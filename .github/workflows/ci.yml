@@ -42,10 +42,12 @@ jobs:
       - name: NautilusTrader smoke
         run: uv run smc4 smoke --output artifacts/ci-smoke
 
-      - name: Preserve smoke evidence
+      - name: Preserve smoke evidence and resolved lock
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: foundation-smoke-${{ github.sha }}
-          path: artifacts/ci-smoke
+          path: |
+            artifacts/ci-smoke
+            uv.lock
           if-no-files-found: warn
