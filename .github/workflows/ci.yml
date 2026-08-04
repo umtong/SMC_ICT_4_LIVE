@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   foundation:
@@ -27,8 +27,24 @@ jobs:
 
       - name: Resolve and install the pinned foundation
         run: |
-          uv lock
+          if [ -f uv.lock ]; then
+            uv lock --check
+          else
+            uv lock
+          fi
           uv sync --locked
+
+      - name: Commit the generated lock once
+        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/bootstrap-research-foundation'
+        run: |
+          if git ls-files --error-unmatch uv.lock >/dev/null 2>&1; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add uv.lock
+          git commit -m "lock foundation dependencies"
+          git push
 
       - name: Compile
         run: uv run python -m compileall -q src scripts tests
@@ -42,12 +58,10 @@ jobs:
       - name: NautilusTrader smoke
         run: uv run smc4 smoke --output artifacts/ci-smoke
 
-      - name: Preserve smoke evidence and resolved lock
+      - name: Preserve smoke evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: foundation-smoke-${{ github.sha }}
-          path: |
-            artifacts/ci-smoke
-            uv.lock
+          path: artifacts/ci-smoke
           if-no-files-found: warn
