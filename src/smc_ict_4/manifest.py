@@ -38,14 +38,16 @@ def _git_value(args: list[str], default: str = "unknown") -> str:
 
 
 def git_state() -> dict[str, Any]:
-    status = _git_value(["status", "--porcelain"], default="")
+    status = _git_value(["status", "--porcelain=v1", "--untracked-files=all"], default="")
+    changes = [line for line in status.splitlines() if line]
     branch = _git_value(["branch", "--show-current"], default="")
     if not branch:
         branch = os.getenv("GITHUB_HEAD_REF") or os.getenv("GITHUB_REF_NAME") or "unknown"
     return {
         "branch": branch,
         "commit": _git_value(["rev-parse", "HEAD"]),
-        "dirty": bool(status),
+        "dirty": bool(changes),
+        "changes": changes[:100],
     }
 
 
