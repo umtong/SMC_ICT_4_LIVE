@@ -16,18 +16,22 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Probe official Binance high-resolution archives
+      - name: Probe official Binance auxiliary archives
         shell: bash
         run: |
           set -u
+          rm -rf artifacts/candidate-04-rich-probe
           mkdir -p artifacts/candidate-04-rich-probe
           base="https://data.binance.vision/data/futures/um/daily"
           for spec in \
-            "klines/BTCUSDT/1s/BTCUSDT-1s-2024-08-08.zip" \
             "aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-08-08.zip" \
-            "bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-08-08.zip" \
-            "bookDepth/BTCUSDT/BTCUSDT-bookDepth-2024-08-08.zip"; do
-            name="$(basename "$spec")"
+            "bookDepth/BTCUSDT/BTCUSDT-bookDepth-2024-08-08.zip" \
+            "metrics/BTCUSDT/BTCUSDT-metrics-2024-08-08.zip" \
+            "liquidationSnapshot/BTCUSDT/BTCUSDT-liquidationSnapshot-2024-08-08.zip" \
+            "markPriceKlines/BTCUSDT/1m/BTCUSDT-1m-2024-08-08.zip" \
+            "indexPriceKlines/BTCUSDT/1m/BTCUSDT-1m-2024-08-08.zip" \
+            "premiumIndexKlines/BTCUSDT/1m/BTCUSDT-1m-2024-08-08.zip"; do
+            name="$(echo "$spec" | tr '/' '_')"
             code="$(curl -L --retry 3 --connect-timeout 20 -sS -w '%{http_code}' -o "artifacts/candidate-04-rich-probe/$name" "$base/$spec" || true)"
             if [[ "$code" != "200" ]]; then
               rm -f "artifacts/candidate-04-rich-probe/$name"
@@ -37,7 +41,9 @@ jobs:
           find artifacts/candidate-04-rich-probe -maxdepth 1 -type f -printf '%f %s bytes\n' | sort | tee artifacts/candidate-04-rich-probe/sizes.txt
           for zip in artifacts/candidate-04-rich-probe/*.zip; do
             [[ -e "$zip" ]] || continue
-            unzip -l "$zip" | head -20
+            echo "=== $zip ==="
+            unzip -l "$zip" | head -10
+            unzip -p "$zip" | head -3 || true
           done > artifacts/candidate-04-rich-probe/listings.txt
       - name: Preserve probe
         uses: actions/upload-artifact@v4
