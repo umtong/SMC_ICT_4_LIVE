@@ -1,0 +1,31 @@
+name: candidate-02-bookdepth-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-bookdepth/**"
+      - ".github/workflows/candidate-02-bookdepth-first.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Collect locked first-week bookDepth archives
+        run: python .candidate-02-bookdepth/collect_first_week.py
+      - name: Upload immutable book-depth data
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-bookdepth-first-${{ github.sha }}
+          path: |
+            .cache/candidate-02/bookdepth-first-week
+            artifacts/candidate-02-bookdepth-first/manifest.json
+          retention-days: 14
