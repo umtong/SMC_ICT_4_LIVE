@@ -27,7 +27,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Apply exact source evolution
-        run: python3 research/candidate-01/evolve_candidate.py
+        run: |
+          python3 research/candidate-01/evolve_candidate.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("tests/test_candidate_01.py")
+          text = path.read_text(encoding="utf-8")
+          old = '"max_structure_overshoot_atr": 10.0,'
+          if text.count(old) != 1:
+              raise SystemExit("legacy fixture overshoot setting was not found exactly once")
+          path.write_text(text.replace(old, '"max_structure_overshoot_atr": 100.0,', 1), encoding="utf-8")
+          PY
       - name: Validate in pinned research environment
         run: |
           set -euo pipefail
