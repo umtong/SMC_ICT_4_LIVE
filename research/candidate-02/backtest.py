@@ -517,23 +517,38 @@ def run_window(
     )
 
     try:
-        engine.add_venue(
-            venue=venue,
-            oms_type=OmsType.NETTING,
-            account_type=AccountType.MARGIN,
-            starting_balances=[Money(starting_balance, usdt)],
-            base_currency=usdt,
-            default_leverage=Decimal(str(config["execution"]["simulation_leverage_capacity"])),
-            reject_stop_orders=False,
-            support_contingent_orders=True,
-            use_reduce_only=True,
-            bar_execution=True,
-            bar_adaptive_high_low_ordering=True,
-            trade_execution=True,
-            allow_cash_borrowing=False,
-            liquidation_enabled=True,
-            liquidation_cancel_open_orders=True,
-        )
+        venue_kwargs = {
+            "venue": venue,
+            "oms_type": OmsType.NETTING,
+            "account_type": AccountType.MARGIN,
+            "starting_balances": [Money(starting_balance, usdt)],
+            "base_currency": usdt,
+            "default_leverage": Decimal(
+                str(config["execution"]["simulation_leverage_capacity"]),
+            ),
+            "reject_stop_orders": False,
+            "support_contingent_orders": True,
+            "use_reduce_only": True,
+            "bar_execution": True,
+            "bar_adaptive_high_low_ordering": True,
+            "trade_execution": True,
+            "allow_cash_borrowing": False,
+        }
+        liquidation_simulation_enabled = True
+        try:
+            engine.add_venue(
+                **venue_kwargs,
+                liquidation_enabled=True,
+                liquidation_cancel_open_orders=True,
+            )
+        except TypeError as exc:
+            # The 1.230.0 wheel shipped in the locked environment exposes a
+            # narrower Cython signature than its published type stub. Argument
+            # binding fails before venue creation, so retrying is side-effect-free.
+            if "liquidation_enabled" not in str(exc):
+                raise
+            liquidation_simulation_enabled = False
+            engine.add_venue(**venue_kwargs)
         for instrument in instruments:
             engine.add_instrument(instrument)
         engine.add_data(all_bars, sort=True)
@@ -637,7 +652,9 @@ def run_window(
                 "effective_taker_commission_rate": str(effective_taker),
                 "bar_adaptive_high_low_ordering": True,
                 "one_bar_cross_asset_arbitration_delay": True,
-                "liquidation_enabled": True,
+                "liquidation_requested": True,
+                "liquidation_enabled": liquidation_simulation_enabled,
+                "liquidation_api_fallback": not liquidation_simulation_enabled,
             },
         }
         write_json_atomic(output / "metrics.json", _json_safe(metrics))
