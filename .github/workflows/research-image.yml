@@ -7,9 +7,9 @@ on:
       - agent/prebuilt-research-environment
     paths:
       - containers/research/**
+      - .dockerignore
       - pyproject.toml
       - uv.lock
-      - README.md
       - src/**
       - .github/workflows/research-image.yml
   workflow_dispatch:
@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
   packages: write
+
+concurrency:
+  group: prebuilt-research-environment-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   IMAGE: ghcr.io/umtong/smc-ict-4-live-research
@@ -53,14 +57,12 @@ jobs:
               echo "${IMAGE}:latest"
               echo "${IMAGE}:sha-${short_sha}"
               echo 'EOF'
-              echo "verify=${IMAGE}:foundation-1.0.0"
             } >> "${GITHUB_OUTPUT}"
           else
             {
               echo 'value<<EOF'
               echo "${IMAGE}:candidate-${short_sha}"
               echo 'EOF'
-              echo "verify=${IMAGE}:candidate-${short_sha}"
             } >> "${GITHUB_OUTPUT}"
           fi
 
