@@ -198,7 +198,7 @@ def _event_context(bars: list[Any], candidate: CandidateConfig) -> pd.DataFrame:
         if event.event_type == "LIQUIDITY_PROBE_REJECTED":
             row.update(
                 {
-                    "probe_time_ns": event.event_time_ns,
+                    "probe_time_ns": str(event.event_time_ns),
                     "probe_flow_z": event.details.get("flow_z"),
                     "probe_volume_z": event.details.get("volume_z"),
                     "probe_boundary": event.details.get("boundary"),
@@ -209,13 +209,19 @@ def _event_context(bars: list[Any], candidate: CandidateConfig) -> pd.DataFrame:
         elif event.event_type == "REVERSAL_DISPLACEMENT_CONFIRMED":
             row.update(
                 {
-                    "displacement_time_ns": event.event_time_ns,
+                    "displacement_time_ns": str(event.event_time_ns),
                     "displacement_flow_z": event.details.get("flow_z"),
                     "displacement_body_atr": event.details.get("body_atr"),
                     "structure_overshoot_atr": event.details.get("structure_overshoot_atr"),
                 },
             )
-    return pd.DataFrame(rows.values())
+    result = pd.DataFrame(rows.values())
+    for column in ("probe_time_ns", "displacement_time_ns"):
+        if column in result:
+            result[column] = pd.to_numeric(
+                result[column], errors="coerce"
+            ).astype("Int64")
+    return result
 
 
 def _causal_z(series: pd.Series, window: int, minimum: int) -> pd.Series:
