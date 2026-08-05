@@ -1,0 +1,220 @@
+    }
+
+
+def _calculate_metrics(
+    trades: Sequence[Trade],
+    nav: pd.Series,
+    config: StrategyConfig,
+    *,
+    start: date,
+    end: date,
+    failure_counts: Mapping[str, int],
+    max_concurrent: int,
+) -> dict[str, Any]:
+    if nav.empty:
+        raise CandidateError("NAV series is empty")
+    ending_nav = float(nav.iloc[-1])
+    calendar_days = (end - start).days + 1
+    if ending_nav <= 0:
+        geom_daily = -1.0
+    else:
+        geom_daily = (ending_nav / config.starting_nav) ** (1.0 / calendar_days) - 1.0
+    running_max = nav.cummax()
+    drawdown = nav / running_max - 1.0
+    max_drawdown = abs(float(drawdown.min()))
+
+    net = np.array([trade.net_pnl for trade in trades], dtype=float)
+    r_values = np.array([trade.r_multiple for trade in trades], dtype=float)
+    winners = net[net > 0]
+    losers = net[net < 0]
+    gross_profit = float(winners.sum()) if winners.size else 0.0
+    gross_loss = abs(float(losers.sum())) if losers.size else 0.0
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else (math.inf if gross_profit > 0 else 0.0)
+    largest_winner_share = float(winners.max() / gross_profit) if gross_profit > 0 else 1.0
+    effective_winners = (
+        float((winners.sum() ** 2) / np.square(winners).sum())
+        if winners.size and np.square(winners).sum() > 0
+        else 0.0
+    )
+    active_days = len({pd.Timestamp(trade.entry_time).date() for trade in trades})
+    daily_nav = nav.resample("1D").last().dropna()
+    daily_returns = daily_nav.pct_change()
+    if not daily_nav.empty:
+        first_return = float(daily_nav.iloc[0] / config.starting_nav - 1.0)
+        daily_returns.iloc[0] = first_return
+
+    scenario_metrics: dict[str, Any] = {}
+    for kind in sorted({trade.kind for trade in trades}):
+        subset = [trade for trade in trades if trade.kind == kind]
+        subset_net = sum(trade.net_pnl for trade in subset)
+        scenario_metrics[kind] = {
+            "trades": len(subset),
+            "wins": sum(trade.net_pnl > 0 for trade in subset),
+            "net_pnl": subset_net,
+            "expectancy_r": float(np.mean([trade.r_multiple for trade in subset])) if subset else 0.0,
+        }
+
+    gate_checks = {
+        "geom_daily": geom_daily >= config.gate_min_geom_daily,
+        "trades": len(trades) >= config.gate_min_trades,
+        "active_days": active_days >= config.gate_min_active_days,
+        "max_drawdown": max_drawdown <= config.gate_max_drawdown,
+        "largest_winner_share": largest_winner_share <= config.gate_max_largest_winner_share,
+        "single_position": max_concurrent <= 1,
+        "positive_nav": ending_nav > 0,
+    }
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "calendar_days": calendar_days,
+        "starting_nav": config.starting_nav,
+        "ending_nav": ending_nav,
+        "total_return": ending_nav / config.starting_nav - 1.0,
+        "geometric_daily_growth": geom_daily,
+        "max_drawdown": max_drawdown,
+        "trades": len(trades),
+        "wins": int((net > 0).sum()),
+        "losses": int((net < 0).sum()),
+        "win_rate": float((net > 0).mean()) if net.size else 0.0,
+        "expectancy_r": float(r_values.mean()) if r_values.size else 0.0,
+        "median_r": float(np.median(r_values)) if r_values.size else 0.0,
+        "profit_factor": profit_factor,
+        "gross_profit": gross_profit,
+        "gross_loss": gross_loss,
+        "fees": float(sum(trade.fees for trade in trades)),
+        "funding": float(sum(trade.funding for trade in trades)),
+        "active_days": active_days,
+        "effective_winners": effective_winners,
+        "largest_winner_share": largest_winner_share,
+        "max_concurrent_entry_plus_position": max_concurrent,
+        "daily_returns": {index.date().isoformat(): float(value) for index, value in daily_returns.dropna().items()},
+        "scenario_metrics": scenario_metrics,
+        "failure_counts": dict(sorted(failure_counts.items())),
+        "gate_checks": gate_checks,
+        "gate_pass": all(gate_checks.values()),
+    }
+
+
+def _write_event_log(path: Path, raw_events: Sequence[RawEvent]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if ResearchEvent is not None and write_events is not None:
+        events = [
+            ResearchEvent(
+                scenario_id=event.scenario_id,
+                instrument_id=INSTRUMENT_ID,
+                event_type=event.event_type,
+                event_time_ns=event.event_time_ns,
+                observed_time_ns=event.observed_time_ns,
+                previous_state=event.previous_state,
+                next_state=event.next_state,
+                reason_code=event.reason_code,
+                reference_price=None if event.reference_price is None else f"{event.reference_price:.8f}",
+                details=event.details,
+            )
+            for event in raw_events
+        ]
+        write_events(path, events)
+        return
+    with path.open("w", encoding="utf-8", newline="\n") as stream:
+        for event in raw_events:
+            stream.write(json.dumps(asdict(event), sort_keys=True, default=str) + "\n")
+
+
+def _write_week_artifacts(
+    output: Path,
+    result: Mapping[str, Any],
+    config_path: Path,
+    data_root: Path,
+    evidence_files: Sequence[Path],
+    *,
+    week_name: str,
+) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    trades = result["trades"]
+    nav = result["nav"]
+    metrics = dict(result["metrics"])
+    trade_frame = pd.DataFrame([asdict(trade) for trade in trades])
+    trade_frame.to_csv(output / "trades.csv", index=False)
+    nav.rename("nav").to_csv(output / "nav.csv", header=True)
+    _write_event_log(output / "events.jsonl", result["events"])
+    _atomic_json(output / "metrics.json", metrics)
+
+    data_manifest_path: Path | None = None
+    if build_data_manifest is not None and write_data_manifest is not None:
+        manifest = build_data_manifest(
+            data_root,
+            dataset=f"binance-usdm-{week_name}",
+            include=[Path(path) for path in evidence_files],
+            metadata_values={"symbol": "BTCUSDT", "interval": "1m"},
+        )
+        data_manifest_path = output / "data_manifest.json"
+        write_data_manifest(data_manifest_path, manifest)
+    else:
+        fallback = {
+            "dataset": f"binance-usdm-{week_name}",
+            "files": [
+                {"path": str(path), "size_bytes": path.stat().st_size, "sha256": _sha256_file(path)}
+                for path in evidence_files
+            ],
+        }
+        data_manifest_path = output / "data_manifest.json"
+        _atomic_json(data_manifest_path, fallback)
+
+    run_id = f"candidate-04-{week_name}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    if create_run_manifest is not None:
+        run_manifest = create_run_manifest(
+            run_id=run_id,
+            candidate="candidate-04",
+            config_path=config_path,
+            data_manifest_path=data_manifest_path,
+            extra={"week": week_name, "metrics": metrics},
+        )
+    else:
+        run_manifest = {
+            "run_id": run_id,
+            "candidate": "candidate-04",
+            "week": week_name,
+            "config_sha256": _sha256_file(config_path),
+            "metrics": metrics,
+        }
+    _atomic_json(output / "run.json", run_manifest)
+
+
+def load_config(path: Path) -> StrategyConfig:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    strategy = payload.get("strategy", payload)
+    if not isinstance(strategy, Mapping):
+        raise CandidateError("config.strategy must be an object")
+    return StrategyConfig.from_mapping(strategy)
+
+
+def load_evaluation_weeks(path: Path) -> list[tuple[str, date, date]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    evaluation = payload.get("evaluation", {})
+    weeks = evaluation.get("weeks", [])
+    result: list[tuple[str, date, date]] = []
+    for index, item in enumerate(weeks, start=1):
+        start = date.fromisoformat(item["start"])
+        end = date.fromisoformat(item["end"])
+        if (end - start).days != 6:
+            raise CandidateError(f"evaluation week {index} must be exactly seven calendar days")
+        result.append((item.get("name", f"week-{index}"), start, end))
+    if not result:
+        raise CandidateError("config contains no evaluation weeks")
+    return result
+
+
+def run_week(
+    *,
+    config_path: Path,
+    start: date,
+    end: date,
+    output: Path,
+    data_root: Path,
+    week_name: str,
+) -> dict[str, Any]:
+    config = load_config(config_path)
+    frame, evidence = download_binance_week(
+        symbol=config.symbol,
+        interval=config.interval,
+        start=start,
