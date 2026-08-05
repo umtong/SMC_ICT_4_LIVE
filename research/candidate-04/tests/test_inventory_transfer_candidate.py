@@ -21,6 +21,7 @@ class Candidate04V7Tests(unittest.TestCase):
         self.original_basis = MODULE.v6.basis_regime
         self.index = pd.date_range("2024-01-01", periods=8, freq="1min", tz="UTC")
         self.config = MODULE.Config(
+            base=MODULE.v6.v5.Config(),
             stress_inventory_quantile_window_minutes=5,
             stress_inventory_quantile_min_periods=3,
             stress_inventory_quantile=0.8,
