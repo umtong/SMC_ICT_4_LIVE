@@ -17,7 +17,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 USER root
 
-RUN apt-get update \
+# The upstream devcontainer image may retain a Yarn APT entry whose signing key
+# rotates independently. Yarn is not used here, so remove that unrelated source
+# before installing the small shared tool set.
+RUN find /etc/apt/sources.list.d -maxdepth 1 -type f -iname '*yarn*' -delete \
+    && apt-get update \
     && apt-get install -y --no-install-recommends make jq \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --no-cache-dir "uv==${UV_VERSION}"
