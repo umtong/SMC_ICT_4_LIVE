@@ -1,0 +1,90 @@
+{
+  "candidate": "candidate-04",
+  "freeze": "v2",
+  "status": "frozen before opening validation-2",
+  "development_windows": [
+    {"name": "dev-1", "start": "2025-09-01", "end": "2025-09-07"},
+    {"name": "dev-2", "start": "2024-12-27", "end": "2025-01-02"},
+    {"name": "dev-3", "start": "2025-10-20", "end": "2025-10-26"},
+    {"name": "dev-4-former-validation-1", "start": "2025-06-12", "end": "2025-06-18"}
+  ],
+  "scenarios": {
+    "external_sweep_reversal": {
+      "pool_lookback_minutes": 90,
+      "minimum_pool_age_minutes": 20,
+      "confirmation_window_minutes": 10,
+      "pre_sweep_structure_minutes": 5,
+      "confirmation_body_atr_min": 0.4,
+      "flow_window_minutes": 15,
+      "directional_flow_improvement_min": 0.03,
+      "directional_close_location_min": 0.5,
+      "target_net_r": 1.35,
+      "maximum_hold_minutes": 180
+    },
+    "internal_pullback_resumption": {
+      "pool_lookback_minutes": 30,
+      "minimum_pool_age_minutes": 6,
+      "required_state": "four-hour direction aligned and one-hour move opposed at sweep time",
+      "confirmation_window_minutes": 10,
+      "pre_sweep_structure_minutes": 5,
+      "confirmation_body_atr_min": 0.4,
+      "flow_window_minutes": 15,
+      "directional_flow_improvement_min": 0.03,
+      "directional_close_location_min": 0.5,
+      "target_net_r": 1.35,
+      "maximum_hold_minutes": 180
+    },
+    "micro_dislocation_reversal": {
+      "pool_lookback_minutes": 20,
+      "minimum_pool_age_minutes": 4,
+      "impact_definition": "pool penetration in ATR divided by sweep volume / lagged rolling median volume",
+      "impact_min": 0.18,
+      "impact_max": 0.35,
+      "auction_efficiency_definition": "absolute 60-minute net move divided by 60-minute absolute path length",
+      "auction_efficiency_max": 0.08,
+      "opposing_cascade_filter": "side-adjusted four-hour return must not be below the negative rolling 80th percentile of absolute four-hour return over the preceding 720 minutes",
+      "target_net_r": 0.5,
+      "maximum_hold_minutes": 60
+    },
+    "cascade_reversal_failure": {
+      "parent": "an external reversal confirmation suppressed by the opposing-cascade filter",
+      "probe_expiry_minutes": 90,
+      "trigger": "close beyond the sweep extreme in the prior trend direction with aligned 15-minute flow, directional close location >= 0.5, and directional body >= 3 ATR",
+      "stop": "opposite post-sweep/probe extreme plus 0.08 sweep ATR",
+      "target_net_r": 1.35,
+      "maximum_hold_minutes": 180
+    }
+  },
+  "shared_execution": {
+    "entry": "next one-minute bar open after a close-confirmed state transition",
+    "fee_bps_each_side": 5.0,
+    "entry_slippage_bps": 2.0,
+    "stop_slippage_bps": 3.0,
+    "market_exit_slippage_bps": 2.0,
+    "planned_funding_bps": 1.0,
+    "risk_fraction_of_current_nav": 0.03,
+    "stop_target_same_bar": "stop first",
+    "break_even_trigger_net_r": 1.05,
+    "break_even_lock_net_r": 0.03,
+    "global_constraint": "at most one selected entry intent or one open position"
+  },
+  "development_results_after_costs": [
+    {"window": "dev-1", "total_return": 0.08764, "geometric_daily_growth": 0.01207, "trades": 4},
+    {"window": "dev-2", "total_return": 0.09155, "geometric_daily_growth": 0.01259, "trades": 9},
+    {"window": "dev-3", "total_return": 0.08313, "geometric_daily_growth": 0.01147, "trades": 2},
+    {"window": "dev-4-former-validation-1", "total_return": 0.07354, "geometric_daily_growth": 0.01019, "trades": 3}
+  ],
+  "sensitivity_evidence": {
+    "impact_min_pass_plateau": [0.18, 0.20],
+    "impact_max_pass_plateau": [0.35, 0.40],
+    "auction_efficiency_pass_plateau": [0.07, 0.08, 0.09, 0.10],
+    "cascade_percentile_pass_plateau": [0.80, 0.85, 0.90],
+    "cascade_failure_body_atr_pass_plateau": [2.0, 2.5, 3.0, 3.5],
+    "micro_hold_minutes_pass_plateau": [60, 70]
+  },
+  "next_untouched_window": {
+    "name": "validation-2",
+    "start": "2023-04-17",
+    "end": "2023-04-23"
+  }
+}
