@@ -1,0 +1,107 @@
+{
+  "candidate": "candidate-04",
+  "freeze": "v3-warmup-causal",
+  "frozen_before_opening": "validation-3: 2024-09-17..2024-09-23",
+  "evaluation_contract": {
+    "warmup_calendar_days": 2,
+    "warmup_use": "past-only feature initialization; no setup, intent, position, PnL, or metric before evaluation start",
+    "evaluation_days": 7,
+    "entry_knowledge": "close-confirmed state transition, fill at following one-minute open",
+    "global_constraint": "at most one selected entry intent or one open position across all scenarios"
+  },
+  "shared_confirmation": {
+    "liquidity_pool": "rolling high/low shifted by one bar",
+    "sweep": "pool penetration and close back inside, adverse taker-flow imbalance, relative-volume and wick evidence",
+    "pre_sweep_structure_minutes": 5,
+    "confirmation_window_minutes": 10,
+    "confirmation": "close through fixed pre-sweep structure, directional body >= 0.4 ATR, directional 15-minute taker-flow improvement >= 0.03, directional close location >= 0.50"
+  },
+  "scenarios": [
+    {
+      "name": "EXTERNAL_REVERSAL",
+      "pool_lookback_minutes": 90,
+      "minimum_pool_age_minutes": 20,
+      "state": "external liquidity sweep and failed auction",
+      "suppression": "when side-adjusted four-hour return is below the negative past-only rolling 80th percentile of absolute four-hour return, convert confirmation to a monitored cascade-failure probe",
+      "target_net_r": 1.35,
+      "maximum_hold_minutes": 180
+    },
+    {
+      "name": "CASCADE_REVERSAL_FAILURE",
+      "parent": "suppressed EXTERNAL_REVERSAL confirmation",
+      "probe_expiry_minutes": 90,
+      "trigger": "close beyond sweep extreme in prior trend direction with directional body >= 3 ATR, aligned 15-minute flow and directional close location >= 0.50",
+      "stop": "opposite post-sweep/probe extreme plus 0.08 sweep ATR",
+      "target_net_r": 1.35,
+      "maximum_hold_minutes": 180
+    },
+    {
+      "name": "INTERNAL_TREND_RESUMPTION",
+      "pool_lookback_minutes": 30,
+      "minimum_pool_age_minutes": 6,
+      "state": "side-adjusted four-hour displacement >= 0 and side-adjusted one-hour displacement < 0 at the sweep; local liquidity is taken during a pullback inside a longer trend",
+      "target_net_r": 1.35,
+      "maximum_hold_minutes": 180
+    },
+    {
+      "name": "DECELERATED_CASCADE_EXHAUSTION",
+      "pool_lookback_minutes": 30,
+      "minimum_pool_age_minutes": 20,
+      "state": "one-hour, four-hour, twelve-hour and twenty-four-hour displacement all oppose the reversal, but absolute twelve-hour displacement is at most half absolute twenty-four-hour displacement",
+      "target_net_r": 1.35,
+      "maximum_hold_minutes": 180
+    },
+    {
+      "name": "MULTISCALE_TREND_CONSENSUS",
+      "pool_lookback_minutes": 20,
+      "minimum_pool_age_minutes": 4,
+      "state": "UTC-day, one-hour, four-hour, twelve-hour and twenty-four-hour displacement all agree with the reclaimed sweep direction",
+      "target_net_r": 1.35,
+      "maximum_hold_minutes": 180
+    },
+    {
+      "name": "MICRO_DISLOCATION_RESUMPTION",
+      "pool_lookback_minutes": 20,
+      "minimum_pool_age_minutes": 4,
+      "impact": "pool penetration ATR divided by sweep volume / lagged rolling median volume",
+      "impact_min": 0.18,
+      "impact_max": 0.35,
+      "auction_efficiency": "absolute one-hour net move divided by one-hour absolute path length",
+      "auction_efficiency_max": 0.08,
+      "trend_state": "four-hour displacement agrees with entry, or twelve-hour displacement agrees while six-hour displacement is a pullback",
+      "cascade_guard": "side-adjusted four-hour return must not be below the negative past-only rolling 80th percentile of absolute four-hour return",
+      "target_net_r": 0.50,
+      "maximum_hold_minutes": 60
+    }
+  ],
+  "priority_when_confirmations_share_a_bar": [
+    "EXTERNAL_REVERSAL or its CASCADE_REVERSAL_FAILURE probe",
+    "30-minute parent scenario",
+    "20-minute parent scenario"
+  ],
+  "execution_and_risk": {
+    "starting_nav_for_reports": 100000.0,
+    "risk_fraction_of_current_nav": 0.03,
+    "quantity_denominator": "absolute adverse entry-to-stop fill distance + entry fee + stop fee + planned adverse funding",
+    "fee_bps_each_side": 5.0,
+    "entry_slippage_bps": 2.0,
+    "stop_slippage_bps": 3.0,
+    "market_exit_slippage_bps": 2.0,
+    "planned_funding_bps": 1.0,
+    "realized_funding_times_utc": [0, 8, 16],
+    "same_bar_stop_and_target": "stop first",
+    "break_even_trigger_net_r": 1.05,
+    "break_even_lock_net_r": 0.03,
+    "arbitrary_notional_or_leverage_cap": false,
+    "model_score_risk_multiplier": false
+  },
+  "development_results_after_all_costs": [
+    {"name": "dev-1", "dates": "2025-09-01..2025-09-07", "total_return": 0.08764154785753986, "geometric_daily_growth": 0.012073970998159655, "trades": 4, "wins": 4},
+    {"name": "dev-2", "dates": "2024-12-27..2025-01-02", "total_return": 0.09154926129378849, "geometric_daily_growth": 0.012592631749367866, "trades": 9, "wins": 6},
+    {"name": "dev-3", "dates": "2025-10-20..2025-10-26", "total_return": 0.08313239636160019, "geometric_daily_growth": 0.011473494251146743, "trades": 2, "wins": 2},
+    {"name": "dev-4-former-validation-1", "dates": "2025-06-12..2025-06-18", "total_return": 0.07353734799962108, "geometric_daily_growth": 0.01018857199522305, "trades": 3, "wins": 3},
+    {"name": "dev-5-former-validation-2", "dates": "2023-04-17..2023-04-23", "total_return": 0.08330607476262353, "geometric_daily_growth": 0.011496662376261124, "trades": 2, "wins": 2}
+  ],
+  "known_development_limit": "dev-3 and dev-5 have only two independent parent events; untouched validation must confirm both state coverage and growth",
+  "next_untouched_window": {"name": "validation-3", "start": "2024-09-17", "end": "2024-09-23"}
+}
