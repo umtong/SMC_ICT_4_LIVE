@@ -40,6 +40,22 @@ jobs:
           test -f research/candidate-01/run_research.py
           test -f tests/test_candidate_01.py
 
+      - name: Align with the pinned NautilusTrader module surface
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-01/nautilus_backtest.py")
+          source = path.read_text(encoding="utf-8")
+          old = "    from nautilus_trader.model import Bar, BarType, CryptoPerpetual\n"
+          new = (
+              "    from nautilus_trader.model.data import Bar, BarType\n"
+              "    from nautilus_trader.model.instruments import CryptoPerpetual\n"
+          )
+          if old not in source:
+              raise SystemExit("expected pinned-runtime import line was not found")
+          path.write_text(source.replace(old, new, 1), encoding="utf-8")
+          PY
+
       - name: Commit implementation locally before evaluation
         run: |
           set -euo pipefail
