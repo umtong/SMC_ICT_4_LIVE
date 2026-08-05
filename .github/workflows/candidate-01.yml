@@ -1,0 +1,226 @@
+name: candidate-01-research
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - "research/candidate-01/**"
+      - "tests/test_candidate_01.py"
+      - "src/smc_ict_4/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Research suite"
+        required: true
+        default: "discovery"
+        type: choice
+        options: [discovery, quick, extended, full]
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-01-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: ${{ github.workspace }}/src
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  discovery:
+    name: causal tests and first frozen random week
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Activate prebuilt environment
+        run: echo "/opt/smc4/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Verify prebuilt runtime
+        run: smc4 doctor
+
+      - name: Compile candidate
+        run: python -m compileall -q src research/candidate-01 tests
+
+      - name: Causal and protocol tests
+        run: python -m unittest tests.test_candidate_01 -v
+
+      - name: Verify frozen random-week order
+        run: python research/candidate-01/seed_protocol.py
+
+      - name: Restore public-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01
+          key: candidate-01-binance-vision-${{ runner.os }}
+
+      - name: Run first frozen discovery week only
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/candidate-01
+          python research/candidate-01/run_research.py \
+            --suite discovery \
+            --output artifacts/candidate-01/discovery \
+            2>&1 | tee artifacts/candidate-01/discovery.log
+
+      - name: Print aggregate evidence
+        if: always()
+        run: |
+          test -f artifacts/candidate-01/discovery/aggregate_metrics.json && \
+          cat artifacts/candidate-01/discovery/aggregate_metrics.json || true
+
+      - name: Preserve discovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-discovery-${{ github.sha }}
+          path: artifacts/candidate-01
+          if-no-files-found: error
+          retention-days: 30
+
+  quick:
+    name: two untouched confirmation weeks
+    needs: discovery
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.suite == 'quick' || inputs.suite == 'extended' || inputs.suite == 'full')) ||
+      (github.event_name == 'push' &&
+       (contains(github.event.head_commit.message, '[quick]') ||
+        contains(github.event.head_commit.message, '[extended]') ||
+        contains(github.event.head_commit.message, '[full]')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "/opt/smc4/.venv/bin" >> "$GITHUB_PATH"
+      - run: smc4 doctor
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01
+          key: candidate-01-binance-vision-${{ runner.os }}
+      - name: Run discovery plus two confirmation weeks
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/candidate-01
+          python research/candidate-01/run_research.py \
+            --suite quick \
+            --output artifacts/candidate-01/quick \
+            2>&1 | tee artifacts/candidate-01/quick.log
+      - if: always()
+        run: test -f artifacts/candidate-01/quick/aggregate_metrics.json && cat artifacts/candidate-01/quick/aggregate_metrics.json || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-quick-${{ github.sha }}
+          path: artifacts/candidate-01
+          if-no-files-found: error
+          retention-days: 30
+
+  extended:
+    name: two additional frozen random weeks
+    needs: quick
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.suite == 'extended') ||
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[extended]'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "/opt/smc4/.venv/bin" >> "$GITHUB_PATH"
+      - run: smc4 doctor
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01
+          key: candidate-01-binance-vision-${{ runner.os }}
+      - name: Run extended suite
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/candidate-01
+          python research/candidate-01/run_research.py \
+            --suite extended \
+            --output artifacts/candidate-01/extended \
+            2>&1 | tee artifacts/candidate-01/extended.log
+      - if: always()
+        run: test -f artifacts/candidate-01/extended/aggregate_metrics.json && cat artifacts/candidate-01/extended/aggregate_metrics.json || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-extended-${{ github.sha }}
+          path: artifacts/candidate-01
+          if-no-files-found: error
+          retention-days: 30
+
+  full:
+    name: full frozen evaluation and completion gate
+    needs: quick
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.suite == 'full') ||
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[full]'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "/opt/smc4/.venv/bin" >> "$GITHUB_PATH"
+      - run: smc4 doctor
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01
+          key: candidate-01-binance-vision-${{ runner.os }}
+      - name: Run full suite and retain failure evidence
+        id: research
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/candidate-01
+          python research/candidate-01/run_research.py \
+            --suite full \
+            --output artifacts/candidate-01/full \
+            2>&1 | tee artifacts/candidate-01/full.log
+      - name: Print aggregate evidence
+        if: always()
+        run: test -f artifacts/candidate-01/full/aggregate_metrics.json && cat artifacts/candidate-01/full/aggregate_metrics.json || true
+      - name: Preserve full evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-full-${{ github.sha }}
+          path: artifacts/candidate-01
+          if-no-files-found: error
+          retention-days: 90
+      - name: Enforce predeclared completion gate
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("artifacts/candidate-01/full/aggregate_metrics.json")
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          if not payload.get("candidate_success", False):
+              raise SystemExit("candidate-01 failed the predeclared completion gate")
+          PY
