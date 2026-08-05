@@ -1,0 +1,272 @@
+{
+  "candidate": "multi_horizon_failed_acceptance_liquidity_trap_v3",
+  "development_evidence": {
+    "all_twelve": {
+      "evaluation_days": 84,
+      "geometric_daily_growth": 0.011852360579192478,
+      "maximum_consecutive_negative_trades": 2,
+      "maximum_effective_notional_multiple": 21.92944680304556,
+      "maximum_mark_to_market_drawdown": 0.16516215736509776,
+      "maximum_single_winner_share_of_gross_profit": 0.1608262595543029,
+      "nav_factor": 2.690546689346963,
+      "nonnegative_week_fraction": 0.75,
+      "positive_active_week_fraction": 0.6666666666666666,
+      "positive_trade_fraction": 0.6190476190476191,
+      "profit_factor": 3.5095098409679193,
+      "trades": 21,
+      "trades_per_day": 0.25
+    },
+    "file": "research/candidate-02/development_evidence_v3.json",
+    "neighbor_stability": "Both rapid-screen and confirmation subsets retained positive cost-after expectancy across adjacent source horizons, flow quantiles, activity quantiles, sweep sizes, acceptance deadlines, failure windows, failure depths, stop buffers and minimum cost-after RR. The lock uses central structural values rather than the best cell.",
+    "rapid_screen_first_three": {
+      "evaluation_days": 21,
+      "geometric_daily_growth": 0.021364424587392294,
+      "maximum_mark_to_market_drawdown": 0.14190549493674198,
+      "maximum_single_winner_share_of_gross_profit": 0.19400234663288346,
+      "nav_factor": 1.5588174611494454,
+      "nonnegative_week_fraction": 0.6666666666666666,
+      "positive_active_week_fraction": 0.6666666666666666,
+      "positive_trade_fraction": 0.6363636363636364,
+      "profit_factor": 3.389047821280449,
+      "trades": 11,
+      "trades_per_day": 0.5238095238095238
+    },
+    "sha256": "c5947f369cff8d4cc7375ab82642a17e6f786befa48620819ce39ca2936d5ac9",
+    "structural_confirmation_next_nine": {
+      "evaluation_days": 63,
+      "geometric_daily_growth": 0.008701399422833989,
+      "maximum_mark_to_market_drawdown": 0.16516215736509865,
+      "maximum_single_winner_share_of_gross_profit": 0.3097377270123165,
+      "nav_factor": 1.726017802856149,
+      "nonnegative_week_fraction": 0.7777777777777778,
+      "positive_active_week_fraction": 0.6666666666666666,
+      "positive_trade_fraction": 0.6,
+      "profit_factor": 3.6289426737016517,
+      "trades": 10,
+      "trades_per_day": 0.15873015873015872
+    }
+  },
+  "known_failure_conditions": [
+    "Directional source path efficiency above 0.16: likely price discovery rather than balanced auction.",
+    "Boundary test without elevated breakout-side taker flow and activity before two-close acceptance.",
+    "Only a sweep/reclaim without prior acceptance: no trapped accepted inventory.",
+    "Acceptance that does not fail within 12 bars.",
+    "Failure entry whose opposite boundary does not offer cost-after reward/risk of at least 1.0.",
+    "Required risk-sized quantity that cannot be supported by actual exchange margin tiers: reject rather than cap.",
+    "Seven clustered full planned losses approach the 35 percent recoverability boundary.",
+    "Bar-only target fills may overstate maker queue certainty; final Nautilus and live implementation must preserve or worsen the locked cost assumptions, never improve them post hoc."
+  ],
+  "lock_version": 3,
+  "locked_at_utc": "2026-08-05T10:31:00Z",
+  "locked_before_prospective_holdout_evaluation": true,
+  "locked_implementation": {
+    "acceptance_and_failure": {
+      "acceptance": "Two consecutive completed closes strictly outside the frozen tested level, reached within four bars including the test bar, with breakout impulse already observed.",
+      "failure": "After acceptance and within 12 completed bars, close at least 0.10 prior ATR back inside. High-break failure close must be in the lower half of its bar; low-break failure close in the upper half.",
+      "minimum_geometry": "Cost-after target reward divided by cost-after planned stop loss at least 1.0.",
+      "stop": "Beyond the complete tracked excursion extreme by 0.10 prior ATR.",
+      "target": "Opposite frozen source-auction boundary.",
+      "trade_side": "Opposite the failed breakout direction."
+    },
+    "config": {
+      "acceptance_consecutive_closes": 2,
+      "acceptance_deadline_bars": 4,
+      "activity_quantile": 0.5,
+      "atr_lookback_5m": 48,
+      "atr_minimum_observations": 24,
+      "auction_horizons_5m": [
+        96,
+        108
+      ],
+      "boundary_touch_tolerance_atr": 0.2,
+      "breakout_flow_quantile": 0.65,
+      "cooldown_bars": 6,
+      "failure_close_half_fraction": 0.5,
+      "failure_window_bars": 12,
+      "flow_lookback_5m": 288,
+      "flow_minimum_observations": 96,
+      "maximum_excursion_atr": 3.0,
+      "maximum_holding_minutes": 720,
+      "maximum_source_path_efficiency": 0.16,
+      "maximum_source_span_atr": 20.0,
+      "minimum_cost_after_reward_risk": 1.0,
+      "minimum_excursion_atr": 0.05,
+      "minimum_failure_depth_atr": 0.1,
+      "minimum_source_age_bars": 6,
+      "minimum_tested_boundary_touches": 3,
+      "rank_policy": "longest_horizon",
+      "risk_fraction": 0.06,
+      "stop_buffer_atr": 0.1,
+      "tail_hours": 12,
+      "warmup_days": 2
+    },
+    "cost_model": {
+      "entry_slippage_rate": 0.00015,
+      "funding_allowance_rate": 0.0001,
+      "maker_fee_rate": 0.0002,
+      "market_impact_rate": 5e-05,
+      "stop_slippage_rate": 0.00025,
+      "taker_fee_rate": 0.0005
+    },
+    "execution_and_risk": {
+      "entry": "Market at the next one-minute open after the completed failure bar, with adverse entry slippage and impact.",
+      "forbidden_overlays": [
+        "maximum notional cap",
+        "arbitrary leverage cap",
+        "model-score risk multiplier",
+        "post-hoc risk reduction to fit 1 percent"
+      ],
+      "portfolio_observation": "All detectors continue updating while busy/cooling; transient setup states reset at entry and after cooldown, consumed pools persist.",
+      "quantity": "Current total NAV times 0.06 divided by per-unit expected stop loss including entry and stop fees, entry/stop slippage, impact and funding allowance.",
+      "stop": "Stop-market, gap-aware at the worse of trigger and bar open, then adverse stop slippage and impact. If stop and target occur in one one-minute bar, stop resolves first.",
+      "target": "Resting maker limit at the frozen opposite boundary.",
+      "time_exit": "Taker market exit after 720 minutes or at evaluation end."
+    },
+    "order_flow_definition": {
+      "activity": "Five-minute base volume and trade count each at or above their prior 288-bar median.",
+      "aggressive_high_break": "buy share at or above the prior 288-bar 65th percentile",
+      "aggressive_low_break": "buy share at or below the prior 288-bar 35th percentile",
+      "five_minute_buy_share": "sum(taker_buy_base_volume) / sum(base_volume)",
+      "timing": "Breakout impulse may occur on any test-to-acceptance bar but must be observed before acceptance is declared."
+    },
+    "source_auction_definition": {
+      "first_test": "Previous completed close must remain inside, source key must be unconsumed, and current high/low excursion must be 0.05 to 3.0 prior ATR.",
+      "horizons": "The exact preceding 96 and 108 completed 5-minute bars (8h and 9h).",
+      "opposite_target": "The opposite minimum low or maximum high frozen from the same source window.",
+      "path_efficiency": "abs(last source close - first source close) / sum(abs(consecutive source close changes)); maximum 0.16.",
+      "source_span": "Frozen high-low span no greater than 20 prior ATR.",
+      "tested_boundary_touches": "Count source highs/lows within 0.20 prior ATR of the tested extreme; minimum three. The opposite boundary need not have three touches.",
+      "tested_level": "Maximum high for a high test or minimum low for a low test. Equal extrema use the first occurrence, matching numpy argmax/argmin."
+    },
+    "source_file": "research/candidate-02/v3_research.py",
+    "source_sha256": "e6883048edf26d35899bfe2ce0fafb679e17b09874caa386017a9c724c5f1695",
+    "test_file": "research/candidate-02/tests/test_v3_research.py",
+    "test_sha256": "bc5789878d1b8739d4d72a162323c750866e9328f95b652623dc9159bb250555"
+  },
+  "market": {
+    "decision_bar": "completed 5-minute bar aggregated from 1-minute bars, UTC epoch aligned, left-closed and right-labeled",
+    "entry_observation": "next 1-minute open whose open timestamp equals the completed 5-minute close timestamp",
+    "future_information_policy": "Every rolling statistic is shifted one completed 5-minute bar. Source auctions exclude the current decision bar. Only completed bars and persistent previously observed state are usable.",
+    "order_flow_fields": [
+      "base volume",
+      "trade count",
+      "taker-buy base volume"
+    ],
+    "symbol": "BTCUSDT",
+    "venue_data": "Binance Vision USD-M perpetual 1-minute klines"
+  },
+  "prospective_pass_criteria": {
+    "mandatory_invariants": [
+      "data continuity and OHLCV integrity",
+      "no future information",
+      "planned stop loss no greater than NAV risk budget after quantity rounding",
+      "flat at every evaluation end",
+      "no liquidation",
+      "one global entry/position contract"
+    ],
+    "maximum_consecutive_negative_trades": 6,
+    "maximum_mark_to_market_drawdown": 0.35,
+    "maximum_single_winner_share_of_gross_profit": 0.25,
+    "minimum_after_cost_geometric_daily_growth": 0.01,
+    "minimum_nonnegative_week_fraction": 0.65,
+    "minimum_positive_active_week_fraction": 0.6,
+    "minimum_positive_trade_fraction": 0.45,
+    "minimum_profit_factor": 1.5,
+    "minimum_total_trades": 32,
+    "minimum_trades_per_day": 0.15
+  },
+  "purpose": "One-shot prospective falsification lock. The implementation, parameters, risk, costs, week set and pass criteria cannot change after any prospective holdout outcome is inspected.",
+  "research_protocol": {
+    "asset_progression": "BTCUSDT prospective holdout first. Only a pass permits unchanged-logic checks on ETHUSDT, SOLUSDT and XRPUSDT and final four-asset global arbitration.",
+    "development_split": {
+      "rapid_screen_first_three": [
+        "2024-07-08",
+        "2025-08-04",
+        "2022-08-22"
+      ],
+      "structural_confirmation_next_nine": [
+        "2025-02-10",
+        "2024-08-26",
+        "2024-09-02",
+        "2025-04-28",
+        "2023-05-15",
+        "2022-01-10",
+        "2022-09-05",
+        "2022-10-03",
+        "2023-03-20"
+      ]
+    },
+    "development_weeks": [
+      "2024-07-08",
+      "2025-08-04",
+      "2022-08-22",
+      "2025-02-10",
+      "2024-08-26",
+      "2024-09-02",
+      "2025-04-28",
+      "2023-05-15",
+      "2022-01-10",
+      "2022-09-05",
+      "2022-10-03",
+      "2023-03-20"
+    ],
+    "holdout_use": "Open exactly once with this lock. A failure rejects v3; it may not be repaired on these weeks.",
+    "prospective_holdout_seed": 2026080503,
+    "prospective_holdout_weeks": [
+      "2021-04-19",
+      "2021-06-28",
+      "2021-08-30",
+      "2021-09-27",
+      "2021-11-29",
+      "2022-04-04",
+      "2022-04-25",
+      "2022-09-12",
+      "2022-09-26",
+      "2022-11-14",
+      "2023-01-23",
+      "2023-03-06",
+      "2023-06-19",
+      "2023-11-27",
+      "2024-01-08",
+      "2024-02-05",
+      "2024-03-04",
+      "2024-04-01",
+      "2024-06-10",
+      "2024-07-15",
+      "2024-11-04",
+      "2024-12-23",
+      "2025-02-24",
+      "2025-06-02",
+      "2025-08-25",
+      "2025-12-08",
+      "2026-02-16",
+      "2026-03-16",
+      "2026-03-30",
+      "2026-05-18"
+    ]
+  },
+  "risk_stress": {
+    "95th_percentile_maximum_drawdown": 0.35152240580736016,
+    "interpretation": "Risk 6 percent is aggressive. Six full planned losses compound to about 31 percent and seven to about 35 percent. Prospective holdout and Nautilus liquidation/margin checks are therefore hard gates.",
+    "median_maximum_drawdown": 0.21925104000000017,
+    "method": "IID bootstrap of the 21 observed development trade R outcomes; diagnostic only, not proof of future independence.",
+    "probability_maximum_drawdown_above_35_percent": 0.0577,
+    "risk_fraction": 0.06,
+    "samples": 100000,
+    "seed": 2026080504,
+    "trades_per_sample": 100
+  },
+  "scenario_logic": {
+    "detector_scenario_separation": "Boundary/source detection, order-flow state, acceptance classification and failed-acceptance trade decision are separate causal stages. A boundary touch, flow extreme or reclaim alone is never an entry.",
+    "global_contract": "Across all detector horizons and eventually all allowed instruments, pending new entry orders plus open positions are at most one. Exit/reduction orders do not count as entries.",
+    "pool_consumption": "A horizon/side/source-event pool is permanently consumed on its first material external excursion, including both sides if one bar crosses both. Detectors continue observing and consuming pools while the portfolio is busy or cooling down.",
+    "states": [
+      "SCANNING_MATURE_AUCTION",
+      "FIRST_BOUNDARY_TEST",
+      "ACCEPTED_OUTSIDE",
+      "FAILED_ACCEPTANCE_SIGNAL",
+      "GLOBAL_BUSY_OR_COOLDOWN"
+    ],
+    "structural_cause": "A mature low-efficiency intraday auction has repeatedly exposed a boundary. Aggressive breakout-side market orders and two consecutive closes initially establish acceptance beyond that boundary. A rapid close back inside, in the rejecting half of its bar, indicates that the aggressive inventory could not sustain price discovery and is trapped. The opposing frozen auction boundary is the natural liquidity objective."
+  }
+}
