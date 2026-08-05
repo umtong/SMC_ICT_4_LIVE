@@ -1,9 +1,10 @@
-"""Causal market-auction state machine for candidate 01.
+"""Causal failed-auction state machine for candidate 01.
 
-The module deliberately contains no execution or accounting code.  It turns a
-strictly time-ordered stream of completed one-minute auction bars into explicit
-scenario transitions and, occasionally, a risk-defined trade plan.  Nautilus
-Trader remains responsible for orders, fills, positions, fees, and account NAV.
+The detector separates market events from the trading scenario.  It observes a
+completed dealing range, then asks whether aggressive demand outside one edge
+creates durable value or is rejected.  Only an explicit failure -- re-entry
+plus opposite displacement and order-flow reversal -- can emit a trade plan.
+NautilusTrader remains responsible for execution, fees, positions and NAV.
 """
 
 from __future__ import annotations
@@ -29,17 +30,16 @@ class Side(str, Enum):
 
 
 class Response(str, Enum):
-    REJECTION = "REJECTION"
-    ACCEPTANCE = "ACCEPTANCE"
+    SWEEP_FAILURE = "SWEEP_FAILURE"
+    ACCEPTANCE_FAILURE = "ACCEPTANCE_FAILURE"
 
 
 class Phase(str, Enum):
     COLLECTING = "COLLECTING"
     WATCHING = "WATCHING"
-    SWEPT = "SWEPT"
-    ACCEPTING = "ACCEPTING"
-    ARMED_REJECTION = "ARMED_REJECTION"
-    ARMED_ACCEPTANCE = "ARMED_ACCEPTANCE"
+    OUTSIDE_TEST = "OUTSIDE_TEST"
+    REENTERED = "REENTERED"
+    ARMED_REVERSAL = "ARMED_REVERSAL"
     COOLDOWN = "COOLDOWN"
 
 
@@ -70,13 +70,13 @@ class AuctionBar:
         )
         if not all(isfinite(value) for value in values):
             raise ValueError("bar values must be finite")
-        if self.low > min(self.open, self.close) or self.high < max(self.open, self.close):
-            raise ValueError("OHLC values are inconsistent")
         if self.high < self.low:
             raise ValueError("high cannot be below low")
-        if self.base_volume < 0 or self.quote_volume < 0:
+        if self.low > min(self.open, self.close) or self.high < max(self.open, self.close):
+            raise ValueError("OHLC values are inconsistent")
+        if self.base_volume < 0.0 or self.quote_volume < 0.0:
             raise ValueError("volume cannot be negative")
-        if self.taker_buy_quote_volume < 0:
+        if self.taker_buy_quote_volume < 0.0:
             raise ValueError("taker buy volume cannot be negative")
         if self.taker_buy_quote_volume > self.quote_volume * 1.000001:
             raise ValueError("taker buy quote volume cannot exceed quote volume")
@@ -96,35 +96,35 @@ class AuctionBar:
 
 @dataclass(frozen=True, slots=True)
 class CandidateConfig:
-    """Small structural parameter set, intentionally not instrument-specific."""
+    """Structural parameters shared across instruments and expressed in ATR units."""
 
     range_minutes: int = 240
     min_anchor_fraction: float = 0.90
     atr_lookback: int = 60
     flow_lookback: int = 60
     volume_lookback: int = 60
-    structure_lookback: int = 8
+    structure_lookback: int = 6
     min_history: int = 60
-    min_sweep_atr: float = 0.06
-    max_sweep_atr: float = 1.10
-    close_inside_atr: float = 0.03
+    min_excursion_atr: float = 0.08
+    max_excursion_atr: float = 1.80
+    outside_close_atr: float = 0.08
+    reentry_depth_atr: float = 0.06
     min_activity_z: float = -0.25
-    min_displacement_atr: float = 0.42
-    min_displacement_flow_z: float = 0.55
-    confirmation_bars: int = 8
-    entry_wait_bars: int = 12
-    stop_buffer_atr: float = 0.12
-    min_reward_risk: float = 1.65
-    acceptance_close_atr: float = 0.16
-    acceptance_flow_z: float = 0.70
-    acceptance_confirm_bars: int = 3
-    acceptance_retest_atr: float = 0.14
-    acceptance_projection: float = 0.85
+    attempt_flow_z: float = 0.55
+    attempt_volume_z: float = 0.25
+    minimum_outside_closes: int = 2
+    failure_window_bars: int = 10
+    confirmation_bars: int = 6
+    min_displacement_atr: float = 0.38
+    min_reversal_flow_z: float = 0.35
+    stop_buffer_atr: float = 0.15
+    minimum_stop_atr: float = 0.65
+    min_reward_risk: float = 1.35
     max_trades_per_block: int = 1
     max_hold_bars: int = 120
     cooldown_bars: int = 15
-    enable_rejection: bool = True
-    enable_acceptance: bool = True
+    enable_sweep_failure: bool = True
+    enable_acceptance_failure: bool = True
 
     def __post_init__(self) -> None:
         integer_fields = {
@@ -134,9 +134,9 @@ class CandidateConfig:
             "volume_lookback": self.volume_lookback,
             "structure_lookback": self.structure_lookback,
             "min_history": self.min_history,
+            "minimum_outside_closes": self.minimum_outside_closes,
+            "failure_window_bars": self.failure_window_bars,
             "confirmation_bars": self.confirmation_bars,
-            "entry_wait_bars": self.entry_wait_bars,
-            "acceptance_confirm_bars": self.acceptance_confirm_bars,
             "max_trades_per_block": self.max_trades_per_block,
             "max_hold_bars": self.max_hold_bars,
             "cooldown_bars": self.cooldown_bars,
@@ -147,12 +147,16 @@ class CandidateConfig:
             raise ValueError("range_minutes must be at least 60")
         if not 0.5 <= self.min_anchor_fraction <= 1.0:
             raise ValueError("min_anchor_fraction must be in [0.5, 1.0]")
-        if not 0.0 < self.min_sweep_atr < self.max_sweep_atr:
-            raise ValueError("invalid sweep bounds")
+        if not 0.0 < self.min_excursion_atr < self.max_excursion_atr:
+            raise ValueError("invalid excursion bounds")
+        if self.outside_close_atr < 0.0 or self.reentry_depth_atr < 0.0:
+            raise ValueError("boundary distances cannot be negative")
+        if self.min_displacement_atr <= 0.0:
+            raise ValueError("min_displacement_atr must be positive")
+        if self.minimum_stop_atr <= self.stop_buffer_atr:
+            raise ValueError("minimum_stop_atr must exceed stop_buffer_atr")
         if self.min_reward_risk <= 1.0:
             raise ValueError("min_reward_risk must exceed one")
-        if self.acceptance_projection <= 0.0:
-            raise ValueError("acceptance_projection must be positive")
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> "CandidateConfig":
@@ -271,18 +275,17 @@ class _Scenario:
     response: Response
     anchor: DealingRange
     started_index: int
-    sweep_extreme: float
+    boundary: float
+    excursion_extreme: float
     internal_break: float
-    anchor_level: float
-    flow_sum: float = 0.0
-    confirm_count: int = 0
-    zone_low: float | None = None
-    zone_high: float | None = None
-    expiry_index: int = 0
+    directional_flow_sum: float
+    outside_closes: int
+    max_volume_z: float
+    expiry_index: int
 
 
 class AuctionStateMachine:
-    """Stateful causal detector for external-liquidity auction responses."""
+    """Detect failed attempts to establish value outside a completed range."""
 
     def __init__(self, config: CandidateConfig, instrument_id: str = "BTCUSDT.BINANCE") -> None:
         self.config = config
@@ -291,7 +294,11 @@ class AuctionStateMachine:
         self.anchor: DealingRange | None = None
         self._range_ns = config.range_minutes * NS_PER_MINUTE
         self._builder: _BlockBuilder | None = None
-        self._history: Deque[AuctionBar] = deque(maxlen=max(256, config.min_history + 16))
+        history_size = max(
+            256,
+            config.min_history + config.failure_window_bars + config.confirmation_bars + 32,
+        )
+        self._history: Deque[AuctionBar] = deque(maxlen=history_size)
         self._true_ranges: Deque[float] = deque(maxlen=config.atr_lookback)
         self._flow_values: Deque[float] = deque(maxlen=config.flow_lookback)
         self._volume_values: Deque[float] = deque(maxlen=config.volume_lookback)
@@ -417,109 +424,122 @@ class AuctionStateMachine:
         scenario = self._scenario
         if scenario is None:
             return
-        previous = scenario.phase
         self._emit(
             scenario_id=scenario.scenario_id,
             event_type="SCENARIO_INVALIDATED",
             event_time_ns=bar.ts_event_ns,
-            previous=previous,
+            previous=scenario.phase,
             next_=Phase.WATCHING,
             reason=reason,
             price=bar.close,
         )
         self._scenario = None
 
-    def _start_rejection(
+    @staticmethod
+    def _directional_flow(side: Side, flow_z: float) -> float:
+        """Flow in the failed breakout direction, expressed as a positive number."""
+
+        # The trade side is opposite the attempted breakout direction.
+        return -flow_z if side is Side.LONG else flow_z
+
+    def _start_outside_test(
         self,
         bar: AuctionBar,
         *,
         side: Side,
-        sweep_extreme: float,
-        anchor_level: float,
+        boundary: float,
+        excursion_extreme: float,
         internal_break: float,
         atr: float,
         flow_z: float,
         volume_z: float,
     ) -> None:
         assert self.anchor is not None
-        scenario_id = self._scenario_id(bar, side, Response.REJECTION)
-        previous = self.phase
+        scenario_id = self._scenario_id(bar, side, Response.ACCEPTANCE_FAILURE)
+        directional_flow = max(self._directional_flow(side, flow_z), 0.0)
         self._scenario = _Scenario(
             scenario_id=scenario_id,
-            phase=Phase.SWEPT,
+            phase=Phase.OUTSIDE_TEST,
             side=side,
-            response=Response.REJECTION,
+            response=Response.ACCEPTANCE_FAILURE,
             anchor=self.anchor,
             started_index=self._bar_index,
-            sweep_extreme=sweep_extreme,
+            boundary=boundary,
+            excursion_extreme=excursion_extreme,
             internal_break=internal_break,
-            anchor_level=anchor_level,
+            directional_flow_sum=directional_flow,
+            outside_closes=1,
+            max_volume_z=volume_z,
+            expiry_index=self._bar_index + self.config.failure_window_bars,
+        )
+        self._emit(
+            scenario_id=scenario_id,
+            event_type="OUTSIDE_AUCTION_TEST_STARTED",
+            event_time_ns=bar.ts_event_ns,
+            previous=self.phase,
+            next_=Phase.OUTSIDE_TEST,
+            reason="DIRECTIONAL_CLOSE_AND_FLOW_OUTSIDE_COMPLETED_RANGE",
+            price=bar.close,
+            details={
+                "trade_side": side.value,
+                "boundary": boundary,
+                "excursion_extreme": excursion_extreme,
+                "atr": atr,
+                "flow_z": flow_z,
+                "volume_z": volume_z,
+            },
+        )
+        self._scenario.phase = Phase.OUTSIDE_TEST
+
+    def _start_sweep_failure(
+        self,
+        bar: AuctionBar,
+        *,
+        side: Side,
+        boundary: float,
+        excursion_extreme: float,
+        internal_break: float,
+        atr: float,
+        flow_z: float,
+        volume_z: float,
+    ) -> None:
+        assert self.anchor is not None
+        scenario_id = self._scenario_id(bar, side, Response.SWEEP_FAILURE)
+        directional_flow = max(self._directional_flow(side, flow_z), 0.0)
+        self._scenario = _Scenario(
+            scenario_id=scenario_id,
+            phase=Phase.REENTERED,
+            side=side,
+            response=Response.SWEEP_FAILURE,
+            anchor=self.anchor,
+            started_index=self._bar_index,
+            boundary=boundary,
+            excursion_extreme=excursion_extreme,
+            internal_break=internal_break,
+            directional_flow_sum=directional_flow,
+            outside_closes=0,
+            max_volume_z=volume_z,
             expiry_index=self._bar_index + self.config.confirmation_bars,
         )
         self._emit(
             scenario_id=scenario_id,
-            event_type="EXTERNAL_LIQUIDITY_SWEPT",
+            event_type="LIQUIDITY_PROBE_REJECTED",
             event_time_ns=bar.ts_event_ns,
-            previous=previous,
-            next_=Phase.SWEPT,
-            reason="CLOSE_RETURNED_INSIDE_COMPLETED_RANGE",
-            price=sweep_extreme,
+            previous=self.phase,
+            next_=Phase.REENTERED,
+            reason="EXCURSION_CLOSED_BACK_INSIDE_COMPLETED_RANGE",
+            price=bar.close,
             details={
-                "side": side.value,
-                "anchor_level": anchor_level,
+                "trade_side": side.value,
+                "boundary": boundary,
+                "excursion_extreme": excursion_extreme,
                 "internal_break": internal_break,
                 "atr": atr,
                 "flow_z": flow_z,
                 "volume_z": volume_z,
             },
         )
-        self._scenario.phase = Phase.SWEPT
-
-    def _start_acceptance(
-        self,
-        bar: AuctionBar,
-        *,
-        side: Side,
-        sweep_extreme: float,
-        anchor_level: float,
-        atr: float,
-        flow_z: float,
-        volume_z: float,
-    ) -> None:
-        assert self.anchor is not None
-        scenario_id = self._scenario_id(bar, side, Response.ACCEPTANCE)
-        previous = self.phase
-        self._scenario = _Scenario(
-            scenario_id=scenario_id,
-            phase=Phase.ACCEPTING,
-            side=side,
-            response=Response.ACCEPTANCE,
-            anchor=self.anchor,
-            started_index=self._bar_index,
-            sweep_extreme=sweep_extreme,
-            internal_break=anchor_level,
-            anchor_level=anchor_level,
-            flow_sum=flow_z,
-            confirm_count=1,
-            expiry_index=self._bar_index + self.config.acceptance_confirm_bars,
-        )
-        self._emit(
-            scenario_id=scenario_id,
-            event_type="RANGE_BOUNDARY_ACCEPTED",
-            event_time_ns=bar.ts_event_ns,
-            previous=previous,
-            next_=Phase.ACCEPTING,
-            reason="CLOSE_AND_AGGRESSIVE_FLOW_HELD_OUTSIDE_RANGE",
-            price=bar.close,
-            details={
-                "side": side.value,
-                "anchor_level": anchor_level,
-                "atr": atr,
-                "flow_z": flow_z,
-                "volume_z": volume_z,
-            },
-        )
-        self._scenario.phase = Phase.ACCEPTING
+        self._scenario.phase = Phase.REENTERED
 
     def _watch_for_auction(
         self,
@@ -541,10 +561,10 @@ class AuctionStateMachine:
 
         high_penetration = bar.high - anchor.high
         low_penetration = anchor.low - bar.low
-        high_cross = high_penetration >= self.config.min_sweep_atr * atr
-        low_cross = low_penetration >= self.config.min_sweep_atr * atr
+        high_cross = high_penetration >= self.config.min_excursion_atr * atr
+        low_cross = low_penetration >= self.config.min_excursion_atr * atr
         if high_cross and low_cross:
-            sid = self._scenario_id(bar, Side.SHORT, Response.REJECTION)
+            sid = self._scenario_id(bar, Side.SHORT, Response.SWEEP_FAILURE)
             self._emit(
                 scenario_id=sid,
                 event_type="AMBIGUOUS_RANGE_EXPANSION",
@@ -560,72 +580,121 @@ class AuctionStateMachine:
         activity_ok = volume_z >= self.config.min_activity_z
         prior = tuple(self._history)[-self.config.structure_lookback :]
 
-        if high_cross:
-            inside = bar.close <= anchor.high - self.config.close_inside_atr * atr
-            shallow_enough = high_penetration <= self.config.max_sweep_atr * atr
-            if self.config.enable_rejection and inside and shallow_enough and activity_ok:
-                self._start_rejection(
+        if high_cross and high_penetration <= self.config.max_excursion_atr * atr and activity_ok:
+            internal_break = min(item.low for item in prior)
+            effort_ok = flow_z >= self.config.attempt_flow_z or volume_z >= self.config.attempt_volume_z
+            closed_inside = bar.close <= anchor.high - self.config.reentry_depth_atr * atr
+            closed_outside = bar.close >= anchor.high + self.config.outside_close_atr * atr
+            if self.config.enable_sweep_failure and effort_ok and closed_inside:
+                self._start_sweep_failure(
                     bar,
                     side=Side.SHORT,
-                    sweep_extreme=bar.high,
-                    anchor_level=anchor.high,
-                    internal_break=min(item.low for item in prior),
+                    boundary=anchor.high,
+                    excursion_extreme=bar.high,
+                    internal_break=internal_break,
                     atr=atr,
                     flow_z=flow_z,
                     volume_z=volume_z,
                 )
                 return
-            accepted = (
-                self.config.enable_acceptance
-                and bar.close >= anchor.high + self.config.acceptance_close_atr * atr
-                and flow_z >= self.config.acceptance_flow_z
-                and activity_ok
-            )
-            if accepted:
-                self._start_acceptance(
+            if self.config.enable_acceptance_failure and flow_z >= self.config.attempt_flow_z and closed_outside:
+                self._start_outside_test(
                     bar,
-                    side=Side.LONG,
-                    sweep_extreme=bar.high,
-                    anchor_level=anchor.high,
+                    side=Side.SHORT,
+                    boundary=anchor.high,
+                    excursion_extreme=bar.high,
+                    internal_break=internal_break,
                     atr=atr,
                     flow_z=flow_z,
                     volume_z=volume_z,
                 )
                 return
 
-        if low_cross:
-            inside = bar.close >= anchor.low + self.config.close_inside_atr * atr
-            shallow_enough = low_penetration <= self.config.max_sweep_atr * atr
-            if self.config.enable_rejection and inside and shallow_enough and activity_ok:
-                self._start_rejection(
+        if low_cross and low_penetration <= self.config.max_excursion_atr * atr and activity_ok:
+            internal_break = max(item.high for item in prior)
+            effort_ok = flow_z <= -self.config.attempt_flow_z or volume_z >= self.config.attempt_volume_z
+            closed_inside = bar.close >= anchor.low + self.config.reentry_depth_atr * atr
+            closed_outside = bar.close <= anchor.low - self.config.outside_close_atr * atr
+            if self.config.enable_sweep_failure and effort_ok and closed_inside:
+                self._start_sweep_failure(
                     bar,
                     side=Side.LONG,
-                    sweep_extreme=bar.low,
-                    anchor_level=anchor.low,
-                    internal_break=max(item.high for item in prior),
+                    boundary=anchor.low,
+                    excursion_extreme=bar.low,
+                    internal_break=internal_break,
                     atr=atr,
                     flow_z=flow_z,
                     volume_z=volume_z,
                 )
                 return
-            accepted = (
-                self.config.enable_acceptance
-                and bar.close <= anchor.low - self.config.acceptance_close_atr * atr
-                and flow_z <= -self.config.acceptance_flow_z
-                and activity_ok
-            )
-            if accepted:
-                self._start_acceptance(
+            if self.config.enable_acceptance_failure and flow_z <= -self.config.attempt_flow_z and closed_outside:
+                self._start_outside_test(
                     bar,
-                    side=Side.SHORT,
-                    sweep_extreme=bar.low,
-                    anchor_level=anchor.low,
+                    side=Side.LONG,
+                    boundary=anchor.low,
+                    excursion_extreme=bar.low,
+                    internal_break=internal_break,
                     atr=atr,
                     flow_z=flow_z,
                     volume_z=volume_z,
                 )
 
-    def _advance_rejection(
+    def _advance_outside_test(
+        self,
+        bar: AuctionBar,
+        scenario: _Scenario,
+        *,
+        atr: float,
+        flow_z: float,
+        volume_z: float,
+    ) -> TradePlan | None:
+        if self._bar_index > scenario.expiry_index:
+            self._expire(bar, "OUTSIDE_VALUE_PERSISTED_WITHOUT_FAILURE")
+            return None
+
+        if scenario.side is Side.SHORT:
+            scenario.excursion_extreme = max(scenario.excursion_extreme, bar.high)
+            still_outside = bar.close > scenario.boundary
+            reentered = bar.close <= scenario.boundary - self.config.reentry_depth_atr * atr
+        else:
+            scenario.excursion_extreme = min(scenario.excursion_extreme, bar.low)
+            still_outside = bar.close < scenario.boundary
+            reentered = bar.close >= scenario.boundary + self.config.reentry_depth_atr * atr
+
+        scenario.max_volume_z = max(scenario.max_volume_z, volume_z)
+        if still_outside:
+            scenario.outside_closes += 1
+            scenario.directional_flow_sum += max(self._directional_flow(scenario.side, flow_z), 0.0)
+            return None
+        if not reentered:
+            return None
+        if scenario.outside_closes < self.config.minimum_outside_closes:
+            self._expire(bar, "OUTSIDE_TEST_TOO_BRIEF_FOR_TRAPPED_ACCEPTANCE")
+            return None
+
+        previous = scenario.phase
+        scenario.phase = Phase.REENTERED
+        scenario.expiry_index = self._bar_index + self.config.confirmation_bars
+        self._emit(
+            scenario_id=scenario.scenario_id,
+            event_type="OUTSIDE_AUCTION_FAILED",
+            event_time_ns=bar.ts_event_ns,
+            previous=previous,
+            next_=Phase.REENTERED,
+            reason="PRICE_REENTERED_RANGE_AFTER_DIRECTIONAL_OUTSIDE_FLOW",
+            price=bar.close,
+            details={
+                "outside_closes": scenario.outside_closes,
+                "directional_flow_sum": scenario.directional_flow_sum,
+                "max_volume_z": scenario.max_volume_z,
+                "boundary": scenario.boundary,
+                "excursion_extreme": scenario.excursion_extreme,
+                "internal_break": scenario.internal_break,
+            },
+        )
+        return self._advance_reentered(bar, scenario, atr=atr, flow_z=flow_z)
+
+    def _advance_reentered(
         self,
         bar: AuctionBar,
         scenario: _Scenario,
@@ -633,187 +702,74 @@ class AuctionStateMachine:
         atr: float,
         flow_z: float,
     ) -> TradePlan | None:
-        side = scenario.side
         invalidation = self.config.stop_buffer_atr * atr
-        if side is Side.SHORT and bar.high > scenario.sweep_extreme + invalidation:
-            self._expire(bar, "SWEEP_EXTREME_RECLAIMED")
+        if scenario.side is Side.SHORT and bar.high > scenario.excursion_extreme + invalidation:
+            self._expire(bar, "FAILED_AUCTION_EXTREME_RECLAIMED")
             return None
-        if side is Side.LONG and bar.low < scenario.sweep_extreme - invalidation:
-            self._expire(bar, "SWEEP_EXTREME_RECLAIMED")
-            return None
-
-        if scenario.phase is Phase.SWEPT:
-            if self._bar_index > scenario.expiry_index:
-                self._expire(bar, "NO_OPPOSING_DISPLACEMENT_IN_TIME")
-                return None
-            body = abs(bar.close - bar.open)
-            if side is Side.SHORT:
-                displaced = (
-                    bar.close < scenario.internal_break
-                    and bar.close < bar.open
-                    and body >= self.config.min_displacement_atr * atr
-                    and flow_z <= -self.config.min_displacement_flow_z
-                )
-            else:
-                displaced = (
-                    bar.close > scenario.internal_break
-                    and bar.close > bar.open
-                    and body >= self.config.min_displacement_atr * atr
-                    and flow_z >= self.config.min_displacement_flow_z
-                )
-            if not displaced:
-                return None
-
-            two_back = tuple(self._history)[-2] if len(self._history) >= 2 else None
-            if side is Side.SHORT and two_back is not None and bar.high < two_back.low:
-                zone_low, zone_high = bar.high, two_back.low
-                zone_reason = "CAUSAL_BEARISH_FVG"
-            elif side is Side.LONG and two_back is not None and bar.low > two_back.high:
-                zone_low, zone_high = two_back.high, bar.low
-                zone_reason = "CAUSAL_BULLISH_FVG"
-            elif side is Side.SHORT:
-                impulse = max(bar.open - bar.close, 0.01 * atr)
-                zone_low = bar.close + 0.35 * impulse
-                zone_high = bar.close + 0.72 * impulse
-                zone_reason = "DISPLACEMENT_BODY_RETRACE_ZONE"
-            else:
-                impulse = max(bar.close - bar.open, 0.01 * atr)
-                zone_low = bar.close - 0.72 * impulse
-                zone_high = bar.close - 0.35 * impulse
-                zone_reason = "DISPLACEMENT_BODY_RETRACE_ZONE"
-
-            scenario.zone_low = min(zone_low, zone_high)
-            scenario.zone_high = max(zone_low, zone_high)
-            scenario.phase = Phase.ARMED_REJECTION
-            scenario.expiry_index = self._bar_index + self.config.entry_wait_bars
-            self._emit(
-                scenario_id=scenario.scenario_id,
-                event_type="OPPOSING_DISPLACEMENT_CONFIRMED",
-                event_time_ns=bar.ts_event_ns,
-                previous=Phase.SWEPT,
-                next_=Phase.ARMED_REJECTION,
-                reason=zone_reason,
-                price=bar.close,
-                details={
-                    "flow_z": flow_z,
-                    "atr": atr,
-                    "zone_low": scenario.zone_low,
-                    "zone_high": scenario.zone_high,
-                    "internal_break": scenario.internal_break,
-                },
-            )
-            return None
-
-        if scenario.phase is not Phase.ARMED_REJECTION:
+        if scenario.side is Side.LONG and bar.low < scenario.excursion_extreme - invalidation:
+            self._expire(bar, "FAILED_AUCTION_EXTREME_RECLAIMED")
             return None
         if self._bar_index > scenario.expiry_index:
-            self._expire(bar, "NO_CAUSAL_RETRACE_IN_TIME")
+            self._expire(bar, "NO_OPPOSITE_DISPLACEMENT_AFTER_REENTRY")
             return None
-        assert scenario.zone_low is not None and scenario.zone_high is not None
-        zone_mid = 0.5 * (scenario.zone_low + scenario.zone_high)
-        touched = bar.high >= scenario.zone_low and bar.low <= scenario.zone_high
-        if side is Side.SHORT:
-            confirmed = (
-                touched
-                and scenario.zone_low <= bar.close <= zone_mid
-                and bar.close < bar.open
-                and flow_z <= 0.35
+
+        body = abs(bar.close - bar.open)
+        if scenario.side is Side.SHORT:
+            displaced = (
+                bar.close < bar.open
+                and body >= self.config.min_displacement_atr * atr
+                and flow_z <= -self.config.min_reversal_flow_z
+                and bar.close < scenario.internal_break
             )
-            stop = scenario.sweep_extreme + self.config.stop_buffer_atr * atr
-            target = scenario.anchor.low
         else:
-            confirmed = (
-                touched
-                and zone_mid <= bar.close <= scenario.zone_high
-                and bar.close > bar.open
-                and flow_z >= -0.35
+            displaced = (
+                bar.close > bar.open
+                and body >= self.config.min_displacement_atr * atr
+                and flow_z >= self.config.min_reversal_flow_z
+                and bar.close > scenario.internal_break
             )
-            stop = scenario.sweep_extreme - self.config.stop_buffer_atr * atr
-            target = scenario.anchor.high
-        if not confirmed:
+        if not displaced:
             return None
-        return self._build_plan(
-            bar=bar,
-            scenario=scenario,
-            atr=atr,
-            stop=stop,
-            target=target,
-            reason="RETRACE_REJECTED_TOWARD_OPPOSING_LIQUIDITY",
+
+        previous = scenario.phase
+        scenario.phase = Phase.ARMED_REVERSAL
+        self._emit(
+            scenario_id=scenario.scenario_id,
+            event_type="REVERSAL_DISPLACEMENT_CONFIRMED",
+            event_time_ns=bar.ts_event_ns,
+            previous=previous,
+            next_=Phase.ARMED_REVERSAL,
+            reason="REENTRY_FOLLOWED_BY_STRUCTURE_BREAK_AND_FLOW_REVERSAL",
+            price=bar.close,
+            details={
+                "flow_z": flow_z,
+                "atr": atr,
+                "body_atr": body / atr,
+                "internal_break": scenario.internal_break,
+                "boundary": scenario.boundary,
+                "excursion_extreme": scenario.excursion_extreme,
+            },
         )
 
-    def _advance_acceptance(
-        self,
-        bar: AuctionBar,
-        scenario: _Scenario,
-        *,
-        atr: float,
-        flow_z: float,
-    ) -> TradePlan | None:
-        side = scenario.side
-        anchor_level = scenario.anchor_level
-        if scenario.phase is Phase.ACCEPTING:
-            if self._bar_index > scenario.expiry_index:
-                self._expire(bar, "OUTSIDE_CLOSE_NOT_CONFIRMED")
-                return None
-            if side is Side.LONG:
-                still_outside = bar.close > anchor_level
-                directional_flow = flow_z > 0.0
-            else:
-                still_outside = bar.close < anchor_level
-                directional_flow = flow_z < 0.0
-            if not still_outside:
-                self._expire(bar, "RANGE_REENTERED_BEFORE_ACCEPTANCE")
-                return None
-            scenario.flow_sum += flow_z
-            scenario.confirm_count += 1
-            if scenario.confirm_count < 2 or not directional_flow:
-                return None
-
-            scenario.phase = Phase.ARMED_ACCEPTANCE
-            scenario.expiry_index = self._bar_index + self.config.entry_wait_bars
-            scenario.zone_low = anchor_level - self.config.acceptance_retest_atr * atr
-            scenario.zone_high = anchor_level + self.config.acceptance_retest_atr * atr
-            self._emit(
-                scenario_id=scenario.scenario_id,
-                event_type="OUTSIDE_VALUE_ACCEPTED",
-                event_time_ns=bar.ts_event_ns,
-                previous=Phase.ACCEPTING,
-                next_=Phase.ARMED_ACCEPTANCE,
-                reason="SECOND_DIRECTIONAL_CLOSE_WITH_FLOW",
-                price=bar.close,
-                details={
-                    "confirm_count": scenario.confirm_count,
-                    "flow_sum": scenario.flow_sum,
-                    "zone_low": scenario.zone_low,
-                    "zone_high": scenario.zone_high,
-                },
+        if scenario.side is Side.SHORT:
+            stop = max(
+                scenario.excursion_extreme + self.config.stop_buffer_atr * atr,
+                bar.close + self.config.minimum_stop_atr * atr,
             )
-            return None
-
-        if scenario.phase is not Phase.ARMED_ACCEPTANCE:
-            return None
-        if self._bar_index > scenario.expiry_index:
-            self._expire(bar, "NO_BOUNDARY_RETEST_IN_TIME")
-            return None
-        assert scenario.zone_low is not None and scenario.zone_high is not None
-        touched = bar.high >= scenario.zone_low and bar.low <= scenario.zone_high
-        if side is Side.LONG:
-            confirmed = touched and bar.close > anchor_level and bar.close > bar.open and flow_z >= -0.20
-            stop = min(bar.low, anchor_level - self.config.stop_buffer_atr * atr)
-            target = anchor_level + scenario.anchor.width * self.config.acceptance_projection
+            target = scenario.anchor.low
         else:
-            confirmed = touched and bar.close < anchor_level and bar.close < bar.open and flow_z <= 0.20
-            stop = max(bar.high, anchor_level + self.config.stop_buffer_atr * atr)
-            target = anchor_level - scenario.anchor.width * self.config.acceptance_projection
-        if not confirmed:
-            return None
+            stop = min(
+                scenario.excursion_extreme - self.config.stop_buffer_atr * atr,
+                bar.close - self.config.minimum_stop_atr * atr,
+            )
+            target = scenario.anchor.high
         return self._build_plan(
             bar=bar,
             scenario=scenario,
             atr=atr,
             stop=stop,
             target=target,
-            reason="ACCEPTED_BOUNDARY_HELD_ON_RETEST",
+            reason="FAILED_AUCTION_ROTATION_TOWARD_OPPOSING_LIQUIDITY",
         )
 
     def _build_plan(
@@ -834,7 +790,7 @@ class AuctionStateMachine:
             return None
         reward_risk = reward / risk
         if reward_risk < self.config.min_reward_risk:
-            self._expire(bar, "OPPOSING_LIQUIDITY_TOO_CLOSE_FOR_COST_ROBUST_PAYOFF")
+            self._expire(bar, "OPPOSING_LIQUIDITY_TOO_CLOSE_FOR_STRUCTURAL_PAYOFF")
             return None
 
         plan = TradePlan(
@@ -848,18 +804,17 @@ class AuctionStateMachine:
             target_price=target,
             anchor_high=scenario.anchor.high,
             anchor_low=scenario.anchor.low,
-            sweep_extreme=scenario.sweep_extreme,
+            sweep_extreme=scenario.excursion_extreme,
             atr=atr,
             estimated_reward_risk=reward_risk,
             max_hold_bars=self.config.max_hold_bars,
             reason_code=reason,
         )
-        previous = scenario.phase
         self._emit(
             scenario_id=scenario.scenario_id,
             event_type="TRADE_PLAN_EMITTED",
             event_time_ns=bar.ts_event_ns,
-            previous=previous,
+            previous=Phase.ARMED_REVERSAL,
             next_=Phase.COOLDOWN,
             reason=reason,
             price=entry,
@@ -895,27 +850,17 @@ class AuctionStateMachine:
         if prior_atr is not None and prior_atr > 0.0 and enough_history and self.anchor is not None:
             scenario = self._scenario
             if scenario is None:
-                self._watch_for_auction(
+                self._watch_for_auction(bar, atr=prior_atr, flow_z=flow_z, volume_z=volume_z)
+            elif scenario.phase is Phase.OUTSIDE_TEST:
+                plan = self._advance_outside_test(
                     bar,
+                    scenario,
                     atr=prior_atr,
                     flow_z=flow_z,
                     volume_z=volume_z,
                 )
-            else:
-                if scenario.response is Response.REJECTION:
-                    plan = self._advance_rejection(
-                        bar,
-                        scenario,
-                        atr=prior_atr,
-                        flow_z=flow_z,
-                    )
-                else:
-                    plan = self._advance_acceptance(
-                        bar,
-                        scenario,
-                        atr=prior_atr,
-                        flow_z=flow_z,
-                    )
+            elif scenario.phase is Phase.REENTERED:
+                plan = self._advance_reentered(bar, scenario, atr=prior_atr, flow_z=flow_z)
 
         if self._last_close is None:
             true_range = bar.high - bar.low
