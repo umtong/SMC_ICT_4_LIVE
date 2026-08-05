@@ -1,0 +1,219 @@
+name: candidate-04-v5-sequential
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/swing_displacement_candidate.py"
+      - "research/candidate-04/swing_displacement_source/**"
+      - "research/candidate-04/swing_displacement_config.json"
+      - "research/candidate-04/rich_features_v2.py"
+      - "research/candidate-04/tests/test_swing_displacement_candidate.py"
+      - "research/candidate-04/tests/test_rich_features_v2.py"
+      - "research/candidate-04/freeze-v5-*.json"
+      - ".github/workflows/candidate-04-v5-sequential.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-04-v5-sequential-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  week1:
+    name: reserve-1 frozen reproduction
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    outputs:
+      gate: ${{ steps.gate.outputs.pass }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+      - name: Use locked foundation
+        run: |
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+      - name: Verify frozen source and causal tests
+        run: |
+          test "$(cat research/candidate-04/swing_displacement_source/*.pyfrag | sha256sum | cut -d' ' -f1)" = "5856e97f7d7ad89cc10e121f12e16a9ee0bd3c82a7f80992dcce7787e81cdc90"
+          test "$(sha256sum research/candidate-04/swing_displacement_config.json | cut -d' ' -f1)" = "849d02b7cb133b2ff8f7feedb5fa99c4f51be0740837cd80e37e5faa37cf452f"
+          test "$(sha256sum research/candidate-04/tests/test_swing_displacement_candidate.py | cut -d' ' -f1)" = "50a4aeab636a3d154d368d542d458d5405b95882cb44b12fd8d5541bef0536c3"
+          uv run python -m compileall -q research/candidate-04
+          uv run python -m unittest \
+            research/candidate-04/tests/test_rich_features_v2.py \
+            research/candidate-04/tests/test_swing_displacement_candidate.py -v
+      - name: Build checksummed causal rich features
+        run: |
+          uv run python research/candidate-04/rich_features_v2.py \
+            --start "2023-12-16" \
+            --end "2023-12-24" \
+            --cache ".cache/candidate-04-v5/reserve1-rich" \
+            --output "artifacts/candidate-04-v5/reserve1/rich"
+      - name: Run first random BTC week
+        run: |
+          uv run python research/candidate-04/swing_displacement_candidate.py \
+            --config research/candidate-04/swing_displacement_config.json \
+            --rich-dir artifacts/candidate-04-v5/reserve1/rich \
+            --kline-dir .cache/candidate-04-v5/reserve1-klines \
+            --evaluation-start 2023-12-18 \
+            --evaluation-end 2023-12-24 \
+            --output artifacts/candidate-04-v5/reserve1/result \
+            --download-klines | tee artifacts/candidate-04-v5/reserve1/console.json
+      - name: Verify frozen first-week evidence and expose gate
+        id: gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("artifacts/candidate-04-v5/reserve1/result/metrics.json")
+          digest = hashlib.sha256(path.read_bytes()).hexdigest()
+          expected = "e540e63cb0b59e9e14b077851b9be01bca92bfd94b3d4f7261f9a11c31223e1d"
+          if digest != expected:
+              raise SystemExit(f"frozen first-week metric hash changed: {digest} != {expected}")
+          metrics = json.loads(path.read_text())
+          passed = bool(metrics["gate_pass"])
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"pass={'true' if passed else 'false'}\n")
+          print(json.dumps(metrics, indent=2, sort_keys=True))
+          if not passed:
+              raise SystemExit("frozen first week no longer passes")
+          PY
+      - name: Preserve first-week evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-v5-reserve1-${{ github.sha }}
+          path: |
+            artifacts/candidate-04-v5/reserve1
+          if-no-files-found: error
+          retention-days: 90
+
+  week2:
+    name: reserve-2 untouched gate
+    needs: week1
+    if: needs.week1.outputs.gate == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    outputs:
+      gate: ${{ steps.gate.outputs.pass }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+      - name: Use locked foundation and verify frozen code
+        run: |
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          test "$(cat research/candidate-04/swing_displacement_source/*.pyfrag | sha256sum | cut -d' ' -f1)" = "5856e97f7d7ad89cc10e121f12e16a9ee0bd3c82a7f80992dcce7787e81cdc90"
+          uv run python -m unittest research/candidate-04/tests/test_swing_displacement_candidate.py -v
+      - name: Build untouched reserve-2 features
+        run: |
+          uv run python research/candidate-04/rich_features_v2.py \
+            --start "2024-08-05" \
+            --end "2024-08-13" \
+            --cache ".cache/candidate-04-v5/reserve2-rich" \
+            --output "artifacts/candidate-04-v5/reserve2/rich"
+      - name: Run second random BTC week
+        run: |
+          uv run python research/candidate-04/swing_displacement_candidate.py \
+            --config research/candidate-04/swing_displacement_config.json \
+            --rich-dir artifacts/candidate-04-v5/reserve2/rich \
+            --kline-dir .cache/candidate-04-v5/reserve2-klines \
+            --evaluation-start 2024-08-07 \
+            --evaluation-end 2024-08-13 \
+            --output artifacts/candidate-04-v5/reserve2/result \
+            --download-klines | tee artifacts/candidate-04-v5/reserve2/console.json
+      - name: Expose second-week gate without opening week three on failure
+        id: gate
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          metrics = json.loads(Path("artifacts/candidate-04-v5/reserve2/result/metrics.json").read_text())
+          passed = bool(metrics["gate_pass"])
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"pass={'true' if passed else 'false'}\n")
+          print(json.dumps(metrics, indent=2, sort_keys=True))
+          PY
+      - name: Preserve second-week evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-v5-reserve2-${{ github.sha }}
+          path: artifacts/candidate-04-v5/reserve2
+          if-no-files-found: error
+          retention-days: 90
+
+  week3:
+    name: reserve-3 untouched gate
+    needs: week2
+    if: needs.week2.outputs.gate == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    outputs:
+      gate: ${{ steps.gate.outputs.pass }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+      - name: Use locked foundation and verify frozen code
+        run: |
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          test "$(cat research/candidate-04/swing_displacement_source/*.pyfrag | sha256sum | cut -d' ' -f1)" = "5856e97f7d7ad89cc10e121f12e16a9ee0bd3c82a7f80992dcce7787e81cdc90"
+          uv run python -m unittest research/candidate-04/tests/test_swing_displacement_candidate.py -v
+      - name: Build untouched reserve-3 features
+        run: |
+          uv run python research/candidate-04/rich_features_v2.py \
+            --start "2025-12-01" \
+            --end "2025-12-09" \
+            --cache ".cache/candidate-04-v5/reserve3-rich" \
+            --output "artifacts/candidate-04-v5/reserve3/rich"
+      - name: Run third random BTC week
+        run: |
+          uv run python research/candidate-04/swing_displacement_candidate.py \
+            --config research/candidate-04/swing_displacement_config.json \
+            --rich-dir artifacts/candidate-04-v5/reserve3/rich \
+            --kline-dir .cache/candidate-04-v5/reserve3-klines \
+            --evaluation-start 2025-12-03 \
+            --evaluation-end 2025-12-09 \
+            --output artifacts/candidate-04-v5/reserve3/result \
+            --download-klines | tee artifacts/candidate-04-v5/reserve3/console.json
+      - name: Expose third-week gate
+        id: gate
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          metrics = json.loads(Path("artifacts/candidate-04-v5/reserve3/result/metrics.json").read_text())
+          passed = bool(metrics["gate_pass"])
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"pass={'true' if passed else 'false'}\n")
+          print(json.dumps(metrics, indent=2, sort_keys=True))
+          PY
+      - name: Preserve third-week evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-v5-reserve3-${{ github.sha }}
+          path: artifacts/candidate-04-v5/reserve3
+          if-no-files-found: error
+          retention-days: 90
