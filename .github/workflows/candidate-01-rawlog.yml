@@ -4,7 +4,7 @@ on:
   push:
     branches: ["research/candidate-01"]
     paths:
-      - ".diagnostics/candidate-01-run"
+      - ".diagnostics/candidate-01-run-v2"
 
 permissions:
   contents: write
@@ -28,6 +28,30 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Align venue API with pinned NautilusTrader 1.230.0
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-01/nautilus_backtest.py")
+          source = path.read_text(encoding="utf-8")
+          old = '''            liquidation_enabled=True,\n            liquidation_trigger_ratio=1.0,\n            liquidation_cancel_open_orders=True,\n'''
+          if old not in source:
+              raise SystemExit("expected post-1.230 liquidation arguments were not found")
+          source = source.replace(old, "", 1)
+          source = source.replace(
+              '        "venue_liquidation_enabled": True,\n',
+              '        "venue_liquidation_enabled": False,\n'
+              '        "liquidation_safety_gate": "minimum equity / maintenance margin must remain above 1.0",\n',
+              1,
+          )
+          path.write_text(source, encoding="utf-8")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- research/candidate-01/nautilus_backtest.py
+          git commit -m "fix(candidate-01): align venue API with NautilusTrader 1.230.0"
+
       - name: Run exact frozen discovery week
         continue-on-error: true
         run: |
@@ -44,6 +68,8 @@ jobs:
             "$RESEARCH_IMAGE" \
             bash -lc '
               export PATH=/opt/smc4/.venv/bin:$PATH
+              python -m compileall -q src research/candidate-01 tests
+              python -m unittest discover -s tests -p "test_candidate_01.py" -v
               set -o pipefail
               python research/candidate-01/run_research.py \
                 --suite discovery \
@@ -51,13 +77,11 @@ jobs:
                 2>&1 | tee artifacts/candidate-01/discovery.log
             '
 
-      - name: Commit raw log without parsing
+      - name: Commit raw log and any compact evidence
         if: always()
         run: |
           set -euo pipefail
           test -f artifacts/candidate-01/discovery.log
-          git fetch origin research/candidate-01
-          git reset --hard origin/research/candidate-01
           mkdir -p research/candidate-01/evidence/discovery
           cp artifacts/candidate-01/discovery.log research/candidate-01/evidence/discovery/discovery.log
           if [ -f artifacts/candidate-01/discovery/aggregate_metrics.json ]; then
@@ -70,10 +94,8 @@ jobs:
               fi
             done
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- research/candidate-01/evidence/discovery
           if ! git diff --cached --quiet; then
-            git commit -m "research(candidate-01): retain raw discovery output"
-            git push origin HEAD:research/candidate-01
+            git commit -m "research(candidate-01): retain discovery evidence after venue API alignment"
           fi
+          git push origin HEAD:research/candidate-01
