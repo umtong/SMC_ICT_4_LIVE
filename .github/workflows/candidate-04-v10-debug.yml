@@ -1,0 +1,62 @@
+name: candidate-04-v10-debug
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v10-debug.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+      - name: Build opened-week features
+        run: |
+          uv run python research/candidate-04/rich_features_v2.py \
+            --start 2023-08-02 \
+            --end 2023-08-10 \
+            --cache .cache/candidate-04-v10-debug/rich \
+            --output artifacts/candidate-04-v10-debug/rich
+      - name: Replay and preserve exact failure
+        id: replay
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p artifacts/candidate-04-v10-debug/result
+          set +e
+          uv run python research/candidate-04/impact_exhaustion_candidate.py \
+            --base-config research/candidate-04/inventory_transfer_config.json \
+            --strategy-config research/candidate-04/impact_exhaustion_config.json \
+            --rich-dir artifacts/candidate-04-v10-debug/rich \
+            --kline-dir .cache/candidate-04-v10-debug/klines \
+            --evaluation-start 2023-08-04 \
+            --evaluation-end 2023-08-10 \
+            --output artifacts/candidate-04-v10-debug/result \
+            --download-klines \
+            > artifacts/candidate-04-v10-debug/stdout.log \
+            2> artifacts/candidate-04-v10-debug/stderr.log
+          status=$?
+          set -e
+          printf '%s\n' "$status" > artifacts/candidate-04-v10-debug/exit_code.txt
+          cat artifacts/candidate-04-v10-debug/stdout.log
+          cat artifacts/candidate-04-v10-debug/stderr.log >&2
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v10-debug-${{ github.sha }}
+          path: artifacts/candidate-04-v10-debug
+          if-no-files-found: error
+          retention-days: 30
