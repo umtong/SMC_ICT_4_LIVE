@@ -640,7 +640,7 @@ def run_window(
                 "summary": _json_safe(result_obj.summary),
                 "stats_pnls": _json_safe(result_obj.stats_pnls),
                 "stats_returns": _json_safe(result_obj.stats_returns),
-                "stats_general": _json_safe(result_obj.stats_general),
+                "stats_general": _json_safe(getattr(result_obj, "stats_general", {})),
                 "iterations": int(result_obj.iterations),
                 "total_events": int(result_obj.total_events),
                 "total_orders": int(result_obj.total_orders),
