@@ -1,0 +1,72 @@
+name: candidate-04-rich-features
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/rich_features.py"
+      - ".github/workflows/candidate-04-rich-features.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: reserve1
+            start: "2023-12-16"
+            end: "2023-12-24"
+          - name: reserve2
+            start: "2024-08-05"
+            end: "2024-08-13"
+          - name: dev1
+            start: "2025-08-30"
+            end: "2025-09-07"
+          - name: validation3
+            start: "2024-09-15"
+            end: "2024-09-23"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+
+      - name: Use locked project foundation
+        run: |
+          uv lock --check
+          uv sync --locked
+
+      - name: Build causal rich features
+        run: |
+          uv run python research/candidate-04/rich_features.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --cache ".cache/candidate-04-rich/${{ matrix.name }}" \
+            --output "artifacts/candidate-04-rich/${{ matrix.name }}"
+
+      - name: Verify output contract
+        run: |
+          test -s "artifacts/candidate-04-rich/${{ matrix.name }}/data_manifest.json"
+          test "$(find "artifacts/candidate-04-rich/${{ matrix.name }}" -name '*.csv.gz' | wc -l)" -eq 9
+          du -sh "artifacts/candidate-04-rich/${{ matrix.name }}"
+
+      - name: Preserve compact features
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-rich-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-04-rich/${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 30
