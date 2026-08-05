@@ -1,0 +1,209 @@
+        ):
+            continue
+        trade = execute_intent(data, intent, nav, config)
+        if trade is None:
+            continue
+        trades.append(trade)
+        nav = trade.nav_after
+        occupied_until = trade.exit_index
+        if intent.scenario in inventory_scenarios:
+            last_inventory_entry = intent.entry_index
+
+    start_day = evaluation_start.normalize()
+    end_day = evaluation_end.normalize()
+    calendar_days = int((end_day - start_day).days) + 1
+    daily_returns: dict[str, float] = {}
+    nav_cursor = config.starting_nav
+    peak = nav_cursor
+    max_drawdown = 0.0
+    for day in pd.date_range(start_day, end_day, freq="1D"):
+        before = nav_cursor
+        day_date = day.date()
+        for trade in (item for item in trades if item.exit_time.date() == day_date):
+            nav_cursor += trade.net_pnl
+            peak = max(peak, nav_cursor)
+            max_drawdown = max(max_drawdown, 1.0 - nav_cursor / peak)
+        daily_returns[str(day_date)] = nav_cursor / before - 1.0
+
+    ending_nav = trades[-1].nav_after if trades else config.starting_nav
+    geometric_daily = (ending_nav / config.starting_nav) ** (1.0 / calendar_days) - 1.0
+    positive = [trade.net_pnl for trade in trades if trade.net_pnl > 0]
+    largest_winner_share = max(positive) / sum(positive) if positive else 1.0
+    scenario_metrics: dict[str, dict[str, Any]] = {}
+    scenarios = (
+        "SWING_FAILED_AUCTION_RESUMPTION",
+        "INVENTORY_BACKED_DISPLACEMENT",
+        "STRESS_REVERSAL_FAILURE_CONTINUATION",
+        "STRESS_INVENTORY_SHOCK_DISPLACEMENT",
+    )
+    for scenario in scenarios:
+        selected = [trade for trade in trades if trade.scenario == scenario]
+        scenario_metrics[scenario] = {
+            "trades": len(selected),
+            "wins": sum(trade.net_pnl > 0 for trade in selected),
+            "net_pnl": sum(trade.net_pnl for trade in selected),
+            "mean_net_r": (
+                float(np.mean([trade.net_r for trade in selected]))
+                if selected
+                else 0.0
+            ),
+        }
+
+    checks = {
+        "geometric_daily": geometric_daily >= config.gate_min_geom_daily,
+        "trades": len(trades) >= config.gate_min_trades,
+        "active_days": (
+            sum(abs(value) > 1e-12 for value in daily_returns.values())
+            >= config.gate_min_active_days
+        ),
+        "win_rate": (
+            sum(trade.net_pnl > 0 for trade in trades) / len(trades)
+            if trades
+            else 0.0
+        )
+        >= config.gate_min_win_rate,
+        "max_drawdown": max_drawdown <= config.gate_max_drawdown,
+        "largest_winner_share": (
+            largest_winner_share <= config.gate_max_largest_winner_share
+        ),
+        "single_position": True,
+        "positive_nav": ending_nav > 0,
+    }
+    metrics = {
+        "starting_nav": config.starting_nav,
+        "ending_nav": ending_nav,
+        "total_return": ending_nav / config.starting_nav - 1.0,
+        "geometric_daily_growth": geometric_daily,
+        "calendar_days": calendar_days,
+        "trades": len(trades),
+        "wins": sum(trade.net_pnl > 0 for trade in trades),
+        "win_rate": (
+            sum(trade.net_pnl > 0 for trade in trades) / len(trades)
+            if trades
+            else 0.0
+        ),
+        "targets": sum(trade.reason == "TARGET" for trade in trades),
+        "sum_net_r": sum(trade.net_r for trade in trades),
+        "mean_net_r": (
+            float(np.mean([trade.net_r for trade in trades])) if trades else 0.0
+        ),
+        "max_drawdown_realized": max_drawdown,
+        "largest_winner_share": largest_winner_share,
+        "active_days": sum(abs(value) > 1e-12 for value in daily_returns.values()),
+        "daily_returns": daily_returns,
+        "scenario_metrics": scenario_metrics,
+        "gate_checks": checks,
+        "gate_pass": all(checks.values()),
+    }
+    diagnostics = [
+        *(
+            {"scenario": "SWING_FAILED_AUCTION_RESUMPTION", **item}
+            for item in swing_diagnostics
+        ),
+        *(
+            {"scenario": "INVENTORY_BACKED_DISPLACEMENT", **item}
+            for item in trend_diagnostics
+        ),
+        *(
+            {"scenario": "STRESS_REVERSAL_FAILURE_CONTINUATION", **item}
+            for item in stress_failure_diagnostics
+        ),
+        *(
+            {"scenario": "STRESS_INVENTORY_SHOCK_DISPLACEMENT", **item}
+            for item in stress_shock_diagnostics
+        ),
+    ]
+    return trades, metrics, diagnostics
+
+
+def write_outputs(
+    output: Path,
+    trades: list[Trade],
+    metrics: dict[str, Any],
+    diagnostics: list[dict[str, Any]],
+    config_path: Path,
+    evaluation_start: pd.Timestamp,
+    evaluation_end: pd.Timestamp,
+) -> None:
+    v5.write_outputs(
+        output,
+        trades,
+        metrics,
+        diagnostics,
+        config_path,
+        evaluation_start,
+        evaluation_end,
+    )
+    run_path = output / "run.json"
+    run = json.loads(run_path.read_text(encoding="utf-8"))
+    run["candidate"] = "candidate-04-v6-regime-transition"
+    extra = dict(run.get("extra", {}))
+    extra["candidate"] = "candidate-04-v6-regime-transition"
+    run["extra"] = extra
+    run_path.write_text(
+        json.dumps(run, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--rich-dir", type=Path, required=True)
+    parser.add_argument("--kline-dir", type=Path, required=True)
+    parser.add_argument("--evaluation-start", required=True)
+    parser.add_argument("--evaluation-end", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--download-klines", action="store_true")
+    args = parser.parse_args()
+
+    config = Config.load(args.config)
+    evaluation_start = pd.Timestamp(args.evaluation_start, tz="UTC")
+    evaluation_end = (
+        pd.Timestamp(args.evaluation_end, tz="UTC")
+        + pd.Timedelta(hours=23, minutes=59)
+    )
+    if args.download_klines:
+        kline_paths = v5.ensure_klines(
+            config.symbol,
+            evaluation_start.date(),
+            evaluation_end.date(),
+            args.kline_dir,
+        )
+    else:
+        kline_paths = sorted(
+            args.kline_dir.glob(f"{config.symbol}-1m-*.zip"),
+        )
+    rich = v5.load_rich(args.rich_dir)
+    klines = v5.load_klines(kline_paths)
+    required = pd.date_range(
+        evaluation_start.normalize(),
+        evaluation_end.normalize(),
+        freq="1D",
+    ).date
+    present = set(klines.index.normalize().date)
+    missing = [str(day) for day in required if day not in present]
+    if missing:
+        raise CandidateError(f"missing evaluation kline days: {missing}")
+
+    data = v5.prepare_data(rich, klines, config)
+    trades, metrics, diagnostics = run_candidate(
+        data,
+        evaluation_start,
+        evaluation_end,
+        config,
+    )
+    write_outputs(
+        args.output,
+        trades,
+        metrics,
+        diagnostics,
+        args.config,
+        evaluation_start,
+        evaluation_end,
+    )
+    print(json.dumps(v5.serializable(metrics), indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
