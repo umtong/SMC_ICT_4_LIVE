@@ -1,0 +1,85 @@
+{
+  "candidate": "candidate-04-v6-regime-transition",
+  "frozen_before_opening": "v6-week-1: 2023-03-08..2023-03-14",
+  "reason_for_v6": {
+    "v5_week_2_failure": {"trades": 17, "wins": 3, "total_return": -0.3057436297444661, "geometric_daily_growth": -0.05079463060900658},
+    "controlled_diagnosis": "Every v5 swing reversal in reserve-2 failed while the past 240-minute median trade-index basis remained negative. The same state was positive in reserve-1. The correction is a causal regime branch, not a loss-specific filter.",
+    "v4_and_v5_history": "freeze-v4-invalidated.md and the v5 evidence remain immutable; v6 treats reserve-1 and reserve-2 as development after the reserve-2 failure was opened."
+  },
+  "causal_state_machine": {
+    "regime": "past 240-minute median trade-index basis; non-negative is normal, negative is persistent perpetual discount/deleveraging stress",
+    "normal": [
+      "SWING_FAILED_AUCTION_RESUMPTION from the frozen v5 swing-pool state machine",
+      "INVENTORY_BACKED_DISPLACEMENT from the frozen v5 directional inventory state"
+    ],
+    "stress": [
+      "Suppress the immediate rejected-sweep reversal.",
+      "Treat that reversal as a competing-risk probe: its all-cost hypothetical target means rejection succeeded; a close beyond the original sweep extreme first means price acceptance and triggers STRESS_REVERSAL_FAILURE_CONTINUATION on the next minute.",
+      "STRESS_INVENTORY_SHOCK_DISPLACEMENT requires raw 15-minute OI growth and 60-second executed-notional burst to exceed their shifted, past-only rolling 95th-percentile thresholds, plus the existing displacement, flow, absorption and low-efficiency state."
+    ],
+    "global": "At most one entry intent or one open position. Same-side intents within five minutes are one parent event."
+  },
+  "execution_and_risk": {
+    "entry": "following one-minute open after every required observation",
+    "risk_fraction_of_current_nav": 0.03,
+    "fee_bps_each_side": 5.0,
+    "entry_slippage_bps": 2.0,
+    "stop_slippage_bps": 3.0,
+    "market_exit_slippage_bps": 2.0,
+    "planned_adverse_funding_bps": 1.0,
+    "funding_times_utc": [0, 8, 16],
+    "target_net_r": 1.2,
+    "break_even_trigger_net_r": 1.05,
+    "break_even_lock_net_r": 0.03,
+    "same_bar_stop_and_target": "stop first",
+    "arbitrary_notional_or_leverage_cap": false,
+    "model_score_risk_multiplier": false
+  },
+  "development_results_after_all_costs": [
+    {
+      "name": "reserve-1-normal-basis-development",
+      "dates": "2023-12-18..2023-12-24",
+      "trades": 10,
+      "wins": 8,
+      "win_rate": 0.8,
+      "total_return": 0.2839775692276647,
+      "geometric_daily_growth": 0.036354184393104116,
+      "sum_net_r": 8.524427658239397,
+      "max_drawdown_realized": 0.028990531503005235,
+      "active_days": 7,
+      "largest_winner_share": 0.14151283907437237
+    },
+    {
+      "name": "reserve-2-negative-basis-development",
+      "dates": "2024-08-07..2024-08-13",
+      "trades": 8,
+      "wins": 7,
+      "win_rate": 0.875,
+      "total_return": 0.17180911132990362,
+      "geometric_daily_growth": 0.022908284096117004,
+      "sum_net_r": 5.408975347635219,
+      "max_drawdown_realized": 0.029506955928944145,
+      "active_days": 5,
+      "largest_winner_share": 0.20146500488155664,
+      "stress_failure_continuation": {"trades": 6, "wins": 5, "mean_net_r": 0.49625088599494127},
+      "stress_inventory_shock": {"trades": 2, "wins": 2, "mean_net_r": 1.2157350158327858}
+    }
+  ],
+  "limited_neighbourhood_check": {
+    "one_variable_at_a_time": true,
+    "basis_threshold_bps": [-1.0, 0.0, 1.0],
+    "basis_window_minutes": [120, 240, 360],
+    "stress_failure_wait_minutes": [60, 120, 180],
+    "inventory_quantile": [0.9, 0.95, 0.975],
+    "inventory_quantile_window_minutes": [480, 720, 1440],
+    "target_net_r": [1.1, 1.2, 1.3],
+    "result": "Every listed one-variable perturbation kept both development weeks above 1% all-cost geometric daily growth. The strict 97.5th-percentile shock setting retained seven trades, six wins and 1.77% daily geometric growth in the stress week."
+  },
+  "frozen_hashes_expected": {
+    "assembled_regime_transition_source": "c767f711c2aa90508dfb9ec86dce8ac4f741a4a1c74e7e703d2fa55a59aa8586",
+    "regime_transition_loader": "9508e596d14a45a5e8676047c4a31db416287d7e3d08fecee2ec29f3c8f91d4f",
+    "regime_transition_config": "76b0a555d578c5c29941fa2ff850e824bb5dc69e21598f14146c0fe083a2e6c0",
+    "regime_transition_test": "f4b7554ac108cf8805c4c56f8b8c26983994db4775d98a2da43218282a66cb02"
+  },
+  "next_untouched": {"name": "v6-week-1", "warmup_start": "2023-03-06", "start": "2023-03-08", "end": "2023-03-14"}
+}
