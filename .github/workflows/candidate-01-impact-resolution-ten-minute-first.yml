@@ -1,0 +1,82 @@
+name: candidate-01-impact-resolution-ten-minute-first
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-impact-resolution-ten-minute-first.yml"
+      - "research/candidate-01/impact_resolution_ten_minute_week.py"
+      - "research/candidate-01/impact_resolution_adaptive_week.py"
+      - "research/candidate-01/impact_resolution_candidate.py"
+      - "research/candidate-01/adaptive_aggtrade_clock.py"
+      - "research/candidate-01/impact_regime_probe.py"
+      - "research/candidate-01/aggtrade_data.py"
+      - "research/candidate-01/aggtrade_clock.py"
+      - "research/candidate-01/data.py"
+      - "research/candidate-01/config.json"
+      - "tests/test_candidate_01_adaptive_clock.py"
+      - "tests/test_candidate_01_impact_resolution.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-impact-resolution-adaptive-first
+          key: candidate-01-impact-resolution-adaptive-BTCUSDT-2023-06-17-25-${{ runner.os }}-v1
+      - name: Run ten-minute information clock on only the first BTC week
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/aggtrade_data.py \
+                research/candidate-01/aggtrade_clock.py \
+                research/candidate-01/adaptive_aggtrade_clock.py \
+                research/candidate-01/impact_regime_probe.py \
+                research/candidate-01/impact_resolution_candidate.py \
+                research/candidate-01/impact_resolution_adaptive_week.py \
+                research/candidate-01/impact_resolution_ten_minute_week.py
+              python -m unittest discover -s tests -p "test_candidate_01_adaptive_clock.py" -v
+              python -m unittest discover -s tests -p "test_candidate_01_impact_resolution.py" -v
+              rm -rf artifacts/candidate-01-impact-resolution-ten-minute-first
+              python research/candidate-01/impact_resolution_ten_minute_week.py \
+                --week 2023-06-19 \
+                --cache .cache/candidate-01-impact-resolution-adaptive-first \
+                --output artifacts/candidate-01-impact-resolution-ten-minute-first \
+                --workers 4
+            '
+      - name: Print first-week ten-minute evidence
+        run: cat artifacts/candidate-01-impact-resolution-ten-minute-first/impact_resolution_adaptive_week_summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-impact-resolution-ten-minute-first-${{ github.sha }}
+          path: artifacts/candidate-01-impact-resolution-ten-minute-first
+          if-no-files-found: error
+          retention-days: 30
