@@ -1,0 +1,220 @@
+    data: pd.DataFrame,
+    evaluation_start: pd.Timestamp,
+    evaluation_end: pd.Timestamp,
+    config: Config,
+) -> tuple[list[Intent], list[dict[str, Any]]]:
+    """Detect new leveraged inventory after a deleveraging regime.
+
+    Both OI growth and executed notional must exceed distributions available
+    strictly before the signal. This separates inventory creation from a large
+    candle caused by closing positions.
+    """
+
+    window = config.stress_inventory_quantile_window_minutes
+    minimum = config.stress_inventory_quantile_min_periods
+    quantile = config.stress_inventory_quantile
+    oi_threshold = (
+        data["oi_change_xday_15m"]
+        .shift(1)
+        .rolling(window, min_periods=minimum)
+        .quantile(quantile)
+    )
+    notional_threshold = (
+        data["notional_burst_xday_60s"]
+        .shift(1)
+        .rolling(window, min_periods=minimum)
+        .quantile(quantile)
+    )
+
+    intents: list[Intent] = []
+    diagnostics: list[dict[str, Any]] = []
+    start_index = max(
+        config.trend_lookback_minutes,
+        config.pullback_lookback_minutes,
+        config.trend_stop_minutes,
+        config.basis_regime_window_minutes,
+    ) + 1
+    for signal_index in range(start_index, len(data) - 1):
+        timestamp = data.index[signal_index]
+        if not evaluation_start <= timestamp <= evaluation_end:
+            continue
+        regime = basis_regime(data, signal_index, config)
+        if regime >= config.basis_stress_threshold_bps:
+            continue
+
+        row = data.iloc[signal_index]
+        atr = float(row["atr"])
+        if not math.isfinite(atr) or atr <= 0:
+            continue
+        raw_trend = float(
+            (
+                row["close"]
+                - data["close"].iloc[
+                    signal_index - config.trend_lookback_minutes
+                ]
+            )
+            / atr,
+        )
+        side = 1 if raw_trend > 0 else -1
+        trend = abs(raw_trend)
+        pullback = side * float(
+            (
+                data["close"].iloc[signal_index - 1]
+                - data["close"].iloc[
+                    signal_index - config.pullback_lookback_minutes
+                ]
+            )
+            / atr,
+        )
+        structure_slice = data.iloc[
+            signal_index - config.trend_structure_minutes : signal_index
+        ]
+        structure = float(
+            structure_slice["high"].max()
+            if side == 1
+            else structure_slice["low"].min(),
+        )
+        broken = (
+            float(row["close"]) > structure
+            if side == 1
+            else float(row["close"]) < structure
+        )
+        body = side * float(row["close"] - row["open"]) / atr
+        flow = side * float(row["flow_60s"])
+        burst = float(data["notional_burst_xday_60s"].iloc[signal_index])
+        burst_cutoff = max(
+            config.trend_notional_burst_60s,
+            float(notional_threshold.iloc[signal_index]),
+        )
+        close_location = directional_close_location(row, side)
+        raw_oi_change = float(data["oi_change_xday_15m"].iloc[signal_index])
+        oi_cutoff = max(0.0, float(oi_threshold.iloc[signal_index]))
+        absorption = float(row["absorption_60s"])
+        efficiency = float(row["eff_60s"])
+        acceleration = side * float(row["flow_accel_15_vs_prior45"])
+
+        passed = (
+            trend >= config.trend_min_displacement_atr
+            and pullback <= config.trend_max_pullback_atr
+            and broken
+            and body >= config.trend_body_atr
+            and flow >= config.trend_flow_60s
+            and burst >= burst_cutoff
+            and close_location >= config.trend_close_location
+            and raw_oi_change >= oi_cutoff
+            and absorption >= config.trend_absorption_60s_min
+            and efficiency <= config.trend_efficiency_60s_max
+            and acceleration <= config.trend_flow_acceleration_max
+        )
+        if not passed:
+            continue
+
+        stop_slice = data.iloc[
+            signal_index - config.trend_stop_minutes : signal_index + 1
+        ]
+        extreme = float(
+            stop_slice["low"].min()
+            if side == 1
+            else stop_slice["high"].max(),
+        )
+        stop = extreme - side * config.trend_stop_buffer_atr * atr
+        details = {
+            "basis_regime_bps": regime,
+            "trend_240m_atr": trend,
+            "pullback_15m_atr": pullback,
+            "raw_oi_change_15m": raw_oi_change,
+            "oi_quantile_cutoff": oi_cutoff,
+            "notional_burst_60s": burst,
+            "notional_quantile_cutoff": burst_cutoff,
+            "flow_60s": flow,
+            "absorption_60s": absorption,
+            "efficiency_60s": efficiency,
+            "flow_acceleration": acceleration,
+        }
+        intents.append(
+            Intent(
+                scenario="STRESS_INVENTORY_SHOCK_DISPLACEMENT",
+                side=side,
+                signal_index=signal_index,
+                entry_index=signal_index + 1,
+                stop_level=stop,
+                event_indices=(signal_index,),
+                details=details,
+            ),
+        )
+        diagnostics.append(
+            {"index": signal_index, "time": timestamp, "side": side, **details},
+        )
+
+    return cluster_intents(intents, config.parent_cluster_minutes), diagnostics
+
+
+def run_candidate(
+    data: pd.DataFrame,
+    evaluation_start: pd.Timestamp,
+    evaluation_end: pd.Timestamp,
+    config: Config,
+) -> tuple[list[Trade], dict[str, Any], list[dict[str, Any]]]:
+    swing, swing_diagnostics = detect_swing_intents(
+        data,
+        evaluation_start,
+        evaluation_end,
+        config,
+    )
+    trend, trend_diagnostics = detect_trend_intents(
+        data,
+        evaluation_start,
+        evaluation_end,
+        config,
+    )
+
+    normal_swing = [
+        intent
+        for intent in swing
+        if basis_regime(data, intent.signal_index, config)
+        >= config.basis_stress_threshold_bps
+    ]
+    normal_trend = [
+        intent
+        for intent in trend
+        if basis_regime(data, intent.signal_index, config)
+        >= config.basis_stress_threshold_bps
+    ]
+    stress_failure, stress_failure_diagnostics = detect_stress_failure_intents(
+        data,
+        swing,
+        config,
+    )
+    stress_shock, stress_shock_diagnostics = detect_stress_inventory_shock_intents(
+        data,
+        evaluation_start,
+        evaluation_end,
+        config,
+    )
+
+    priorities = {
+        "SWING_FAILED_AUCTION_RESUMPTION": 0,
+        "STRESS_INVENTORY_SHOCK_DISPLACEMENT": 1,
+        "STRESS_REVERSAL_FAILURE_CONTINUATION": 2,
+        "INVENTORY_BACKED_DISPLACEMENT": 3,
+    }
+    all_intents = sorted(
+        [*normal_swing, *normal_trend, *stress_failure, *stress_shock],
+        key=lambda item: (item.entry_index, priorities[item.scenario]),
+    )
+
+    trades: list[Trade] = []
+    nav = config.starting_nav
+    occupied_until = -1
+    last_inventory_entry = -10**12
+    inventory_scenarios = {
+        "INVENTORY_BACKED_DISPLACEMENT",
+        "STRESS_INVENTORY_SHOCK_DISPLACEMENT",
+    }
+    for intent in all_intents:
+        if intent.entry_index <= occupied_until:
+            continue
+        if (
+            intent.scenario in inventory_scenarios
+            and intent.entry_index - last_inventory_entry
+            < config.trend_cooldown_minutes
