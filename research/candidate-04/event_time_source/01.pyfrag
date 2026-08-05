@@ -1,0 +1,90 @@
+ dep=pd.concat(depth).sort_index();unique=dep.index.to_series().drop_duplicates().sort_values();diff=unique.diff().dt.total_seconds().dropna();cadence={'snapshots':int(len(unique)),'median_seconds':float(diff.median()),'min_seconds':float(diff.min()),'max_seconds':float(diff.max())}
+ dep=dep.resample('1s').ffill().reindex(s.index,method='ffill');snap=pd.Series(unique.index,index=unique.index).resample('1s').ffill().reindex(s.index,method='ffill');s['depth_age']=(s.index.to_series(index=s.index)-snap).dt.total_seconds()
+ for band in [1,2,5]:
+  bid=dep[-band];ask=dep[band];s[f'depth{band}']=(bid-ask)/(bid+ask);s[f'bidchg{band}_60']=bid/bid.shift(60)-1;s[f'askchg{band}_60']=ask/ask.shift(60)-1
+ tr=pd.concat([(b.high-b.low),(b.high-b.close.shift()).abs(),(b.low-b.close.shift()).abs()],axis=1).max(axis=1);b['atr']=tr.rolling(30,min_periods=30).mean()
+ for w in [15,60,240,720,1440]:b[f'ret{w}']=(b.close-b.close.shift(w))/b.atr
+ b['atr_ratio']=b.atr/b.atr.shift(1).rolling(1440,min_periods=720).median();b['atr_bps']=b.atr/b.close*10000
+ mapcols=['atr','atr_ratio','atr_bps']+[f'ret{w}' for w in [15,60,240,720,1440]];s[mapcols]=b[mapcols].reindex(s.index,method='ffill')
+ idxclose=ib.close.reindex(s.index,method='ffill');s['basis']=(s.close/idxclose-1)*10000
+ if not m.empty:
+  mm=m.resample('1s').ffill().reindex(s.index,method='ffill')
+  for c in mm.columns:s['metric_'+c]=mm[c]
+  for h in [300,900,3600]:s[f'oi{h}']=s.metric_sum_open_interest/s.metric_sum_open_interest.shift(h)-1
+ for w in [5,10,15,30,60]:
+  n=s.notional.rolling(w,min_periods=w).sum();sg=s.signed.rolling(w,min_periods=w).sum();path=s.close.pct_change(fill_method=None).abs().rolling(w,min_periods=w).sum();chg=s.close.pct_change(w,fill_method=None)
+  s[f'n{w}']=n;s[f'f{w}']=sg/n.replace(0,np.nan);s[f'eff{w}']=chg.abs()/path.replace(0,np.nan);s[f'maxshare{w}']=s.maxn.rolling(w,min_periods=w).max()/n.replace(0,np.nan)
+ s['n10_med']=s.n10.shift(10).rolling(1800,min_periods=600).median();s['burst10']=s.n10/s.n10_med
+ for lb in [300,900,1800]:
+  hi=s.high.shift(1).rolling(lb,min_periods=lb).max();lo=s.low.shift(1).rolling(lb,min_periods=lb).min();s[f'hi{lb}']=hi;s[f'lo{lb}']=lo;s[f'histable{lb}']=hi.eq(hi.shift(30));s[f'lostable{lb}']=lo.eq(lo.shift(30))
+ return s,evidence,cadence
+
+def entry_fill(p,side,bps=2):return p*(1+side*bps/10000)
+def exit_fill(p,side,bps):return p*(1-side*bps/10000)
+def funding_count(a,b):
+ if b<=a:return 0
+ count=0;d=a.floor('D')
+ while d<=b:
+  for h in [0,8,16]:
+   t=d+pd.Timedelta(hours=h)
+   if a<t<=b:count+=1
+  d+=pd.Timedelta(days=1)
+ return count
+
+def denom(entry,stop,side):
+ sf=exit_fill(stop,side,3);return side*(entry-sf)+.0005*entry+.0005*sf+.0001*entry
+
+def target_trigger(entry,d,side,R,slip=2):
+ f=.0005;goal=R*d;x=(goal+entry*(1+f))/(1-f) if side==1 else (entry*(1-f)-goal)/(1+f);return x/(1-side*slip/10000)
+def net_r(entry,trig,side,d,slip,t0,t1):
+ x=exit_fill(trig,side,slip);return (side*(x-entry)-.0005*entry-.0005*x-funding_count(t0,t1)*.0001*entry)/d
+
+def outcome(s,entry_i,side,stop,R,maxhold=900):
+ entry=entry_fill(float(s.open.iloc[entry_i]),side);d=denom(entry,stop,side)
+ if not np.isfinite(d) or d<=0:return None
+ tgt=target_trigger(entry,d,side,R);be=target_trigger(entry,d,side,1.05);belock=target_trigger(entry,d,side,.03,slip=3);armed=False;t0=s.index[entry_i]
+ for q in range(entry_i,min(len(s),entry_i+maxhold)):
+  r=s.iloc[q];st=belock if armed else stop;hs=r.low<=st if side==1 else r.high>=st;ht=r.high>=tgt if side==1 else r.low<=tgt
+  if hs:return {'r':net_r(entry,st,side,d,3,t0,s.index[q]),'exit_time':s.index[q],'reason':'BE' if armed else 'STOP','bars':q-entry_i+1,'entry':entry,'stop':stop,'target':tgt}
+  if ht:return {'r':net_r(entry,tgt,side,d,2,t0,s.index[q]),'exit_time':s.index[q],'reason':'TARGET','bars':q-entry_i+1,'entry':entry,'stop':stop,'target':tgt}
+  if not armed and (r.high>=be if side==1 else r.low<=be):armed=True
+ q=min(len(s)-1,entry_i+maxhold-1);return {'r':net_r(entry,float(s.close.iloc[q]),side,d,2,t0,s.index[q]),'exit_time':s.index[q],'reason':'TIME','bars':q-entry_i+1,'entry':entry,'stop':stop,'target':tgt}
+
+def snapshot(s,k,side,prefix):
+ r=s.iloc[k];get=lambda c:float(r[c]) if c in r and pd.notna(r[c]) else np.nan
+ z={prefix+'flow5':side*get('f5'),prefix+'flow15':side*get('f15'),prefix+'flow60':side*get('f60'),prefix+'eff10':get('eff10'),prefix+'eff15':get('eff15'),prefix+'maxshare10':get('maxshare10'),prefix+'burst10':get('burst10'),prefix+'depth1':side*get('depth1'),prefix+'depth5':side*get('depth5'),prefix+'depth_age':get('depth_age'),prefix+'basis':side*get('basis'),prefix+'oi5':get('oi300'),prefix+'oi15':get('oi900'),prefix+'oi60':get('oi3600')}
+ for c in ['metric_sum_taker_long_short_vol_ratio','metric_count_long_short_ratio','metric_sum_toptrader_long_short_ratio']:
+  v=get(c);z[prefix+c.replace('metric_','')]=side*np.log(v) if v>0 else np.nan
+ return z
+
+def scan(s,eval_start:pd.Timestamp,eval_end:pd.Timestamp)->pd.DataFrame:
+ rec=[];cool={(1,'R'):-10**9,(-1,'R'):-10**9,(1,'C'):-10**9,(-1,'C'):-10**9}
+ n=len(s);candidate={}
+ for side in [1,-1]:
+  for lb in [300,900,1800]:
+   level=s[f'lo{lb}'] if side==1 else s[f'hi{lb}'];stable=s[f'lostable{lb}'] if side==1 else s[f'histable{lb}'];ext=s.low if side==1 else s.high;pen=side*(level-ext)/s.atr;old=-side*s.f10
+   mask=stable&pen.between(.03,1.5)&old.ge(.20)&s.burst10.ge(1.3)&s.index.to_series().between(eval_start-pd.Timedelta(minutes=2),eval_end)
+   for i in np.flatnonzero(mask.to_numpy()):candidate[(i,side)]=max(lb,candidate.get((i,side),0))
+ for (i,revside),lb in sorted(candidate.items()):
+  if i<3600 or i>=n-1000:continue
+  r=s.iloc[i];atr=float(r.atr);level=float(r[f'lo{lb}'] if revside==1 else r[f'hi{lb}']);pre=float(s.high.iloc[i-15:i].max() if revside==1 else s.low.iloc[i-15:i].min());extreme=float(r.low if revside==1 else r.high)
+  # Rejection branch: reclaim + micro-structure break + opposite flow.
+  if i-cool[(revside,'R')]>=120:
+   j=None
+   for k in range(i+3,min(i+91,n-1)):
+    x=s.iloc[k];extreme=min(extreme,float(x.low)) if revside==1 else max(extreme,float(x.high));reclaim=x.close>level if revside==1 else x.close<level;cross=x.close>pre if revside==1 else x.close<pre;recovery=revside*(float(x.close)-extreme)/atr
+    if reclaim and cross and recovery>=.12 and revside*x.f5>=.10 and revside*x.f15>=0 and revside*x.depth5>=-.10:
+     j=k;break
+   if j is not None and s.index[j+1]>=eval_start and s.index[j+1]<eval_end:
+    stop=extreme-revside*max(.03*atr,float(s.close.iloc[j])*.0002);stopatr=revside*(float(s.open.iloc[j+1])-stop)/atr
+    if .20<=stopatr<=2.5:
+     base={'scenario':'MICRO_SWEEP_REJECTION','side':revside,'lb':lb,'shock_i':i,'confirm_i':j,'entry_i':j+1,'shock_time':s.index[i],'confirm_time':s.index[j],'entry_time':s.index[j+1],'atr':atr,'atr_ratio':float(r.atr_ratio),'atr_bps':float(r.atr_bps),'penetration':revside*(level-(r.low if revside==1 else r.high))/atr,'duration':j-i,'old_flow10':-revside*float(r.f10),'recovery':revside*(float(s.close.iloc[j])-extreme)/atr,'stop_atr':stopatr,'trend15':revside*float(r.ret15),'trend60':revside*float(r.ret60),'trend240':revside*float(r.ret240),'trend720':revside*float(r.ret720),'trend1440':revside*float(r.ret1440),'basis_turn':revside*(float(s.basis.iloc[j])-float(r.basis))}
+     base.update(snapshot(s,i,revside,'s_'));base.update(snapshot(s,j,revside,'d_'))
+     for R in [.8,1.,1.35,1.8,2.2]:
+      o=outcome(s,j+1,revside,stop,R)
+      for a,b in o.items():base[f'{a}_{R:.2f}']=b
+     rec.append(base);cool[(revside,'R')]=i
+  # Acceptance branch: persistent residence outside the pool with flow/impact alignment.
+  cont=-revside
+  if i-cool[(cont,'C')]>=120:
+   j=None;extreme2=float(r.high if cont==1 else r.low)
