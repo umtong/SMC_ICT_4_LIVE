@@ -30,6 +30,41 @@ jobs:
           sed -i 's/from nautilus_trader.model import CryptoPerpetual/from nautilus_trader.model.instruments import CryptoPerpetual/' research/candidate-02/backtest.py
           sed -i 's/from nautilus_trader.model.identifiers import InstrumentId, Venue/from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue/' research/candidate-02/backtest.py
           sed -i 's/from nautilus_trader.model.objects import Currency, Money, Price, Quantity, Symbol/from nautilus_trader.model.objects import Currency, Money, Price, Quantity/' research/candidate-02/backtest.py
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-02/backtest.py")
+          text = path.read_text(encoding="utf-8")
+          anchor = 'ALLOWED_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")\n'
+          compatibility = '''ALLOWED_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+
+
+class _WritableValuesFrame(pd.DataFrame):
+    """Pandas 3 CoW compatibility for NautilusTrader 1.230.0 wranglers.
+
+    NautilusTrader's Cython memoryview requires a writable ndarray, while
+    pandas 3 deliberately exposes ``DataFrame.values`` as read-only.  Return a
+    fresh writable float64 array without changing source market data.
+    """
+
+    @property
+    def _constructor(self):
+        return _WritableValuesFrame
+
+    @property
+    def values(self):
+        array = self.to_numpy(dtype="float64", copy=True)
+        array.setflags(write=True)
+        return array
+'''
+          if compatibility not in text:
+              text = text.replace(anchor, compatibility, 1)
+          text = text.replace(
+              "bars = BarDataWrangler(bar_type, instrument).process(frame)",
+              "bars = BarDataWrangler(bar_type, instrument).process(_WritableValuesFrame(frame))",
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
           test -f research/candidate-02/core.py
           test -f research/candidate-02/backtest.py
           test -f .github/workflows/candidate-02.yml
@@ -42,7 +77,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add research/candidate-02
           if ! git diff --cached --quiet; then
-            git commit -m "fix(research): align NautilusTrader model namespaces"
+            git commit -m "fix(research): bridge pandas 3 CoW to Nautilus wrangler"
             git push origin HEAD:research/candidate-02
           fi
 
