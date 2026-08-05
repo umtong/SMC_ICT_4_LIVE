@@ -50,12 +50,12 @@ jobs:
             -s research/candidate-04/tests \
             -p 'test_*.py' -v
 
-      - name: Prefetch frozen development and untouched validation BTC weeks
+      - name: Prefetch frozen windows with two-day causal warm-up
         run: |
           uv run python - <<'PY'
           import importlib.util
           import json
-          from datetime import date
+          from datetime import date, timedelta
           from pathlib import Path
           import sys
 
@@ -76,7 +76,7 @@ jobs:
               module.download_binance_week(
                   symbol=config.symbol,
                   interval=config.interval,
-                  start=start,
+                  start=start - timedelta(days=2),
                   end=end,
                   data_root=Path(".cache/binance-candidate-04"),
               )
