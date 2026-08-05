@@ -4,7 +4,7 @@ on:
   push:
     branches: ["research/candidate-03"]
     paths:
-      - "research/candidate-03/adse_patch.tar.gz"
+      - "research/candidate-03/adse_patch.b64.*"
       - ".github/workflows/candidate-03-bootstrap.yml"
 
 permissions:
@@ -18,11 +18,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: research/candidate-03
-      - name: Verify and apply frozen ADSE patch
+      - name: Reassemble, verify, and apply frozen ADSE patch
         run: |
-          echo "b2eca4a30cae31efcfb0a7aec605ffbbc5db1c4bbc3aada2877a283766f44724  research/candidate-03/adse_patch.tar.gz" | sha256sum -c -
-          tar -xzf research/candidate-03/adse_patch.tar.gz
-          rm research/candidate-03/adse_patch.tar.gz
+          cat research/candidate-03/adse_patch.b64.* | tr -d '\n\r\t ' | base64 --decode > /tmp/adse_patch.tar.gz
+          echo "b2eca4a30cae31efcfb0a7aec605ffbbc5db1c4bbc3aada2877a283766f44724  /tmp/adse_patch.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/adse_patch.tar.gz
+          rm -f research/candidate-03/adse_patch.tar.gz
+          rm -f research/candidate-03/adse_patch.b64.*
           rm .github/workflows/candidate-03-bootstrap.yml
           rm -f .github/workflows/candidate-03-lcpt-diagnostics.yml
           git config user.name "github-actions[bot]"
