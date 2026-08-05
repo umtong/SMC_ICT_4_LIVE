@@ -621,6 +621,7 @@ def simulate(
     evaluation_end_ns: int,
     starting_nav: float,
     cost: float,
+    exit_on_boundary_reacceptance: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, Any], pd.DataFrame, pd.DataFrame]:
     schedules: dict[int, list[ScenarioPlan]] = {}
     for plan in plans:
@@ -637,6 +638,7 @@ def simulate(
     daily_rows: list[dict[str, Any]] = []
     current_day: str | None = None
     current_day_nav = starting_nav
+    pending_reacceptance_exit = False
 
     for index, feature in enumerate(features):
         bar = feature.bar
@@ -646,6 +648,48 @@ def simulate(
             break
 
         occupied_at_start = active is not None
+        if active is not None and pending_reacceptance_exit:
+            # The previous completed event re-established outside value. Exit
+            # at the next observable event open; live stop/target orders retain
+            # precedence when that open gaps through them.
+            if active.plan.side is Side.LONG:
+                if bar.open <= active.plan.stop_price:
+                    reacceptance_price = bar.open
+                    reacceptance_reason = "STOP"
+                elif bar.open >= active.plan.target_price:
+                    reacceptance_price = active.plan.target_price
+                    reacceptance_reason = "TARGET"
+                else:
+                    reacceptance_price = bar.open
+                    reacceptance_reason = "BOUNDARY_REACCEPTANCE"
+            else:
+                if bar.open >= active.plan.stop_price:
+                    reacceptance_price = bar.open
+                    reacceptance_reason = "STOP"
+                elif bar.open <= active.plan.target_price:
+                    reacceptance_price = active.plan.target_price
+                    reacceptance_reason = "TARGET"
+                else:
+                    reacceptance_price = bar.open
+                    reacceptance_reason = "BOUNDARY_REACCEPTANCE"
+            closed = close_position(
+                active,
+                exit_time_ns=bar.start_time_ns,
+                exit_price=reacceptance_price,
+                reason=reacceptance_reason,
+                cost=cost,
+            )
+            nav = closed.exit_nav
+            trades.append(closed)
+            counters["boundary_reacceptance_exits"] += int(
+                reacceptance_reason == "BOUNDARY_REACCEPTANCE",
+            )
+            counters["boundary_reacceptance_stop_gaps"] += int(
+                reacceptance_reason == "STOP",
+            )
+            active = None
+            pending_reacceptance_exit = False
+
         if active is not None:
             active.bars_held += 1
             adverse = bar.low if active.plan.side is Side.LONG else bar.high
@@ -820,6 +864,16 @@ def simulate(
             counters["occupied_plans"] += len(pending)
         pending = []
 
+        if active is not None and exit_on_boundary_reacceptance:
+            reaccepted = (
+                bar.close <= active.plan.confirmation_hold_price
+                if active.plan.side is Side.LONG
+                else bar.close >= active.plan.confirmation_hold_price
+            )
+            if reaccepted and not pending_reacceptance_exit:
+                pending_reacceptance_exit = True
+                counters["boundary_reacceptance_signals"] += 1
+
         new_plans = schedules.get(index, [])
         if active is None:
             pending = list(new_plans)
@@ -891,6 +945,7 @@ def simulate(
         "max_drawdown": max_drawdown,
         "minimum_equity_to_maintenance_margin": minimum_margin_ratio,
         "target_met": geo >= 0.01,
+        "exit_on_boundary_reacceptance": exit_on_boundary_reacceptance,
         "counters": dict(counters),
     }
     return trade_frame, metrics, pd.DataFrame(daily_rows), rejection_frame
