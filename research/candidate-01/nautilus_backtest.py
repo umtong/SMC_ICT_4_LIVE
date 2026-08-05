@@ -586,8 +586,21 @@ def run_nautilus_backtest(
     )
     bar_type = BarType.from_str("BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL")
 
-    wrangle = frame.set_index("close_dt")[["open", "high", "low", "close", "base_volume"]].copy()
-    wrangle = wrangle.rename(columns={"base_volume": "volume"})
+    # Build a fresh NumPy-backed frame from Python lists.  Frames returned by
+    # recent pandas copy-on-write operations can expose read-only ``values``;
+    # NautilusTrader v1.230.0's Cython wrangler requests a writable memoryview.
+    wrangle = pd.DataFrame(
+        {
+            "open": [float(value) for value in frame["open"]],
+            "high": [float(value) for value in frame["high"]],
+            "low": [float(value) for value in frame["low"]],
+            "close": [float(value) for value in frame["close"]],
+            "volume": [float(value) for value in frame["base_volume"]],
+        },
+        index=pd.DatetimeIndex(frame["close_dt"].tolist(), name="close_dt"),
+    )
+    if not wrangle.values.flags.writeable:
+        raise RuntimeError("wrangle frame unexpectedly exposes a read-only values buffer")
     bars = BarDataWrangler(bar_type, instrument).process(wrangle)
     aux_bars = {
         int(pd.Timestamp(row.close_dt).value): AuctionBar(
