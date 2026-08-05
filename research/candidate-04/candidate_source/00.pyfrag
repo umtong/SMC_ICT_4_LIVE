@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Candidate 04: causal liquidity-transition day-trading research harness.
+
+The candidate converts ICT/SMC concepts into an explicit state machine:
+
+    established liquidity pool -> sweep/acceptance -> displacement/hold
+    -> next-bar execution -> target/invalidation/timeout
+
+The fast path is deliberately bar-by-bar and causal.  It is used to reject weak
+alpha quickly before the same strategy is replayed through NautilusTrader.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+import zipfile
+from dataclasses import asdict, dataclass, field
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
+
+import numpy as np
+import pandas as pd
+
+try:
+    from smc_ict_4.contracts import ResearchEvent
+    from smc_ict_4.event_log import write_events
+    from smc_ict_4.manifest import (
+        build_data_manifest,
+        create_run_manifest,
+        write_data_manifest,
+        write_json_atomic,
+    )
+except ImportError:  # Local logic tests can run outside the project package.
+    ResearchEvent = None  # type: ignore[assignment]
+    write_events = None  # type: ignore[assignment]
+    build_data_manifest = None  # type: ignore[assignment]
+    create_run_manifest = None  # type: ignore[assignment]
+    write_data_manifest = None  # type: ignore[assignment]
+    write_json_atomic = None  # type: ignore[assignment]
+
+
+KLINE_COLUMNS = [
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "close_time",
+    "quote_volume",
+    "trades",
+    "taker_buy_base",
+    "taker_buy_quote",
+    "ignore",
+]
+PRICE_COLUMNS = ["open", "high", "low", "close"]
+NUMERIC_COLUMNS = PRICE_COLUMNS + [
+    "volume",
+    "quote_volume",
+    "trades",
+    "taker_buy_base",
+    "taker_buy_quote",
+]
+INSTRUMENT_ID = "BTCUSDT-PERP.BINANCE"
+NS_PER_MINUTE = 60_000_000_000
+
+
+class CandidateError(RuntimeError):
+    """Raised when candidate evidence cannot be trusted."""
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyConfig:
+    symbol: str = "BTCUSDT"
+    interval: str = "1m"
+    starting_nav: float = 100_000.0
+    risk_fraction: float = 0.03
+    fee_bps: float = 5.0
+    entry_slippage_bps: float = 2.0
+    stop_slippage_bps: float = 3.0
+    market_exit_slippage_bps: float = 2.0
+    funding_bps_per_event: float = 1.0
+
+    atr_period: int = 30
+    volume_window: int = 120
+    pool_lookback: int = 90
+    context_lookback: int = 360
+    min_pool_age: int = 5
+    min_pool_touches: int = 1
+    pool_touch_bps: float = 4.0
+
+    min_sweep_atr: float = 0.04
+    max_sweep_atr: float = 0.90
+    reversal_flow_threshold: float = 0.10
+    reversal_volume_multiple: float = 1.05
+    reversal_wick_fraction: float = 0.38
+    reversal_context_slack_atr: float = 0.15
+    reversal_confirm_window: int = 4
+    reversal_displacement_atr: float = 0.28
+    reversal_confirm_flow: float = -0.02
+    reversal_target_r_cap: float = 3.0
+    reversal_min_target_r: float = 1.35
+
+    continuation_flow_threshold: float = 0.12
+    continuation_volume_multiple: float = 1.08
+    continuation_body_atr: float = 0.38
+    continuation_close_location: float = 0.68
+    continuation_max_opposite_wick: float = 0.32
+    continuation_accept_atr: float = 0.05
+    continuation_confirm_window: int = 2
+    continuation_hold_tolerance_atr: float = 0.12
+    continuation_target_r: float = 1.85
+
+    stop_buffer_atr: float = 0.08
+    min_stop_atr: float = 0.18
+    max_stop_atr: float = 1.50
+    max_hold_bars: int = 180
+    break_even_trigger_r: float = 1.05
+    break_even_offset_r: float = 0.03
+
+    session_hours_utc: tuple[int, ...] = tuple(range(24))
+    cooldown_bars: int = 3
+
+    gate_min_geom_daily: float = 0.01
+    gate_min_trades: int = 7
+    gate_min_active_days: int = 4
+    gate_max_drawdown: float = 0.20
+    gate_max_largest_winner_share: float = 0.55
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, Any]) -> "StrategyConfig":
+        allowed = {field.name for field in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        unknown = sorted(set(values) - allowed)
+        if unknown:
+            raise CandidateError(f"unknown config keys: {unknown}")
+        normalized = dict(values)
+        if "session_hours_utc" in normalized:
+            normalized["session_hours_utc"] = tuple(int(x) for x in normalized["session_hours_utc"])
+        config = cls(**normalized)
+        config.validate()
+        return config
+
+    def validate(self) -> None:
+        if self.symbol != "BTCUSDT":
+            raise CandidateError("candidate-04 screening is intentionally BTCUSDT-first")
+        if self.interval != "1m":
+            raise CandidateError("candidate-04 currently requires 1m Binance USD-M klines")
+        if not 0 < self.risk_fraction <= 0.03:
+            raise CandidateError("risk_fraction must be in (0, 0.03]")
+        if self.starting_nav <= 0:
+            raise CandidateError("starting_nav must be positive")
+        if self.pool_lookback < 20 or self.context_lookback <= self.pool_lookback:
+            raise CandidateError("context_lookback must exceed a meaningful pool_lookback")
+        if self.min_stop_atr <= 0 or self.max_stop_atr <= self.min_stop_atr:
+            raise CandidateError("invalid stop geometry bounds")
+        if not self.session_hours_utc:
+            raise CandidateError("at least one UTC session hour is required")
+        if any(hour < 0 or hour > 23 for hour in self.session_hours_utc):
+            raise CandidateError("session_hours_utc values must be in [0, 23]")
+
+
+@dataclass(slots=True)
+class PendingSetup:
+    scenario_id: str
+    kind: str
+    side: int
+    sweep_index: int
+    expires_index: int
+    level: float
+    extreme: float
+    sweep_high: float
+    sweep_low: float
+    sweep_close: float
+    atr: float
+    opposing_pool: float | None
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class EntryIntent:
+    scenario_id: str
+    kind: str
+    side: int
+    entry_index: int
+    level: float
+    extreme: float
+    atr: float
+    opposing_pool: float | None
+    confirmed_index: int
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class Position:
+    scenario_id: str
+    kind: str
+    side: int
+    entry_index: int
+    entry_time: pd.Timestamp
+    entry_price: float
+    quantity: float
+    stop_price: float
+    initial_stop_price: float
+    target_price: float
+    initial_price_risk: float
+    risk_budget: float
+    nav_before: float
+    entry_fee: float
+    funding_cost: float = 0.0
+    break_even_armed: bool = False
