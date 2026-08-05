@@ -53,7 +53,34 @@ jobs:
           )
           if old not in source:
               raise SystemExit("expected pinned-runtime import line was not found")
-          path.write_text(source.replace(old, new, 1), encoding="utf-8")
+          source = source.replace(old, new, 1)
+          old_wrangle = (
+              '    wrangle = frame.set_index("close_dt")[["open", "high", "low", "close", "base_volume"]].copy()\n'
+              '    wrangle = wrangle.rename(columns={"base_volume": "volume"})\n'
+              '    bars = BarDataWrangler(bar_type, instrument).process(wrangle)\n'
+          )
+          new_wrangle = "\n".join([
+              '    # Build a fresh NumPy-backed frame from Python lists.  Frames returned by',
+              '    # recent pandas copy-on-write operations can expose read-only ``values``;',
+              '    # NautilusTrader v1.230.0\'s Cython wrangler requests a writable memoryview.',
+              '    wrangle = pd.DataFrame(',
+              '        {',
+              '            "open": [float(value) for value in frame["open"]],',
+              '            "high": [float(value) for value in frame["high"]],',
+              '            "low": [float(value) for value in frame["low"]],',
+              '            "close": [float(value) for value in frame["close"]],',
+              '            "volume": [float(value) for value in frame["base_volume"]],',
+              '        },',
+              '        index=pd.DatetimeIndex(frame["close_dt"].tolist(), name="close_dt"),',
+              '    )',
+              '    if not wrangle.values.flags.writeable:',
+              '        raise RuntimeError("wrangle frame unexpectedly exposes a read-only values buffer")',
+              '    bars = BarDataWrangler(bar_type, instrument).process(wrangle)',
+              '',
+          ])
+          if old_wrangle not in source:
+              raise SystemExit("expected pandas wrangle block was not found")
+          path.write_text(source.replace(old_wrangle, new_wrangle, 1), encoding="utf-8")
           PY
 
       - name: Commit implementation locally before evaluation
