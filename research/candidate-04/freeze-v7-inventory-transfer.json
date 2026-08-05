@@ -1,0 +1,111 @@
+{
+  "candidate": "candidate-04-v7-inventory-transfer",
+  "frozen_before_opening": "v7-week-1: 2024-03-18..2024-03-24",
+  "structural_change_from_v6": {
+    "observed_failure": "v6-week-1 was positive but sparse: five trades, three wins, +2.62% for the week and +0.37% daily geometric growth. The stress inventory scenario generated no trades.",
+    "cause": "v6 required raw OI creation AND an extreme executed-notional burst. That conflated two independent inventory-transfer mechanisms and discarded valid deleveraging continuation, particularly shorts confirmed by OI contraction.",
+    "v7_resolution": "After the unchanged base displacement state, stress continuation is confirmed when either side-adjusted OI change strictly exceeds its shifted past-only 95th percentile OR the executed-notional burst strictly exceeds its shifted past-only 95th percentile. Long OI transfer is OI creation; short OI transfer is OI contraction. Equality never counts as a shock.",
+    "unchanged": "basis regime, sweep competing risk, all price/flow/absorption/efficiency conditions, next-minute execution, costs, 3% NAV risk sizing, one-position constraint, targets, invalidation and funding remain unchanged."
+  },
+  "causal_sequence": {
+    "normal_basis": [
+      "confirmed swing liquidity failure and resumption",
+      "inventory-backed displacement"
+    ],
+    "negative_basis_stress": [
+      "rejected sweep becomes a target-versus-extreme competing-risk probe; extreme first confirms continuation",
+      "or a completed base displacement is confirmed by directional OI transfer or extreme executed-notional shock"
+    ],
+    "observation": "all rolling percentiles are shifted by one minute; current shock cannot enter its own reference distribution",
+    "execution": "entry at the following one-minute open after every required observation"
+  },
+  "execution_and_risk": {
+    "starting_nav_for_reports": 100000.0,
+    "risk_fraction_of_current_nav": 0.03,
+    "quantity_denominator": "adverse entry-to-stop fill distance plus entry fee, stop fee, slippage and planned adverse funding",
+    "fee_bps_each_side": 5.0,
+    "entry_slippage_bps": 2.0,
+    "stop_slippage_bps": 3.0,
+    "market_exit_slippage_bps": 2.0,
+    "planned_adverse_funding_bps": 1.0,
+    "funding_times_utc": [0, 8, 16],
+    "target_net_r": 1.2,
+    "break_even_trigger_net_r": 1.05,
+    "break_even_lock_net_r": 0.03,
+    "same_bar_stop_and_target": "stop first",
+    "global_constraint": "at most one entry intent or one open position",
+    "arbitrary_notional_or_leverage_cap": false,
+    "model_score_risk_multiplier": false
+  },
+  "development_results_after_all_costs": [
+    {
+      "name": "normal-basis-development",
+      "dates": "2023-12-18..2023-12-24",
+      "trades": 10,
+      "wins": 8,
+      "win_rate": 0.8,
+      "total_return": 0.2839775692276647,
+      "geometric_daily_growth": 0.036354184393104116,
+      "sum_net_r": 8.524427658239397,
+      "active_days": 7,
+      "max_drawdown_realized": 0.028990531503005235,
+      "largest_winner_share": 0.14151283907437237,
+      "gate_pass": true
+    },
+    {
+      "name": "negative-basis-development-a",
+      "dates": "2024-08-07..2024-08-13",
+      "trades": 8,
+      "wins": 7,
+      "win_rate": 0.875,
+      "total_return": 0.1449596857693798,
+      "geometric_daily_growth": 0.019526689435642508,
+      "sum_net_r": 4.617423807604074,
+      "active_days": 5,
+      "max_drawdown_realized": 0.029506955928944034,
+      "largest_winner_share": 0.2275325601338177,
+      "gate_pass": true
+    },
+    {
+      "name": "negative-basis-development-b-former-v6-week-1",
+      "dates": "2023-03-08..2023-03-14",
+      "trades": 9,
+      "wins": 6,
+      "win_rate": 0.6666666666666666,
+      "total_return": 0.10950566764595981,
+      "geometric_daily_growth": 0.014955672178377455,
+      "sum_net_r": 3.6195074112671985,
+      "active_days": 4,
+      "max_drawdown_realized": 0.029604358626402316,
+      "largest_winner_share": 0.19203269879126003,
+      "gate_pass": true
+    }
+  ],
+  "limited_neighbourhood_check": {
+    "inventory_quantile": {
+      "0.925": "all three development weeks pass",
+      "0.95": "all three development weeks pass",
+      "0.975": "all remain profitable and above 1% daily geometric growth, but the former v6-week-1 becomes too sparse for the active-day gate",
+      "0.90": "too permissive; the 2024-08 stress week falls below 1% daily geometric growth"
+    },
+    "quantile_window_minutes": {
+      "720": "all pass",
+      "1440": "all pass",
+      "480": "the former v6-week-1 is positive but narrowly below 1% daily geometric growth"
+    },
+    "all_passed_one_variable_ranges": {
+      "quantile_min_periods": [120, 240, 360],
+      "basis_threshold_bps": [-1.0, 0.0, 1.0],
+      "basis_window_minutes": [120, 240, 360],
+      "failure_wait_minutes": [60, 120, 180],
+      "target_net_r": [1.1, 1.2, 1.3],
+      "inventory_cooldown_minutes": [20, 30, 45]
+    }
+  },
+  "known_failure_conditions": [
+    "Lowering the inventory shock quantile to 0.90 admits too many ordinary displacement bars and weakens the stress-week expectancy.",
+    "A 480-minute reference distribution reacts too quickly to a local burst cluster and slightly underproduces growth in one development week.",
+    "The candidate has not yet passed any untouched v7 week; development success is not promotion evidence."
+  ],
+  "untouched_sequence": "validation-weeks-v7.json"
+}
