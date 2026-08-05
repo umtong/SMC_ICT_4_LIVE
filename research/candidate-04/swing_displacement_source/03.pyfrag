@@ -1,0 +1,199 @@
+    planned_funding = entry_fill * config.planned_funding_bps / 10_000.0
+    desired_exit_fill = (
+        target_r * loss_per_unit + side * entry_fill + fee * entry_fill + planned_funding
+    ) / (side - fee)
+    return desired_exit_fill / (1.0 - side * slip)
+
+
+def execute_intent(
+    data: pd.DataFrame,
+    intent: Intent,
+    nav: float,
+    config: Config,
+) -> Trade | None:
+    if intent.entry_index >= len(data):
+        return None
+    side = intent.side
+    entry_open = float(data["open"].iloc[intent.entry_index])
+    entry_fill = entry_open * (1.0 + side * config.entry_slippage_bps / 10_000.0)
+    stop_fill = intent.stop_level * (1.0 - side * config.stop_slippage_bps / 10_000.0)
+    price_loss = side * (entry_fill - stop_fill)
+    if not math.isfinite(price_loss) or price_loss <= 0:
+        return None
+    planned_funding = entry_fill * config.planned_funding_bps / 10_000.0
+    loss_per_unit = (
+        price_loss
+        + config.fee_bps / 10_000.0 * (entry_fill + stop_fill)
+        + planned_funding
+    )
+    risk_budget = nav * config.risk_fraction
+    quantity = risk_budget / loss_per_unit
+    target = target_trigger(entry_fill, side, loss_per_unit, config.target_net_r, config)
+    max_hold = (
+        config.sweep_max_hold_minutes
+        if intent.scenario == "SWING_FAILED_AUCTION_RESUMPTION"
+        else config.trend_max_hold_minutes
+    )
+
+    current_stop = intent.stop_level
+    funded_per_unit = 0.0
+    break_even_armed = False
+    exit_index: int | None = None
+    exit_fill: float | None = None
+    reason = "TIME"
+    fee = config.fee_bps / 10_000.0
+
+    for index in range(intent.entry_index, min(intent.entry_index + max_hold, len(data))):
+        row = data.iloc[index]
+        timestamp = data.index[index]
+        if (
+            index > intent.entry_index
+            and timestamp.minute == 0
+            and timestamp.hour in config.funding_hours_utc
+        ):
+            funded_per_unit += entry_fill * config.planned_funding_bps / 10_000.0
+
+        stop_hit = float(row["low"]) <= current_stop if side == 1 else float(row["high"]) >= current_stop
+        target_hit = float(row["high"]) >= target if side == 1 else float(row["low"]) <= target
+        if stop_hit:  # pessimistic ordering when both occur in one bar
+            exit_index = index
+            exit_fill = current_stop * (1.0 - side * config.stop_slippage_bps / 10_000.0)
+            reason = "BREAK_EVEN" if break_even_armed else "STOP"
+            break
+        if target_hit:
+            exit_index = index
+            exit_fill = target * (1.0 - side * config.market_exit_slippage_bps / 10_000.0)
+            reason = "TARGET"
+            break
+
+        if not break_even_armed:
+            favourable = float(row["high"] if side == 1 else row["low"])
+            favourable_fill = favourable * (
+                1.0 - side * config.market_exit_slippage_bps / 10_000.0
+            )
+            favourable_net = (
+                side * (favourable_fill - entry_fill)
+                - fee * (entry_fill + favourable_fill)
+                - funded_per_unit
+            )
+            if favourable_net / loss_per_unit >= config.break_even_trigger_r:
+                desired_net = config.break_even_lock_r * loss_per_unit
+                desired_stop_fill = (
+                    desired_net
+                    + side * entry_fill
+                    + fee * entry_fill
+                    + funded_per_unit
+                ) / (side - fee)
+                current_stop = desired_stop_fill / (
+                    1.0 - side * config.stop_slippage_bps / 10_000.0
+                )
+                break_even_armed = True
+
+    if exit_index is None or exit_fill is None:
+        exit_index = min(intent.entry_index + max_hold - 1, len(data) - 1)
+        close = float(data["close"].iloc[exit_index])
+        exit_fill = close * (1.0 - side * config.market_exit_slippage_bps / 10_000.0)
+        reason = "TIME"
+
+    net_per_unit = (
+        side * (exit_fill - entry_fill)
+        - fee * (entry_fill + exit_fill)
+        - funded_per_unit
+    )
+    net_pnl = quantity * net_per_unit
+    nav_after = nav + net_pnl
+    return Trade(
+        scenario=intent.scenario,
+        side=side,
+        signal_index=intent.signal_index,
+        entry_index=intent.entry_index,
+        exit_index=exit_index,
+        entry_time=data.index[intent.entry_index],
+        exit_time=data.index[exit_index],
+        entry_fill=entry_fill,
+        exit_fill=exit_fill,
+        stop_level=intent.stop_level,
+        target_trigger=target,
+        quantity=quantity,
+        nav_before=nav,
+        nav_after=nav_after,
+        risk_budget=risk_budget,
+        planned_loss_per_unit=loss_per_unit,
+        net_pnl=net_pnl,
+        net_r=net_pnl / risk_budget,
+        reason=reason,
+        hold_minutes=exit_index - intent.entry_index,
+        cluster_events=int(intent.details.get("cluster_events", 1)),
+    )
+
+
+def run_candidate(
+    data: pd.DataFrame,
+    evaluation_start: pd.Timestamp,
+    evaluation_end: pd.Timestamp,
+    config: Config,
+) -> tuple[list[Trade], dict[str, Any], list[dict[str, Any]]]:
+    swing, swing_diagnostics = detect_swing_intents(data, evaluation_start, evaluation_end, config)
+    trend, trend_diagnostics = detect_trend_intents(data, evaluation_start, evaluation_end, config)
+    all_intents = sorted(
+        [*swing, *trend],
+        key=lambda item: (
+            item.entry_index,
+            0 if item.scenario == "SWING_FAILED_AUCTION_RESUMPTION" else 1,
+        ),
+    )
+
+    trades: list[Trade] = []
+    nav = config.starting_nav
+    occupied_until = -1
+    last_trend_entry = -10**12
+    for intent in all_intents:
+        if intent.entry_index <= occupied_until:
+            continue
+        if (
+            intent.scenario == "INVENTORY_BACKED_DISPLACEMENT"
+            and intent.entry_index - last_trend_entry < config.trend_cooldown_minutes
+        ):
+            continue
+        trade = execute_intent(data, intent, nav, config)
+        if trade is None:
+            continue
+        trades.append(trade)
+        nav = trade.nav_after
+        occupied_until = trade.exit_index
+        if intent.scenario == "INVENTORY_BACKED_DISPLACEMENT":
+            last_trend_entry = intent.entry_index
+
+    start_day = evaluation_start.normalize()
+    end_day = evaluation_end.normalize()
+    calendar_days = int((end_day - start_day).days) + 1
+    daily_returns: dict[str, float] = {}
+    nav_cursor = config.starting_nav
+    peak = nav_cursor
+    max_drawdown = 0.0
+    for day in pd.date_range(start_day, end_day, freq="1D"):
+        before = nav_cursor
+        day_date = day.date()
+        for trade in (item for item in trades if item.exit_time.date() == day_date):
+            nav_cursor += trade.net_pnl
+            peak = max(peak, nav_cursor)
+            max_drawdown = max(max_drawdown, 1.0 - nav_cursor / peak)
+        daily_returns[str(day_date)] = nav_cursor / before - 1.0
+
+    ending_nav = trades[-1].nav_after if trades else config.starting_nav
+    geometric_daily = (ending_nav / config.starting_nav) ** (1.0 / calendar_days) - 1.0
+    positive = [trade.net_pnl for trade in trades if trade.net_pnl > 0]
+    largest_winner_share = max(positive) / sum(positive) if positive else 1.0
+    scenario_metrics: dict[str, dict[str, Any]] = {}
+    for scenario in ("SWING_FAILED_AUCTION_RESUMPTION", "INVENTORY_BACKED_DISPLACEMENT"):
+        selected = [trade for trade in trades if trade.scenario == scenario]
+        scenario_metrics[scenario] = {
+            "trades": len(selected),
+            "wins": sum(trade.net_pnl > 0 for trade in selected),
+            "net_pnl": sum(trade.net_pnl for trade in selected),
+            "mean_net_r": float(np.mean([trade.net_r for trade in selected])) if selected else 0.0,
+        }
+
+    checks = {
+        "geometric_daily": geometric_daily >= config.gate_min_geom_daily,
+        "trades": len(trades) >= config.gate_min_trades,
