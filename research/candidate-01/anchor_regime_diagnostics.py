@@ -67,7 +67,7 @@ def _segments(research: dict[str, Any]) -> list[tuple[str, datetime, datetime, s
 def _block_features(frame: pd.DataFrame, range_minutes: int) -> pd.DataFrame:
     range_ns = range_minutes * NS_PER_MINUTE
     values = frame.copy()
-    values["ts_ns"] = values["close_dt"].astype("int64")
+    values["ts_ns"] = values["close_dt"].map(lambda value: pd.Timestamp(value).value)
     values["block_id"] = values["ts_ns"] // range_ns
     values["signed_flow"] = 2.0 * values["taker_buy_quote_volume"] - values["quote_volume"]
     values["close_change"] = values["close"].diff().abs()
@@ -157,7 +157,7 @@ def _block_features(frame: pd.DataFrame, range_minutes: int) -> pd.DataFrame:
 
 
 def _event_features(bars: list[Any], candidate: CandidateConfig) -> pd.DataFrame:
-    machine = AuctionStateMachine(candidate, instrument_id="BTCUSDT-PERP.BINANCE")
+    machine = AuctionStateMachine(candidate, instrument_id="BTCUSDT-PERP.BINANCE:240m")
     for item in bars:
         machine.on_bar(item)
     rows: dict[str, dict[str, Any]] = {}
