@@ -1,0 +1,79 @@
+name: candidate-01-rawlog
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".diagnostics/candidate-01-run"
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run exact frozen discovery week
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/candidate-01
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              set -o pipefail
+              python research/candidate-01/run_research.py \
+                --suite discovery \
+                --output artifacts/candidate-01/discovery \
+                2>&1 | tee artifacts/candidate-01/discovery.log
+            '
+
+      - name: Commit raw log without parsing
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f artifacts/candidate-01/discovery.log
+          git fetch origin research/candidate-01
+          git reset --hard origin/research/candidate-01
+          mkdir -p research/candidate-01/evidence/discovery
+          cp artifacts/candidate-01/discovery.log research/candidate-01/evidence/discovery/discovery.log
+          if [ -f artifacts/candidate-01/discovery/aggregate_metrics.json ]; then
+            cp artifacts/candidate-01/discovery/aggregate_metrics.json research/candidate-01/evidence/discovery/aggregate_metrics.json
+          fi
+          if [ -d artifacts/candidate-01/discovery/discovery ]; then
+            for file in metrics.json run.json data_manifest.json trade_plans.csv daily_nav.csv positions.csv scenario_events.jsonl execution_events.jsonl; do
+              if [ -f "artifacts/candidate-01/discovery/discovery/$file" ]; then
+                cp "artifacts/candidate-01/discovery/discovery/$file" "research/candidate-01/evidence/discovery/$file"
+              fi
+            done
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- research/candidate-01/evidence/discovery
+          if ! git diff --cached --quiet; then
+            git commit -m "research(candidate-01): retain raw discovery output"
+            git push origin HEAD:research/candidate-01
+          fi
