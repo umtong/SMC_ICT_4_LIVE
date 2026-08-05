@@ -1,0 +1,110 @@
+name: prebuilt-research-environment
+
+on:
+  push:
+    branches:
+      - main
+      - agent/prebuilt-research-environment
+    paths:
+      - containers/research/**
+      - .dockerignore
+      - pyproject.toml
+      - uv.lock
+      - src/**
+      - .github/workflows/research-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: prebuilt-research-environment-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research
+
+jobs:
+  build-publish-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Select immutable and convenience tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::12}"
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            {
+              echo 'value<<EOF'
+              echo "${IMAGE}:foundation-1.0.0"
+              echo "${IMAGE}:latest"
+              echo "${IMAGE}:sha-${short_sha}"
+              echo 'EOF'
+            } >> "${GITHUB_OUTPUT}"
+          else
+            {
+              echo 'value<<EOF'
+              echo "${IMAGE}:candidate-${short_sha}"
+              echo 'EOF'
+            } >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build and publish the preinstalled environment
+        id: image
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: .
+          file: containers/research/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.value }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=foundation-1.0.0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify from a fresh pull of the published digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference="${IMAGE}@${{ steps.image.outputs.digest }}"
+          docker pull "${reference}"
+          docker run --rm "${reference}" python --version
+          docker run --rm "${reference}" python -c 'from importlib.metadata import version; assert version("nautilus_trader") == "1.230.0"'
+          docker run --rm "${reference}" smc4 doctor
+          mkdir -p artifacts/prebuilt-smoke
+          chmod 0777 artifacts/prebuilt-smoke
+          docker run --rm \
+            -v "${PWD}/artifacts/prebuilt-smoke:/workspace/artifacts" \
+            -w /workspace \
+            "${reference}" \
+            smc4 smoke --output /workspace/artifacts
+          printf '%s\n' "${reference}" > artifacts/prebuilt-smoke/image-reference.txt
+          test -s artifacts/prebuilt-smoke/run.json
+
+      - name: Preserve image identity and smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt-research-environment-${{ github.sha }}
+          path: artifacts/prebuilt-smoke
+          if-no-files-found: error

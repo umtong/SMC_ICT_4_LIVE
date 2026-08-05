@@ -4,6 +4,7 @@
 
 | 요구사항 | 사용 대상 | 결정 |
 |---|---|---|
+| Python·NautilusTrader 실행 환경 | GHCR 사전 구축 이미지 + Dev Container | 연구 후보에서 설치하지 않음 |
 | 결정론적 이벤트 재생 | NautilusTrader backtest engine/node | 재구현하지 않음 |
 | 주문 생명주기와 체결 이벤트 | NautilusTrader execution engine | 재구현하지 않음 |
 | 포지션·계좌·포트폴리오 회계 | NautilusTrader portfolio/accounting | 재구현하지 않음 |
@@ -25,6 +26,7 @@
 - 자체 백테스트 엔진
 - 자체 주문·포지션 회계
 - 자체 메시지 버스
+- 연구 후보별 Python/NautilusTrader 재설치 절차
 - 자체 분산 작업 스케줄러
 - 연구 AI 승인·통제 워크플로
 - 전 종목·전 연도 상시 실행 CI

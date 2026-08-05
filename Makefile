@@ -1,19 +1,31 @@
 .PHONY: setup doctor test smoke check research
 
+ifeq ($(SMC4_PREBUILT_ENV),1)
+PYTHON := python
+SMC4 := smc4
+else
+PYTHON := uv run python
+SMC4 := uv run smc4
+endif
+
 setup:
+ifeq ($(SMC4_PREBUILT_ENV),1)
+	@echo "prebuilt environment is already installed"
+else
 	uv sync --locked
+endif
 
 doctor:
-	uv run smc4 doctor
+	$(SMC4) doctor
 
 test:
-	uv run python -m unittest discover -s tests -p 'test_*.py'
+	$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
 
 smoke:
-	uv run smc4 smoke --output artifacts/smoke
+	$(SMC4) smoke --output artifacts/smoke
 
 check: doctor test smoke
 
 research:
 	@test -n "$(NAME)" || (echo "usage: make research NAME=candidate-a" && exit 2)
-	uv run python scripts/new_research.py "$(NAME)"
+	$(PYTHON) scripts/new_research.py "$(NAME)"
