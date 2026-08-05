@@ -1,13 +1,15 @@
-"""Collect deterministic unseen BTC windows for candidate-02 falsification.
+"""Collect the prospectively locked BTC holdout for candidate-02.
 
-This bootstrap helper only downloads immutable Binance Vision files.  It does
-not inspect outcomes or alter strategy parameters.
+The exact weeks and rule were committed in ``locked_rule_v2.json`` before this
+collector was changed. This helper only downloads immutable Binance Vision
+files; it does not inspect outcomes or alter parameters.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import json
 import sys
 
 sys.path.insert(0, str(Path("research/candidate-02").resolve()))
@@ -15,22 +17,17 @@ sys.path.insert(0, str(Path("research/candidate-02").resolve()))
 from backtest import load_binance_1m  # noqa: E402
 
 
-LOCKED_UNSEEN_MONDAYS = (
-    "2025-02-10",
-    "2024-08-26",
-    "2024-09-02",
-    "2025-04-28",
-    "2023-05-15",
-    "2022-01-10",
-    "2022-09-05",
-    "2022-10-03",
-    "2023-03-20",
-)
+LOCK_PATH = Path("research/candidate-02/locked_rule_v2.json")
 
 
 def main() -> None:
+    lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+    weeks = tuple(lock["research_basis"]["holdout_weeks"])
+    if len(weeks) != 30 or len(set(weeks)) != 30:
+        raise RuntimeError("prospective holdout lock must contain 30 unique weeks")
+
     cache = Path(".cache/candidate-02/binance-vision")
-    for value in LOCKED_UNSEEN_MONDAYS:
+    for value in weeks:
         start = datetime.fromisoformat(value).replace(tzinfo=UTC)
         load_binance_1m(
             "BTCUSDT",
