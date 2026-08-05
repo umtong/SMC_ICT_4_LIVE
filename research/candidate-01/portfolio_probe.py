@@ -335,6 +335,7 @@ def simulate(
     starting_nav: float,
     risk_rates: tuple[float, ...],
     allowed_scenario_ids: frozenset[str] | None = None,
+    external_plans_by_signal_time: dict[int, tuple[Pending, ...]] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any], dict[float, list[dict[str, Any]]]]:
     start_ns = int(pd.Timestamp(evaluation_start).value)
     end_ns = int(pd.Timestamp(evaluation_end).value)
@@ -504,6 +505,14 @@ def simulate(
                     )
                 ):
                     generated.append(Pending(symbol=symbol, horizon=horizon, plan=plan))
+        if (
+            external_plans_by_signal_time is not None
+            and start_ns <= ts_ns < end_ns
+            and active is None
+        ):
+            for item in external_plans_by_signal_time.get(ts_ns, ()):
+                if item.symbol in bars_now:
+                    generated.append(item)
         pending = generated
 
         active_mark = bars_now.get(active.viable.symbol).close if active is not None and active.viable.symbol in bars_now else None
