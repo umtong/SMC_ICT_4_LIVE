@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Event-time BTC liquidity-transition research candidate.
+
+The detector and scenarios are separate:
+1. detect a persistent liquidity reservoir and an aggressive sweep;
+2. classify post-sweep auction as absorption/rejection or acceptance;
+3. enter only after the corresponding state is observable.
+
+All raw archives are checksum verified.  Features are timestamped at the second
+at which they become observable; execution starts at the following second.
+"""
+from __future__ import annotations
+import argparse, json, math, urllib.request
+from dataclasses import dataclass, asdict
+from datetime import date, timedelta
+from hashlib import sha256
+from pathlib import Path
+from typing import Iterable
+import numpy as np
+import pandas as pd
+
+BASE='https://data.binance.vision/data/futures/um/daily'
+@dataclass(frozen=True)
+class Evidence:
+ endpoint:str;day:str;path:str;size_bytes:int;sha256:str
+
+def digest(p:Path)->str:
+ h=sha256()
+ with p.open('rb') as f:
+  while b:=f.read(1<<20):h.update(b)
+ return h.hexdigest()
+
+def spec(endpoint:str,symbol:str,day:date)->str:
+ ds=day.isoformat()
+ if endpoint=='aggTrades':return f'aggTrades/{symbol}/{symbol}-aggTrades-{ds}.zip'
+ if endpoint=='bookDepth':return f'bookDepth/{symbol}/{symbol}-bookDepth-{ds}.zip'
+ if endpoint=='metrics':return f'metrics/{symbol}/{symbol}-metrics-{ds}.zip'
+ if endpoint=='klines':return f'klines/{symbol}/1m/{symbol}-1m-{ds}.zip'
+ if endpoint=='indexPriceKlines':return f'indexPriceKlines/{symbol}/1m/{symbol}-1m-{ds}.zip'
+ raise ValueError(endpoint)
+
+def acquire(endpoint:str,symbol:str,day:date,cache:Path,required:bool=True)->tuple[Path|None,Evidence|None]:
+ rel=spec(endpoint,symbol,day);d=cache/endpoint;d.mkdir(parents=True,exist_ok=True);p=d/Path(rel).name;cs=p.with_suffix(p.suffix+'.CHECKSUM')
+ try:
+  if not p.exists():urllib.request.urlretrieve(f'{BASE}/{rel}',p)
+  if not cs.exists():urllib.request.urlretrieve(f'{BASE}/{rel}.CHECKSUM',cs)
+ except Exception:
+  if required:raise
+  p.unlink(missing_ok=True);cs.unlink(missing_ok=True);return None,None
+ exp=cs.read_text().strip().split()[0].lower();act=digest(p)
+ if act!=exp:raise RuntimeError(f'checksum mismatch: {p}')
+ return p,Evidence(endpoint,day.isoformat(),str(p),p.stat().st_size,act)
+
+def trades_day(path:Path,day:date)->pd.DataFrame:
+ cols=['agg_trade_id','price','quantity','first_trade_id','last_trade_id','transact_time','is_buyer_maker'];parts=[]
+ for c in pd.read_csv(path,compression='zip',usecols=cols,chunksize=500_000):
+  maker=c.is_buyer_maker.astype(str).str.lower().eq('true') if c.is_buyer_maker.dtype==object else c.is_buyer_maker.astype(bool)
+  c['ts']=pd.to_datetime(c.transact_time,unit='ms',utc=True).dt.floor('s');c['notional']=c.price*c.quantity;c['signed']=np.where(maker,-c.notional,c.notional);c['maxn']=c.notional;c['trades']=(c.last_trade_id-c.first_trade_id+1).clip(lower=1)
+  parts.append(c.groupby('ts').agg(open=('price','first'),high=('price','max'),low=('price','min'),close=('price','last'),notional=('notional','sum'),signed=('signed','sum'),maxn=('maxn','max'),trades=('trades','sum'),aggs=('agg_trade_id','count')))
+ x=pd.concat(parts).sort_index().groupby(level=0).agg(open=('open','first'),high=('high','max'),low=('low','min'),close=('close','last'),notional=('notional','sum'),signed=('signed','sum'),maxn=('maxn','max'),trades=('trades','sum'),aggs=('aggs','sum'))
+ start=pd.Timestamp(day,tz='UTC');idx=pd.date_range(start,start+pd.Timedelta(days=1)-pd.Timedelta(seconds=1),freq='1s');x=x.reindex(idx);x.close=x.close.ffill().bfill()
+ for col in ['open','high','low']:x[col]=x[col].fillna(x.close)
+ for col in ['notional','signed','maxn','trades','aggs']:x[col]=x[col].fillna(0.)
+ return x
+
+def depth_day(path:Path)->pd.DataFrame:
+ r=pd.read_csv(path,compression='zip');r['ts']=pd.to_datetime(r.timestamp,utc=True);return r.pivot(index='ts',columns='percentage',values='notional').sort_index()
+
+def bars_day(path:Path)->pd.DataFrame:
+ b=pd.read_csv(path,compression='zip');b.index=pd.to_datetime(b.open_time,unit='ms',utc=True)
+ for c in ['open','high','low','close','quote_volume']:b[c]=pd.to_numeric(b[c],errors='coerce')
+ return b[['open','high','low','close','quote_volume']]
+
+def metrics_day(path:Path|None)->pd.DataFrame:
+ if path is None:return pd.DataFrame()
+ m=pd.read_csv(path,compression='zip');m.index=pd.to_datetime(m.create_time,utc=True);m=m.sort_index()
+ cols=[c for c in m.columns if c not in {'create_time','symbol'}]
+ for c in cols:m[c]=pd.to_numeric(m[c],errors='coerce')
+ return m[cols]
+
+def build(symbol:str,start:date,end:date,cache:Path)->tuple[pd.DataFrame,list[Evidence],dict]:
+ secs=[];depth=[];bars=[];indexbars=[];metrics=[];evidence=[];day=start
+ while day<=end:
+  paths={}
+  for ep in ['aggTrades','bookDepth','klines','indexPriceKlines']:
+   p,e=acquire(ep,symbol,day,cache,True);paths[ep]=p;evidence.append(e)
+  mp,me=acquire('metrics',symbol,day,cache,False)
+  if me:evidence.append(me)
+  secs.append(trades_day(paths['aggTrades'],day));depth.append(depth_day(paths['bookDepth']));bars.append(bars_day(paths['klines']));indexbars.append(bars_day(paths['indexPriceKlines']));metrics.append(metrics_day(mp));day+=timedelta(days=1)
+ s=pd.concat(secs).sort_index();b=pd.concat(bars).sort_index();ib=pd.concat(indexbars).sort_index();m=pd.concat([x for x in metrics if not x.empty]).sort_index() if any(not x.empty for x in metrics) else pd.DataFrame()
