@@ -27,6 +27,7 @@ jobs:
           cat .candidate-02-bootstrap/part-* | base64 --decode > /tmp/candidate-02.tar.gz
           echo "78d8c938c0adf8a5e65ce540a69979eff9f8e2963101cfa8f53bdae762ec4daf  /tmp/candidate-02.tar.gz" | sha256sum --check
           tar -xzf /tmp/candidate-02.tar.gz
+          sed -i 's/from nautilus_trader.model import CryptoPerpetual/from nautilus_trader.model.instruments import CryptoPerpetual/' research/candidate-02/backtest.py
           test -f research/candidate-02/core.py
           test -f research/candidate-02/backtest.py
           test -f .github/workflows/candidate-02.yml
@@ -38,8 +39,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add research/candidate-02
-          git commit -m "feat(research): implement candidate-02 liquidity cascade reclaim"
-          git push origin HEAD:research/candidate-02
+          if ! git diff --cached --quiet; then
+            git commit -m "fix(research): use NautilusTrader instrument namespace"
+            git push origin HEAD:research/candidate-02
+          fi
 
       - name: Set up Python 3.13
         uses: actions/setup-python@v5
