@@ -32,7 +32,7 @@ jobs:
           key: candidate-01-binance-vision-${{ runner.os }}
       - name: Apply exact runtime patch
         run: python3 research/candidate-01/fix_multi_segment_runtime.py
-      - name: Validate two engines in one pinned process
+      - name: Validate fresh process per pinned Nautilus segment
         run: |
           set -euo pipefail
           docker run --rm \
@@ -54,6 +54,17 @@ jobs:
                 --suite quick \
                 --output artifacts/candidate-01-runtime-check \
                 --cache .cache/candidate-01
+              python - <<"PY"
+              import json
+              from pathlib import Path
+              root = Path("artifacts/candidate-01-runtime-check")
+              aggregate = json.loads((root / "aggregate_metrics.json").read_text())
+              labels = [item["label"] for item in aggregate["segments"]]
+              assert labels == ["discovery", "confirmation-1", "confirmation-2"], labels
+              for label in labels:
+                  assert (root / label / "metrics.json").is_file(), label
+              print(json.dumps(aggregate, indent=2, sort_keys=True))
+              PY
             '
       - name: Commit and push runtime fix
         if: success()
@@ -61,6 +72,6 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add research/candidate-01/nautilus_backtest.py
-          git commit -m "fix(candidate-01): support deterministic multi-segment suites"
+          git add research/candidate-01/run_research.py
+          git commit -m "fix(candidate-01): isolate deterministic suite segments"
           git push origin HEAD:research/candidate-01
