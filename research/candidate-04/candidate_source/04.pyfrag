@@ -1,0 +1,220 @@
+
+    for index in range(len(data)):
+        row = data.iloc[index]
+        timestamp = pd.Timestamp(row["timestamp"])
+        position_existed_at_bar_open = position is not None
+
+        # Entry intents are generated only after a closed confirmation bar and are
+        # executed at the next bar open.  The current bar can therefore hit the
+        # stop or target; there is no one-bar immunity.
+        if position is None and intent is not None and index == intent.entry_index:
+            nav_at_entry = cash_nav
+            position, rejection = _position_from_intent(data, intent, config, nav_at_entry)
+            if position is None:
+                reason = rejection or "UNKNOWN_REJECTION"
+                failure_counts[reason] = failure_counts.get(reason, 0) + 1
+                _append_event(
+                    events,
+                    row=row,
+                    scenario_id=intent.scenario_id,
+                    event_type="ENTRY_REJECTED",
+                    previous_state="CONFIRMED",
+                    next_state="REJECTED",
+                    reason_code=reason,
+                    reference_price=float(row["open"]),
+                    details=intent.details,
+                    observed_at_open=True,
+                )
+            else:
+                cash_nav -= position.entry_fee
+                _append_event(
+                    events,
+                    row=row,
+                    scenario_id=position.scenario_id,
+                    event_type="ENTRY_FILLED",
+                    previous_state="CONFIRMED",
+                    next_state="ENTERED",
+                    reason_code="RISK_BUDGET_SIZE",
+                    reference_price=position.entry_price,
+                    details={
+                        "quantity": position.quantity,
+                        "stop": position.stop_price,
+                        "target": position.target_price,
+                        "risk_budget": position.risk_budget,
+                    },
+                    observed_at_open=True,
+                )
+            intent = None
+
+        if (
+            position is not None
+            and position_existed_at_bar_open
+            and _funding_boundary(timestamp)
+            and index > position.entry_index
+        ):
+            cost = position.quantity * float(row["open"]) * (config.funding_bps_per_event / 10_000.0)
+            cash_nav -= cost
+            position.funding_cost += cost
+
+        if position is not None:
+            stop_hit = float(row["low"]) <= position.stop_price if position.side > 0 else float(row["high"]) >= position.stop_price
+            target_hit = float(row["high"]) >= position.target_price if position.side > 0 else float(row["low"]) <= position.target_price
+            exit_reason: str | None = None
+            raw_exit = 0.0
+            stop_exit = False
+            target_exit = False
+
+            # Conservative ordering: if both are touched in one 1m bar, invalidation wins.
+            if stop_hit:
+                exit_reason = "INVALIDATION"
+                raw_exit = position.stop_price
+                stop_exit = True
+            elif target_hit:
+                exit_reason = "TARGET_LIQUIDITY"
+                raw_exit = position.target_price
+                target_exit = True
+            elif index - position.entry_index + 1 >= config.max_hold_bars:
+                exit_reason = "TIMEOUT"
+                raw_exit = float(row["close"])
+
+            if exit_reason is not None:
+                trade, cash_nav = _close_position(
+                    position,
+                    raw_exit=raw_exit,
+                    exit_time=timestamp,
+                    exit_index=index,
+                    reason=exit_reason,
+                    config=config,
+                    cash_nav=cash_nav,
+                    stop_exit=stop_exit,
+                    target_exit=target_exit,
+                )
+                trades.append(trade)
+                _append_event(
+                    events,
+                    row=row,
+                    scenario_id=position.scenario_id,
+                    event_type="EXIT",
+                    previous_state="ENTERED",
+                    next_state=exit_reason,
+                    reason_code=exit_reason,
+                    reference_price=trade.exit_price,
+                    details={"net_pnl": trade.net_pnl, "r_multiple": trade.r_multiple},
+                )
+                position = None
+                cooldown_until = index + config.cooldown_bars
+            else:
+                favorable = position.side * (float(row["high"] if position.side > 0 else row["low"]) - position.entry_price)
+                favorable_r = favorable / max(position.initial_price_risk, 1e-12)
+                if not position.break_even_armed and favorable_r >= config.break_even_trigger_r:
+                    candidate_stop = position.entry_price + position.side * config.break_even_offset_r * position.initial_price_risk
+                    if position.side > 0:
+                        position.stop_price = max(position.stop_price, candidate_stop)
+                    else:
+                        position.stop_price = min(position.stop_price, candidate_stop)
+                    position.break_even_armed = True
+
+        if position is None and intent is None and pending is not None:
+            confirmed = _confirm_setup(data, index, pending, config)
+            if confirmed is not None:
+                intent = confirmed
+                _append_event(
+                    events,
+                    row=row,
+                    scenario_id=pending.scenario_id,
+                    event_type="CONFIRMATION",
+                    previous_state="SWEPT" if pending.kind.startswith("SWEEP_ABSORPTION") else "ACCEPTED",
+                    next_state="CONFIRMED",
+                    reason_code="DISPLACEMENT" if pending.kind.startswith("SWEEP_ABSORPTION") else "OUTSIDE_HOLD",
+                    reference_price=float(row["close"]),
+                    details=confirmed.details,
+                )
+                pending = None
+            elif index >= pending.expires_index:
+                _append_event(
+                    events,
+                    row=row,
+                    scenario_id=pending.scenario_id,
+                    event_type="SETUP_EXPIRED",
+                    previous_state="SWEPT" if pending.kind.startswith("SWEEP_ABSORPTION") else "ACCEPTED",
+                    next_state="EXPIRED",
+                    reason_code="NO_CAUSAL_CONFIRMATION",
+                    reference_price=float(row["close"]),
+                    details=pending.details,
+                )
+                failure_counts["NO_CAUSAL_CONFIRMATION"] = failure_counts.get("NO_CAUSAL_CONFIRMATION", 0) + 1
+                pending = None
+
+        if position is None and intent is None and pending is None and index > cooldown_until:
+            setup_counter += 1
+            detected = _detect_setup(data, index, config, setup_counter)
+            if detected is not None:
+                pending = detected
+                previous_state = "NEUTRAL"
+                next_state = "SWEPT" if detected.kind.startswith("SWEEP_ABSORPTION") else "ACCEPTED"
+                reason_code = "FAILED_AUCTION" if next_state == "SWEPT" else "PRICE_ACCEPTANCE"
+                _append_event(
+                    events,
+                    row=row,
+                    scenario_id=detected.scenario_id,
+                    event_type="LIQUIDITY_TRANSITION",
+                    previous_state=previous_state,
+                    next_state=next_state,
+                    reason_code=reason_code,
+                    reference_price=detected.level,
+                    details=detected.details,
+                )
+
+        mark = float(row["close"])
+        nav_points.append((timestamp, _mark_nav(cash_nav, position, mark)))
+        max_concurrent = max(max_concurrent, int(position is not None) + int(intent is not None))
+        if max_concurrent > 1:
+            raise CandidateError("single-position/single-entry constraint violated")
+
+    if position is not None:
+        row = data.iloc[-1]
+        timestamp = pd.Timestamp(row["timestamp"])
+        trade, cash_nav = _close_position(
+            position,
+            raw_exit=float(row["close"]),
+            exit_time=timestamp,
+            exit_index=len(data) - 1,
+            reason="END_OF_DATA",
+            config=config,
+            cash_nav=cash_nav,
+        )
+        trades.append(trade)
+        _append_event(
+            events,
+            row=row,
+            scenario_id=position.scenario_id,
+            event_type="EXIT",
+            previous_state="ENTERED",
+            next_state="END_OF_DATA",
+            reason_code="END_OF_DATA",
+            reference_price=trade.exit_price,
+            details={"net_pnl": trade.net_pnl, "r_multiple": trade.r_multiple},
+        )
+        nav_points[-1] = (timestamp, cash_nav)
+
+    nav_series = pd.Series(
+        [value for _, value in nav_points],
+        index=pd.DatetimeIndex([timestamp for timestamp, _ in nav_points]),
+        name="nav",
+        dtype="float64",
+    )
+    metrics = _calculate_metrics(
+        trades,
+        nav_series,
+        config,
+        start=start or nav_series.index[0].date(),
+        end=end or nav_series.index[-1].date(),
+        failure_counts=failure_counts,
+        max_concurrent=max_concurrent,
+    )
+    return {
+        "data": data,
+        "trades": trades,
+        "events": events,
+        "nav": nav_series,
+        "metrics": metrics,
