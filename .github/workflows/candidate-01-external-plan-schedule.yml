@@ -1,0 +1,35 @@
+name: candidate-01-external-plan-schedule
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-external-plan-schedule.yml"
+      - "research/candidate-01/enable_external_plan_schedule.py"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Add optional external causal plan schedule
+        run: |
+          set -euo pipefail
+          python3 research/candidate-01/enable_external_plan_schedule.py
+          python3 -m compileall -q research/candidate-01/portfolio_probe.py
+          python3 -m unittest discover -s tests -p "test_candidate_01.py" -v
+      - name: Persist shared simulator extension
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-01/portfolio_probe.py
+          git commit -m "feat(candidate-01): accept causal external plan schedules"
+          git push origin HEAD:research/candidate-01
