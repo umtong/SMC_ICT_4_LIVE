@@ -25,8 +25,8 @@ from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import AccountType, OmsType
-from nautilus_trader.model.identifiers import InstrumentId, Venue
-from nautilus_trader.model.objects import Currency, Money, Price, Quantity, Symbol
+from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
+from nautilus_trader.model.objects import Currency, Money, Price, Quantity
 from nautilus_trader.persistence.wranglers import BarDataWrangler
 
 from smc_ict_4.contracts import ResearchEvent
