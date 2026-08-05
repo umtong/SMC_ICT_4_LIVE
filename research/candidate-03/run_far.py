@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the frozen FAR candidate on one precommitted BTC validation week."""
+"""Run frozen FAR-v2 on one precommitted development or validation week."""
 from __future__ import annotations
 
 import argparse
@@ -32,8 +32,9 @@ def load_config(path: Path) -> FarConfig:
     unknown = sorted(set(payload) - allowed)
     if unknown:
         raise ValueError(f"unknown FAR config fields: {unknown}")
-    if isinstance(payload.get("validation_weeks"), list):
-        payload["validation_weeks"] = tuple(payload["validation_weeks"])
+    for key in ("development_weeks", "validation_weeks"):
+        if isinstance(payload.get(key), list):
+            payload[key] = tuple(payload[key])
     config = FarConfig(**payload)
     config.validate()
     return config
@@ -44,6 +45,8 @@ def to_ns(day: date) -> int:
 
 
 def json_safe(value: Any) -> Any:
+    if isinstance(value, Path):
+        return value.as_posix()
     if hasattr(value, "value"):
         return value.value
     if isinstance(value, dict):
@@ -82,8 +85,8 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    if args.week_start.isoformat() not in config.validation_weeks:
-        parser.error(f"week is not precommitted: {config.validation_weeks}")
+    if args.week_start.isoformat() not in config.permitted_weeks:
+        parser.error(f"week is not precommitted: {config.permitted_weeks}")
     start_ns = to_ns(args.week_start)
     end_ns = to_ns(args.week_start + timedelta(days=7))
     events: list[ResearchEvent] = []
@@ -116,7 +119,9 @@ def main() -> int:
             "week_start_utc": args.week_start.isoformat(),
             "week_end_utc": (args.week_start + timedelta(days=7)).isoformat(),
             "data_stats": data_stats,
+            "frozen_development_weeks": list(config.development_weeks),
             "frozen_validation_weeks": list(config.validation_weeks),
+            "validation_salt": config.validation_salt,
             "config": asdict(config),
         }
     )
@@ -136,10 +141,13 @@ def main() -> int:
             "data_files": data_stats["files"],
             "data_sha256": data_stats["sha256"],
             "event_rows": data_stats["rows"],
-            "causal_timestamp_contract": "minute close -> first later aggregate trade",
+            "causal_timestamp_contract": (
+                "completed minute absorption -> exact aggregate-trade CHOCH -> same confirming trade entry"
+            ),
+            "validation_salt": config.validation_salt,
         },
     )
-    write_json_atomic(output / "run.json", run_manifest)
+    write_json_atomic(output / "run.json", json_safe(run_manifest))
     summary_keys = (
         "week_start_utc",
         "trades",

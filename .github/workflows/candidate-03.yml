@@ -1,4 +1,4 @@
-name: candidate-03-research
+name: candidate-03-far-v2
 
 on:
   push:
@@ -13,96 +13,167 @@ permissions:
   contents: read
 
 jobs:
-  frozen-btc-week-gates:
+  development-regression:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      - name: Causal and accounting tests
+      - name: Causal, selection, and accounting tests
         run: |
           PYTHONPATH=src:research/candidate-03 python research/candidate-03/test_candidate.py
           PYTHONPATH=src:research/candidate-03 python research/candidate-03/test_far.py
+          python research/candidate-03/select_validation_weeks.py
 
-      - name: Download first precommitted BTC week
-        run: >-
-          python research/candidate-03/download_daily.py
-          --dataset aggTrades --symbol BTCUSDT
-          --start-date 2022-03-06 --end-date 2022-03-13
-          --output .research-data/candidate-03/far/week-1 --no-extract
+      - name: Reproduce development week 1
+        run: |
+          python research/candidate-03/download_daily.py \
+            --dataset aggTrades --symbol BTCUSDT \
+            --start-date 2022-03-06 --end-date 2022-03-13 \
+            --output .research-data/candidate-03/far-v2/development-1 --no-extract
+          PYTHONPATH=src:research/candidate-03 python research/candidate-03/run_far.py \
+            --data .research-data/candidate-03/far-v2/development-1/BTCUSDT-aggTrades-*.zip \
+            --week-start 2022-03-07 \
+            --label far-v2-development-1 \
+            --output artifacts/candidate-03/far-v2/development-1
+          python research/candidate-03/gate.py \
+            artifacts/candidate-03/far-v2/development-1/metrics.json \
+            --minimum-trades 8 --minimum-win-rate 0.45 \
+            --minimum-daily-growth 0.01 --require-target
 
-      - name: Evaluate first precommitted BTC week
-        run: >-
-          PYTHONPATH=src:research/candidate-03
-          python research/candidate-03/run_far.py
-          --data .research-data/candidate-03/far/week-1/BTCUSDT-aggTrades-*.zip
-          --week-start 2022-03-07
-          --label btc-week-1-2022-03-07-far-v1
-          --output artifacts/candidate-03/far/week-1
+      - name: Reproduce development week 2
+        run: |
+          python research/candidate-03/download_daily.py \
+            --dataset aggTrades --symbol BTCUSDT \
+            --start-date 2025-03-16 --end-date 2025-03-23 \
+            --output .research-data/candidate-03/far-v2/development-2 --no-extract
+          PYTHONPATH=src:research/candidate-03 python research/candidate-03/run_far.py \
+            --data .research-data/candidate-03/far-v2/development-2/BTCUSDT-aggTrades-*.zip \
+            --week-start 2025-03-17 \
+            --label far-v2-development-2 \
+            --output artifacts/candidate-03/far-v2/development-2
+          python research/candidate-03/gate.py \
+            artifacts/candidate-03/far-v2/development-2/metrics.json \
+            --minimum-trades 8 --minimum-win-rate 0.45 \
+            --minimum-daily-growth 0.01 --require-target
 
-      - name: Gate first BTC week
-        run: >-
-          python research/candidate-03/gate.py
-          artifacts/candidate-03/far/week-1/metrics.json
-          --minimum-trades 8 --minimum-win-rate 0.45
-          --minimum-daily-growth 0.01 --require-target
-
-      - name: Download second precommitted BTC week
-        run: >-
-          python research/candidate-03/download_daily.py
-          --dataset aggTrades --symbol BTCUSDT
-          --start-date 2025-03-16 --end-date 2025-03-23
-          --output .research-data/candidate-03/far/week-2 --no-extract
-
-      - name: Evaluate second precommitted BTC week
-        run: >-
-          PYTHONPATH=src:research/candidate-03
-          python research/candidate-03/run_far.py
-          --data .research-data/candidate-03/far/week-2/BTCUSDT-aggTrades-*.zip
-          --week-start 2025-03-17
-          --label btc-week-2-2025-03-17-far-v1
-          --output artifacts/candidate-03/far/week-2
-
-      - name: Gate second BTC week
-        run: >-
-          python research/candidate-03/gate.py
-          artifacts/candidate-03/far/week-2/metrics.json
-          --minimum-trades 8 --minimum-win-rate 0.45
-          --minimum-daily-growth 0.01 --require-target
-
-      - name: Download third precommitted BTC week
-        run: >-
-          python research/candidate-03/download_daily.py
-          --dataset aggTrades --symbol BTCUSDT
-          --start-date 2023-08-27 --end-date 2023-09-03
-          --output .research-data/candidate-03/far/week-3 --no-extract
-
-      - name: Evaluate third precommitted BTC week
-        run: >-
-          PYTHONPATH=src:research/candidate-03
-          python research/candidate-03/run_far.py
-          --data .research-data/candidate-03/far/week-3/BTCUSDT-aggTrades-*.zip
-          --week-start 2023-08-28
-          --label btc-week-3-2023-08-28-far-v1
-          --output artifacts/candidate-03/far/week-3
-
-      - name: Gate third BTC week
-        run: >-
-          python research/candidate-03/gate.py
-          artifacts/candidate-03/far/week-3/metrics.json
-          --minimum-trades 8 --minimum-win-rate 0.45
-          --minimum-daily-growth 0.01 --require-target
-
-      - name: Preserve reproducible evidence
+      - name: Preserve development regression evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-03-far-gates-${{ github.sha }}
+          name: candidate-03-far-v2-development-${{ github.sha }}
           path: |
-            artifacts/candidate-03/far
-            .research-data/candidate-03/far/**/*.manifest.json
+            artifacts/candidate-03/far-v2/development-*
+            .research-data/candidate-03/far-v2/development-*/*.manifest.json
+          if-no-files-found: error
+
+  validation-week-1:
+    needs: development-regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Open first frozen validation week
+        run: |
+          python research/candidate-03/download_daily.py \
+            --dataset aggTrades --symbol BTCUSDT \
+            --start-date 2022-07-17 --end-date 2022-07-24 \
+            --output .research-data/candidate-03/far-v2/validation-1 --no-extract
+          PYTHONPATH=src:research/candidate-03 python research/candidate-03/run_far.py \
+            --data .research-data/candidate-03/far-v2/validation-1/BTCUSDT-aggTrades-*.zip \
+            --week-start 2022-07-18 \
+            --label far-v2-validation-1-2022-07-18 \
+            --output artifacts/candidate-03/far-v2/validation-1
+      - name: Gate first frozen validation week
+        run: >-
+          python research/candidate-03/gate.py
+          artifacts/candidate-03/far-v2/validation-1/metrics.json
+          --minimum-trades 8 --minimum-win-rate 0.45
+          --minimum-daily-growth 0.01 --require-target
+      - name: Preserve first validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-far-v2-validation-1-${{ github.sha }}
+          path: |
+            artifacts/candidate-03/far-v2/validation-1
+            .research-data/candidate-03/far-v2/validation-1/*.manifest.json
+          if-no-files-found: error
+
+  validation-week-2:
+    needs: validation-week-1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Open second frozen validation week
+        run: |
+          python research/candidate-03/download_daily.py \
+            --dataset aggTrades --symbol BTCUSDT \
+            --start-date 2021-12-12 --end-date 2021-12-19 \
+            --output .research-data/candidate-03/far-v2/validation-2 --no-extract
+          PYTHONPATH=src:research/candidate-03 python research/candidate-03/run_far.py \
+            --data .research-data/candidate-03/far-v2/validation-2/BTCUSDT-aggTrades-*.zip \
+            --week-start 2021-12-13 \
+            --label far-v2-validation-2-2021-12-13 \
+            --output artifacts/candidate-03/far-v2/validation-2
+      - name: Gate second frozen validation week
+        run: >-
+          python research/candidate-03/gate.py
+          artifacts/candidate-03/far-v2/validation-2/metrics.json
+          --minimum-trades 8 --minimum-win-rate 0.45
+          --minimum-daily-growth 0.01 --require-target
+      - name: Preserve second validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-far-v2-validation-2-${{ github.sha }}
+          path: |
+            artifacts/candidate-03/far-v2/validation-2
+            .research-data/candidate-03/far-v2/validation-2/*.manifest.json
+          if-no-files-found: error
+
+  validation-week-3:
+    needs: validation-week-2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Open third frozen validation week
+        run: |
+          python research/candidate-03/download_daily.py \
+            --dataset aggTrades --symbol BTCUSDT \
+            --start-date 2021-01-10 --end-date 2021-01-17 \
+            --output .research-data/candidate-03/far-v2/validation-3 --no-extract
+          PYTHONPATH=src:research/candidate-03 python research/candidate-03/run_far.py \
+            --data .research-data/candidate-03/far-v2/validation-3/BTCUSDT-aggTrades-*.zip \
+            --week-start 2021-01-11 \
+            --label far-v2-validation-3-2021-01-11 \
+            --output artifacts/candidate-03/far-v2/validation-3
+      - name: Gate third frozen validation week
+        run: >-
+          python research/candidate-03/gate.py
+          artifacts/candidate-03/far-v2/validation-3/metrics.json
+          --minimum-trades 8 --minimum-win-rate 0.45
+          --minimum-daily-growth 0.01 --require-target
+      - name: Preserve third validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-far-v2-validation-3-${{ github.sha }}
+          path: |
+            artifacts/candidate-03/far-v2/validation-3
+            .research-data/candidate-03/far-v2/validation-3/*.manifest.json
           if-no-files-found: error

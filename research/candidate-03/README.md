@@ -1,139 +1,121 @@
-# candidate-03 — Flow Absorption Reversal
+# candidate-03 — FAR-v2
 
-This branch is one independent complete candidate. It does not depend on another research branch.
+**Flow Absorption Structure Reversal** is the active independent candidate on this branch. It trades neither a wick nor an order-flow imbalance in isolation. It trades a state sequence:
 
-## Decision record
+```text
+fresh equilibrium excursion
+  -> unusually one-sided aggressive flow
+  -> weak price progress and extreme rejection (absorption observation)
+  -> exact trade-through of prior 10-minute opposite structure (CHoCH)
+  -> reversal entry on the confirming aggregate trade
+  -> signal-extreme invalidation, after-cost 3R target, or 240-minute expiry
+```
 
-### Iteration 01 — liquidity-sweep classifier: rejected
+The pattern detector reports observable facts. `FarReplay` owns scenario state, ordering, one-slot arbitration, and confirmation. `FarPortfolio` owns fills, costs, current-NAV loss-budget sizing, and realized NAV.
 
-The first implementation classified a previously formed liquidity level after breach as rejection, acceptance, or no-trade using one-minute candle geometry and Binance's one-minute taker-buy-volume field. It was intentionally screened on the first precommitted BTC week before any later week was opened.
+## Why v1 was discarded
 
-After taker fees of 5 bps per fill, 1.5 bps slippage/impact per fill, funding, and 3% NAV loss-budget sizing, the week produced:
+The first liquidity-level classifier produced 31 trades on `2022-03-07`, only four wins, mean −0.593R, −43.63% NAV, and −7.86% daily geometric growth. Entry-touch and stricter one-minute confirmation controls remained negative. The first FAR implementation then passed its first week but failed the untouched `2025-03-17` week: 32 trades, 25% win rate, −30.25% NAV, and −5.02% daily geometric growth. Its immediate fade treated one-minute failed progress as proof of reversal; strong directional auctions continued through the stop.
 
-- 31 trades, 4 wins, 27 losses
-- 12.90% win rate
-- mean net result −0.593R; median −0.987R
-- net NAV return −43.63%; daily geometric growth −7.86%
-- maximum drawdown 44.30%
-
-Entry-touch, directional-close, close-location, and flow-confirmation controls all remained negative. Exact aggregate-trade analysis also showed that the level-selection premise did not separate continuation from absorption. This was a logic failure, not an engine or data failure, so the iteration was stopped. Its implementation and first-week evidence remain in the branch for falsification history.
-
-### Iteration 02 — Flow Absorption Reversal: active candidate
-
-The surviving causal hypothesis is that a directional market-order chase can be temporarily exhausted when all of the following are observable at a completed one-minute auction:
-
-1. Price is stretched from a causal four-hour volume-weighted equilibrium.
-2. Aggressive taker notional is aligned with that stretch and is unusually imbalanced.
-3. Minute notional activity is elevated relative to the prior six-hour activity distribution.
-4. Despite the aggressive flow, directional price progress is negligible and the close rejects the flow-direction extreme.
-5. The strategy trades against the chase on the first aggregate trade strictly after the completed minute.
-
-This is an order-flow absorption scenario, not a standalone candle pattern. The detector computes observable facts; the scenario/portfolio layer owns state transitions, entry, invalidation, target, and NAV accounting.
+FAR-v2 changes the causal sequence rather than adding a score filter. Absorption is only an observation. The trade requires the opposite side to break structure first. The same equilibrium-side excursion can consume only one attempt.
 
 ## Frozen state machine
 
-```text
-IDLE
-  -> STRETCHED_CHASE       aggressive flow aligned with equilibrium stretch
-  -> ENTRY_PENDING         high activity but failed directional progress
-  -> POSITION_ACTIVE       first aggregate trade after minute close
-  -> CLOSED                target, causal stop, time expiry, or run end
-```
+| State | Required observation | Action |
+|---|---|---|
+| `IDLE` | no active episode | observe only |
+| `STRETCHED_CHASE` | aggressive flow is aligned with a volume-weighted equilibrium stretch | record chase |
+| `ABSORPTION_OBSERVED` | high activity, weak flow-direction progress, rejected close | create candidate only |
+| `CHOCH_PENDING` | excursion age ≤120 minutes and first attempt in excursion | wait up to 15 minutes for prior-10-minute opposite structure break |
+| `ENTRY_PENDING` | exact aggregate trade crosses the CHoCH boundary before invalidation | submit/open on that confirming trade |
+| `POSITION_ACTIVE` | one position occupies the global candidate slot | monitor causal stop, target, and time |
+| terminal | stop, target, time, pre-entry invalidation, or CHoCH expiry | close/reset |
 
-No signal score changes the risk fraction or quantity. One pending entry or open position is allowed across the candidate.
+A signal whose extreme fails before CHoCH is invalid. A signal that does not confirm in 15 minutes expires. No later signal from the same continuous side-of-equilibrium excursion is allowed.
 
 ## Frozen central specification
 
-The values below were fixed from market logic and the middle of a broad first-week performance plateau before opening the second or third validation week.
-
-| Component | Frozen value |
+| Component | Value |
 |---|---:|
-| aggressive notional imbalance | `abs(flow) >= 0.30` |
+| aggregate-flow imbalance | `abs(flow) >= 0.30` |
 | activity expansion | current minute notional / median prior 360 minutes `>= 2.0` |
-| equilibrium stretch | absolute 240-minute volume-weighted z-score `>= 0.8` |
-| chase alignment | aggressive-flow sign equals equilibrium-stretch sign |
-| failed progress | flow-signed minute return `<= 1.0 bp` |
+| causal equilibrium | 240-minute volume-weighted mean and standard second moment |
+| equilibrium stretch | `abs(z) >= 0.8`, aligned with aggressive-flow sign |
+| failed directional progress | flow-signed one-minute return `<= 1 bp` |
 | rejection location | `>= 0.45` away from flow-direction extreme |
-| entry | first aggregate trade strictly after the signal-minute close |
-| stop | beyond signal-minute extreme by `0.20 × ATR(60m)` |
-| target | price solving for `+2.0` net planned-loss R after fees and impact |
-| maximum holding time | 60 minutes |
-| independent-episode cooldown | 60 minutes |
+| fresh excursion | continuous same side of equilibrium `<= 120 minutes` |
+| CHoCH | exact trade-through of the opposite boundary of the preceding 10 completed minutes |
+| confirmation window | 15 minutes |
+| independent episode | first attempted signal per equilibrium-side excursion; 60-minute minimum attempt spacing |
+| entry | exact aggregate trade that first confirms CHoCH |
+| causal stop | signal extreme plus `0.20 × ATR(60m)` buffer |
+| target | price solving for `+3.0` planned-loss R after fees and impact |
+| maximum hold | 240 minutes |
 | risk | current total NAV × 3% planned loss budget |
 | execution costs | 5 bps taker fee + 1.5 bps slippage/impact on each fill; 1 bp funding per 8h |
 
-The equilibrium variance is the standard causal weighted second moment:
+Quantity is always:
 
 ```text
-mean     = sum(price * volume) / sum(volume)
-variance = sum(price^2 * volume) / sum(volume) - mean^2
+planned loss budget = current total NAV * 0.03
+quantity = planned loss budget / expected per-unit loss
 ```
 
-The current minute is known at its close and may enter the equilibrium calculation. Its activity is compared only with prior minutes.
+Expected per-unit loss includes expected entry and stop fills, both fees, slippage/impact, and maximum-hold funding. Model strength never changes risk or quantity. One pending entry or open position is permitted.
 
-## Precommitted BTC validation order
+## Exact-event development results
 
-The weeks were selected before their candidate results were viewed and are separated by at least 180 days:
+These two weeks are development evidence, not untouched validation. Both use ordered Binance USD-M aggregate trades and checksum-recorded public archives.
 
-1. `2022-03-07` — discovery and first gate
-2. `2025-03-17` — untouched second gate
-3. `2023-08-28` — untouched third gate
+| BTC week | events | trades | wins | mean net R | net NAV | daily geometric growth | max drawdown |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `2022-03-07` | 14,646,755 | 9 | 6 | +1.319R | +40.80% | **+5.009%** | 2.51% |
+| `2025-03-17` | 9,211,719 | 8 | 4 | +0.361R | +8.01% | **+1.106%** | 5.85% |
 
-The workflow downloads and evaluates week 2 only after week 1 passes, and week 3 only after week 2 passes. No later-week result is used to change this frozen specification.
+The exact checksums, trade rows, direction/exit breakdowns, and concentration diagnostics are committed under `results/`. The second week is the period on which FAR-v1 failed; FAR-v2 was developed by isolating that causal failure, not by disabling shorts.
 
-## First-week frozen-result evidence
+## Untouched weekly validation order
 
-Local exact-event replay after the weighted-variance bug was corrected and after the code was split into detector, portfolio, replay, and metrics modules produced:
+Before downloading any FAR-v2 validation data, the following dates were selected by `select_validation_weeks.py` using salt `candidate-03|far-v2|BTCUSDT`, a Monday universe from 2021-01-04 through 2025-12-22, prior candidate dates excluded, and at least 180 days between selected weeks:
 
-- 14,646,755 ordered Binance USD-M aggregate trades
-- 19 accepted trades from 25 qualifying signals
-- 11 wins, 8 losses; win rate 57.89%
-- mean net result +0.613R; median +0.570R
-- after-cost NAV return +39.15%
-- daily geometric NAV growth +4.83%
-- maximum drawdown 9.66%
-- 9 targets, 7 stops, 3 time exits
-- largest winner 10.54% of positive R; top three 31.61%
+1. `2022-07-18`
+2. `2021-12-13`
+3. `2021-01-11`
 
-The central point was not selected as the best backtest cell. In the local neighboring threshold set around the frozen point, 14 of 16 settings exceeded 1% daily geometric growth and all 16 were positive; exit-distance and holding-time controls also showed a broad positive region. These are first-week diagnostics only, not substitutes for the untouched gates.
+The workflow opens week 2 only after week 1 passes, and week 3 only after week 2 passes. Each gate requires at least eight trades, win rate at least 45%, positive mean net R, daily geometric growth at least 1%, drawdown below 20%, and the target flag.
 
 ## Reproduction
 
-The project environment is prebuilt. Do not reinstall NautilusTrader.
+The project environment is prebuilt; do not reinstall NautilusTrader.
 
 ```bash
 smc4 doctor
-PYTHONPATH=src:research/candidate-03 \
-  python research/candidate-03/test_far.py
+PYTHONPATH=src:research/candidate-03 python research/candidate-03/test_far.py
+python research/candidate-03/select_validation_weeks.py
 
 python research/candidate-03/download_daily.py \
   --dataset aggTrades --symbol BTCUSDT \
   --start-date 2022-03-06 --end-date 2022-03-13 \
-  --output .research-data/candidate-03/week-1 --no-extract
+  --output .research-data/candidate-03/far-v2/dev-1 --no-extract
 
 PYTHONPATH=src:research/candidate-03 \
   python research/candidate-03/run_far.py \
-  --data .research-data/candidate-03/week-1/BTCUSDT-aggTrades-*.zip \
+  --data .research-data/candidate-03/far-v2/dev-1/BTCUSDT-aggTrades-*.zip \
   --week-start 2022-03-07 \
-  --label btc-week-1-2022-03-07-far-v1 \
-  --output artifacts/candidate-03/far/week-1
-
-python research/candidate-03/gate.py \
-  artifacts/candidate-03/far/week-1/metrics.json \
-  --minimum-trades 8 --minimum-win-rate 0.45 \
-  --minimum-daily-growth 0.01 --require-target
+  --label far-v2-development-1 \
+  --output artifacts/candidate-03/far-v2/development-1
 ```
 
-Each run writes `run.json`, `metrics.json`, `trades.csv`, and a causally validated `scenario_events.jsonl`. The run manifest records archive SHA-256 values and event counts. Raw market data is not committed.
+Every run writes `run.json`, `metrics.json`, `trades.csv`, and causally ordered `scenario_events.jsonl`. The manifest records archive SHA-256 values, event IDs, event timestamps, and the configuration hash. Raw market data is not committed.
 
 ## Known failure conditions
 
-- Aggressive flow can be informed rather than exhausted; a trend acceleration after apparent rejection can stop the position.
-- News or liquidation cascades can jump beyond the causal stop. Actual loss can then exceed the planned 3% despite correct quantity calculation.
-- Public aggregate trades expose executed aggressor flow, not L2 queue depletion, refill, or this account's exact market impact.
-- The fixed 1.5 bps impact assumption can understate cost when NAV-based quantity is large relative to available liquidity.
-- Quiet or fragmented regimes can reduce independent opportunities below the rate needed for the growth target.
-- The mechanism is measured on Binance USD-M aggressor flow; direct transfer to another venue is not assumed.
-- A one-minute completed-auction decision intentionally sacrifices sub-minute entry speed in exchange for causal observability.
+- A CHoCH can be a temporary pullback inside a larger informed trend; the signal-extreme stop remains necessary.
+- News and liquidation gaps can cross the expected stop fill, so realized loss can exceed the planned 3% despite correct quantity calculation.
+- Aggregate trades expose executed aggressor flow, not queue depletion/refill or this account's exact market impact.
+- Fixed 1.5 bps impact can understate cost when NAV-scaled quantity is large relative to available depth.
+- A 3R/240-minute recovery path may fail in low-volatility or fragmented auctions even when direction is eventually correct.
+- The 120-minute fresh-excursion boundary and four-hour recovery horizon are logically interpretable but require untouched-week and long-period confirmation; they are not claimed invariant yet.
+- The mechanism is venue-specific until the same state sequence is verified on another venue or instrument.
 
-Long evaluation and cross-instrument testing are permitted only after all three frozen BTC weekly gates pass.
+Long evaluation and BTC-to-ETH/SOL/XRP transfer remain blocked until all three frozen BTC validation weeks pass.

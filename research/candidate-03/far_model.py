@@ -1,4 +1,8 @@
-"""Domain records for the Flow Absorption Reversal candidate."""
+"""Domain records for candidate-03 FAR-v2.
+
+FAR-v2 separates observable aggressive-flow absorption from the later market-
+structure confirmation required to trade it.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -19,9 +23,13 @@ class Direction(StrEnum):
 class ScenarioState(StrEnum):
     IDLE = "IDLE"
     STRETCHED_CHASE = "STRETCHED_CHASE"
+    ABSORPTION_OBSERVED = "ABSORPTION_OBSERVED"
+    CHOCH_PENDING = "CHOCH_PENDING"
     ENTRY_PENDING = "ENTRY_PENDING"
     POSITION_ACTIVE = "POSITION_ACTIVE"
     CLOSED = "CLOSED"
+    INVALIDATED = "INVALIDATED"
+    EXPIRED = "EXPIRED"
 
 
 class ExitReason(StrEnum):
@@ -33,13 +41,15 @@ class ExitReason(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class FarConfig:
-    candidate: str = "candidate-03-far-v1"
+    candidate: str = "candidate-03-far-v2"
     instrument_id: str = "BTCUSDT-PERP.BINANCE"
     initial_nav: float = 100_000.0
     risk_fraction: float = 0.03
     taker_fee_bps: float = 5.0
     slippage_impact_bps: float = 1.5
     funding_bps_per_8h: float = 1.0
+
+    # Observable absorption detector.
     flow_imbalance_min: float = 0.30
     activity_ratio_min: float = 2.0
     equilibrium_window_minutes: int = 240
@@ -49,12 +59,23 @@ class FarConfig:
     atr_window_minutes: int = 60
     rejection_location_min: float = 0.45
     directional_progress_max_bps: float = 1.0
-    stop_buffer_atr: float = 0.20
-    target_net_r: float = 2.0
-    max_holding_minutes: int = 60
+
+    # State and structure confirmation.
+    equilibrium_excursion_max_minutes: int = 120
+    choch_lookback_minutes: int = 10
+    choch_wait_minutes: int = 15
+    one_attempt_per_excursion: bool = True
     episode_cooldown_minutes: int = 60
+
+    # Causal invalidation and recovery objective.
+    stop_buffer_atr: float = 0.20
+    target_net_r: float = 3.0
+    max_holding_minutes: int = 240
     warmup_minutes: int = 1_440
-    validation_weeks: tuple[str, ...] = ("2022-03-07", "2025-03-17", "2023-08-28")
+
+    development_weeks: tuple[str, ...] = ("2022-03-07", "2025-03-17")
+    validation_salt: str = "candidate-03|far-v2|BTCUSDT"
+    validation_weeks: tuple[str, ...] = ("2022-07-18", "2021-12-13", "2021-01-11")
 
     def validate(self) -> None:
         if not 0 < self.risk_fraction <= 0.03:
@@ -69,11 +90,16 @@ class FarConfig:
             raise ValueError("activity_ratio_min must exceed one")
         if self.equilibrium_z_min <= 0 or self.rejection_location_min <= 0:
             raise ValueError("signal thresholds must be positive")
+        if self.target_net_r <= 0 or self.stop_buffer_atr < 0:
+            raise ValueError("exit geometry must be positive")
         for value in (
             self.equilibrium_window_minutes,
             self.activity_baseline_minutes,
             self.activity_min_history_minutes,
             self.atr_window_minutes,
+            self.equilibrium_excursion_max_minutes,
+            self.choch_lookback_minutes,
+            self.choch_wait_minutes,
             self.max_holding_minutes,
             self.episode_cooldown_minutes,
             self.warmup_minutes,
@@ -82,6 +108,14 @@ class FarConfig:
                 raise ValueError("time windows must be positive")
         if self.activity_min_history_minutes > self.activity_baseline_minutes:
             raise ValueError("minimum activity history exceeds baseline window")
+        if set(self.development_weeks) & set(self.validation_weeks):
+            raise ValueError("development and validation weeks must be disjoint")
+        if len(set(self.validation_weeks)) != len(self.validation_weeks):
+            raise ValueError("validation weeks must be unique")
+
+    @property
+    def permitted_weeks(self) -> tuple[str, ...]:
+        return self.development_weeks + self.validation_weeks
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +214,9 @@ class FeatureSnapshot:
     equilibrium_price: float
     equilibrium_sigma: float
     equilibrium_z: float
+    equilibrium_side: int
+    equilibrium_excursion_minutes: int
+    equilibrium_excursion_start_minute: int
     return_bps: float
     directional_progress_bps: float
     close_location: float
@@ -193,6 +230,21 @@ class AbsorptionSignal:
     scenario_id: str
     direction: Direction
     snapshot: FeatureSnapshot
+
+    @property
+    def excursion_id(self) -> tuple[int, int]:
+        return (
+            self.snapshot.equilibrium_side,
+            self.snapshot.equilibrium_excursion_start_minute,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChochSetup:
+    signal: AbsorptionSignal
+    confirmation_price: float
+    invalidation_price: float
+    expires_time_ns: int
 
 
 @dataclass(slots=True)
