@@ -1,4 +1,10 @@
-"""Causal loader for official Binance Vision futures positioning data."""
+"""Causal loader for official Binance Vision futures positioning data.
+
+Binance Vision archives are not schema-identical across years: some CSV files
+carry a textual header, others are headerless, and timestamps may be seconds,
+milliseconds, microseconds, or nanoseconds.  This module normalizes those
+publisher formats explicitly before any causal as-of join.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+import re
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -18,6 +25,30 @@ import pandas as pd
 
 
 BASE = "https://data.binance.vision/data/futures/um/daily"
+METRIC_COLUMNS = [
+    "create_time",
+    "symbol",
+    "sum_open_interest",
+    "sum_open_interest_value",
+    "count_toptrader_long_short_ratio",
+    "sum_toptrader_long_short_ratio",
+    "count_long_short_ratio",
+    "sum_taker_long_short_vol_ratio",
+]
+KLINE_COLUMNS = [
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "close_time",
+    "quote_volume",
+    "count",
+    "taker_buy_volume",
+    "taker_buy_quote_volume",
+    "ignore",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,19 +170,55 @@ def _member_csv(payload: bytes) -> bytes:
         return archive.read(members[0])
 
 
+def _timestamp_unit(series: pd.Series) -> str:
+    numeric = pd.to_numeric(series, errors="raise").dropna()
+    if numeric.empty:
+        raise ValueError("timestamp series is empty")
+    value = int(numeric.iloc[len(numeric) // 2])
+    magnitude = abs(value)
+    if magnitude >= 10**17:
+        return "ns"
+    if magnitude >= 10**14:
+        return "us"
+    if magnitude >= 10**11:
+        return "ms"
+    if magnitude >= 10**8:
+        return "s"
+    raise ValueError(f"unrecognized timestamp magnitude: {value}")
+
+
+def _read_positional_csv(payload: bytes, columns: list[str]) -> pd.DataFrame:
+    frame = pd.read_csv(BytesIO(payload), header=None, dtype=str)
+    if frame.shape[1] < len(columns):
+        raise ValueError(f"expected at least {len(columns)} columns, got {frame.shape[1]}")
+    frame = frame.iloc[:, : len(columns)].copy()
+    frame.columns = columns
+    return frame
+
+
 def read_metrics(records: list[AuxiliaryDownload]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for record in records:
         if record.data_type != "metrics":
             continue
-        frame = pd.read_csv(BytesIO(_member_csv(Path(record.path).read_bytes())))
+        frame = _read_positional_csv(
+            _member_csv(Path(record.path).read_bytes()),
+            METRIC_COLUMNS,
+        )
+        first = str(frame.iloc[0]["create_time"]).strip().lower()
+        if first in {"create_time", "timestamp"} or not re.search(r"\d", first):
+            frame = frame.iloc[1:].reset_index(drop=True)
         frames.append(frame)
     if not frames:
         return pd.DataFrame()
     result = pd.concat(frames, ignore_index=True)
-    result["create_time"] = pd.to_datetime(result["create_time"], utc=True)
+    result["create_time"] = pd.to_datetime(
+        result["create_time"],
+        utc=True,
+        errors="raise",
+    ).astype("datetime64[ns, UTC]")
     numeric = [column for column in result.columns if column not in {"create_time", "symbol"}]
-    result[numeric] = result[numeric].apply(pd.to_numeric, errors="coerce")
+    result[numeric] = result[numeric].apply(pd.to_numeric, errors="raise")
     result = result.sort_values("create_time", kind="stable").drop_duplicates("create_time", keep="last")
     result = result.reset_index(drop=True)
 
@@ -190,19 +257,31 @@ def read_index_klines(
     for record in records:
         if record.data_type != data_type:
             continue
-        frame = pd.read_csv(BytesIO(_member_csv(Path(record.path).read_bytes())))
-        frames.append(frame)
+        frame = _read_positional_csv(
+            _member_csv(Path(record.path).read_bytes()),
+            KLINE_COLUMNS,
+        )
+        first = str(frame.iloc[0]["open_time"])
+        if not re.fullmatch(r"\d+", first):
+            frame = frame.iloc[1:].reset_index(drop=True)
+        if frame.empty:
+            raise ValueError(f"empty {data_type} archive for {record.day}")
+        for column in ("open_time", "open", "high", "low", "close", "close_time"):
+            frame[column] = pd.to_numeric(frame[column], errors="raise")
+        close_unit = _timestamp_unit(frame["close_time"])
+        frame["close_time"] = pd.to_datetime(
+            frame["close_time"],
+            unit=close_unit,
+            utc=True,
+        ).astype("datetime64[ns, UTC]")
+        for column in ("open", "high", "low", "close"):
+            frame[f"{prefix}_{column}"] = frame[column].astype(float)
+        frames.append(
+            frame[["close_time", *[f"{prefix}_{column}" for column in ("open", "high", "low", "close")]]],
+        )
     if not frames:
         return pd.DataFrame()
     result = pd.concat(frames, ignore_index=True)
-    result["close_time"] = pd.to_datetime(
-        pd.to_numeric(result["close_time"], errors="raise"),
-        unit="ms",
-        utc=True,
-    )
-    for column in ("open", "high", "low", "close"):
-        result[f"{prefix}_{column}"] = pd.to_numeric(result[column], errors="coerce")
-    result = result[["close_time", *[f"{prefix}_{column}" for column in ("open", "high", "low", "close")]]]
     result = result.sort_values("close_time", kind="stable").drop_duplicates("close_time", keep="last")
     close = result[f"{prefix}_close"]
     for window in (60, 120, 360):
@@ -223,7 +302,11 @@ def merge_auxiliary_at_times(
     events = pd.DataFrame(
         {
             "event_row": np.arange(len(event_times_ns), dtype=int),
-            "event_time": pd.to_datetime(event_times_ns.astype("int64"), unit="ns", utc=True),
+            "event_time": pd.to_datetime(
+                event_times_ns.astype("int64"),
+                unit="ns",
+                utc=True,
+            ).astype("datetime64[ns, UTC]"),
         },
     ).sort_values("event_time", kind="stable")
     if not metrics.empty:
