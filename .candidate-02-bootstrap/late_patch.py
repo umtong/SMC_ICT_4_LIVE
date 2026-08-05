@@ -1,69 +1,34 @@
-"""Late source patch applied while candidate-02 is validated.
+"""Materialize the prospectively locked candidate-02 v3 bundle."""
 
-The helper is temporary and is removed after the permanent source/workflow is
-committed. Every mutation is deterministic and idempotent.
-"""
+from __future__ import annotations
 
+import base64
+from hashlib import sha256
 from pathlib import Path
+import tarfile
 
 
-backtest = Path("research/candidate-02/backtest.py")
-text = backtest.read_text(encoding="utf-8")
-text = text.replace(
-    '"stats_general": _json_safe(result_obj.stats_general),',
-    '"stats_general": _json_safe(getattr(result_obj, "stats_general", {})),',
-)
-if "import multiprocessing as mp\n" not in text:
-    text = text.replace("import math\n", "import math\nimport multiprocessing as mp\n", 1)
-helper = '''
+EXPECTED_SHA256 = "579b455a1b95427e1954d836be83c0ae9ab14d190b9edef0096c7de5245d93b8"
+BOOTSTRAP = Path(".candidate-02-bootstrap")
+parts = sorted(BOOTSTRAP.glob("v3-part-*"))
+if not parts:
+    raise RuntimeError("candidate-02 v3 bundle parts are missing")
+encoded = "".join(path.read_text(encoding="ascii") for path in parts)
+payload = base64.b64decode(encoded, validate=True)
+actual = sha256(payload).hexdigest()
+if actual != EXPECTED_SHA256:
+    raise RuntimeError(f"candidate-02 v3 bundle hash mismatch: {actual}")
 
-def _run_window_in_isolated_process(payload: dict[str, Any]) -> dict[str, Any]:
-    """Run one window in a fresh process because NT logging is process-global."""
-
-    return run_window(**payload)
-'''
-marker = "\ndef run_screen(\n"
-if "def _run_window_in_isolated_process" not in text:
-    text = text.replace(marker, helper + marker, 1)
-old_loop = '''    for item in selection["locked_windows"]:
-        start = _utc_midnight(item["start"])
-        end = start + timedelta(days=7)
-        result = run_window(
-            label=item["role"],
-            symbols=("BTCUSDT",),
-            evaluation_start=start,
-            evaluation_end=end,
-            config=config,
-            output=output / item["role"],
-            cache_root=cache_root,
-        )
-        results.append(result["metrics"])
-        all_events.extend(result["events"])
-        all_data_files.extend(result["data_files"])
-'''
-new_loop = '''    spawn = mp.get_context("spawn")
-    for item in selection["locked_windows"]:
-        start = _utc_midnight(item["start"])
-        end = start + timedelta(days=7)
-        payload = {
-            "label": item["role"],
-            "symbols": ("BTCUSDT",),
-            "evaluation_start": start,
-            "evaluation_end": end,
-            "config": config,
-            "output": output / item["role"],
-            "cache_root": cache_root,
-        }
-        # NautilusTrader 1.230.0 owns a process-global Rust logger. A fresh
-        # child per window also guarantees clean engine/account/cache state.
-        with spawn.Pool(processes=1, maxtasksperchild=1) as pool:
-            result = pool.apply(_run_window_in_isolated_process, (payload,))
-        results.append(result["metrics"])
-        all_events.extend(result["events"])
-        all_data_files.extend(result["data_files"])
-'''
-if old_loop in text:
-    text = text.replace(old_loop, new_loop, 1)
-elif new_loop not in text:
-    raise RuntimeError("run_screen loop shape changed unexpectedly")
-backtest.write_text(text, encoding="utf-8")
+archive_path = Path("/tmp/candidate-02-v3-lock.tar.gz")
+archive_path.write_bytes(payload)
+root = Path.cwd().resolve()
+with tarfile.open(archive_path, "r:gz") as archive:
+    for member in archive.getmembers():
+        if not member.name.startswith("research/candidate-02/"):
+            raise RuntimeError(f"unexpected bundle member: {member.name}")
+        if not (member.isfile() or member.isdir()):
+            raise RuntimeError(f"unsupported bundle member type: {member.name}")
+        destination = (root / member.name).resolve()
+        if destination != root and root not in destination.parents:
+            raise RuntimeError(f"unsafe bundle member: {member.name}")
+    archive.extractall(root, filter="data")
