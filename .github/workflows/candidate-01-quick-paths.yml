@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/candidate-01-quick-paths.yml"
       - "research/candidate-01/diagnose_forward_paths.py"
+      - "research/candidate-01/combine_forward_paths.py"
       - "research/candidate-01/core.py"
       - "research/candidate-01/config.json"
   workflow_dispatch:
@@ -55,29 +56,7 @@ jobs:
               python research/candidate-01/diagnose_forward_paths.py \
                 --start 2025-11-10 --end 2025-11-17 \
                 --output "$root/confirmation-2"
-              python - <<"PY"
-              import json
-              from pathlib import Path
-              import pandas as pd
-              root = Path("artifacts/candidate-01-quick-paths")
-              frames = []
-              for label in ("discovery", "confirmation-1", "confirmation-2"):
-                  frame = pd.read_csv(root / label / "forward_paths.csv")
-                  frame.insert(0, "segment", label)
-                  frames.append(frame)
-              combined = pd.concat(frames, ignore_index=True)
-              combined.to_csv(root / "combined_forward_paths.csv", index=False)
-              summary = {
-                  "plans": int(len(combined)),
-                  "by_segment": combined.groupby("segment").size().astype(int).to_dict(),
-                  "by_response": combined.groupby("response").size().astype(int).to_dict(),
-              }
-              (root / "combined_summary.json").write_text(
-                  json.dumps(summary, indent=2, sort_keys=True) + "\n",
-                  encoding="utf-8",
-              )
-              print(json.dumps(summary, indent=2, sort_keys=True))
-              PY
+              python research/candidate-01/combine_forward_paths.py "$root"
             '
       - uses: actions/upload-artifact@v4
         with:
