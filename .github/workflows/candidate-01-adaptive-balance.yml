@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: read
 
 env:
@@ -24,6 +24,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -33,6 +35,8 @@ jobs:
         with:
           path: .cache/candidate-01-adaptive-balance
           key: candidate-01-adaptive-balance-data-${{ runner.os }}
+      - name: Repair probe invalidation ordering
+        run: python3 research/candidate-01/fix_adaptive_balance_probe.py
       - name: Diagnose causally confirmed adaptive balances
         run: |
           set -euo pipefail
@@ -61,3 +65,12 @@ jobs:
           path: artifacts/candidate-01-adaptive-balance
           if-no-files-found: error
           retention-days: 30
+      - name: Persist repaired detector
+        if: success()
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-01/adaptive_balance_diagnostics.py
+          git commit -m "fix(candidate-01): invalidate expanding adaptive probes causally"
+          git push origin HEAD:research/candidate-01
