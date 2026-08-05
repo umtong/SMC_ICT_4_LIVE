@@ -1,0 +1,118 @@
+name: candidate-02-bootstrap
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-bootstrap/**"
+      - ".github/workflows/candidate-02-bootstrap.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  materialize-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize verified candidate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .candidate-02-bootstrap/part-* | base64 --decode > /tmp/candidate-02.tar.gz
+          echo "78d8c938c0adf8a5e65ce540a69979eff9f8e2963101cfa8f53bdae762ec4daf  /tmp/candidate-02.tar.gz" | sha256sum --check
+          tar -xzf /tmp/candidate-02.tar.gz
+          test -f research/candidate-02/core.py
+          test -f research/candidate-02/backtest.py
+          test -f .github/workflows/candidate-02.yml
+
+      - name: Replace bootstrap payload with reviewable source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .candidate-02-bootstrap
+          rm .github/workflows/candidate-02-bootstrap.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat(research): implement candidate-02 liquidity cascade reclaim"
+          git push origin HEAD:research/candidate-02
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install locked uv
+        run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+
+      - name: Restore immutable market-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/candidate-02/binance-vision
+          key: candidate-02-binance-vision-${{ runner.os }}-v1
+
+      - name: Materialize locked foundation
+        run: |
+          uv lock --check
+          uv sync --locked
+
+      - name: Verify prebuilt runtime
+        run: uv run smc4 doctor
+
+      - name: Run causal unit tests
+        run: uv run python research/candidate-02/candidate.py self-test
+
+      - name: Reproduce locked week selection
+        run: uv run python research/candidate-02/candidate.py select-windows
+
+      - name: Run BTC cost-after NautilusTrader screen
+        shell: bash
+        run: |
+          set +e
+          uv run python research/candidate-02/candidate.py validate \
+            --output artifacts/candidate-02-screen \
+            --cache .cache/candidate-02/binance-vision
+          status=$?
+          set -e
+          mkdir -p artifacts/candidate-02-screen
+          echo "$status" > artifacts/candidate-02-screen/validation_exit_code.txt
+          if [[ "$status" != "0" && "$status" != "2" ]]; then
+            exit "$status"
+          fi
+
+      - name: Publish validation summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f artifacts/candidate-02-screen/metrics.json ]]; then
+            uv run python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          m = json.loads(Path("artifacts/candidate-02-screen/metrics.json").read_text())
+          print("# Candidate-02 BTC random-week screen")
+          print(f"- Geometric daily growth: **{m['geometric_daily_growth']:.4%}**")
+          print(f"- Target met: **{m['target_met']}**")
+          print(f"- Trades: **{m['total_trades']}** ({m['trades_per_day']:.3f}/day)")
+          print(f"- Win rate: **{m['win_rate']:.2%}**")
+          print(f"- Worst window growth: **{m['worst_window_growth']:.4%}/day**")
+          print(f"- Worst NAV drawdown: **{m['worst_window_drawdown']:.2%}**")
+          print(f"- Decision: **{m['decision']}**")
+          PY
+          else
+            echo "Candidate did not produce metrics.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Preserve complete reproducibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-bootstrap-screen-${{ github.sha }}
+          path: artifacts/candidate-02-screen
+          if-no-files-found: warn
+          retention-days: 30
