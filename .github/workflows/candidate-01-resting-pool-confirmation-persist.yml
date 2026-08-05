@@ -1,0 +1,82 @@
+name: candidate-01-resting-pool-confirmation-persist
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-resting-pool-confirmation-persist.yml"
+      - "research/candidate-01/resting_pool_confirmation_diagnostics.py"
+      - "research/candidate-01/resting_liquidity_pool_probe.py"
+      - "research/candidate-01/core.py"
+      - "research/candidate-01/data.py"
+      - "research/candidate-01/config.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  diagnose-and-persist:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-resting-pools
+          key: candidate-01-resting-pools-data-${{ runner.os }}-v1
+      - name: Diagnose all first structure breaks after repeated-pool sweeps
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/resting_liquidity_pool_probe.py \
+                research/candidate-01/resting_pool_confirmation_diagnostics.py
+              rm -rf artifacts/candidate-01-resting-pool-confirmation
+              python research/candidate-01/resting_pool_confirmation_diagnostics.py \
+                --cache .cache/candidate-01-resting-pools \
+                --output artifacts/candidate-01-resting-pool-confirmation
+            '
+      - name: Persist version-bound summary
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-01/evidence/resting-pool-confirmation
+          cp \
+            artifacts/candidate-01-resting-pool-confirmation/resting_pool_confirmation_summary.json \
+            research/candidate-01/evidence/resting-pool-confirmation/summary.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("research/candidate-01/evidence/resting-pool-confirmation/summary.json")
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          payload["source_commit"] = "${{ github.sha }}"
+          payload["workflow_run_id"] = "${{ github.run_id }}"
+          path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-01/evidence/resting-pool-confirmation/summary.json
+          git commit -m "evidence(candidate-01): resting-pool confirmation diagnosis"
+          git push origin HEAD:research/candidate-01
