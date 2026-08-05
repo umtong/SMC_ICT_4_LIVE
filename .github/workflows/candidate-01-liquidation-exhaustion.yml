@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/candidate-01-liquidation-exhaustion.yml"
       - "research/candidate-01/liquidation_exhaustion_probe.py"
+      - "research/candidate-01/fix_liquidation_probe_horizon.py"
       - "research/candidate-01/auxiliary_data.py"
       - "research/candidate-01/portfolio_probe.py"
       - "research/candidate-01/core.py"
@@ -35,6 +36,8 @@ jobs:
         with:
           path: .cache/candidate-01-liquidation-exhaustion
           key: candidate-01-liquidation-exhaustion-data-${{ runner.os }}-v1
+      - name: Respect shared simulator horizon contract
+        run: python3 research/candidate-01/fix_liquidation_probe_horizon.py
       - name: Verify runtime and run five frozen short segments
         run: |
           set -euo pipefail
