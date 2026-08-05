@@ -1,0 +1,220 @@
+
+@dataclass(frozen=True, slots=True)
+class Trade:
+    scenario_id: str
+    kind: str
+    side: str
+    entry_time: str
+    exit_time: str
+    entry_price: float
+    exit_price: float
+    stop_price: float
+    target_price: float
+    quantity: float
+    gross_pnl: float
+    fees: float
+    funding: float
+    net_pnl: float
+    r_multiple: float
+    nav_before: float
+    nav_after: float
+    exit_reason: str
+    bars_held: int
+
+
+@dataclass(frozen=True, slots=True)
+class RawEvent:
+    scenario_id: str
+    event_type: str
+    event_time_ns: int
+    observed_time_ns: int
+    previous_state: str
+    next_state: str
+    reason_code: str
+    reference_price: float | None
+    details: Mapping[str, Any]
+
+
+def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if write_json_atomic is not None:
+        write_json_atomic(path, payload)
+        return
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(dict(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download(url: str, destination: Path, *, attempts: int = 4) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    headers = {"User-Agent": "SMC-ICT-4-candidate-04/1.0"}
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as stream:
+                while chunk := response.read(1024 * 1024):
+                    stream.write(chunk)
+            temporary.replace(destination)
+            return
+        except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+            last_error = exc
+            temporary.unlink(missing_ok=True)
+            if attempt < attempts:
+                time.sleep(2 ** (attempt - 1))
+    raise CandidateError(f"failed to download {url}: {last_error}")
+
+
+def _verify_checksum(archive: Path, checksum: Path) -> None:
+    text = checksum.read_text(encoding="utf-8").strip()
+    expected = text.split()[0].lower()
+    actual = _sha256_file(archive)
+    if expected != actual:
+        raise CandidateError(f"checksum mismatch for {archive.name}: expected {expected}, got {actual}")
+
+
+def _date_range(start: date, end: date) -> Iterable[date]:
+    current = start
+    while current <= end:
+        yield current
+        current += timedelta(days=1)
+
+
+def download_binance_week(
+    *,
+    symbol: str,
+    interval: str,
+    start: date,
+    end: date,
+    data_root: Path,
+) -> tuple[pd.DataFrame, list[Path]]:
+    """Download and validate Binance USD-M daily kline archives."""
+
+    raw_dir = data_root / "futures" / "um" / "daily" / "klines" / symbol / interval
+    frames: list[pd.DataFrame] = []
+    evidence: list[Path] = []
+
+    for day in _date_range(start, end):
+        stem = f"{symbol}-{interval}-{day.isoformat()}.zip"
+        archive = raw_dir / stem
+        checksum = raw_dir / f"{stem}.CHECKSUM"
+        base_url = f"https://data.binance.vision/data/futures/um/daily/klines/{symbol}/{interval}/{stem}"
+        if not archive.exists():
+            _download(base_url, archive)
+        if not checksum.exists():
+            _download(base_url + ".CHECKSUM", checksum)
+        _verify_checksum(archive, checksum)
+        evidence.extend([archive, checksum])
+
+        with zipfile.ZipFile(archive) as zipped:
+            members = [name for name in zipped.namelist() if name.lower().endswith(".csv")]
+            if len(members) != 1:
+                raise CandidateError(f"expected one CSV in {archive}, got {members}")
+            with zipped.open(members[0]) as stream:
+                raw = pd.read_csv(stream, header=None, dtype=str)
+        if raw.empty:
+            raise CandidateError(f"empty archive: {archive}")
+        first = str(raw.iat[0, 0]).strip().lower()
+        if first in {"open_time", "open time"} or not first.lstrip("-").isdigit():
+            raw = raw.iloc[1:].reset_index(drop=True)
+        if raw.shape[1] != len(KLINE_COLUMNS):
+            raise CandidateError(f"unexpected kline schema in {archive}: {raw.shape[1]} columns")
+        raw.columns = KLINE_COLUMNS
+        frames.append(raw)
+
+    frame = pd.concat(frames, ignore_index=True)
+    frame["open_time"] = pd.to_numeric(frame["open_time"], errors="raise").astype("int64")
+    frame["close_time"] = pd.to_numeric(frame["close_time"], errors="raise").astype("int64")
+    for column in NUMERIC_COLUMNS:
+        frame[column] = pd.to_numeric(frame[column], errors="raise").astype("float64")
+
+    unit = "us" if int(frame["open_time"].max()) >= 10**15 else "ms"
+    frame["timestamp"] = pd.to_datetime(frame["open_time"], unit=unit, utc=True)
+    frame["close_timestamp"] = pd.to_datetime(frame["close_time"], unit=unit, utc=True)
+    frame = frame.set_index("timestamp", drop=False).sort_index()
+
+    if frame.index.has_duplicates:
+        duplicates = frame.index[frame.index.duplicated()].unique()
+        raise CandidateError(f"duplicate timestamps in market data: {duplicates[:5].tolist()}")
+    expected_rows = ((end - start).days + 1) * 24 * 60
+    if len(frame) != expected_rows:
+        raise CandidateError(f"expected {expected_rows} one-minute rows, got {len(frame)}")
+    diffs = frame.index.to_series().diff().dropna().dt.total_seconds()
+    bad_gaps = diffs[diffs != 60.0]
+    if not bad_gaps.empty:
+        raise CandidateError(f"non-contiguous 1m data at {bad_gaps.index[:5].tolist()}")
+    if not (frame["high"] >= frame[PRICE_COLUMNS].max(axis=1)).all():
+        raise CandidateError("high is below another OHLC field")
+    if not (frame["low"] <= frame[PRICE_COLUMNS].min(axis=1)).all():
+        raise CandidateError("low is above another OHLC field")
+    if (frame["volume"] < 0).any() or (frame["taker_buy_base"] < 0).any():
+        raise CandidateError("negative volume encountered")
+    return frame, evidence
+
+
+def _rolling_age(series: pd.Series, window: int, *, high: bool) -> pd.Series:
+    def age(values: np.ndarray) -> float:
+        location = int(np.argmax(values) if high else np.argmin(values))
+        return float(len(values) - 1 - location)
+
+    return series.shift(1).rolling(window, min_periods=window).apply(age, raw=True)
+
+
+def _rolling_touches(series: pd.Series, window: int, touch_bps: float, *, high: bool) -> pd.Series:
+    fraction = touch_bps / 10_000.0
+
+    def touches(values: np.ndarray) -> float:
+        level = float(np.max(values) if high else np.min(values))
+        tolerance = max(abs(level) * fraction, 1e-12)
+        if high:
+            return float(np.count_nonzero(values >= level - tolerance))
+        return float(np.count_nonzero(values <= level + tolerance))
+
+    return series.shift(1).rolling(window, min_periods=window).apply(touches, raw=True)
+
+
+def prepare_features(frame: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
+    """Create only present/past-derived features; no centered windows are used."""
+
+    data = frame.copy()
+    previous_close = data["close"].shift(1)
+    true_range = pd.concat(
+        [
+            data["high"] - data["low"],
+            (data["high"] - previous_close).abs(),
+            (data["low"] - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    data["atr"] = true_range.shift(1).ewm(
+        span=config.atr_period,
+        adjust=False,
+        min_periods=config.atr_period,
+    ).mean()
+    data["volume_median"] = data["volume"].shift(1).rolling(
+        config.volume_window,
+        min_periods=config.volume_window,
+    ).median()
+    data["pool_high"] = data["high"].shift(1).rolling(
+        config.pool_lookback,
+        min_periods=config.pool_lookback,
+    ).max()
+    data["pool_low"] = data["low"].shift(1).rolling(
+        config.pool_lookback,
+        min_periods=config.pool_lookback,
+    ).min()
+    data["pool_high_age"] = _rolling_age(data["high"], config.pool_lookback, high=True)
+    data["pool_low_age"] = _rolling_age(data["low"], config.pool_lookback, high=False)
+    data["pool_high_touches"] = _rolling_touches(
+        data["high"],
+        config.pool_lookback,
+        config.pool_touch_bps,
