@@ -586,22 +586,26 @@ def run_nautilus_backtest(
     )
     bar_type = BarType.from_str("BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL")
 
-    # Build a fresh NumPy-backed frame from Python lists.  Frames returned by
-    # recent pandas copy-on-write operations can expose read-only ``values``;
-    # NautilusTrader v1.230.0's Cython wrangler requests a writable memoryview.
-    wrangle = pd.DataFrame(
-        {
-            "open": [float(value) for value in frame["open"]],
-            "high": [float(value) for value in frame["high"]],
-            "low": [float(value) for value in frame["low"]],
-            "close": [float(value) for value in frame["close"]],
-            "volume": [float(value) for value in frame["base_volume"]],
-        },
-        index=pd.DatetimeIndex(frame["close_dt"].tolist(), name="close_dt"),
-    )
-    if not wrangle.values.flags.writeable:
-        raise RuntimeError("wrangle frame unexpectedly exposes a read-only values buffer")
-    bars = BarDataWrangler(bar_type, instrument).process(wrangle)
+    # Build public model objects directly. pandas 3 copy-on-write exposes
+    # read-only ``DataFrame.values`` while NautilusTrader v1.230.0's legacy
+    # Cython wrangler requests a writable memoryview. Direct construction is
+    # equivalent to that wrangler and keeps the pinned engine path deterministic.
+    bars: list[Bar] = []
+    append_bar = bars.append
+    for row in frame.itertuples(index=False):
+        ts_event = int(pd.Timestamp(row.close_dt).value)
+        append_bar(
+            Bar(
+                bar_type=bar_type,
+                open=Price(float(row.open), instrument.price_precision),
+                high=Price(float(row.high), instrument.price_precision),
+                low=Price(float(row.low), instrument.price_precision),
+                close=Price(float(row.close), instrument.price_precision),
+                volume=Quantity(float(row.base_volume), instrument.size_precision),
+                ts_event=ts_event,
+                ts_init=ts_event,
+            )
+        )
     aux_bars = {
         int(pd.Timestamp(row.close_dt).value): AuctionBar(
             ts_event_ns=int(pd.Timestamp(row.close_dt).value),
