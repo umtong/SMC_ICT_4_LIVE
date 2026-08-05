@@ -1,0 +1,220 @@
+        high=True,
+    )
+    data["pool_low_touches"] = _rolling_touches(
+        data["low"],
+        config.pool_lookback,
+        config.pool_touch_bps,
+        high=False,
+    )
+    data["context_high"] = data["high"].shift(1).rolling(
+        config.context_lookback,
+        min_periods=config.context_lookback,
+    ).max()
+    data["context_low"] = data["low"].shift(1).rolling(
+        config.context_lookback,
+        min_periods=config.context_lookback,
+    ).min()
+    data["context_mid"] = (data["context_high"] + data["context_low"]) / 2.0
+
+    volume = data["volume"].replace(0.0, np.nan)
+    data["flow_ratio"] = ((2.0 * data["taker_buy_base"] - data["volume"]) / volume).fillna(0.0).clip(-1.0, 1.0)
+    data["bar_range"] = (data["high"] - data["low"]).clip(lower=1e-12)
+    data["body"] = data["close"] - data["open"]
+    data["body_atr"] = data["body"].abs() / data["atr"]
+    data["close_location"] = (data["close"] - data["low"]) / data["bar_range"]
+    data["lower_wick_fraction"] = (
+        np.minimum(data["open"], data["close"]) - data["low"]
+    ).clip(lower=0.0) / data["bar_range"]
+    data["upper_wick_fraction"] = (
+        data["high"] - np.maximum(data["open"], data["close"])
+    ).clip(lower=0.0) / data["bar_range"]
+    return data
+
+
+def _row_event_times(row: pd.Series) -> tuple[int, int]:
+    event_time_ns = int(pd.Timestamp(row["timestamp"]).value)
+    observed_time_ns = int(pd.Timestamp(row["close_timestamp"]).value)
+    if observed_time_ns < event_time_ns:
+        raise CandidateError("observed timestamp precedes event timestamp")
+    return event_time_ns, observed_time_ns
+
+
+def _append_event(
+    events: list[RawEvent],
+    *,
+    row: pd.Series,
+    scenario_id: str,
+    event_type: str,
+    previous_state: str,
+    next_state: str,
+    reason_code: str,
+    reference_price: float | None,
+    details: Mapping[str, Any],
+    observed_at_open: bool = False,
+) -> None:
+    event_time_ns, observed_time_ns = _row_event_times(row)
+    if observed_at_open:
+        observed_time_ns = event_time_ns
+    events.append(
+        RawEvent(
+            scenario_id=scenario_id,
+            event_type=event_type,
+            event_time_ns=event_time_ns,
+            observed_time_ns=observed_time_ns,
+            previous_state=previous_state,
+            next_state=next_state,
+            reason_code=reason_code,
+            reference_price=reference_price,
+            details=dict(details),
+        ),
+    )
+
+
+def _scenario_id(timestamp: pd.Timestamp, kind: str, side: int, counter: int) -> str:
+    direction = "LONG" if side > 0 else "SHORT"
+    return f"C04-{timestamp.strftime('%Y%m%dT%H%M%SZ')}-{kind}-{direction}-{counter:04d}"
+
+
+def _detect_setup(
+    data: pd.DataFrame,
+    index: int,
+    config: StrategyConfig,
+    counter: int,
+) -> PendingSetup | None:
+    row = data.iloc[index]
+    needed = [
+        "atr",
+        "volume_median",
+        "pool_high",
+        "pool_low",
+        "context_mid",
+        "context_high",
+        "context_low",
+    ]
+    if any(pd.isna(row[column]) for column in needed):
+        return None
+    timestamp = pd.Timestamp(row["timestamp"])
+    if timestamp.hour not in config.session_hours_utc:
+        return None
+
+    atr = float(row["atr"])
+    if not math.isfinite(atr) or atr <= 0:
+        return None
+    volume_ok_reversal = float(row["volume"]) >= float(row["volume_median"]) * config.reversal_volume_multiple
+    volume_ok_continuation = float(row["volume"]) >= float(row["volume_median"]) * config.continuation_volume_multiple
+    flow = float(row["flow_ratio"])
+    pool_high = float(row["pool_high"])
+    pool_low = float(row["pool_low"])
+    context_mid = float(row["context_mid"])
+
+    downside_penetration = (pool_low - float(row["low"])) / atr
+    upside_penetration = (float(row["high"]) - pool_high) / atr
+
+    long_reversal = (
+        config.min_sweep_atr <= downside_penetration <= config.max_sweep_atr
+        and float(row["close"]) > pool_low
+        and flow <= -config.reversal_flow_threshold
+        and volume_ok_reversal
+        and float(row["lower_wick_fraction"]) >= config.reversal_wick_fraction
+        and float(row["pool_low_age"]) >= config.min_pool_age
+        and float(row["pool_low_touches"]) >= config.min_pool_touches
+        and float(row["close"]) <= context_mid + config.reversal_context_slack_atr * atr
+    )
+    short_reversal = (
+        config.min_sweep_atr <= upside_penetration <= config.max_sweep_atr
+        and float(row["close"]) < pool_high
+        and flow >= config.reversal_flow_threshold
+        and volume_ok_reversal
+        and float(row["upper_wick_fraction"]) >= config.reversal_wick_fraction
+        and float(row["pool_high_age"]) >= config.min_pool_age
+        and float(row["pool_high_touches"]) >= config.min_pool_touches
+        and float(row["close"]) >= context_mid - config.reversal_context_slack_atr * atr
+    )
+
+    if long_reversal or short_reversal:
+        side = 1 if long_reversal else -1
+        level = pool_low if side > 0 else pool_high
+        extreme = float(row["low"] if side > 0 else row["high"])
+        opposing_pool = float(row["context_high"] if side > 0 else row["context_low"])
+        return PendingSetup(
+            scenario_id=_scenario_id(timestamp, "REV", side, counter),
+            kind="SWEEP_ABSORPTION_REVERSAL",
+            side=side,
+            sweep_index=index,
+            expires_index=index + config.reversal_confirm_window,
+            level=level,
+            extreme=extreme,
+            sweep_high=float(row["high"]),
+            sweep_low=float(row["low"]),
+            sweep_close=float(row["close"]),
+            atr=atr,
+            opposing_pool=opposing_pool,
+            details={
+                "flow_ratio": flow,
+                "penetration_atr": downside_penetration if side > 0 else upside_penetration,
+                "volume_multiple": float(row["volume"]) / float(row["volume_median"]),
+                "wick_fraction": float(row["lower_wick_fraction"] if side > 0 else row["upper_wick_fraction"]),
+                "pool_age": float(row["pool_low_age"] if side > 0 else row["pool_high_age"]),
+                "pool_touches": float(row["pool_low_touches"] if side > 0 else row["pool_high_touches"]),
+            },
+        )
+
+    long_continuation = (
+        upside_penetration >= config.min_sweep_atr
+        and float(row["close"]) >= pool_high + config.continuation_accept_atr * atr
+        and flow >= config.continuation_flow_threshold
+        and volume_ok_continuation
+        and float(row["body"]) > 0
+        and float(row["body_atr"]) >= config.continuation_body_atr
+        and float(row["close_location"]) >= config.continuation_close_location
+        and float(row["upper_wick_fraction"]) <= config.continuation_max_opposite_wick
+        and float(row["pool_high_age"]) >= config.min_pool_age
+        and float(row["pool_high_touches"]) >= config.min_pool_touches
+    )
+    short_continuation = (
+        downside_penetration >= config.min_sweep_atr
+        and float(row["close"]) <= pool_low - config.continuation_accept_atr * atr
+        and flow <= -config.continuation_flow_threshold
+        and volume_ok_continuation
+        and float(row["body"]) < 0
+        and float(row["body_atr"]) >= config.continuation_body_atr
+        and float(row["close_location"]) <= 1.0 - config.continuation_close_location
+        and float(row["lower_wick_fraction"]) <= config.continuation_max_opposite_wick
+        and float(row["pool_low_age"]) >= config.min_pool_age
+        and float(row["pool_low_touches"]) >= config.min_pool_touches
+    )
+    if long_continuation or short_continuation:
+        side = 1 if long_continuation else -1
+        level = pool_high if side > 0 else pool_low
+        extreme = float(row["low"] if side > 0 else row["high"])
+        return PendingSetup(
+            scenario_id=_scenario_id(timestamp, "CONT", side, counter),
+            kind="SWEEP_ACCEPTANCE_CONTINUATION",
+            side=side,
+            sweep_index=index,
+            expires_index=index + config.continuation_confirm_window,
+            level=level,
+            extreme=extreme,
+            sweep_high=float(row["high"]),
+            sweep_low=float(row["low"]),
+            sweep_close=float(row["close"]),
+            atr=atr,
+            opposing_pool=None,
+            details={
+                "flow_ratio": flow,
+                "penetration_atr": upside_penetration if side > 0 else downside_penetration,
+                "volume_multiple": float(row["volume"]) / float(row["volume_median"]),
+                "body_atr": float(row["body_atr"]),
+                "close_location": float(row["close_location"]),
+                "pool_age": float(row["pool_high_age"] if side > 0 else row["pool_low_age"]),
+                "pool_touches": float(row["pool_high_touches"] if side > 0 else row["pool_low_touches"]),
+            },
+        )
+    return None
+
+
+def _confirm_setup(
+    data: pd.DataFrame,
+    index: int,
+    pending: PendingSetup,
+    config: StrategyConfig,
