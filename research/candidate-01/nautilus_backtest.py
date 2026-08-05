@@ -274,7 +274,8 @@ def run_nautilus_backtest(
 
     from nautilus_trader.backtest.engine import BacktestEngine
     from nautilus_trader.config import BacktestEngineConfig, LoggingConfig, StrategyConfig
-    from nautilus_trader.model import Bar, BarType, CryptoPerpetual
+    from nautilus_trader.model.data import Bar, BarType
+    from nautilus_trader.model.instruments import CryptoPerpetual
     from nautilus_trader.model.enums import AccountType, OmsType, OrderSide, TimeInForce
     from nautilus_trader.model.events import PositionClosed, PositionOpened
     from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
