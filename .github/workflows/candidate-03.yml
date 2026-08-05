@@ -15,7 +15,7 @@ permissions:
 jobs:
   first-random-week:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,23 +23,33 @@ jobs:
           python-version: "3.13"
       - name: Candidate unit tests
         run: PYTHONPATH=src python research/candidate-03/test_candidate.py
-      - name: Download official BTCUSDT USD-M data
-        run: python research/candidate-03/download_month.py --month 2022-03 --output .research-data/candidate-03
-      - name: Run first precommitted random week
+      - name: Download official BTCUSDT one-minute baseline data
+        run: python research/candidate-03/download_month.py --month 2022-03 --output .research-data/candidate-03/bars
+      - name: Download official BTCUSDT aggregate-trade event data
+        run: >-
+          python research/candidate-03/download_daily.py
+          --dataset aggTrades
+          --symbol BTCUSDT
+          --start-date 2022-03-06
+          --end-date 2022-03-13
+          --output .research-data/candidate-03/aggTrades
+      - name: Run failed one-minute proxy baseline for regression evidence
         run: >-
           PYTHONPATH=src python research/candidate-03/run_research.py
-          --data .research-data/candidate-03/BTCUSDT-1m-2022-03.csv
+          --data .research-data/candidate-03/bars/BTCUSDT-1m-2022-03.csv
           --week-start 2022-03-07
-          --label btc-week-1-2022-03-07
-          --output artifacts/candidate-03/week-1
-      - name: Fail-fast alpha gate
-        run: python research/candidate-03/gate.py artifacts/candidate-03/week-1/metrics.json
-      - name: Preserve research evidence and source data
+          --label btc-week-1-2022-03-07-one-minute-proxy
+          --output artifacts/candidate-03/iteration-01-one-minute-proxy
+      - name: Fail-fast baseline gate
+        run: python research/candidate-03/gate.py artifacts/candidate-03/iteration-01-one-minute-proxy/metrics.json
+      - name: Preserve evidence and raw event archives
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-03-week-1-${{ github.sha }}
+          name: candidate-03-week-1-events-${{ github.sha }}
           path: |
-            artifacts/candidate-03/week-1
-            .research-data/candidate-03/BTCUSDT-1m-2022-03.zip
+            artifacts/candidate-03/iteration-01-one-minute-proxy
+            .research-data/candidate-03/bars/BTCUSDT-1m-2022-03.zip
+            .research-data/candidate-03/aggTrades/*.zip
+            .research-data/candidate-03/aggTrades/*.manifest.json
           if-no-files-found: error
