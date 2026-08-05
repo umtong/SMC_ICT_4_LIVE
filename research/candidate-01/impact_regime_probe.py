@@ -622,6 +622,7 @@ def simulate(
     starting_nav: float,
     cost: float,
     exit_on_boundary_reacceptance: bool = False,
+    maximum_hold_ns: int | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any], pd.DataFrame, pd.DataFrame]:
     schedules: dict[int, list[ScenarioPlan]] = {}
     for plan in plans:
@@ -721,7 +722,13 @@ def simulate(
                     reason="TARGET",
                     cost=cost,
                 )
-            elif active.bars_held >= MAX_HOLD_BARS:
+            elif (
+                maximum_hold_ns is not None
+                and bar.end_time_ns - active.entry_time_ns >= maximum_hold_ns
+            ) or (
+                maximum_hold_ns is None
+                and active.bars_held >= MAX_HOLD_BARS
+            ):
                 closed = close_position(
                     active,
                     exit_time_ns=bar.end_time_ns,
