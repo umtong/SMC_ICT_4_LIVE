@@ -1,0 +1,53 @@
+name: candidate-04-opened-week-klines
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-opened-week-klines.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preserve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+      - name: Use locked foundation
+        run: |
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+      - name: Download checksummed official klines for the already-opened week
+        run: |
+          uv run python - <<'PY'
+          import importlib.util
+          from datetime import date
+          from pathlib import Path
+          import sys
+
+          path = Path('research/candidate-04/swing_displacement_candidate.py')
+          spec = importlib.util.spec_from_file_location('candidate04_kline_export', path)
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          module.ensure_klines(
+              'BTCUSDT',
+              date(2023, 3, 8),
+              date(2023, 3, 14),
+              Path('artifacts/candidate-04-opened-week-klines'),
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-opened-week-klines-${{ github.sha }}
+          path: artifacts/candidate-04-opened-week-klines
+          if-no-files-found: error
+          retention-days: 30
