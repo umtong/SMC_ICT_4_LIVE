@@ -253,7 +253,11 @@ def _aligned_auctions(perp: pd.DataFrame, spot: pd.DataFrame) -> pd.DataFrame:
     )
     frame = left.merge(right, on="open_dt", how="inner", validate="one_to_one")
     frame = frame.sort_values("open_dt", kind="stable").reset_index(drop=True)
-    frame["event_time_ns"] = frame["perp_close_dt"].astype("int64")
+    frame["event_time_ns"] = (
+        pd.to_datetime(frame["perp_close_dt"], utc=True)
+        .astype("datetime64[ns, UTC]")
+        .astype("int64")
+    )
     for venue in ("perp", "spot"):
         frame[f"{venue}_aggressive_imbalance"] = (
             2.0 * frame[f"{venue}_taker_buy_quote_volume"]
