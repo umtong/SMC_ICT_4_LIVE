@@ -1,0 +1,109 @@
+{
+  "candidate": "candidate-04",
+  "freeze": "v5-causal-swing-and-inventory-displacement",
+  "frozen_before_opening": "reserve-2: 2024-08-07..2024-08-13",
+  "first_random_week": {
+    "name": "reserve-1",
+    "warmup": "2023-12-16..2023-12-17",
+    "evaluation": "2023-12-18..2023-12-24",
+    "selection_source": "validation-weeks.json; random.Random(4404), frozen before results"
+  },
+  "data_contract": {
+    "rich_features": "official Binance USD-M aggTrades, bookDepth, metrics, mark/index/premium archives; checksummed",
+    "depth_time_axis": "actual exchange timestamps with causal forward-fill; elapsed-time changes rather than assumed row cadence",
+    "daily_boundary": "notional burst and open-interest changes recomputed after daily files are concatenated",
+    "observation": "minute features are knowable only after the minute closes",
+    "execution": "entry at the following one-minute open"
+  },
+  "scenarios": [
+    {
+      "name": "SWING_FAILED_AUCTION_RESUMPTION",
+      "sequence": [
+        "register a swing pivot only after three right-hand bars close",
+        "merge nearby same-side pivots within 0.18 lagged ATR",
+        "require observable pool age at least 15 minutes and prominence at least 0.10 lagged ATR",
+        "consume the pool on its first meaningful 0.03 to 1.20 ATR penetration",
+        "require the sweep bar to close back inside the pool",
+        "freeze the pre-sweep five-minute structure",
+        "within eight minutes use the first close through that structure as the final quality verdict",
+        "require the break to agree with 240-minute displacement, directional body at least 0.60 ATR, directional 60-second flow at least 0.02, directional close location at least 0.65, and 60-second notional at least 1.20 times its lagged 120-minute median"
+      ],
+      "stop": "beyond the sweep extreme plus 0.08 lagged ATR",
+      "maximum_hold_minutes": 180
+    },
+    {
+      "name": "INVENTORY_BACKED_DISPLACEMENT",
+      "sequence": [
+        "require 240-minute displacement at least 2.0 ATR",
+        "require the prior 15-minute move to be a non-positive side-adjusted pullback",
+        "break the fixed prior five-minute structure with body at least 0.60 ATR",
+        "require directional 60-second executed flow at least 0.20, directional close location at least 0.65, and 60-second notional at least 2.0 times its lagged 120-minute median",
+        "require side-adjusted 15-minute open-interest change at least zero",
+        "require 60-second absorption at least 0.15, price-path efficiency at most 0.60, and last-15-second flow acceleration versus the prior 45 seconds at most zero"
+      ],
+      "stop": "opposite twelve-minute causal extreme plus 0.08 lagged ATR",
+      "maximum_hold_minutes": 120,
+      "cooldown_minutes": 30
+    }
+  ],
+  "parent_event_contract": {
+    "cluster_minutes": 5,
+    "same_side_duplicates": "one parent event; latest next-minute entry and widest causal invalidation",
+    "global_constraint": "at most one selected entry intent or one open position"
+  },
+  "execution_and_risk": {
+    "starting_nav_for_report": 100000.0,
+    "risk_fraction_of_current_nav": 0.03,
+    "quantity_denominator": "absolute adverse entry-to-stop fill distance plus entry fee, stop fee, slippage and planned adverse funding",
+    "fee_bps_each_side": 5.0,
+    "entry_slippage_bps": 2.0,
+    "stop_slippage_bps": 3.0,
+    "market_exit_slippage_bps": 2.0,
+    "planned_adverse_funding_bps": 1.0,
+    "realized_funding_times_utc": [0, 8, 16],
+    "target_net_r": 1.20,
+    "break_even_trigger_net_r": 1.05,
+    "break_even_lock_net_r": 0.03,
+    "same_bar_stop_and_target": "stop first",
+    "arbitrary_notional_or_leverage_cap": false,
+    "model_score_risk_multiplier": false
+  },
+  "first_week_after_all_costs": {
+    "trades": 10,
+    "wins": 8,
+    "win_rate": 0.80,
+    "targets": 8,
+    "sum_net_r": 8.524427658239397,
+    "mean_net_r": 0.8524427658239396,
+    "ending_nav": 128397.75692276646,
+    "total_return": 0.2839775692276647,
+    "geometric_daily_growth": 0.036354184393104116,
+    "max_drawdown_realized": 0.028990531503005235,
+    "active_days": 7,
+    "largest_winner_share": 0.14151283907437237,
+    "scenario_metrics": {
+      "SWING_FAILED_AUCTION_RESUMPTION": {"trades": 4, "wins": 4, "mean_net_r": 1.2267703942905386, "net_pnl": 16804.27597661353},
+      "INVENTORY_BACKED_DISPLACEMENT": {"trades": 6, "wins": 4, "mean_net_r": 0.6028910135128737, "net_pnl": 11593.480946152928}
+    }
+  },
+  "first_week_gate": {
+    "geometric_daily_growth_min": 0.01,
+    "trades_min": 7,
+    "active_days_min": 4,
+    "win_rate_min": 0.55,
+    "max_drawdown_max": 0.20,
+    "largest_winner_share_max": 0.55,
+    "passed": true
+  },
+  "frozen_file_hashes": {
+    "swing_displacement_candidate.py": "5856e97f7d7ad89cc10e121f12e16a9ee0bd3c82a7f80992dcce7787e81cdc90",
+    "swing_displacement_config.json": "849d02b7cb133b2ff8f7feedb5fa99c4f51be0740837cd80e37e5faa37cf452f",
+    "test_swing_displacement_candidate.py": "a9dbc38ead23c25462e3841a9ecebdaf632678fd1779ff251a0419900d95f7bf",
+    "first_week_metrics.json": "e540e63cb0b59e9e14b077851b9be01bca92bfd94b3d4f7261f9a11c31223e1d"
+  },
+  "next_week": {
+    "name": "reserve-2",
+    "warmup": "2024-08-05..2024-08-06",
+    "evaluation": "2024-08-07..2024-08-13"
+  }
+}
