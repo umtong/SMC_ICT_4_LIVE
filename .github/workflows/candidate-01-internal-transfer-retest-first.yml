@@ -1,0 +1,81 @@
+name: candidate-01-internal-transfer-retest-first
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-internal-transfer-retest-first.yml"
+      - "research/candidate-01/aggtrade_time_clock.py"
+      - "research/candidate-01/internal_liquidity_transfer_week.py"
+      - "research/candidate-01/internal_transfer_retest_week.py"
+      - "research/candidate-01/impact_regime_probe.py"
+      - "research/candidate-01/aggtrade_data.py"
+      - "research/candidate-01/data.py"
+      - "research/candidate-01/config.json"
+      - "tests/test_candidate_01_aggtrade_time_clock.py"
+      - "tests/test_candidate_01_internal_liquidity_transfer.py"
+      - "tests/test_candidate_01_internal_transfer_retest.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-timebar-aggtrades-first
+          key: candidate-01-timebar-BTCUSDT-2023-06-18-25-${{ runner.os }}-v1
+      - name: Run 5m transfer with 1m retest on only the first BTC week
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/aggtrade_data.py \
+                research/candidate-01/aggtrade_time_clock.py \
+                research/candidate-01/impact_regime_probe.py \
+                research/candidate-01/internal_liquidity_transfer_week.py \
+                research/candidate-01/internal_transfer_retest_week.py \
+                tests/test_candidate_01_internal_transfer_retest.py
+              python -m unittest discover -s tests -p "test_candidate_01_aggtrade_time_clock.py" -v
+              python -m unittest discover -s tests -p "test_candidate_01_internal_liquidity_transfer.py" -v
+              python -m unittest discover -s tests -p "test_candidate_01_internal_transfer_retest.py" -v
+              rm -rf artifacts/candidate-01-internal-transfer-retest-first
+              python research/candidate-01/internal_transfer_retest_week.py \
+                --week 2023-06-19 \
+                --cache .cache/candidate-01-timebar-aggtrades-first \
+                --output artifacts/candidate-01-internal-transfer-retest-first \
+                --workers 4
+            '
+      - name: Print first-week retest evidence
+        run: cat artifacts/candidate-01-internal-transfer-retest-first/internal_transfer_retest_week_summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-internal-transfer-retest-first-${{ github.sha }}
+          path: artifacts/candidate-01-internal-transfer-retest-first
+          if-no-files-found: error
+          retention-days: 30
