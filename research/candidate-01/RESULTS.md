@@ -1,12 +1,5 @@
 # Recorded results
 
-## Discovery week — RUNTIME FAILURE
+No performance claim is recorded before the pinned GitHub Actions workflow completes. The first immutable discovery-week, confirmation-suite, and full-suite outputs will be copied here from `aggregate_metrics.json` with the workflow run URL, commit SHA, data hashes, and an unambiguous PASS/FAIL against the predeclared gate.
 
-- implementation commit: `6b04af0a9f76d78790cfc45f3650bdc7dbce9468`
-- workflow: https://github.com/umtong/SMC_ICT_4_LIVE/actions/runs/30987418370
-
-The pinned NautilusTrader discovery run did not produce `aggregate_metrics.json`. No performance claim is made. The final log tail is preserved below and in the workflow artifact.
-
-```text
-
-```
+A missing result is not success. A failed gate is a rejected candidate.
