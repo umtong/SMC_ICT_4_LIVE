@@ -70,6 +70,7 @@ def base_config(**overrides: object) -> CandidateConfig:
         "confirmation_bars": 4,
         "min_displacement_atr": 0.3,
         "min_reversal_flow_z": 0.3,
+        "max_structure_overshoot_atr": 100.0,
         "stop_buffer_atr": 0.1,
         "minimum_stop_atr": 0.5,
         "min_reward_risk": 1.2,
@@ -149,6 +150,25 @@ class CandidateCoreTest(unittest.TestCase):
             event_types.index("REVERSAL_DISPLACEMENT_CONFIRMED"),
         )
 
+    def test_overextended_displacement_is_not_chased(self) -> None:
+        machine = AuctionStateMachine(
+            base_config(
+                enable_acceptance_failure=False,
+                max_structure_overshoot_atr=0.25,
+            ),
+        )
+        sequence = completed_anchor()
+        sequence.extend(
+            [
+                bar(60, 109.8, 110.8, 109.0, 109.4, quote=2_000.0, buy_quote=1_750.0),
+                bar(61, 109.2, 109.3, 103.5, 104.0, quote=3_000.0, buy_quote=250.0),
+            ],
+        )
+        plans = [plan for item in sequence if (plan := machine.on_bar(item)) is not None]
+        self.assertEqual(plans, [])
+        reasons = [event.reason_code for event in machine.transitions]
+        self.assertIn("REVERSAL_DISPLACEMENT_ALREADY_OVEREXTENDED", reasons)
+
     def test_acceptance_failure_requires_two_outside_closes_then_reentry(self) -> None:
         machine = AuctionStateMachine(base_config(enable_sweep_failure=False))
         sequence = completed_anchor()
@@ -157,7 +177,7 @@ class CandidateCoreTest(unittest.TestCase):
                 bar(60, 109.8, 110.9, 109.7, 110.6, quote=2_200.0, buy_quote=2_000.0),
                 bar(61, 110.5, 111.2, 110.3, 110.9, quote=2_000.0, buy_quote=1_800.0),
                 bar(62, 110.7, 110.8, 109.2, 109.5, quote=2_500.0, buy_quote=350.0),
-                bar(63, 109.4, 109.5, 105.7, 106.1, quote=3_000.0, buy_quote=250.0),
+                bar(63, 109.4, 109.5, 106.8, 107.0, quote=3_000.0, buy_quote=250.0),
             ],
         )
         plans = [plan for item in sequence if (plan := machine.on_bar(item)) is not None]

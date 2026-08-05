@@ -21,6 +21,7 @@ class ExecutionConfig:
     all_in_cost_bps_per_side: float = 7.0
     minimum_net_reward_risk: float = 1.35
     venue_max_leverage: float = 125.0
+    minimum_price_risk_fraction: float = 0.65
     price_precision: int = 1
     quantity_precision: int = 3
     price_increment: float = 0.1
@@ -37,6 +38,8 @@ class ExecutionConfig:
             raise ValueError("minimum_net_reward_risk must exceed one")
         if self.venue_max_leverage <= 0:
             raise ValueError("venue_max_leverage must be positive")
+        if not 0.0 < self.minimum_price_risk_fraction < 1.0:
+            raise ValueError("minimum_price_risk_fraction must be in (0, 1)")
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "ExecutionConfig":
@@ -254,6 +257,7 @@ def _build_metrics(
         "one_global_entry_gate_violations": strategy.gate_violations,
         "ended_flat": bool(strategy.ended_flat),
         "rejected_after_one_bar_delay": strategy.delayed_plan_rejections,
+        "cost_dominated_plan_rejections": strategy.cost_dominated_plan_rejections,
         "max_hold_exits": strategy.max_hold_exits,
         "protective_order_failures": strategy.protective_order_failures,
         "minimum_equity_to_maintenance_margin": strategy.minimum_equity_to_maintenance_margin,
@@ -293,6 +297,7 @@ def run_nautilus_backtest(
         risk_fraction: Decimal
         cost_fraction_per_side: Decimal
         minimum_net_reward_risk: Decimal
+        minimum_price_risk_fraction: Decimal
         evaluation_start_ns: int
         evaluation_end_ns: int
         max_hold_bars: int
@@ -327,6 +332,7 @@ def run_nautilus_backtest(
             self.max_drawdown = 0.0
             self.gate_violations = 0
             self.delayed_plan_rejections = 0
+            self.cost_dominated_plan_rejections = 0
             self.max_hold_exits = 0
             self.protective_order_failures = 0
             self.minimum_equity_to_maintenance_margin: float | None = None
@@ -433,7 +439,28 @@ def run_nautilus_backtest(
 
             equity = self._equity()
             cost = float(self.config.cost_fraction_per_side)
-            planned_loss_per_unit = abs(entry - stop) + entry * cost + stop * cost
+            price_risk = abs(entry - stop)
+            round_trip_cost_at_stop = entry * cost + stop * cost
+            planned_loss_per_unit = price_risk + round_trip_cost_at_stop
+            price_risk_fraction = (
+                price_risk / planned_loss_per_unit if planned_loss_per_unit > 0.0 else 0.0
+            )
+            if price_risk_fraction < float(self.config.minimum_price_risk_fraction):
+                self.cost_dominated_plan_rejections += 1
+                self.delayed_plan_rejections += 1
+                self._record(
+                    "PLAN_REJECTED_COST_DOMINATED_INVALIDATION",
+                    ts_ns,
+                    scenario_id=plan.scenario_id,
+                    entry=entry,
+                    stop=stop,
+                    price_risk=price_risk,
+                    round_trip_cost_at_stop=round_trip_cost_at_stop,
+                    price_risk_fraction=price_risk_fraction,
+                    minimum_price_risk_fraction=float(self.config.minimum_price_risk_fraction),
+                )
+                self.gate.release(plan.scenario_id)
+                return
             planned_gain_per_unit = abs(target - entry) - entry * cost - target * cost
             if planned_loss_per_unit <= 0.0 or planned_gain_per_unit <= 0.0:
                 self.gate.release(plan.scenario_id)
@@ -475,6 +502,9 @@ def run_nautilus_backtest(
                 "quantity": quantity_value,
                 "equity": equity,
                 "risk_budget": risk_budget,
+                "price_risk": price_risk,
+                "round_trip_cost_at_stop": round_trip_cost_at_stop,
+                "price_risk_fraction": price_risk_fraction,
                 "planned_loss_per_unit_after_cost": planned_loss_per_unit,
                 "planned_gain_per_unit_after_cost": planned_gain_per_unit,
                 "net_reward_risk_at_submission": net_rr,
@@ -636,6 +666,7 @@ def run_nautilus_backtest(
             risk_fraction=Decimal(str(execution.risk_fraction)),
             cost_fraction_per_side=cost_fraction,
             minimum_net_reward_risk=Decimal(str(execution.minimum_net_reward_risk)),
+            minimum_price_risk_fraction=Decimal(str(execution.minimum_price_risk_fraction)),
             evaluation_start_ns=int(pd.Timestamp(evaluation_start).value),
             evaluation_end_ns=int(pd.Timestamp(evaluation_end).value),
             max_hold_bars=candidate.max_hold_bars,

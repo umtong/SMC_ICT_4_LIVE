@@ -117,6 +117,7 @@ class CandidateConfig:
     confirmation_bars: int = 6
     min_displacement_atr: float = 0.38
     min_reversal_flow_z: float = 0.35
+    max_structure_overshoot_atr: float = 1.0
     stop_buffer_atr: float = 0.15
     minimum_stop_atr: float = 0.65
     min_reward_risk: float = 1.35
@@ -153,6 +154,8 @@ class CandidateConfig:
             raise ValueError("boundary distances cannot be negative")
         if self.min_displacement_atr <= 0.0:
             raise ValueError("min_displacement_atr must be positive")
+        if self.max_structure_overshoot_atr <= 0.0:
+            raise ValueError("max_structure_overshoot_atr must be positive")
         if self.minimum_stop_atr <= self.stop_buffer_atr:
             raise ValueError("minimum_stop_atr must exceed stop_buffer_atr")
         if self.min_reward_risk <= 1.0:
@@ -731,6 +734,15 @@ class AuctionStateMachine:
         if not displaced:
             return None
 
+        structure_overshoot = (
+            (scenario.internal_break - bar.close) / atr
+            if scenario.side is Side.SHORT
+            else (bar.close - scenario.internal_break) / atr
+        )
+        if structure_overshoot > self.config.max_structure_overshoot_atr:
+            self._expire(bar, "REVERSAL_DISPLACEMENT_ALREADY_OVEREXTENDED")
+            return None
+
         previous = scenario.phase
         scenario.phase = Phase.ARMED_REVERSAL
         self._emit(
@@ -745,6 +757,7 @@ class AuctionStateMachine:
                 "flow_z": flow_z,
                 "atr": atr,
                 "body_atr": body / atr,
+                "structure_overshoot_atr": structure_overshoot,
                 "internal_break": scenario.internal_break,
                 "boundary": scenario.boundary,
                 "excursion_extreme": scenario.excursion_extreme,
