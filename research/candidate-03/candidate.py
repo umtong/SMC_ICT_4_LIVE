@@ -1,4 +1,10 @@
-"""Public description entry point for the independent candidate."""
-def describe()->str:
-    return ('Liquidity Auction Transition Engine: causally confirmed pools are classified after breach as '
-            'rejection, acceptance, or no-trade; entries use the first retest and all sizing uses total NAV loss budget.')
+"""Public description entry point for the independent candidate-03."""
+
+
+def describe() -> str:
+    return (
+        "Flow Absorption Reversal (FAR): after price stretches from a causal "
+        "volume-weighted equilibrium, unusually intense aggressive flow that "
+        "fails to produce directional price progress is treated as absorbed; "
+        "the system enters against the chase on the first later aggregate trade."
+    )

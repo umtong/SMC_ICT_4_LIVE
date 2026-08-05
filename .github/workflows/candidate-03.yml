@@ -13,43 +13,96 @@ permissions:
   contents: read
 
 jobs:
-  first-random-week:
+  frozen-btc-week-gates:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Candidate unit tests
-        run: PYTHONPATH=src python research/candidate-03/test_candidate.py
-      - name: Download official BTCUSDT one-minute baseline data
-        run: python research/candidate-03/download_month.py --month 2022-03 --output .research-data/candidate-03/bars
-      - name: Download official BTCUSDT aggregate-trade event data
+
+      - name: Causal and accounting tests
+        run: |
+          PYTHONPATH=src:research/candidate-03 python research/candidate-03/test_candidate.py
+          PYTHONPATH=src:research/candidate-03 python research/candidate-03/test_far.py
+
+      - name: Download first precommitted BTC week
         run: >-
           python research/candidate-03/download_daily.py
-          --dataset aggTrades
-          --symbol BTCUSDT
-          --start-date 2022-03-06
-          --end-date 2022-03-13
-          --output .research-data/candidate-03/aggTrades
-      - name: Run failed one-minute proxy baseline for regression evidence
+          --dataset aggTrades --symbol BTCUSDT
+          --start-date 2022-03-06 --end-date 2022-03-13
+          --output .research-data/candidate-03/far/week-1 --no-extract
+
+      - name: Evaluate first precommitted BTC week
         run: >-
-          PYTHONPATH=src python research/candidate-03/run_research.py
-          --data .research-data/candidate-03/bars/BTCUSDT-1m-2022-03.csv
+          PYTHONPATH=src:research/candidate-03
+          python research/candidate-03/run_far.py
+          --data .research-data/candidate-03/far/week-1/BTCUSDT-aggTrades-*.zip
           --week-start 2022-03-07
-          --label btc-week-1-2022-03-07-one-minute-proxy
-          --output artifacts/candidate-03/iteration-01-one-minute-proxy
-      - name: Fail-fast baseline gate
-        run: python research/candidate-03/gate.py artifacts/candidate-03/iteration-01-one-minute-proxy/metrics.json
-      - name: Preserve evidence and raw event archives
+          --label btc-week-1-2022-03-07-far-v1
+          --output artifacts/candidate-03/far/week-1
+
+      - name: Gate first BTC week
+        run: >-
+          python research/candidate-03/gate.py
+          artifacts/candidate-03/far/week-1/metrics.json
+          --minimum-trades 8 --minimum-win-rate 0.45
+          --minimum-daily-growth 0.01 --require-target
+
+      - name: Download second precommitted BTC week
+        run: >-
+          python research/candidate-03/download_daily.py
+          --dataset aggTrades --symbol BTCUSDT
+          --start-date 2025-03-16 --end-date 2025-03-23
+          --output .research-data/candidate-03/far/week-2 --no-extract
+
+      - name: Evaluate second precommitted BTC week
+        run: >-
+          PYTHONPATH=src:research/candidate-03
+          python research/candidate-03/run_far.py
+          --data .research-data/candidate-03/far/week-2/BTCUSDT-aggTrades-*.zip
+          --week-start 2025-03-17
+          --label btc-week-2-2025-03-17-far-v1
+          --output artifacts/candidate-03/far/week-2
+
+      - name: Gate second BTC week
+        run: >-
+          python research/candidate-03/gate.py
+          artifacts/candidate-03/far/week-2/metrics.json
+          --minimum-trades 8 --minimum-win-rate 0.45
+          --minimum-daily-growth 0.01 --require-target
+
+      - name: Download third precommitted BTC week
+        run: >-
+          python research/candidate-03/download_daily.py
+          --dataset aggTrades --symbol BTCUSDT
+          --start-date 2023-08-27 --end-date 2023-09-03
+          --output .research-data/candidate-03/far/week-3 --no-extract
+
+      - name: Evaluate third precommitted BTC week
+        run: >-
+          PYTHONPATH=src:research/candidate-03
+          python research/candidate-03/run_far.py
+          --data .research-data/candidate-03/far/week-3/BTCUSDT-aggTrades-*.zip
+          --week-start 2023-08-28
+          --label btc-week-3-2023-08-28-far-v1
+          --output artifacts/candidate-03/far/week-3
+
+      - name: Gate third BTC week
+        run: >-
+          python research/candidate-03/gate.py
+          artifacts/candidate-03/far/week-3/metrics.json
+          --minimum-trades 8 --minimum-win-rate 0.45
+          --minimum-daily-growth 0.01 --require-target
+
+      - name: Preserve reproducible evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-03-week-1-events-${{ github.sha }}
+          name: candidate-03-far-gates-${{ github.sha }}
           path: |
-            artifacts/candidate-03/iteration-01-one-minute-proxy
-            .research-data/candidate-03/bars/BTCUSDT-1m-2022-03.zip
-            .research-data/candidate-03/aggTrades/*.zip
-            .research-data/candidate-03/aggTrades/*.manifest.json
+            artifacts/candidate-03/far
+            .research-data/candidate-03/far/**/*.manifest.json
           if-no-files-found: error
