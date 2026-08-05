@@ -4,7 +4,7 @@ on:
   push:
     branches: ["research/candidate-01"]
     paths:
-      - ".diagnostics/candidate-01-run-v2"
+      - ".diagnostics/candidate-01-run-v3"
 
 permissions:
   contents: write
@@ -28,29 +28,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Align venue API with pinned NautilusTrader 1.230.0
+      - name: Make liquidation-marker diagnostics type-safe
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           path = Path("research/candidate-01/nautilus_backtest.py")
           source = path.read_text(encoding="utf-8")
-          old = '''            liquidation_enabled=True,\n            liquidation_trigger_ratio=1.0,\n            liquidation_cancel_open_orders=True,\n'''
-          if old not in source:
-              raise SystemExit("expected post-1.230 liquidation arguments were not found")
-          source = source.replace(old, "", 1)
-          source = source.replace(
-              '        "venue_liquidation_enabled": True,\n',
-              '        "venue_liquidation_enabled": False,\n'
-              '        "liquidation_safety_gate": "minimum equity / maintenance margin must remain above 1.0",\n',
-              1,
+          old = '        row_text = frame.astype(str).agg(" ".join, axis=1).str.upper()\n'
+          new = (
+              '        row_text = frame.apply(\n'
+              '            lambda row: " ".join(str(value) for value in row.tolist()),\n'
+              '            axis=1,\n'
+              '        ).str.upper()\n'
           )
-          path.write_text(source, encoding="utf-8")
+          if old not in source:
+              raise SystemExit("expected liquidation-marker aggregation line was not found")
+          path.write_text(source.replace(old, new, 1), encoding="utf-8")
           PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -- research/candidate-01/nautilus_backtest.py
-          git commit -m "fix(candidate-01): align venue API with NautilusTrader 1.230.0"
+          git commit -m "fix(candidate-01): make report marker scan type-safe"
 
       - name: Run exact frozen discovery week
         continue-on-error: true
@@ -77,7 +76,7 @@ jobs:
                 2>&1 | tee artifacts/candidate-01/discovery.log
             '
 
-      - name: Commit raw log and any compact evidence
+      - name: Commit raw log and compact evidence
         if: always()
         run: |
           set -euo pipefail
@@ -87,8 +86,11 @@ jobs:
           if [ -f artifacts/candidate-01/discovery/aggregate_metrics.json ]; then
             cp artifacts/candidate-01/discovery/aggregate_metrics.json research/candidate-01/evidence/discovery/aggregate_metrics.json
           fi
+          if [ -f artifacts/candidate-01/discovery/run.json ]; then
+            cp artifacts/candidate-01/discovery/run.json research/candidate-01/evidence/discovery/suite_run.json
+          fi
           if [ -d artifacts/candidate-01/discovery/discovery ]; then
-            for file in metrics.json run.json data_manifest.json trade_plans.csv daily_nav.csv positions.csv scenario_events.jsonl execution_events.jsonl; do
+            for file in metrics.json run.json data_manifest.json trade_plans.csv daily_nav.csv positions.csv orders.csv account.csv scenario_events.jsonl execution_events.jsonl; do
               if [ -f "artifacts/candidate-01/discovery/discovery/$file" ]; then
                 cp "artifacts/candidate-01/discovery/discovery/$file" "research/candidate-01/evidence/discovery/$file"
               fi
@@ -96,6 +98,6 @@ jobs:
           fi
           git add -- research/candidate-01/evidence/discovery
           if ! git diff --cached --quiet; then
-            git commit -m "research(candidate-01): retain discovery evidence after venue API alignment"
+            git commit -m "research(candidate-01): record first executable discovery evidence"
           fi
           git push origin HEAD:research/candidate-01
