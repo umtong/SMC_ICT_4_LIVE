@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""Candidate-04 v5: causal swing failure + inventory-backed displacement.
+
+The candidate deliberately separates two market states:
+
+1. SWING_FAILED_AUCTION_RESUMPTION
+   A confirmed and sufficiently prominent swing pool is swept, price closes back
+   inside, then a fixed pre-sweep structure is displaced in the 240-minute
+   direction with above-normal executed notional.
+
+2. INVENTORY_BACKED_DISPLACEMENT
+   A 15-minute pullback occurs inside a 240-minute displacement. Price breaks
+   the fixed five-minute structure with strong executed flow while open
+   interest does not contract. Moderate impact efficiency and non-accelerating
+   terminal flow reject one-shot covering squeezes.
+
+All rolling features are past-only. Pivots become usable only after the required
+right-hand bars close, and every entry is placed at the following minute open.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import urllib.request
+import zipfile
+from dataclasses import asdict, dataclass, field
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Any, Iterable
+
+import numpy as np
+import pandas as pd
+
+try:
+    from smc_ict_4.contracts import ResearchEvent
+    from smc_ict_4.event_log import write_events
+    from smc_ict_4.manifest import create_run_manifest, write_json_atomic
+except ImportError:  # pragma: no cover - standalone diagnostics
+    ResearchEvent = None  # type: ignore[assignment]
+    write_events = None  # type: ignore[assignment]
+    create_run_manifest = None  # type: ignore[assignment]
+    write_json_atomic = None  # type: ignore[assignment]
+
+BASE = "https://data.binance.vision/data/futures/um/daily"
+INSTRUMENT_ID = "BTCUSDT-PERP.BINANCE"
+KLINE_COLUMNS = [
+    "open_time", "open", "high", "low", "close", "volume", "close_time",
+    "quote_volume", "count", "taker_buy_volume", "taker_buy_quote_volume", "ignore",
+]
+
+
+class CandidateError(RuntimeError):
+    """Raised when candidate evidence is incomplete or internally inconsistent."""
+
+
+@dataclass(frozen=True, slots=True)
+class Config:
+    symbol: str = "BTCUSDT"
+    starting_nav: float = 100_000.0
+    risk_fraction: float = 0.03
+    fee_bps: float = 5.0
+    entry_slippage_bps: float = 2.0
+    stop_slippage_bps: float = 3.0
+    market_exit_slippage_bps: float = 2.0
+    planned_funding_bps: float = 1.0
+    funding_hours_utc: tuple[int, ...] = (0, 8, 16)
+
+    atr_period: int = 30
+    target_net_r: float = 1.20
+    break_even_trigger_r: float = 1.05
+    break_even_lock_r: float = 0.03
+
+    pivot_left: int = 3
+    pivot_right: int = 3
+    pool_merge_atr: float = 0.18
+    pool_max_age_minutes: int = 720
+    pool_min_age_minutes: int = 15
+    pool_min_prominence_atr: float = 0.10
+    sweep_min_atr: float = 0.03
+    sweep_max_atr: float = 1.20
+    sweep_confirmation_minutes: int = 8
+    pre_sweep_structure_minutes: int = 5
+    sweep_body_atr: float = 0.60
+    sweep_flow_60s: float = 0.02
+    sweep_close_location: float = 0.65
+    sweep_notional_burst_60s: float = 1.20
+    sweep_trend_240m_atr: float = 0.0
+    sweep_stop_buffer_atr: float = 0.08
+    sweep_max_hold_minutes: int = 180
+
+    trend_lookback_minutes: int = 240
+    pullback_lookback_minutes: int = 15
+    trend_structure_minutes: int = 5
+    trend_stop_minutes: int = 12
+    trend_min_displacement_atr: float = 2.0
+    trend_max_pullback_atr: float = 0.0
+    trend_body_atr: float = 0.60
+    trend_flow_60s: float = 0.20
+    trend_close_location: float = 0.65
+    trend_notional_burst_60s: float = 2.0
+    trend_oi_15m_min: float = 0.0
+    trend_absorption_60s_min: float = 0.15
+    trend_efficiency_60s_max: float = 0.60
+    trend_flow_acceleration_max: float = 0.0
+    trend_stop_buffer_atr: float = 0.08
+    trend_max_hold_minutes: int = 120
+    trend_cooldown_minutes: int = 30
+
+    parent_cluster_minutes: int = 5
+    gate_min_geom_daily: float = 0.01
+    gate_min_trades: int = 7
+    gate_min_active_days: int = 4
+    gate_min_win_rate: float = 0.55
+    gate_max_drawdown: float = 0.20
+    gate_max_largest_winner_share: float = 0.55
+
+    @classmethod
+    def load(cls, path: Path) -> "Config":
+        values = json.loads(path.read_text(encoding="utf-8"))
+        if "funding_hours_utc" in values:
+            values["funding_hours_utc"] = tuple(int(x) for x in values["funding_hours_utc"])
+        allowed = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
+        unknown = sorted(set(values) - allowed)
+        if unknown:
+            raise CandidateError(f"unknown config keys: {unknown}")
+        result = cls(**values)
+        result.validate()
+        return result
+
+    def validate(self) -> None:
+        if self.symbol != "BTCUSDT":
+            raise CandidateError("candidate-04 remains BTCUSDT-first")
+        if not 0 < self.risk_fraction <= 0.03:
+            raise CandidateError("risk_fraction must be in (0, 0.03]")
+        if self.starting_nav <= 0:
+            raise CandidateError("starting_nav must be positive")
+        if self.target_net_r <= 0:
+            raise CandidateError("target_net_r must be positive")
+        if self.pivot_left < 1 or self.pivot_right < 1:
+            raise CandidateError("pivot confirmation requires left and right bars")
+
+
+@dataclass(slots=True)
+class Pool:
+    side: int  # +1 buy-side/high pool, -1 sell-side/low pool
+    level: float
+    created_index: int
+    observed_index: int
+    last_touch_index: int
+    touches: int
+    pool_id: int
+    prominence_atr: float
+    active: bool = True
+
+
+@dataclass(slots=True)
+class Intent:
+    scenario: str
+    side: int
+    signal_index: int
+    entry_index: int
+    stop_level: float
+    event_indices: tuple[int, ...]
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class Trade:
+    scenario: str
+    side: int
+    signal_index: int
+    entry_index: int
+    exit_index: int
+    entry_time: pd.Timestamp
+    exit_time: pd.Timestamp
+    entry_fill: float
+    exit_fill: float
+    stop_level: float
+    target_trigger: float
+    quantity: float
+    nav_before: float
+    nav_after: float
+    risk_budget: float
+    planned_loss_per_unit: float
+    net_pnl: float
+    net_r: float
+    reason: str
+    hold_minutes: int
+    cluster_events: int
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while block := stream.read(1 << 20):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _download_checked(url: str, target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    checksum = target.with_suffix(target.suffix + ".CHECKSUM")
+    if not target.exists():
+        urllib.request.urlretrieve(url, target)
+    if not checksum.exists():
+        urllib.request.urlretrieve(url + ".CHECKSUM", checksum)
+    expected = checksum.read_text(encoding="utf-8").strip().split()[0].lower()
+    actual = sha256_file(target)
+    if actual != expected:
+        raise CandidateError(f"checksum mismatch for {target}: {actual} != {expected}")
+    return target
+
+
+def ensure_klines(symbol: str, start: date, end: date, root: Path) -> list[Path]:
+    paths: list[Path] = []
+    day = start
+    while day <= end:
+        name = f"{symbol}-1m-{day.isoformat()}.zip"
+        url = f"{BASE}/klines/{symbol}/1m/{name}"
+        paths.append(_download_checked(url, root / name))
+        day += timedelta(days=1)
+    return paths
+
+
+def load_klines(paths: Iterable[Path]) -> pd.DataFrame:
+    parts: list[pd.DataFrame] = []
+    for path in sorted(paths):
+        frame = pd.read_csv(path, compression="zip")
+        if "open_time" not in frame.columns:
+            frame = pd.read_csv(path, compression="zip", names=KLINE_COLUMNS)
+        frame["open_time"] = pd.to_datetime(frame["open_time"], unit="ms", utc=True)
+        for column in ("open", "high", "low", "close", "volume", "quote_volume"):
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        parts.append(frame.set_index("open_time"))
