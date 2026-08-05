@@ -1,0 +1,220 @@
+) -> EntryIntent | None:
+    if index <= pending.sweep_index or index > pending.expires_index:
+        return None
+    row = data.iloc[index]
+    atr = float(row["atr"]) if not pd.isna(row["atr"]) else pending.atr
+    body = float(row["body"])
+    body_atr = abs(body) / max(atr, 1e-12)
+    flow = float(row["flow_ratio"])
+
+    if pending.kind == "SWEEP_ABSORPTION_REVERSAL":
+        if pending.side > 0:
+            confirmed = (
+                body > 0
+                and body_atr >= config.reversal_displacement_atr
+                and float(row["close"]) > pending.sweep_high
+                and flow >= config.reversal_confirm_flow
+            )
+        else:
+            confirmed = (
+                body < 0
+                and body_atr >= config.reversal_displacement_atr
+                and float(row["close"]) < pending.sweep_low
+                and flow <= -config.reversal_confirm_flow
+            )
+    else:
+        if pending.side > 0:
+            confirmed = (
+                float(row["close"]) > pending.level
+                and float(row["low"]) >= pending.level - config.continuation_hold_tolerance_atr * atr
+                and float(row["close_location"]) >= 0.50
+            )
+        else:
+            confirmed = (
+                float(row["close"]) < pending.level
+                and float(row["high"]) <= pending.level + config.continuation_hold_tolerance_atr * atr
+                and float(row["close_location"]) <= 0.50
+            )
+    if not confirmed:
+        return None
+    return EntryIntent(
+        scenario_id=pending.scenario_id,
+        kind=pending.kind,
+        side=pending.side,
+        entry_index=index + 1,
+        level=pending.level,
+        extreme=pending.extreme,
+        atr=pending.atr,
+        opposing_pool=pending.opposing_pool,
+        confirmed_index=index,
+        details={**pending.details, "confirmation_body_atr": body_atr, "confirmation_flow": flow},
+    )
+
+
+def _adverse_fill(price: float, side: int, bps: float, *, entry: bool) -> float:
+    fraction = bps / 10_000.0
+    if entry:
+        return price * (1.0 + side * fraction)
+    return price * (1.0 - side * fraction)
+
+
+def _position_from_intent(
+    data: pd.DataFrame,
+    intent: EntryIntent,
+    config: StrategyConfig,
+    nav: float,
+) -> tuple[Position | None, str | None]:
+    if intent.entry_index >= len(data):
+        return None, "NO_NEXT_BAR"
+    row = data.iloc[intent.entry_index]
+    raw_entry = float(row["open"])
+    entry = _adverse_fill(raw_entry, intent.side, config.entry_slippage_bps, entry=True)
+    stop_anchor = intent.extreme - intent.side * config.stop_buffer_atr * intent.atr
+    raw_stop = stop_anchor
+    stop_fill = _adverse_fill(raw_stop, intent.side, config.stop_slippage_bps, entry=False)
+    if intent.side > 0 and raw_stop >= entry:
+        return None, "STOP_NOT_BELOW_ENTRY"
+    if intent.side < 0 and raw_stop <= entry:
+        return None, "STOP_NOT_ABOVE_ENTRY"
+
+    price_risk = abs(entry - raw_stop)
+    stop_atr = price_risk / max(intent.atr, 1e-12)
+    if stop_atr < config.min_stop_atr:
+        return None, "STOP_TOO_TIGHT"
+    if stop_atr > config.max_stop_atr:
+        return None, "STOP_TOO_WIDE"
+
+    fee_rate = config.fee_bps / 10_000.0
+    # Quantity is sized from full-NAV planned loss.  Include one adverse funding
+    # event because a valid intraday position can cross an 00:00/08:00/16:00 UTC
+    # funding boundary before its causal timeout.  This is a planning cost only;
+    # realized accounting charges funding strictly when the boundary is crossed.
+    expected_funding_per_unit = entry * (config.funding_bps_per_event / 10_000.0)
+    per_unit_expected_loss = (
+        abs(entry - stop_fill)
+        + entry * fee_rate
+        + stop_fill * fee_rate
+        + expected_funding_per_unit
+    )
+    if per_unit_expected_loss <= 0 or not math.isfinite(per_unit_expected_loss):
+        return None, "INVALID_RISK_DENOMINATOR"
+    risk_budget = nav * config.risk_fraction
+    quantity = risk_budget / per_unit_expected_loss
+    if quantity <= 0 or not math.isfinite(quantity):
+        return None, "INVALID_QUANTITY"
+
+    if intent.kind == "SWEEP_ABSORPTION_REVERSAL" and intent.opposing_pool is not None:
+        candidate_target = float(intent.opposing_pool)
+        candidate_r = intent.side * (candidate_target - entry) / price_risk
+        if candidate_r < config.reversal_min_target_r:
+            return None, "OPPOSING_LIQUIDITY_TOO_CLOSE"
+        target_r = min(candidate_r, config.reversal_target_r_cap)
+    else:
+        target_r = config.continuation_target_r
+    target = entry + intent.side * target_r * price_risk
+    entry_fee = quantity * entry * fee_rate
+
+    return (
+        Position(
+            scenario_id=intent.scenario_id,
+            kind=intent.kind,
+            side=intent.side,
+            entry_index=intent.entry_index,
+            entry_time=pd.Timestamp(row["timestamp"]),
+            entry_price=entry,
+            quantity=quantity,
+            stop_price=raw_stop,
+            initial_stop_price=raw_stop,
+            target_price=target,
+            initial_price_risk=price_risk,
+            risk_budget=risk_budget,
+            nav_before=nav,
+            entry_fee=entry_fee,
+        ),
+        None,
+    )
+
+
+def _mark_nav(cash_nav: float, position: Position | None, mark_price: float) -> float:
+    if position is None:
+        return cash_nav
+    unrealized = position.side * position.quantity * (mark_price - position.entry_price)
+    return cash_nav + unrealized
+
+
+def _close_position(
+    position: Position,
+    *,
+    raw_exit: float,
+    exit_time: pd.Timestamp,
+    exit_index: int,
+    reason: str,
+    config: StrategyConfig,
+    cash_nav: float,
+    stop_exit: bool = False,
+    target_exit: bool = False,
+) -> tuple[Trade, float]:
+    if stop_exit:
+        exit_price = _adverse_fill(raw_exit, position.side, config.stop_slippage_bps, entry=False)
+    elif target_exit:
+        exit_price = raw_exit
+    else:
+        exit_price = _adverse_fill(raw_exit, position.side, config.market_exit_slippage_bps, entry=False)
+    fee_rate = config.fee_bps / 10_000.0
+    exit_fee = position.quantity * exit_price * fee_rate
+    gross_pnl = position.side * position.quantity * (exit_price - position.entry_price)
+    net_pnl = gross_pnl - position.entry_fee - exit_fee - position.funding_cost
+    nav_after = position.nav_before + net_pnl
+    # cash_nav has entry fee and funding already debited; add price PnL and exit fee.
+    updated_cash = cash_nav + gross_pnl - exit_fee
+    if not math.isclose(updated_cash, nav_after, rel_tol=1e-9, abs_tol=1e-6):
+        raise CandidateError(f"accounting mismatch: cash={updated_cash}, trade={nav_after}")
+    trade = Trade(
+        scenario_id=position.scenario_id,
+        kind=position.kind,
+        side="LONG" if position.side > 0 else "SHORT",
+        entry_time=position.entry_time.isoformat(),
+        exit_time=exit_time.isoformat(),
+        entry_price=position.entry_price,
+        exit_price=exit_price,
+        stop_price=position.initial_stop_price,
+        target_price=position.target_price,
+        quantity=position.quantity,
+        gross_pnl=gross_pnl,
+        fees=position.entry_fee + exit_fee,
+        funding=position.funding_cost,
+        net_pnl=net_pnl,
+        r_multiple=net_pnl / position.risk_budget,
+        nav_before=position.nav_before,
+        nav_after=nav_after,
+        exit_reason=reason,
+        bars_held=exit_index - position.entry_index + 1,
+    )
+    return trade, updated_cash
+
+
+def _funding_boundary(timestamp: pd.Timestamp) -> bool:
+    return timestamp.minute == 0 and timestamp.hour in {0, 8, 16}
+
+
+def backtest_frame(
+    frame: pd.DataFrame,
+    config: StrategyConfig,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> dict[str, Any]:
+    """Run the causal state machine and realistic risk-budget accounting."""
+
+    data = prepare_features(frame, config)
+    cash_nav = config.starting_nav
+    pending: PendingSetup | None = None
+    intent: EntryIntent | None = None
+    position: Position | None = None
+    trades: list[Trade] = []
+    events: list[RawEvent] = []
+    nav_points: list[tuple[pd.Timestamp, float]] = []
+    failure_counts: dict[str, int] = {}
+    setup_counter = 0
+    cooldown_until = -1
+    max_concurrent = 0
