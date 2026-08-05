@@ -218,9 +218,13 @@ def _event_context(bars: list[Any], candidate: CandidateConfig) -> pd.DataFrame:
     result = pd.DataFrame(rows.values())
     for column in ("probe_time_ns", "displacement_time_ns"):
         if column in result:
-            result[column] = pd.to_numeric(
-                result[column], errors="coerce"
-            ).astype("Int64")
+            result[column] = pd.array(
+                [
+                    int(value) if pd.notna(value) else pd.NA
+                    for value in result[column]
+                ],
+                dtype="Int64",
+            )
     return result
 
 
