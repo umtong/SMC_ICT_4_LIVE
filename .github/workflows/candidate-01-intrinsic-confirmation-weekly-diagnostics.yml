@@ -1,0 +1,100 @@
+name: candidate-01-intrinsic-confirmation-weekly-diagnostics
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-intrinsic-confirmation-weekly-diagnostics.yml"
+      - "research/candidate-01/intrinsic_external_confirmation_diagnostics.py"
+      - "research/candidate-01/intrinsic_external_liquidity_v3_router.py"
+      - "research/candidate-01/intrinsic_external_liquidity_v2_daily_week.py"
+      - "research/candidate-01/intrinsic_external_liquidity_v2_week.py"
+      - "research/candidate-01/adaptive_aggtrade_clock.py"
+      - "research/candidate-01/directional_change_failed_sweep_week.py"
+      - "research/candidate-01/impact_regime_probe.py"
+      - "research/candidate-01/aggtrade_data.py"
+      - "research/candidate-01/aggtrade_clock.py"
+      - "research/candidate-01/data.py"
+      - "research/candidate-01/config.json"
+      - "tests/test_candidate_01_intrinsic_external_v3_router.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: week-1
+            week: "2023-06-19"
+            cache_path: .cache/candidate-01-intrinsic-external-v2-daily-first
+            cache_key: candidate-01-intrinsic-external-v2-daily-BTCUSDT-2023-06-14-26-Linux-v1
+          - label: week-2
+            week: "2022-08-01"
+            cache_path: .cache/candidate-01-intrinsic-external-v2-daily-week-2
+            cache_key: candidate-01-intrinsic-external-v2-daily-BTCUSDT-2022-07-27-2022-08-01-Linux-v1
+          - label: week-3
+            week: "2025-11-10"
+            cache_path: .cache/candidate-01-intrinsic-external-v2-daily-week-3
+            cache_key: candidate-01-intrinsic-external-v2-daily-BTCUSDT-2025-11-05-2025-11-10-Linux-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: ${{ matrix.cache_path }}
+          key: ${{ matrix.cache_key }}
+      - name: Run controlled post-retest confirmation variants
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/aggtrade_data.py \
+                research/candidate-01/aggtrade_clock.py \
+                research/candidate-01/adaptive_aggtrade_clock.py \
+                research/candidate-01/impact_regime_probe.py \
+                research/candidate-01/directional_change_failed_sweep_week.py \
+                research/candidate-01/intrinsic_external_liquidity_v2_week.py \
+                research/candidate-01/intrinsic_external_liquidity_v2_daily_week.py \
+                research/candidate-01/intrinsic_external_liquidity_v3_router.py \
+                research/candidate-01/intrinsic_external_confirmation_diagnostics.py
+              python -m unittest discover -s tests -p "test_candidate_01_intrinsic_external_v3_router.py" -v
+              rm -rf artifacts/candidate-01-intrinsic-confirmation-${{ matrix.label }}
+              python research/candidate-01/intrinsic_external_confirmation_diagnostics.py \
+                --week ${{ matrix.week }} \
+                --cache ${{ matrix.cache_path }} \
+                --output artifacts/candidate-01-intrinsic-confirmation-${{ matrix.label }} \
+                --workers 4
+            '
+      - name: Print controlled weekly evidence
+        run: cat artifacts/candidate-01-intrinsic-confirmation-${{ matrix.label }}/confirmation_diagnostics_summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-intrinsic-confirmation-${{ matrix.label }}-${{ github.sha }}
+          path: artifacts/candidate-01-intrinsic-confirmation-${{ matrix.label }}
+          if-no-files-found: error
+          retention-days: 30
