@@ -121,7 +121,11 @@ def _causal_bar_state(frame: pd.DataFrame, candidate: CandidateConfig) -> pd.Dat
             "taker_buy_quote_volume",
         ]
     ].copy()
-    result["ts_ns"] = result["close_dt"].astype("int64")
+    result["ts_ns"] = (
+        pd.to_datetime(result["close_dt"], utc=True)
+        .astype("datetime64[ns, UTC]")
+        .astype("int64")
+    )
     result["aggressive_imbalance"] = (
         2.0 * result["taker_buy_quote_volume"] - result["quote_volume"]
     ) / result["quote_volume"].replace(0.0, np.nan)
