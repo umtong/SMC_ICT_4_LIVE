@@ -1,0 +1,43 @@
+name: candidate-03-research
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - "research/candidate-03/**"
+      - ".github/workflows/candidate-03.yml"
+      - "src/smc_ict_4/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  first-random-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Candidate unit tests
+        run: PYTHONPATH=src python research/candidate-03/test_candidate.py
+      - name: Download official BTCUSDT USD-M data
+        run: python research/candidate-03/download_month.py --month 2022-03 --output .research-data/candidate-03
+      - name: Run first precommitted random week
+        run: >-
+          PYTHONPATH=src python research/candidate-03/run_research.py
+          --data .research-data/candidate-03/BTCUSDT-1m-2022-03.csv
+          --week-start 2022-03-07
+          --label btc-week-1-2022-03-07
+          --output artifacts/candidate-03/week-1
+      - name: Fail-fast alpha gate
+        run: python research/candidate-03/gate.py artifacts/candidate-03/week-1/metrics.json
+      - name: Preserve research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-week-1-${{ github.sha }}
+          path: artifacts/candidate-03/week-1
+          if-no-files-found: error
