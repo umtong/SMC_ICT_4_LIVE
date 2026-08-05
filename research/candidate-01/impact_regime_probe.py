@@ -63,7 +63,7 @@ from data import parse_utc_date  # noqa: E402
 RISK_RATE = 0.03
 COST_PER_SIDE = 0.0007
 MAINTENANCE_MARGIN_RATE = 1.0 / 125.0 / 2.0
-CLOCK_CALIBRATION_MINUTES = 1
+CLOCK_CALIBRATION_MINUTES = 20
 FLOW_HISTORY = 120
 ATR_HISTORY = 60
 STRUCTURE_BARS = 20
@@ -473,10 +473,12 @@ class ImpactRegimeDetector:
                 reason="flow regime produced efficient outside value",
             )
             if direction is Side.LONG:
-                stop = boundary - 0.20 * atr
+                # Outside value is invalid only when the complete initiative
+                # pulse is reclaimed, not on sub-cost noise at the boundary.
+                stop = pulse_low - 0.10 * atr
                 target = boundary + structure_width
             else:
-                stop = boundary + 0.20 * atr
+                stop = pulse_high + 0.10 * atr
                 target = boundary - structure_width
             plan = ScenarioPlan(
                 scenario_id=scenario_id + ":continuation",
