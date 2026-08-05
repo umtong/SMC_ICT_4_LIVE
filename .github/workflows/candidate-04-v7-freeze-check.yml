@@ -1,0 +1,109 @@
+name: candidate-04-v7-freeze-check
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v7-freeze-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+      - name: Verify environment, hashes and causal tests
+        run: |
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          echo "candidate=$(sha256sum research/candidate-04/inventory_transfer_candidate.py | cut -d' ' -f1)"
+          echo "config=$(sha256sum research/candidate-04/inventory_transfer_config.json | cut -d' ' -f1)"
+          echo "test=$(sha256sum research/candidate-04/tests/test_inventory_transfer_candidate.py | cut -d' ' -f1)"
+          uv run python -m compileall -q research/candidate-04
+          uv run python -m unittest discover -s research/candidate-04/tests -p 'test_inventory_transfer_candidate.py' -v
+          uv run python -m unittest discover -s research/candidate-04/tests -p 'test_regime_transition_candidate.py' -v
+          uv run python -m unittest discover -s research/candidate-04/tests -p 'test_swing_displacement_candidate.py' -v
+          uv run python -m unittest discover -s research/candidate-04/tests -p 'test_rich_features_v2.py' -v
+
+  reproduce:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: normal-basis-development
+            build_start: "2023-12-16"
+            build_end: "2023-12-24"
+            eval_start: "2023-12-18"
+            eval_end: "2023-12-24"
+          - name: negative-basis-development-a
+            build_start: "2024-08-05"
+            build_end: "2024-08-13"
+            eval_start: "2024-08-07"
+            eval_end: "2024-08-13"
+          - name: negative-basis-development-b
+            build_start: "2023-03-06"
+            build_end: "2023-03-14"
+            eval_start: "2023-03-08"
+            eval_end: "2023-03-14"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+      - name: Use locked foundation
+        run: |
+          uv lock --check
+          uv sync --locked
+      - name: Build checksummed causal rich features
+        run: |
+          uv run python research/candidate-04/rich_features_v2.py \
+            --start "${{ matrix.build_start }}" \
+            --end "${{ matrix.build_end }}" \
+            --cache ".cache/candidate-04-v7/${{ matrix.name }}-rich" \
+            --output "artifacts/candidate-04-v7/${{ matrix.name }}/rich"
+      - name: Replay frozen v7 development week
+        run: |
+          uv run python research/candidate-04/inventory_transfer_candidate.py \
+            --config research/candidate-04/inventory_transfer_config.json \
+            --rich-dir "artifacts/candidate-04-v7/${{ matrix.name }}/rich" \
+            --kline-dir ".cache/candidate-04-v7/${{ matrix.name }}-klines" \
+            --evaluation-start "${{ matrix.eval_start }}" \
+            --evaluation-end "${{ matrix.eval_end }}" \
+            --output "artifacts/candidate-04-v7/${{ matrix.name }}/result" \
+            --download-klines | tee "artifacts/candidate-04-v7/${{ matrix.name }}/console.json"
+      - name: Require every development gate
+        run: |
+          MATRIX_NAME="${{ matrix.name }}" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          name = os.environ['MATRIX_NAME']
+          path = Path('artifacts/candidate-04-v7') / name / 'result' / 'metrics.json'
+          metrics = json.loads(path.read_text())
+          print(json.dumps(metrics, indent=2, sort_keys=True))
+          if not metrics['gate_pass']:
+              raise SystemExit(f'{name} no longer passes its frozen gate')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v7-${{ matrix.name }}-${{ github.sha }}
+          path: |
+            artifacts/candidate-04-v7/${{ matrix.name }}/result
+            artifacts/candidate-04-v7/${{ matrix.name }}/rich/data_manifest.json
+            artifacts/candidate-04-v7/${{ matrix.name }}/console.json
+          if-no-files-found: warn
+          retention-days: 90
