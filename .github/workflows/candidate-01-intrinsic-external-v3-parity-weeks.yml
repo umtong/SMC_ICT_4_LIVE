@@ -5,6 +5,7 @@ on:
     branches: ["research/candidate-01"]
     paths:
       - ".github/workflows/candidate-01-intrinsic-external-v3-parity-weeks.yml"
+      - "research/candidate-01/check_intrinsic_external_parity.py"
       - "research/candidate-01/intrinsic_external_liquidity_v3_router.py"
       - "research/candidate-01/intrinsic_external_liquidity_v3_daily_week.py"
       - "research/candidate-01/intrinsic_external_liquidity_v2_daily_week.py"
@@ -81,7 +82,8 @@ jobs:
                 research/candidate-01/intrinsic_external_liquidity_v2_week.py \
                 research/candidate-01/intrinsic_external_liquidity_v2_daily_week.py \
                 research/candidate-01/intrinsic_external_liquidity_v3_router.py \
-                research/candidate-01/intrinsic_external_liquidity_v3_daily_week.py
+                research/candidate-01/intrinsic_external_liquidity_v3_daily_week.py \
+                research/candidate-01/check_intrinsic_external_parity.py
               python -m unittest discover -s tests -p "test_candidate_01_intrinsic_external_v3_router.py" -v
               rm -rf \
                 artifacts/candidate-01-v2-parity-${{ matrix.label }} \
@@ -96,47 +98,11 @@ jobs:
                 --cache ${{ matrix.cache_path }} \
                 --output artifacts/candidate-01-v3-parity-${{ matrix.label }} \
                 --workers 4
-              python - <<"PY"
-              import json
-              from pathlib import Path
-              import pandas as pd
-              from pandas.testing import assert_frame_equal
-
-              root = Path("artifacts")
-              v2 = root / "candidate-01-v2-parity-${{ matrix.label }}"
-              v3 = root / "candidate-01-v3-parity-${{ matrix.label }}"
-              s2 = json.loads((v2 / "intrinsic_external_liquidity_v2_daily_week_summary.json").read_text())
-              s3 = json.loads((v3 / "intrinsic_external_liquidity_v3_daily_week_summary.json").read_text())
-              for key in (
-                  "evaluation_event_bars",
-                  "evaluation_retest_signals",
-                  "routed_plans",
-                  "decision_counts",
-                  "detector_counts",
-                  "metrics",
-              ):
-                  if s2[key] != s3[key]:
-                      raise AssertionError(f"summary parity failed for {key}: {s2[key]} != {s3[key]}")
-              for name in ("trades.csv", "daily_nav.csv", "rejections.csv", "routing_decisions.csv"):
-                  try:
-                      left = pd.read_csv(v2 / name)
-                      right = pd.read_csv(v3 / name)
-                  except pd.errors.EmptyDataError:
-                      left_empty = (v2 / name).read_text() == ""
-                      right_empty = (v3 / name).read_text() == ""
-                      if left_empty != right_empty:
-                          raise
-                      continue
-                  assert_frame_equal(left, right, check_dtype=False, check_exact=True)
-              report = {
-                  "week": "${{ matrix.week }}",
-                  "label": "${{ matrix.label }}",
-                  "parity": True,
-                  "metrics": s3["metrics"],
-              }
-              (v3 / "parity_report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-              print(json.dumps(report, indent=2, sort_keys=True))
-              PY
+              python research/candidate-01/check_intrinsic_external_parity.py \
+                --left artifacts/candidate-01-v2-parity-${{ matrix.label }} \
+                --right artifacts/candidate-01-v3-parity-${{ matrix.label }} \
+                --label ${{ matrix.label }} \
+                --week ${{ matrix.week }}
             '
       - uses: actions/upload-artifact@v4
         with:
