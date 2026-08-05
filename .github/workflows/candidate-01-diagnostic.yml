@@ -1,0 +1,145 @@
+name: candidate-01-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".candidate01-bootstrap/diagnostic-run"
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  capture-discovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run exact frozen discovery week and retain stdout
+        id: discovery
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q src research/candidate-01 tests
+              python -m unittest discover -s tests -p "test_candidate_01.py" -v
+              python research/candidate-01/seed_protocol.py
+              set -o pipefail
+              mkdir -p artifacts/candidate-01
+              python research/candidate-01/run_research.py \
+                --suite discovery \
+                --output artifacts/candidate-01/discovery \
+                2>&1 | tee artifacts/candidate-01/discovery.log
+            '
+
+      - name: Commit exact diagnostics and compact evidence
+        if: always()
+        env:
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import shutil
+          import subprocess
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-01/discovery")
+          log_path = Path("artifacts/candidate-01/discovery.log")
+          metrics_path = root / "aggregate_metrics.json"
+          evidence = Path("research/candidate-01/evidence/discovery")
+          evidence.mkdir(parents=True, exist_ok=True)
+          if log_path.exists():
+              shutil.copy2(log_path, evidence / "discovery.log")
+
+          if metrics_path.exists():
+              segment_dir = root / "discovery"
+              copies = {
+                  metrics_path: evidence / "aggregate_metrics.json",
+                  root / "run.json": evidence / "suite_run.json",
+                  segment_dir / "metrics.json": evidence / "metrics.json",
+                  segment_dir / "run.json": evidence / "run.json",
+                  segment_dir / "data_manifest.json": evidence / "data_manifest.json",
+                  segment_dir / "trade_plans.csv": evidence / "trade_plans.csv",
+                  segment_dir / "daily_nav.csv": evidence / "daily_nav.csv",
+                  segment_dir / "positions.csv": evidence / "positions.csv",
+                  segment_dir / "scenario_events.jsonl": evidence / "scenario_events.jsonl",
+                  segment_dir / "execution_events.jsonl": evidence / "execution_events.jsonl",
+              }
+              for source, target in copies.items():
+                  if source.exists():
+                      shutil.copy2(source, target)
+              payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+              segment = payload["segments"][0]
+              passed = bool(
+                  segment["target_met"]
+                  and int(segment["closed_positions"]) >= 5
+                  and float(segment["max_drawdown"]) > -0.20
+                  and bool(segment["ended_flat"])
+                  and int(segment["one_global_entry_gate_violations"]) == 0
+                  and int(segment.get("protective_order_failures", 0)) == 0
+                  and int(segment.get("liquidation_marker_rows", 0)) == 0
+              )
+              lines = [
+                  "# Recorded results", "",
+                  f"## Discovery week — {'PASS' if passed else 'FAIL'}", "",
+                  f"- implementation commit: `{subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()}`",
+                  f"- workflow: {os.environ['WORKFLOW_URL']}",
+                  f"- frozen interval: `{segment['evaluation_start_utc']}` to `{segment['evaluation_end_utc']}`",
+                  f"- cost-after geometric mean daily NAV growth: `{segment['geometric_mean_daily_return']:.8%}`",
+                  f"- total return: `{segment['total_return']:.8%}`",
+                  f"- maximum drawdown: `{segment['max_drawdown']:.8%}`",
+                  f"- submitted / closed positions: `{segment['submissions']}` / `{segment['closed_positions']}`",
+                  f"- ended flat: `{segment['ended_flat']}`",
+                  f"- global-entry-gate violations: `{segment['one_global_entry_gate_violations']}`",
+                  f"- protective-order failures: `{segment.get('protective_order_failures', 0)}`",
+                  f"- liquidation markers: `{segment.get('liquidation_marker_rows', 0)}`", "",
+                  "This is only the frozen discovery gate. Confirmation weeks and the fixed 2024 evaluation remain unopened unless it passes.",
+              ]
+          else:
+              tail = ""
+              if log_path.exists():
+                  tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:])
+              lines = [
+                  "# Recorded results", "",
+                  "## Discovery week — RUNTIME FAILURE", "",
+                  f"- implementation commit: `{subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()}`",
+                  f"- workflow: {os.environ['WORKFLOW_URL']}", "",
+                  "No aggregate metrics were produced. The exact log is committed under `evidence/discovery/discovery.log`.", "",
+                  "```text", tail, "```",
+              ]
+          Path("research/candidate-01/RESULTS.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- research/candidate-01/RESULTS.md research/candidate-01/evidence/discovery
+          if ! git diff --cached --quiet; then
+            git commit -m "research(candidate-01): capture exact discovery diagnostics"
+            git push origin HEAD:research/candidate-01
+          fi
