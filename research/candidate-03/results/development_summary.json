@@ -1,220 +1,94 @@
 {
-  "candidate": "candidate-03-lcpt-v1",
-  "causal_audits": {
-    "drawdown": "computed from liquidation-value mark-to-market NAV on every futures aggregate trade",
-    "entry_buffer": {
-      "invalidation": "cancel when the original cascade-extreme stop is crossed before first entry trade",
-      "selected": "one full minute after confirmation"
+  "candidate": "candidate-03-adse-v1",
+  "status": "development_exact_replay_passed_validation_frozen_unopened",
+  "execution": {
+    "data": "Binance Vision futures aggTrades, spot aggTrades, USD-M metrics",
+    "entry": "first futures aggregate trade after a valid one-minute buffer",
+    "costs": {
+      "taker_fee_bps_each_fill": 5.0,
+      "slippage_and_market_impact_bps_each_fill": 1.5,
+      "funding_bps_per_8h": 1.0
     },
-    "extension_filter": {
-      "continuation_inclusive_control": "rejected because it conditions event age on the confirmation interval itself",
-      "reason": "measures event age at ignition completion before continuation confirmation",
-      "selected": "60-minute directional move ending at ignition close; includes ignition and excludes the continuation interval",
-      "strictly_before_ignition_control": "added stale/late events; development win rate and drawdown degraded"
-    }
+    "risk_fraction": 0.03,
+    "single_global_slot": true
   },
-  "data_notes": {
-    "2022-03-07_futures_aggregate_trade_rows": 14646755,
-    "2022-03-07_invalid_zero_oi_snapshots": 117,
-    "2022-07-18_futures_aggregate_trade_rows": 18583307,
-    "2025-03-17_futures_aggregate_trade_rows": 9211719,
-    "zero_oi_policy": "treat as unavailable provider snapshots, reset OI continuity, never interpret as liquidation"
-  },
-  "exact_aggregate_trade_development_results": {
-    "2022-03-07": {
-      "closed_nav_max_drawdown": 0.04551153977498479,
-      "daily_geometric_growth": 0.050181196854701904,
-      "directions": {
-        "LONG": 5,
-        "SHORT": 6
-      },
-      "exit_reasons": {
-        "END_OF_RUN": 0,
-        "STOP": 4,
-        "TARGET": 2,
-        "TIME": 4,
-        "TRAIL": 1
-      },
-      "final_nav": 140880.10506833988,
-      "gate_passed": true,
-      "max_drawdown": 0.10621706302104739,
-      "mean_net_r": 1.1496415557371407,
-      "median_net_r": 0.29894717264165044,
-      "net_return": 0.4088010506833988,
-      "scenario_counters": {
-        "blocked_signals": 4,
-        "invalidated_before_entry": 0,
-        "protection_activations": 4,
-        "signals": 15,
-        "structural_stop_updates": 92
-      },
-      "trades": 11,
-      "win_rate": 0.5454545454545454,
-      "wins": 6
+  "weeks": [
+    {
+      "week": "2022-03-07",
+      "signals": 20,
+      "blocked_signals": 4,
+      "invalidated_before_entry": 3,
+      "trades": 13,
+      "wins": 8,
+      "win_rate": 0.6153846153846154,
+      "mean_net_r": 1.1679674672838045,
+      "median_net_r": 0.5730398807171375,
+      "final_nav": 151808.74162150873,
+      "daily_geometric_growth": 0.061449996737366286,
+      "max_drawdown": 0.08554237515390817,
+      "scenario_kinds": {"LCPT": 11, "TPR": 2}
     },
-    "2022-07-18": {
-      "closed_nav_max_drawdown": 0.15685739277229338,
-      "daily_geometric_growth": 0.02507326551221878,
-      "directions": {
-        "LONG": 8,
-        "SHORT": 6
-      },
-      "exit_reasons": {
-        "END_OF_RUN": 0,
-        "STOP": 6,
-        "TARGET": 1,
-        "TIME": 2,
-        "TRAIL": 5
-      },
-      "final_nav": 118928.06399469939,
-      "gate_passed": true,
-      "max_drawdown": 0.19067445546405126,
-      "mean_net_r": 0.4668992615851643,
-      "median_net_r": -0.20778680261437646,
-      "net_return": 0.18928063994699396,
-      "scenario_counters": {
-        "blocked_signals": 4,
-        "invalidated_before_entry": 0,
-        "protection_activations": 6,
-        "signals": 18,
-        "structural_stop_updates": 154
-      },
-      "trades": 14,
-      "win_rate": 0.5,
-      "wins": 7
-    },
-    "2025-03-17": {
-      "closed_nav_max_drawdown": 0.05859931432649079,
-      "daily_geometric_growth": 0.025599618645158362,
-      "directions": {
-        "LONG": 2,
-        "SHORT": 6
-      },
-      "exit_reasons": {
-        "END_OF_RUN": 0,
-        "STOP": 3,
-        "TARGET": 0,
-        "TIME": 3,
-        "TRAIL": 2
-      },
-      "final_nav": 119356.19211521577,
-      "gate_passed": true,
-      "max_drawdown": 0.0649676354825619,
+    {
+      "week": "2025-03-17",
+      "signals": 11,
+      "blocked_signals": 1,
+      "invalidated_before_entry": 2,
+      "trades": 8,
+      "wins": 5,
+      "win_rate": 0.625,
       "mean_net_r": 0.7805887753207186,
       "median_net_r": 0.9733553700265059,
-      "net_return": 0.19356192115215776,
-      "scenario_counters": {
-        "blocked_signals": 1,
-        "invalidated_before_entry": 1,
-        "protection_activations": 3,
-        "signals": 10,
-        "structural_stop_updates": 75
-      },
-      "trades": 8,
-      "win_rate": 0.625,
-      "wins": 5
+      "final_nav": 119356.19211521577,
+      "daily_geometric_growth": 0.025599618645158362,
+      "max_drawdown": 0.0649676354825619,
+      "scenario_kinds": {"LCPT": 8, "TPR": 0}
+    },
+    {
+      "week": "2022-07-18",
+      "signals": 19,
+      "blocked_signals": 4,
+      "invalidated_before_entry": 0,
+      "trades": 15,
+      "wins": 8,
+      "win_rate": 0.5333333333333333,
+      "mean_net_r": 0.57470144819924,
+      "median_net_r": 0.21070679126924155,
+      "final_nav": 126363.20415930903,
+      "daily_geometric_growth": 0.03399212898661208,
+      "max_drawdown": 0.1516529722892832,
+      "scenario_kinds": {"LCPT": 14, "TPR": 1}
+    },
+    {
+      "week": "2023-04-10",
+      "signals": 20,
+      "blocked_signals": 5,
+      "invalidated_before_entry": 4,
+      "trades": 11,
+      "wins": 6,
+      "win_rate": 0.5454545454545454,
+      "mean_net_r": 0.4560882621727736,
+      "median_net_r": 0.4995481376438652,
+      "final_nav": 114931.54952595911,
+      "daily_geometric_growth": 0.02007987678819667,
+      "max_drawdown": 0.13532054961255513,
+      "scenario_kinds": {"LCPT": 3, "TPR": 8}
     }
-  },
-  "frozen_config": {
-    "atr_minutes": 60,
-    "candidate": "candidate-03-lcpt-v1",
-    "continuation_futures_flow_min": 0.0,
-    "continuation_oi_drop_bps": 20.0,
-    "continuation_spot_flow_min": 0.0,
-    "development_weeks": [
-      "2022-03-07",
-      "2025-03-17",
-      "2022-07-18"
-    ],
-    "entry_buffer_minutes": 1,
-    "extension_through_ignition_max_bps": 50.0,
-    "funding_bps_per_8h": 1.0,
-    "futures_instrument_id": "BTCUSDT-PERP.BINANCE",
-    "ignition_futures_flow_min": 0.0,
-    "ignition_oi_drop_bps": 1.0,
-    "ignition_price_shock_bps": 10.0,
-    "ignition_spot_flow_min": -0.1,
-    "initial_nav": 100000.0,
-    "max_holding_minutes": 240,
-    "maximum_mark_to_market_drawdown": 0.2,
-    "minimum_daily_geometric_growth": 0.01,
-    "minimum_trades": 8,
-    "minimum_win_rate": 0.45,
-    "protection_activation_r": 2.0,
-    "protection_lock_net_r": 0.5,
-    "risk_fraction": 0.03,
-    "slippage_impact_bps": 1.5,
-    "spot_instrument_id": "BTCUSDT.BINANCE",
-    "stop_buffer_atr": 0.2,
-    "structural_trail_buffer_atr": 0.05,
-    "structural_trail_minutes": 20,
-    "taker_fee_bps": 5.0,
-    "target_net_r": 6.0,
-    "validation_weeks": [
-      "2023-04-10",
-      "2025-02-03",
-      "2025-10-06"
-    ]
-  },
-  "neighbor_controls": {
-    "event_threshold_ranges_passing_all_three_development_weeks": {
-      "continuation_oi_drop_bps": [
-        19,
-        20
-      ],
-      "extension_through_ignition_max_bps": [
-        50,
-        55
-      ],
-      "ignition_oi_drop_bps": [
-        0,
-        1.5
-      ],
-      "ignition_price_shock_bps": [
-        8,
-        11
-      ],
-      "ignition_spot_flow_min": [
-        -0.2,
-        0.0
-      ]
-    },
-    "exit_ranges_passing_all_three_development_weeks": {
-      "max_holding_minutes": [
-        180,
-        360
-      ],
-      "protection_activation_r": [
-        1.5,
-        3.0
-      ],
-      "protection_lock_net_r": [
-        0,
-        1.0
-      ],
-      "stop_buffer_atr": [
-        0.1,
-        0.3
-      ],
-      "structural_trail_buffer_atr": [
-        0,
-        0.15
-      ],
-      "structural_trail_minutes": [
-        10,
-        40
-      ],
-      "target_net_r": [
-        4,
-        8
-      ]
-    },
-    "screening_mode": "one-minute conservative adverse-first replay; frozen center rechecked with exact aggregate-trade order"
-  },
-  "next_staged_validation": [
-    "2023-04-10",
-    "2025-02-03",
-    "2025-10-06"
   ],
-  "status": "development_gates_passed_validation_unopened"
+  "controlled_neighbor_findings": {
+    "regime_overlap_pairs_passing_all_opened_weeks": [
+      {"lcpt_max": 1.4, "tpr_min": 1.0},
+      {"lcpt_max": 1.4, "tpr_min": 1.1},
+      {"lcpt_max": 1.5, "tpr_min": 1.0},
+      {"lcpt_max": 1.5, "tpr_min": 1.1}
+    ],
+    "lcpt_ignition_price_shock_bps": [9.0, 10.0, 11.0],
+    "lcpt_continuation_oi_drop_bps": [19.0, 20.0],
+    "lcpt_extension_max_bps": [50.0, 55.0],
+    "lcpt_target_net_r": [5.0, 6.0, 7.0],
+    "tpr_trend_min_bps": [20.0, 25.0],
+    "tpr_pullback_min_bps": [5.0, 6.0],
+    "tpr_resumption_min_bps": [4.0, 5.0, 6.0],
+    "tpr_target_net_r": [3.0, 3.5]
+  },
+  "note": "Neighbor screening used conservative adverse-first one-minute replay; the frozen center was then verified with exact aggregate-trade event order."
 }

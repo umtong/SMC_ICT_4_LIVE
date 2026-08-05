@@ -1,10 +1,18 @@
-name: candidate-03-lcpt-v1
+name: candidate-03-adse-v1
 
 on:
   push:
     branches: ["research/candidate-03"]
     paths:
-      - "research/candidate-03/**"
+      - "research/candidate-03/adse_*.py"
+      - "research/candidate-03/adse_config.json"
+      - "research/candidate-03/run_adse.py"
+      - "research/candidate-03/select_adse_weeks.py"
+      - "research/candidate-03/test_adse.py"
+      - "research/candidate-03/README.md"
+      - "research/candidate-03/results/**"
+      - "research/candidate-03/download_lcpt_bundle.py"
+      - "research/candidate-03/gate.py"
       - ".github/workflows/candidate-03.yml"
       - "src/smc_ict_4/**"
   workflow_dispatch:
@@ -24,12 +32,67 @@ jobs:
       - name: Frozen selection and causal/accounting tests
         run: |
           PYTHONPATH=src:research/candidate-03 \
-            python research/candidate-03/test_lcpt.py
-          python research/candidate-03/select_lcpt_weeks.py
+            python research/candidate-03/test_adse.py
+          python research/candidate-03/select_adse_weeks.py
           python -m compileall -q research/candidate-03 src/smc_ict_4
 
-  validation-week-1:
+  development-regression:
     needs: causal-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: development-1
+            week: "2022-03-07"
+          - label: development-2
+            week: "2025-03-17"
+          - label: development-3
+            week: "2022-07-18"
+          - label: development-4
+            week: "2023-04-10"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Download checksum-verified opened development week
+        run: >-
+          python research/candidate-03/download_lcpt_bundle.py
+          --symbol BTCUSDT
+          --week-start ${{ matrix.week }}
+          --output .research-data/candidate-03/adse/${{ matrix.label }}
+      - name: Exact aggregate-trade development replay
+        run: >-
+          PYTHONPATH=src:research/candidate-03
+          python research/candidate-03/run_adse.py
+          --futures-agg .research-data/candidate-03/adse/${{ matrix.label }}/futures-agg/*.zip
+          --spot-agg .research-data/candidate-03/adse/${{ matrix.label }}/spot-agg/*.zip
+          --metrics .research-data/candidate-03/adse/${{ matrix.label }}/metrics/*.zip
+          --week-start ${{ matrix.week }}
+          --label btc-adse-${{ matrix.label }}-${{ matrix.week }}
+          --output artifacts/candidate-03/adse/${{ matrix.label }}
+      - name: Gate opened development week
+        run: >-
+          python research/candidate-03/gate.py
+          artifacts/candidate-03/adse/${{ matrix.label }}/metrics.json
+          --minimum-trades 8
+          --minimum-win-rate 0.45
+          --minimum-daily-growth 0.01
+          --require-target
+      - name: Preserve development regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-adse-${{ matrix.label }}-${{ github.sha }}
+          path: |
+            artifacts/candidate-03/adse/${{ matrix.label }}
+            .research-data/candidate-03/adse/${{ matrix.label }}/*.manifest.json
+          if-no-files-found: error
+
+  validation-week-1:
+    needs: [causal-tests, development-regression]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -37,26 +100,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Open first frozen BTC week only
+      - name: Open first newly frozen BTC week only
         run: >-
           python research/candidate-03/download_lcpt_bundle.py
           --symbol BTCUSDT
-          --week-start 2023-04-10
-          --output .research-data/candidate-03/lcpt/validation-1
+          --week-start 2025-05-05
+          --output .research-data/candidate-03/adse/validation-1
       - name: Exact aggregate-trade replay
         run: >-
           PYTHONPATH=src:research/candidate-03
-          python research/candidate-03/run_lcpt.py
-          --futures-agg .research-data/candidate-03/lcpt/validation-1/futures-agg/*.zip
-          --spot-agg .research-data/candidate-03/lcpt/validation-1/spot-agg/*.zip
-          --metrics .research-data/candidate-03/lcpt/validation-1/metrics/*.zip
-          --week-start 2023-04-10
-          --label btc-lcpt-validation-1-2023-04-10
-          --output artifacts/candidate-03/lcpt/validation-1
-      - name: Gate first frozen BTC week
+          python research/candidate-03/run_adse.py
+          --futures-agg .research-data/candidate-03/adse/validation-1/futures-agg/*.zip
+          --spot-agg .research-data/candidate-03/adse/validation-1/spot-agg/*.zip
+          --metrics .research-data/candidate-03/adse/validation-1/metrics/*.zip
+          --week-start 2025-05-05
+          --label btc-adse-validation-1-2025-05-05
+          --output artifacts/candidate-03/adse/validation-1
+      - name: Gate first newly frozen BTC week
         run: >-
           python research/candidate-03/gate.py
-          artifacts/candidate-03/lcpt/validation-1/metrics.json
+          artifacts/candidate-03/adse/validation-1/metrics.json
           --minimum-trades 8
           --minimum-win-rate 0.45
           --minimum-daily-growth 0.01
@@ -65,10 +128,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-03-lcpt-validation-1-${{ github.sha }}
+          name: candidate-03-adse-validation-1-${{ github.sha }}
           path: |
-            artifacts/candidate-03/lcpt/validation-1
-            .research-data/candidate-03/lcpt/validation-1/*.manifest.json
+            artifacts/candidate-03/adse/validation-1
+            .research-data/candidate-03/adse/validation-1/*.manifest.json
           if-no-files-found: error
 
   validation-week-2:
@@ -80,26 +143,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Open second frozen BTC week after week 1 passes
+      - name: Open second newly frozen BTC week after week 1 passes
         run: >-
           python research/candidate-03/download_lcpt_bundle.py
           --symbol BTCUSDT
-          --week-start 2025-02-03
-          --output .research-data/candidate-03/lcpt/validation-2
+          --week-start 2022-09-19
+          --output .research-data/candidate-03/adse/validation-2
       - name: Exact aggregate-trade replay
         run: >-
           PYTHONPATH=src:research/candidate-03
-          python research/candidate-03/run_lcpt.py
-          --futures-agg .research-data/candidate-03/lcpt/validation-2/futures-agg/*.zip
-          --spot-agg .research-data/candidate-03/lcpt/validation-2/spot-agg/*.zip
-          --metrics .research-data/candidate-03/lcpt/validation-2/metrics/*.zip
-          --week-start 2025-02-03
-          --label btc-lcpt-validation-2-2025-02-03
-          --output artifacts/candidate-03/lcpt/validation-2
-      - name: Gate second frozen BTC week
+          python research/candidate-03/run_adse.py
+          --futures-agg .research-data/candidate-03/adse/validation-2/futures-agg/*.zip
+          --spot-agg .research-data/candidate-03/adse/validation-2/spot-agg/*.zip
+          --metrics .research-data/candidate-03/adse/validation-2/metrics/*.zip
+          --week-start 2022-09-19
+          --label btc-adse-validation-2-2022-09-19
+          --output artifacts/candidate-03/adse/validation-2
+      - name: Gate second newly frozen BTC week
         run: >-
           python research/candidate-03/gate.py
-          artifacts/candidate-03/lcpt/validation-2/metrics.json
+          artifacts/candidate-03/adse/validation-2/metrics.json
           --minimum-trades 8
           --minimum-win-rate 0.45
           --minimum-daily-growth 0.01
@@ -108,10 +171,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-03-lcpt-validation-2-${{ github.sha }}
+          name: candidate-03-adse-validation-2-${{ github.sha }}
           path: |
-            artifacts/candidate-03/lcpt/validation-2
-            .research-data/candidate-03/lcpt/validation-2/*.manifest.json
+            artifacts/candidate-03/adse/validation-2
+            .research-data/candidate-03/adse/validation-2/*.manifest.json
           if-no-files-found: error
 
   validation-week-3:
@@ -123,26 +186,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Open third frozen BTC week after weeks 1 and 2 pass
+      - name: Open third newly frozen BTC week after weeks 1 and 2 pass
         run: >-
           python research/candidate-03/download_lcpt_bundle.py
           --symbol BTCUSDT
-          --week-start 2025-10-06
-          --output .research-data/candidate-03/lcpt/validation-3
+          --week-start 2023-06-05
+          --output .research-data/candidate-03/adse/validation-3
       - name: Exact aggregate-trade replay
         run: >-
           PYTHONPATH=src:research/candidate-03
-          python research/candidate-03/run_lcpt.py
-          --futures-agg .research-data/candidate-03/lcpt/validation-3/futures-agg/*.zip
-          --spot-agg .research-data/candidate-03/lcpt/validation-3/spot-agg/*.zip
-          --metrics .research-data/candidate-03/lcpt/validation-3/metrics/*.zip
-          --week-start 2025-10-06
-          --label btc-lcpt-validation-3-2025-10-06
-          --output artifacts/candidate-03/lcpt/validation-3
-      - name: Gate third frozen BTC week
+          python research/candidate-03/run_adse.py
+          --futures-agg .research-data/candidate-03/adse/validation-3/futures-agg/*.zip
+          --spot-agg .research-data/candidate-03/adse/validation-3/spot-agg/*.zip
+          --metrics .research-data/candidate-03/adse/validation-3/metrics/*.zip
+          --week-start 2023-06-05
+          --label btc-adse-validation-3-2023-06-05
+          --output artifacts/candidate-03/adse/validation-3
+      - name: Gate third newly frozen BTC week
         run: >-
           python research/candidate-03/gate.py
-          artifacts/candidate-03/lcpt/validation-3/metrics.json
+          artifacts/candidate-03/adse/validation-3/metrics.json
           --minimum-trades 8
           --minimum-win-rate 0.45
           --minimum-daily-growth 0.01
@@ -151,8 +214,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-03-lcpt-validation-3-${{ github.sha }}
+          name: candidate-03-adse-validation-3-${{ github.sha }}
           path: |
-            artifacts/candidate-03/lcpt/validation-3
-            .research-data/candidate-03/lcpt/validation-3/*.manifest.json
+            artifacts/candidate-03/adse/validation-3
+            .research-data/candidate-03/adse/validation-3/*.manifest.json
           if-no-files-found: error
