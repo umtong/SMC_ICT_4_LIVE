@@ -22,10 +22,12 @@ jobs:
       - name: Collect locked positioning, basis and funding data
         run: python .candidate-02-state/collect_derivative_state.py
       - name: Upload immutable derivative-state data
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: candidate-02-derivative-state-${{ github.sha }}
           path: |
             .cache/candidate-02/derivative-state
             artifacts/candidate-02-state/manifest.json
+          if-no-files-found: warn
           retention-days: 30
