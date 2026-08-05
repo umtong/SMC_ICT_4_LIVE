@@ -1,0 +1,173 @@
+        "active_days": sum(abs(value) > 1e-12 for value in daily_returns.values()) >= config.gate_min_active_days,
+        "win_rate": (sum(trade.net_pnl > 0 for trade in trades) / len(trades) if trades else 0.0)
+        >= config.gate_min_win_rate,
+        "max_drawdown": max_drawdown <= config.gate_max_drawdown,
+        "largest_winner_share": largest_winner_share <= config.gate_max_largest_winner_share,
+        "single_position": True,
+        "positive_nav": ending_nav > 0,
+    }
+    metrics = {
+        "starting_nav": config.starting_nav,
+        "ending_nav": ending_nav,
+        "total_return": ending_nav / config.starting_nav - 1.0,
+        "geometric_daily_growth": geometric_daily,
+        "calendar_days": calendar_days,
+        "trades": len(trades),
+        "wins": sum(trade.net_pnl > 0 for trade in trades),
+        "win_rate": sum(trade.net_pnl > 0 for trade in trades) / len(trades) if trades else 0.0,
+        "targets": sum(trade.reason == "TARGET" for trade in trades),
+        "sum_net_r": sum(trade.net_r for trade in trades),
+        "mean_net_r": float(np.mean([trade.net_r for trade in trades])) if trades else 0.0,
+        "max_drawdown_realized": max_drawdown,
+        "largest_winner_share": largest_winner_share,
+        "active_days": sum(abs(value) > 1e-12 for value in daily_returns.values()),
+        "daily_returns": daily_returns,
+        "scenario_metrics": scenario_metrics,
+        "gate_checks": checks,
+        "gate_pass": all(checks.values()),
+    }
+    diagnostics = [
+        *({"scenario": "SWING_FAILED_AUCTION_RESUMPTION", **item} for item in swing_diagnostics),
+        *({"scenario": "INVENTORY_BACKED_DISPLACEMENT", **item} for item in trend_diagnostics),
+    ]
+    return trades, metrics, diagnostics
+
+
+def serializable(value: Any) -> Any:
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, (np.integer, np.floating)):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): serializable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [serializable(item) for item in value]
+    return value
+
+
+def write_outputs(
+    output: Path,
+    trades: list[Trade],
+    metrics: dict[str, Any],
+    diagnostics: list[dict[str, Any]],
+    config_path: Path,
+    evaluation_start: pd.Timestamp,
+    evaluation_end: pd.Timestamp,
+) -> None:
+    output.mkdir(parents=True, exist_ok=True)
+    trade_frame = pd.DataFrame(serializable(asdict(trade)) for trade in trades)
+    trade_frame.to_csv(output / "trades.csv", index=False)
+    pd.DataFrame(serializable(item) for item in diagnostics).to_csv(
+        output / "diagnostics.csv.gz",
+        index=False,
+        compression="gzip",
+    )
+    payload = serializable(metrics)
+    (output / "metrics.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    run = {
+        "candidate": "candidate-04-v5-swing-displacement",
+        "evaluation_start": evaluation_start.isoformat(),
+        "evaluation_end": evaluation_end.isoformat(),
+        "config_sha256": sha256_file(config_path),
+    }
+    if create_run_manifest is not None:
+        run = create_run_manifest(
+            run_id=f"candidate-04-v5-{evaluation_start.date()}-{evaluation_end.date()}",
+            candidate="candidate-04-v5-swing-displacement",
+            config_path=config_path,
+            extra=run,
+        )
+    (output / "run.json").write_text(
+        json.dumps(serializable(run), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    if ResearchEvent is not None and write_events is not None:
+        events = []
+        previous: dict[str, str] = {}
+        for trade in trades:
+            scenario_id = f"{trade.scenario}-{trade.entry_time.isoformat()}"
+            prior = previous.get(scenario_id, "READY")
+            entry_ns = int(trade.entry_time.value)
+            exit_ns = int(trade.exit_time.value)
+            events.append(
+                ResearchEvent(
+                    scenario_id=scenario_id,
+                    instrument_id=INSTRUMENT_ID,
+                    event_type="ENTRY",
+                    event_time_ns=entry_ns,
+                    observed_time_ns=entry_ns,
+                    previous_state=prior,
+                    next_state="POSITION_OPEN",
+                    reason_code=trade.scenario,
+                    reference_price=str(trade.entry_fill),
+                    details={"side": trade.side, "quantity": trade.quantity},
+                ),
+            )
+            events.append(
+                ResearchEvent(
+                    scenario_id=scenario_id,
+                    instrument_id=INSTRUMENT_ID,
+                    event_type="EXIT",
+                    event_time_ns=exit_ns,
+                    observed_time_ns=exit_ns,
+                    previous_state="POSITION_OPEN",
+                    next_state="COMPLETE",
+                    reason_code=trade.reason,
+                    reference_price=str(trade.exit_fill),
+                    details={"net_pnl": trade.net_pnl, "net_r": trade.net_r},
+                ),
+            )
+            previous[scenario_id] = "COMPLETE"
+        write_events(output / "events.jsonl", events)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--rich-dir", type=Path, required=True)
+    parser.add_argument("--kline-dir", type=Path, required=True)
+    parser.add_argument("--evaluation-start", required=True)
+    parser.add_argument("--evaluation-end", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--download-klines", action="store_true")
+    args = parser.parse_args()
+
+    config = Config.load(args.config)
+    evaluation_start = pd.Timestamp(args.evaluation_start, tz="UTC")
+    evaluation_end = pd.Timestamp(args.evaluation_end, tz="UTC") + pd.Timedelta(hours=23, minutes=59)
+    if args.download_klines:
+        kline_paths = ensure_klines(
+            config.symbol,
+            evaluation_start.date(),
+            evaluation_end.date(),
+            args.kline_dir,
+        )
+    else:
+        kline_paths = sorted(args.kline_dir.glob(f"{config.symbol}-1m-*.zip"))
+    rich = load_rich(args.rich_dir)
+    klines = load_klines(kline_paths)
+    required = pd.date_range(evaluation_start.normalize(), evaluation_end.normalize(), freq="1D").date
+    present = set(klines.index.normalize().date)
+    missing = [str(day) for day in required if day not in present]
+    if missing:
+        raise CandidateError(f"missing evaluation kline days: {missing}")
+    data = prepare_data(rich, klines, config)
+    trades, metrics, diagnostics = run_candidate(data, evaluation_start, evaluation_end, config)
+    write_outputs(
+        args.output,
+        trades,
+        metrics,
+        diagnostics,
+        args.config,
+        evaluation_start,
+        evaluation_end,
+    )
+    print(json.dumps(serializable(metrics), indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
