@@ -1,0 +1,82 @@
+name: candidate-04-event-time-development
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/event_time_candidate.py"
+      - "research/candidate-04/event_time_source/**"
+      - "research/candidate-04/tests/test_event_time_candidate.py"
+      - ".github/workflows/candidate-04-event-time.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - {name: dev1, start: "2025-08-30", end: "2025-09-07", eval_start: "2025-09-01", eval_end: "2025-09-07"}
+          - {name: dev2, start: "2024-12-25", end: "2025-01-02", eval_start: "2024-12-27", eval_end: "2025-01-02"}
+          - {name: dev3, start: "2025-10-18", end: "2025-10-26", eval_start: "2025-10-20", eval_end: "2025-10-26"}
+          - {name: dev4, start: "2025-06-10", end: "2025-06-18", eval_start: "2025-06-12", eval_end: "2025-06-18"}
+          - {name: dev5, start: "2023-04-15", end: "2023-04-23", eval_start: "2023-04-17", eval_end: "2023-04-23"}
+          - {name: validation3, start: "2024-09-15", end: "2024-09-23", eval_start: "2024-09-17", eval_end: "2024-09-23"}
+          - {name: reserve1, start: "2023-12-16", end: "2023-12-24", eval_start: "2023-12-18", eval_end: "2023-12-24"}
+          - {name: reserve2, start: "2024-08-05", end: "2024-08-13", eval_start: "2024-08-07", eval_end: "2024-08-13"}
+          - {name: reserve3, start: "2025-12-01", end: "2025-12-09", eval_start: "2025-12-03", eval_end: "2025-12-09"}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+
+      - name: Use locked project foundation
+        run: |
+          uv lock --check
+          uv sync --locked
+
+      - name: Verify runtime and candidate contracts
+        run: |
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-04
+          uv run python -m unittest \
+            research/candidate-04/tests/test_event_time_candidate.py \
+            research/candidate-04/tests/test_rich_features_v2.py -v
+
+      - name: Run event-time detector and scenario replay
+        run: |
+          uv run python research/candidate-04/event_time_candidate.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --eval-start "${{ matrix.eval_start }}" \
+            --eval-end "${{ matrix.eval_end }}" \
+            --cache ".cache/candidate-04-event-time/${{ matrix.name }}" \
+            --output "artifacts/candidate-04-event-time/${{ matrix.name }}"
+
+      - name: Verify evidence contract
+        run: |
+          test -s "artifacts/candidate-04-event-time/${{ matrix.name }}/summary.json"
+          test -s "artifacts/candidate-04-event-time/${{ matrix.name }}/data_manifest.json"
+          test -s "artifacts/candidate-04-event-time/${{ matrix.name }}/events.csv.gz"
+          python -m json.tool "artifacts/candidate-04-event-time/${{ matrix.name }}/summary.json"
+
+      - name: Preserve compact event evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-event-time-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-04-event-time/${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 30
