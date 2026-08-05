@@ -50,6 +50,29 @@ jobs:
             -s research/candidate-04/tests \
             -p 'test_*.py' -v
 
+      - name: Prefetch all frozen BTC weeks for controlled diagnostics
+        run: |
+          uv run python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import sys
+
+          module_path = Path("research/candidate-04/candidate.py")
+          spec = importlib.util.spec_from_file_location("candidate_04_prefetch", module_path)
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          config = module.load_config(Path("research/candidate-04/config.json"))
+          for _, start, end in module.load_evaluation_weeks(Path("research/candidate-04/config.json")):
+              module.download_binance_week(
+                  symbol=config.symbol,
+                  interval=config.interval,
+                  start=start,
+                  end=end,
+                  data_root=Path(".cache/binance-candidate-04"),
+              )
+          PY
+
       - name: Frozen staged BTC screening
         env:
           DISPATCH_MAX_WEEKS: ${{ github.event.inputs.max_weeks }}
