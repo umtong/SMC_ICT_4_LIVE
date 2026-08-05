@@ -12,27 +12,24 @@ permissions:
   packages: read
 
 env:
-  PYTHONPATH: ${{ github.workspace }}/src
-  PYTHONDONTWRITEBYTECODE: "1"
-  PYTHONUNBUFFERED: "1"
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
 
 jobs:
   materialize-and-validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    container:
-      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout staged payload
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Activate prebuilt environment
-        run: echo "/opt/smc4/.venv/bin" >> "$GITHUB_PATH"
+      - name: Authenticate pinned research image
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Materialize candidate payload
         run: |
@@ -51,35 +48,56 @@ jobs:
           git add -- research/candidate-01 tests/test_candidate_01.py
           git commit -m "research(candidate-01): implement causal liquidity auction"
 
-      - name: Verify prebuilt runtime
-        run: smc4 doctor
-
-      - name: Compile candidate
-        run: python -m compileall -q src research/candidate-01 tests
-
-      - name: Causal and protocol tests
-        run: python -m unittest tests.test_candidate_01 -v
-
-      - name: Verify frozen random-week order
-        run: python research/candidate-01/seed_protocol.py
+      - name: Verify pinned runtime and causal invariants
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q src research/candidate-01 tests
+              python -m unittest discover -s tests -p "test_candidate_01.py" -v
+              python research/candidate-01/seed_protocol.py
+            '
 
       - name: Run first frozen discovery week
         id: discovery
         continue-on-error: true
         run: |
-          set -o pipefail
-          mkdir -p artifacts/candidate-01
-          python research/candidate-01/run_research.py \
-            --suite discovery \
-            --output artifacts/candidate-01/discovery \
-            2>&1 | tee artifacts/candidate-01/discovery.log
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              set -o pipefail
+              mkdir -p artifacts/candidate-01
+              python research/candidate-01/run_research.py \
+                --suite discovery \
+                --output artifacts/candidate-01/discovery \
+                2>&1 | tee artifacts/candidate-01/discovery.log
+            '
 
       - name: Record immutable discovery result
         if: always()
         env:
           WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           import os
           from pathlib import Path
@@ -167,7 +185,7 @@ jobs:
       - name: Enforce discovery progression gate
         if: always()
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           from pathlib import Path
           path = Path("artifacts/candidate-01/discovery/aggregate_metrics.json")

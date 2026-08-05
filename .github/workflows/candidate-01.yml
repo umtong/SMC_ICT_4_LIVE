@@ -27,60 +27,70 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PYTHONPATH: ${{ github.workspace }}/src
-  PYTHONDONTWRITEBYTECODE: "1"
-  PYTHONUNBUFFERED: "1"
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
 
 jobs:
   discovery:
     name: causal tests and first frozen random week
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    container:
-      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Activate prebuilt environment
-        run: echo "/opt/smc4/.venv/bin" >> "$GITHUB_PATH"
-
-      - name: Verify prebuilt runtime
-        run: smc4 doctor
-
-      - name: Compile candidate
-        run: python -m compileall -q src research/candidate-01 tests
-
-      - name: Causal and protocol tests
-        run: python -m unittest tests.test_candidate_01 -v
-
-      - name: Verify frozen random-week order
-        run: python research/candidate-01/seed_protocol.py
-
+      - name: Authenticate pinned research image
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Restore public-data cache
         uses: actions/cache@v4
         with:
           path: .cache/candidate-01
           key: candidate-01-binance-vision-${{ runner.os }}
-
+      - name: Verify runtime, causal invariants, and frozen protocol
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q src research/candidate-01 tests
+              python -m unittest discover -s tests -p "test_candidate_01.py" -v
+              python research/candidate-01/seed_protocol.py
+            '
       - name: Run first frozen discovery week only
         run: |
-          set -o pipefail
-          mkdir -p artifacts/candidate-01
-          python research/candidate-01/run_research.py \
-            --suite discovery \
-            --output artifacts/candidate-01/discovery \
-            2>&1 | tee artifacts/candidate-01/discovery.log
-
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              set -o pipefail
+              mkdir -p artifacts/candidate-01
+              python research/candidate-01/run_research.py \
+                --suite discovery \
+                --output artifacts/candidate-01/discovery \
+                2>&1 | tee artifacts/candidate-01/discovery.log
+            '
       - name: Print aggregate evidence
         if: always()
-        run: |
-          test -f artifacts/candidate-01/discovery/aggregate_metrics.json && \
-          cat artifacts/candidate-01/discovery/aggregate_metrics.json || true
-
+        run: test -f artifacts/candidate-01/discovery/aggregate_metrics.json && cat artifacts/candidate-01/discovery/aggregate_metrics.json || true
       - name: Preserve discovery evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -102,27 +112,38 @@ jobs:
         contains(github.event.head_commit.message, '[full]')))
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    container:
-      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - run: echo "/opt/smc4/.venv/bin" >> "$GITHUB_PATH"
-      - run: smc4 doctor
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/cache@v4
         with:
           path: .cache/candidate-01
           key: candidate-01-binance-vision-${{ runner.os }}
       - name: Run discovery plus two confirmation weeks
         run: |
-          set -o pipefail
-          mkdir -p artifacts/candidate-01
-          python research/candidate-01/run_research.py \
-            --suite quick \
-            --output artifacts/candidate-01/quick \
-            2>&1 | tee artifacts/candidate-01/quick.log
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              set -o pipefail
+              mkdir -p artifacts/candidate-01
+              python research/candidate-01/run_research.py \
+                --suite quick \
+                --output artifacts/candidate-01/quick \
+                2>&1 | tee artifacts/candidate-01/quick.log
+            '
       - if: always()
         run: test -f artifacts/candidate-01/quick/aggregate_metrics.json && cat artifacts/candidate-01/quick/aggregate_metrics.json || true
       - if: always()
@@ -141,27 +162,38 @@ jobs:
       (github.event_name == 'push' && contains(github.event.head_commit.message, '[extended]'))
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    container:
-      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - run: echo "/opt/smc4/.venv/bin" >> "$GITHUB_PATH"
-      - run: smc4 doctor
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/cache@v4
         with:
           path: .cache/candidate-01
           key: candidate-01-binance-vision-${{ runner.os }}
       - name: Run extended suite
         run: |
-          set -o pipefail
-          mkdir -p artifacts/candidate-01
-          python research/candidate-01/run_research.py \
-            --suite extended \
-            --output artifacts/candidate-01/extended \
-            2>&1 | tee artifacts/candidate-01/extended.log
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              set -o pipefail
+              mkdir -p artifacts/candidate-01
+              python research/candidate-01/run_research.py \
+                --suite extended \
+                --output artifacts/candidate-01/extended \
+                2>&1 | tee artifacts/candidate-01/extended.log
+            '
       - if: always()
         run: test -f artifacts/candidate-01/extended/aggregate_metrics.json && cat artifacts/candidate-01/extended/aggregate_metrics.json || true
       - if: always()
@@ -180,15 +212,13 @@ jobs:
       (github.event_name == 'push' && contains(github.event.head_commit.message, '[full]'))
     runs-on: ubuntu-24.04
     timeout-minutes: 180
-    container:
-      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - run: echo "/opt/smc4/.venv/bin" >> "$GITHUB_PATH"
-      - run: smc4 doctor
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/cache@v4
         with:
           path: .cache/candidate-01
@@ -197,12 +227,25 @@ jobs:
         id: research
         continue-on-error: true
         run: |
-          set -o pipefail
-          mkdir -p artifacts/candidate-01
-          python research/candidate-01/run_research.py \
-            --suite full \
-            --output artifacts/candidate-01/full \
-            2>&1 | tee artifacts/candidate-01/full.log
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              set -o pipefail
+              mkdir -p artifacts/candidate-01
+              python research/candidate-01/run_research.py \
+                --suite full \
+                --output artifacts/candidate-01/full \
+                2>&1 | tee artifacts/candidate-01/full.log
+            '
       - name: Print aggregate evidence
         if: always()
         run: test -f artifacts/candidate-01/full/aggregate_metrics.json && cat artifacts/candidate-01/full/aggregate_metrics.json || true
@@ -216,7 +259,7 @@ jobs:
           retention-days: 90
       - name: Enforce predeclared completion gate
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import json
           from pathlib import Path
           path = Path("artifacts/candidate-01/full/aggregate_metrics.json")
