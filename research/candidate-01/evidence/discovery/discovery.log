@@ -8,15 +8,31 @@ Traceback (most recent call last):
     ...<5 lines>...
         output_dir=destination,
     )
-  File "/workspace/research/candidate-01/nautilus_backtest.py", line 646, in run_nautilus_backtest
-    engine.add_venue(
-    ~~~~~~~~~~~~~~~~^
-        venue=venue,
-        ^^^^^^^^^^^^
-    ...<9 lines>...
-        liquidation_cancel_open_orders=True,
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/research/candidate-01/nautilus_backtest.py", line 666, in run_nautilus_backtest
+    metrics = _build_metrics(
+        label=label,
+    ...<5 lines>...
+        positions=positions,
     )
-    ^
-  File "nautilus_trader/backtest/engine.pyx", line 502, in nautilus_trader.backtest.engine.BacktestEngine.add_venue
-TypeError: add_venue() got an unexpected keyword argument 'liquidation_enabled'
+  File "/workspace/research/candidate-01/nautilus_backtest.py", line 216, in _build_metrics
+    liquidation_marker_rows = _liquidation_marker_rows(fills, positions)
+  File "/workspace/research/candidate-01/nautilus_backtest.py", line 160, in _liquidation_marker_rows
+    row_text = frame.astype(str).agg(" ".join, axis=1).str.upper()
+               ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/opt/smc4/.venv/lib/python3.13/site-packages/pandas/core/frame.py", line 12048, in aggregate
+    result = op.agg()
+  File "/opt/smc4/.venv/lib/python3.13/site-packages/pandas/core/apply.py", line 1036, in agg
+    result = self.obj.apply(self.func, axis, args=self.args, **self.kwargs)
+  File "/opt/smc4/.venv/lib/python3.13/site-packages/pandas/core/frame.py", line 12437, in apply
+    return op.apply().__finalize__(self, method="apply")
+           ~~~~~~~~^^
+  File "/opt/smc4/.venv/lib/python3.13/site-packages/pandas/core/apply.py", line 1015, in apply
+    return self.apply_standard()
+           ~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/smc4/.venv/lib/python3.13/site-packages/pandas/core/apply.py", line 1167, in apply_standard
+    results, res_index = self.apply_series_generator()
+                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/smc4/.venv/lib/python3.13/site-packages/pandas/core/apply.py", line 1183, in apply_series_generator
+    results[i] = self.func(v, *self.args, **self.kwargs)
+                 ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: sequence item 23: expected str instance, float found
