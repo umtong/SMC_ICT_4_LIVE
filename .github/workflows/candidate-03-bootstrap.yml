@@ -1,0 +1,41 @@
+name: candidate-03-lcpt-bootstrap
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - ".lcpt-bootstrap/**"
+      - ".github/workflows/candidate-03-bootstrap.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  install-frozen-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify and install frozen LCPT-v1 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .lcpt-bootstrap/part* > /tmp/candidate03-lcpt.tar.gz.b64
+          base64 -d /tmp/candidate03-lcpt.tar.gz.b64 > /tmp/candidate03-lcpt.tar.gz
+          echo "f6a90f787e436344fc5c0f44621700214c070d4c02df08aa86a7deccefaececf  /tmp/candidate03-lcpt.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/candidate03-lcpt.tar.gz -C .
+          rm -rf .lcpt-bootstrap
+          rm -f .github/workflows/candidate-03-bootstrap.yml
+          rm -f .github/workflows/candidate-03-oi-diagnostics.yml
+          rm -f .github/workflows/candidate-03-spot-flow-diagnostics.yml
+          rm -f .github/workflows/candidate-03-validation-diagnostics.yml
+          PYTHONPATH=src:research/candidate-03 python research/candidate-03/test_lcpt.py
+          python research/candidate-03/select_lcpt_weeks.py
+          python -m compileall -q research/candidate-03 src/smc_ict_4
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add -A
+          git commit -m "candidate-03: freeze LCPT-v1 staged validation"
+          git push origin HEAD:research/candidate-03
