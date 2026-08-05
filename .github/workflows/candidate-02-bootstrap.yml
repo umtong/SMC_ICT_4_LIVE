@@ -30,41 +30,7 @@ jobs:
           sed -i 's/from nautilus_trader.model import CryptoPerpetual/from nautilus_trader.model.instruments import CryptoPerpetual/' research/candidate-02/backtest.py
           sed -i 's/from nautilus_trader.model.identifiers import InstrumentId, Venue/from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue/' research/candidate-02/backtest.py
           sed -i 's/from nautilus_trader.model.objects import Currency, Money, Price, Quantity, Symbol/from nautilus_trader.model.objects import Currency, Money, Price, Quantity/' research/candidate-02/backtest.py
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("research/candidate-02/backtest.py")
-          text = path.read_text(encoding="utf-8")
-          anchor = 'ALLOWED_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")\n'
-          compatibility = '''ALLOWED_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
-
-
-class _WritableValuesFrame(pd.DataFrame):
-    """Pandas 3 CoW compatibility for NautilusTrader 1.230.0 wranglers.
-
-    NautilusTrader's Cython memoryview requires a writable ndarray, while
-    pandas 3 deliberately exposes ``DataFrame.values`` as read-only.  Return a
-    fresh writable float64 array without changing source market data.
-    """
-
-    @property
-    def _constructor(self):
-        return _WritableValuesFrame
-
-    @property
-    def values(self):
-        array = self.to_numpy(dtype="float64", copy=True)
-        array.setflags(write=True)
-        return array
-'''
-          if compatibility not in text:
-              text = text.replace(anchor, compatibility, 1)
-          text = text.replace(
-              "bars = BarDataWrangler(bar_type, instrument).process(frame)",
-              "bars = BarDataWrangler(bar_type, instrument).process(_WritableValuesFrame(frame))",
-          )
-          path.write_text(text, encoding="utf-8")
-          PY
+          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwYXRoID0gUGF0aCgicmVzZWFyY2gvY2FuZGlkYXRlLTAyL2JhY2t0ZXN0LnB5IikKdGV4dCA9IHBhdGgucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIpCmFuY2hvciA9ICdBTExPV0VEX1NZTUJPTFMgPSAoIkJUQ1VTRFQiLCAiRVRIVVNEVCIsICJTT0xVU0RUIiwgIlhSUFVTRFQiKVxuJwpjb21wYXRpYmlsaXR5ID0gIiIiQUxMT1dFRF9TWU1CT0xTID0gKCJCVENVU0RUIiwgIkVUSFVTRFQiLCAiU09MVVNEVCIsICJYUlBVU0RUIikKCgpjbGFzcyBfV3JpdGFibGVWYWx1ZXNGcmFtZShwZC5EYXRhRnJhbWUpOgogICAgXCJcIlwiUGFuZGFzIDMgQ29XIGNvbXBhdGliaWxpdHkgZm9yIE5hdXRpbHVzVHJhZGVyIDEuMjMwLjAgd3JhbmdsZXJzLgoKICAgIE5hdXRpbHVzVHJhZGVyJ3MgQ3l0aG9uIG1lbW9yeXZpZXcgcmVxdWlyZXMgYSB3cml0YWJsZSBuZGFycmF5LCB3aGlsZQogICAgcGFuZGFzIDMgZGVsaWJlcmF0ZWx5IGV4cG9zZXMgYGBEYXRhRnJhbWUudmFsdWVzYGAgYXMgcmVhZC1vbmx5LiBSZXR1cm4gYQogICAgZnJlc2ggd3JpdGFibGUgZmxvYXQ2NCBhcnJheSB3aXRob3V0IGNoYW5naW5nIHNvdXJjZSBtYXJrZXQgZGF0YS4KICAgIFwiXCJcIgoKICAgIEBwcm9wZXJ0eQogICAgZGVmIF9jb25zdHJ1Y3RvcihzZWxmKToKICAgICAgICByZXR1cm4gX1dyaXRhYmxlVmFsdWVzRnJhbWUKCiAgICBAcHJvcGVydHkKICAgIGRlZiB2YWx1ZXMoc2VsZik6CiAgICAgICAgYXJyYXkgPSBzZWxmLnRvX251bXB5KGR0eXBlPSJmbG9hdDY0IiwgY29weT1UcnVlKQogICAgICAgIGFycmF5LnNldGZsYWdzKHdyaXRlPVRydWUpCiAgICAgICAgcmV0dXJuIGFycmF5CiIiIgppZiAiY2xhc3MgX1dyaXRhYmxlVmFsdWVzRnJhbWUiIG5vdCBpbiB0ZXh0OgogICAgdGV4dCA9IHRleHQucmVwbGFjZShhbmNob3IsIGNvbXBhdGliaWxpdHksIDEpCnRleHQgPSB0ZXh0LnJlcGxhY2UoCiAgICAiYmFycyA9IEJhckRhdGFXcmFuZ2xlcihiYXJfdHlwZSwgaW5zdHJ1bWVudCkucHJvY2VzcyhmcmFtZSkiLAogICAgImJhcnMgPSBCYXJEYXRhV3JhbmdsZXIoYmFyX3R5cGUsIGluc3RydW1lbnQpLnByb2Nlc3MoX1dyaXRhYmxlVmFsdWVzRnJhbWUoZnJhbWUpKSIsCikKcGF0aC53cml0ZV90ZXh0KHRleHQsIGVuY29kaW5nPSJ1dGYtOCIpCg==' | base64 --decode | python
           test -f research/candidate-02/core.py
           test -f research/candidate-02/backtest.py
           test -f .github/workflows/candidate-02.yml
