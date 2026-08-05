@@ -53,6 +53,25 @@ KLINE_COLUMNS = [
     "ignore",
 ]
 ALLOWED_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+
+
+class _WritableValuesFrame(pd.DataFrame):
+    """Pandas 3 CoW compatibility for NautilusTrader 1.230.0 wranglers.
+
+    NautilusTrader's Cython memoryview requires a writable ndarray, while
+    pandas 3 deliberately exposes ``DataFrame.values`` as read-only. Return a
+    fresh writable float64 array without changing source market data.
+    """
+
+    @property
+    def _constructor(self):
+        return _WritableValuesFrame
+
+    @property
+    def values(self):
+        array = self.to_numpy(dtype="float64", copy=True)
+        array.setflags(write=True)
+        return array
 NS_MINUTE = 60_000_000_000
 UTC = timezone.utc
 
@@ -458,7 +477,7 @@ def run_window(
             end=data_end,
             cache_root=cache_root,
         )
-        bars = BarDataWrangler(bar_type, instrument).process(frame)
+        bars = BarDataWrangler(bar_type, instrument).process(_WritableValuesFrame(frame))
         if len(bars) != len(frame):
             raise RuntimeError(f"wrangler row mismatch for {symbol}: {len(frame)} -> {len(bars)}")
         all_bars.extend(bars)
