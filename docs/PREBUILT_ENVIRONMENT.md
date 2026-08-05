@@ -6,13 +6,25 @@
 
 ## 실행 단위
 
-GitHub Container Registry에 다음 이미지를 게시합니다.
+GitHub Container Registry에 다음 릴리스 태그를 게시합니다.
 
 ```text
 ghcr.io/umtong/smc-ict-4-live-research:foundation-1.0.0
 ```
 
 이미지에는 Python 3.13, uv 0.11.25, 잠금 파일 전체 의존성, NautilusTrader 1.230.0, 프로젝트 CLI와 공통 라이브러리가 들어 있습니다. `/opt/smc4/.venv`는 `vscode` 사용자가 읽고 수정할 수 있어 연구 후보가 추가 라이브러리를 실험하는 것을 막지 않습니다.
+
+## 검증된 환경의 승격
+
+워크플로가 게시한 태그를 그대로 연구 환경에 연결하지 않습니다. 게시된 exact digest를 새 컨테이너에서 검증한 뒤 `.devcontainer/devcontainer.json`에 명시적으로 고정합니다.
+
+현재 승격된 digest:
+
+```text
+ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+```
+
+따라서 이후 같은 태그가 다른 이미지를 가리키더라도 기존 연구 AI의 시작 환경은 바뀌지 않습니다. 공통 런타임을 변경할 때는 새 이미지 게시 → 새 컨테이너 검증 → digest 승격을 별도 기반 변경으로 수행합니다.
 
 ## 연구 브랜치 연결
 

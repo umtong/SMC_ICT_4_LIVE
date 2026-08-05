@@ -19,10 +19,16 @@ NautilusTrader 1.230.0
 Git, make, jq
 ```
 
-이미지:
+사람이 확인할 수 있는 릴리스 태그는 다음과 같습니다.
 
 ```text
 ghcr.io/umtong/smc-ict-4-live-research:foundation-1.0.0
+```
+
+실제 Dev Container는 태그 변경의 영향을 받지 않도록 검증된 이미지 digest를 직접 고정합니다.
+
+```text
+ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
 ```
 
 GitHub에서 `Code` → `Codespaces` → `Create codespace`로 열면 의존성 설치 명령은 필요하지 않습니다. 컨테이너 생성 시 `smc4 doctor`가 자동으로 실행되고, 터미널이 열린 뒤 바로 연구할 수 있습니다.
@@ -55,7 +61,7 @@ uv run smc4 doctor
 ## 저장소 지도
 
 ```text
-.devcontainer/devcontainer.json          사전 구축 연구 이미지 진입점
+.devcontainer/devcontainer.json          검증된 이미지 digest를 고정한 연구 환경 진입점
 containers/research/Dockerfile           공통 연구 이미지 정의
 .github/workflows/research-image.yml     이미지 빌드·게시·새 컨테이너 검증
 PROJECT_PRINCIPLES.md                    프로젝트의 연구 목적과 우선순위
@@ -78,4 +84,4 @@ tests                                    공통 기반의 빠른 검증
 - 큰 시장 데이터와 실행 산출물: Git에 커밋하지 않음
 - 데이터는 파일 해시와 manifest로 식별
 
-NautilusTrader나 공통 이미지 버전 변경은 개별 연구 브랜치가 아니라 공통 기반 변경으로 처리합니다.
+NautilusTrader나 공통 이미지 버전 변경은 개별 연구 브랜치가 아니라 공통 기반 변경으로 처리합니다. 새 이미지는 먼저 게시·검증한 뒤 `.devcontainer`의 digest를 명시적으로 승격합니다.
