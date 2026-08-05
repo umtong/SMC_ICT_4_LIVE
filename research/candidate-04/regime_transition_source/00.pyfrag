@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Candidate-04 v6: basis-regime liquidity transition state machine.
+
+Normal non-negative basis uses the frozen v5 failed-auction and directional
+inventory-displacement states. Persistent negative basis suppresses immediate
+reversal entries: a rejected sweep becomes a probe whose failure can confirm
+acceptance, while extreme past-only OI and notional quantiles identify new
+inventory entering after deleveraging.
+"""
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import importlib.util
+import json
+import math
+from pathlib import Path
+import sys
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+_BASE_PATH = Path(__file__).with_name("swing_displacement_candidate.py")
+_SPEC = importlib.util.spec_from_file_location("candidate04_v5_base", _BASE_PATH)
+if _SPEC is None or _SPEC.loader is None:
+    raise RuntimeError(f"cannot load v5 base candidate from {_BASE_PATH}")
+v5 = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = v5
+_SPEC.loader.exec_module(v5)
+
+CandidateError = v5.CandidateError
+Intent = v5.Intent
+Trade = v5.Trade
+ResearchEvent = v5.ResearchEvent
+INSTRUMENT_ID = v5.INSTRUMENT_ID
+
+
+@dataclass(frozen=True, slots=True)
+class Config:
+    base: Any
+    basis_regime_window_minutes: int = 240
+    basis_stress_threshold_bps: float = 0.0
+    stress_failure_wait_minutes: int = 180
+    stress_inventory_quantile_window_minutes: int = 720
+    stress_inventory_quantile_min_periods: int = 240
+    stress_inventory_quantile: float = 0.95
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.base, name)
+
+    @classmethod
+    def load(cls, path: Path) -> "Config":
+        values = json.loads(path.read_text(encoding="utf-8"))
+        base_fields = set(v5.Config.__dataclass_fields__)
+        regime_fields = set(cls.__dataclass_fields__) - {"base"}
+        unknown = sorted(set(values) - base_fields - regime_fields)
+        if unknown:
+            raise CandidateError(f"unknown config keys: {unknown}")
+        base_values = {key: value for key, value in values.items() if key in base_fields}
+        if "funding_hours_utc" in base_values:
+            base_values["funding_hours_utc"] = tuple(
+                int(value) for value in base_values["funding_hours_utc"]
+            )
+        base = v5.Config(**base_values)
+        base.validate()
+        regime_values = {
+            key: values[key]
+            for key in regime_fields
+            if key in values
+        }
+        result = cls(base=base, **regime_values)
+        if result.basis_regime_window_minutes < 60:
+            raise CandidateError("basis regime window must be at least 60 minutes")
+        if not 0.5 < result.stress_inventory_quantile < 1.0:
+            raise CandidateError("stress inventory quantile must be in (0.5, 1)")
+        if (
+            result.stress_inventory_quantile_min_periods
+            > result.stress_inventory_quantile_window_minutes
+        ):
+            raise CandidateError("quantile min periods cannot exceed its window")
+        return result
+
+
+directional_close_location = v5.directional_close_location
+cluster_intents = v5.cluster_intents
+target_trigger = v5.target_trigger
+execute_intent = v5.execute_intent
+detect_swing_intents = v5.detect_swing_intents
+detect_trend_intents = v5.detect_trend_intents
+
+
+def basis_regime(
+    data: pd.DataFrame,
+    index: int,
+    config: Config,
+) -> float:
+    start = max(0, index - config.basis_regime_window_minutes + 1)
+    return float(data["trade_index_basis_bps"].iloc[start : index + 1].median())
+
+
+def _hypothetical_reversal_target(
+    data: pd.DataFrame,
+    intent: Intent,
+    config: Config,
+) -> float | None:
+    if intent.entry_index >= len(data):
+        return None
+    side = intent.side
+    entry_open = float(data["open"].iloc[intent.entry_index])
+    entry_fill = entry_open * (1.0 + side * config.entry_slippage_bps / 10_000.0)
+    stop_fill = intent.stop_level * (1.0 - side * config.stop_slippage_bps / 10_000.0)
+    price_loss = side * (entry_fill - stop_fill)
+    if not math.isfinite(price_loss) or price_loss <= 0:
+        return None
+    planned_funding = entry_fill * config.planned_funding_bps / 10_000.0
+    loss_per_unit = (
+        price_loss
+        + config.fee_bps / 10_000.0 * (entry_fill + stop_fill)
+        + planned_funding
+    )
+    return target_trigger(entry_fill, side, loss_per_unit, config.target_net_r, config)
+
+
+def detect_stress_failure_intents(
+    data: pd.DataFrame,
+    swing_intents: list[Intent],
+    config: Config,
+) -> tuple[list[Intent], list[dict[str, Any]]]:
+    """Turn a rejected sweep into continuation only after the rejection fails.
+
+    The original reversal signal is never entered in a negative-basis regime.
+    Its cost-aware target and sweep extreme define a competing-risk probe:
+    target first means rejection succeeded; extreme first means price accepted
+    the swept side and continuation becomes tradable.
+    """
+
+    intents: list[Intent] = []
+    diagnostics: list[dict[str, Any]] = []
+    for parent in swing_intents:
+        signal_index = parent.signal_index
+        regime = basis_regime(data, signal_index, config)
+        if regime >= config.basis_stress_threshold_bps:
+            continue
+
+        reversal_target = _hypothetical_reversal_target(data, parent, config)
+        if reversal_target is None:
+            continue
+        continuation_side = -parent.side
+        sweep_index = int(parent.details["index"])
+        sweep_extreme = float(parent.details["extreme"])
+        outcome = "EXPIRED"
+        trigger_index: int | None = None
+
+        for index in range(
+            parent.entry_index,
+            min(signal_index + config.stress_failure_wait_minutes + 1, len(data) - 1),
+        ):
+            row = data.iloc[index]
+            reversal_target_hit = (
+                float(row["high"]) >= reversal_target
+                if parent.side == 1
+                else float(row["low"]) <= reversal_target
+            )
+            failure_hit = (
+                float(row["close"]) > sweep_extreme
+                if continuation_side == 1
+                else float(row["close"]) < sweep_extreme
+            )
+            if reversal_target_hit:
+                outcome = "REJECTION_SUCCEEDED"
+                break
+            if failure_hit:
+                # Stress must remain persistent when acceptance is confirmed.
+                if basis_regime(data, index, config) < config.basis_stress_threshold_bps:
+                    trigger_index = index
+                    outcome = "ACCEPTANCE_CONFIRMED"
+                else:
+                    outcome = "STRESS_ENDED"
+                break
+
+        if trigger_index is not None:
+            atr = float(data["atr"].iloc[trigger_index])
+            reaction = data.iloc[sweep_index : trigger_index + 1]
+            reaction_extreme = float(
+                reaction["low"].min()
+                if continuation_side == 1
+                else reaction["high"].max()
+            )
+            stop = reaction_extreme - continuation_side * config.sweep_stop_buffer_atr * atr
+            intents.append(
+                Intent(
+                    scenario="STRESS_REVERSAL_FAILURE_CONTINUATION",
+                    side=continuation_side,
+                    signal_index=trigger_index,
+                    entry_index=trigger_index + 1,
+                    stop_level=stop,
+                    event_indices=(sweep_index, signal_index),
+                    details={
+                        "basis_regime_bps": regime,
+                        "parent_reversal_signal_index": signal_index,
+                        "sweep_extreme": sweep_extreme,
+                        "hypothetical_reversal_target": reversal_target,
+                    },
+                ),
+            )
+        diagnostics.append(
+            {
+                "time": data.index[signal_index],
+                "signal_index": signal_index,
+                "side": continuation_side,
+                "basis_regime_bps": regime,
+                "outcome": outcome,
+                "trigger_index": trigger_index,
+            },
+        )
+    return cluster_intents(intents, config.parent_cluster_minutes), diagnostics
+
+
+def detect_stress_inventory_shock_intents(
