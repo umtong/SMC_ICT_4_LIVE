@@ -34,10 +34,12 @@ jobs:
           --output artifacts/candidate-03/week-1
       - name: Fail-fast alpha gate
         run: python research/candidate-03/gate.py artifacts/candidate-03/week-1/metrics.json
-      - name: Preserve research evidence
+      - name: Preserve research evidence and source data
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: candidate-03-week-1-${{ github.sha }}
-          path: artifacts/candidate-03/week-1
+          path: |
+            artifacts/candidate-03/week-1
+            .research-data/candidate-03/BTCUSDT-1m-2022-03.zip
           if-no-files-found: error
