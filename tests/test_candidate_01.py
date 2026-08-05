@@ -59,11 +59,20 @@ def base_config(**overrides: object) -> CandidateConfig:
         "volume_lookback": 30,
         "structure_lookback": 6,
         "min_history": 30,
-        "max_sweep_atr": 2.0,
+        "min_excursion_atr": 0.05,
+        "max_excursion_atr": 3.0,
+        "outside_close_atr": 0.05,
+        "reentry_depth_atr": 0.03,
+        "attempt_flow_z": 0.3,
+        "attempt_volume_z": 0.0,
+        "minimum_outside_closes": 2,
+        "failure_window_bars": 5,
+        "confirmation_bars": 4,
         "min_displacement_atr": 0.3,
-        "min_displacement_flow_z": 0.3,
+        "min_reversal_flow_z": 0.3,
+        "stop_buffer_atr": 0.1,
+        "minimum_stop_atr": 0.5,
         "min_reward_risk": 1.2,
-        "acceptance_flow_z": 0.3,
     }
     values.update(overrides)
     return CandidateConfig(**values)
@@ -75,7 +84,20 @@ def completed_anchor() -> list[AuctionBar]:
         close = 108.0 + ((minute % 5) - 2) * 0.05
         high = 110.0 if minute == 12 else close + 0.20
         low = 100.0 if minute == 25 else close - 0.20
-        result.append(bar(minute, close - 0.03, high, low, close))
+        # Alternate small historical flow so an extreme current imbalance has a
+        # finite causal z-score instead of a zero-variance fallback.
+        buy_quote = 470.0 if minute % 2 == 0 else 530.0
+        result.append(
+            bar(
+                minute,
+                close - 0.03,
+                high,
+                low,
+                close,
+                quote=1_000.0,
+                buy_quote=buy_quote,
+            ),
+        )
     return result
 
 
@@ -101,61 +123,78 @@ class CandidateCoreTest(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertGreaterEqual(events[0].observed_time_ns, events[0].event_time_ns)
 
-    def test_rejection_requires_sweep_displacement_and_retrace_in_order(self) -> None:
-        machine = AuctionStateMachine(base_config(enable_acceptance=False))
+    def test_sweep_failure_requires_probe_reentry_and_opposite_displacement(self) -> None:
+        machine = AuctionStateMachine(base_config(enable_acceptance_failure=False))
         sequence = completed_anchor()
         sequence.extend(
             [
-                bar(60, 109.9, 110.55, 109.2, 109.7, quote=1_500.0, buy_quote=1_050.0),
-                bar(61, 109.4, 109.5, 105.5, 106.0, quote=3_000.0, buy_quote=300.0),
-                bar(62, 108.0, 108.4, 107.2, 107.5, quote=1_800.0, buy_quote=650.0),
+                bar(60, 109.8, 110.8, 109.0, 109.4, quote=2_000.0, buy_quote=1_750.0),
+                bar(61, 109.2, 109.3, 105.8, 106.2, quote=3_000.0, buy_quote=300.0),
             ],
         )
         plans = [plan for item in sequence if (plan := machine.on_bar(item)) is not None]
         self.assertEqual(len(plans), 1)
         plan = plans[0]
         self.assertEqual(plan.side, Side.SHORT)
-        self.assertEqual(plan.response, Response.REJECTION)
+        self.assertEqual(plan.response, Response.SWEEP_FAILURE)
         self.assertLess(plan.target_price, plan.expected_entry)
         self.assertGreater(plan.stop_price, plan.expected_entry)
         self.assertGreaterEqual(plan.estimated_reward_risk, 1.2)
         event_types = [event.event_type for event in machine.transitions]
-        self.assertIn("EXTERNAL_LIQUIDITY_SWEPT", event_types)
-        self.assertIn("OPPOSING_DISPLACEMENT_CONFIRMED", event_types)
+        self.assertIn("LIQUIDITY_PROBE_REJECTED", event_types)
+        self.assertIn("REVERSAL_DISPLACEMENT_CONFIRMED", event_types)
         self.assertIn("TRADE_PLAN_EMITTED", event_types)
         self.assertLess(
-            event_types.index("EXTERNAL_LIQUIDITY_SWEPT"),
-            event_types.index("OPPOSING_DISPLACEMENT_CONFIRMED"),
+            event_types.index("LIQUIDITY_PROBE_REJECTED"),
+            event_types.index("REVERSAL_DISPLACEMENT_CONFIRMED"),
         )
 
-    def test_acceptance_requires_second_outside_close_then_retest(self) -> None:
-        machine = AuctionStateMachine(
-            base_config(enable_rejection=False, acceptance_close_atr=0.10),
-        )
+    def test_acceptance_failure_requires_two_outside_closes_then_reentry(self) -> None:
+        machine = AuctionStateMachine(base_config(enable_sweep_failure=False))
         sequence = completed_anchor()
         sequence.extend(
             [
-                bar(60, 109.7, 110.7, 109.6, 110.5, quote=2_000.0, buy_quote=1_800.0),
-                bar(61, 110.45, 111.0, 110.3, 110.8, quote=1_800.0, buy_quote=1_500.0),
-                bar(62, 110.7, 111.1, 110.5, 110.9, quote=1_700.0, buy_quote=1_400.0),
-                bar(63, 110.0, 110.45, 109.95, 110.3, quote=1_500.0, buy_quote=1_200.0),
+                bar(60, 109.8, 110.9, 109.7, 110.6, quote=2_200.0, buy_quote=2_000.0),
+                bar(61, 110.5, 111.2, 110.3, 110.9, quote=2_000.0, buy_quote=1_800.0),
+                bar(62, 110.7, 110.8, 109.2, 109.5, quote=2_500.0, buy_quote=350.0),
+                bar(63, 109.4, 109.5, 105.7, 106.1, quote=3_000.0, buy_quote=250.0),
             ],
         )
         plans = [plan for item in sequence if (plan := machine.on_bar(item)) is not None]
         self.assertEqual(len(plans), 1)
         plan = plans[0]
-        self.assertEqual(plan.side, Side.LONG)
-        self.assertEqual(plan.response, Response.ACCEPTANCE)
+        self.assertEqual(plan.side, Side.SHORT)
+        self.assertEqual(plan.response, Response.ACCEPTANCE_FAILURE)
         event_types = [event.event_type for event in machine.transitions]
-        self.assertIn("RANGE_BOUNDARY_ACCEPTED", event_types)
-        self.assertIn("OUTSIDE_VALUE_ACCEPTED", event_types)
+        self.assertIn("OUTSIDE_AUCTION_TEST_STARTED", event_types)
+        self.assertIn("OUTSIDE_AUCTION_FAILED", event_types)
+        self.assertIn("REVERSAL_DISPLACEMENT_CONFIRMED", event_types)
+
+    def test_persistent_outside_value_is_not_faded(self) -> None:
+        machine = AuctionStateMachine(
+            base_config(enable_sweep_failure=False, failure_window_bars=3),
+        )
+        sequence = completed_anchor()
+        sequence.extend(
+            [
+                bar(60, 109.8, 110.9, 109.7, 110.6, quote=2_200.0, buy_quote=2_000.0),
+                bar(61, 110.5, 111.2, 110.3, 110.9, quote=2_000.0, buy_quote=1_800.0),
+                bar(62, 110.8, 111.5, 110.6, 111.2, quote=1_900.0, buy_quote=1_700.0),
+                bar(63, 111.1, 111.8, 110.9, 111.5, quote=1_800.0, buy_quote=1_600.0),
+                bar(64, 111.4, 112.0, 111.2, 111.7, quote=1_700.0, buy_quote=1_500.0),
+            ],
+        )
+        plans = [plan for item in sequence if (plan := machine.on_bar(item)) is not None]
+        self.assertEqual(plans, [])
+        reasons = [event.reason_code for event in machine.transitions]
+        self.assertIn("OUTSIDE_VALUE_PERSISTED_WITHOUT_FAILURE", reasons)
 
     def test_future_bars_cannot_change_already_observed_events(self) -> None:
         prefix = completed_anchor() + [
-            bar(60, 109.9, 110.55, 109.2, 109.7, quote=1_500.0, buy_quote=1_050.0),
+            bar(60, 109.8, 110.8, 109.0, 109.4, quote=2_000.0, buy_quote=1_750.0),
         ]
-        first = AuctionStateMachine(base_config(enable_acceptance=False))
-        second = AuctionStateMachine(base_config(enable_acceptance=False))
+        first = AuctionStateMachine(base_config(enable_acceptance_failure=False))
+        second = AuctionStateMachine(base_config(enable_acceptance_failure=False))
         for item in prefix:
             first.on_bar(item)
             second.on_bar(item)
@@ -163,8 +202,8 @@ class CandidateCoreTest(unittest.TestCase):
         observed_second = [event.to_dict() for event in second.transitions]
         self.assertEqual(observed_first, observed_second)
 
-        first.on_bar(bar(61, 109.4, 109.5, 105.5, 106.0, quote=3_000.0, buy_quote=300.0))
-        second.on_bar(bar(61, 109.4, 112.0, 108.0, 111.0, quote=3_000.0, buy_quote=2_700.0))
+        first.on_bar(bar(61, 109.2, 109.3, 105.8, 106.2, quote=3_000.0, buy_quote=300.0))
+        second.on_bar(bar(61, 109.3, 112.0, 109.0, 111.0, quote=3_000.0, buy_quote=2_700.0))
         self.assertEqual(
             observed_first,
             [event.to_dict() for event in first.transitions[: len(observed_first)]],
