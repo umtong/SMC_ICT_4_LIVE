@@ -334,6 +334,7 @@ def simulate(
     minimum_net_reward_risk: float,
     starting_nav: float,
     risk_rates: tuple[float, ...],
+    allowed_scenario_ids: frozenset[str] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any], dict[float, list[dict[str, Any]]]]:
     start_ns = int(pd.Timestamp(evaluation_start).value)
     end_ns = int(pd.Timestamp(evaluation_end).value)
@@ -493,7 +494,15 @@ def simulate(
                 continue
             for horizon in variant.horizons:
                 plan = machines[(symbol, horizon)].on_bar(current_bar)
-                if plan is not None and start_ns <= ts_ns < end_ns and active is None:
+                if (
+                    plan is not None
+                    and start_ns <= ts_ns < end_ns
+                    and active is None
+                    and (
+                        allowed_scenario_ids is None
+                        or plan.scenario_id in allowed_scenario_ids
+                    )
+                ):
                     generated.append(Pending(symbol=symbol, horizon=horizon, plan=plan))
         pending = generated
 
