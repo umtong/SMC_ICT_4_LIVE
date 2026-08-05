@@ -1,0 +1,107 @@
+        end=end,
+        data_root=data_root,
+    )
+    result = backtest_frame(frame, config, start=start, end=end)
+    _write_week_artifacts(
+        output,
+        result,
+        config_path,
+        data_root,
+        evidence,
+        week_name=week_name,
+    )
+    return dict(result["metrics"])
+
+
+def run_pipeline(
+    *,
+    config_path: Path,
+    output: Path,
+    data_root: Path,
+    max_weeks: int | None,
+) -> dict[str, Any]:
+    weeks = load_evaluation_weeks(config_path)
+    if max_weeks is not None:
+        weeks = weeks[:max_weeks]
+    output.mkdir(parents=True, exist_ok=True)
+    results: list[dict[str, Any]] = []
+    stopped_after: str | None = None
+
+    for week_name, start, end in weeks:
+        metrics = run_week(
+            config_path=config_path,
+            start=start,
+            end=end,
+            output=output / week_name,
+            data_root=data_root,
+            week_name=week_name,
+        )
+        results.append({"name": week_name, "metrics": metrics})
+        if not metrics["gate_pass"]:
+            stopped_after = week_name
+            break
+
+    summary = {
+        "candidate": "candidate-04",
+        "config_sha256": _sha256_file(config_path),
+        "requested_weeks": len(weeks),
+        "completed_weeks": len(results),
+        "stopped_after": stopped_after,
+        "all_completed_passed": len(results) == len(weeks) and all(item["metrics"]["gate_pass"] for item in results),
+        "weeks": results,
+    }
+    _atomic_json(output / "pipeline_summary.json", summary)
+    return summary
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    week = subparsers.add_parser("week", help="run one explicit seven-day window")
+    week.add_argument("--config", type=Path, required=True)
+    week.add_argument("--start", type=date.fromisoformat, required=True)
+    week.add_argument("--end", type=date.fromisoformat, required=True)
+    week.add_argument("--output", type=Path, required=True)
+    week.add_argument("--data-root", type=Path, default=Path(".cache/binance"))
+    week.add_argument("--name", default="week")
+
+    pipeline = subparsers.add_parser("pipeline", help="run deterministic evaluation weeks with stage gates")
+    pipeline.add_argument("--config", type=Path, required=True)
+    pipeline.add_argument("--output", type=Path, required=True)
+    pipeline.add_argument("--data-root", type=Path, default=Path(".cache/binance"))
+    pipeline.add_argument("--max-weeks", type=int)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    if args.command == "week":
+        if (args.end - args.start).days != 6:
+            raise CandidateError("week command requires exactly seven calendar days")
+        metrics = run_week(
+            config_path=args.config,
+            start=args.start,
+            end=args.end,
+            output=args.output,
+            data_root=args.data_root,
+            week_name=args.name,
+        )
+        print(json.dumps(metrics, indent=2, sort_keys=True))
+        return 0
+    summary = run_pipeline(
+        config_path=args.config,
+        output=args.output,
+        data_root=args.data_root,
+        max_weeks=args.max_weeks,
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except CandidateError as exc:
+        print(f"candidate-04 error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
