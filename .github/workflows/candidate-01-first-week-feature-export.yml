@@ -1,0 +1,71 @@
+name: candidate-01-first-week-feature-export
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-first-week-feature-export.yml"
+      - "research/candidate-01/export_first_week_features.py"
+      - "research/candidate-01/aggtrade_time_clock.py"
+      - "research/candidate-01/impact_regime_probe.py"
+      - "research/candidate-01/aggtrade_data.py"
+      - "research/candidate-01/data.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-timebar-aggtrades-first
+          key: candidate-01-timebar-BTCUSDT-2023-06-18-25-${{ runner.os }}-v1
+      - name: Export frozen first-week causal bars and features
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/aggtrade_data.py \
+                research/candidate-01/aggtrade_time_clock.py \
+                research/candidate-01/impact_regime_probe.py \
+                research/candidate-01/export_first_week_features.py
+              rm -rf artifacts/candidate-01-first-week-features
+              python research/candidate-01/export_first_week_features.py \
+                --week 2023-06-19 \
+                --cache .cache/candidate-01-timebar-aggtrades-first \
+                --output artifacts/candidate-01-first-week-features \
+                --workers 4
+            '
+      - name: Print feature manifest
+        run: cat artifacts/candidate-01-first-week-features/feature_export_manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-first-week-features-${{ github.sha }}
+          path: artifacts/candidate-01-first-week-features
+          if-no-files-found: error
+          retention-days: 30
