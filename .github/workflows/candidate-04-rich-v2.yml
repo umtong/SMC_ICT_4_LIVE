@@ -1,0 +1,61 @@
+name: candidate-04-rich-features-v2
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/rich_features_v2.py"
+      - "research/candidate-04/tests/test_rich_features_v2.py"
+      - ".github/workflows/candidate-04-rich-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - {name: dev1, start: "2025-08-30", end: "2025-09-07"}
+          - {name: dev2, start: "2024-12-25", end: "2025-01-02"}
+          - {name: dev3, start: "2025-10-18", end: "2025-10-26"}
+          - {name: dev4, start: "2025-06-10", end: "2025-06-18"}
+          - {name: dev5, start: "2023-04-15", end: "2023-04-23"}
+          - {name: validation3, start: "2024-09-15", end: "2024-09-23"}
+          - {name: reserve1, start: "2023-12-16", end: "2023-12-24"}
+          - {name: reserve2, start: "2024-08-05", end: "2024-08-13"}
+          - {name: reserve3, start: "2025-12-01", end: "2025-12-09"}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+      - run: |
+          uv lock --check
+          uv sync --locked
+      - name: Verify corrected depth contract
+        run: |
+          uv run python -m unittest research/candidate-04/tests/test_rich_features_v2.py -v
+      - name: Build corrected causal rich features
+        run: |
+          uv run python research/candidate-04/rich_features_v2.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --cache ".cache/candidate-04-rich-v2/${{ matrix.name }}" \
+            --output "artifacts/candidate-04-rich-v2/${{ matrix.name }}"
+      - name: Verify output
+        run: |
+          test "$(find "artifacts/candidate-04-rich-v2/${{ matrix.name }}" -name '*.csv.gz' | wc -l)" -eq 9
+          test -s "artifacts/candidate-04-rich-v2/${{ matrix.name }}/data_manifest.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-rich-v2-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-04-rich-v2/${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 30
