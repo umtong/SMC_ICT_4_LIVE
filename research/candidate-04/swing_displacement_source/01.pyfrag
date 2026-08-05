@@ -1,0 +1,191 @@
+    if not parts:
+        raise CandidateError("no kline files")
+    result = pd.concat(parts).sort_index()
+    if result.index.has_duplicates:
+        raise CandidateError("duplicate kline timestamps")
+    return result
+
+
+def load_rich(directory: Path) -> pd.DataFrame:
+    paths = sorted(directory.glob("BTCUSDT-rich-*.csv.gz"))
+    if not paths:
+        raise CandidateError(f"no rich features in {directory}")
+    frame = pd.concat((pd.read_csv(path) for path in paths), ignore_index=True)
+    frame["open_time"] = pd.to_datetime(frame["open_time"], utc=True)
+    frame["observed_time"] = pd.to_datetime(frame["observed_time"], utc=True)
+    frame = frame.set_index("open_time").sort_index()
+    if frame.index.has_duplicates:
+        raise CandidateError("duplicate rich-feature timestamps")
+    expected_observed = frame.index + pd.Timedelta(minutes=1)
+    if not (frame["observed_time"].array == expected_observed.array).all():
+        raise CandidateError("rich features violate the close-observed contract")
+    return frame
+
+
+def prepare_data(rich: pd.DataFrame, klines: pd.DataFrame, config: Config) -> pd.DataFrame:
+    data = rich.copy()
+    data["open"] = data["mark_open"]
+    data["high"] = data["mark_high"]
+    data["low"] = data["mark_low"]
+    data["close"] = data["trade_close"]
+    common = data.index.intersection(klines.index)
+    for column in ("open", "high", "low", "close", "volume", "quote_volume"):
+        data.loc[common, column] = klines.loc[common, column].to_numpy()
+
+    previous_close = data["close"].shift(1)
+    true_range = pd.concat(
+        [
+            data["high"] - data["low"],
+            (data["high"] - previous_close).abs(),
+            (data["low"] - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    data["atr"] = true_range.shift(1).rolling(config.atr_period, min_periods=config.atr_period).mean()
+
+    # Recompute stateful features across archive day boundaries. The source files
+    # are deliberately daily artifacts; trading state must not reset at UTC 00:00.
+    for window in (15, 30, 60):
+        for stem in ("notional", "trade_count"):
+            column = f"{stem}_{window}s"
+            median = data[column].shift(1).rolling(120, min_periods=60).median()
+            data[f"{stem}_burst_xday_{window}s"] = data[column] / median.replace(0.0, np.nan)
+    for horizon in (5, 15, 60):
+        data[f"oi_change_xday_{horizon}m"] = data["metric_sum_open_interest"].pct_change(
+            horizon,
+            fill_method=None,
+        )
+    return data
+
+
+def directional_close_location(row: pd.Series, side: int) -> float:
+    span = max(float(row["high"] - row["low"]), 1e-12)
+    if side == 1:
+        return float((row["close"] - row["low"]) / span)
+    return float((row["high"] - row["close"]) / span)
+
+
+def cluster_intents(intents: list[Intent], minutes: int) -> list[Intent]:
+    if not intents:
+        return []
+    ordered = sorted(intents, key=lambda item: (item.entry_index, item.scenario))
+    groups: list[list[Intent]] = []
+    current: list[Intent] = []
+    for intent in ordered:
+        if not current:
+            current = [intent]
+        elif intent.side == current[-1].side and intent.entry_index - current[-1].entry_index <= minutes:
+            current.append(intent)
+        else:
+            groups.append(current)
+            current = [intent]
+    if current:
+        groups.append(current)
+
+    clustered: list[Intent] = []
+    for group in groups:
+        side = group[0].side
+        latest = max(group, key=lambda item: item.entry_index)
+        stop = min(item.stop_level for item in group) if side == 1 else max(item.stop_level for item in group)
+        clustered.append(
+            Intent(
+                scenario=latest.scenario,
+                side=side,
+                signal_index=latest.signal_index,
+                entry_index=latest.entry_index,
+                stop_level=stop,
+                event_indices=tuple(sorted({index for item in group for index in item.event_indices})),
+                details={**latest.details, "cluster_events": len(group)},
+            ),
+        )
+    return clustered
+
+
+def detect_swing_intents(
+    data: pd.DataFrame,
+    evaluation_start: pd.Timestamp,
+    evaluation_end: pd.Timestamp,
+    config: Config,
+) -> tuple[list[Intent], list[dict[str, Any]]]:
+    pools: list[Pool] = []
+    active: list[Pool] = []
+    raw_events: list[dict[str, Any]] = []
+    pool_id = 0
+    left, right = config.pivot_left, config.pivot_right
+
+    for index in range(left + right, len(data)):
+        for pool in active:
+            if pool.active and index - pool.last_touch_index > config.pool_max_age_minutes:
+                pool.active = False
+
+        center = index - right
+        window = data.iloc[center - left : center + right + 1]
+        pivot_atr = float(data["atr"].iloc[center])
+        if math.isfinite(pivot_atr) and pivot_atr > 0:
+            high = float(data["high"].iloc[center])
+            low = float(data["low"].iloc[center])
+            candidates: list[tuple[int, float, float]] = []
+            if high >= float(window["high"].max()) and int((window["high"] == high).sum()) == 1:
+                neighbour = min(
+                    high - float(window["high"].iloc[:left].max()),
+                    high - float(window["high"].iloc[left + 1 :].max()),
+                )
+                candidates.append((1, high, neighbour / pivot_atr))
+            if low <= float(window["low"].min()) and int((window["low"] == low).sum()) == 1:
+                neighbour = min(
+                    float(window["low"].iloc[:left].min()) - low,
+                    float(window["low"].iloc[left + 1 :].min()) - low,
+                )
+                candidates.append((-1, low, neighbour / pivot_atr))
+
+            for side, price, prominence in candidates:
+                nearby = [
+                    pool
+                    for pool in active
+                    if pool.active
+                    and pool.side == side
+                    and abs(pool.level - price) <= config.pool_merge_atr * pivot_atr
+                ]
+                if nearby:
+                    pool = min(nearby, key=lambda item: abs(item.level - price))
+                    pool.level = (pool.level * pool.touches + price) / (pool.touches + 1)
+                    pool.touches += 1
+                    pool.last_touch_index = center
+                    pool.prominence_atr = max(pool.prominence_atr, prominence)
+                else:
+                    pool_id += 1
+                    pool = Pool(side, price, center, index, center, 1, pool_id, prominence)
+                    pools.append(pool)
+                    active.append(pool)
+
+        row = data.iloc[index]
+        timestamp = data.index[index]
+        atr = float(row["atr"])
+        if not math.isfinite(atr) or atr <= 0:
+            continue
+
+        for pool in list(active):
+            if not pool.active:
+                continue
+            age = index - pool.observed_index
+            eligible = (
+                age >= config.pool_min_age_minutes
+                and pool.prominence_atr >= config.pool_min_prominence_atr
+            )
+            if pool.side == 1:
+                penetration = (float(row["high"]) - pool.level) / atr
+                taken = penetration >= config.sweep_min_atr
+                rejected = float(row["close"]) < pool.level and penetration <= config.sweep_max_atr
+                trade_side = -1
+                extreme = float(row["high"])
+            else:
+                penetration = (pool.level - float(row["low"])) / atr
+                taken = penetration >= config.sweep_min_atr
+                rejected = float(row["close"]) > pool.level and penetration <= config.sweep_max_atr
+                trade_side = 1
+                extreme = float(row["low"])
+
+            if not taken:
+                continue
+            if evaluation_start <= timestamp <= evaluation_end and eligible and rejected:
+                raw_events.append(
