@@ -1,0 +1,115 @@
+{
+  "candidate": "causal_metaorder_pullback_reacceleration_v5",
+  "lock_version": 1,
+  "locked_at_utc": "2026-08-05T11:46:00Z",
+  "purpose": "Sequential confirmation lock after the first three randomly selected BTC weeks. No rule or parameter may change before the three locked confirmation weeks are evaluated.",
+  "market_logic": {
+    "structural_cause": "A moderately persistent directional metaorder moves price through an already observable micro-auction. A counterflow pullback that retraces part of the impulse without becoming a stronger opposite metaorder transfers inventory. Renewed aggressive flow and a local structure break indicate continuation rather than terminal exhaustion.",
+    "state_sequence": [
+      "PERSISTENT_DIRECTIONAL_DRIFT",
+      "PRIOR_MICRO_AUCTION_BROKEN",
+      "LOWER_STRENGTH_COUNTERFLOW_PULLBACK",
+      "AGGRESSIVE_FLOW_REACCELERATION",
+      "LOCAL_STRUCTURE_REBREAK",
+      "ENTER_CONTINUATION",
+      "PULLBACK_EXTREME_INVALIDATION",
+      "COST_AFTER_R_TARGET_OR_TIME_EXIT"
+    ],
+    "explicitly_excluded_state": "A 90-minute directional move above 6 ATR is terminal-overextension/forced-liquidation risk, not a continuation setup."
+  },
+  "market": {
+    "discovery_symbol": "BTCUSDT",
+    "decision_bar_minutes": 5,
+    "fill_bar_minutes": 1,
+    "calendar": "UTC",
+    "future_information_policy": "Only completed bars and rolling statistics shifted by one completed bar may be used. Entry is the next observed one-minute open."
+  },
+  "scenario": {
+    "atr": {
+      "definition": "Median true range of the previous completed 48 five-minute bars",
+      "minimum_observations": 24
+    },
+    "flow_activity_statistics": {
+      "lookback_bars": 288,
+      "minimum_observations": 96,
+      "activity_quantile": 0.50,
+      "aggressive_flow_definition": "2 * taker_buy_base_volume / total_base_volume - 1"
+    },
+    "persistent_drift": {
+      "bars": 18,
+      "minimum_move_atr": 2.0,
+      "maximum_move_atr": 6.0,
+      "minimum_path_efficiency": 0.40,
+      "minimum_aligned_volume_weighted_flow": 0.015,
+      "prior_micro_auction_bars": 24,
+      "break_requirement": "The drift extreme must break the previously completed 24-bar high or low."
+    },
+    "pullback": {
+      "maximum_bars": 8,
+      "minimum_retrace_fraction": 0.25,
+      "maximum_retrace_fraction": 0.55,
+      "maximum_opposite_flow_to_impulse_ratio": 1.25
+    },
+    "reacceleration": {
+      "minimum_body_atr": 0.15,
+      "minimum_aligned_flow_share": 0.51,
+      "local_break_bars": 2,
+      "require_quote_volume_at_or_above_prior_median": true,
+      "require_trade_count_at_or_above_prior_median": true
+    },
+    "trade": {
+      "entry": "Market at the next one-minute open after the completed five-minute reacceleration bar.",
+      "stop": "Pullback extreme plus 0.15 ATR beyond the invalidation side.",
+      "cost_after_reward_risk": 1.5,
+      "maximum_holding_minutes": 240,
+      "cooldown_five_minute_bars": 3,
+      "same_bar_stop_target_resolution": "STOP_FIRST",
+      "gap_stop_execution": "Worse of stop trigger and one-minute open, then stop slippage and impact.",
+      "single_global_pending_entry_or_open_position": true
+    }
+  },
+  "cost_model": {
+    "maker_fee_rate": 0.00020,
+    "taker_fee_rate": 0.00050,
+    "entry_slippage_rate": 0.00015,
+    "stop_slippage_rate": 0.00025,
+    "market_impact_rate": 0.00005,
+    "funding_allowance_rate": 0.00010
+  },
+  "risk": {
+    "planned_loss_fraction_of_current_nav": 0.03,
+    "quantity_rule": "Current NAV times 0.03 divided by per-unit expected stop loss including entry and stop fees, entry and stop slippage, market impact and funding allowance.",
+    "maximum_notional_cap": null,
+    "score_risk_multiplier": null
+  },
+  "research_protocol": {
+    "initial_screen_weeks": ["2024-12-23", "2022-04-25", "2024-07-08"],
+    "initial_screen_result": {
+      "evaluation_days": 21,
+      "trades": 23,
+      "trades_per_day": 1.0952380952380953,
+      "wins": 15,
+      "win_rate": 0.6521739130434783,
+      "profit_factor": 2.7492449075712546,
+      "after_cost_geometric_daily_growth": 0.015899644015224146,
+      "maximum_mark_to_market_drawdown": 0.10068901839853739,
+      "positive_weeks": 3,
+      "total_weeks": 3
+    },
+    "adjacent_overextension_caps_tested": [5.5, 6.0, 6.5],
+    "adjacent_caps_all_met_one_percent_daily_on_initial_screen": true,
+    "confirmation_seed": 2026080504,
+    "confirmation_population": "All locally available locked BTC weeks excluding the initial three, sorted before random.Random(seed).sample(population, 3).",
+    "confirmation_weeks": ["2025-08-25", "2023-11-27", "2021-04-19"],
+    "confirmation_use": "Run exactly once without changing code, logic or parameters. Failure rejects or redesigns v5; these weeks may not be used to repair v5."
+  },
+  "rapid_pass_criteria": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor": 1.50,
+    "minimum_after_cost_geometric_daily_growth": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25,
+    "minimum_positive_week_fraction": 0.6666666666666666,
+    "maximum_single_winner_share_of_gross_profit": 0.25
+  }
+}
