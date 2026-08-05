@@ -1,0 +1,59 @@
+name: candidate-01-evolve
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".candidate01-evolve"
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  evolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Apply exact source evolution
+        run: python3 research/candidate-01/evolve_candidate.py
+      - name: Validate in pinned research environment
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q src research/candidate-01 tests
+              python -m unittest discover -s tests -p "test_candidate_01.py" -v
+            '
+      - name: Commit and push evolved candidate
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-01/core.py \
+                  research/candidate-01/nautilus_backtest.py \
+                  research/candidate-01/config.json \
+                  tests/test_candidate_01.py
+          git commit -m "research(candidate-01): enforce structural execution viability"
+          git push origin HEAD:research/candidate-01
