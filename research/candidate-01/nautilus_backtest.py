@@ -157,7 +157,10 @@ def _liquidation_marker_rows(*frames: pd.DataFrame) -> int:
     for frame in frames:
         if frame.empty:
             continue
-        row_text = frame.astype(str).agg(" ".join, axis=1).str.upper()
+        row_text = frame.apply(
+            lambda row: " ".join(str(value) for value in row.tolist()),
+            axis=1,
+        ).str.upper()
         total += int(row_text.str.contains("LIQUIDAT", regex=False).sum())
     return total
 
