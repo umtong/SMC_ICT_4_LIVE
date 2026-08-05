@@ -1,0 +1,41 @@
+name: candidate-04-v6-freeze-check
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v6-freeze-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+      - name: Verify environment, hashes and causal tests
+        run: |
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          test "$(cat research/candidate-04/regime_transition_source/*.pyfrag | sha256sum | cut -d' ' -f1)" = "c767f711c2aa90508dfb9ec86dce8ac4f741a4a1c74e7e703d2fa55a59aa8586"
+          test "$(sha256sum research/candidate-04/regime_transition_candidate.py | cut -d' ' -f1)" = "9508e596d14a45a5e8676047c4a31db416287d7e3d08fecee2ec29f3c8f91d4f"
+          test "$(sha256sum research/candidate-04/regime_transition_config.json | cut -d' ' -f1)" = "76b0a555d578c5c29941fa2ff850e824bb5dc69e21598f14146c0fe083a2e6c0"
+          test "$(sha256sum research/candidate-04/tests/test_regime_transition_candidate.py | cut -d' ' -f1)" = "f4b7554ac108cf8805c4c56f8b8c26983994db4775d98a2da43218282a66cb02"
+          uv run python -m compileall -q research/candidate-04
+          uv run python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_regime_transition_candidate.py' -v
+          uv run python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_swing_displacement_candidate.py' -v
+          uv run python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_rich_features_v2.py' -v
