@@ -1,0 +1,60 @@
+name: candidate-01-long-paths
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-long-paths.yml"
+      - "research/candidate-01/diagnose_forward_paths.py"
+      - "research/candidate-01/core.py"
+      - "research/candidate-01/config.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-long-paths
+          key: candidate-01-long-paths-data-${{ runner.os }}
+      - name: Replay 2024 causal plans and measure all subsequent paths
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              rm -rf artifacts/candidate-01-long-paths
+              python research/candidate-01/diagnose_forward_paths.py \
+                --start 2024-01-01 --end 2025-01-01 \
+                --cache .cache/candidate-01-long-paths \
+                --output artifacts/candidate-01-long-paths
+            '
+      - name: Print summary
+        run: cat artifacts/candidate-01-long-paths/forward_path_summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-long-paths-${{ github.sha }}
+          path: artifacts/candidate-01-long-paths
+          if-no-files-found: error
+          retention-days: 30
