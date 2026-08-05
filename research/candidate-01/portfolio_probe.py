@@ -57,6 +57,7 @@ class Pending:
     symbol: str
     horizon: int
     plan: TradePlan
+    confirmation_hold_price: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,7 @@ class Viable:
     planned_gain_per_unit: float
     price_risk_fraction: float
     net_reward_risk: float
+    confirmation_hold_price: float | None
 
 
 @dataclass(slots=True)
@@ -169,6 +171,14 @@ def _viable(
 ) -> Viable | None:
     plan = pending.plan
     entry = bar.close
+    if pending.confirmation_hold_price is not None:
+        hold_ok = (
+            entry >= pending.confirmation_hold_price
+            if plan.side is Side.LONG
+            else entry <= pending.confirmation_hold_price
+        )
+        if not hold_ok:
+            return None
     if plan.side is Side.LONG and not plan.stop_price < entry < plan.target_price:
         return None
     if plan.side is Side.SHORT and not plan.target_price < entry < plan.stop_price:
@@ -197,6 +207,7 @@ def _viable(
         planned_gain_per_unit=planned_gain,
         price_risk_fraction=price_fraction,
         net_reward_risk=net_rr,
+        confirmation_hold_price=pending.confirmation_hold_price,
     )
 
 
@@ -311,6 +322,7 @@ def _close_trade(
             "target": active.viable.target,
             "price_risk_fraction": active.viable.price_risk_fraction,
             "net_reward_risk_at_entry": active.viable.net_reward_risk,
+            "confirmation_hold_price": active.viable.confirmation_hold_price,
             "exit_time_ns": exit_time_ns,
             "exit_price": exit_price,
             "exit_reason": reason,
@@ -364,6 +376,7 @@ def simulate(
         "invalid_delayed_geometry": 0,
         "cost_dominated": 0,
         "insufficient_net_reward_risk": 0,
+        "failed_confirmation_hold": 0,
         "occupied": 0,
     }
 
@@ -438,6 +451,15 @@ def simulate(
                     continue
                 plan = item.plan
                 entry = current_bar.close
+                if item.confirmation_hold_price is not None:
+                    hold_ok = (
+                        entry >= item.confirmation_hold_price
+                        if plan.side is Side.LONG
+                        else entry <= item.confirmation_hold_price
+                    )
+                    if not hold_ok:
+                        rejected["failed_confirmation_hold"] += 1
+                        continue
                 geometry_ok = (
                     plan.stop_price < entry < plan.target_price
                     if plan.side is Side.LONG

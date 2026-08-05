@@ -255,6 +255,7 @@ class LtfMssDetector:
         source: SweepAttempt,
         sweep_extreme: float,
         reason_code: str,
+        confirmation_hold_price: float | None = None,
     ) -> tuple[Pending | None, str, float, float, float]:
         side = source.side
         entry = signal_bar.close
@@ -293,7 +294,12 @@ class LtfMssDetector:
             max_hold_bars=180,
             reason_code=reason_code,
         )
-        pending = Pending(symbol="BTCUSDT", horizon=60, plan=plan)
+        pending = Pending(
+            symbol="BTCUSDT",
+            horizon=60,
+            plan=plan,
+            confirmation_hold_price=confirmation_hold_price,
+        )
         self.schedules[rule].setdefault(signal_bar.ts_event_ns, []).append(pending)
         self.rule_counts[rule]["plans_emitted"] += 1
         return pending, "emitted", stop, target, rr
@@ -471,6 +477,7 @@ class LtfMssDetector:
                 source=source,
                 sweep_extreme=active.sweep_extreme,
                 reason_code="LTF_MSS_DIRECTIONAL_BREAK_CONFIRMED",
+                confirmation_hold_price=active.internal_break,
             )
             if pending is not None:
                 immediate_emitted.append("ltf-mss-market")
@@ -494,6 +501,7 @@ class LtfMssDetector:
                 source=source,
                 sweep_extreme=active.sweep_extreme,
                 reason_code="LTF_MSS_FLOW_DISPLACEMENT_CONFIRMED",
+                confirmation_hold_price=active.internal_break,
             )
             if pending is not None:
                 immediate_emitted.append("ltf-mss-flow-market")
