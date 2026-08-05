@@ -1,0 +1,66 @@
+name: candidate-01-runtime-fix
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".candidate01-runtime-fix"
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  fix-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01
+          key: candidate-01-binance-vision-${{ runner.os }}
+      - name: Apply exact runtime patch
+        run: python3 research/candidate-01/fix_multi_segment_runtime.py
+      - name: Validate two engines in one pinned process
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q research/candidate-01
+              python -m unittest discover -s tests -p "test_candidate_01.py" -v
+              rm -rf artifacts/candidate-01-runtime-check
+              python research/candidate-01/run_research.py \
+                --suite quick \
+                --output artifacts/candidate-01-runtime-check \
+                --cache .cache/candidate-01
+            '
+      - name: Commit and push runtime fix
+        if: success()
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-01/nautilus_backtest.py
+          git commit -m "fix(candidate-01): support deterministic multi-segment suites"
+          git push origin HEAD:research/candidate-01
