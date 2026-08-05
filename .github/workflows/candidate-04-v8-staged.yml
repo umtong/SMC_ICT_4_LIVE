@@ -1,0 +1,232 @@
+name: candidate-04-v8-staged
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v8-staged.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FROZEN_SHA: 37b7d8b674955890df0104ce32cbdb30d8bc0632
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+      - name: Verify frozen source and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$FROZEN_SHA^{commit}"
+          git diff --quiet "$FROZEN_SHA" -- \
+            research/candidate-04/mesoscale_acceptance_candidate.py \
+            research/candidate-04/inventory_transfer_candidate.py \
+            research/candidate-04/inventory_transfer_config.json \
+            research/candidate-04/regime_transition_candidate.py \
+            research/candidate-04/regime_transition_source \
+            research/candidate-04/swing_displacement_candidate.py \
+            research/candidate-04/swing_displacement_source \
+            research/candidate-04/rich_features_v2.py \
+            research/candidate-04/tests/test_mesoscale_acceptance_candidate.py \
+            research/candidate-04/tests/test_inventory_transfer_candidate.py \
+            research/candidate-04/tests/test_basis_regime_and_competing_risk.py \
+            research/candidate-04/tests/test_swing_displacement_candidate.py \
+            research/candidate-04/tests/test_rich_features_v2.py
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-04
+          uv run python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_mesoscale_acceptance_candidate.py' -v
+          uv run python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_inventory_transfer_candidate.py' -v
+          uv run python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_basis_regime_and_competing_risk.py' -v
+
+  week1:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      gate_pass: ${{ steps.gate.outputs.gate_pass }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+      - name: Build first untouched week
+        run: |
+          uv run python research/candidate-04/rich_features_v2.py \
+            --start 2023-08-02 \
+            --end 2023-08-10 \
+            --cache .cache/candidate-04-v8/week1-rich \
+            --output artifacts/candidate-04-v8/week1/rich
+      - name: Replay first untouched week
+        run: |
+          uv run python research/candidate-04/mesoscale_acceptance_candidate.py \
+            --config research/candidate-04/inventory_transfer_config.json \
+            --rich-dir artifacts/candidate-04-v8/week1/rich \
+            --kline-dir .cache/candidate-04-v8/week1-klines \
+            --evaluation-start 2023-08-04 \
+            --evaluation-end 2023-08-10 \
+            --output artifacts/candidate-04-v8/week1/result \
+            --download-klines | tee artifacts/candidate-04-v8/week1/console.json
+      - name: Record first gate
+        id: gate
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          metrics = json.loads(Path('artifacts/candidate-04-v8/week1/result/metrics.json').read_text())
+          passed = str(bool(metrics['gate_pass'])).lower()
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              stream.write(f'gate_pass={passed}\n')
+          Path('artifacts/candidate-04-v8/week1/gate.txt').write_text(
+              'PASS\n' if metrics['gate_pass'] else 'FAIL\n', encoding='utf-8')
+          print(json.dumps(metrics, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v8-week1-${{ github.sha }}
+          path: |
+            artifacts/candidate-04-v8/week1/result
+            artifacts/candidate-04-v8/week1/console.json
+            artifacts/candidate-04-v8/week1/gate.txt
+            artifacts/candidate-04-v8/week1/rich/data_manifest.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  week2:
+    needs: [verify, week1]
+    if: needs.week1.outputs.gate_pass == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      gate_pass: ${{ steps.gate.outputs.gate_pass }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+      - name: Build second untouched week
+        run: |
+          uv run python research/candidate-04/rich_features_v2.py \
+            --start 2025-02-06 \
+            --end 2025-02-14 \
+            --cache .cache/candidate-04-v8/week2-rich \
+            --output artifacts/candidate-04-v8/week2/rich
+      - name: Replay second untouched week
+        run: |
+          uv run python research/candidate-04/mesoscale_acceptance_candidate.py \
+            --config research/candidate-04/inventory_transfer_config.json \
+            --rich-dir artifacts/candidate-04-v8/week2/rich \
+            --kline-dir .cache/candidate-04-v8/week2-klines \
+            --evaluation-start 2025-02-08 \
+            --evaluation-end 2025-02-14 \
+            --output artifacts/candidate-04-v8/week2/result \
+            --download-klines | tee artifacts/candidate-04-v8/week2/console.json
+      - name: Record second gate
+        id: gate
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          metrics = json.loads(Path('artifacts/candidate-04-v8/week2/result/metrics.json').read_text())
+          passed = str(bool(metrics['gate_pass'])).lower()
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              stream.write(f'gate_pass={passed}\n')
+          Path('artifacts/candidate-04-v8/week2/gate.txt').write_text(
+              'PASS\n' if metrics['gate_pass'] else 'FAIL\n', encoding='utf-8')
+          print(json.dumps(metrics, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v8-week2-${{ github.sha }}
+          path: |
+            artifacts/candidate-04-v8/week2/result
+            artifacts/candidate-04-v8/week2/console.json
+            artifacts/candidate-04-v8/week2/gate.txt
+            artifacts/candidate-04-v8/week2/rich/data_manifest.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  week3:
+    needs: [verify, week2]
+    if: needs.week2.outputs.gate_pass == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      gate_pass: ${{ steps.gate.outputs.gate_pass }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+      - name: Build third untouched week
+        run: |
+          uv run python research/candidate-04/rich_features_v2.py \
+            --start 2022-07-24 \
+            --end 2022-08-01 \
+            --cache .cache/candidate-04-v8/week3-rich \
+            --output artifacts/candidate-04-v8/week3/rich
+      - name: Replay third untouched week
+        run: |
+          uv run python research/candidate-04/mesoscale_acceptance_candidate.py \
+            --config research/candidate-04/inventory_transfer_config.json \
+            --rich-dir artifacts/candidate-04-v8/week3/rich \
+            --kline-dir .cache/candidate-04-v8/week3-klines \
+            --evaluation-start 2022-07-26 \
+            --evaluation-end 2022-08-01 \
+            --output artifacts/candidate-04-v8/week3/result \
+            --download-klines | tee artifacts/candidate-04-v8/week3/console.json
+      - name: Record third gate
+        id: gate
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          metrics = json.loads(Path('artifacts/candidate-04-v8/week3/result/metrics.json').read_text())
+          passed = str(bool(metrics['gate_pass'])).lower()
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              stream.write(f'gate_pass={passed}\n')
+          Path('artifacts/candidate-04-v8/week3/gate.txt').write_text(
+              'PASS\n' if metrics['gate_pass'] else 'FAIL\n', encoding='utf-8')
+          print(json.dumps(metrics, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v8-week3-${{ github.sha }}
+          path: |
+            artifacts/candidate-04-v8/week3/result
+            artifacts/candidate-04-v8/week3/console.json
+            artifacts/candidate-04-v8/week3/gate.txt
+            artifacts/candidate-04-v8/week3/rich/data_manifest.json
+          if-no-files-found: warn
+          retention-days: 90
