@@ -1,0 +1,57 @@
+name: candidate-01-forward-path
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - "research/candidate-01/diagnose_forward_paths.py"
+      - "research/candidate-01/core.py"
+      - "research/candidate-01/config.json"
+      - ".github/workflows/candidate-01-forward-path.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01
+          key: candidate-01-binance-vision-${{ runner.os }}
+      - name: Replay causal signals and measure subsequent paths
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              python research/candidate-01/diagnose_forward_paths.py \
+                --output artifacts/candidate-01-forward-path
+            '
+      - name: Print summary
+        run: cat artifacts/candidate-01-forward-path/forward_path_summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-forward-path-${{ github.sha }}
+          path: artifacts/candidate-01-forward-path
+          if-no-files-found: error
+          retention-days: 30
