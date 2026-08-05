@@ -1,0 +1,23 @@
+   for k in range(i+10,min(i+91,n-1)):
+    x=s.iloc[k];window=s.iloc[k-14:k+1];outside=(window.close>level if cont==1 else window.close<level).mean();extreme2=max(extreme2,float(x.high)) if cont==1 else min(extreme2,float(x.low));extension=cont*(extreme2-level)/atr
+    if outside>=.8 and extension>=.12 and cont*x.f15>=.12 and x.eff15>=.25 and cont*x.depth5>=-.12:
+     j=k;break
+   if j is not None and s.index[j+1]>=eval_start and s.index[j+1]<eval_end:
+    stop=level-cont*max(.08*atr,float(s.close.iloc[j])*.0003);stopatr=cont*(float(s.open.iloc[j+1])-stop)/atr
+    if .20<=stopatr<=2.0:
+     base={'scenario':'MICRO_SWEEP_ACCEPTANCE','side':cont,'lb':lb,'shock_i':i,'confirm_i':j,'entry_i':j+1,'shock_time':s.index[i],'confirm_time':s.index[j],'entry_time':s.index[j+1],'atr':atr,'atr_ratio':float(r.atr_ratio),'atr_bps':float(r.atr_bps),'penetration':revside*(level-(r.low if revside==1 else r.high))/atr,'duration':j-i,'old_flow10':cont*float(r.f10),'extension':cont*(extreme2-level)/atr,'stop_atr':stopatr,'trend15':cont*float(r.ret15),'trend60':cont*float(r.ret60),'trend240':cont*float(r.ret240),'trend720':cont*float(r.ret720),'trend1440':cont*float(r.ret1440),'basis_turn':cont*(float(s.basis.iloc[j])-float(r.basis))}
+     base.update(snapshot(s,i,cont,'s_'));base.update(snapshot(s,j,cont,'d_'))
+     for R in [.8,1.,1.35,1.8,2.2]:
+      o=outcome(s,j+1,cont,stop,R)
+      for a,b in o.items():base[f'{a}_{R:.2f}']=b
+     rec.append(base);cool[(cont,'C')]=i
+ return pd.DataFrame(rec).sort_values('entry_time').reset_index(drop=True) if rec else pd.DataFrame()
+
+def main():
+ p=argparse.ArgumentParser();p.add_argument('--symbol',default='BTCUSDT');p.add_argument('--start',required=True);p.add_argument('--end',required=True);p.add_argument('--eval-start',required=True);p.add_argument('--eval-end',required=True);p.add_argument('--cache',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args();start=date.fromisoformat(a.start);end=date.fromisoformat(a.end);es=pd.Timestamp(a.eval_start,tz='UTC');ee=pd.Timestamp(a.eval_end,tz='UTC')+pd.Timedelta(days=1);a.output.mkdir(parents=True,exist_ok=True)
+ s,e,c=build(a.symbol,start,end,a.cache);events=scan(s,es,ee);events.to_csv(a.output/'events.csv.gz',index=False,compression='gzip');(a.output/'data_manifest.json').write_text(json.dumps({'symbol':a.symbol,'start':a.start,'end':a.end,'eval_start':a.eval_start,'eval_end':a.eval_end,'depth_cadence':c,'files':[asdict(x) for x in e]},indent=2,sort_keys=True)+'\n')
+ summary={'rows':len(events),'by_scenario':events.groupby('scenario').size().to_dict() if len(events) else {},'depth_cadence':c}
+ for R in [.8,1.,1.35,1.8,2.2]:
+  if len(events):summary[f'target_{R:.2f}']={'win_rate':float((events[f'r_{R:.2f}']>0).mean()),'mean_r':float(events[f'r_{R:.2f}'].mean()),'targets':int((events[f'reason_{R:.2f}']=='TARGET').sum())}
+ (a.output/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n');print(json.dumps(summary,indent=2,sort_keys=True))
+if __name__=='__main__':main()
