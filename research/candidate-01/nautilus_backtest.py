@@ -254,7 +254,8 @@ def _build_metrics(
         "max_hold_exits": strategy.max_hold_exits,
         "protective_order_failures": strategy.protective_order_failures,
         "minimum_equity_to_maintenance_margin": strategy.minimum_equity_to_maintenance_margin,
-        "venue_liquidation_enabled": True,
+        "venue_liquidation_enabled": False,
+        "liquidation_safety_gate": "minimum equity / maintenance margin must remain above 1.0",
         "venue_max_leverage": execution.venue_max_leverage,
         "liquidation_marker_rows": liquidation_marker_rows,
     }
@@ -652,9 +653,6 @@ def run_nautilus_backtest(
             default_leverage=Decimal(str(execution.venue_max_leverage)),
             reject_stop_orders=False,
             bar_adaptive_high_low_ordering=True,
-            liquidation_enabled=True,
-            liquidation_trigger_ratio=1.0,
-            liquidation_cancel_open_orders=True,
         )
         engine.add_instrument(instrument)
         engine.add_data(bars)
