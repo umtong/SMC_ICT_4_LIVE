@@ -2,17 +2,17 @@
 
 - Status: **GATE_FAIL**
 - Gate passed: **False**
-- Baseline pooled daily geometric return: **-0.289679%**
-- Baseline pooled NAV multiple across sampled days: **0.940898x**
-- Baseline trades: **2**
-- Maximum sampled-segment drawdown: **5.910223%**
+- Baseline pooled daily geometric return: **0.000000%**
+- Baseline pooled NAV multiple across sampled days: **1.000000x**
+- Baseline trades: **0**
+- Maximum sampled-segment drawdown: **0.000000%**
 
 ## Fixed-week results
 
 | week | return | daily geo | trades | win rate | PF | max DD | reversal | continuation | implementation |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | week-a | 0.0000% | 0.0000% | 0 | n/a | n/a | 0.0000% | 0 | 0 | OK |
-| week-b | -5.9102% | -0.8665% | 2 | 0.00% | 0.000 | 5.9102% | 2 | 0 | OK |
+| week-b | 0.0000% | 0.0000% | 0 | n/a | n/a | 0.0000% | 0 | 0 | OK |
 | week-c | 0.0000% | 0.0000% | 0 | n/a | n/a | 0.0000% | 0 | 0 | OK |
 
 ## Gate checks
@@ -28,7 +28,7 @@
 - Classification: **LOGIC_ERROR_NO_STRUCTURAL_PATH**
 - Largest influence: **insufficient cost-after conditional edge or opportunity rate**
 - Required action: Discard candidate-09 as a complete candidate; preserve only the listed mechanisms for later hypotheses.
-- Parts worth preserving: absorption/reclaim branch produced executable events; risk-budgeted loss path remained recoverable in the gate sample
+- Parts worth preserving: risk-budgeted loss path remained recoverable in the gate sample
 
 ## Known failure conditions
 
