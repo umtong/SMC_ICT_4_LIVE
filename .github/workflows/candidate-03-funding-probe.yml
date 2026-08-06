@@ -1,0 +1,127 @@
+name: candidate-03-funding-catalog-probe
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths: [".github/workflows/candidate-03-funding-probe.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Inspect installed Nautilus funding persistence path
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+          mkdir -p artifacts/candidate-03/funding-probe
+          chmod -R 0777 artifacts
+          docker pull "$IMAGE"
+          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" bash -c '
+            python - <<"PY"
+          import inspect
+          import pathlib
+          import tempfile
+          import traceback
+          import nautilus_trader
+          from decimal import Decimal
+          from nautilus_trader.model.data import FundingRateUpdate
+          from nautilus_trader.model.identifiers import InstrumentId
+          from nautilus_trader.persistence import ParquetDataCatalog
+
+          out = pathlib.Path("/workspace/artifacts/candidate-03/funding-probe/probe.txt")
+          lines = []
+          def emit(value=""):
+              text = str(value)
+              lines.append(text)
+              print(text)
+
+          emit(f"nautilus={nautilus_trader.__version__}")
+          emit(f"FundingRateUpdate_module={FundingRateUpdate.__module__}")
+          emit(f"FundingRateUpdate_attrs={[x for x in dir(FundingRateUpdate) if any(k in x.lower() for k in (\"arrow\", \"record\", \"schema\", \"json\", \"type_name\", \"field\", \"metadata\"))]}")
+          for name in ("get_fields", "get_metadata", "fully_qualified_name", "type_name_static", "decode_record_batch_py", "encode_record_batch_py", "from_json"):
+              emit(f"attr {name}: {getattr(FundingRateUpdate, name, None)!r}")
+
+          try:
+              from nautilus_trader.model import register_custom_data_class
+              emit(f"register_custom_data_class={register_custom_data_class}")
+              try:
+                  register_custom_data_class(FundingRateUpdate)
+                  emit("register_custom_data_class FundingRateUpdate: SUCCESS")
+              except Exception as exc:
+                  emit(f"register_custom_data_class FundingRateUpdate: {type(exc).__name__}: {exc}")
+          except Exception as exc:
+              emit(f"registration import failed: {type(exc).__name__}: {exc}")
+
+          try:
+              import nautilus_trader.persistence.catalog.parquet as parquet_module
+              emit(f"parquet_module={parquet_module.__file__}")
+              for name in ("backend_session", "_register_directory_table", "write_data", "_write_chunk"):
+                  target = getattr(ParquetDataCatalog, name, None)
+                  emit(f"--- SOURCE {name} ---")
+                  try:
+                      emit(inspect.getsource(target))
+                  except Exception as exc:
+                      emit(f"source unavailable: {type(exc).__name__}: {exc}")
+          except Exception:
+              emit(traceback.format_exc())
+
+          root = pathlib.Path(nautilus_trader.__file__).resolve().parent
+          emit(f"package_root={root}")
+          for path in sorted(root.rglob("*.py")):
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except Exception:
+                  continue
+              if "FundingRateUpdate" in text or "funding_rate_update" in text:
+                  emit(f"--- MATCH FILE {path.relative_to(root)} ---")
+                  for no, line in enumerate(text.splitlines(), 1):
+                      if "FundingRateUpdate" in line or "funding_rate_update" in line or "CUSTOM_DATA_TYPES" in line:
+                          emit(f"{no}: {line}")
+
+          temp = tempfile.mkdtemp(prefix="nt-funding-probe-")
+          catalog = ParquetDataCatalog(temp)
+          item = FundingRateUpdate(
+              InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),
+              Decimal("0.0001"),
+              1,
+              1,
+              interval=480,
+              next_funding_ns=2,
+          )
+          emit(f"sample={item!r}")
+          try:
+              catalog.write_data([item])
+              emit("write_data: SUCCESS")
+          except Exception as exc:
+              emit(f"write_data: {type(exc).__name__}: {exc}")
+              emit(traceback.format_exc())
+          try:
+              emit(f"catalog files={list(pathlib.Path(temp).rglob(\"*\"))}")
+              loaded = catalog.funding_rates(instrument_ids=["BTCUSDT-PERP.BINANCE"])
+              emit(f"catalog.funding_rates: SUCCESS {loaded!r}")
+          except Exception as exc:
+              emit(f"catalog.funding_rates: {type(exc).__name__}: {exc}")
+              emit(traceback.format_exc())
+          out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+          '
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-03-funding-probe-${{ github.sha }}
+          path: artifacts/candidate-03/funding-probe/probe.txt
+          if-no-files-found: error
+          retention-days: 3
