@@ -25,6 +25,34 @@ NS_PER_MINUTE = 60_000_000_000
 NS_PER_DAY = 86_400_000_000_000
 
 
+def native_equity_amount(portfolio: Any, venue: Any, currency: Any) -> float:
+    """Return one currency's native Portfolio equity as a scalar.
+
+    NautilusTrader 1.230 exposes ``Portfolio.equity`` as a
+    ``dict[Currency, Money]`` even for a single-currency account. The explicit
+    currency lookup keeps risk sizing, episode accounting, drawdown, and final
+    NAV on the same native portfolio value without reconstructing PnL.
+    """
+    values = portfolio.equity(venue)
+    if not isinstance(values, dict):
+        return float(values)
+    money = values.get(currency)
+    if money is None:
+        currency_code = str(currency)
+        for key, value in values.items():
+            if str(key) == currency_code:
+                money = value
+                break
+    if money is None:
+        if len(values) == 1:
+            money = next(iter(values.values()))
+        else:
+            raise RuntimeError(
+                f"native equity missing currency {currency}: available={list(values)}"
+            )
+    return float(money)
+
+
 class NTLvcfrConfig(StrategyConfig, frozen=True):
     instrument_id: InstrumentId
     signals_path: str
@@ -690,14 +718,11 @@ class NTLvcfrStrategy(Strategy):
         self.equity_curve.append({"timestamp_ns": timestamp_ns, "equity": equity})
 
     def _equity(self) -> float:
-        value = self.portfolio.equity(self.instrument.venue)
-        if value is None:
-            account = self.portfolio.account(self.instrument.venue)
-            if account is None:
-                raise RuntimeError("native account unavailable")
-            balance = account.balance_total(self.instrument.quote_currency)
-            return float(balance)
-        return float(value)
+        return native_equity_amount(
+            self.portfolio,
+            self.instrument.venue,
+            self.instrument.quote_currency,
+        )
 
     def _finalize_episode(self, timestamp_ns: int) -> None:
         if self.current_episode is None:

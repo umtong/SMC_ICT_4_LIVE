@@ -6,6 +6,24 @@ import unittest
 from pathlib import Path
 
 from nt_lvcfr_data import CandidateConfig, MinuteFact, NS_PER_MINUTE, detect_signals, merge_windows, select_second_extrema
+from nt_lvcfr_strategy import native_equity_amount
+
+
+class NativeEquityTests(unittest.TestCase):
+    class Portfolio:
+        def __init__(self, values):
+            self.values = values
+
+        def equity(self, venue):
+            return self.values
+
+    def test_reads_requested_currency_from_native_map(self) -> None:
+        portfolio = self.Portfolio({"BTC": 1.0, "USDT": 100_123.5})
+        self.assertEqual(native_equity_amount(portfolio, "BINANCE", "USDT"), 100_123.5)
+
+    def test_single_currency_native_map_is_unambiguous(self) -> None:
+        portfolio = self.Portfolio({"USDT": 99_999.25})
+        self.assertEqual(native_equity_amount(portfolio, "BINANCE", object()), 99_999.25)
 
 
 class ConfigTests(unittest.TestCase):

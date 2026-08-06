@@ -30,6 +30,7 @@ from nautilus_trader.model.data import FundingRateUpdate, QuoteTick
 from nautilus_trader.model.identifiers import InstrumentId, Venue
 
 from nt_lvcfr_data import CandidateConfig, NS_PER_DAY, NS_PER_MINUTE, date_to_ns, prepare_week
+from nt_lvcfr_strategy import native_equity_amount
 from smc_ict_4.manifest import create_run_manifest, write_json_atomic
 
 
@@ -269,10 +270,11 @@ def main() -> int:
     account = portfolio.account(Venue("BINANCE"))
     if account is None:
         raise RuntimeError("native margin account missing")
-    equity = portfolio.equity(Venue("BINANCE"))
-    if equity is None:
-        equity = account.balance_total(account.base_currency)
-    final_equity = float(equity)
+    final_equity = native_equity_amount(
+        portfolio,
+        Venue("BINANCE"),
+        account.base_currency,
+    )
     summary_path = output / "strategy_summary.json"
     if not summary_path.exists():
         raise RuntimeError("strategy did not write its native summary")
