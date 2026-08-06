@@ -1,0 +1,91 @@
+name: candidate-08-aggtrade-acceptance-bootstrap-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-aggtrade-acceptance-bootstrap-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-aggtrade-acceptance-bootstrap-v1
+  cancel-in-progress: false
+
+jobs:
+  install-permanent-sources:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PAYLOAD_PREFIX: research/candidate-08/.bootstrap/candidate08_runtime.tar.xz.b64.part-
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize and validate permanent NautilusTrader source path
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          shopt -s nullglob
+          payload_parts=("${PAYLOAD_PREFIX}"*)
+          [[ ${#payload_parts[@]} -eq 5 ]]
+          for part in "${payload_parts[@]}"; do test -s "$part"; done
+          cat "${payload_parts[@]}" | base64 -d > /tmp/candidate08_runtime.tar.xz
+          tar -xJf /tmp/candidate08_runtime.tar.xz -C "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-08/aggtrade_acceptance_funding.py \
+            research/candidate-08/aggtrade_acceptance_mark_price.py \
+            research/candidate-08/aggtrade_acceptance_signals.py \
+            research/candidate-08/aggtrade_acceptance_strategy.py \
+            research/candidate-08/aggtrade_acceptance_evaluation.py \
+            research/candidate-08/run_aggtrade_acceptance_nautilus.py \
+            research/candidate-08/test_aggtrade_acceptance_pure.py \
+            research/candidate-08/test_aggtrade_acceptance_nautilus.py
+          python research/candidate-08/test_aggtrade_orderflow.py -v
+          python research/candidate-08/test_aggtrade_acceptance.py -v
+          python research/candidate-08/test_aggtrade_acceptance_pure.py -v
+          python research/candidate-08/test_aggtrade_acceptance_nautilus.py -v
+
+      - name: Commit permanent source path without starting the evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          rm -f research/candidate-08/.run-aggtrade-acceptance-bootstrap-v1
+          rm -rf research/candidate-08/.bootstrap
+          rm -f .github/workflows/candidate-08-aggtrade-acceptance-bootstrap-v1.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- \
+            .github/workflows/candidate-08-aggtrade-acceptance-bootstrap-v1.yml \
+            .github/workflows/candidate-08-aggtrade-acceptance-nautilus.yml \
+            research/candidate-08/.run-aggtrade-acceptance-bootstrap-v1 \
+            research/candidate-08/.bootstrap \
+            research/candidate-08/aggtrade_acceptance_evaluation.py \
+            research/candidate-08/aggtrade_acceptance_funding.py \
+            research/candidate-08/aggtrade_acceptance_mark_price.py \
+            research/candidate-08/aggtrade_acceptance_signals.py \
+            research/candidate-08/aggtrade_acceptance_strategy.py \
+            research/candidate-08/config_aggtrade_acceptance_nautilus.json \
+            research/candidate-08/run_aggtrade_acceptance_nautilus.py \
+            research/candidate-08/test_aggtrade_acceptance_nautilus.py \
+            research/candidate-08/test_aggtrade_acceptance_pure.py
+          git commit -m "candidate-08: install corrected shared-account acceptance validation"
+          for attempt in 1 2 3 4; do
+            git fetch origin research/candidate-08
+            git rebase origin/research/candidate-08
+            if git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+          exit 1
