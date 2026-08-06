@@ -6,7 +6,7 @@ on:
       - research/candidate-06
     paths:
       - ".github/workflows/candidate-06-campaign.yml"
-      - "research/candidate-06/dlvr_payload.tar.gz"
+      - "research/candidate-06/dlvr_payload.part-*"
   workflow_dispatch:
 
 permissions:
@@ -39,11 +39,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Expand reviewed source payload
+      - name: Reassemble and verify reviewed source payload
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          tar -xzf research/candidate-06/dlvr_payload.tar.gz
+          cat research/candidate-06/dlvr_payload.part-* > /tmp/dlvr_payload.tar.gz
+          printf '%s  %s\n' \
+            'e99e8f90e2dd740f840944007ba19e6e7f5da653018711555369b8857082f9e7' \
+            '/tmp/dlvr_payload.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/dlvr_payload.tar.gz
           mv .github-workflow.tmp .github/workflows/candidate-06-campaign.yml
 
       - name: Verify fixed NautilusTrader environment
@@ -116,17 +120,25 @@ jobs:
           set -euo pipefail
           git config user.name "candidate-06-research-bot"
           git config user.email "candidate-06-research-bot@users.noreply.github.com"
-          git add \
+          for path in \
             .github/workflows/candidate-06-campaign.yml \
             research/candidate-06/depth_liquidity_response_engine.py \
             research/candidate-06/prepare_liquidity_series.py \
             research/candidate-06/run_depth_campaign.py \
             research/candidate-06/depth_shim/nautilus_strategy.py \
-            research/candidate-06/test_depth_liquidity_response_engine.py
-          git rm -f research/candidate-06/dlvr_payload.tar.gz
+            research/candidate-06/test_depth_liquidity_response_engine.py; do
+            if [ -e "$path" ]; then
+              git add "$path"
+            fi
+          done
+          rm -f research/candidate-06/dlvr_payload.part-* research/candidate-06/dlvr_payload.tar.gz
+          git add -A research/candidate-06
           git add -f artifacts/candidate-06/dlvr-first-week
           if [ -f research/candidate-06/config.dlvr.locked.json ]; then
             git add -f research/candidate-06/config.dlvr.locked.json
+          fi
+          if git diff --cached --quiet; then
+            exit 0
           fi
           git commit -m "Record candidate-06 passive-liquidity evidence [candidate-06 evidence]"
           git push origin HEAD:research/candidate-06
