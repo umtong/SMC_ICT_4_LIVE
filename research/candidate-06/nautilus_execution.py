@@ -68,7 +68,12 @@ class NautilusExecutionMixin:
         favorable_drift = (
             entry - signal.reference_entry if direction == "LONG" else signal.reference_entry - entry
         )
-        if reason is None and favorable_drift > float(self.config.max_entry_drift_atr) * signal.atr:
+        enforce_drift_guard = bool(self._logic_params.get("enforce_favorable_drift_guard", True))
+        if (
+            reason is None
+            and enforce_drift_guard
+            and favorable_drift > float(self.config.max_entry_drift_atr) * signal.atr
+        ):
             reason = "FAVORABLE_MOVE_ALREADY_CONSUMED"
 
         tick = float(self._instrument.price_increment)
@@ -86,7 +91,13 @@ class NautilusExecutionMixin:
                 signal,
                 snapshot,
                 reason,
-                {"net_rr": net_rr, "entry": entry, **confirmation_details},
+                {
+                    "net_rr": net_rr,
+                    "entry": entry,
+                    "favorable_drift_atr": favorable_drift / signal.atr if signal.atr > 0.0 else None,
+                    "favorable_drift_guard_enabled": enforce_drift_guard,
+                    **confirmation_details,
+                },
             )
             return
 
@@ -145,6 +156,7 @@ class NautilusExecutionMixin:
                 "net_rr_at_submission": net_rr,
                 "fee_rate_per_fill": fee,
                 "sac_entry_confirmation": confirmation_mode if signal.family == "SAC" else None,
+                "favorable_drift_guard_enabled": enforce_drift_guard,
             }
             self._entry_inflight = True
             self.diagnostics["entries_submitted"] += 1
@@ -162,6 +174,8 @@ class NautilusExecutionMixin:
                     "net_rr_after_cost": net_rr,
                     "stop_price": float(stop_price),
                     "target_price": float(target_price),
+                    "favorable_drift_atr": favorable_drift / signal.atr if signal.atr > 0.0 else None,
+                    "favorable_drift_guard_enabled": enforce_drift_guard,
                     **confirmation_details,
                 },
             )
