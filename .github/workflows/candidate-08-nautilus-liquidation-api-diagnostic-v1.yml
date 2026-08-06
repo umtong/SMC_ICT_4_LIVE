@@ -1,0 +1,94 @@
+name: candidate-08-nautilus-liquidation-api-diagnostic-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-nautilus-liquidation-api-diagnostic-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  diagnose:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUT: research/candidate-08/evidence/aggtrade-acceptance-nautilus/liquidation-api-diagnostic-v1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Inspect pinned Cython and PyO3 surfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          mkdir -p "$OUT"
+          python - <<'PY'
+          import inspect, json, os
+          from pathlib import Path
+          import nautilus_trader
+          from nautilus_trader.backtest.engine import BacktestEngine
+          from nautilus_trader.backtest.exchange import SimulatedExchange
+          from nautilus_trader.core import nautilus_pyo3
+
+          def describe(value):
+              result = {
+                  "module": getattr(value, "__module__", None),
+                  "qualname": getattr(value, "__qualname__", None),
+                  "doc": (getattr(value, "__doc__", None) or "")[:20000],
+              }
+              try:
+                  result["signature"] = str(inspect.signature(value))
+              except Exception as exc:
+                  result["signature_error"] = repr(exc)
+              return result
+
+          pyo3_names = [
+              name for name in dir(nautilus_pyo3)
+              if any(token in name.lower() for token in ("backtest", "simulated", "liquidat"))
+          ]
+          payload = {
+              "nautilus_version": getattr(nautilus_trader, "__version__", None),
+              "cython": {
+                  "BacktestEngine": describe(BacktestEngine),
+                  "BacktestEngine.add_venue": describe(BacktestEngine.add_venue),
+                  "SimulatedExchange": describe(SimulatedExchange),
+                  "SimulatedExchange_names": [
+                      name for name in dir(SimulatedExchange)
+                      if any(token in name.lower() for token in ("liquidat", "margin", "funding"))
+                  ],
+              },
+              "pyo3_matching_names": pyo3_names,
+              "pyo3_descriptions": {
+                  name: describe(getattr(nautilus_pyo3, name)) for name in pyo3_names
+              },
+          }
+          out = Path(os.environ["OUT"])
+          (out / "diagnostic.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+      - name: Commit diagnostic evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f research/candidate-08/.run-nautilus-liquidation-api-diagnostic-v1
+          git add -A -- "$OUT" research/candidate-08/.run-nautilus-liquidation-api-diagnostic-v1
+          git commit -m "candidate-08: record pinned liquidation API surface [skip ci]"
+          for attempt in 1 2 3 4; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
+            git rebase --abort || true
+            sleep $((attempt * 3))
+          done
+          exit 1
