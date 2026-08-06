@@ -1,0 +1,90 @@
+name: candidate-08-pyo3-production-adapter-v2
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-pyo3-production-adapter-v2"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-pyo3-production-adapter-v2
+  cancel-in-progress: false
+
+jobs:
+  patch-test-and-commit:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize the v1 controlled scripts with only the overbroad checks narrowed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path(".github/workflows/candidate-08-pyo3-production-adapter-v1.yml")
+          text = path.read_text(encoding="utf-8")
+
+          def extract(name: str) -> str:
+              step = f"      - name: {name}\n"
+              start = text.index(step)
+              run = text.index("        run: |\n", start) + len("        run: |\n")
+              end = text.find("\n      - name: ", run)
+              if end < 0:
+                  end = len(text)
+              lines = text[run:end].splitlines()
+              return "\n".join(
+                  line[10:] if line.startswith("          ") else line
+                  for line in lines
+              ) + "\n"
+
+          patch = extract("Apply only the verified Cython to PyO3 adapter correction")
+          verify = extract("Verify contracts and native production smoke")
+          old_patch = 'if ".orders" in strategy:'
+          new_patch = 'if "orders.orders" in strategy:'
+          old_verify = 'assert ".orders" not in strategy_source'
+          new_verify = 'assert "orders.orders" not in strategy_source'
+          if patch.count(old_patch) != 1 or verify.count(old_verify) != 1:
+              raise SystemExit("narrow validation anchors were not unique")
+          patch = patch.replace(old_patch, new_patch)
+          verify = verify.replace(old_verify, new_verify)
+          Path("/tmp/candidate08_patch.sh").write_text(patch, encoding="utf-8")
+          Path("/tmp/candidate08_verify.sh").write_text(verify, encoding="utf-8")
+          PY
+          bash /tmp/candidate08_patch.sh
+          bash /tmp/candidate08_verify.sh
+
+      - name: Commit only verified production files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f research/candidate-08/.run-pyo3-production-adapter-v2
+          git add -A -- \
+            research/candidate-08/aggtrade_acceptance_strategy.py \
+            research/candidate-08/run_aggtrade_acceptance_nautilus.py \
+            research/candidate-08/.run-pyo3-production-adapter-v2
+          git commit -m "candidate-08: use verified native Nautilus production adapter [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
