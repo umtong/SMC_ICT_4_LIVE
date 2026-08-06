@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
+from causal_clock import source_bar_datetime
 from lrb_types import PrimitiveSnapshot
 from session_equilibrium_engine import SessionEquilibriumRetestEngine
 
@@ -84,7 +83,9 @@ class RollingAuctionLiquidityRelayEngine(SessionEquilibriumRetestEngine):
         self._hour_low = observation.low if self._hour_low is None else min(self._hour_low, observation.low)
 
     def _roll_hour_before(self, snapshot: PrimitiveSnapshot) -> None:
-        dt = datetime.fromtimestamp(snapshot.observation.ts_ns / 1_000_000_000, tz=timezone.utc)
+        # `ts_ns` is the completed-bar event time.  The 01:00 event belongs to
+        # the 00:59-01:00 source interval and must finish the 00 UTC auction.
+        dt = source_bar_datetime(snapshot.observation.ts_ns)
         key = dt.strftime("%Y-%m-%dT%H")
         self._minute_in_hour = dt.minute
         if self._hour_key is None:
