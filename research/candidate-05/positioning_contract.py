@@ -85,7 +85,14 @@ def _positioning_features(metrics: pd.DataFrame) -> pd.DataFrame:
         3,
         fill_method=None,
     )
-    frame["metrics_observed_time_ns"] = frame["metrics_observed_time"].astype("int64")
+    # Pandas 3 may retain microsecond resolution for parsed timestamps. Convert
+    # explicitly to UTC nanoseconds before integer serialization so the feature
+    # contract is stable across pandas versions and platforms.
+    frame["metrics_observed_time_ns"] = (
+        frame["metrics_observed_time"]
+        .astype("datetime64[ns, UTC]")
+        .astype("int64")
+    )
     return frame
 
 
