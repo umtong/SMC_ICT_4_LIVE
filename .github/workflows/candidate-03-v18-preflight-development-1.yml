@@ -1,0 +1,115 @@
+name: candidate-03-v18-preflight-development-1
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - "research/candidate-03/derive_nt_lvcfr_v18_signals.py"
+      - "research/candidate-03/test_nt_lvcfr_v18.py"
+      - "research/candidate-03/prepare_nt_lvcfr_v18.py"
+      - "research/candidate-03/nt_lvcfr_v18_config.json"
+      - ".github/workflows/candidate-03-v18-preflight-development-1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONPATH: research/candidate-03
+  CONFIG: research/candidate-03/nt_lvcfr_v18_config.json
+
+jobs:
+  causal-opportunity-preflight:
+    runs-on: ubuntu-slim
+    timeout-minutes: 240
+    steps:
+      - name: Clone branch and verify frozen V18 detector contract
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch research/candidate-03 \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          test "$(git hash-object research/candidate-03/derive_nt_lvcfr_v18_signals.py)" = "aea81e9d9d5ce2f1d7d37484352ef0b90d2cb0df"
+          test "$(git hash-object research/candidate-03/test_nt_lvcfr_v18.py)" = "4a0e096329d1bfca28abacfe384410d906eff5e9"
+          test "$(git hash-object research/candidate-03/prepare_nt_lvcfr_v18.py)" = "162d22d37365513424611f7e66eb07d95fc16102"
+          test "$(git hash-object research/candidate-03/rebuild_nt_lvcfr_bookticker_catalog.py)" = "27a18072a5a0d21b8d8b81cf0384a2b7336e4f70"
+          test "$(git hash-object research/candidate-03/nt_lvcfr_v18_config.json)" = "6a15641340aa81ecd03d186ed478c50da6ee0294"
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=research/candidate-03 \
+            python3 research/candidate-03/test_nt_lvcfr_v18.py
+          python3 -m py_compile \
+            research/candidate-03/derive_nt_lvcfr_v18_signals.py \
+            research/candidate-03/prepare_nt_lvcfr_v18.py \
+            research/candidate-03/rebuild_nt_lvcfr_bookticker_catalog.py
+
+      - name: Build first-week causal schedule from checksum-verified official data
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          prepared="$RUNNER_TEMP/candidate-03-v18-development-1/prepared"
+          out="$RUNNER_TEMP/candidate-03-v18-development-1/output"
+          mkdir -p "$prepared" "$out"
+          PYTHONPATH=research/candidate-03 python3 \
+            research/candidate-03/prepare_nt_lvcfr_v18.py \
+            --week-start 2024-01-08 --output "$prepared" --config "$CONFIG" \
+            2>&1 | tee "$out/preparation.log"
+          cp "$prepared/signals.json" "$prepared/signals-v1.json"
+          PYTHONPATH=research/candidate-03 python3 \
+            research/candidate-03/derive_nt_lvcfr_v18_signals.py \
+            --prepared-root "$prepared" \
+            --output-manifest "$out/v18_signal_manifest.json" \
+            2>&1 | tee "$out/derivation.log"
+          cp "$prepared/signals.json" "$out/signals.json"
+          cp "$prepared/data_manifest.json" "$out/data_manifest.json"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          out = Path("${RUNNER_TEMP}") / "candidate-03-v18-development-1/output"
+          manifest = json.loads((out / "v18_signal_manifest.json").read_text())
+          signals = json.loads((out / "signals.json").read_text())
+          causal = {
+              "candidate": manifest["candidate"],
+              "engine_status": "causal_opportunity_preflight_only_no_backtest",
+              "week_start": "2024-01-08",
+              "source_contraction_event_count": manifest["source_contraction_event_count"],
+              "retained_deleveraging_signal_count": manifest["retained_deleveraging_signal_count"],
+              "expansion_pre_candidate_count": manifest["expansion_pre_candidate_count"],
+              "l1_routed_signal_count": manifest["l1_routed_signal_count"],
+              "derived_signal_count": manifest["derived_signal_count"],
+              "minimum_required_episodes": 8,
+              "opportunity_gate_reachable": len(signals) >= 8,
+              "state_counts": manifest["state_counts"],
+              "l1_routing_counts": manifest["l1_routing_counts"],
+              "threshold_policy": manifest["threshold_policy"],
+              "performance_metrics_calculated": False,
+          }
+          (out / "preflight_summary.json").write_text(
+              json.dumps(causal, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(causal, indent=2, sort_keys=True))
+          if len(signals) < 8:
+              raise SystemExit("V18 first-week opportunity gate is unreachable")
+          PY
+
+      - name: Commit detector-only evidence
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd repo
+          src="$RUNNER_TEMP/candidate-03-v18-development-1/output"
+          dst=research/candidate-03/results/v18-preflight-development-1
+          rm -rf "$dst"
+          mkdir -p "$dst"
+          cp "$src"/*.json "$dst"/
+          cp "$src"/*.log "$dst"/
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add "$dst"
+          git commit -m "candidate-03: record V18 first-week causal preflight"
+          git pull --rebase origin research/candidate-03
+          git push origin HEAD:research/candidate-03
