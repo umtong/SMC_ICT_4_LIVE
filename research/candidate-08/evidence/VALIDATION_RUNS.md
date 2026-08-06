@@ -15,6 +15,8 @@ This ledger records immutable GitHub Actions run IDs and the reason for every re
 | 31077616228 | 85cd5654e215aea9ddfeac1fece60621a2afa205 | patch-infrastructure failure | the timestamp patch was first tested outside the pinned image where pandas was absent; source was not committed |
 | 31077694294 | e7fb2081afe40a65a18fcbc76b364168136cf565 | validated patch, commit failure | the pinned image passed `smc4 doctor` and all eight causal/risk/timestamp tests; only Git safe-directory configuration prevented the already validated workspace changes from being committed |
 | 31077856942 | b75dc3f7854631f16630cdb494d0ed31acb55171 | patch success | the same pinned-image checks and eight tests passed and the explicit epoch-nanosecond conversion plus optional result-statistics handling were committed as `474ff3ae5f9203ee0c021cb4ef6cae6243bedacc` |
+| 31077987176 | a98827259323cf8d897f3dd737431c39e29717d5 | first real signal, OrderList adapter failure | the valid 2024 clock produced the first confirmed setup on 2024-04-09 16:08:59.999 UTC; the strategy then treated Nautilus's bracket `OrderList` object as an iterable tuple before any order submission |
+| 31078147847 | 635da6f60fa7b2bd8b3cf132631b994eb1c02745 | OrderList patch success | the adapter was changed to unpack `OrderList.orders` while preserving the bracket object passed to `submit_order_list`; the fixed source was committed as `95e7f45b2b4381d7091d27f4ab1ed7873bb8ea60` |
 
 The execution models use the pinned official `nautilus_trader.backtest.models` API. The data adapter
 constructs the official Nautilus `Bar` type directly from an owned float64 array, converts any pandas
