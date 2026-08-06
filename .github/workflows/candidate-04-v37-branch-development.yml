@@ -1,0 +1,304 @@
+name: candidate-04-v37-branch-development
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/evidence-v36-survivor-followup.json"
+      - "research/candidate-04/evidence-v36-branch-validation.json"
+      - "research/candidate-04/evidence-v36-long.json"
+      - ".github/workflows/candidate-04-v37-branch-development.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Permit V37 only after V36 economic exhaustion
+        id: route
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          long_path = Path("research/candidate-04/evidence-v36-long.json")
+          if long_path.exists():
+              try:
+                  long_value = json.loads(long_path.read_text())
+              except Exception:
+                  long_value = {}
+              if long_value.get("project_target_reached"):
+                  print("should_run=false")
+                  print("reason=v36_project_target_reached")
+                  raise SystemExit(0)
+          validation = Path(
+              "research/candidate-04/evidence-v36-branch-validation.json"
+          )
+          if validation.exists():
+              try:
+                  value = json.loads(validation.read_text())
+              except Exception:
+                  value = {}
+              if value.get("project_target_reached"):
+                  print("should_run=false")
+                  print("reason=v36_branch_validation_reached_target")
+                  raise SystemExit(0)
+              if value.get("validation_completed") is True:
+                  print("should_run=true")
+                  print("reason=v36_branch_path_economically_exhausted")
+                  raise SystemExit(0)
+          route_path = Path(
+              "research/candidate-04/evidence-v36-survivor-followup.json"
+          )
+          if not route_path.exists():
+              print("should_run=false")
+              print("reason=await_v36_route_evidence")
+              raise SystemExit(0)
+          route = json.loads(route_path.read_text())
+          if route.get("project_target_reached"):
+              print("should_run=false")
+              print("reason=v36_project_target_reached")
+          elif route.get("implementation_failure"):
+              print("should_run=false")
+              print("reason=v36_same_week_implementation_recovery_required")
+          elif route.get("validation_pending"):
+              print("should_run=false")
+              print("reason=await_v36_survivor_validation")
+          elif route.get("economic_path_terminal"):
+              print("should_run=true")
+              print("reason=v36_economic_path_exhausted")
+          else:
+              print("should_run=false")
+              print("reason=v36_not_terminal")
+          PY
+
+      - name: Restore exact completed-data BTC development observations
+        if: steps.route.outputs.should_run == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v27-cross-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Verify V37 volume-clock contracts and freeze source
+        if: steps.route.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/volume_clock_impact_residual_compiler.py \
+            research/candidate-04/run_frozen_btc_route.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_volume_clock_impact_residual_compiler.py' -v
+          echo "V37_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Run full V37 sequentially and ablate only the first failure
+        if: steps.route.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=(low_activity normal_basis stress_a)
+          build_starts=(2023-08-02 2023-12-16 2024-08-05)
+          build_ends=(2023-08-10 2023-12-24 2024-08-13)
+          eval_starts=(2023-08-04 2023-12-18 2024-08-07)
+          eval_ends=(2023-08-10 2023-12-24 2024-08-13)
+          root="artifacts/candidate-04-v37-branch-development"
+          mkdir -p "$root"
+          failed=""
+          failed_index=""
+
+          for i in "${!names[@]}"; do
+            name="${names[$i]}"
+            rich_dir="$(find sources -type f -path "*candidate-04-v27-cross-${name}-*/source/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+            test -n "$rich_dir"
+            output="$root/full/$name"
+            python research/candidate-04/run_frozen_btc_route.py \
+              --family v37 \
+              --route full \
+              --candidate candidate-04-v37-volume-clock-impact-residual \
+              --stage "development_${name}" \
+              --compiler research/candidate-04/volume_clock_impact_residual_compiler.py \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --execution-config research/candidate-04/nt_liquidity_config.json \
+              --rich-dir "$rich_dir" \
+              --build-start "${build_starts[$i]}" \
+              --build-end "${build_ends[$i]}" \
+              --evaluation-start "${eval_starts[$i]}" \
+              --evaluation-end "${eval_ends[$i]}" \
+              --cache ".cache/candidate-04-v37-branch/full/$name" \
+              --output "$output" \
+              --min-trades 4 \
+              --min-active-days 3 \
+              --min-win-rate 0.55 \
+              --min-geometric-daily 0.01
+            passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$output/summary.json")"
+            if [[ "$passed" != "true" ]]; then
+              failed="$name"
+              failed_index="$i"
+              break
+            fi
+          done
+
+          survivors=""
+          if [[ -z "$failed" ]]; then
+            survivors="full"
+          else
+            rich_dir="$(find sources -type f -path "*candidate-04-v27-cross-${failed}-*/source/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+            for route in continuation reversal; do
+              output="$root/ablations/$failed/$route"
+              python research/candidate-04/run_frozen_btc_route.py \
+                --family v37 \
+                --route "$route" \
+                --candidate "candidate-04-v37-${route}-only" \
+                --stage "${failed}_${route}_only_ablation" \
+                --compiler research/candidate-04/volume_clock_impact_residual_compiler.py \
+                --base-config research/candidate-04/inventory_transfer_config.json \
+                --impact-config research/candidate-04/impact_exhaustion_config.json \
+                --router-config research/candidate-04/auction_activity_router_config.json \
+                --execution-config research/candidate-04/nt_liquidity_config.json \
+                --rich-dir "$rich_dir" \
+                --build-start "${build_starts[$failed_index]}" \
+                --build-end "${build_ends[$failed_index]}" \
+                --evaluation-start "${eval_starts[$failed_index]}" \
+                --evaluation-end "${eval_ends[$failed_index]}" \
+                --cache ".cache/candidate-04-v37-branch/ablation/$failed/$route" \
+                --output "$output" \
+                --min-trades 4 \
+                --min-active-days 3 \
+                --min-win-rate 0.55 \
+                --min-geometric-daily 0.01
+              passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$output/summary.json")"
+              if [[ "$passed" == "true" ]]; then
+                survivors="$survivors $route"
+              fi
+            done
+            survivors="$(echo "$survivors" | xargs)"
+          fi
+          export V37_ROOT="$root" V37_FAILED="$failed" V37_SURVIVORS="$survivors"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["V37_ROOT"])
+          full_weeks = {
+              path.parent.name: json.loads(path.read_text())
+              for path in root.glob("full/*/summary.json")
+          }
+          ablations = {
+              path.parent.name: json.loads(path.read_text())
+              for path in root.glob("ablations/*/*/summary.json")
+          }
+          survivors = os.environ["V37_SURVIVORS"].split()
+          evidence = {
+              "candidate": "candidate-04-v37-volume-clock-impact-residual",
+              "family": "v37",
+              "compiler": "volume_clock_impact_residual_compiler.py",
+              "source_commit": os.environ["V37_SOURCE_COMMIT"],
+              "stage": "sequential_development_and_first_failure_ablation",
+              "weeks": full_weeks,
+              "failed_week": os.environ["V37_FAILED"] or None,
+              "controlled_ablations": ablations,
+              "survivors": survivors,
+              "validation_pending": bool(survivors),
+              "economic_path_terminal": not bool(survivors),
+              "project_target_reached": False,
+              "implementation_failure": False,
+              "decision": (
+                  "validate_surviving_routes_across_all_development_unseen_and_long_windows"
+                  if survivors
+                  else "discard_v37_no_surviving_mechanism"
+              ),
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+          }
+          (root / "research_decision.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          Path(
+              "research/candidate-04/evidence-v37-survivor-followup.json"
+          ).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          Path(
+              "research/candidate-04/evidence-v37-development.json"
+          ).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Record deferred V37 development
+        if: steps.route.outputs.should_run != 'true'
+        shell: bash
+        env:
+          REASON: ${{ steps.route.outputs.reason }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          evidence = {
+              "candidate": "candidate-04-v37-volume-clock-impact-residual",
+              "family": "v37",
+              "compiler": "volume_clock_impact_residual_compiler.py",
+              "executed": False,
+              "validation_pending": False,
+              "reason": os.environ["REASON"],
+          }
+          Path(
+              "research/candidate-04/evidence-v37-development.json"
+          ).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v37-branch-development-${{ github.run_id }}
+          path: artifacts/candidate-04-v37-branch-development
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Commit V37 development evidence with rebase retry
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-04/evidence-v37-development.json \
+            research/candidate-04/evidence-v37-survivor-followup.json \
+            2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record branch-safe V37 development evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
