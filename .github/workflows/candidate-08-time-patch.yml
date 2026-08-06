@@ -73,8 +73,9 @@ jobs:
           python -m compileall -q research/candidate-08
           python research/candidate-08/test_logic.py -v
           grep -nE '_index_to_nanoseconds|getattr\(result, "stats_general"' research/candidate-08/data.py research/candidate-08/run.py
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add research/candidate-08/data.py research/candidate-08/run.py research/candidate-08/test_logic.py research/candidate-08/.patch-time-scale
-          git commit -m "candidate-08: enforce Nautilus nanosecond event time"
-          git push origin HEAD:research/candidate-08
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" add research/candidate-08/data.py research/candidate-08/run.py research/candidate-08/test_logic.py research/candidate-08/.patch-time-scale
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: enforce Nautilus nanosecond event time"
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
