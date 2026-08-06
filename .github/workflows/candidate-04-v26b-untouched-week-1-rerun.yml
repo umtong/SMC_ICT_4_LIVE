@@ -1,0 +1,276 @@
+name: candidate-04-v26b-untouched-week-1-rerun
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v26b-untouched-week-1-rerun.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      C04_BUILD_START: "2024-05-25"
+      C04_BUILD_END: "2024-06-02"
+      C04_EVALUATION_START: "2024-05-27"
+      C04_EVALUATION_END: "2024-06-02"
+      C04_FROZEN_COMMIT: "ea4fd231a90a86a9ea2e01cf66c9b28198afb958"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify immutable V26b source bytes and fixed runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v26b-untouched-1"
+          mkdir -p "$root"
+          smc4 doctor
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          from urllib.parse import quote
+          from urllib.request import urlopen
+
+          root = Path("artifacts/candidate-04-v26b-untouched-1")
+          freeze = json.loads(
+              Path("research/candidate-04/freeze-v26b.json").read_text()
+          )
+          commit = os.environ["C04_FROZEN_COMMIT"]
+          if freeze["source_freeze"]["commit"] != commit:
+              raise SystemExit("freeze file and workflow frozen commit disagree")
+          verified = []
+          for path_text in freeze["source_freeze"]["protected_paths"]:
+              path = Path(path_text)
+              local = path.read_bytes()
+              encoded = quote(path_text, safe="/")
+              url = (
+                  "https://raw.githubusercontent.com/umtong/SMC_ICT_4_LIVE/"
+                  f"{commit}/{encoded}"
+              )
+              with urlopen(url, timeout=30) as response:
+                  frozen = response.read()
+              if local != frozen:
+                  raise SystemExit(f"protected source changed after freeze: {path_text}")
+              verified.append(
+                  {
+                      "path": path_text,
+                      "sha256": hashlib.sha256(local).hexdigest(),
+                      "bytes": len(local),
+                  }
+              )
+          result = {
+              "frozen_commit": commit,
+              "protected_files": len(verified),
+              "verified": verified,
+          }
+          (root / "source_freeze_verification.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps({
+              "frozen_commit": commit,
+              "protected_files": len(verified),
+          }, sort_keys=True))
+          PY
+          python -m compileall -q \
+            research/candidate-04/rich_features.py \
+            research/candidate-04/rich_features_v2.py \
+            research/candidate-04/rich_signal_compiler_v22.py \
+            research/candidate-04/rich_signal_compiler_v22b.py \
+            research/candidate-04/rich_signal_compiler_v23.py \
+            research/candidate-04/rich_signal_compiler_v24.py \
+            research/candidate-04/rich_signal_compiler_v25.py \
+            research/candidate-04/external_break_retest_compiler.py \
+            research/candidate-04/rich_signal_compiler_v26.py \
+            research/candidate-04/rich_signal_compiler_v26b.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v22_rich_router.py
+          python -m unittest discover -s research/candidate-04/tests -p 'test_rich_signal_compiler_v24.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_rich_signal_compiler_v25.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_rich_signal_compiler_v26.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_rich_signal_compiler_v26b.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_external_break_retest_compiler.py' -v
+          python -m unittest research/candidate-04/tests/test_rich_features_v2.py -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Build untouched completed-data observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v26b-untouched-1"
+          rich="$root/rich"
+          mkdir -p "$rich"
+          python research/candidate-04/rich_features_v2.py \
+            --start "$C04_BUILD_START" \
+            --end "$C04_BUILD_END" \
+            --cache ".cache/candidate-04-v26b-untouched-1/rich" \
+            --output "$rich"
+          expected=$(( ( $(date -d "$C04_BUILD_END" +%s) - $(date -d "$C04_BUILD_START" +%s) ) / 86400 + 1 ))
+          test "$(find "$rich" -name '*.csv.gz' | wc -l)" -eq "$expected"
+          test -s "$rich/data_manifest.json"
+
+      - name: Compile frozen V26b intents without execution or PnL
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v26b-untouched-1"
+          python research/candidate-04/rich_signal_compiler_v26b.py \
+            --base-config research/candidate-04/inventory_transfer_config.json \
+            --impact-config research/candidate-04/impact_exhaustion_config.json \
+            --router-config research/candidate-04/auction_activity_router_config.json \
+            --rich-dir "$root/rich" \
+            --kline-dir ".cache/candidate-04-v26b-untouched-1/raw" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --output "$root/signals" \
+            --download-klines \
+            | tee "$root/signal_compiler_console.json"
+          test -s "$root/signals/signals.json"
+          test -s "$root/signals/summary.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-04-v26b-untouched-1")
+          rows = json.loads((root / "signals/signals.json").read_text())
+          valid = {
+              "EXTERNAL_POOL_FAILED_DISCOVERY_REVERSAL",
+              "TRAPPED_COUNTERTREND_INVENTORY_RETEST_RESUMPTION",
+              "NON_CLIMACTIC_PARENT_AUCTION_RESUMPTION",
+              "NORMAL_FAILED_AUCTION_RESUMPTION",
+              "TAIL_CONFIRMED_STRESS_FAILED_AUCTION",
+              "ORDERLY_INVENTORY_DISPLACEMENT",
+          }
+          previous = -1
+          for row in rows:
+              timestamp = int(row["observe_time_ns"])
+              if timestamp < previous:
+                  raise SystemExit("signals are not time ordered")
+              previous = timestamp
+              scenario = str(row["scenario"])
+              if scenario not in valid or int(row["side"]) not in (-1, 1):
+                  raise SystemExit(f"invalid frozen signal: {scenario}")
+              if scenario == "TRAPPED_COUNTERTREND_INVENTORY_RETEST_RESUMPTION":
+                  change = float(
+                      row["details"]["retest_counter_break_state"]
+                      ["acceptance_to_retest_open_interest_change"]
+                  )
+                  if change <= 0.0:
+                      raise SystemExit("inventory signal lacks state-interval OI increase")
+          print(json.dumps({"validated_signals": len(rows)}, sort_keys=True))
+          PY
+
+      - name: Execute untouched week exclusively through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v26b-untouched-1"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$root/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v22_rich_router.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start "$C04_BUILD_START" \
+            --build-end "$C04_BUILD_END" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --cache ".cache/candidate-04-v26b-untouched-1/raw" \
+            --output "$root/nautilus" \
+            | tee "$root/nautilus_console.json"
+          test -s "$root/nautilus/metrics.json"
+          test -s "$root/nautilus/run.json"
+          test -e "$root/nautilus/positions.csv"
+          test -s "$root/nautilus/equity.csv"
+          test -s "$root/nautilus/strategy_events.json"
+
+      - name: Verify risk and apply frozen sequential gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          from pandas.errors import EmptyDataError
+
+          root = Path("artifacts/candidate-04-v26b-untouched-1")
+          metrics = json.loads((root / "nautilus/metrics.json").read_text())
+          events = json.loads((root / "nautilus/strategy_events.json").read_text())
+          signal_summary = json.loads((root / "signals/summary.json").read_text())
+          freeze = json.loads(Path("research/candidate-04/freeze-v26b.json").read_text())
+          try:
+              positions = pd.read_csv(root / "nautilus/positions.csv")
+          except EmptyDataError:
+              positions = pd.DataFrame()
+          entries = [event for event in events if event.get("event_type") == "ENTRY_SUBMITTED"]
+          if len(entries) != len(positions.index):
+              raise SystemExit(
+                  f"entry/position mismatch entries={len(entries)} positions={len(positions.index)}"
+              )
+          losses = []
+          for position, entry in zip(positions.to_dict("records"), entries):
+              pnl = float(str(position["realized_pnl"]).split()[0].replace("_", ""))
+              if pnl < 0.0:
+                  losses.append(abs(pnl) / float(entry["details"]["equity"]))
+          maximum_loss = max(losses, default=0.0)
+          risk_pass = maximum_loss <= float(
+              freeze["weekly_gate"]["maximum_realized_loss_fraction"]
+          )
+          candidate_pass = bool(metrics.get("gate_pass")) and risk_pass
+          summary = {
+              "candidate": freeze["candidate"],
+              "stage": "untouched_week_1",
+              "source_commit": freeze["source_freeze"]["commit"],
+              "evaluation_start": "2024-05-27",
+              "evaluation_end": "2024-06-02",
+              "engine": metrics.get("engine"),
+              "signals": signal_summary.get("written_signals"),
+              "route_counts": signal_summary.get("route_counts"),
+              "trades": metrics.get("trades"),
+              "wins": metrics.get("wins"),
+              "win_rate": metrics.get("win_rate"),
+              "total_return": metrics.get("total_return"),
+              "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+              "active_days": metrics.get("active_days"),
+              "max_drawdown": metrics.get("max_drawdown"),
+              "largest_winner_share": metrics.get("largest_winner_share"),
+              "scenario_metrics": metrics.get("scenario_metrics"),
+              "gate_checks": metrics.get("gate_checks"),
+              "maximum_realized_loss_fraction": maximum_loss,
+              "risk_pass": risk_pass,
+              "candidate_pass": candidate_pass,
+              "next_stage_allowed": candidate_pass,
+          }
+          (root / "summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n"
+          )
+          (root / "sequential_gate.json").write_text(
+              json.dumps({
+                  "candidate_pass": candidate_pass,
+                  "next_stage_allowed": candidate_pass,
+                  "stage_2_remains_unopened": not candidate_pass,
+              }, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if not risk_pass:
+              raise SystemExit("realized loss exceeded frozen 3% NAV contract")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v26b-untouched-week-1-rerun-${{ github.sha }}
+          path: artifacts/candidate-04-v26b-untouched-1
+          if-no-files-found: error
+          retention-days: 90
