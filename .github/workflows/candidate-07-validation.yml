@@ -61,6 +61,14 @@ jobs:
           --data-root .research-data/candidate-07
           --lookahead-minutes 120
 
+      - name: Enforce strict pool-lifecycle causality
+        if: always()
+        run: >-
+          python research/candidate-07/diagnose_failed_flow_strict.py
+          --config research/candidate-07/config.json
+          --stage week-1
+          --output artifacts/candidate-07
+
       - name: Print machine-readable result
         if: always()
         run: |
@@ -68,6 +76,7 @@ jobs:
           cat artifacts/candidate-07/pipeline_summary.json
           cat artifacts/candidate-07/week-1/metrics.json
           cat artifacts/candidate-07/week-1/failed_flow_diagnostic.json
+          cat artifacts/candidate-07/week-1/failed_flow_strict.json
 
       - name: Preserve complete replay evidence
         if: always()
