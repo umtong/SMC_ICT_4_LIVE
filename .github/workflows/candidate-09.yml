@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: read
 
 jobs:
@@ -31,29 +31,66 @@ jobs:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
 
+      - name: Apply controlled pinned-API fix
+        id: api_fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-09/strategy.py")
+          source = path.read_text(encoding="utf-8")
+          old = '"duration_ns": _as_int_ns(event.duration),'
+          new = '"duration_ns": _as_int_ns(event.duration_ns),'
+          if old in source:
+              path.write_text(source.replace(old, new, 1), encoding="utf-8")
+          PY
+
+          if ! git diff --quiet -- research/candidate-09/strategy.py; then
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add research/candidate-09/strategy.py
+            git commit -m "fix(candidate-09): use PositionClosed.duration_ns"
+            git push origin HEAD:research/candidate-09
+            echo "applied=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Verify pinned NautilusTrader environment
+        if: steps.api_fix.outputs.applied != 'true'
         run: smc4 doctor
 
       - name: Compile candidate
+        if: steps.api_fix.outputs.applied != 'true'
         run: python -m compileall -q research/candidate-09
 
       - name: Candidate causal and risk tests
+        if: steps.api_fix.outputs.applied != 'true'
         run: python -m unittest discover -s research/candidate-09/tests -p 'test_*.py' -v
 
+      - name: Verify PositionClosed duration contract
+        if: steps.api_fix.outputs.applied != 'true'
+        run: |
+          grep -F '"duration_ns": _as_int_ns(event.duration_ns),' research/candidate-09/strategy.py
+          ! grep -F '"duration_ns": _as_int_ns(event.duration),' research/candidate-09/strategy.py
+
       - name: Run frozen three-week protocol and one-variable ablation
+        if: steps.api_fix.outputs.applied != 'true'
         run: |
           python research/candidate-09/run_research.py \
             --config research/candidate-09/config.json \
             --output artifacts/candidate-09
 
       - name: Show decision
-        if: always()
+        if: always() && steps.api_fix.outputs.applied != 'true'
         run: |
           test -f artifacts/candidate-09/SUMMARY.md && cat artifacts/candidate-09/SUMMARY.md || true
           test -f artifacts/candidate-09/decision.json && cat artifacts/candidate-09/decision.json || true
 
       - name: Preserve complete reproducible evidence
-        if: always()
+        if: always() && steps.api_fix.outputs.applied != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: candidate-09-evidence-${{ github.sha }}
