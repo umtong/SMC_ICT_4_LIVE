@@ -1,6 +1,5 @@
-#!/usr/bin/env python3
-"""Candidate 05 production import surface: execution-confirmed cancel v18."""
+"""Candidate 05 active strategy entrypoint."""
 from strategy_base import LiquidityResponseConfig
-from strategy_v18 import ExecutionConfirmedCancelStrategy as LiquidityResponseStrategy
+from strategy_v19 import BlindRetraceAblationStrategy as LiquidityResponseStrategy
 
 __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
