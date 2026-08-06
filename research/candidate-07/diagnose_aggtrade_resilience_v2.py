@@ -101,8 +101,10 @@ def run(args: argparse.Namespace) -> int:
         oi_impulse_rank=logic.oi_impulse_rank,
     )
     five["timestamp_ns"] = five["timestamp_ns"].astype("int64")
+    event_seconds = bundle.seconds.copy()
+    event_seconds["close_time_ns"] = event_seconds["timestamp_ns"].astype("int64")
     bars = attach_causal_context_gap_safe(
-        bundle.seconds,
+        event_seconds,
         minute,
         five,
         history_windows=logic.history_windows,
