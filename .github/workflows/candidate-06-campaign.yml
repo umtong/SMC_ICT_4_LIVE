@@ -45,10 +45,9 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           cat research/candidate-06/dlvr_payload.part-* > /tmp/dlvr_payload.tar.gz
           printf '%s  %s\n' \
-            'e99e8f90e2dd740f840944007ba19e6e7f5da653018711555369b8857082f9e7' \
+            '45ef60553046a051e395cf249480cf6cd96bf7d21337911d0280c61acdf6e85c' \
             '/tmp/dlvr_payload.tar.gz' | sha256sum -c -
           tar -xzf /tmp/dlvr_payload.tar.gz
-          mv .github-workflow.tmp .github/workflows/candidate-06-campaign.yml
 
       - name: Verify fixed NautilusTrader environment
         run: |
@@ -61,7 +60,7 @@ jobs:
           print(f"NAUTILUS_VERSION={actual}")
           PY
 
-      - name: Verify detector and scenario causality
+      - name: Verify detector, data adapter and scenario causality
         run: |
           set -euo pipefail
           python -m py_compile \
@@ -72,7 +71,7 @@ jobs:
             research/candidate-06/test_depth_liquidity_response_engine.py
           python research/candidate-06/test_depth_liquidity_response_engine.py
 
-      - name: Run controlled passive-liquidity campaign through NautilusTrader
+      - name: Run unchanged passive-liquidity campaign through NautilusTrader
         id: lab
         continue-on-error: true
         run: |
@@ -114,25 +113,18 @@ jobs:
           cp artifacts/candidate-06-dlvr.stdout artifacts/candidate-06/dlvr-first-week/workflow_stdout.txt 2>/dev/null || true
           cp artifacts/candidate-06-dlvr.stderr artifacts/candidate-06/dlvr-first-week/workflow_stderr.txt 2>/dev/null || true
 
-      - name: Commit source and reproducible staged evidence
+      - name: Commit reviewed source and reproducible evidence
         if: always() && github.event_name == 'push'
         run: |
           set -euo pipefail
           git config user.name "candidate-06-research-bot"
           git config user.email "candidate-06-research-bot@users.noreply.github.com"
-          for path in \
-            .github/workflows/candidate-06-campaign.yml \
+          git add \
             research/candidate-06/depth_liquidity_response_engine.py \
             research/candidate-06/prepare_liquidity_series.py \
             research/candidate-06/run_depth_campaign.py \
             research/candidate-06/depth_shim/nautilus_strategy.py \
-            research/candidate-06/test_depth_liquidity_response_engine.py; do
-            if [ -e "$path" ]; then
-              git add "$path"
-            fi
-          done
-          rm -f research/candidate-06/dlvr_payload.part-* research/candidate-06/dlvr_payload.tar.gz
-          git add -A research/candidate-06
+            research/candidate-06/test_depth_liquidity_response_engine.py
           git add -f artifacts/candidate-06/dlvr-first-week
           if [ -f research/candidate-06/config.dlvr.locked.json ]; then
             git add -f research/candidate-06/config.dlvr.locked.json
