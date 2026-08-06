@@ -1,0 +1,113 @@
+{
+  "candidate": "candidate-04-v30-two-stage-auction-resolution",
+  "status": "rejected_after_logic_ablation",
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "development_workflow": {
+    "run_id": 31112464513,
+    "source_commit": "b2c0a6fb9a191dd9b295bf45acd8722fc2d348a7",
+    "aggregate_artifact_id": 8972323525,
+    "aggregate_digest": "sha256:68f0e65433fb1a4c550841c26e93a110a5cad1adc441a9fda8051c4fd9c6e65c"
+  },
+  "aggregate": {
+    "weeks": 7,
+    "calendar_days": 49,
+    "all_weeks_positive": false,
+    "compounded_return": 0.41410759787326556,
+    "geometric_daily_growth": 0.007096462605078457,
+    "trades": 23,
+    "wins": 17,
+    "win_rate": 0.7391304347826086,
+    "development_target_reached": false
+  },
+  "failed_week": {
+    "evaluation_start": "2025-03-24",
+    "evaluation_end": "2025-03-30",
+    "trades": 3,
+    "wins": 0,
+    "total_return": -0.05329069552550003,
+    "geometric_daily_growth": -0.007792791465774829,
+    "max_drawdown": 0.05329069552550003,
+    "maximum_realized_loss_fraction": 0.023271701797791082,
+    "risk_pass": true,
+    "scenario_results": {
+      "BALANCED_RECLAIM_FAILURE_INVENTORY_CONTINUATION": {
+        "trades": 1,
+        "wins": 0,
+        "net_pnl": -1781.4501601
+      },
+      "STRESS_ACCEPTANCE_FAILURE_DELEVERAGING_REVERSAL": {
+        "trades": 1,
+        "wins": 0,
+        "net_pnl": -1291.97299995
+      },
+      "PARENT_ALIGNED_EXTERNAL_RECLAIM_FAILURE_CONTINUATION": {
+        "trades": 1,
+        "wins": 0,
+        "net_pnl": -2255.6463925
+      }
+    }
+  },
+  "useful_original_hold_routes": {
+    "TWO_STAGE_BALANCED_FAILED_INVENTORY_REVERSAL_HOLD": {
+      "trades": 1,
+      "wins": 1,
+      "net_pnl": 4505.613768
+    },
+    "TWO_STAGE_EXTERNAL_FAILED_DISCOVERY_HOLD": {
+      "trades": 2,
+      "wins": 2,
+      "net_pnl": 4864.86995554
+    },
+    "TWO_STAGE_STRESS_FAILED_AUCTION_HOLD": {
+      "trades": 3,
+      "wins": 2,
+      "net_pnl": 2552.0208515199997
+    },
+    "combined": {
+      "trades": 6,
+      "wins": 5,
+      "win_rate": 0.8333333333333334,
+      "net_pnl": 11922.50457506
+    }
+  },
+  "key_variable_ablation": {
+    "workflow_run_id": 31112933862,
+    "source_commit": "de26e7a04d76c9ab4d584fd25e9a32227d740b55",
+    "aggregate_artifact_id": 8972492378,
+    "aggregate_digest": "sha256:e87d7e6e3bd7835502528300e6dfaff3895fbe429b3309d9ae30144581c34fcb",
+    "changed_variables": 1,
+    "removed_resolution_branch": "OPPOSITE_SIDE_REACCEPTANCE",
+    "result": {
+      "calendar_days": 49,
+      "all_weeks_positive": false,
+      "compounded_return": 0.49370835502478694,
+      "geometric_daily_growth": 0.008222639203588455,
+      "trades": 20,
+      "wins": 17,
+      "win_rate": 0.85,
+      "failed_week_trades": 0,
+      "failed_week_total_return": 0.0,
+      "structural_path_exists": false
+    }
+  },
+  "failure_diagnosis": {
+    "direction": "the three opposite routes later moved in the intended direction over a longer horizon, so direction was not the main error",
+    "timing": "entry occurred on the first opposite-side aligned close while the boundary was still negotiating and repeatedly crossing",
+    "invalidation": "stop was built from the incomplete immediate reclaim segment, so normal boundary negotiation invalidated trades before the eventual directional auction",
+    "largest_performance_factor": "single-bar opposite-side reacceptance was not durable auction resolution"
+  },
+  "preserve_for_next_system": [
+    "original-side second-stage hold routes",
+    "causal objective boundaries",
+    "raw state-interval OI semantics",
+    "past-only materiality thresholds",
+    "actual-fill bracket guard",
+    "current-NAV 3% planned-loss sizing",
+    "one global NautilusTrader pending-entry or open-position state"
+  ],
+  "next_hypothesis": {
+    "name": "boundary negotiation expansion",
+    "logic": "after first reclaim, do not enter on a single opposite close; wait for a completed two-sided negotiation range and trade only displacement beyond the full negotiation extreme, with the stop beyond the opposite negotiation extreme and a pre-existing external-liquidity target",
+    "external_support": "persistent order-flow regimes and online change-point methods are more appropriate than treating one aligned bar as a new regime"
+  }
+}
