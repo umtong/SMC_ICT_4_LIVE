@@ -52,7 +52,7 @@ jobs:
             candidate-07-positioning-week1-v1
             candidate-07-flow-week1-v1
 
-      - name: Diagnose frozen BTC Week-1 aggregate-trade resilience
+      - name: Diagnose frozen BTC Week-1 baseline
         run: >-
           python research/candidate-07/diagnose_aggtrade_resilience_v2.py
           --config research/candidate-07/config.json
@@ -63,22 +63,60 @@ jobs:
           --output artifacts/candidate-07/week-1/aggtrade_resilience_baseline.json
           --data-root .research-data/candidate-07
 
-      - name: Print compact machine-readable diagnosis
-        if: always()
+      - name: Classify baseline without masking implementation errors
+        id: classify
         run: |
-          test -f artifacts/candidate-07/week-1/aggtrade_resilience_baseline.json
-          python - <<'PY'
+          python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           from pathlib import Path
           path = Path('artifacts/candidate-07/week-1/aggtrade_resilience_baseline.json')
           payload = json.loads(path.read_text())
-          print(json.dumps({
-              'variant': payload['variant'],
-              'summary': payload['summary'],
-              'loader_diagnostics': payload['loader_diagnostics'],
-              'preconsumption': payload['preconsumption'],
-              'pool_collision_summary': payload['pool_collision_summary'],
-          }, indent=2, sort_keys=True))
+          diagnostics = payload['loader_diagnostics']
+          implementation_clean = (
+              diagnostics['out_of_order_rows'] == 0
+              and diagnostics['duplicate_agg_trade_ids'] == 0
+              and diagnostics['second_rows'] > 0
+          )
+          print(f"implementation_clean={'true' if implementation_clean else 'false'}")
+          passed = bool(payload['summary']['diagnostic_gate']['passed'])
+          print(f"baseline_passed={'true' if passed else 'false'}")
+          print(f"need_ablation={'true' if implementation_clean and not passed else 'false'}")
+          PY
+
+      - name: Remove OI-release gate only
+        if: steps.classify.outputs.need_ablation == 'true'
+        run: >-
+          python research/candidate-07/diagnose_aggtrade_resilience_v2.py
+          --config research/candidate-07/config.json
+          --stage week-1
+          --start 2025-12-22
+          --end 2025-12-29
+          --event-warmup-days 1
+          --ablate-oi-release
+          --output artifacts/candidate-07/week-1/aggtrade_resilience_ablation_no_oi.json
+          --data-root .research-data/candidate-07
+
+      - name: Print compact machine-readable comparison
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = {}
+          for name in ('baseline', 'ablation_no_oi'):
+              path = Path(f'artifacts/candidate-07/week-1/aggtrade_resilience_{name}.json')
+              if path.exists():
+                  payload = json.loads(path.read_text())
+                  result[name] = {
+                      'variant': payload['variant'],
+                      'summary': payload['summary'],
+                      'loader_diagnostics': payload['loader_diagnostics'],
+                      'preconsumption': payload['preconsumption'],
+                      'pool_collision_summary': payload['pool_collision_summary'],
+                  }
+          if not result:
+              raise SystemExit('no candidate report produced')
+          print(json.dumps(result, indent=2, sort_keys=True))
           PY
 
       - name: Preserve complete structural evidence
