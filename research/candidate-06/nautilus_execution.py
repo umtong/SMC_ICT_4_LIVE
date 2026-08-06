@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
+from entry_confirmation import DefenseCheck, continuation_defense_passes
 from logic import PrimitiveSnapshot, ScenarioSignal
 from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_strategy_common import utc_day as _utc_day, utc_hour as _utc_hour
@@ -24,6 +25,46 @@ class NautilusExecutionMixin:
             reason = "DELAYED_PRICE_OUTSIDE_LONG_BRACKET"
         elif direction == "SHORT" and not (target < entry < stop):
             reason = "DELAYED_PRICE_OUTSIDE_SHORT_BRACKET"
+
+        confirmation_mode = str(self._logic_params.get("sac_entry_confirmation", "NONE"))
+        confirmation_details: dict[str, Any] = {}
+        if signal.family == "SAC" and confirmation_mode.upper() != "NONE":
+            check = DefenseCheck(
+                mode=confirmation_mode,
+                direction=direction,
+                boundary=float(signal.liquidity_level),
+                signal_reference=float(signal.reference_entry),
+                open=float(snapshot.observation.open),
+                close=float(snapshot.observation.close),
+                flow_ratio=float(snapshot.flow_ratio),
+            )
+            passed = continuation_defense_passes(check)
+            confirmation_details = {
+                "confirmation_mode": confirmation_mode,
+                "boundary": check.boundary,
+                "signal_reference": check.signal_reference,
+                "delayed_open": check.open,
+                "delayed_close": check.close,
+                "delayed_flow_ratio": check.flow_ratio,
+                "boundary_held": check.boundary_held,
+                "directional_body": check.directional_body,
+                "directional_flow": check.directional_flow,
+                "reference_held": check.reference_held,
+                "passed": passed,
+            }
+            self.diagnostics.setdefault("sac_entry_candidates", []).append(
+                {
+                    "scenario_id": signal.scenario_id,
+                    "direction": direction,
+                    **confirmation_details,
+                },
+            )
+            confirmation_counts = self.diagnostics.setdefault("sac_entry_confirmation_counts", {})
+            key = "passed" if passed else "failed"
+            confirmation_counts[key] = int(confirmation_counts.get(key, 0)) + 1
+            if reason is None and not passed:
+                reason = "SAC_NEXT_COMPLETED_BAR_DEFENSE_FAILED"
+
         favorable_drift = (
             entry - signal.reference_entry if direction == "LONG" else signal.reference_entry - entry
         )
@@ -41,7 +82,12 @@ class NautilusExecutionMixin:
         if reason is None and net_rr < float(self.config.min_net_rr_after_delay):
             reason = "NET_REWARD_RISK_ERODED_AFTER_DELAY"
         if reason is not None:
-            self._abstain_signal(signal, snapshot, reason, {"net_rr": net_rr, "entry": entry})
+            self._abstain_signal(
+                signal,
+                snapshot,
+                reason,
+                {"net_rr": net_rr, "entry": entry, **confirmation_details},
+            )
             return
 
         equity = self._current_equity()
@@ -98,6 +144,7 @@ class NautilusExecutionMixin:
                 "loss_per_unit": loss_per_unit,
                 "net_rr_at_submission": net_rr,
                 "fee_rate_per_fill": fee,
+                "sac_entry_confirmation": confirmation_mode if signal.family == "SAC" else None,
             }
             self._entry_inflight = True
             self.diagnostics["entries_submitted"] += 1
@@ -115,6 +162,7 @@ class NautilusExecutionMixin:
                     "net_rr_after_cost": net_rr,
                     "stop_price": float(stop_price),
                     "target_price": float(target_price),
+                    **confirmation_details,
                 },
             )
             self.submit_order_list(order_list)
@@ -191,4 +239,3 @@ class NautilusExecutionMixin:
         self._active_trade = None
         self._entry_inflight = False
         self._exit_inflight = False
-
