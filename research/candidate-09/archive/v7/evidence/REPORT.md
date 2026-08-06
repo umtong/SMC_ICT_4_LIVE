@@ -2,18 +2,18 @@
 
 - Status: **GATE_FAIL**
 - Gate passed: **False**
-- Baseline pooled daily geometric return: **-0.623391%**
-- Baseline pooled NAV multiple across sampled days: **0.876936x**
-- Baseline trades: **8**
-- Maximum sampled-segment drawdown: **8.731657%**
+- Baseline pooled daily geometric return: **-0.289679%**
+- Baseline pooled NAV multiple across sampled days: **0.940898x**
+- Baseline trades: **2**
+- Maximum sampled-segment drawdown: **5.910223%**
 
 ## Fixed-week results
 
 | week | return | daily geo | trades | win rate | PF | max DD | reversal | continuation | implementation |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| week-a | -5.9085% | -0.8663% | 2 | 0.00% | 0.000 | 5.9085% | 2 | 0 | OK |
-| week-b | -0.1304% | -0.0186% | 1 | 0.00% | 0.000 | 0.1304% | 1 | 0 | OK |
-| week-c | -6.6780% | -0.9825% | 5 | 20.00% | 0.425 | 8.7317% | 5 | 0 | OK |
+| week-a | 0.0000% | 0.0000% | 0 | n/a | n/a | 0.0000% | 0 | 0 | OK |
+| week-b | -5.9102% | -0.8665% | 2 | 0.00% | 0.000 | 5.9102% | 2 | 0 | OK |
+| week-c | 0.0000% | 0.0000% | 0 | n/a | n/a | 0.0000% | 0 | 0 | OK |
 
 ## Gate checks
 
@@ -21,7 +21,7 @@
 - FAIL — `pooled_daily_geometric_return`
 - FAIL — `minimum_trades_each_week`
 - FAIL — `all_weeks_positive`
-- FAIL — `profit_not_single_trade_dominated`
+- PASS — `profit_not_single_trade_dominated`
 
 ## Failure classification / structural diagnosis
 
