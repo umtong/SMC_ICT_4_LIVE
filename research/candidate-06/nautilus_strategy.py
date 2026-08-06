@@ -48,6 +48,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from auction_relay_engine import RollingAuctionLiquidityRelayEngine
 
         return RollingAuctionLiquidityRelayEngine(logic_params)
+    if name == "ROLLING_AUCTION_STRUCTURAL_STOP":
+        from auction_structural_stop_engine import RollingAuctionStructuralStopEngine
+
+        return RollingAuctionStructuralStopEngine(logic_params)
     if name == "FIXED_INTERVAL_AUCTION_RELAY":
         from fixed_interval_auction_engine import FixedIntervalAuctionLiquidityRelayEngine
 
@@ -126,8 +130,6 @@ def make_strategy_class():
             """Advance clocks/ranges while the single global trade slot is occupied."""
             step = self._scenario_engine.observe(snapshot, allow_new=False)
             self._record_transitions(step.transitions, ts_ns)
-            # A signal generated while entry is unavailable is intentionally
-            # discarded; it cannot be an independent executable opportunity.
 
         def on_bar(self, bar: Bar) -> None:
             self.diagnostics["bars_seen"] += 1
