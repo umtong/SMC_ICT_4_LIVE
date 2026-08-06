@@ -1,0 +1,40 @@
+name: candidate-01-v24-failure-watchdog
+
+on:
+  workflow_run:
+    workflows: ["candidate-01-v24-absorption-weeks"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  persist-failure:
+    if: github.event.workflow_run.head_branch == 'research/candidate-01' && github.event.workflow_run.conclusion != 'success'
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-01
+          fetch-depth: 0
+      - name: Capture failed workflow metadata and logs
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-01/evidence/v24-workflow-failure
+          gh run view "$RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json databaseId,displayTitle,headSha,status,conclusion,jobs \
+            > research/candidate-01/evidence/v24-workflow-failure/run.json
+          gh run view "$RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --log-failed \
+            > research/candidate-01/evidence/v24-workflow-failure/failed.log || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-01/evidence/v24-workflow-failure
+          git commit -m "research(candidate-01): record v24 workflow failure"
+          git push origin HEAD:research/candidate-01
