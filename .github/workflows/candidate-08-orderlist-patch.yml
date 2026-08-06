@@ -1,0 +1,42 @@
+name: candidate-08-orderlist-patch
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - ".github/workflows/candidate-08-orderlist-patch.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Adapt bracket OrderList without changing order semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-08/strategy.py")
+          source = path.read_text(encoding="utf-8")
+          old = "        entry_order, stop_order, target_order = orders\n"
+          new = "        entry_order, stop_order, target_order = orders.orders\n"
+          if source.count(old) != 1:
+              raise SystemExit(f"expected one OrderList unpack site, found {source.count(old)}")
+          path.write_text(source.replace(old, new), encoding="utf-8")
+          PY
+          python -m compileall -q research/candidate-08/strategy.py
+          grep -n 'entry_order, stop_order, target_order = orders.orders' research/candidate-08/strategy.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-08/strategy.py
+          git commit -m "candidate-08: adapt Nautilus bracket OrderList"
+          git push origin HEAD:research/candidate-08
