@@ -41,7 +41,8 @@ class OrderFlowImpactRegimeTests(unittest.TestCase):
                 "eff_300s": 0.80,
                 "notional_burst_60s": 2.0,
                 "basis_change_15m": 1.0,
-                "metric_sum_open_interest": [100.0] * 4 + [101.0] * 16,
+                # At index 19, the strict 15-minute comparison is index 4.
+                "metric_sum_open_interest": [100.0] * 5 + [101.0] * 15,
             },
             index=index,
         )
@@ -182,7 +183,8 @@ class OrderFlowImpactRegimeTests(unittest.TestCase):
                 row[f"bid_chg_{band}_60s"] = 0.0
                 row[f"ask_chg_{band}_60s"] = 0.0
             rows.append(row)
-        rows[10].update(
+        # Place the shock after 15 full prior minutes so the OI interval exists.
+        rows[20].update(
             {
                 "high": 102.0,
                 "close": 101.5,
@@ -195,9 +197,9 @@ class OrderFlowImpactRegimeTests(unittest.TestCase):
             }
         )
         for band in candidate.DEPTH_BANDS:
-            rows[10][f"bid_chg_{band}_60s"] = 0.1
-            rows[10][f"ask_chg_{band}_60s"] = 0.5
-        rows[11].update(
+            rows[20][f"bid_chg_{band}_60s"] = 0.1
+            rows[20][f"ask_chg_{band}_60s"] = 0.5
+        rows[21].update(
             {
                 "close": 99.5,
                 "high": 101.8,
@@ -222,7 +224,7 @@ class OrderFlowImpactRegimeTests(unittest.TestCase):
             positive_oi_step_median=zero,
         )
         take = candidate.v24.PoolTake(
-            shock_index=10,
+            shock_index=20,
             pool_id=1,
             pool_side=1,
             trade_side=-1,
@@ -238,7 +240,7 @@ class OrderFlowImpactRegimeTests(unittest.TestCase):
         with patch.object(
             candidate.v24,
             "detect_external_pool_takes",
-            return_value={10: [take]},
+            return_value={20: [take]},
         ):
             intents, counts = candidate.detect_absorbed_flow_reversal_intents(
                 data,
@@ -253,8 +255,8 @@ class OrderFlowImpactRegimeTests(unittest.TestCase):
         intent = intents[0]
         self.assertEqual(intent.scenario, candidate.REVERSAL_SCENARIO)
         self.assertEqual(intent.side, -1)
-        self.assertEqual(intent.signal_index, 11)
-        self.assertGreater(intent.stop_level, float(data["close"].iloc[11]))
+        self.assertEqual(intent.signal_index, 21)
+        self.assertGreater(intent.stop_level, float(data["close"].iloc[21]))
 
 
 if __name__ == "__main__":
