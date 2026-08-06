@@ -1,0 +1,237 @@
+name: candidate-05-end-to-end-research-v3
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/validated_btc_research.py"
+      - "research/candidate-05/controlled_candidate_research.py"
+      - "research/candidate-05/shared_account_backtest.py"
+      - "research/candidate-05/shared_account_research.py"
+      - "research/candidate-05/ci_end_to_end_evidence.py"
+      - "research/candidate-05/global_entry_slot_v4.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v5.py"
+      - "research/candidate-05/shared_account_strategy_variants_v2.py"
+      - ".github/workflows/candidate-05-end-to-end-research-v3.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-end-to-end-research-v2
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  btc-exact-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-end-to-end-v3/btc
+      SUMMARY: artifacts/candidate-05-end-to-end-v3/btc/compact/validated_btc_research_v3.json
+      WINNER: artifacts/candidate-05-end-to-end-v3/btc/compact/validated_btc_winner_v3.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed environment and research contracts
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT/compact"
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/verification_status.txt"
+          echo "valid=$([[ $status -eq 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run all BTC families against exact controls
+        if: steps.verify.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python research/candidate-05/validated_btc_research.py \
+            --output "$ROOT/runs" \
+            --cache .cache/candidate-05-end-to-end-v3/btc \
+            --summary "$SUMMARY" \
+            --winner "$WINNER" \
+            2>&1 | tee "$ROOT/research_console.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/research_status.txt"
+          exit "$status"
+
+      - name: Finalize compact BTC evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/ci_end_to_end_evidence.py btc \
+            --root "$ROOT" \
+            --summary "$SUMMARY" \
+            --winner "$WINNER" \
+            --source-commit "${{ github.sha }}" \
+            --workflow-run-id "${{ github.run_id }}"
+          test -s "$SUMMARY"
+          test -s "$WINNER"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-btc-v3-compact-${{ github.run_id }}
+          path: artifacts/candidate-05-end-to-end-v3/btc/compact/**
+          if-no-files-found: error
+          retention-days: 90
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-btc-v3-full-${{ github.run_id }}
+          path: artifacts/candidate-05-end-to-end-v3/btc/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  one-account-four-symbols:
+    needs: btc-exact-control
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-end-to-end-v3/shared
+      BTC: artifacts/candidate-05-end-to-end-v3/btc-compact
+      SUMMARY: artifacts/candidate-05-end-to-end-v3/shared/compact/shared_account_research_v3.json
+      COMBINED: artifacts/candidate-05-end-to-end-v3/shared/compact/end_to_end_research_v3.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-05-btc-v3-compact-${{ github.run_id }}
+          path: artifacts/candidate-05-end-to-end-v3/btc-compact
+
+      - name: Verify shared-account contracts independently
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT/compact"
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+            test -s "$BTC/validated_btc_winner_v3.json"
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/verification_status.txt"
+          echo "valid=$([[ $status -eq 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run staged one-account four-symbol research
+        if: steps.verify.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python research/candidate-05/shared_account_research.py \
+            --winner-evidence "$BTC/validated_btc_winner_v3.json" \
+            --output "$ROOT/runs" \
+            --cache .cache/candidate-05-end-to-end-v3/shared \
+            --summary "$SUMMARY" \
+            2>&1 | tee "$ROOT/research_console.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/research_status.txt"
+          exit "$status"
+
+      - name: Finalize shared and combined evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/ci_end_to_end_evidence.py combined \
+            --btc-summary "$BTC/validated_btc_research_v3.json" \
+            --btc-winner "$BTC/validated_btc_winner_v3.json" \
+            --shared-root "$ROOT" \
+            --shared "$SUMMARY" \
+            --output "$COMBINED" \
+            --source-commit "${{ github.sha }}" \
+            --workflow-run-id "${{ github.run_id }}"
+          test -s "$SUMMARY"
+          test -s "$COMBINED"
+          test -s "${COMBINED%.json}.md"
+
+      - name: Persist latest evidence and audit-compatible aliases once
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-05/evidence
+          cp "$BTC/validated_btc_research_v3.json" research/candidate-05/evidence/validated_btc_research_v3.json
+          cp "$BTC/validated_btc_winner_v3.json" research/candidate-05/evidence/validated_btc_winner_v3.json
+          cp "$SUMMARY" research/candidate-05/evidence/shared_account_research_v3.json
+          cp "$COMBINED" research/candidate-05/evidence/end_to_end_research_v3.json
+          cp "${COMBINED%.json}.md" research/candidate-05/evidence/end_to_end_research_v3.md
+
+          cp "$BTC/validated_btc_research_v3.json" research/candidate-05/evidence/validated_btc_research_v2.json
+          cp "$BTC/validated_btc_winner_v3.json" research/candidate-05/evidence/validated_btc_winner_v2.json
+          cp "$SUMMARY" research/candidate-05/evidence/shared_account_research_v2.json
+          cp "$COMBINED" research/candidate-05/evidence/end_to_end_research_v2.json
+          cp "${COMBINED%.json}.md" research/candidate-05/evidence/end_to_end_research_v2.md
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-05/evidence/validated_btc_research_v2.json \
+            research/candidate-05/evidence/validated_btc_winner_v2.json \
+            research/candidate-05/evidence/shared_account_research_v2.json \
+            research/candidate-05/evidence/end_to_end_research_v2.json \
+            research/candidate-05/evidence/end_to_end_research_v2.md \
+            research/candidate-05/evidence/validated_btc_research_v3.json \
+            research/candidate-05/evidence/validated_btc_winner_v3.json \
+            research/candidate-05/evidence/shared_account_research_v3.json \
+            research/candidate-05/evidence/end_to_end_research_v3.json \
+            research/candidate-05/evidence/end_to_end_research_v3.md
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-05: record latest end-to-end exact-control research v3"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-05
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            sleep $((attempt * 5))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-end-to-end-v3-compact-${{ github.run_id }}
+          path: artifacts/candidate-05-end-to-end-v3/shared/compact/**
+          if-no-files-found: error
+          retention-days: 90
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-shared-v3-full-${{ github.run_id }}
+          path: artifacts/candidate-05-end-to-end-v3/shared/**
+          if-no-files-found: warn
+          retention-days: 90
