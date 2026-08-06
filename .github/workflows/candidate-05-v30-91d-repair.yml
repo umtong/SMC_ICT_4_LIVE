@@ -1,0 +1,223 @@
+name: candidate-05-v30-91d-repair
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/v30_promoted_screen.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  evidence-driven-91d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 190
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v30-91d-repair
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read completed 30-day evidence and decide eligibility
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" research/candidate-05/evidence
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("research/candidate-05/evidence/v30_promoted_screen.json")
+          if not path.exists():
+              source = {"classification": "MISSING_V30_PROMOTED_SCREEN_EVIDENCE", "runs": {}}
+          else:
+              source = json.loads(path.read_text(encoding="utf-8"))
+          run = source.get("runs", {}).get("continuous-30d", {})
+          available = bool(run.get("available", False))
+          integrity = bool(run.get("integrity_pass", False))
+          growth = float(run.get("geometric_daily_growth", -1.0)) if available else -1.0
+          eligible = available and integrity and growth >= 0.01
+          decision = {
+              "source_classification": source.get("classification"),
+              "continuous_30d_available": available,
+              "continuous_30d_integrity_pass": integrity,
+              "continuous_30d_geometric_daily_growth": growth,
+              "eligible_for_91d": eligible,
+          }
+          Path("/tmp/v30_91d_selection.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          with Path("/tmp/v30_91d_outputs.txt").open("w", encoding="utf-8") as f:
+              f.write(f"eligible={'true' if eligible else 'false'}\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          cat /tmp/v30_91d_outputs.txt >> "$GITHUB_OUTPUT"
+
+      - name: Verify fixed NautilusTrader environment and contracts
+        if: steps.select.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v | tee "$ROOT/tests.log"
+
+      - name: Configure the unchanged v30 strategy for runtime only
+        if: steps.select.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          """Runtime entrypoint selected by completed 30-day v30 evidence."""
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v30_external_acceptance_retest import ExternalAcceptanceFirstRetestStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+
+      - name: Run the fixed continuous 91-day evaluation through NautilusTrader
+        if: steps.select.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$ROOT/continuous-91d"
+          mkdir -p "$out"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-05-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-05-30 \
+            --cache .cache/candidate-05-v30-91d-repair \
+            --output "$out" \
+            | tee "$out/console.json"
+
+      - name: Build explicit implementation-or-logic result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          selection = json.loads(
+              Path("/tmp/v30_91d_selection.json").read_text(encoding="utf-8")
+          )
+          root = Path("artifacts/candidate-05-v30-91d-repair/continuous-91d")
+          metrics_path = root / "metrics.json"
+          eligible = bool(selection.get("eligible_for_91d", False))
+
+          if not eligible:
+              result = {
+                  "schema": "candidate-05-v30-91d-repair-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "PROMOTION_NOT_ELIGIBLE_FROM_COMPLETED_30D_EVIDENCE",
+                  "selection": selection,
+                  "long_evaluation_started": False,
+                  "reason": "The 30-day cost-after NAV evidence was missing, failed integrity, or remained below 1% geometric daily growth.",
+              }
+          elif not metrics_path.exists():
+              result = {
+                  "schema": "candidate-05-v30-91d-repair-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_OR_EVIDENCE_ERROR_91D",
+                  "selection": selection,
+                  "long_evaluation_started": True,
+                  "metrics_available": False,
+              }
+          else:
+              m = json.loads(metrics_path.read_text(encoding="utf-8"))
+              d = m.get("strategy_diagnostics", {})
+              checks = {
+                  "engine_is_nautilus": m.get("engine") == "NautilusTrader BacktestNode",
+                  "positive_nav": m.get("ending_nav", 0.0) > 0.0,
+                  "no_liquidation": m.get("liquidations", 0) == 0,
+                  "no_order_rejections": d.get("order_rejections", 0) == 0,
+                  "single_entry_intent": d.get("max_simultaneous_entry_intents", 0) <= 1,
+                  "single_position": d.get("max_open_positions_observed", 0) <= 1,
+                  "nautilus_orders": m.get("gate_checks", {}).get("nautilus_orders", False),
+                  "nautilus_positions": m.get("gate_checks", {}).get("nautilus_positions", False),
+              }
+              integrity = all(checks.values())
+              growth = float(m.get("geometric_daily_growth", -1.0))
+              if not integrity:
+                  classification = "IMPLEMENTATION_OR_EVIDENCE_ERROR_91D"
+              elif growth >= 0.01:
+                  classification = "PROJECT_GROWTH_GOAL_REACHED_ON_91D"
+              else:
+                  classification = "LOGIC_OR_ROBUSTNESS_FAILURE_ON_91D"
+              result = {
+                  "schema": "candidate-05-v30-91d-repair-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": classification,
+                  "selection": selection,
+                  "long_evaluation_started": True,
+                  "metrics_available": True,
+                  "strategy": "strategy_v30_external_acceptance_retest:ExternalAcceptanceFirstRetestStrategy",
+                  "evaluation_start": m.get("evaluation_start"),
+                  "evaluation_end": m.get("evaluation_end"),
+                  "calendar_days": m.get("calendar_days"),
+                  "starting_nav": m.get("starting_nav"),
+                  "ending_nav": m.get("ending_nav"),
+                  "total_return": m.get("total_return"),
+                  "geometric_daily_growth": growth,
+                  "max_drawdown": m.get("max_drawdown"),
+                  "trades": m.get("trades"),
+                  "wins": m.get("wins"),
+                  "losses": m.get("losses"),
+                  "win_rate": m.get("win_rate"),
+                  "profit_factor": m.get("profit_factor"),
+                  "active_days": m.get("active_days"),
+                  "largest_winner_share": m.get("largest_winner_share"),
+                  "scenario_metrics": m.get("scenario_metrics", {}),
+                  "external_diagnostics": {
+                      key: value for key, value in d.items() if key.startswith("external_")
+                  },
+                  "integrity_checks": checks,
+                  "integrity_pass": integrity,
+              }
+
+          output = Path("research/candidate-05/evidence/v30_91d_repair.json")
+          output.write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          test -s research/candidate-05/evidence/v30_91d_repair.json
+
+      - name: Restore the repository entrypoint and persist compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -- research/candidate-05/strategy.py || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-05/evidence/v30_91d_repair.json
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-05: record repaired v30 91d decision [skip ci]"
+            git push origin HEAD:research/candidate-05
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.select.outputs.eligible == 'true'
+        with:
+          name: candidate-05-v30-91d-repair-${{ github.sha }}
+          path: artifacts/candidate-05-v30-91d-repair/**
+          if-no-files-found: warn
+          retention-days: 90
