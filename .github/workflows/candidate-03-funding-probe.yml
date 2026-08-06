@@ -1,4 +1,4 @@
-name: candidate-03-backtest-node-source-probe
+name: candidate-03-oneshot-funding-query-probe
 
 on:
   push:
@@ -21,78 +21,69 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Extract installed BacktestNode source and signatures
+      - name: Compare legacy catalog query modes for funding
         shell: bash
         run: |
           set -euo pipefail
           IMAGE=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-          out=artifacts/candidate-03/node-probe
+          out=artifacts/candidate-03/query-probe
           mkdir -p "$out" && chmod -R 0777 artifacts
           docker pull "$IMAGE"
           docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" bash -c '
             python - <<"PY"
           import inspect
           import pathlib
-          import shutil
+          import tempfile
           import traceback
-          import nautilus_trader.backtest.node as node_module
-          import nautilus_trader.backtest.config as config_module
-          from nautilus_trader.backtest.engine import BacktestEngine
-          from nautilus_trader.backtest.node import BacktestDataConfig, BacktestNode
+          from decimal import Decimal
+          from nautilus_trader.model.data import FundingRateUpdate
+          from nautilus_trader.model.identifiers import InstrumentId
+          from nautilus_trader.persistence.catalog import ParquetDataCatalog
 
-          out = pathlib.Path("/workspace/artifacts/candidate-03/node-probe")
+          out = pathlib.Path("/workspace/artifacts/candidate-03/query-probe")
           lines = []
           def emit(value=""):
               text = str(value)
               lines.append(text)
               print(text)
 
-          for module in (node_module, config_module):
-              path = pathlib.Path(module.__file__)
-              emit("MODULE " + module.__name__ + " " + str(path))
-              if path.exists() and path.suffix in {".py", ".pyx", ".pxd"}:
-                  shutil.copy2(path, out / path.name)
+          temp = tempfile.mkdtemp(prefix="nt-query-probe-")
+          catalog = ParquetDataCatalog(temp)
+          instrument_id = InstrumentId.from_str("BTCUSDT-PERP.BINANCE")
+          item = FundingRateUpdate(instrument_id, Decimal("0.0001"), 1, 1, interval=480, next_funding_ns=2)
+          catalog.write_data([item])
 
-          for target in (BacktestDataConfig, BacktestNode, BacktestEngine):
-              emit("TARGET " + repr(target))
+          for flag in (False, True):
               try:
-                  emit("SIGNATURE " + str(inspect.signature(target)))
+                  result = catalog.query(
+                      data_cls=FundingRateUpdate,
+                      identifiers=[instrument_id],
+                      optimize_file_loading=flag,
+                  )
+                  emit("query optimize_file_loading=" + str(flag) + " SUCCESS " + repr(result))
               except Exception as exc:
-                  emit("SIGNATURE_ERROR " + type(exc).__name__ + ": " + str(exc))
-              emit("ATTRS " + repr([name for name in dir(target) if any(token in name.lower() for token in ("build", "run", "engine", "data", "catalog", "load", "add", "config"))]))
-              try:
-                  emit(inspect.getsource(target))
-              except Exception as exc:
-                  emit("SOURCE_ERROR " + type(exc).__name__ + ": " + str(exc))
+                  emit("query optimize_file_loading=" + str(flag) + " FAILED " + type(exc).__name__ + ": " + str(exc))
+                  emit(traceback.format_exc())
 
-          for name in ("build", "run", "get_engine", "_create_engine", "_load_data", "_run", "_run_streaming", "_run_oneshot"):
-              target = getattr(BacktestNode, name, None)
-              if target is None:
-                  continue
-              emit("METHOD " + name)
+          for name in ("query", "query_rust", "_query_subclasses"):
+              target = getattr(ParquetDataCatalog, name, None)
+              emit("--- SOURCE " + name + " ---")
               try:
                   emit(inspect.getsource(target))
               except Exception as exc:
                   emit("SOURCE_ERROR " + type(exc).__name__ + ": " + str(exc))
 
-          for name in ("add_data", "run", "get_result"):
-              target = getattr(BacktestEngine, name, None)
-              emit("ENGINE_METHOD " + name + " " + repr(target))
-              try:
-                  emit("SIG " + str(inspect.signature(target)))
-              except Exception as exc:
-                  emit("SIG_ERROR " + type(exc).__name__ + ": " + str(exc))
-
-          emit("BacktestDataConfig fields=" + repr(getattr(BacktestDataConfig, "__struct_fields__", None)))
-          emit("BacktestDataConfig annotations=" + repr(getattr(BacktestDataConfig, "__annotations__", None)))
-          emit("BacktestDataConfig defaults=" + repr(getattr(BacktestDataConfig, "__struct_defaults__", None)))
+          parquet_path = pathlib.Path(inspect.getfile(ParquetDataCatalog))
+          emit("PARQUET_PATH " + str(parquet_path))
+          if parquet_path.exists():
+              (out / "parquet.py").write_text(parquet_path.read_text(encoding="utf-8"), encoding="utf-8")
           (out / "probe.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
           '
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-03-node-source-${{ github.sha }}
-          path: artifacts/candidate-03/node-probe
+          name: candidate-03-query-probe-${{ github.sha }}
+          path: artifacts/candidate-03/query-probe
           if-no-files-found: error
           retention-days: 3
