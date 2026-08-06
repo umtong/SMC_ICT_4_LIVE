@@ -1,4 +1,4 @@
-name: Candidate 09 controlled research loop v2
+name: Candidate 09 controlled research loop v3
 
 on:
   push:
@@ -39,31 +39,46 @@ jobs:
           path: .cache/candidate-09
           key: candidate-09-binance-vision-v1
 
-      - name: Repair only the execution adapter and remove stale incompatible test
+      - name: Repair only pinned-Nautilus execution adapters
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('research/candidate-09/run.py')
-          text = path.read_text(encoding='utf-8')
+          run_path = Path('research/candidate-09/run.py')
+          run_text = run_path.read_text(encoding='utf-8')
 
           old_import = 'from nautilus_trader.model.data import BarType\n'
           new_import = 'from nautilus_trader.model.data import Bar, BarType\n'
-          if new_import not in text:
-              if old_import not in text:
+          if new_import not in run_text:
+              if old_import not in run_text:
                   raise SystemExit('expected BarType import not found')
-              text = text.replace(old_import, new_import, 1)
+              run_text = run_text.replace(old_import, new_import, 1)
 
           old_block = '''    wrangler = BarDataWrangler(bar_type=bar_type, instrument=instrument)\n    nautilus_bars = wrangler.process(bars_to_frame(bars))\n    if len(nautilus_bars) != len(bars):\n        raise RuntimeError(f"wrangler changed row count: {len(bars)} -> {len(nautilus_bars)}")\n'''
           new_block = '''    # Construct native Nautilus bars directly.  This avoids a pandas copy-on-write\n    # incompatibility in BarDataWrangler while preserving the same close-time\n    # ts_event/ts_init contract and all Nautilus execution/accounting semantics.\n    nautilus_bars = [\n        Bar(\n            bar_type=bar_type,\n            open=instrument.make_price(item.open),\n            high=instrument.make_price(item.high),\n            low=instrument.make_price(item.low),\n            close=instrument.make_price(item.close),\n            volume=instrument.make_qty(item.volume),\n            ts_event=item.ts_ns,\n            ts_init=item.ts_ns,\n        )\n        for item in bars\n    ]\n'''
-          if new_block not in text:
-              if old_block not in text:
+          if new_block not in run_text:
+              if old_block not in run_text:
                   raise SystemExit('expected wrangler block not found')
-              text = text.replace(old_block, new_block, 1)
+              run_text = run_text.replace(old_block, new_block, 1)
+          run_path.write_text(run_text, encoding='utf-8')
 
-          path.write_text(text, encoding='utf-8')
+          strategy_path = Path('research/candidate-09/nautilus_strategy.py')
+          strategy_text = strategy_path.read_text(encoding='utf-8')
+          factory_names = {
+              'stop_loss_order_type=': 'sl_order_type=',
+              'stop_loss_trigger_price=': 'sl_trigger_price=',
+              'take_profit_order_type=': 'tp_order_type=',
+              'take_profit_price=': 'tp_price=',
+          }
+          for legacy, pinned in factory_names.items():
+              strategy_text = strategy_text.replace(legacy, pinned)
+          remaining = [name for name in factory_names if name in strategy_text]
+          required = [name for name in factory_names.values() if name not in strategy_text]
+          if remaining or required:
+              raise SystemExit(f'bracket API repair incomplete: remaining={remaining}, missing={required}')
+          strategy_path.write_text(strategy_text, encoding='utf-8')
 
           stale_test = Path('research/candidate-09/tests/test_candidate.py')
           if stale_test.exists():
