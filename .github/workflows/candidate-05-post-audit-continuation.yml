@@ -1,0 +1,143 @@
+name: candidate-05-post-audit-continuation
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/master_winner_control_audit.json"
+      - "research/candidate-05/post_audit_continuation.py"
+      - ".github/workflows/candidate-05-post-audit-continuation.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-post-audit-continuation
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  continue-after-invalidated-winner:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-post-audit-continuation
+      SUMMARY: research/candidate-05/evidence/post_audit_continuation.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed environment and research contracts
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT" research/candidate-05/evidence
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/verification_status.txt"
+          echo "valid=$([[ $status -eq 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Continue only after an exact-control winner invalidation
+        id: research
+        if: steps.verify.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python research/candidate-05/post_audit_continuation.py \
+            --audit research/candidate-05/evidence/master_winner_control_audit.json \
+            --output "$ROOT/runs" \
+            --cache .cache/candidate-05-post-audit-continuation \
+            --summary "$SUMMARY" \
+            2>&1 | tee "$ROOT/research_console.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/research_status.txt"
+          exit "$status"
+
+      - name: Build implementation fallback when orchestration cannot be trusted
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-post-audit-continuation")
+          summary_path = Path("research/candidate-05/evidence/post_audit_continuation.json")
+          verification = (root / "verification_status.txt").read_text(encoding="utf-8").strip() if (root / "verification_status.txt").exists() else "missing"
+          research_status = (root / "research_status.txt").read_text(encoding="utf-8").strip() if (root / "research_status.txt").exists() else "not_run"
+          verification_tail = (root / "verification.log").read_text(encoding="utf-8", errors="replace").splitlines()[-240:] if (root / "verification.log").exists() else []
+          research_tail = (root / "research_console.log").read_text(encoding="utf-8", errors="replace").splitlines()[-300:] if (root / "research_console.log").exists() else []
+          if summary_path.exists():
+              summary = json.loads(summary_path.read_text(encoding="utf-8"))
+              summary["verification_status"] = verification
+              summary["research_process_status"] = research_status
+          elif verification != "exit_code=0":
+              summary = {
+                  "schema": "candidate-05-post-audit-continuation-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_STATIC_OR_CONTRACT",
+                  "winner": None,
+                  "verification_status": verification,
+                  "verification_log_tail": verification_tail,
+                  "research_process_status": research_status,
+                  "next_action": "Repair the static or contract error and rerun the identical workflow.",
+              }
+          else:
+              summary = {
+                  "schema": "candidate-05-post-audit-continuation-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_POST_AUDIT_ORCHESTRATOR_RUNTIME",
+                  "winner": None,
+                  "verification_status": verification,
+                  "research_process_status": research_status,
+                  "research_log_tail": research_tail,
+                  "next_action": "Repair orchestration without changing candidate logic and rerun the identical ranges.",
+              }
+          summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+          git checkout -- research/candidate-05/strategy.py || true
+          test -s "$SUMMARY"
+
+      - name: Commit conflict-resistant continuation evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$SUMMARY"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-05: record post-audit continuation [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-05
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            sleep $((attempt * 5))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-post-audit-continuation-${{ github.sha }}
+          path: artifacts/candidate-05-post-audit-continuation/**
+          if-no-files-found: warn
+          retention-days: 90
