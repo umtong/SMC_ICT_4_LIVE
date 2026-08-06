@@ -1,0 +1,72 @@
+{
+  "candidate_family": "candidate-02-v66-direct-depth-flow-auction-state",
+  "status": "LOCKED_BEFORE_FIRST_WEEK_DIRECT_MICROSTRUCTURE_COLLECTION",
+  "locked_utc": "2026-08-06T05:21:00Z",
+  "performance_engine": "NautilusTrader 1.230.0 via the existing candidate-02 run_window path",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "first_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2024-10-28T00:00:00Z",
+    "end_utc": "2024-11-04T00:00:00Z",
+    "selection_seed": 2026080666,
+    "selection_method": "deterministic shuffle of eligible Monday weeks inside direct-data coverage after excluding every previously revealed candidate-02 week",
+    "raw_data_status_at_lock": "NOT_COLLECTED_FOR_V66"
+  },
+  "direct_sources": [
+    "Binance Vision USD-M aggTrades",
+    "Binance Vision USD-M bookDepth",
+    "Binance Vision USD-M one-minute klines"
+  ],
+  "causal_question": "When aggressive flow reaches an external 30-minute auction boundary, is liquidity in front of it being withdrawn so price discovery can continue, or replenished so the impact is absorbed and the auction rotates?",
+  "mutually_exclusive_modes": [
+    {
+      "mode": "WITHDRAWAL_DISCOVERY",
+      "setup": "large completed three-minute aggressive flow, above-median turnover, efficient price impact, external boundary break, same-side one-percent depth withdrawal and stable/replenishing opposite depth",
+      "confirmation": "first completed one-minute retest that touches and holds outside the frozen boundary with supportive flow/book imbalance",
+      "entry_direction": "with the aggressive flow",
+      "invalidation": "back inside the frozen boundary by 0.15 ATR",
+      "target": "0.75 frozen 30-minute auction-range extension"
+    },
+    {
+      "mode": "REPLENISHMENT_ABSORPTION",
+      "setup": "large completed three-minute aggressive flow, above-median turnover, inefficient price impact, external boundary sweep and same-side one-percent depth replenishment",
+      "confirmation": "first completed one-minute close back inside the frozen boundary with failed flow or opposing book imbalance",
+      "entry_direction": "opposite the aggressive flow",
+      "invalidation": "beyond the observed impact extreme by 0.15 ATR",
+      "target": "opposite frozen 30-minute auction boundary"
+    }
+  ],
+  "causality": {
+    "feature_timestamp": "minute close time",
+    "all aggTrades and book snapshots are restricted to the completed minute",
+    "all adaptive thresholds use shift(1) before rolling quantiles",
+    "boundary high/low excludes the setup minute",
+    "orders are submitted only at a completed confirmation-minute timestamp"
+  },
+  "fixed_cost_model": {
+    "entry_fee_rate": 0.0005,
+    "target_fee_rate": 0.0002,
+    "stop_fee_rate": 0.0005,
+    "entry_slippage_rate": 0.00015,
+    "stop_slippage_rate": 0.00025,
+    "market_impact_rate": 0.00005,
+    "funding_rate_allowance": 0.0001
+  },
+  "first_week_gate": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.5,
+    "minimum_profit_factor_after_cost": 1.5,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25
+  },
+  "promotion_rule": "Only a mode satisfying every first-week gate can be frozen unchanged before a new second BTC week is selected and collected. Failed frequency, direction, reward geometry or drawdown ends the mode without parameter search.",
+  "files_locked_before_collection": [
+    "research/candidate-02/v66_depth_flow_core.py",
+    "research/candidate-02/v66_nt_backtest.py",
+    "research/candidate-02/v66_withdrawal_discovery_config.json",
+    "research/candidate-02/v66_replenishment_absorption_config.json",
+    "research/candidate-02/v66_depth_flow_family_lock.json"
+  ]
+}
