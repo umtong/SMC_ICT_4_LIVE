@@ -59,6 +59,19 @@ def _numeric_or_nan(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series.replace("", pd.NA), errors="coerce")
 
 
+def _invalid_preview(
+    metrics: pd.DataFrame,
+    mask: pd.Series,
+) -> list[dict[str, object]]:
+    columns = [
+        "timestamp",
+        "sum_open_interest",
+        "sum_open_interest_value",
+        "create_time",
+    ]
+    return metrics.loc[mask, columns].head(12).to_dict(orient="records")
+
+
 def load_positioning_bundle(
     *,
     symbol: str,
@@ -123,12 +136,24 @@ def load_positioning_bundle(
         raise RuntimeError("positioning metrics empty after interval filter")
     if not metrics["timestamp_ns"].is_monotonic_increasing:
         raise RuntimeError("positioning metrics are not monotonic")
-    if metrics["sum_open_interest"].isna().any() or (metrics["sum_open_interest"] <= 0).any():
-        raise RuntimeError("open interest must be present and positive")
-    if metrics["sum_open_interest_value"].isna().any() or (
+
+    invalid_oi = metrics["sum_open_interest"].isna() | (
+        metrics["sum_open_interest"] <= 0
+    )
+    if bool(invalid_oi.any()):
+        raise RuntimeError(
+            "open interest must be present and positive: "
+            f"count={int(invalid_oi.sum())}, sample={_invalid_preview(metrics, invalid_oi)}"
+        )
+    invalid_oi_value = metrics["sum_open_interest_value"].isna() | (
         metrics["sum_open_interest_value"] <= 0
-    ).any():
-        raise RuntimeError("open interest value must be present and positive")
+    )
+    if bool(invalid_oi_value.any()):
+        raise RuntimeError(
+            "open interest value must be present and positive: "
+            f"count={int(invalid_oi_value.sum())}, "
+            f"sample={_invalid_preview(metrics, invalid_oi_value)}"
+        )
     if any(timestamp.minute % 5 for timestamp in metrics["timestamp"]):
         raise RuntimeError("positioning timestamps are not aligned to five-minute boundaries")
 
