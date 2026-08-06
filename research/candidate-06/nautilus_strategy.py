@@ -21,7 +21,7 @@ from smc_ict_4.contracts import ResearchEvent
 def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
     """Instantiate the explicitly requested causal state machine.
 
-    This selector contains no performance logic.  Configured experiments choose
+    This selector contains no performance logic. Configured experiments choose
     one named market hypothesis, while execution, fills and accounting remain in
     NautilusTrader.
     """
@@ -60,6 +60,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from failed_auction_trap_engine import FailedAuctionTrapRelayEngine
 
         return FailedAuctionTrapRelayEngine(logic_params)
+    if name == "FIVE_MINUTE_DISPLACEMENT_REBALANCE":
+        from displacement_rebalance_engine import FiveMinuteDisplacementRebalanceEngine
+
+        return FiveMinuteDisplacementRebalanceEngine(logic_params)
     if name == "MULTI_TIMESCALE_LIQUIDITY_RELAY":
         from composite_engine import MultiTimescaleLiquidityRelayEngine
 
@@ -131,7 +135,7 @@ def make_strategy_class():
             self.subscribe_bars(self.config.bar_type)
 
         def _observe_scenario_without_new_entry(self, snapshot: PrimitiveSnapshot, ts_ns: int) -> None:
-            """Advance clocks/ranges while the single global trade slot is occupied."""
+            """Advance clocks and episode state while the global trade slot is occupied."""
             step = self._scenario_engine.observe(snapshot, allow_new=False)
             self._record_transitions(step.transitions, ts_ns)
 

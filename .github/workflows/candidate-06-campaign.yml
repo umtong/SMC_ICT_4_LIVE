@@ -1,4 +1,4 @@
-name: Candidate 06 Hourly SAC Excursion Diagnostic
+name: Candidate 06 Displacement Rebalance First BTC Week
 
 on:
   push:
@@ -25,7 +25,7 @@ defaults:
     shell: bash
 
 jobs:
-  first-week-diagnostic:
+  first-week-lab:
     if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -54,66 +54,82 @@ jobs:
           print(f"NAUTILUS_VERSION={actual}")
           PY
 
-      - name: Verify post-close diagnostic contract
+      - name: Verify displacement-rebalance causality
         run: |
           set -euo pipefail
           python -m py_compile research/candidate-06/*.py
+          python research/candidate-06/test_displacement_rebalance_engine.py
           python research/candidate-06/test_excursion_diagnostics.py
-          python research/candidate-06/test_entry_confirmation.py
-          python research/candidate-06/test_auction_relay_engine.py
 
-      - name: Replay unchanged hourly SAC candidate in NautilusTrader
-        id: diagnostic
+      - name: Run controlled DIRC matrix through NautilusTrader
+        id: lab
         continue-on-error: true
         run: |
           set +e
-          rm -rf artifacts/candidate-06/hourly-sac-excursion-diagnostic
+          rm -rf artifacts/candidate-06/dirc-first-week
           mkdir -p "$SMC4_RESEARCH_DATA" artifacts
-          python research/candidate-06/run_hourly_excursion_diagnostic.py \
-            --output artifacts/candidate-06/hourly-sac-excursion-diagnostic \
-            > artifacts/candidate-06-hourly-excursion.stdout 2> artifacts/candidate-06-hourly-excursion.stderr
+          python research/candidate-06/run_displacement_rebalance_matrix.py \
+            --output artifacts/candidate-06/dirc-first-week \
+            > artifacts/candidate-06-dirc.stdout 2> artifacts/candidate-06-dirc.stderr
           code=$?
           echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Guarantee diagnostic evidence
+      - name: Guarantee terminal evidence
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p artifacts/candidate-06/hourly-sac-excursion-diagnostic
-          printf '%s\n' '${{ steps.diagnostic.outputs.exit_code }}' > artifacts/candidate-06/hourly-sac-excursion-diagnostic/workflow_exit_code.txt
-          cp artifacts/candidate-06-hourly-excursion.stdout artifacts/candidate-06/hourly-sac-excursion-diagnostic/workflow_stdout.txt 2>/dev/null || true
-          cp artifacts/candidate-06-hourly-excursion.stderr artifacts/candidate-06/hourly-sac-excursion-diagnostic/workflow_stderr.txt 2>/dev/null || true
+          mkdir -p artifacts/candidate-06/dirc-first-week
+          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/dirc-first-week/workflow_exit_code.txt
+          if [ ! -f artifacts/candidate-06/dirc-first-week/summary.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-06/dirc-first-week")
+          payload = {
+              "all_three_weeks_passed": False,
+              "long_evaluation_authorized": False,
+              "selected": None,
+              "terminal_status": "IMPLEMENTATION_OR_RUNTIME_FAILURE_BEFORE_SUMMARY",
+          }
+          (root / "summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          fi
+          cp artifacts/candidate-06-dirc.stdout artifacts/candidate-06/dirc-first-week/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-06-dirc.stderr artifacts/candidate-06/dirc-first-week/workflow_stderr.txt 2>/dev/null || true
 
-      - name: Commit reproducible diagnostic evidence
+      - name: Commit reproducible staged evidence
         if: always() && github.event_name == 'push'
         run: |
           set -euo pipefail
           git config user.name "candidate-06-research-bot"
           git config user.email "candidate-06-research-bot@users.noreply.github.com"
-          git add -f artifacts/candidate-06/hourly-sac-excursion-diagnostic
+          git add -f artifacts/candidate-06/dirc-first-week
+          if [ -f research/candidate-06/config.dirc.locked.json ]; then
+            git add -f research/candidate-06/config.dirc.locked.json
+          fi
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "Record candidate-06 hourly excursion evidence [candidate-06 evidence]"
+          git commit -m "Record candidate-06 DIRC evidence [candidate-06 evidence]"
           git push origin HEAD:research/candidate-06
 
-      - name: Upload diagnostic evidence
+      - name: Upload staged evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-06-hourly-excursion-${{ github.sha }}
-          path: artifacts/candidate-06/hourly-sac-excursion-diagnostic
+          name: candidate-06-dirc-${{ github.sha }}
+          path: artifacts/candidate-06/dirc-first-week
           include-hidden-files: true
           retention-days: 30
           if-no-files-found: error
 
-      - name: Enforce diagnostic completion
+      - name: Enforce staged decision
         if: always()
         run: |
-          code='${{ steps.diagnostic.outputs.exit_code }}'
+          code='${{ steps.lab.outputs.exit_code }}'
           if [ -z "$code" ]; then
-            echo "hourly excursion diagnostic did not report an exit code" >&2
+            echo "DIRC lab did not report an exit code" >&2
             exit 1
           fi
           exit "$code"
