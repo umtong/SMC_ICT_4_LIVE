@@ -38,6 +38,11 @@ def load(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8", newline="") as stream:
+        return list(csv.DictReader(stream))
+
+
 def expected_dates(week: str) -> list[str]:
     start = date.fromisoformat(week)
     return [(start + timedelta(days=index)).isoformat() for index in range(7)]
@@ -59,8 +64,10 @@ def classify(root: Path, week: str) -> dict[str, Any]:
     summary = load(root / SUMMARY)
     metrics = load(root / "nautilus_metrics.json")
     contract = load(root / "execution_contract.json")
-    with (root / "daily_nav.csv").open(encoding="utf-8", newline="") as stream:
-        nav_dates = [row["date"] for row in csv.DictReader(stream)]
+    nav_rows = read_csv(root / "daily_nav.csv")
+    primary_rows = read_csv(root / "primary_plans.csv")
+    control_rows = read_csv(root / "control_plans.csv")
+    nav_dates = [row["date"] for row in nav_rows]
 
     assert summary["authoritative_backtest"] is True
     assert summary["execution_engine"] == "NautilusTrader"
@@ -89,9 +96,20 @@ def classify(root: Path, week: str) -> dict[str, Any]:
         int(value) for value in summary["tradeable_resolution_counts"].values()
     )
     assert int(summary["calendar_target_selections"]) == tradeable
-    assert int(summary["flow_aligned_tradeable_resolutions"]) == int(
-        summary["primary_plan_count"],
+    assert int(summary["flow_aligned_tradeable_resolutions"]) <= tradeable
+
+    # These files are evaluation-period streams, unlike the full-context
+    # resolution counters above. Validate each scope against its own evidence
+    # rather than comparing counters from different time ranges.
+    assert len(primary_rows) == int(summary["primary_plan_count"])
+    assert len(control_rows) == int(summary["control_plan_count"])
+    assert all(
+        ":flow-primary" in row["scenario_id"] for row in primary_rows
     )
+    assert all(
+        ":close-control" in row["scenario_id"] for row in control_rows
+    )
+
     assert float(summary["risk_fraction"]) == 0.03
     assert float(summary["all_in_cost_bps_per_side"]) == 7.0
 
