@@ -1,0 +1,89 @@
+name: candidate-08-range-fvg-ltf-regime-probe
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-range-fvg-ltf-regime-probe"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  probe:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/range-fvg-ltf-regime-probe
+      DATA_CACHE: /tmp/candidate-08-range-fvg-multiasset-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore official multiasset archive cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/candidate-08-range-fvg-multiasset-data
+          key: candidate-08-range-fvg-multiasset-binance-v1
+
+      - name: Decompose unchanged signals by structural auction state
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-08/range_fvg_ltf_regime_probe.py
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          python research/candidate-08/range_fvg_ltf_regime_probe.py \
+            --config research/candidate-08/config_range_fvg.json \
+            --output "$OUTPUT_DIR" \
+            --data-cache "$DATA_CACHE" \
+            2>&1 | tee "$OUTPUT_DIR/runner.log"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          output = Path(os.environ["OUTPUT_DIR"])
+          (output / "workflow.json").write_text(
+              json.dumps({
+                  "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                  "head_sha": os.environ.get("GITHUB_SHA"),
+                  "diagnostic_only": True,
+                  "trade_contract_changed": False,
+                  "decomposition": [
+                      "latest completed 4h direction",
+                      "two completed 4h directions",
+                      "UTC day-open position",
+                      "completed 4h overlap",
+                      "causal 60m efficiency",
+                      "four-asset breadth"
+                  ],
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          rm research/candidate-08/.run-range-fvg-ltf-regime-probe
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" add \
+            research/candidate-08/range_fvg_ltf_regime_probe.py \
+            research/candidate-08/evidence/range-fvg-ltf-regime-probe \
+            research/candidate-08/.run-range-fvg-ltf-regime-probe
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: record auction-regime decomposition"
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-range-fvg-ltf-regime-${{ github.sha }}
+          path: research/candidate-08/evidence/range-fvg-ltf-regime-probe
+          retention-days: 30
+          if-no-files-found: warn
