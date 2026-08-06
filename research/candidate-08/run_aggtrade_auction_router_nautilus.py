@@ -5,15 +5,21 @@ carried by each immutable signal in ``logic_details`` and normalized here immedi
 existing reporting helpers consume the completed NautilusTrader run. This keeps execution, risk,
 funding, liquidation, and orders identical to the already verified production adapter while still
 producing truthful per-scenario diagnostics.
+
+``AUCTION_ROUTER_FAMILY_MODE`` defaults to ``both``. The two single-family modes exist only for the
+one permitted economic-family ablation after a valid base failure and are hard-blocked from
+promotion regardless of their result.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import os
 from typing import Any, Mapping, Sequence
 
 import run_aggtrade_acceptance_nautilus as base_runner
 
+from aggtrade_acceptance_signals import AcceptanceSignalBundle
 from aggtrade_auction_router_signals import (
     FAILED_AUCTION_FAMILY,
     INITIATIVE_FAMILY,
@@ -22,10 +28,81 @@ from aggtrade_auction_router_signals import (
 
 
 UNCLASSIFIED_FAMILY = "UNCLASSIFIED_AUCTION_SCENARIO"
+FAMILY_MODES = {
+    "both": {INITIATIVE_FAMILY, FAILED_AUCTION_FAMILY},
+    "initiative_only": {INITIATIVE_FAMILY},
+    "failed_auction_only": {FAILED_AUCTION_FAMILY},
+}
+FAMILY_MODE = os.environ.get("AUCTION_ROUTER_FAMILY_MODE", "both")
+if FAMILY_MODE not in FAMILY_MODES:
+    raise RuntimeError(
+        f"invalid AUCTION_ROUTER_FAMILY_MODE={FAMILY_MODE!r}; "
+        f"expected one of {sorted(FAMILY_MODES)}"
+    )
+
 _original_position_metrics = base_runner._position_metrics
 _original_closed_trade_records = base_runner._closed_trade_records
 _original_global_signal_summary = base_runner._global_signal_summary
 _original_suite_summary = base_runner._suite_summary
+
+
+def _signal_family(signal: Any) -> str:
+    details = getattr(signal, "details", {})
+    if isinstance(details, Mapping):
+        value = details.get("scenario_family")
+        if value:
+            return str(value)
+    return UNCLASSIFIED_FAMILY
+
+
+def _filter_bundle_for_family_mode(
+    bundle: AcceptanceSignalBundle,
+    *,
+    mode: str,
+) -> AcceptanceSignalBundle:
+    if mode not in FAMILY_MODES:
+        raise ValueError(f"unknown auction family mode: {mode!r}")
+    if mode == "both":
+        return bundle
+
+    allowed = FAMILY_MODES[mode]
+    retained: dict[int, tuple[Any, ...]] = {}
+    removed: list[dict[str, Any]] = []
+    for timestamp, signals in bundle.signals_by_time_ns.items():
+        kept = tuple(signal for signal in signals if _signal_family(signal) in allowed)
+        if kept:
+            retained[int(timestamp)] = kept
+        for signal in signals:
+            family = _signal_family(signal)
+            if family not in allowed:
+                removed.append(
+                    {
+                        "scenario_id": str(signal.scenario_id),
+                        "symbol": str(signal.symbol),
+                        "reason": "DIAGNOSTIC_SCENARIO_FAMILY_ABLATION",
+                        "removed_family": family,
+                        "retained_mode": mode,
+                        "signal_time_ns": int(signal.signal_time_ns),
+                    }
+                )
+
+    diagnostics = dict(bundle.diagnostics)
+    diagnostics["DIAGNOSTIC_FAMILY_ABLATION_REMOVED_SIGNALS"] = len(removed)
+    diagnostics["DIAGNOSTIC_FAMILY_ABLATION_RETAINED_SIGNALS"] = sum(
+        len(signals) for signals in retained.values()
+    )
+    return AcceptanceSignalBundle(
+        signals_by_time_ns=retained,
+        diagnostics=dict(sorted(diagnostics.items())),
+        rejected_scenarios=tuple(bundle.rejected_scenarios) + tuple(removed),
+    )
+
+
+def _build_router_signals(**kwargs: Any) -> AcceptanceSignalBundle:
+    return _filter_bundle_for_family_mode(
+        build_auction_router_signals(**kwargs),
+        mode=FAMILY_MODE,
+    )
 
 
 def _scenario_family_from_intent(intent: Mapping[str, Any]) -> str:
@@ -82,13 +159,9 @@ def _auction_global_signal_summary(
     summary = _original_global_signal_summary(signals_by_time_ns)
     signals = [signal for items in signals_by_time_ns.values() for signal in items]
     summary["by_scenario_family"] = dict(
-        sorted(
-            Counter(
-                str(signal.details.get("scenario_family", UNCLASSIFIED_FAMILY))
-                for signal in signals
-            ).items()
-        )
+        sorted(Counter(_signal_family(signal) for signal in signals).items())
     )
+    summary["auction_family_mode"] = FAMILY_MODE
     return summary
 
 
@@ -193,19 +266,26 @@ def _auction_suite_summary(
             "no_unclassified_closed_trades",
         )
     )
+    base_family_mode = FAMILY_MODE == "both"
 
+    summary["auction_family_mode"] = FAMILY_MODE
+    summary["diagnostic_family_ablation"] = not base_family_mode
     summary["scenario_family_results"] = family_summary["by_family"]
     summary["scenario_attribution_checks"] = checks
     summary["scenario_attribution_passed"] = attribution_passed
+    summary["promotable"] = bool(summary.get("promotable", True) and base_family_mode)
     suite_checks = summary.setdefault("suite_gate_checks", {})
     suite_checks["complete_auction_scenario_attribution"] = attribution_passed
+    suite_checks["base_contract_includes_both_auction_families"] = base_family_mode
     summary["suite_gate_passed"] = bool(
-        summary.get("suite_gate_passed", False) and attribution_passed
+        summary.get("suite_gate_passed", False)
+        and attribution_passed
+        and base_family_mode
     )
     return summary
 
 
-base_runner.build_acceptance_signals = build_auction_router_signals
+base_runner.build_acceptance_signals = _build_router_signals
 base_runner._position_metrics = _auction_position_metrics
 base_runner._closed_trade_records = _auction_closed_trade_records
 base_runner._global_signal_summary = _auction_global_signal_summary
