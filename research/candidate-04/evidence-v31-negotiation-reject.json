@@ -1,0 +1,85 @@
+{
+  "candidate": "candidate-04-v31-boundary-negotiation-expansion",
+  "status": "rejected_after_key_scenario_ablation",
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "development_workflow": {
+    "run_id": 31113803676,
+    "source_commit": "de2717744c5c7fe1cd8e65ce35fe2cd7f1724bf9",
+    "aggregate_artifact_id": 8972879747,
+    "aggregate_digest": "sha256:ef5f106d5563c8447b1f25c65362c854f87ec942f57785f172d79ad8b3a6b81f"
+  },
+  "aggregate": {
+    "weeks": 7,
+    "calendar_days": 49,
+    "all_weeks_positive": false,
+    "compounded_return": 0.28190230250937276,
+    "geometric_daily_growth": 0.005079850626365623,
+    "trades": 17,
+    "wins": 13,
+    "win_rate": 0.7647058823529411,
+    "development_target_reached": false
+  },
+  "successful_failed_week_repair": {
+    "evaluation_start": "2025-03-24",
+    "evaluation_end": "2025-03-30",
+    "parent_candidates": 3,
+    "settled_signals": 3,
+    "orders_with_valid_preexisting_target": 1,
+    "trades": 1,
+    "wins": 1,
+    "total_return": 0.008335091736000111,
+    "geometric_daily_growth": 0.0011864957131315634,
+    "scenario": "STRESS_SETTLED_DELEVERAGING_REVERSAL",
+    "net_pnl": 833.5091736,
+    "interpretation": "requiring a completed two-sided negotiation and expansion beyond the prior close range corrected the immediate-entry timing error, but the full negotiation stop made two otherwise valid directions unable to reach a pre-existing cost-after 1.2R target"
+  },
+  "largest_negative_scenario": {
+    "scenario": "STRESS_SETTLED_ACCEPTANCE_CONTINUATION",
+    "trades": 2,
+    "wins": 0,
+    "net_pnl": -4230.62318568,
+    "affected_week": "2024-08-07_2024-08-13"
+  },
+  "key_scenario_ablation": {
+    "workflow_run_id": 31114267295,
+    "source_commit": "32303a70a1a24aa795c280483e2f9ea6b22361fc",
+    "aggregate_artifact_id": 8973057394,
+    "aggregate_digest": "sha256:10edd2192468d27de73ce97004433b90018fb74e375be41dc2ff479071bdd55a",
+    "changed_variables": 1,
+    "removed_scenario": "STRESS_SETTLED_ACCEPTANCE_CONTINUATION",
+    "result": {
+      "calendar_days": 49,
+      "all_weeks_positive": true,
+      "compounded_return": 0.3399542290404871,
+      "geometric_daily_growth": 0.005990021017036717,
+      "trades": 15,
+      "wins": 13,
+      "win_rate": 0.8666666666666667,
+      "failed_week_trades": 1,
+      "failed_week_total_return": 0.008335091736000111,
+      "structural_path_exists": false
+    }
+  },
+  "useful_components": {
+    "two_sided_negotiation_state": "corrected all three untouched-week directions and prevented immediate boundary-crossing stops",
+    "full_negotiation_invalidation": "logically matched the completed auction rather than the last reclaim segment",
+    "original_side_hold_routes": {
+      "trades": 6,
+      "wins": 5,
+      "net_pnl": 11922.50457506
+    },
+    "target_rejection": "correctly rejected two structures whose pre-existing external liquidity did not provide cost-after 1.2R after using the complete negotiation stop"
+  },
+  "failure_causes": [
+    "settled boundary expansions were too sparse to supply repeated independent opportunities",
+    "stress parent-side expansion remained logically mixed with exhaustion despite complete negotiation",
+    "removing the failed stress route produced low frequency and 0.599% daily growth, far below the objective"
+  ],
+  "preserve_for_future": [
+    "causal boundary negotiation detector",
+    "full high-low negotiation invalidation",
+    "original-side hold routes as optional state-specific mechanisms",
+    "past-only displacement threshold",
+    "NautilusTrader current-NAV risk and actual-fill guard"
+  ]
+}
