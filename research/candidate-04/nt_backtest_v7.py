@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run candidate-04 v7 target variants through NautilusTrader only."""
+"""Run candidate-04 v7b target variants through NautilusTrader only."""
 from __future__ import annotations
 
 import os
@@ -9,8 +9,8 @@ import nt_backtest as base
 
 
 VARIANTS = {
-    "target12": "nt_swing_pool_strategy_v4:SwingPoolCausalTarget12Strategy",
-    "target16": "nt_swing_pool_strategy_v4:SwingPoolCausalTarget16Strategy",
+    "target12": "nt_swing_pool_strategy_v5:SwingPoolWorkingTarget12Strategy",
+    "target16": "nt_swing_pool_strategy_v5:SwingPoolWorkingTarget16Strategy",
 }
 
 _original_importable_strategy_config = base.ImportableStrategyConfig
