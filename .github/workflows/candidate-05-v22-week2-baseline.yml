@@ -1,0 +1,88 @@
+name: candidate-05-v22-week2-baseline
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v22-week2-baseline.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  frozen-week2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed research environment
+        run: |
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Route diagnostic run to unchanged v22
+        shell: bash
+        run: |
+          cat > research/candidate-05/strategy.py <<'PY'
+          """Diagnostic entrypoint for the frozen Candidate 05 v22 baseline."""
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v22 import ActualFillMilestoneStrategy as LiquidityResponseStrategy
+
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          python -m compileall -q research/candidate-05/strategy.py
+
+      - name: Run frozen BTC week 2 through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-05-v22-baseline/week-2
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-01-13 \
+            --build-end 2024-01-21 \
+            --evaluation-start 2024-01-15 \
+            --evaluation-end 2024-01-21 \
+            --cache .cache/candidate-05-v22-baseline/week-2 \
+            --output artifacts/candidate-05-v22-baseline/week-2 \
+            | tee artifacts/candidate-05-v22-baseline/week-2/console.json
+
+      - name: Verify and print evidence
+        if: always()
+        shell: bash
+        run: |
+          stage=artifacts/candidate-05-v22-baseline/week-2
+          if test -f "$stage/metrics.json"; then
+            python -m json.tool "$stage/metrics.json"
+            test -s "$stage/run.json"
+            test -s "$stage/data_manifest.json"
+            test -s "$stage/orders.csv"
+            test -s "$stage/positions.csv"
+            test -s "$stage/account.csv"
+            test -s "$stage/equity.csv"
+            test -s "$stage/scenario_events.jsonl"
+            test -s "$stage/strategy_diagnostics.json"
+          fi
+          if test -f "$stage/errors.log"; then
+            cat "$stage/errors.log"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v22-week2-baseline-${{ github.sha }}
+          path: artifacts/candidate-05-v22-baseline/week-2/**
+          if-no-files-found: warn
+          retention-days: 90
