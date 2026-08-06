@@ -1,0 +1,75 @@
+name: candidate-04-cross-asset-evidence-reconciler
+
+on:
+  workflow_run:
+    workflows: ["candidate-04-cross-asset-integrated-validation"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Download all integrated validation artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: "*"
+          path: reconciled-artifacts
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Reduce artifacts without recalculating PnL or NAV
+        shell: bash
+        run: |
+          set -euo pipefail
+          relative="research/candidate-04/run-evidence/cross-asset-${RUN_ID}.json"
+          mkdir -p "$(dirname "$relative")"
+          python research/candidate-04/reconcile_run_evidence.py \
+            --artifacts reconciled-artifacts \
+            --workflow "$WORKFLOW_NAME" \
+            --run-id "$RUN_ID" \
+            --head-sha "$HEAD_SHA" \
+            --conclusion "$CONCLUSION" \
+            --output "$relative"
+          echo "EVIDENCE_PATH=$relative" >> "$GITHUB_ENV"
+
+      - name: Commit unique run evidence through Contents API with retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          content="$(base64 -w0 "$EVIDENCE_PATH")"
+          message="reconcile four-instrument validation run ${RUN_ID}"
+          for attempt in 1 2 3 4 5; do
+            if gh api \
+              --method PUT \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/contents/${EVIDENCE_PATH}" \
+              -f message="$message" \
+              -f content="$content" \
+              -f branch="research/candidate-04" \
+              >/tmp/cross-asset-response.json 2>/tmp/cross-asset-error.txt; then
+              cat /tmp/cross-asset-response.json
+              exit 0
+            fi
+            cat /tmp/cross-asset-error.txt >&2 || true
+            sleep $((attempt * 3))
+          done
+          exit 1
