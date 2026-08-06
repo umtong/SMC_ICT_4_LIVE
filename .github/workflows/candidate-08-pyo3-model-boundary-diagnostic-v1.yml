@@ -1,0 +1,311 @@
+name: candidate-08-pyo3-model-boundary-diagnostic-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-pyo3-model-boundary-diagnostic-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-pyo3-model-boundary-diagnostic-v1
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUT: research/candidate-08/evidence/aggtrade-acceptance-nautilus/pyo3-model-boundary-diagnostic-v1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Inspect the pinned PyO3 boundary without changing production code
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$OUT"
+          smc4 doctor | tee "$OUT/doctor.txt"
+          PYTHONPATH=research/candidate-08 python - <<'PY' | tee "$OUT/diagnostic.log"
+          from __future__ import annotations
+
+          from dataclasses import asdict, is_dataclass
+          from decimal import Decimal
+          import inspect
+          import json
+          from pathlib import Path
+          import traceback
+          from typing import Any
+
+          import pandas as pd
+
+          from nautilus_trader.core import nautilus_pyo3 as pyo3
+          from nautilus_trader.model.enums import AccountType as LegacyAccountType, OmsType as LegacyOmsType
+          from nautilus_trader.model.identifiers import Venue as LegacyVenue
+          from nautilus_trader.model.objects import Currency as LegacyCurrency, Money as LegacyMoney
+
+          from aggtrade_acceptance_strategy import (
+              AggTradeAcceptanceStrategy,
+              AggTradeAcceptanceStrategyConfig,
+          )
+          from run_aggtrade_acceptance_nautilus import (
+              _bars_from_ten_second_frame,
+              _build_instrument,
+              _ten_second_bar_type,
+          )
+
+          OUT = Path("research/candidate-08/evidence/aggtrade-acceptance-nautilus/pyo3-model-boundary-diagnostic-v1")
+          CONFIG = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_nautilus.json").read_text())
+          result: dict[str, Any] = {
+              "engine": "NautilusTrader",
+              "version": "1.230.0",
+              "purpose": "measure the Cython/PyO3 adapter boundary before a controlled same-week rerun",
+              "objects": {},
+              "attempts": [],
+          }
+
+          def safe_repr(value: Any) -> str:
+              try:
+                  return repr(value)
+              except Exception as exc:
+                  return f"<repr failed: {type(exc).__name__}: {exc}>"
+
+          def signature(value: Any) -> str | None:
+              try:
+                  return str(inspect.signature(value))
+              except Exception as exc:
+                  return f"<{type(exc).__name__}: {exc}>"
+
+          def describe(label: str, value: Any) -> None:
+              cls = value if isinstance(value, type) else type(value)
+              attrs = sorted(
+                  name for name in dir(value)
+                  if not name.startswith("__")
+                  and (
+                      name in {"from_str", "from_dict", "to_dict", "to_pyo3", "from_pyo3", "value"}
+                      or "pyo3" in name.lower()
+                      or "capsule" in name.lower()
+                      or "raw" in name.lower()
+                  )
+              )
+              result["objects"][label] = {
+                  "type": f"{cls.__module__}.{cls.__qualname__}",
+                  "repr": safe_repr(value),
+                  "signature": signature(value if isinstance(value, type) else cls),
+                  "selected_attributes": attrs,
+                  "selected_attribute_signatures": {
+                      name: signature(getattr(value, name)) for name in attrs
+                  },
+              }
+
+          def attempt(label: str, function):
+              record: dict[str, Any] = {"label": label}
+              try:
+                  value = function()
+                  record.update(
+                      ok=True,
+                      type=f"{type(value).__module__}.{type(value).__qualname__}",
+                      repr=safe_repr(value),
+                  )
+                  result["attempts"].append(record)
+                  return value
+              except Exception as exc:
+                  record.update(
+                      ok=False,
+                      error_type=type(exc).__name__,
+                      error=str(exc),
+                      traceback=traceback.format_exc(),
+                  )
+                  result["attempts"].append(record)
+                  return None
+
+          module_names = sorted(
+              name for name in dir(pyo3)
+              if name in {
+                  "Venue", "Currency", "Money", "OmsType", "AccountType", "InstrumentId",
+                  "Symbol", "CryptoPerpetual", "Price", "Quantity", "BarType", "Bar",
+                  "FundingRateUpdate", "MarkPriceUpdate", "BacktestEngine", "BacktestEngineConfig",
+                  "OneTickSlippageFillModel", "MakerTakerFeeModel", "LatencyModel",
+              }
+          )
+          result["pyo3_exported_names"] = module_names
+          for name in module_names:
+              describe(f"pyo3.{name}", getattr(pyo3, name))
+
+          legacy_venue = LegacyVenue("BINANCE")
+          legacy_currency = LegacyCurrency.from_str("USDT")
+          legacy_money = LegacyMoney(100000.0, legacy_currency)
+          describe("legacy.Venue.instance", legacy_venue)
+          describe("legacy.Currency.instance", legacy_currency)
+          describe("legacy.Money.instance", legacy_money)
+          describe("legacy.OmsType.HEDGING", LegacyOmsType.HEDGING)
+          describe("legacy.AccountType.MARGIN", LegacyAccountType.MARGIN)
+
+          p_venue = attempt("pyo3.Venue.from_str", lambda: pyo3.Venue.from_str("BINANCE"))
+          p_currency = attempt("pyo3.Currency.from_str", lambda: pyo3.Currency.from_str("USDT"))
+          p_money = attempt("pyo3.Money.from_str", lambda: pyo3.Money.from_str("100000 USDT"))
+          p_oms = attempt("pyo3.OmsType.HEDGING", lambda: pyo3.OmsType.HEDGING)
+          p_account_type = attempt("pyo3.AccountType.MARGIN", lambda: pyo3.AccountType.MARGIN)
+          engine_config = attempt(
+              "pyo3.BacktestEngineConfig(run_analysis=True)",
+              lambda: pyo3.BacktestEngineConfig(run_analysis=True),
+          )
+          engine = attempt(
+              "pyo3.BacktestEngine(config)",
+              lambda: pyo3.BacktestEngine(engine_config),
+          ) if engine_config is not None else None
+
+          if engine is not None:
+              for method in (
+                  "add_venue", "add_instrument", "add_data", "add_strategy", "run",
+                  "generate_orders_report", "generate_fills_report", "generate_positions_report",
+                  "generate_account_report", "list_venues",
+              ):
+                  result["objects"][f"engine.{method}"] = {
+                      "signature": signature(getattr(engine, method)),
+                  }
+
+          if engine is not None and all(
+              value is not None for value in (p_venue, p_currency, p_money, p_oms, p_account_type)
+          ):
+              venue_added = attempt(
+                  "engine.add_venue with PyO3 identifier/enums/money and native liquidation",
+                  lambda: engine.add_venue(
+                      venue=p_venue,
+                      oms_type=p_oms,
+                      account_type=p_account_type,
+                      starting_balances=[p_money],
+                      base_currency=p_currency,
+                      default_leverage=Decimal(str(CONFIG["venue"]["default_leverage"])),
+                      liquidation_enabled=bool(CONFIG["venue"]["liquidation_enabled"]),
+                      liquidation_trigger_ratio=float(CONFIG["venue"]["liquidation_trigger_ratio"]),
+                      liquidation_cancel_open_orders=bool(
+                          CONFIG["venue"]["liquidation_cancel_open_orders"]
+                      ),
+                      reject_stop_orders=False,
+                      support_contingent_orders=True,
+                      use_position_ids=True,
+                      use_reduce_only=True,
+                      bar_execution=True,
+                      bar_adaptive_high_low_ordering=bool(
+                          CONFIG["venue"]["bar_adaptive_high_low_ordering"]
+                      ),
+                  ),
+              )
+          else:
+              venue_added = None
+
+          fee_rate = float(CONFIG["effective_fee_rate_per_fill"])
+          instruments = {
+              symbol: _build_instrument(symbol, values, fee_rate)
+              for symbol, values in CONFIG["assets"].items()
+          }
+          btc = instruments["BTCUSDT"]
+          describe("legacy.CryptoPerpetual.instance", btc)
+          if engine is not None and venue_added is not None:
+              attempt("engine.add_instrument legacy CryptoPerpetual", lambda: engine.add_instrument(btc))
+
+          p_instrument = None
+          if hasattr(pyo3, "CryptoPerpetual"):
+              legacy_dict = attempt("legacy instrument to_dict", lambda: btc.to_dict(btc))
+              if legacy_dict is None:
+                  legacy_dict = attempt("legacy instrument instance to_dict", lambda: btc.to_dict())
+              if legacy_dict is not None and hasattr(pyo3.CryptoPerpetual, "from_dict"):
+                  p_instrument = attempt(
+                      "pyo3.CryptoPerpetual.from_dict(legacy to_dict)",
+                      lambda: pyo3.CryptoPerpetual.from_dict(legacy_dict),
+                  )
+              if p_instrument is None and hasattr(btc, "to_pyo3"):
+                  p_instrument = attempt("legacy instrument.to_pyo3", lambda: btc.to_pyo3())
+              if p_instrument is not None and engine is not None and venue_added is not None:
+                  attempt("engine.add_instrument converted PyO3 CryptoPerpetual", lambda: engine.add_instrument(p_instrument))
+
+          timestamp = pd.Timestamp("2024-04-08T00:00:10Z")
+          frame = pd.DataFrame(
+              {"open": [100.0], "high": [100.1], "low": [99.9], "close": [100.0], "volume": [1.0]},
+              index=[timestamp],
+          )
+          bar_type = _ten_second_bar_type(btc)
+          legacy_bar = _bars_from_ten_second_frame(frame, bar_type=bar_type, instrument=btc)[0]
+          describe("legacy.Bar.instance", legacy_bar)
+          if engine is not None and venue_added is not None:
+              attempt("engine.add_data legacy Bar", lambda: engine.add_data([legacy_bar]))
+
+          p_bar = None
+          if hasattr(legacy_bar, "to_pyo3"):
+              p_bar = attempt("legacy bar.to_pyo3", lambda: legacy_bar.to_pyo3())
+          if p_bar is None and hasattr(pyo3, "Bar") and hasattr(pyo3.Bar, "from_dict"):
+              bar_dict = attempt("legacy bar to_dict", lambda: legacy_bar.to_dict(legacy_bar))
+              if bar_dict is None:
+                  bar_dict = attempt("legacy bar instance to_dict", lambda: legacy_bar.to_dict())
+              if bar_dict is not None:
+                  p_bar = attempt("pyo3.Bar.from_dict(legacy to_dict)", lambda: pyo3.Bar.from_dict(bar_dict))
+          if p_bar is not None and engine is not None and venue_added is not None:
+              attempt("engine.add_data converted PyO3 Bar", lambda: engine.add_data([p_bar]))
+
+          strategy = AggTradeAcceptanceStrategy(
+              AggTradeAcceptanceStrategyConfig(
+                  trading_start_ns=int(timestamp.as_unit("ns").value),
+                  trading_end_ns=int((timestamp + pd.Timedelta(minutes=1)).as_unit("ns").value),
+                  risk_fraction=Decimal("0.03"),
+                  effective_fee_rate=Decimal("0.0006"),
+                  minimum_net_reward_risk=Decimal("1.2"),
+                  maximum_hold_minutes=240,
+                  funding_avoidance_minutes=5,
+              ),
+              instrument_ids=tuple(item.id for item in instruments.values()),
+              bar_types=tuple(_ten_second_bar_type(item) for item in instruments.values()),
+              signals_by_time_ns={},
+              funding_observations_by_instrument={str(item.id): () for item in instruments.values()},
+          )
+          describe("legacy.Strategy.instance", strategy)
+          if engine is not None and venue_added is not None:
+              attempt("engine.add_strategy legacy Python Strategy", lambda: engine.add_strategy(strategy))
+
+          if engine is not None:
+              attempt("engine.dispose", lambda: engine.dispose())
+
+          result["classification"] = "IMPLEMENTATION_BOUNDARY_DIAGNOSTIC_ONLY"
+          OUT.mkdir(parents=True, exist_ok=True)
+          (OUT / "diagnostic.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, default=str) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps({
+              "classification": result["classification"],
+              "attempts": [
+                  {key: item.get(key) for key in ("label", "ok", "type", "error_type", "error")}
+                  for item in result["attempts"]
+              ],
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit diagnostic evidence only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f research/candidate-08/.run-pyo3-model-boundary-diagnostic-v1
+          git add -A -- "$OUT" research/candidate-08/.run-pyo3-model-boundary-diagnostic-v1
+          git commit -m "candidate-08: record PyO3 model boundary diagnostic [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
