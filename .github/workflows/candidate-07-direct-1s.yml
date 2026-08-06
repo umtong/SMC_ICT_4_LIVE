@@ -1,0 +1,83 @@
+name: candidate-07-direct-1s-validation
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - ".github/workflows/candidate-07-direct-1s.yml"
+      - "research/candidate-07/data_microstructure_1s.py"
+      - "research/candidate-07/diagnose_impact_resilience_1s.py"
+      - "research/candidate-07/diagnose_impact_resilience_1s_v2.py"
+      - "research/candidate-07/tests/test_impact_resilience_1s.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  btc-week-1-impact-resilience-direct:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Fetch exact source without marketplace actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin https://github.com/${GITHUB_REPOSITORY}.git
+          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Verify pinned NautilusTrader foundation
+        run: smc4 doctor
+
+      - name: Compile and run causal tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q research/candidate-07
+          python -m unittest discover -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Run implementation-correct frozen BTC Week-1 diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-07/diagnose_impact_resilience_1s_v2.py \
+            --config research/candidate-07/config.json \
+            --stage week-1 \
+            --start 2025-12-22 \
+            --end 2025-12-29 \
+            --micro-warmup-days 3 \
+            --output artifacts/candidate-07/week-1/impact_resilience_1s_v2.json \
+            --data-root .research-data/candidate-07
+
+      - name: Print compact immutable evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f artifacts/candidate-07/week-1/impact_resilience_1s_v2.json
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          path = Path('artifacts/candidate-07/week-1/impact_resilience_1s_v2.json')
+          payload = json.loads(path.read_text())
+          manifest = path.with_name('impact_resilience_1s_data_manifest.json')
+          print(json.dumps({
+              'source_commit': '${{ github.sha }}',
+              'summary': payload['summary'],
+              'cadence_gaps': payload['cadence_gaps'],
+              'pool_collision_summary': payload['pool_collision_summary'],
+              'report_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+              'data_manifest_sha256': (
+                  hashlib.sha256(manifest.read_bytes()).hexdigest()
+                  if manifest.exists() else None
+              ),
+          }, indent=2, sort_keys=True))
+          PY
