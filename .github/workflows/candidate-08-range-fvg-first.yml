@@ -1,0 +1,103 @@
+name: candidate-08-range-fvg-first
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-range-fvg-first"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  validate:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/range-fvg-first
+      DATA_CACHE: /tmp/candidate-08-range-fvg-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify pinned environment and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-08/range_fvg_logic.py \
+            research/candidate-08/range_fvg_strategy.py \
+            research/candidate-08/run_range_fvg.py \
+            research/candidate-08/test_range_fvg.py
+          python research/candidate-08/test_range_fvg.py -v
+
+      - name: Restore official Binance archive cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/candidate-08-range-fvg-data
+          key: candidate-08-range-fvg-binance-v1
+
+      - name: Run first BTC week in NautilusTrader
+        id: run_candidate
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          set +e
+          python research/candidate-08/run_range_fvg.py \
+            --suite first \
+            --config research/candidate-08/config_range_fvg.json \
+            --output "$OUTPUT_DIR" \
+            --data-cache "$DATA_CACHE" \
+            2>&1 | tee "$OUTPUT_DIR/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT_DIR/runner_exit_status.txt"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          output = Path(os.environ["OUTPUT_DIR"])
+          (output / "workflow.json").write_text(
+              json.dumps({
+                  "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                  "head_sha": os.environ.get("GITHUB_SHA"),
+                  "suite": "first",
+                  "engine": "NautilusTrader",
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          exit "$status"
+
+      - name: Commit reproducible first-window evidence
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm research/candidate-08/.run-range-fvg-first
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" add \
+            research/candidate-08/evidence/range-fvg-first \
+            research/candidate-08/.run-range-fvg-first
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: record completed-range FVG first week"
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-range-fvg-first-${{ github.sha }}
+          path: research/candidate-08/evidence/range-fvg-first
+          retention-days: 30
+          if-no-files-found: warn
