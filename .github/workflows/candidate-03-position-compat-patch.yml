@@ -1,0 +1,86 @@
+name: candidate-03-runtime-position-closed-compatibility
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths: [".github/workflows/candidate-03-position-compat-patch.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Use installed Cython and Rust PositionClosed field names safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          strategy_path = Path('research/candidate-03/nt_lvcfr_strategy.py')
+          strategy = strategy_path.read_text(encoding='utf-8')
+
+          marker = '''def native_equity_amount(portfolio: Any, venue: Any, currency: Any) -> float:\n'''
+          helpers = '''def position_closed_peak_qty(event: Any) -> float:\n    \"\"\"Return peak position quantity across NT 1.230 Python backends.\"\"\"\n    value = getattr(event, \"peak_qty\", None)\n    if value is None:\n        value = getattr(event, \"peak_quantity\")\n    return float(value)\n\n\ndef position_closed_duration_ns(event: Any) -> int:\n    \"\"\"Return closed-position duration across NT 1.230 Python backends.\"\"\"\n    value = getattr(event, \"duration_ns\", None)\n    if value is None:\n        value = getattr(event, \"duration\")\n    return int(value)\n\n\n'''
+          if strategy.count(marker) != 1:
+              raise SystemExit(f'helper marker count={strategy.count(marker)}')
+          strategy = strategy.replace(marker, helpers + marker)
+
+          old = '''            \"quantity\": float(event.peak_quantity),\n'''
+          new = '''            \"quantity\": position_closed_peak_qty(event),\n'''
+          if strategy.count(old) != 1:
+              raise SystemExit(f'peak field target count={strategy.count(old)}')
+          strategy = strategy.replace(old, new)
+
+          old = '''            \"duration_ns\": int(event.duration),\n'''
+          new = '''            \"duration_ns\": position_closed_duration_ns(event),\n'''
+          if strategy.count(old) != 1:
+              raise SystemExit(f'duration field target count={strategy.count(old)}')
+          strategy_path.write_text(strategy.replace(old, new), encoding='utf-8')
+
+          test_path = Path('research/candidate-03/test_nt_lvcfr.py')
+          tests = test_path.read_text(encoding='utf-8')
+          old = '''from nt_lvcfr_strategy import expected_funding_debit_per_unit, native_equity_amount\n'''
+          new = '''from nautilus_trader.model.events import PositionClosed\n\nfrom nt_lvcfr_strategy import (\n    expected_funding_debit_per_unit,\n    native_equity_amount,\n    position_closed_duration_ns,\n    position_closed_peak_qty,\n)\n'''
+          if tests.count(old) != 1:
+              raise SystemExit(f'test import target count={tests.count(old)}')
+          tests = tests.replace(old, new)
+
+          old = '''class PositionEventContractTests(unittest.TestCase):\n    def test_strategy_uses_nautilus_1230_position_closed_fields(self) -> None:\n        source = Path(__file__).with_name(\"nt_lvcfr_strategy.py\").read_text(encoding=\"utf-8\")\n        self.assertIn(\"event.peak_quantity\", source)\n        self.assertIn(\"event.duration\", source)\n        self.assertNotIn(\"event.peak_qty\", source)\n        self.assertNotIn(\"event.duration_ns\", source)\n        self.assertIn(\"event.ts_closed is not None\", source)\n        self.assertIn(\"event.avg_px_close is not None\", source)\n'''
+          new = '''class PositionEventContractTests(unittest.TestCase):\n    class CythonEvent:\n        peak_qty = 12.5\n        duration_ns = 123\n\n    class RustEvent:\n        peak_quantity = 7.5\n        duration = 456\n\n    def test_installed_runtime_exposes_a_supported_position_contract(self) -> None:\n        self.assertTrue(\n            hasattr(PositionClosed, \"peak_qty\")\n            or hasattr(PositionClosed, \"peak_quantity\"),\n        )\n        self.assertTrue(\n            hasattr(PositionClosed, \"duration_ns\")\n            or hasattr(PositionClosed, \"duration\"),\n        )\n\n    def test_cython_position_contract(self) -> None:\n        event = self.CythonEvent()\n        self.assertEqual(position_closed_peak_qty(event), 12.5)\n        self.assertEqual(position_closed_duration_ns(event), 123)\n\n    def test_rust_position_contract(self) -> None:\n        event = self.RustEvent()\n        self.assertEqual(position_closed_peak_qty(event), 7.5)\n        self.assertEqual(position_closed_duration_ns(event), 456)\n\n    def test_optional_close_fields_are_guarded(self) -> None:\n        source = Path(__file__).with_name(\"nt_lvcfr_strategy.py\").read_text(encoding=\"utf-8\")\n        self.assertIn(\"event.ts_closed is not None\", source)\n        self.assertIn(\"event.avg_px_close is not None\", source)\n'''
+          if tests.count(old) != 1:
+              raise SystemExit(f'position test block count={tests.count(old)}')
+          test_path.write_text(tests.replace(old, new), encoding='utf-8')
+          PY
+
+          IMAGE=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+          docker pull "$IMAGE"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c '
+              smc4 doctor &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr.py &&
+              PYTHONPYCACHEPREFIX=/tmp/candidate-03-pycache \
+                python -m compileall -q research/candidate-03 src/smc_ict_4
+            '
+
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add research/candidate-03/nt_lvcfr_strategy.py research/candidate-03/test_nt_lvcfr.py
+          git commit -m "candidate-03: support runtime PositionClosed field variants"
+          git push origin HEAD:research/candidate-03
