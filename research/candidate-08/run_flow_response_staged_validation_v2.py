@@ -24,6 +24,7 @@ from flow_response_trade_path_diagnostics_v2 import DIAGNOSTIC_REVISION
 
 
 PROTOCOL_REVISION = "FLOW_RESPONSE_STAGED_VALIDATION_V2_EXACT_CADENCE"
+_ORIGINAL_VALIDATE_BASE_SUMMARY = base.validate_base_summary
 
 
 base.IMPLEMENTATION_REVISION = IMPLEMENTATION_REVISION
@@ -66,7 +67,12 @@ def validate_base_summary(
 ) -> tuple[str, ...]:
     """Return implementation/evidence errors only; never infer economic failure."""
 
-    errors = list(base.validate_base_summary(summary, expected_suite=expected_suite))
+    errors = list(
+        _ORIGINAL_VALIDATE_BASE_SUMMARY(
+            summary,
+            expected_suite=expected_suite,
+        )
+    )
     if str(summary.get("ten_second_cadence_contract")) != "EXACT_CONSECUTIVE_10_SECONDS":
         errors.append("TEN_SECOND_CADENCE_CONTRACT_NOT_EXACT")
     if str(summary.get("trade_path_diagnostic_revision")) != DIAGNOSTIC_REVISION:
