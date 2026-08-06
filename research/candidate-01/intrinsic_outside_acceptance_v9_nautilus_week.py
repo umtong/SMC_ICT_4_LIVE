@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
 import json
 from pathlib import Path
@@ -355,8 +355,11 @@ def route_acceptance(
             },
         )
         if plan is not None:
-            plan.response = "OUTSIDE_VALUE_ACCEPTANCE_CONTINUATION"
-            plan.reason_code = "OUTSIDE_VALUE_BOUNDARY_RETEST_CONTINUATION"
+            plan = replace(
+                plan,
+                response="OUTSIDE_VALUE_ACCEPTANCE_CONTINUATION",
+                reason_code="OUTSIDE_VALUE_BOUNDARY_RETEST_CONTINUATION",
+            )
             plans.append(plan)
     return plans, decisions
 
