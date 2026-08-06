@@ -23,7 +23,9 @@ from nt_low_impact_external_strategy import choose_external_liquidity_target
 
 
 class RichSignalConfig(LiquidityTransitionConfig, frozen=True):
-    signals_path: str
+    # The parent config already defines optional fields, so msgspec requires any
+    # extension field to have a default unless the entire struct is keyword-only.
+    signals_path: str = ""
     minimum_target_net_r: float = 1.20
     projection_bars: int = 240
 
@@ -38,6 +40,8 @@ class RichSignalStrategy(LowImpactExternalLiquidityStrategy):
 
     def on_start(self) -> None:
         super().on_start()
+        if not self.config.signals_path:
+            raise RuntimeError("signals_path is required")
         path = Path(self.config.signals_path)
         rows = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(rows, list):
