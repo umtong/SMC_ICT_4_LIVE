@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
-"""Current-NAV sizing from causal expected, direction-specific fill costs.
+"""Current-NAV sizing from the causal fill contract actually used by Nautilus.
 
-The former adapter used the nearest-rank q95 of an entire next-bar adverse
-excursion for both the entry and the stop. That quantity is a tail reserve, not
-the expected entry or stop fill requested by the project loss-budget equation.
-It also reused entry-direction excursions for stop-through slippage, although a
-long entry is worsened by upward movement and its stop is worsened by downward
-movement (vice versa for a short).
+The validated core submitted market entries at a completed one-minute bar. With
+this bar-execution configuration every observed entry filled at the following
+completed trade close plus one adverse price tick. Observed stop-market exits
+filled at the structural stop trigger plus approximately one adverse tick.
 
-This adapter changes the fill expectation only:
+The former adapter instead added the q95 of a whole next-bar high/low excursion
+to both entry and stop. That was neither the engine's fill rule nor the expected
+entry/stop price in the project loss-budget equation. It double-counted a tail
+reserve and reused the entry-side distribution for the opposite-side stop.
 
-* expected market-entry deterioration is the arithmetic mean of completed
-  close-to-next-bar excursions in the entry direction;
-* expected stop deterioration is the arithmetic mean in the opposite direction;
-* the exact pre-signal causal target, current Nautilus NAV, 3% risk budget,
-  all-in fees, one stop tick, signal stop and every order/account mechanism stay
-  unchanged.
+This adapter changes fill expectation only:
 
-The arithmetic mean includes zero excursions. It therefore estimates the
-unconditional cost of the next executable bar rather than selecting a fitted
-quantile. All observations are completed before the current signal.
+* entry transition cost is the arithmetic mean of positive, direction-signed
+  close-to-next-close changes from completed past bars, plus one adverse tick;
+* stop deterioration is one adverse tick from the known structural trigger;
+* exact causal target, current Nautilus NAV, 3% risk budget, all-in fees, stop,
+  quantity precision, global position constraint and every order/account
+  mechanism remain unchanged.
+
+Zero and favorable close-to-close changes contribute zero transition cost. The
+statistic therefore estimates the unconditional expected adverse part of the
+coarse one-bar execution delay without fitting a quantile to observed trades.
 """
 from __future__ import annotations
 
@@ -37,6 +40,9 @@ from nt_exact_causal_target_risk_sizing import select_exact_causal_target
 
 
 EXPECTED_GAP_MIN_OBSERVATIONS = 120
+FILL_EXPECTATION_CONTRACT = (
+    "mean_positive_completed_directional_close_transition_plus_one_tick"
+)
 
 
 def directional_entry_excursions(
@@ -44,7 +50,7 @@ def directional_entry_excursions(
     side: int,
     window: int = GAP_WINDOW_BARS,
 ) -> list[float]:
-    """Completed close-to-next-bar deterioration for a market entry."""
+    """Return completed adverse close-to-next-close entry transitions."""
 
     if side not in (-1, 1):
         return []
@@ -52,11 +58,8 @@ def directional_entry_excursions(
     result: list[float] = []
     for previous, current in zip(selected, selected[1:]):
         previous_close = float(previous["close"])
-        deterioration = (
-            float(current["high"]) - previous_close
-            if side > 0
-            else previous_close - float(current["low"])
-        )
+        current_close = float(current["close"])
+        deterioration = side * (current_close - previous_close)
         if math.isfinite(deterioration):
             result.append(max(deterioration, 0.0))
     return result
@@ -66,7 +69,7 @@ def causal_expected_entry_deterioration(
     rows: list[dict[str, float | int]],
     side: int,
 ) -> tuple[float, int]:
-    """Arithmetic expected adverse entry excursion from completed bars."""
+    """Arithmetic expected adverse close-transition from completed bars."""
 
     values = directional_entry_excursions(rows, side)
     if len(values) < EXPECTED_GAP_MIN_OBSERVATIONS:
@@ -81,7 +84,7 @@ def expected_fill_risk_sized_submit_bracket(
     target_net_r: float,
     details: dict[str, Any],
 ) -> bool:
-    """Submit the exact causal target with expected entry and stop fills."""
+    """Submit the exact causal target with causal expected fill prices."""
 
     side = int(setup.side)
     atr = float(self._atr())
@@ -118,22 +121,17 @@ def expected_fill_risk_sized_submit_bracket(
     if not math.isfinite(signal_planned_loss) or signal_planned_loss <= 0.0:
         return False
 
-    completed = list(self.bars)
     entry_deterioration, entry_observations = (
-        causal_expected_entry_deterioration(completed, side)
+        causal_expected_entry_deterioration(list(self.bars), side)
     )
-    stop_deterioration, stop_observations = (
-        causal_expected_entry_deterioration(completed, -side)
-    )
-    if not (
-        math.isfinite(entry_deterioration)
-        and math.isfinite(stop_deterioration)
-    ):
+    if not math.isfinite(entry_deterioration):
         return False
 
     tick = _tick_size(self.instrument)
-    expected_entry_fill = signal_entry + side * entry_deterioration
-    expected_stop_fill = stop_trigger - side * (stop_deterioration + tick)
+    expected_entry_fill = signal_entry + side * (
+        entry_deterioration + tick
+    )
+    expected_stop_fill = stop_trigger - side * tick
     execution_price_loss = side * (
         expected_entry_fill - expected_stop_fill
     )
@@ -185,12 +183,13 @@ def expected_fill_risk_sized_submit_bracket(
             "quantity": quantity_value,
             "equity": equity,
             "risk_budget": risk_budget,
-            "entry_expected_adverse_excursion": entry_deterioration,
-            "stop_expected_adverse_excursion": stop_deterioration,
-            "fill_expectation": "arithmetic_mean_completed_directional_excursion",
+            "entry_expected_adverse_close_transition": entry_deterioration,
+            "entry_adverse_tick": tick,
+            "stop_expected_adverse_excursion": 0.0,
+            "stop_adverse_tick": tick,
+            "fill_expectation": FILL_EXPECTATION_CONTRACT,
             "fill_expectation_window_bars": GAP_WINDOW_BARS,
             "entry_expectation_observations": entry_observations,
-            "stop_expectation_observations": stop_observations,
             "stop_slippage_ticks": 1,
         },
     )
@@ -199,6 +198,7 @@ def expected_fill_risk_sized_submit_bracket(
 
 __all__ = [
     "EXPECTED_GAP_MIN_OBSERVATIONS",
+    "FILL_EXPECTATION_CONTRACT",
     "causal_expected_entry_deterioration",
     "directional_entry_excursions",
     "expected_fill_risk_sized_submit_bracket",
