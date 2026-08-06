@@ -1,4 +1,4 @@
-"""Reproducible research runner for candidate 10."""
+"""Reproducible candidate 10 v3 research runner."""
 
 from __future__ import annotations
 
@@ -10,18 +10,21 @@ from pathlib import Path
 import subprocess
 import sys
 
-from candidate import MachineParams
-from candidate import reproducible_weeks
-from candidate import run_backtest
+from c10_flow_model import FlowParams
+from c10_flow_research import reproducible_weeks
+from c10_flow_research import run_flow_backtest
 
-
-VARIANT_NAMES = ("full", "ablation-immediate-resting-entry")
+VARIANT_NAMES = ("full", "ablation-price-only")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=("gate", "three-weeks", "single"), default="gate")
-    parser.add_argument("--week", help="ISO Monday for --phase single or an isolated worker")
+    parser.add_argument(
+        "--phase",
+        choices=("gate", "three-weeks", "single"),
+        default="gate",
+    )
+    parser.add_argument("--week", help="ISO Monday for --phase single or worker")
     parser.add_argument("--output", default="artifacts/candidate-10")
     parser.add_argument("--data-root", default="artifacts/candidate-10-data")
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
@@ -33,16 +36,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def variants() -> dict[str, MachineParams]:
-    full = MachineParams()
-    # One-variable v2.3 ablation: submit the old passive 61.8% parent as soon as
-    # displacement is certified. Full waits for the first corridor touch and a
-    # close through the preceding minute's opposing extreme. Pools, targets,
-    # costs, risk, seed and all numerical thresholds remain identical.
-    immediate_entry = replace(full, enable_retrace_confirmation=False)
+def variants() -> dict[str, FlowParams]:
+    full = FlowParams()
+    # Exact one-variable ablation: remove executed aggressor-flow direction and
+    # magnitude from absorption/repricing certification. Event bars, local range,
+    # price response, costs, targets, risk, seed and every threshold stay fixed.
+    price_only = replace(full, enable_order_flow=False)
     return {
         "full": full,
-        "ablation-immediate-resting-entry": immediate_entry,
+        "ablation-price-only": price_only,
     }
 
 
@@ -52,7 +54,7 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
     week = date.fromisoformat(args.week)
     params = variants()[args.variant]
     destination = output_root / args.phase / week.isoformat() / args.variant
-    metrics = run_backtest(
+    metrics = run_flow_backtest(
         week_start=week,
         variant=args.variant,
         params=params,
@@ -69,8 +71,8 @@ def _run_isolated(
     week: date,
     variant: str,
 ) -> dict[str, object]:
-    # NautilusTrader 1.230 owns a process-global Rust logger. A fresh process
-    # per engine prevents the ablation from mutating or inheriting engine state.
+    # NautilusTrader 1.230 owns process-global Rust logging state. Fresh workers
+    # preserve exact variant isolation without rebuilding the engine.
     command = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -126,8 +128,12 @@ def main() -> int:
         "phase": args.phase,
         "executed_weeks": [item.isoformat() for item in weeks],
         "engine_process_isolation": True,
-        "candidate_generation": "v2.3-confirmed-first-retrace-rejection",
+        "candidate_generation": "v3-event-notional-flow-absorption-repricing",
         "variants": list(VARIANT_NAMES),
+        "ablation_contract": (
+            "only FlowParams.enable_order_flow changes; all price, execution, "
+            "cost, target, risk and selection rules remain identical"
+        ),
     }
     (output_root / "week_selection.json").write_text(
         json.dumps(selection, indent=2, sort_keys=True) + "\n",
@@ -139,13 +145,17 @@ def main() -> int:
         for variant in variants():
             results.append(_run_isolated(args=args, week=week, variant=variant))
 
+    full_results = [item for item in results if item["variant"] == "full"]
     summary = {
         "selection": selection,
         "results": results,
-        "all_full_target_pass": all(
-            bool(item["target_pass"]) for item in results if item["variant"] == "full"
-        ),
+        "all_full_target_pass": bool(full_results)
+        and all(bool(item["target_pass"]) for item in full_results),
     }
+    (output_root / args.phase / "summary.json").parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
     (output_root / args.phase / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

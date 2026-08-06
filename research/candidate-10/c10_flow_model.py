@@ -1,4 +1,4 @@
-"""Contracts for candidate 10 v3 event-notional flow auctions."""
+"""Causal contracts for candidate 10 v3 event-notional flow auctions."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ NS_PER_MINUTE = 60_000_000_000
 
 @dataclass(frozen=True, slots=True)
 class FlowTickView:
+    """Minimal executed-trade view known at ``ts_ns``."""
+
     ts_ns: int
     price: float
     quantity: float
@@ -23,6 +25,8 @@ class FlowTickView:
 
 @dataclass(slots=True)
 class FlowBar:
+    """Atomic aggregate-trade bucket closed by a causal notional threshold."""
+
     sequence: int
     start_ns: int
     end_ns: int
@@ -96,11 +100,30 @@ class FlowBar:
 
     @property
     def efficiency(self) -> float:
-        return abs(self.net_move) / self.path_travel if self.path_travel > 0.0 else 0.0
+        """Net price progress divided by total executed-price path travel."""
+
+        if self.path_travel <= 0.0:
+            return 0.0
+        return abs(self.net_move) / self.path_travel
 
     @property
     def range_width(self) -> float:
         return self.high - self.low
+
+    @property
+    def close_location(self) -> float:
+        if self.range_width <= 0.0:
+            return 0.5
+        return (self.close - self.low) / self.range_width
+
+    def true_range(self, previous_close: float | None) -> float:
+        if previous_close is None:
+            return self.range_width
+        return max(
+            self.range_width,
+            abs(self.high - previous_close),
+            abs(self.low - previous_close),
+        )
 
 
 @dataclass(slots=True)
@@ -114,9 +137,10 @@ class FlowRaidProbe:
     initiated_sequence: int
     initiated_ns: int
     initial_delta_ratio: float
+    initial_efficiency: float
     initial_flow_threshold: float
+    initial_bar_open: float
     initial_bar_close: float
-    outside_closes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,29 +175,37 @@ class FlowTransition:
 
 @dataclass(frozen=True, slots=True)
 class FlowParams:
-    # Event bars close after one quarter of the rolling median one-minute
-    # notional. This adapts bar duration to activity rather than optimizing a
-    # clock interval for BTC.
+    # Event bars close after one quarter of the rolling median completed-minute
+    # notional. This uses event time rather than fitting a BTC-specific clock bar.
     minute_notional_lookback: int = 60
     minimum_minute_history: int = 30
     event_notional_fraction: float = 0.25
 
-    # The preceding 20 complete event bars form the active local dealing range.
-    # At median activity this is approximately five minutes, while event time
-    # naturally accelerates or slows with trading intensity.
+    # The preceding complete event bars define the local dealing range and all
+    # empirical thresholds. Current-bar values never enter their own thresholds.
     range_event_bars: int = 20
     feature_lookback: int = 240
     minimum_feature_history: int = 80
+    atr_event_bars: int = 80
+    minimum_atr_history: int = 40
 
-    # Flow thresholds are causal rolling quantiles, not asset-specific absolute
-    # volume constants.
+    # Order-flow and price-response thresholds are causal rolling quantiles.
     flow_extreme_quantile: float = 0.75
     flow_reversal_quantile: float = 0.50
+    absorption_efficiency_quantile: float = 0.50
+    repricing_efficiency_quantile: float = 0.50
+    minimum_delta_ratio: float = 0.08
+    minimum_efficiency: float = 0.15
     enable_order_flow: bool = True
 
+    # Scenario grammar: raid -> failed price response (absorption) -> opposite
+    # efficient repricing -> first passive retrace toward the repricing origin.
     raid_atr: float = 0.15
-    probe_max_bars: int = 2
+    repricing_atr: float = 0.35
+    probe_max_bars: int = 3
+    retrace_fraction: float = 0.50
     stop_buffer_atr: float = 1.00
+    cost_floor_multiple: float = 1.00
     entry_expiry_bars: int = 8
     min_net_rr: float = 1.35
 
