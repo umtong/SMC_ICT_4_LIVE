@@ -1,0 +1,131 @@
+name: candidate-03-v17-development-2-daemonless
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - "research/candidate-03/pinned_oci_python.py"
+      - ".github/workflows/candidate-03-v17-development-2-daemonless.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CONFIG: research/candidate-03/nt_lvcfr_v17_config.json
+
+jobs:
+  second-development-week:
+    runs-on: ubuntu-slim
+    timeout-minutes: 240
+    steps:
+      - name: Clone exact branch and verify frozen V17 sources
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch research/candidate-03 \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          test "$(git hash-object research/candidate-03/derive_nt_lvcfr_v17_signals.py)" = "fcc05dd19bbfc621226250743979d341a7194bf7"
+          test "$(git hash-object research/candidate-03/nt_lvcfr_v17_config.json)" = "64c7ef99cc076582ffff59c961208bc09d22cae7"
+          test "$(git hash-object research/candidate-03/nt_lvcfr_strategy.py)" = "e4d00ae0c6fa1d24198c846bccb247baacdc0456"
+          test "$(git hash-object research/candidate-03/run_nt_lvcfr.py)" = "74bb02f1b69ee31ce32ddfa47497bdd9770ac00b"
+
+      - name: Pull and verify the pinned prebuilt environment without Docker
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd repo
+          rootfs="$RUNNER_TEMP/smc4-rootfs"
+          cache="$RUNNER_TEMP/smc4-oci-cache"
+          python research/candidate-03/pinned_oci_python.py pull \
+            --image "$IMAGE" --rootfs "$rootfs" --cache "$cache" \
+            --username "$GITHUB_ACTOR" --password "$GITHUB_TOKEN"
+          python research/candidate-03/pinned_oci_python.py python \
+            --rootfs "$rootfs" --repository "$PWD" -- \
+            -m smc_ict_4.cli doctor
+          for test in \
+            research/candidate-03/test_nt_lvcfr.py \
+            research/candidate-03/test_nt_lvcfr_trade_proxy.py \
+            research/candidate-03/test_nt_lvcfr_v13.py \
+            research/candidate-03/test_nt_lvcfr_v17.py; do
+            python research/candidate-03/pinned_oci_python.py python \
+              --rootfs "$rootfs" --repository "$PWD" -- "$test"
+          done
+
+      - name: Prepare official data and run unchanged V17 week two in pinned Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          rootfs="$RUNNER_TEMP/smc4-rootfs"
+          pin=(python research/candidate-03/pinned_oci_python.py python --rootfs "$rootfs" --repository "$PWD" --)
+          prepared=artifacts/candidate-03/nt-lvcfr-v17-daemonless/development-2/prepared
+          out=artifacts/candidate-03/nt-lvcfr-v17-daemonless/development-2/output
+          mkdir -p "$prepared" "$out"
+          "${pin[@]}" research/candidate-03/prepare_nt_lvcfr_trade_proxy.py \
+            --week-start 2025-06-23 --output "$prepared" --config "$CONFIG" \
+            2>&1 | tee "$out/preparation.log"
+          cp "$prepared/signals.json" "$prepared/signals-v1.json"
+          "${pin[@]}" research/candidate-03/derive_nt_lvcfr_v17_signals.py \
+            --prepared-root "$prepared" --output-manifest "$out/v17_signal_manifest.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('artifacts/candidate-03/nt-lvcfr-v17-daemonless/development-2/output/v17_signal_manifest.json').read_text())
+          expected = {
+              'source_contraction_event_count': 10,
+              'retained_deleveraging_signal_count': 4,
+              'expansion_signal_count': 4,
+              'derived_signal_count': 8,
+              'state_counts': {
+                  'FIRST_BREAK_CHOCH_REVERSAL': 3,
+                  'MEASURED_ACCEPTANCE_CONTINUATION': 1,
+                  'SPOT_LED_OI_EXPANSION_ACCEPTANCE': 4,
+              },
+          }
+          if any(manifest.get(key) != value for key, value in expected.items()):
+              raise SystemExit(f'V17 second-week causal regression: {manifest}')
+          PY
+          "${pin[@]}" research/candidate-03/rebuild_nt_lvcfr_trade_proxy_catalog.py \
+            --prepared-root "$prepared" --config "$CONFIG" \
+            2>&1 | tee "$out/catalog_rebuild.log"
+          "${pin[@]}" research/candidate-03/run_nt_lvcfr.py \
+            --week-start 2025-06-23 --prepared-root "$prepared" --output "$out" --config "$CONFIG" \
+            2>&1 | tee "$out/backtest.log"
+          set +e
+          "${pin[@]}" research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
+            --config "$CONFIG" | tee "$out/gate.json"
+          gate_status=${PIPESTATUS[0]}
+          set -e
+          echo "$gate_status" > "$out/gate_status.txt"
+
+      - name: Commit reproducible native evidence
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd repo
+          src=artifacts/candidate-03/nt-lvcfr-v17-daemonless/development-2/output
+          dst=research/candidate-03/results/v17-development-2
+          rm -rf "$dst"
+          mkdir -p "$dst"
+          cp "$src"/*.json "$dst"/
+          cp "$src"/*.jsonl "$dst"/ 2>/dev/null || true
+          cp "$src"/*.csv "$dst"/ 2>/dev/null || true
+          cp "$src"/*.log "$dst"/
+          cp "$src/gate_status.txt" "$dst"/
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add "$dst"
+          git commit -m "candidate-03: record V17 second-week native evidence"
+          git pull --rebase origin research/candidate-03
+          git push origin HEAD:research/candidate-03
+          exit "$(cat "$dst/gate_status.txt")"
