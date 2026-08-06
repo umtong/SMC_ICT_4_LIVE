@@ -1,0 +1,63 @@
+name: candidate-05-resolve-validated-winner
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/master_research_continuation.json"
+      - "research/candidate-05/evidence/master_winner_control_audit.json"
+      - "research/candidate-05/evidence/post_audit_continuation.json"
+      - "research/candidate-05/evidence/v32_queue_pressure_controlled.json"
+      - "research/candidate-05/resolve_validated_winner.py"
+      - "research/candidate-05/tests/test_resolve_validated_winner.py"
+      - ".github/workflows/candidate-05-resolve-validated-winner.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-resolve-validated-winner
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify resolver contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q research/candidate-05
+          PYTHONPATH=research/candidate-05 python -m unittest \
+            research/candidate-05/tests/test_resolve_validated_winner.py -v
+
+      - name: Resolve exact-control winner
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-05 python \
+            research/candidate-05/resolve_validated_winner.py \
+            --evidence-root research/candidate-05/evidence \
+            --output research/candidate-05/evidence/validated_btc_winner.json
+          test -s research/candidate-05/evidence/validated_btc_winner.json
+
+      - name: Persist conflict-resistant winner state
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-05/evidence/validated_btc_winner.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-05: resolve validated BTC winner [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-05
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            sleep $((attempt * 3))
+          done
+          exit 1
