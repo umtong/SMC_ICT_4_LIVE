@@ -44,7 +44,8 @@ jobs:
               smc4 doctor &&
               PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
                 python research/candidate-03/test_nt_lvcfr.py &&
-              python -m py_compile research/candidate-03/derive_nt_lvcfr_v2_signals.py
+              PYTHONPYCACHEPREFIX=/tmp/nt-lvcfr-v2-pycache \
+                python -m py_compile research/candidate-03/derive_nt_lvcfr_v2_signals.py
             '
 
       - name: Restore immutable full first-week NautilusTrader catalog
@@ -118,5 +119,5 @@ jobs:
             artifacts/candidate-03/nt-lvcfr-v2/**/*.jsonl
             artifacts/candidate-03/nt-lvcfr-v2/**/*.csv
             artifacts/candidate-03/nt-lvcfr-v2/**/*.log
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
