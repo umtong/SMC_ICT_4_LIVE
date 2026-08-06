@@ -1,18 +1,18 @@
-name: candidate-07-direct-1s-validation
+name: candidate-07-direct-event-validation
 
 on:
   push:
     branches: ["research/candidate-07"]
     paths:
       - ".github/workflows/candidate-07-direct-1s.yml"
-      - "research/candidate-07/data_microstructure_1s.py"
-      - "research/candidate-07/diagnose_impact_resilience_1s.py"
-      - "research/candidate-07/diagnose_impact_resilience_1s_v2.py"
-      - "research/candidate-07/tests/test_impact_resilience_1s.py"
+      - "research/candidate-07/data_aggtrades_1s.py"
+      - "research/candidate-07/diagnose_aggtrade_resilience.py"
+      - "research/candidate-07/diagnose_aggtrade_resilience_v2.py"
+      - "research/candidate-07/tests/test_aggtrade_resilience.py"
   workflow_dispatch:
 
 concurrency:
-  group: candidate-07-direct-1s-validation
+  group: candidate-07-direct-event-validation
   cancel-in-progress: true
 
 permissions:
@@ -20,9 +20,9 @@ permissions:
   packages: read
 
 jobs:
-  btc-week-1-impact-resilience-direct:
+  btc-week-1-aggtrade-resilience-direct:
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -47,17 +47,17 @@ jobs:
           python -m compileall -q research/candidate-07
           python -m unittest discover -s research/candidate-07/tests -p 'test_*.py' -v
 
-      - name: Run implementation-correct frozen BTC Week-1 diagnostic
+      - name: Run frozen BTC Week-1 aggregate-trade baseline
         shell: bash
         run: |
           set -euo pipefail
-          python research/candidate-07/diagnose_impact_resilience_1s_v2.py \
+          python research/candidate-07/diagnose_aggtrade_resilience_v2.py \
             --config research/candidate-07/config.json \
             --stage week-1 \
             --start 2025-12-22 \
             --end 2025-12-29 \
-            --micro-warmup-days 3 \
-            --output artifacts/candidate-07/week-1/impact_resilience_1s_v2.json \
+            --event-warmup-days 1 \
+            --output artifacts/candidate-07/week-1/aggtrade_resilience_baseline.json \
             --data-root .research-data/candidate-07
 
       - name: Print compact immutable evidence
@@ -65,18 +65,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f artifacts/candidate-07/week-1/impact_resilience_1s_v2.json
+          test -f artifacts/candidate-07/week-1/aggtrade_resilience_baseline.json
           python - <<'PY'
           import hashlib
           import json
           from pathlib import Path
-          path = Path('artifacts/candidate-07/week-1/impact_resilience_1s_v2.json')
+          path = Path('artifacts/candidate-07/week-1/aggtrade_resilience_baseline.json')
           payload = json.loads(path.read_text())
-          manifest = path.with_name('impact_resilience_1s_data_manifest.json')
+          manifest = path.with_name('aggtrade_resilience_data_manifest.json')
           print(json.dumps({
               'source_commit': '${{ github.sha }}',
+              'variant': payload['variant'],
               'summary': payload['summary'],
-              'cadence_gaps': payload['cadence_gaps'],
+              'loader_diagnostics': payload['loader_diagnostics'],
+              'preconsumption': payload['preconsumption'],
               'pool_collision_summary': payload['pool_collision_summary'],
               'report_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
               'data_manifest_sha256': (
