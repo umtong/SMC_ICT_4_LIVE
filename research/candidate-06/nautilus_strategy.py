@@ -76,6 +76,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from hierarchical_sweep_engine import HierarchicalLiquiditySweepContinuationEngine
 
         return HierarchicalLiquiditySweepContinuationEngine(logic_params)
+    if name == "HIERARCHICAL_CONFIRMED_POOL":
+        from hierarchical_pool_engine import HierarchicalConfirmedPoolContinuationEngine
+
+        return HierarchicalConfirmedPoolContinuationEngine(logic_params)
     if name == "MULTI_TIMESCALE_LIQUIDITY_RELAY":
         from composite_engine import MultiTimescaleLiquidityRelayEngine
 
