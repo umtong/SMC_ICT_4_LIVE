@@ -1,0 +1,34 @@
+name: candidate-01-microstructure-frequency-audit
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-microstructure-frequency-audit.yml"
+      - "research/candidate-01/binance_vision_microstructure_frequency_audit.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit exact official archive frequency and completeness
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/candidate-01/binance_vision_microstructure_frequency_audit.py
+          rm -rf artifacts/candidate-01-microstructure-frequency-audit
+          python3 research/candidate-01/binance_vision_microstructure_frequency_audit.py \
+            --output artifacts/candidate-01-microstructure-frequency-audit
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-microstructure-frequency-audit-${{ github.sha }}
+          path: artifacts/candidate-01-microstructure-frequency-audit
+          if-no-files-found: error
+          retention-days: 30
