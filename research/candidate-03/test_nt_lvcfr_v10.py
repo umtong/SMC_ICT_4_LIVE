@@ -7,10 +7,11 @@ from nt_lvcfr_data import CandidateConfig
 
 
 class StructuralObjectiveBufferTests(unittest.TestCase):
-    def test_live_strategy_places_stop_behind_causal_objective(self) -> None:
-        source = Path(__file__).with_name("nt_lvcfr_strategy.py").read_text(
-            encoding="utf-8"
-        )
+    def test_v10_patch_declares_objective_buffer(self) -> None:
+        """Preserve the V10 ablation contract without freezing later strategy logic."""
+        source = Path(__file__).with_name(
+            "apply_nt_lvcfr_v10_strategy_patch.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("STRUCTURAL_OBJECTIVE_BUFFER_ACTIVATED", source)
         self.assertIn(
             "buffered_stop = structural_trigger - active.direction * buffer",
@@ -21,8 +22,6 @@ class StructuralObjectiveBufferTests(unittest.TestCase):
             source,
         )
         self.assertIn("structural_objective_buffer_activations", source)
-        self.assertNotIn("def _structural_protection_stop", source)
-        self.assertNotIn("COMPLETED_TWENTY_MINUTE_STRUCTURE_ADVANCED", source)
 
     def test_v10_changes_no_detector_entry_target_or_risk_configuration(self) -> None:
         v9 = CandidateConfig.load(Path(__file__).with_name("nt_lvcfr_v9_config.json"))
