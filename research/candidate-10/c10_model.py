@@ -137,20 +137,24 @@ class MachineParams:
     acceptance_atr: float = 0.12
 
     # v2.2: displacement must break the nearest already right-confirmed 1-minute
-    # pivot, not an arbitrary whole-window extreme. The ablation restores the
-    # previous eight-bar range extreme while every other rule remains fixed.
+    # pivot, not an arbitrary whole-window extreme.
     enable_nearest_micro_pivot: bool = True
     micro_pivot_left: int = 1
     micro_pivot_right: int = 1
 
     # The v2.1 path ablation was performance-identical. The active candidate
-    # therefore returns to the simpler single-bar displacement certificate; the
-    # path implementation is retained only as a tested diagnostic option.
+    # therefore uses the simpler single-bar displacement certificate.
     enable_path_displacement: bool = False
     displacement_atr: float = 0.75
     displacement_max_bars: int = 10
     displacement_min_efficiency: float = 0.55
     displacement_speed_atr: float = 0.32
+
+    # v2.3: a displacement corridor is only a location. The first retrace must
+    # touch it and then close through the preceding minute's opposing extreme
+    # before a passive entry is armed. The ablation submits immediately at the
+    # old 61.8% resting level while every other rule remains fixed.
+    enable_retrace_confirmation: bool = True
 
     # Executable entry/invalidation grammar retained from v1.
     stop_buffer_atr: float = 1.00
