@@ -21,10 +21,17 @@ This ledger records immutable GitHub Actions run IDs and the reason for every re
 | 31078727960 | c489ef0689d1dc037d71efd272a2f9e85559f0c2 | controlled revision success | ten tests passed; commit `28f469a6ad0a9e854fdb943fe992f2fabcc09f19` requires established liquidity, a contracted held retest, and later continuation displacement |
 | 31078940798 | e055fec757c7ec9d52b9d931aa6474baf5fd2e61 | revised screen-01 failed; diagnostic chain stopped suite | four trades, zero wins, NAV 100,000.00→77,993.28 USDT, daily geometric growth -3.48838%. Three rejection trades lost 19,279.51 USDT and one acceptance trade lost 2,727.21 USDT. Screen-02 replay also ran, but `RETEST_HELD→CONFIRMED` was logged with stale `previous_state=ARMED`, so strict event validation stopped before its metrics were written |
 | 31079160379 | fad4305fb872aa7c7240983fd3cbe7a42105b821 | diagnostic state patch success | cancellation and confirmation events now preserve `RETEST_HELD`; no trading rule, order, fill, or sizing behavior changed |
+| 31114849538 | e28a0f244690f1e41b594f8aa849a896b19fc13e | native production adapter success | pinned PyO3 strategy allocation, instrument/data conversions, reports, one shared margin account, market bracket, funding/mark data, liquidation, and zero residual exposure passed; bot committed `02978fca21260fbeabf566ba9d155c7a6e94ef63` |
+| 31115021104 | 55c9b9f6d6f75a67ba7e68a708ad55dd8bebf5ef | valid clean first-week logic failure | native replay completed with 3 trades, 0 wins, NAV 100,000.00→93,949.88433884 USDT, daily geometric growth -0.887590%; all causality, funding, three-percent risk, liquidation, and residual-exposure checks passed |
+| 31115693854 | 1d41d9cbef33121dc5ea390d3e0a2c4f82290be9 | valid single-variable diagnostic ablation | removing only retest contraction produced 3 trades, 1 win, NAV 104,182.48422935 USDT, daily geometric growth +0.587057%; one ETH trade supplied all positive PnL, so the predeclared non-promotable ablation did not meet the project target or independence requirement |
+| 31117471234 | 851f41878d37a06b700c7bb7ea1ebc20b8dd876a | workflow patch implementation failure | a workflow-time string replacement for scenario metadata was non-unique and stopped before tests or replay; no performance evidence was created |
+| 31117765098 | d809e76589c377c9a545533597f5337d839224e1 | external runner-queue blocker | source-corrected auction-router v2 remained queued without job start; no candidate code ran and the marker remains only a pending request |
+| 31119226020 | 8fd348c8b4ed11d92777973c3762e54f477daeec | external runner-queue blocker | source-stable auction-router v3 removes runtime strategy rewriting and stages first-week then three-week replay, but remained queued without job start at the latest check; no performance conclusion is permitted |
 
-The execution models use the pinned official `nautilus_trader.backtest.models` API. The data adapter
-constructs official Nautilus `Bar` objects from owned float64 arrays, explicitly converts pandas
-indices to epoch nanoseconds, and retains source close time as event and observation time. Reports
-come from `ReportProvider` over the engine cache. The loaded runtime does not expose the direct
-liquidation switch found in its type stub, so liquidation is not claimed active; realized loss and
-margin paths remain promotion diagnostics.
+The earlier execution models used the pinned official `nautilus_trader.backtest.models` API and
+progressively exposed Cython/PyO3 boundary problems.  Commit
+`02978fca21260fbeabf566ba9d155c7a6e94ef63` supersedes that mixed adapter with the verified native
+PyO3 production path.  Current performance evidence must therefore come from the native runner and
+must include official checksum-verified data manifests, account/fill/order/position reports,
+causal funding and mark-price state, native liquidation settings, exact three-percent planned-loss
+checks, and zero residual exposure.
