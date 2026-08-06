@@ -1,0 +1,544 @@
+name: candidate-08-pyo3-production-adapter-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-pyo3-production-adapter-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-pyo3-production-adapter-v1
+  cancel-in-progress: false
+
+jobs:
+  patch-test-and-commit:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply only the verified Cython to PyO3 adapter correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          from pathlib import Path
+
+          strategy_path = Path("research/candidate-08/aggtrade_acceptance_strategy.py")
+          strategy = strategy_path.read_text(encoding="utf-8")
+          old_imports = '''from nautilus_trader.config import StrategyConfig
+          from nautilus_trader.model.data import Bar, BarType
+          from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
+          from nautilus_trader.model.identifiers import InstrumentId
+          from nautilus_trader.model.objects import Currency
+          from nautilus_trader.trading.strategy import Strategy
+          '''
+          new_imports = '''from nautilus_trader.core import nautilus_pyo3
+
+          StrategyConfig = nautilus_pyo3.StrategyConfig
+          Strategy = nautilus_pyo3.Strategy
+          Bar = nautilus_pyo3.Bar
+          BarType = nautilus_pyo3.BarType
+          InstrumentId = nautilus_pyo3.InstrumentId
+          Currency = nautilus_pyo3.Currency
+          OrderSide = nautilus_pyo3.OrderSide
+          OrderType = nautilus_pyo3.OrderType
+          TimeInForce = nautilus_pyo3.TimeInForce
+          '''
+          if strategy.count(old_imports) != 1:
+              raise SystemExit("strategy import boundary mismatch")
+          strategy = strategy.replace(old_imports, new_imports)
+
+          config_start = strategy.index("class AggTradeAcceptanceStrategyConfig(")
+          config_end = strategy.index("\n\nclass AggTradeAcceptanceStrategy", config_start)
+          native_config = '''class AggTradeAcceptanceStrategyConfig(StrategyConfig):
+              _CUSTOM_FIELDS = (
+                  "trading_start_ns",
+                  "trading_end_ns",
+                  "risk_fraction",
+                  "effective_fee_rate",
+                  "minimum_net_reward_risk",
+                  "maximum_hold_minutes",
+                  "funding_avoidance_minutes",
+              )
+
+              def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+                  base_kwargs = dict(kwargs)
+                  for field in cls._CUSTOM_FIELDS:
+                      base_kwargs.pop(field, None)
+                  # Venue-native OTO/OUO handling remains authoritative.
+                  base_kwargs["manage_contingent_orders"] = False
+                  return super().__new__(cls, *args, **base_kwargs)
+
+              def __init__(
+                  self,
+                  *,
+                  trading_start_ns: int,
+                  trading_end_ns: int,
+                  risk_fraction: Decimal,
+                  effective_fee_rate: Decimal,
+                  minimum_net_reward_risk: Decimal,
+                  maximum_hold_minutes: int,
+                  funding_avoidance_minutes: int,
+                  **_kwargs: Any,
+              ) -> None:
+                  self.trading_start_ns = int(trading_start_ns)
+                  self.trading_end_ns = int(trading_end_ns)
+                  self.risk_fraction = Decimal(risk_fraction)
+                  self.effective_fee_rate = Decimal(effective_fee_rate)
+                  self.minimum_net_reward_risk = Decimal(minimum_net_reward_risk)
+                  self.maximum_hold_minutes = int(maximum_hold_minutes)
+                  self.funding_avoidance_minutes = int(funding_avoidance_minutes)
+          '''
+          strategy = strategy[:config_start] + native_config + strategy[config_end:]
+
+          exact_replacements = {
+              "quantity = instrument.make_qty(Decimal(str(quantity_value)))":
+                  "quantity = instrument.make_qty(float(quantity_value))",
+              "stop_price = instrument.make_price(Decimal(str(geometry[\"stop\"])))":
+                  "stop_price = instrument.make_price(float(geometry[\"stop\"]))",
+              "target_price = instrument.make_price(Decimal(str(geometry[\"target\"])))":
+                  "target_price = instrument.make_price(float(geometry[\"target\"]))",
+              "entry_order, stop_order, target_order = orders.orders":
+                  "if not isinstance(orders, list) or len(orders) != 3:\n"
+                  "            raise RuntimeError(\n"
+                  "                f\"pinned NautilusTrader bracket contract changed: {type(orders)!r}\"\n"
+                  "            )\n"
+                  "        entry_order, stop_order, target_order = orders",
+          }
+          for old, new in exact_replacements.items():
+              if strategy.count(old) != 1:
+                  raise SystemExit(f"strategy adapter anchor mismatch: {old}")
+              strategy = strategy.replace(old, new)
+          if ".orders" in strategy:
+              raise SystemExit("legacy OrderList .orders access remains")
+          if "nautilus_trader.trading.strategy" in strategy:
+              raise SystemExit("legacy Cython Strategy import remains")
+          strategy_path.write_text(strategy, encoding="utf-8")
+
+          runner_path = Path("research/candidate-08/run_aggtrade_acceptance_nautilus.py")
+          runner = runner_path.read_text(encoding="utf-8")
+          old_runner_imports = '''from nautilus_trader.analysis.reporter import ReportProvider
+          from nautilus_trader.backtest.engine import BacktestEngine
+          from nautilus_trader.backtest.models import LatencyModel, MakerTakerFeeModel, OneTickSlippageFillModel
+          from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
+          from nautilus_trader.model import FundingRateUpdate, MarkPriceUpdate
+          '''
+          new_runner_imports = '''from nautilus_trader.core import nautilus_pyo3
+          from nautilus_trader.model import FundingRateUpdate, MarkPriceUpdate
+          '''
+          if runner.count(old_runner_imports) != 1:
+              raise SystemExit("runner import boundary mismatch")
+          runner = runner.replace(old_runner_imports, new_runner_imports)
+
+          globals_anchor = 'VENUE = Venue("BINANCE")\nUSDT = Currency.from_str("USDT")\n'
+          globals_new = '''VENUE = nautilus_pyo3.Venue.from_str("BINANCE")
+          NATIVE_USDT = nautilus_pyo3.Currency.from_str("USDT")
+          LEGACY_USDT = Currency.from_str("USDT")
+          '''
+          if runner.count(globals_anchor) != 1:
+              raise SystemExit("runner venue globals mismatch")
+          runner = runner.replace(globals_anchor, globals_new)
+          runner = runner.replace("quote_currency=USDT,", "quote_currency=LEGACY_USDT,")
+          runner = runner.replace("settlement_currency=USDT,", "settlement_currency=LEGACY_USDT,")
+          runner = runner.replace("min_notional=Money(10.0, USDT),", "min_notional=Money(10.0, LEGACY_USDT),")
+
+          engine_start = runner.index("def _create_engine(\n")
+          engine_end = runner.index("\ndef _ten_second_bar_type(", engine_start)
+          native_engine = '''def _create_engine(
+              config: Mapping[str, Any],
+              instruments: Mapping[str, Any],
+          ) -> Any:
+              latency = config["cost_assumptions"]["latency_ms"]
+              engine = nautilus_pyo3.BacktestEngine(
+                  nautilus_pyo3.BacktestEngineConfig(
+                      run_analysis=True,
+                      bypass_logging=True,
+                  )
+              )
+              engine.add_venue(
+                  venue=VENUE,
+                  oms_type=nautilus_pyo3.OmsType.HEDGING,
+                  account_type=nautilus_pyo3.AccountType.MARGIN,
+                  starting_balances=[
+                      nautilus_pyo3.Money.from_str(
+                          f"{config['starting_nav_usdt']} USDT"
+                      )
+                  ],
+                  base_currency=NATIVE_USDT,
+                  default_leverage=Decimal(str(config["venue"]["default_leverage"])),
+                  fill_model=nautilus_pyo3.OneTickSlippageFillModel(
+                      prob_fill_on_limit=1.0,
+                      prob_slippage=float(
+                          config["cost_assumptions"]["one_tick_slippage_probability"]
+                      ),
+                      random_seed=int(config["random_seed"]),
+                  ),
+                  fee_model=nautilus_pyo3.MakerTakerFeeModel(),
+                  latency_model=nautilus_pyo3.StaticLatencyModel(
+                      base_latency_nanos=int(latency["base"] * 1_000_000),
+                      insert_latency_nanos=int(latency["insert"] * 1_000_000),
+                      update_latency_nanos=int(latency["update"] * 1_000_000),
+                      cancel_latency_nanos=int(latency["cancel"] * 1_000_000),
+                  ),
+                  reject_stop_orders=False,
+                  support_contingent_orders=True,
+                  use_position_ids=True,
+                  use_reduce_only=True,
+                  bar_execution=True,
+                  bar_adaptive_high_low_ordering=bool(
+                      config["venue"]["bar_adaptive_high_low_ordering"]
+                  ),
+                  liquidation_enabled=bool(config["venue"]["liquidation_enabled"]),
+                  liquidation_trigger_ratio=float(config["venue"]["liquidation_trigger_ratio"]),
+                  liquidation_cancel_open_orders=bool(
+                      config["venue"]["liquidation_cancel_open_orders"]
+                  ),
+              )
+              for instrument in instruments.values():
+                  engine.add_instrument(instrument)
+              return engine
+          '''
+          runner = runner[:engine_start] + native_engine + runner[engine_end:]
+
+          helpers_anchor = "\n\n\ndef _merge_signal_bundles("
+          if runner.count(helpers_anchor) != 1:
+              raise SystemExit("runner helper insertion boundary mismatch")
+          native_helpers = '''
+
+          def _native_instrument(instrument: CryptoPerpetual) -> Any:
+              return nautilus_pyo3.CryptoPerpetual.from_dict(
+                  type(instrument).to_dict(instrument)
+              )
+
+
+          def _native_funding_update(update: FundingRateUpdate) -> Any:
+              return nautilus_pyo3.FundingRateUpdate.from_dict(
+                  {
+                      "type": "FundingRateUpdate",
+                      "instrument_id": str(update.instrument_id),
+                      "rate": str(update.rate),
+                      "interval": int(update.interval),
+                      "next_funding_ns": (
+                          None if update.next_funding_ns is None else int(update.next_funding_ns)
+                      ),
+                      "ts_event": int(update.ts_event),
+                      "ts_init": int(update.ts_init),
+                  }
+              )
+
+
+          def _native_events(value: Any) -> list[Any]:
+              events = getattr(value, "events", ())
+              return list(events() if callable(events) else events)
+
+
+          def _native_dict(value: Any) -> dict[str, Any]:
+              method = getattr(value, "to_dict")
+              try:
+                  result = method()
+              except TypeError:
+                  result = type(value).to_dict(value)
+              return dict(result)
+
+
+          def _native_fills_report(orders: list[Any]) -> pd.DataFrame:
+              rows = [
+                  _native_dict(event)
+                  for order in orders
+                  for event in _native_events(order)
+                  if type(event).__name__ == "OrderFilled"
+              ]
+              if not rows:
+                  return pd.DataFrame()
+              report = pd.DataFrame(rows).set_index("client_order_id").sort_index()
+              for column in ("ts_event", "ts_init"):
+                  if column in report.columns:
+                      report[column] = [pd.Timestamp(int(value or 0), tz="UTC") for value in report[column]]
+              report.drop(columns=["type"], errors="ignore", inplace=True)
+              return report
+
+
+          def _native_account_report(account: Any) -> pd.DataFrame:
+              rows: list[dict[str, Any]] = []
+              for event in _native_events(account):
+                  state = _native_dict(event)
+                  balances = list(state.pop("balances", []))
+                  rows.extend({**dict(balance), **state} for balance in balances)
+              if not rows:
+                  return pd.DataFrame()
+              report = pd.DataFrame(rows).set_index("ts_event").sort_index()
+              report.index = [pd.Timestamp(int(value), tz="UTC") for value in report.index]
+              report.drop(columns=["ts_init", "type", "event_id"], errors="ignore", inplace=True)
+              return report
+
+
+          def _result_field(result: Any, name: str, default: Any) -> Any:
+              value = getattr(result, name, default)
+              return value() if callable(value) else value
+          '''
+          runner = runner.replace(helpers_anchor, native_helpers + helpers_anchor)
+
+          instrument_anchor = '''    bar_types = {symbol: _ten_second_bar_type(instrument) for symbol, instrument in instruments.items()}
+              pattern_source = json.loads(pattern_config_path.read_text(encoding="utf-8"))
+          '''
+          instrument_new = '''    bar_types = {symbol: _ten_second_bar_type(instrument) for symbol, instrument in instruments.items()}
+              native_instruments = {
+                  symbol: _native_instrument(instrument)
+                  for symbol, instrument in instruments.items()
+              }
+              native_bar_types = {
+                  symbol: nautilus_pyo3.BarType.from_str(str(bar_types[symbol]))
+                  for symbol in instruments
+              }
+              pattern_source = json.loads(pattern_config_path.read_text(encoding="utf-8"))
+          '''
+          if runner.count(instrument_anchor) != 1:
+              raise SystemExit("runner instrument conversion boundary mismatch")
+          runner = runner.replace(instrument_anchor, instrument_new)
+
+          strategy_anchor = '''        instrument_ids=tuple(instrument.id for instrument in instruments.values()),
+                  bar_types=tuple(bar_types.values()),
+          '''
+          strategy_new = '''        instrument_ids=tuple(instrument.id for instrument in native_instruments.values()),
+                  bar_types=tuple(native_bar_types.values()),
+          '''
+          if runner.count(strategy_anchor) != 1:
+              raise SystemExit("runner strategy native IDs boundary mismatch")
+          runner = runner.replace(strategy_anchor, strategy_new)
+
+          replay_anchor = '''    all_bars.sort(key=lambda bar: (int(bar.ts_event), str(bar.bar_type.instrument_id)))
+              all_funding_updates.sort(key=lambda item: (int(item.ts_event), str(item.instrument_id)))
+              all_mark_price_updates.sort(key=lambda item: (int(item.ts_event), str(item.instrument_id)))
+              engine = _create_engine(config, instruments)
+          '''
+          replay_new = '''    all_bars.sort(key=lambda bar: (int(bar.ts_event), str(bar.bar_type.instrument_id)))
+              all_funding_updates.sort(key=lambda item: (int(item.ts_event), str(item.instrument_id)))
+              all_mark_price_updates.sort(key=lambda item: (int(item.ts_event), str(item.instrument_id)))
+              native_bars = [bar.to_pyo3() for bar in all_bars]
+              native_funding_updates = [
+                  _native_funding_update(update) for update in all_funding_updates
+              ]
+              native_mark_price_updates = [update.to_pyo3() for update in all_mark_price_updates]
+              engine = _create_engine(config, native_instruments)
+          '''
+          if runner.count(replay_anchor) != 1:
+              raise SystemExit("runner replay conversion boundary mismatch")
+          runner = runner.replace(replay_anchor, replay_new)
+          runner = runner.replace("engine.add_data(all_bars, sort=False)", "engine.add_data(native_bars, sort=False)")
+          runner = runner.replace(
+              "engine.add_data(all_mark_price_updates, sort=False)",
+              "engine.add_data(native_mark_price_updates, sort=False)",
+          )
+          runner = runner.replace(
+              "engine.add_data(all_funding_updates, sort=False)",
+              "engine.add_data(native_funding_updates, sort=False)",
+          )
+
+          reports_anchor = '''        account = engine.cache.account_for_venue(VENUE)
+                  if account is None:
+                      raise RuntimeError("NautilusTrader did not retain the shared Binance margin account")
+                  cached_orders = engine.cache.orders()
+                  cached_positions = engine.cache.positions()
+                  orders = ReportProvider.generate_orders_report(cached_orders)
+                  fills = ReportProvider.generate_fills_report(cached_orders)
+                  positions = ReportProvider.generate_positions_report(cached_positions)
+                  account_report = ReportProvider.generate_account_report(account)
+          '''
+          reports_new = '''        account = engine.cache.account_for_venue(VENUE)
+                  if account is None:
+                      raise RuntimeError("NautilusTrader did not retain the shared Binance margin account")
+                  cached_orders = list(engine.cache.orders())
+                  orders = engine.generate_orders_report()
+                  fills = _native_fills_report(cached_orders)
+                  positions = engine.generate_positions_report()
+                  account_report = _native_account_report(account)
+          '''
+          if runner.count(reports_anchor) != 1:
+              raise SystemExit("runner report boundary mismatch")
+          runner = runner.replace(reports_anchor, reports_new)
+          runner = runner.replace("final_money = account.balance_total(USDT)", "final_money = account.balance_total(NATIVE_USDT)")
+          runner = runner.replace(
+              "for instrument in instruments.values()\n        )\n        open_orders",
+              "for instrument in native_instruments.values()\n        )\n        open_orders",
+              1,
+          )
+          runner = runner.replace(
+              "for instrument in instruments.values()\n        )\n        unprocessed",
+              "for instrument in native_instruments.values()\n        )\n        unprocessed",
+              1,
+          )
+          runner = runner.replace(
+              '"iterations": result.iterations,\n                "total_events": result.total_events,\n                "total_orders": result.total_orders,\n                "total_positions": result.total_positions,\n                "stats_pnls": result.stats_pnls,\n                "stats_returns": result.stats_returns,\n                "stats_general": getattr(result, "stats_general", {}),',
+              '"iterations": _result_field(result, "iterations", 0),\n                "total_events": _result_field(result, "total_events", 0),\n                "total_orders": _result_field(result, "total_orders", 0),\n                "total_positions": _result_field(result, "total_positions", 0),\n                "stats_pnls": _result_field(result, "stats_pnls", {}),\n                "stats_returns": _result_field(result, "stats_returns", {}),\n                "stats_general": _result_field(result, "stats_general", {}),',
+          )
+          runner = runner.replace(
+              '"name": "NautilusTrader BacktestEngine",',
+              '"name": "NautilusTrader PyO3 BacktestEngine",',
+          )
+          runner = runner.replace(
+              '"instruments": [str(instrument.id) for instrument in instruments.values()],',
+              '"instruments": [str(instrument.id) for instrument in native_instruments.values()],',
+          )
+          if "ReportProvider" in runner or "BacktestEngineConfig" in runner:
+              raise SystemExit("legacy runner engine/report surface remains")
+          if "nautilus_pyo3.BacktestEngine" not in runner:
+              raise SystemExit("native engine construction missing")
+          runner_path.write_text(runner, encoding="utf-8")
+          PY
+
+      - name: Verify contracts and native production smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-08/aggtrade_acceptance_strategy.py \
+            research/candidate-08/run_aggtrade_acceptance_nautilus.py
+          python research/candidate-08/test_aggtrade_orderflow.py -v
+          python research/candidate-08/test_aggtrade_acceptance.py -v
+          python research/candidate-08/test_aggtrade_acceptance_pure.py -v
+          python research/candidate-08/test_aggtrade_acceptance_nautilus.py -v
+          PYTHONPATH=research/candidate-08 python - <<'PY'
+          from decimal import Decimal
+          import json
+          from pathlib import Path
+          import pandas as pd
+          from nautilus_trader.core import nautilus_pyo3
+
+          from aggtrade_acceptance_strategy import (
+              AggTradeAcceptanceStrategy,
+              AggTradeAcceptanceStrategyConfig,
+          )
+          from run_aggtrade_acceptance_nautilus import (
+              VENUE,
+              NATIVE_USDT,
+              _build_instrument,
+              _create_engine,
+              _native_account_report,
+              _native_instrument,
+          )
+
+          config = json.loads(
+              Path("research/candidate-08/config_aggtrade_acceptance_nautilus.json").read_text()
+          )
+          legacy = {
+              symbol: _build_instrument(
+                  symbol,
+                  specification,
+                  float(config["effective_fee_rate_per_fill"]),
+              )
+              for symbol, specification in config["assets"].items()
+          }
+          native = {symbol: _native_instrument(item) for symbol, item in legacy.items()}
+          bar_types = {
+              symbol: nautilus_pyo3.BarType.from_str(
+                  f"{instrument.id}-10-SECOND-LAST-EXTERNAL"
+              )
+              for symbol, instrument in native.items()
+          }
+          timestamp = pd.Timestamp("2024-04-08T00:00:10Z")
+          centers = {"BTCUSDT": 70000.0, "ETHUSDT": 3500.0, "SOLUSDT": 175.0, "XRPUSDT": 0.6}
+          bars = []
+          for symbol, instrument in native.items():
+              center = centers[symbol]
+              step = 10 ** (-instrument.price_precision)
+              bars.append(
+                  nautilus_pyo3.Bar(
+                      bar_type=bar_types[symbol],
+                      open=nautilus_pyo3.Price(center, instrument.price_precision),
+                      high=nautilus_pyo3.Price(center + step, instrument.price_precision),
+                      low=nautilus_pyo3.Price(center - step, instrument.price_precision),
+                      close=nautilus_pyo3.Price(center, instrument.price_precision),
+                      volume=nautilus_pyo3.Quantity(1.0, instrument.size_precision),
+                      ts_event=int(timestamp.as_unit("ns").value),
+                      ts_init=int(timestamp.as_unit("ns").value),
+                  )
+              )
+          strategy = AggTradeAcceptanceStrategy(
+              AggTradeAcceptanceStrategyConfig(
+                  trading_start_ns=int(timestamp.as_unit("ns").value),
+                  trading_end_ns=int((timestamp + pd.Timedelta(minutes=1)).as_unit("ns").value),
+                  risk_fraction=Decimal("0.03"),
+                  effective_fee_rate=Decimal(str(config["effective_fee_rate_per_fill"])),
+                  minimum_net_reward_risk=Decimal(str(config["minimum_net_reward_risk"])),
+                  maximum_hold_minutes=int(config["maximum_hold_minutes"]),
+                  funding_avoidance_minutes=int(config["funding_avoidance_minutes"]),
+              ),
+              instrument_ids=tuple(item.id for item in native.values()),
+              bar_types=tuple(bar_types.values()),
+              signals_by_time_ns={},
+              funding_observations_by_instrument={str(item.id): () for item in native.values()},
+          )
+          engine = _create_engine(config, native)
+          try:
+              engine.add_data(bars)
+              engine.add_strategy(strategy)
+              engine.run()
+              account = engine.cache.account_for_venue(VENUE)
+              assert account is not None
+              assert account.balance_total(NATIVE_USDT) is not None
+              assert not _native_account_report(account).empty
+              assert engine.cache.orders_open_count() == 0
+              assert engine.cache.positions_open_count() == 0
+          finally:
+              engine.dispose()
+          strategy_source = Path("research/candidate-08/aggtrade_acceptance_strategy.py").read_text()
+          assert "entry_order, stop_order, target_order = orders" in strategy_source
+          assert ".orders" not in strategy_source
+          assert "nautilus_pyo3.Strategy" in strategy_source
+          diagnostic = json.loads(
+              Path(
+                  "research/candidate-08/evidence/aggtrade-acceptance-nautilus/"
+                  "pyo3-native-strategy-diagnostic-v3/summary.json"
+              ).read_text()
+          )
+          required = (
+              "bracket_ids_valid",
+              "direct_shared_nav",
+              "engine_run_completed",
+              "native_data",
+              "native_instrument",
+              "native_python_strategy_added",
+              "native_venue",
+              "no_open_orders",
+              "no_open_positions",
+              "position_round_trip",
+          )
+          assert all(diagnostic["chain"][key] for key in required)
+          print("CANDIDATE08_NATIVE_PRODUCTION_ADAPTER_SMOKE_OK")
+          PY
+
+      - name: Commit only verified production files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f research/candidate-08/.run-pyo3-production-adapter-v1
+          git add -A -- \
+            research/candidate-08/aggtrade_acceptance_strategy.py \
+            research/candidate-08/run_aggtrade_acceptance_nautilus.py \
+            research/candidate-08/.run-pyo3-production-adapter-v1
+          git commit -m "candidate-08: use verified native Nautilus production adapter [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
