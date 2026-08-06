@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 jobs:
-  week-1:
+  staged-btc-weeks:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     container:
@@ -34,7 +34,7 @@ jobs:
             -p 'test_*.py' -v
           python research/candidate-05/select_weeks.py
 
-      - name: Run first frozen BTC week through NautilusTrader
+      - name: Run frozen BTC weekly gates sequentially through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
@@ -44,58 +44,64 @@ jobs:
             --weeks research/candidate-05/weeks.json \
             --cache .cache/candidate-05 \
             --output artifacts/candidate-05 \
-            --max-weeks 1 \
+            --max-weeks 3 \
             | tee artifacts/candidate-05/console.json
 
       - name: Preserve observational diagnostics
         if: always()
         shell: bash
         run: |
-          mkdir -p artifacts/candidate-05/week-1/raw-klines
+          mkdir -p artifacts/candidate-05/raw-klines
           if compgen -G '.cache/candidate-05/klines/*.zip' > /dev/null; then
-            cp .cache/candidate-05/klines/*.zip artifacts/candidate-05/week-1/raw-klines/
+            cp .cache/candidate-05/klines/*.zip artifacts/candidate-05/raw-klines/
           fi
 
-      - name: Verify and print evidence
+      - name: Verify and print available stage evidence
         if: always()
         shell: bash
         run: |
-          if test -f artifacts/candidate-05/week-1/metrics.json; then
-            python -m json.tool artifacts/candidate-05/week-1/metrics.json
-            test -s artifacts/candidate-05/week-1/run.json
-            test -s artifacts/candidate-05/week-1/data_manifest.json
-            test -s artifacts/candidate-05/week-1/orders.csv
-            test -s artifacts/candidate-05/week-1/positions.csv
-            test -s artifacts/candidate-05/week-1/account.csv
-            test -s artifacts/candidate-05/week-1/equity.csv
-            test -s artifacts/candidate-05/week-1/scenario_events.jsonl
-            test -s artifacts/candidate-05/week-1/strategy_diagnostics.json
+          if test -f artifacts/candidate-05/pipeline_summary.json; then
+            python -m json.tool artifacts/candidate-05/pipeline_summary.json
           fi
-          if test -f artifacts/candidate-05/week-1/errors.log; then
-            cat artifacts/candidate-05/week-1/errors.log
-          fi
+          for stage in artifacts/candidate-05/week-*; do
+            test -d "$stage" || continue
+            if test -f "$stage/metrics.json"; then
+              python -m json.tool "$stage/metrics.json"
+              test -s "$stage/run.json"
+              test -s "$stage/data_manifest.json"
+              test -s "$stage/orders.csv"
+              test -s "$stage/positions.csv"
+              test -s "$stage/account.csv"
+              test -s "$stage/equity.csv"
+              test -s "$stage/scenario_events.jsonl"
+              test -s "$stage/strategy_diagnostics.json"
+            fi
+            if test -f "$stage/errors.log"; then
+              cat "$stage/errors.log"
+            fi
+          done
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-05-week1-${{ github.sha }}
+          name: candidate-05-staged-${{ github.sha }}
           path: |
             artifacts/candidate-05/pipeline_summary.json
             artifacts/candidate-05/console.json
-            artifacts/candidate-05/week-1/metrics.json
-            artifacts/candidate-05/week-1/run.json
-            artifacts/candidate-05/week-1/data_manifest.json
-            artifacts/candidate-05/week-1/raw_evidence.json
-            artifacts/candidate-05/week-1/features.csv.gz
-            artifacts/candidate-05/week-1/raw-klines/*.zip
-            artifacts/candidate-05/week-1/orders.csv
-            artifacts/candidate-05/week-1/positions.csv
-            artifacts/candidate-05/week-1/account.csv
-            artifacts/candidate-05/week-1/equity.csv
-            artifacts/candidate-05/week-1/scenario_events.jsonl
-            artifacts/candidate-05/week-1/strategy_diagnostics.json
-            artifacts/candidate-05/week-1/closed_scenarios.json
-            artifacts/candidate-05/week-1/order_rejections.json
-            artifacts/candidate-05/week-1/errors.log
+            artifacts/candidate-05/raw-klines/*.zip
+            artifacts/candidate-05/week-*/metrics.json
+            artifacts/candidate-05/week-*/run.json
+            artifacts/candidate-05/week-*/data_manifest.json
+            artifacts/candidate-05/week-*/raw_evidence.json
+            artifacts/candidate-05/week-*/features.csv.gz
+            artifacts/candidate-05/week-*/orders.csv
+            artifacts/candidate-05/week-*/positions.csv
+            artifacts/candidate-05/week-*/account.csv
+            artifacts/candidate-05/week-*/equity.csv
+            artifacts/candidate-05/week-*/scenario_events.jsonl
+            artifacts/candidate-05/week-*/strategy_diagnostics.json
+            artifacts/candidate-05/week-*/closed_scenarios.json
+            artifacts/candidate-05/week-*/order_rejections.json
+            artifacts/candidate-05/week-*/errors.log
           if-no-files-found: warn
           retention-days: 90
