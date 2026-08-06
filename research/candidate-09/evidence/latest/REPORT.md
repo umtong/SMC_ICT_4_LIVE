@@ -2,22 +2,22 @@
 
 - Status: **GATE_FAIL**
 - Gate passed: **False**
-- Baseline pooled daily geometric return: **-2.132806%**
-- Baseline pooled NAV multiple across sampled days: **0.635887x**
+- Baseline pooled daily geometric return: **-1.753871%**
+- Baseline pooled NAV multiple across sampled days: **0.689643x**
 - Baseline trades: **24**
-- Maximum sampled-segment drawdown: **33.728318%**
+- Maximum sampled-segment drawdown: **29.828127%**
 
 ## Fixed-week results
 
 | week | return | daily geo | trades | win rate | PF | max DD | reversal | continuation | implementation |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| week-a | -24.6844% | -3.9688% | 19 | 21.05% | 0.404 | 33.7283% | 14 | 5 | IMPLEMENTATION_ERROR |
-| week-b | -6.4336% | -0.9455% | 2 | 0.00% | 0.000 | 6.4336% | 1 | 1 | IMPLEMENTATION_ERROR |
-| week-c | -9.7650% | -1.4572% | 3 | 0.00% | 0.000 | 9.7650% | 2 | 1 | IMPLEMENTATION_ERROR |
+| week-a | -19.6894% | -3.0839% | 19 | 21.05% | 0.489 | 29.8281% | 14 | 5 | OK |
+| week-b | -5.9111% | -0.8667% | 2 | 0.00% | 0.000 | 5.9111% | 1 | 1 | OK |
+| week-c | -8.7331% | -1.2970% | 3 | 0.00% | 0.000 | 8.7331% | 2 | 1 | OK |
 
 ## Gate checks
 
-- FAIL — `implementation_ok`
+- PASS — `implementation_ok`
 - FAIL — `pooled_daily_geometric_return`
 - FAIL — `minimum_trades_each_week`
 - FAIL — `all_weeks_positive`
@@ -25,9 +25,10 @@
 
 ## Failure classification / structural diagnosis
 
-- Classification: **IMPLEMENTATION_ERROR**
-- Largest influence: **implementation contract**
-- Required action: Fix execution/accounting/time contracts and rerun the identical weeks before changing logic.
+- Classification: **LOGIC_ERROR_NO_STRUCTURAL_PATH**
+- Largest influence: **insufficient cost-after conditional edge or opportunity rate**
+- Required action: Discard candidate-09 as a complete candidate; preserve only the listed mechanisms for later hypotheses.
+- Parts worth preserving: absorption/reclaim branch produced executable events; acceptance/retest branch produced executable events
 
 ## Known failure conditions
 

@@ -172,8 +172,12 @@ class Candidate09Strategy(Strategy):
     def on_position_closed(self, event: PositionClosed) -> None:
         if self._active_signal is None:
             return
-        gross_pnl = _money(event.realized_pnl)
-        net_pnl = gross_pnl - self._active_commissions - self._active_extra_cost
+        # Nautilus PositionClosed.realized_pnl is already net of native venue
+        # commissions. Reconstruct price PnL for diagnostics, and subtract only
+        # the explicit reserve needed to reach the configured composite cost.
+        native_net_realized_pnl = _money(event.realized_pnl)
+        gross_pnl = native_net_realized_pnl + self._active_commissions
+        net_pnl = native_net_realized_pnl - self._active_extra_cost
         nav_before = self.adjusted_nav
         self.adjusted_nav += net_pnl
         record = {
@@ -188,6 +192,7 @@ class Candidate09Strategy(Strategy):
             "target_price": self._active_signal.target_price,
             "planned_loss": self._planned_loss,
             "gross_realized_pnl": gross_pnl,
+            "native_net_realized_pnl": native_net_realized_pnl,
             "native_commissions": self._active_commissions,
             "extra_composite_cost": self._active_extra_cost,
             "net_pnl": net_pnl,
