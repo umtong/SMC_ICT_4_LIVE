@@ -8,5 +8,6 @@ This branch exists only to trigger the `pull_request`-scoped NautilusTrader gate
 - Full versus exact ablation: remove only open-interest state
 - Engine: pinned NautilusTrader 1.230.0
 - Risk: current conservative whole-account NAV × 3% planned loss
+- Synchronization revision: `2`
 
 No strategy parameter, week, seed, fee, entry, stop, target, or risk change is introduced by this trigger.
