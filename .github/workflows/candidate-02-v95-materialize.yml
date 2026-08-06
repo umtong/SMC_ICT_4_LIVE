@@ -1,0 +1,79 @@
+name: candidate-02-v95-materialize
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v95-materialize.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  exact-v95-materialization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify and materialize the prospectively locked v95 payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload=.candidate-02-v95/payload.tar.gz
+          test "$(sha256sum "$payload" | cut -d' ' -f1)" = "5fb79dbde6f55d0a1dd04a97c0a0a6056b5d7871b144b8a69ec3e2a48e5daa42"
+          tar -tzf "$payload"
+          tar -xzf "$payload"
+
+          actual="$(cat \
+            research/candidate-02/v95_mature_swing_breakout_core.py \
+            research/candidate-02/v95_nt_backtest.py \
+            research/candidate-02/v95_base_config.json \
+            research/candidate-02/v95_mature_swing_breakout_lock.json \
+            research/candidate-02/v95_design.md | sha256sum | cut -d' ' -f1)"
+          test "$actual" = "7523cf67e38367e4f03412834d7905d0e9a61c05285abade0b9cdc3063288601"
+          test "$(cat research/candidate-02/v95_payload_sha256.txt)" = "$actual"
+
+          python -m py_compile \
+            research/candidate-02/v95_mature_swing_breakout_core.py \
+            research/candidate-02/v95_nt_backtest.py
+          python -m json.tool research/candidate-02/v95_base_config.json >/dev/null
+          python -m json.tool research/candidate-02/v95_mature_swing_breakout_lock.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          lock = json.loads(Path('research/candidate-02/v95_mature_swing_breakout_lock.json').read_text())
+          cfg = json.loads(Path('research/candidate-02/v95_base_config.json').read_text())
+          assert lock['status'] == 'LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['first_week']['symbol'] == 'BTCUSDT'
+          assert lock['first_week']['start_utc'] == '2025-10-06T00:00:00Z'
+          assert lock['first_week']['end_utc'] == '2025-10-13T00:00:00Z'
+          assert lock['first_week']['selection_seed'] == 2026080695
+          assert lock['first_week']['raw_data_status_at_lock'] == 'NOT_COLLECTED_FOR_V95'
+          assert lock['performance_engine'] == 'NautilusTrader 1.230.0'
+          assert lock['custom_backtest_engine'] is False
+          assert float(lock['risk_fraction']) == 0.03
+          assert lock['global_pending_entry_plus_position_limit'] == 1
+          assert lock['precommitted_single_ablation']['only_change'] == 'require_defense_memory true to false'
+          assert cfg['validation']['first_week_start'] == '2025-10-06'
+          assert cfg['validation']['selection_seed'] == 2026080695
+          assert float(cfg['risk']['risk_fraction']) == 0.03
+          assert cfg['risk']['maximum_notional_cap'] is None
+          assert cfg['risk']['score_risk_multiplier'] is None
+          assert cfg['scenario']['require_defense_memory'] is True
+          assert cfg['scenario']['swing_bar_minutes'] == 15
+          assert cfg['scenario']['minimum_level_age_minutes'] == 480
+          assert cfg['scenario']['maximum_level_age_minutes'] == 2880
+          PY
+
+          rm -rf .candidate-02-v95
+          rm -f .github/workflows/candidate-02-v95-materialize.yml
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "research(candidate-02): lock v95 mature defended swing breakout"
+          git push origin HEAD:research/candidate-02
