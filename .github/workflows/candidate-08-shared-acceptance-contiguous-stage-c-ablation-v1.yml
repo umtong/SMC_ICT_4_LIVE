@@ -1,0 +1,137 @@
+name: candidate-08-shared-acceptance-contiguous-stage-c-ablation-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-shared-acceptance-contiguous-stage-c-ablation-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/shared-acceptance-contiguous-stage-c-ablation-v1
+      DATA_CACHE: /tmp/candidate-08-contiguous-stage-c-ablation
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Wait for an unabated Stage C logical failure
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-08/evidence/shared-acceptance-contiguous-stage-c-v1
+          file="$root/route.txt"
+          for attempt in $(seq 1 1440); do
+            git fetch origin research/candidate-08
+            git reset --hard origin/research/candidate-08
+            [[ -f "$file" ]] && break
+            sleep 15
+          done
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          root = Path("research/candidate-08/evidence/shared-acceptance-contiguous-stage-c-v1")
+          route = (root / "route.txt").read_text().strip() if (root / "route.txt").exists() else "NO_ROUTE"
+          suite = json.loads((root / "suite_metrics.json").read_text()) if (root / "suite_metrics.json").exists() else {}
+          original = suite.get("runner_kind", "NONE")
+          kind = {"BASE": "BASE_ABLATION", "IMPLEMENTATION": "IMPLEMENTATION_ABLATION"}.get(original, "NONE")
+          run = route == "STAGE_C_LOGIC_FAILURE_UNABLATED" and kind != "NONE"
+          print(f"run={'true' if run else 'false'}")
+          print(f"runner_kind={kind}")
+          print(f"variant={suite.get('variant', 'NONE')}_NO_CONTRACTION_STAGE_C")
+          print(f"upstream_route={route}")
+          PY
+      - uses: actions/cache/restore@v4
+        if: steps.select.outputs.run == 'true'
+        with:
+          path: ${{ env.DATA_CACHE }}
+          key: candidate-08-contiguous-stage-c-ablation-${{ github.sha }}
+          restore-keys: |
+            candidate-08-contiguous-stage-c-
+            candidate-08-stage-b-
+            candidate-08-aggtrade-acceptance-
+      - name: Rerun the identical continuous interval with one ablation
+        if: steps.select.outputs.run == 'true'
+        shell: bash
+        env:
+          RUNNER_KIND: ${{ steps.select.outputs.runner_kind }}
+          VARIANT: ${{ steps.select.outputs.variant }}
+        run: |
+          set -o pipefail
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          set +e
+          {
+            set -euo pipefail
+            smc4 doctor
+            python - <<'PY'
+            import json, os
+            from pathlib import Path
+            config = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_shared.json").read_text())
+            plan = json.loads(Path("research/candidate-08/shared_acceptance_contiguous_plan_v1.json").read_text())
+            window = plan["stage_c"]
+            config["candidate"] = f"candidate-08-{os.environ['VARIANT']}"
+            config["suites"]["first"] = [{"name": window["name"], "start": window["start"], "end": window["end"]}]
+            config["ablation"] = {"removed_variable": "RETEST_ACTIVITY_AND_IMBALANCE_CONTRACTION", "same_contiguous_interval": True}
+            Path("research/candidate-08/evidence/shared-acceptance-contiguous-stage-c-ablation-v1/config.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+            PY
+            python research/candidate-08/run_selected_shared_acceptance_variant.py \
+              --runner-kind "$RUNNER_KIND" \
+              --config "$OUTPUT_DIR/config.json" \
+              --output "$OUTPUT_DIR/run" \
+              --data-cache "$DATA_CACHE"
+          } 2>&1 | tee "$OUTPUT_DIR/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT_DIR/runner_exit_status.txt"
+          python research/candidate-08/evaluate_contiguous_shared_acceptance.py \
+            --run "$OUTPUT_DIR/run" \
+            --plan research/candidate-08/shared_acceptance_contiguous_plan_v1.json \
+            --stage stage_c \
+            --variant "$VARIANT" \
+            --runner-kind "$RUNNER_KIND" \
+            --output "$OUTPUT_DIR/suite_metrics.json" || true
+      - name: Record non-applicable route
+        if: steps.select.outputs.run != 'true'
+        shell: bash
+        env:
+          ROUTE: ${{ steps.select.outputs.upstream_route }}
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          printf '{"reason":"Stage C was not an unabated logical failure","route":"%s"}\n' "$ROUTE" > "$OUTPUT_DIR/ablation_not_run.json"
+          printf 'NOT_RUN\n' > "$OUTPUT_DIR/route.txt"
+          printf '0\n' > "$OUTPUT_DIR/runner_exit_status.txt"
+      - name: Commit Stage C ablation evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin research/candidate-08
+          rm -f research/candidate-08/.run-shared-acceptance-contiguous-stage-c-ablation-v1
+          git add "$OUTPUT_DIR" research/candidate-08/.run-shared-acceptance-contiguous-stage-c-ablation-v1
+          git commit -m "candidate-08: record same-interval Stage C contraction ablation" || true
+          git push origin HEAD:research/candidate-08
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-contiguous-stage-c-ablation-${{ github.run_id }}
+          path: research/candidate-08/evidence/shared-acceptance-contiguous-stage-c-ablation-v1
+          retention-days: 30
+      - uses: actions/cache/save@v4
+        if: steps.select.outputs.run == 'true'
+        with:
+          path: ${{ env.DATA_CACHE }}
+          key: candidate-08-contiguous-stage-c-ablation-${{ github.sha }}
