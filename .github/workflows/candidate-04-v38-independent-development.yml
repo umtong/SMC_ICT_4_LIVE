@@ -1,0 +1,228 @@
+name: candidate-04-v38-independent-development
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/volume_clock_imbalance_gap_compiler.py"
+      - "research/candidate-04/tests/test_volume_clock_imbalance_gap_compiler.py"
+      - ".github/workflows/candidate-04-v38-independent-development.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Restore exact completed-data BTC development observations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v27-cross-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Verify V38 causal and execution contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/volume_clock_impact_residual_compiler.py \
+            research/candidate-04/volume_clock_imbalance_gap_compiler.py \
+            research/candidate-04/run_frozen_btc_route.py \
+            research/candidate-04/filter_candidate_signals.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_volume_clock_impact_residual_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_volume_clock_imbalance_gap_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+          echo "V38_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Run full V38 sequentially and ablate first economic failure
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=(low_activity normal_basis stress_a)
+          build_starts=(2023-08-02 2023-12-16 2024-08-05)
+          build_ends=(2023-08-10 2023-12-24 2024-08-13)
+          eval_starts=(2023-08-04 2023-12-18 2024-08-07)
+          eval_ends=(2023-08-10 2023-12-24 2024-08-13)
+          root="artifacts/candidate-04-v38-independent-development"
+          mkdir -p "$root"
+          failed=""
+          failed_index=""
+
+          for i in "${!names[@]}"; do
+            name="${names[$i]}"
+            rich_dir="$(find sources -type f -path "*candidate-04-v27-cross-${name}-*/source/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+            test -n "$rich_dir"
+            output="$root/full/$name"
+            python research/candidate-04/run_frozen_btc_route.py \
+              --family v38 \
+              --route full \
+              --candidate candidate-04-v38-volume-clock-imbalance-gap \
+              --stage "development_${name}" \
+              --compiler research/candidate-04/volume_clock_imbalance_gap_compiler.py \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --execution-config research/candidate-04/nt_liquidity_config.json \
+              --rich-dir "$rich_dir" \
+              --build-start "${build_starts[$i]}" \
+              --build-end "${build_ends[$i]}" \
+              --evaluation-start "${eval_starts[$i]}" \
+              --evaluation-end "${eval_ends[$i]}" \
+              --cache ".cache/candidate-04-v38-independent/full/$name" \
+              --output "$output" \
+              --min-trades 4 \
+              --min-active-days 3 \
+              --min-win-rate 0.55 \
+              --min-geometric-daily 0.01
+            passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$output/summary.json")"
+            if [[ "$passed" != "true" ]]; then
+              failed="$name"
+              failed_index="$i"
+              break
+            fi
+          done
+
+          survivors=""
+          if [[ -z "$failed" ]]; then
+            survivors="full"
+          else
+            rich_dir="$(find sources -type f -path "*candidate-04-v27-cross-${failed}-*/source/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+            for route in continuation reversal; do
+              output="$root/ablations/$failed/$route"
+              python research/candidate-04/run_frozen_btc_route.py \
+                --family v38 \
+                --route "$route" \
+                --candidate "candidate-04-v38-${route}-only" \
+                --stage "${failed}_${route}_only_ablation" \
+                --compiler research/candidate-04/volume_clock_imbalance_gap_compiler.py \
+                --base-config research/candidate-04/inventory_transfer_config.json \
+                --impact-config research/candidate-04/impact_exhaustion_config.json \
+                --router-config research/candidate-04/auction_activity_router_config.json \
+                --execution-config research/candidate-04/nt_liquidity_config.json \
+                --rich-dir "$rich_dir" \
+                --build-start "${build_starts[$failed_index]}" \
+                --build-end "${build_ends[$failed_index]}" \
+                --evaluation-start "${eval_starts[$failed_index]}" \
+                --evaluation-end "${eval_ends[$failed_index]}" \
+                --cache ".cache/candidate-04-v38-independent/ablation/$failed/$route" \
+                --output "$output" \
+                --min-trades 4 \
+                --min-active-days 3 \
+                --min-win-rate 0.55 \
+                --min-geometric-daily 0.01
+              passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$output/summary.json")"
+              if [[ "$passed" == "true" ]]; then
+                survivors="$survivors $route"
+              fi
+            done
+            survivors="$(echo "$survivors" | xargs)"
+          fi
+          export V38_ROOT="$root" V38_FAILED="$failed" V38_SURVIVORS="$survivors"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["V38_ROOT"])
+          full_weeks = {
+              path.parent.name: json.loads(path.read_text())
+              for path in root.glob("full/*/summary.json")
+          }
+          ablations = {
+              path.parent.name: json.loads(path.read_text())
+              for path in root.glob("ablations/*/*/summary.json")
+          }
+          survivors = os.environ["V38_SURVIVORS"].split()
+          evidence = {
+              "candidate": "candidate-04-v38-volume-clock-imbalance-gap",
+              "family": "v38",
+              "compiler": "volume_clock_imbalance_gap_compiler.py",
+              "source_commit": os.environ["V38_SOURCE_COMMIT"],
+              "stage": "independent_sequential_development",
+              "weeks": full_weeks,
+              "failed_week": os.environ["V38_FAILED"] or None,
+              "controlled_ablations": ablations,
+              "survivors": survivors,
+              "validation_pending": bool(survivors),
+              "economic_path_terminal": not bool(survivors),
+              "project_target_reached": False,
+              "implementation_failure": False,
+              "decision": (
+                  "validate_surviving_routes_across_all_development_unseen_and_long_windows"
+                  if survivors
+                  else "discard_v38_no_surviving_mechanism"
+              ),
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+          }
+          (root / "research_decision.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          Path(
+              "research/candidate-04/evidence-v38-independent-development.json"
+          ).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          if survivors:
+              Path(
+                  "research/candidate-04/evidence-v38-survivor-followup.json"
+              ).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v38-independent-development-${{ github.run_id }}
+          path: artifacts/candidate-04-v38-independent-development
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Commit V38 evidence with rebase retry
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-04/evidence-v38-independent-development.json \
+            research/candidate-04/evidence-v38-survivor-followup.json \
+            2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record independent V38 development evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
