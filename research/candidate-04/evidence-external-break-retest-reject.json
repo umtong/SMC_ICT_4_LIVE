@@ -1,0 +1,56 @@
+{
+  "candidate": "candidate-04-external-break-retest-resumption-v1",
+  "decision": "REJECT_AS_STANDALONE",
+  "workflow_run_id": 31093930067,
+  "results": [
+    {
+      "week": "2023-08-04..2023-08-10",
+      "signals": 3,
+      "trades": 2,
+      "wins": 1,
+      "total_return": 0.03110770453970013,
+      "geometric_daily_growth": 0.004385827665948527
+    },
+    {
+      "week": "2024-12-27..2025-01-02",
+      "signals": 3,
+      "trades": 2,
+      "wins": 0,
+      "total_return": -0.023191202703299885,
+      "geometric_daily_growth": -0.0033464381503686136
+    }
+  ],
+  "one_variable_ablation": {
+    "removed_variable": "negative 15-minute open-interest change at the first retest",
+    "workflow_run_id": 31094261228,
+    "results": [
+      {
+        "week": "2023-08-04..2023-08-10",
+        "signals": 8,
+        "trades": 6,
+        "wins": 1,
+        "total_return": -0.05023412460389998,
+        "geometric_daily_growth": -0.007335785340064738,
+        "active_days": 6
+      },
+      {
+        "week": "2024-12-27..2025-01-02",
+        "signals": 6,
+        "trades": 5,
+        "wins": 2,
+        "total_return": 0.015155071475499993,
+        "geometric_daily_growth": 0.002151078915372917,
+        "active_days": 3
+      }
+    ]
+  },
+  "failure_structure": "The accepted-break and exact-first-retest geometry is not one economic mechanism. Contracting OI represents liquidation/reduction, while non-contracting or expanding OI represents fresh inventory. Removing the OI gate reverses the sign of performance across the two weeks rather than producing a stable improvement, so the same entry scenario cannot be applied across both inventory states.",
+  "largest_performance_factor": "Inventory mechanism at retest, interacting with the surrounding auction state. Treating OI as a global include/exclude threshold caused false generalization.",
+  "valid_components": [
+    "The parent state begins with an actually accepted causal external-pool break rather than a rolling-return sign.",
+    "The broken pool itself is the only eligible first retest level; unrelated historical pivots are excluded.",
+    "Outside acceptance and reclaim are completed-data states with aligned flow, return and basis.",
+    "The non-climactic relation prevents a larger second impact event from being mislabeled as orderly resumption."
+  ],
+  "next_use": "Retain accepted-break and exact-first-retest detection as a context primitive. Future systems must route contracting-OI liquidation retests and expanding-OI inventory retests as separate complete scenarios with independent parent-state requirements; do not combine them with OR logic."
+}
