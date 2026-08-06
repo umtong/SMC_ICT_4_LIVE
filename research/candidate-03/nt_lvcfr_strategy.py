@@ -68,6 +68,17 @@ def position_closed_duration_ns(event: Any) -> int:
     return int(value)
 
 
+VALID_ENTRY_KINDS = frozenset({"CONTINUATION", "REVERSAL"})
+
+
+def signal_entry_kind(signal: dict[str, Any]) -> str:
+    """Return a validated explicit entry mode, defaulting legacy signals."""
+    kind = str(signal.get("entry_kind", "CONTINUATION")).upper()
+    if kind not in VALID_ENTRY_KINDS:
+        raise ValueError(f"unsupported entry_kind={kind!r}")
+    return kind
+
+
 def native_equity_amount(portfolio: Any, venue: Any, currency: Any) -> float:
     """Return one currency's native Portfolio equity as a scalar.
 
@@ -475,15 +486,19 @@ class NTLvcfrStrategy(Strategy):
                     details={},
                 )
                 continue
+            kind = signal_entry_kind(signal)
+            scenario_kind = str(signal.get("scenario_kind", "LIQUIDITY_VACUUM"))
             self.current_episode = {
                 "scenario_id": signal["scenario_id"],
+                "scenario_kind": scenario_kind,
+                "entry_kind": kind,
                 "signal_time_ns": int(signal["confirm_time_ns"]),
                 "native_equity_before": self._equity(),
                 "legs": [],
             }
             self.pending = PendingEntry(
                 signal=signal,
-                kind="CONTINUATION",
+                kind=kind,
                 direction=int(signal["direction"]),
                 eligible_time_ns=int(signal["eligible_time_ns"]),
                 stop=float(signal["initial_stop"]),
@@ -491,12 +506,12 @@ class NTLvcfrStrategy(Strategy):
             )
             self._emit(
                 scenario_id=signal["scenario_id"],
-                event_type="LIQUIDITY_VACUUM_CONFIRMED",
+                event_type="AUCTION_STATE_CONFIRMED",
                 event_time_ns=int(signal["confirm_time_ns"]),
                 observed_time_ns=timestamp_ns,
-                previous_state="LIQUIDATION_IMPULSE",
-                next_state="ENTRY_BUFFER",
-                reason_code="TWO_STAGE_OI_CONTRACTION_WITH_LOW_RESIDUAL_FUTURES_FLOW",
+                previous_state="CAUSAL_EVENT_CONFIRMED",
+                next_state="ENTRY_BUFFER" if kind == "CONTINUATION" else "REVERSAL_BUFFER",
+                reason_code=scenario_kind,
                 reference_price=None,
                 details=dict(signal["details"]),
             )
