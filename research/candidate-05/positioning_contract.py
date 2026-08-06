@@ -9,15 +9,17 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import date, timedelta
+from functools import wraps
 import json
 from pathlib import Path
 import urllib.request
+from typing import Any, Callable
 
 import pandas as pd
 
 import features as _features
 
-_BASE_LOAD_RANGE = _features.load_range
+_BASE_LOAD_RANGE: Callable[..., Any] | None = None
 _METRICS_COLUMNS = (
     "sum_open_interest",
     "sum_open_interest_value",
@@ -108,6 +110,8 @@ def load_range(
     cache: Path,
     output: Path,
 ):
+    if _BASE_LOAD_RANGE is None:
+        raise RuntimeError("positioning contract was not installed")
     klines, feature_path, manifest_files, evidence = _BASE_LOAD_RANGE(
         symbol=symbol,
         start=start,
@@ -167,4 +171,12 @@ def load_range(
 
 
 def install() -> None:
-    _features.load_range = load_range
+    """Wrap the currently installed feature loader, preserving prior contracts."""
+    global _BASE_LOAD_RANGE
+    current = _features.load_range
+    if getattr(current, "_candidate05_positioning_contract", False):
+        return
+    _BASE_LOAD_RANGE = current
+    wrapped = wraps(current)(load_range)
+    setattr(wrapped, "_candidate05_positioning_contract", True)
+    _features.load_range = wrapped
