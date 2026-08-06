@@ -365,7 +365,7 @@ class ThreeRProgressProtectionMixin:
         )
         try:
             self.modify_order(
-                client_order_id=stop_order_id,
+                stop_order,
                 trigger_price=trigger_price,
             )
         except Exception as exc:
