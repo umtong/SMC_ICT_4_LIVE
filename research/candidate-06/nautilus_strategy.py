@@ -88,6 +88,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from hierarchical_multi_liquidity_engine import HierarchicalMultiLiquidityEngine
 
         return HierarchicalMultiLiquidityEngine(logic_params)
+    if name == "PERIODIC_OPENING_LIQUIDITY_RELAY":
+        from periodic_opening_engine import PeriodicOpeningLiquidityRelayEngine
+
+        return PeriodicOpeningLiquidityRelayEngine(logic_params)
     if name == "MULTI_TIMESCALE_LIQUIDITY_RELAY":
         from composite_engine import MultiTimescaleLiquidityRelayEngine
 

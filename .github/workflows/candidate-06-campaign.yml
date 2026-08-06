@@ -1,4 +1,4 @@
-name: Candidate 06 Swing and Equal-Liquidity First BTC Week
+name: Candidate 06 Periodic Opening-Imbalance First BTC Week
 
 on:
   push:
@@ -54,24 +54,24 @@ jobs:
           print(f"NAUTILUS_VERSION={actual}")
           PY
 
-      - name: Verify multi-liquidity causality
+      - name: Verify periodic-opening causality
         run: |
           set -euo pipefail
           python -m py_compile research/candidate-06/*.py
-          python research/candidate-06/test_hierarchical_flow_factor_engine.py
+          python research/candidate-06/test_periodic_opening_engine.py
           python research/candidate-06/test_hierarchical_multi_liquidity_engine.py
           python research/candidate-06/test_excursion_diagnostics.py
 
-      - name: Run controlled HML matrix through NautilusTrader
+      - name: Run controlled POIL matrix through NautilusTrader
         id: lab
         continue-on-error: true
         run: |
           set +e
-          rm -rf artifacts/candidate-06/hml-first-week
+          rm -rf artifacts/candidate-06/poil-first-week
           mkdir -p "$SMC4_RESEARCH_DATA" artifacts
-          python research/candidate-06/run_hierarchical_multi_liquidity_matrix.py \
-            --output artifacts/candidate-06/hml-first-week \
-            > artifacts/candidate-06-hml.stdout 2> artifacts/candidate-06-hml.stderr
+          python research/candidate-06/run_periodic_opening_matrix.py \
+            --output artifacts/candidate-06/poil-first-week \
+            > artifacts/candidate-06-poil.stdout 2> artifacts/candidate-06-poil.stderr
           code=$?
           echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
           exit 0
@@ -80,13 +80,13 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p artifacts/candidate-06/hml-first-week
-          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/hml-first-week/workflow_exit_code.txt
-          if [ ! -f artifacts/candidate-06/hml-first-week/summary.json ]; then
+          mkdir -p artifacts/candidate-06/poil-first-week
+          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/poil-first-week/workflow_exit_code.txt
+          if [ ! -f artifacts/candidate-06/poil-first-week/summary.json ]; then
             python - <<'PY'
           import json
           from pathlib import Path
-          root = Path("artifacts/candidate-06/hml-first-week")
+          root = Path("artifacts/candidate-06/poil-first-week")
           payload = {
               "all_three_weeks_passed": False,
               "long_evaluation_authorized": False,
@@ -96,8 +96,8 @@ jobs:
           (root / "summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
           fi
-          cp artifacts/candidate-06-hml.stdout artifacts/candidate-06/hml-first-week/workflow_stdout.txt 2>/dev/null || true
-          cp artifacts/candidate-06-hml.stderr artifacts/candidate-06/hml-first-week/workflow_stderr.txt 2>/dev/null || true
+          cp artifacts/candidate-06-poil.stdout artifacts/candidate-06/poil-first-week/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-06-poil.stderr artifacts/candidate-06/poil-first-week/workflow_stderr.txt 2>/dev/null || true
 
       - name: Commit reproducible staged evidence
         if: always() && github.event_name == 'push'
@@ -105,22 +105,22 @@ jobs:
           set -euo pipefail
           git config user.name "candidate-06-research-bot"
           git config user.email "candidate-06-research-bot@users.noreply.github.com"
-          git add -f artifacts/candidate-06/hml-first-week
-          if [ -f research/candidate-06/config.hml.locked.json ]; then
-            git add -f research/candidate-06/config.hml.locked.json
+          git add -f artifacts/candidate-06/poil-first-week
+          if [ -f research/candidate-06/config.poil.locked.json ]; then
+            git add -f research/candidate-06/config.poil.locked.json
           fi
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "Record candidate-06 HML evidence [candidate-06 evidence]"
+          git commit -m "Record candidate-06 POIL evidence [candidate-06 evidence]"
           git push origin HEAD:research/candidate-06
 
       - name: Upload staged evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-06-hml-${{ github.sha }}
-          path: artifacts/candidate-06/hml-first-week
+          name: candidate-06-poil-${{ github.sha }}
+          path: artifacts/candidate-06/poil-first-week
           include-hidden-files: true
           retention-days: 30
           if-no-files-found: error
@@ -130,7 +130,7 @@ jobs:
         run: |
           code='${{ steps.lab.outputs.exit_code }}'
           if [ -z "$code" ]; then
-            echo "HML lab did not report an exit code" >&2
+            echo "POIL lab did not report an exit code" >&2
             exit 1
           fi
           exit "$code"
