@@ -45,9 +45,13 @@ class RollingAuctionLiquidityRelayEngine(SessionEquilibriumRetestEngine):
         observation = snapshot.observation
         minimum = float(self.params.get("auction_sweep_min_atr", self.params.get("session_sweep_min_atr", 0.10))) * snapshot.atr
         result = []
-        key = self._hour_key
+        # The parent records consumption with its current-day scope.  We clear
+        # that set on each hourly roll, so this matching key means one episode
+        # per side of one completed-hour range, never repeated signals from the
+        # same liquidity event.
+        scope = self._current_day or self._hour_key
         if (
-            (key, "PREVIOUS_HOUR_HIGH", "UPPER") not in self._consumed
+            (scope, "PREVIOUS_HOUR_HIGH", "UPPER") not in self._consumed
             and self._prior_close <= self._previous_hour_high
             and observation.high >= self._previous_hour_high + minimum
         ):
@@ -61,7 +65,7 @@ class RollingAuctionLiquidityRelayEngine(SessionEquilibriumRetestEngine):
                 )
             )
         if (
-            (key, "PREVIOUS_HOUR_LOW", "LOWER") not in self._consumed
+            (scope, "PREVIOUS_HOUR_LOW", "LOWER") not in self._consumed
             and self._prior_close >= self._previous_hour_low
             and observation.low <= self._previous_hour_low - minimum
         ):
