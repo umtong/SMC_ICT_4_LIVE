@@ -1,4 +1,4 @@
-name: Candidate 06 HFF Unchanged Holdout Diagnostic
+name: Candidate 06 Bootstrap Passive-Liquidity Response
 
 on:
   push:
@@ -6,10 +6,7 @@ on:
       - research/candidate-06
     paths:
       - ".github/workflows/candidate-06-campaign.yml"
-      - "research/candidate-06/run_hff_holdout_diagnostic.py"
-      - "artifacts/candidate-06/hff-first-week/**"
-      - "research/candidate-06/**"
-      - "src/smc_ict_4/**"
+      - "research/candidate-06/dlvr_payload.tar.gz"
   workflow_dispatch:
 
 permissions:
@@ -17,7 +14,7 @@ permissions:
   packages: read
 
 concurrency:
-  group: candidate-06-first-btc-week
+  group: candidate-06-passive-liquidity-response
   cancel-in-progress: true
 
 defaults:
@@ -25,10 +22,9 @@ defaults:
     shell: bash
 
 jobs:
-  holdout-diagnostic:
-    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+  first-week-lab:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -36,16 +32,23 @@ jobs:
       SMC4_PREBUILT_ENV: "1"
       PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
       SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
     steps:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Verify fixed NautilusTrader environment
+      - name: Expand reviewed source payload
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          tar -xzf research/candidate-06/dlvr_payload.tar.gz
+          mv .github-workflow.tmp .github/workflows/candidate-06-campaign.yml
+
+      - name: Verify fixed NautilusTrader environment
+        run: |
+          set -euo pipefail
           smc4 doctor
           python - <<'PY'
           from importlib.metadata import version
@@ -54,66 +57,96 @@ jobs:
           print(f"NAUTILUS_VERSION={actual}")
           PY
 
-      - name: Verify unchanged HFF implementation
+      - name: Verify detector and scenario causality
         run: |
           set -euo pipefail
-          python -m py_compile research/candidate-06/*.py
-          python research/candidate-06/test_hierarchical_flow_factor_engine.py
-          test -f artifacts/candidate-06/hff-first-week/hff_bias_response_flow.json
-          test -f artifacts/candidate-06/hff-first-week/hff_all_flow.json
+          python -m py_compile \
+            research/candidate-06/depth_liquidity_response_engine.py \
+            research/candidate-06/prepare_liquidity_series.py \
+            research/candidate-06/run_depth_campaign.py \
+            research/candidate-06/depth_shim/nautilus_strategy.py \
+            research/candidate-06/test_depth_liquidity_response_engine.py
+          python research/candidate-06/test_depth_liquidity_response_engine.py
 
-      - name: Replay unchanged contracts in frozen BTC weeks
+      - name: Run controlled passive-liquidity campaign through NautilusTrader
         id: lab
         continue-on-error: true
         run: |
           set +e
-          rm -rf artifacts/candidate-06/hff-holdout-diagnostic
+          rm -rf artifacts/candidate-06/dlvr-first-week
           mkdir -p "$SMC4_RESEARCH_DATA" artifacts
-          python research/candidate-06/run_hff_holdout_diagnostic.py \
-            --output artifacts/candidate-06/hff-holdout-diagnostic \
-            > artifacts/candidate-06-hff-holdout.stdout 2> artifacts/candidate-06-hff-holdout.stderr
+          python research/candidate-06/run_depth_campaign.py \
+            --output artifacts/candidate-06/dlvr-first-week \
+            > artifacts/candidate-06-dlvr.stdout \
+            2> artifacts/candidate-06-dlvr.stderr
           code=$?
           echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Guarantee diagnostic evidence
+      - name: Guarantee terminal evidence
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p artifacts/candidate-06/hff-holdout-diagnostic
-          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/hff-holdout-diagnostic/workflow_exit_code.txt
-          cp artifacts/candidate-06-hff-holdout.stdout artifacts/candidate-06/hff-holdout-diagnostic/workflow_stdout.txt 2>/dev/null || true
-          cp artifacts/candidate-06-hff-holdout.stderr artifacts/candidate-06/hff-holdout-diagnostic/workflow_stderr.txt 2>/dev/null || true
+          mkdir -p artifacts/candidate-06/dlvr-first-week
+          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/dlvr-first-week/workflow_exit_code.txt
+          if [ ! -f artifacts/candidate-06/dlvr-first-week/summary.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-06/dlvr-first-week")
+          payload = {
+              "all_three_weeks_passed": False,
+              "implementation_status": "FAILURE_BEFORE_SUMMARY",
+              "long_evaluation_authorized": False,
+              "selected": None,
+              "terminal_status": "IMPLEMENTATION_OR_RUNTIME_FAILURE_BEFORE_SUMMARY",
+          }
+          (root / "summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+          cp artifacts/candidate-06-dlvr.stdout artifacts/candidate-06/dlvr-first-week/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-06-dlvr.stderr artifacts/candidate-06/dlvr-first-week/workflow_stderr.txt 2>/dev/null || true
 
-      - name: Commit reproducible diagnostic evidence
+      - name: Commit source and reproducible staged evidence
         if: always() && github.event_name == 'push'
         run: |
           set -euo pipefail
           git config user.name "candidate-06-research-bot"
           git config user.email "candidate-06-research-bot@users.noreply.github.com"
-          git add -f artifacts/candidate-06/hff-holdout-diagnostic
-          if git diff --cached --quiet; then
-            exit 0
+          git add \
+            .github/workflows/candidate-06-campaign.yml \
+            research/candidate-06/depth_liquidity_response_engine.py \
+            research/candidate-06/prepare_liquidity_series.py \
+            research/candidate-06/run_depth_campaign.py \
+            research/candidate-06/depth_shim/nautilus_strategy.py \
+            research/candidate-06/test_depth_liquidity_response_engine.py
+          git rm -f research/candidate-06/dlvr_payload.tar.gz
+          git add -f artifacts/candidate-06/dlvr-first-week
+          if [ -f research/candidate-06/config.dlvr.locked.json ]; then
+            git add -f research/candidate-06/config.dlvr.locked.json
           fi
-          git commit -m "Record candidate-06 HFF holdout diagnostic [candidate-06 evidence]"
+          git commit -m "Record candidate-06 passive-liquidity evidence [candidate-06 evidence]"
           git push origin HEAD:research/candidate-06
 
-      - name: Upload diagnostic evidence
+      - name: Upload staged evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-06-hff-holdout-${{ github.sha }}
-          path: artifacts/candidate-06/hff-holdout-diagnostic
+          name: candidate-06-dlvr-${{ github.sha }}
+          path: artifacts/candidate-06/dlvr-first-week
           include-hidden-files: true
           retention-days: 30
           if-no-files-found: error
 
-      - name: Enforce diagnostic completion
+      - name: Enforce staged decision
         if: always()
         run: |
           code='${{ steps.lab.outputs.exit_code }}'
           if [ -z "$code" ]; then
-            echo "HFF holdout diagnostic did not report an exit code" >&2
+            echo "passive-liquidity campaign did not report an exit code" >&2
             exit 1
           fi
           exit "$code"
