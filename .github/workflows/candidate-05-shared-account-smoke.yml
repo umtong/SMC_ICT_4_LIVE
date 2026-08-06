@@ -1,0 +1,197 @@
+name: candidate-05-shared-account-smoke
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/shared_account_backtest.py"
+      - "research/candidate-05/global_entry_slot_v3.py"
+      - "research/candidate-05/global_entry_slot_v4.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v4.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v5.py"
+      - "research/candidate-05/shared_account_strategy_variants_v2.py"
+      - "research/candidate-05/tests/test_global_entry_slot*.py"
+      - "research/candidate-05/tests/test_shared_account_backtest_contract.py"
+      - ".github/workflows/candidate-05-shared-account-smoke.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-shared-account-smoke
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  runtime-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-shared-account-smoke
+      EVIDENCE: research/candidate-05/evidence/shared_account_smoke.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify static and unit contracts
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT" research/candidate-05/evidence
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/verification_status.txt"
+          echo "valid=$([[ $status -eq 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Create non-promotional v26 implementation probe evidence
+        if: steps.verify.outputs.valid == 'true'
+        shell: bash
+        run: |
+          cat > "$ROOT/smoke_winner.json" <<'JSON'
+          {
+            "schema": "candidate-05-shared-smoke-winner-v1",
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_v26:ScenarioValidEntryStrategy",
+            "scope": "implementation smoke only; not a performance selection"
+          }
+          JSON
+
+      - name: Run one-account four-symbol Nautilus smoke on the weak week
+        id: smoke
+        if: steps.verify.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python research/candidate-05/shared_account_backtest.py \
+            --winner-evidence "$ROOT/smoke_winner.json" \
+            --build-start 2023-09-06 \
+            --build-end 2023-09-14 \
+            --evaluation-start 2023-09-08 \
+            --evaluation-end 2023-09-14 \
+            --cache .cache/candidate-05-shared-account-smoke \
+            --output "$ROOT/run" \
+            2>&1 | tee "$ROOT/smoke_console.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/smoke_status.txt"
+          exit "$status"
+
+      - name: Classify implementation independently of performance
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-shared-account-smoke")
+          verification = (root / "verification_status.txt").read_text(encoding="utf-8").strip() if (root / "verification_status.txt").exists() else "missing"
+          smoke_status = (root / "smoke_status.txt").read_text(encoding="utf-8").strip() if (root / "smoke_status.txt").exists() else "not_run"
+          verification_tail = (root / "verification.log").read_text(encoding="utf-8", errors="replace").splitlines()[-260:] if (root / "verification.log").exists() else []
+          smoke_tail = (root / "smoke_console.log").read_text(encoding="utf-8", errors="replace").splitlines()[-360:] if (root / "smoke_console.log").exists() else []
+          metrics_path = root / "run/metrics.json"
+
+          if verification != "exit_code=0":
+              result = {
+                  "schema": "candidate-05-shared-account-smoke-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_SHARED_STATIC_OR_CONTRACT",
+                  "implementation_pass": False,
+                  "verification_status": verification,
+                  "verification_log_tail": verification_tail,
+                  "smoke_status": smoke_status,
+              }
+          elif not metrics_path.exists():
+              result = {
+                  "schema": "candidate-05-shared-account-smoke-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_SHARED_RUNTIME_OR_EVIDENCE",
+                  "implementation_pass": False,
+                  "verification_status": verification,
+                  "smoke_status": smoke_status,
+                  "smoke_log_tail": smoke_tail,
+              }
+          else:
+              metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+              integrity = bool(metrics.get("integrity_pass", False))
+              result = {
+                  "schema": "candidate-05-shared-account-smoke-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": (
+                      "SHARED_ACCOUNT_IMPLEMENTATION_SMOKE_PASSED"
+                      if integrity
+                      else "IMPLEMENTATION_ERROR_SHARED_INTEGRITY"
+                  ),
+                  "implementation_pass": integrity,
+                  "verification_status": verification,
+                  "smoke_status": smoke_status,
+                  "performance_is_not_a_smoke_gate": True,
+                  "metrics": {
+                      "engine": metrics.get("engine"),
+                      "strategy": metrics.get("strategy"),
+                      "evaluation_start": metrics.get("evaluation_start"),
+                      "evaluation_end": metrics.get("evaluation_end"),
+                      "starting_nav": metrics.get("starting_nav"),
+                      "ending_nav": metrics.get("ending_nav"),
+                      "total_return": metrics.get("total_return"),
+                      "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                      "max_drawdown": metrics.get("max_drawdown"),
+                      "trades": metrics.get("trades"),
+                      "wins": metrics.get("wins"),
+                      "losses": metrics.get("losses"),
+                      "active_days": metrics.get("active_days"),
+                      "integrity_checks": metrics.get("integrity_checks"),
+                      "global_slot_audit": metrics.get("global_slot_audit"),
+                      "symbol_metrics": metrics.get("symbol_metrics"),
+                  },
+              }
+          Path("research/candidate-05/evidence/shared_account_smoke.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          test -s "$EVIDENCE"
+
+      - name: Persist smoke evidence without downstream dependency
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$EVIDENCE"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-05: record shared-account implementation smoke"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-05
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-shared-account-smoke-${{ github.sha }}
+          path: artifacts/candidate-05-shared-account-smoke/**
+          if-no-files-found: warn
+          retention-days: 90
