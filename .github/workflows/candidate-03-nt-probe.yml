@@ -1,0 +1,100 @@
+name: candidate-03-nt-probe
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - ".github/workflows/candidate-03-nt-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify prebuilt runtime and inspect NautilusTrader 1.230.0 APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/nt-probe
+          smc4 doctor
+          python - <<'PY' | tee artifacts/nt-probe/api.txt
+          import inspect
+          import importlib
+          import nautilus_trader
+
+          print('nautilus_version', nautilus_trader.__version__)
+          targets = [
+              ('nautilus_trader.backtest.node', ['BacktestDataConfig','BacktestEngineConfig','BacktestNode','BacktestRunConfig','BacktestVenueConfig']),
+              ('nautilus_trader.config', ['ImportableStrategyConfig','StrategyConfig']),
+              ('nautilus_trader.persistence.catalog', ['ParquetDataCatalog']),
+              ('nautilus_trader.model.data', ['TradeTick','QuoteTick','Bar']),
+              ('nautilus_trader.model.instruments', ['CryptoPerpetual','CurrencyPair']),
+              ('nautilus_trader.model.orders', ['MarketOrder','StopMarketOrder','LimitOrder']),
+              ('nautilus_trader.model.events', ['OrderFilled','OrderRejected','PositionOpened','PositionClosed']),
+              ('nautilus_trader.trading.strategy', ['Strategy']),
+          ]
+          for module_name, names in targets:
+              module = importlib.import_module(module_name)
+              print('\nMODULE', module_name)
+              print('custom_names', [n for n in dir(module) if 'custom' in n.lower() or 'data_type' in n.lower() or 'register' in n.lower()])
+              for name in names:
+                  obj = getattr(module, name, None)
+                  print('\nOBJECT', name, obj)
+                  if obj is None:
+                      continue
+                  try:
+                      print('signature', inspect.signature(obj))
+                  except Exception as exc:
+                      print('signature_error', type(exc).__name__, exc)
+                  doc = inspect.getdoc(obj)
+                  if doc:
+                      print('doc', doc[:4000])
+
+          for module_name in [
+              'nautilus_trader.model',
+              'nautilus_trader.model.data',
+              'nautilus_trader.serialization',
+              'nautilus_trader.persistence',
+              'nautilus_trader.core.data',
+          ]:
+              module = importlib.import_module(module_name)
+              print('\nDISCOVER', module_name)
+              print([n for n in dir(module) if any(k in n.lower() for k in ('custom','register','data_type','datatype'))])
+
+          from nautilus_trader.persistence.catalog import ParquetDataCatalog
+          print('\nCATALOG_METHODS')
+          for name in dir(ParquetDataCatalog):
+              if any(k in name.lower() for k in ('write','query','custom','instrument','trade','quote')):
+                  obj = getattr(ParquetDataCatalog, name)
+                  try:
+                      sig = inspect.signature(obj)
+                  except Exception:
+                      sig = '<unavailable>'
+                  print(name, sig)
+
+          from nautilus_trader.trading.strategy import Strategy
+          print('\nSTRATEGY_METHODS')
+          for name in dir(Strategy):
+              if any(k in name.lower() for k in ('subscribe','submit','close','cancel','portfolio','account','data')):
+                  obj = getattr(Strategy, name)
+                  try:
+                      sig = inspect.signature(obj)
+                  except Exception:
+                      sig = '<unavailable>'
+                  print(name, sig)
+          PY
+      - name: Preserve API probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-nt-probe-${{ github.sha }}
+          path: artifacts/nt-probe
+          if-no-files-found: error
+          retention-days: 1
