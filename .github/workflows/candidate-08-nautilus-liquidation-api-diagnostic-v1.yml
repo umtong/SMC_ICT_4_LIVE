@@ -19,12 +19,12 @@ jobs:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
     env:
-      OUT: research/candidate-08/evidence/aggtrade-acceptance-nautilus/liquidation-api-diagnostic-v1
+      OUT: research/candidate-08/evidence/aggtrade-acceptance-nautilus/liquidation-api-diagnostic-v2
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Inspect pinned Cython and PyO3 surfaces
+      - name: Inspect pinned PyO3 engine integration surface
         shell: bash
         run: |
           set -euo pipefail
@@ -35,7 +35,6 @@ jobs:
           import inspect, json, os
           from pathlib import Path
           import nautilus_trader
-          from nautilus_trader.backtest.engine import BacktestEngine
           from nautilus_trader.core import nautilus_pyo3
 
           def describe(value):
@@ -50,20 +49,26 @@ jobs:
                   result["signature_error"] = repr(exc)
               return result
 
-          pyo3_names = [
-              name for name in dir(nautilus_pyo3)
-              if any(token in name.lower() for token in ("backtest", "simulated", "liquidat"))
+          engine_type = nautilus_pyo3.BacktestEngine
+          relevant = [
+              name for name in dir(engine_type)
+              if any(token in name.lower() for token in (
+                  "venue", "instrument", "data", "strategy", "actor", "run", "result",
+                  "cache", "portfolio", "sort", "report", "dispose", "clear",
+              ))
           ]
+          descriptions = {}
+          for name in relevant:
+              try:
+                  descriptions[name] = describe(getattr(engine_type, name))
+              except Exception as exc:
+                  descriptions[name] = {"access_error": repr(exc)}
           payload = {
               "nautilus_version": getattr(nautilus_trader, "__version__", None),
-              "cython": {
-                  "BacktestEngine": describe(BacktestEngine),
-                  "BacktestEngine.add_venue": describe(BacktestEngine.add_venue),
-              },
-              "pyo3_matching_names": pyo3_names,
-              "pyo3_descriptions": {
-                  name: describe(getattr(nautilus_pyo3, name)) for name in pyo3_names
-              },
+              "engine": describe(engine_type),
+              "engine_relevant_names": relevant,
+              "engine_methods": descriptions,
+              "venue_config": describe(nautilus_pyo3.BacktestVenueConfig),
           }
           out = Path(os.environ["OUT"])
           (out / "diagnostic.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -78,7 +83,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           rm -f research/candidate-08/.run-nautilus-liquidation-api-diagnostic-v1
           git add -A -- "$OUT" research/candidate-08/.run-nautilus-liquidation-api-diagnostic-v1
-          git commit -m "candidate-08: record pinned liquidation API surface [skip ci]"
+          git commit -m "candidate-08: record PyO3 engine integration surface [skip ci]"
           for attempt in 1 2 3 4; do
             git fetch origin research/candidate-08
             if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
