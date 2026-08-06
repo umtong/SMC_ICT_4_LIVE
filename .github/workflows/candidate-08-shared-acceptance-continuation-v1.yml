@@ -1,0 +1,520 @@
+name: candidate-08-shared-acceptance-continuation-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-shared-acceptance-continuation-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  continue-selected-path:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/shared-acceptance-continuation-v1
+      DATA_CACHE: /tmp/candidate-08-acceptance-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for routed first-week branch and select eligible variant
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          original=research/candidate-08/evidence/shared-acceptance-routing-v1/route.txt
+          for attempt in $(seq 1 240); do
+            git fetch origin research/candidate-08
+            git reset --hard origin/research/candidate-08
+            [[ -f "$original" ]] && break
+            sleep 15
+          done
+          original_route=$(cat "$original" 2>/dev/null || printf 'NO_ROUTE')
+          variant=NONE
+          first_dir=
+          config_path=
+          runner_kind=
+          downstream=
+
+          if [[ "$original_route" == RUN_REMAINING_FIXED_WEEKS ]]; then
+            variant=BASE_V1
+            first_dir=research/candidate-08/evidence/shared-acceptance-first-v1
+            config_path=research/candidate-08/config_aggtrade_acceptance_shared.json
+            runner_kind=BASE
+            downstream=SCREEN
+          elif [[ "$original_route" == ONE_CORE_VARIABLE_ABLATION ]]; then
+            route_file=research/candidate-08/evidence/shared-acceptance-no-contraction-ablation-v2/route.txt
+            for attempt in $(seq 1 240); do
+              git fetch origin research/candidate-08
+              git reset --hard origin/research/candidate-08
+              [[ -f "$route_file" ]] && break
+              sleep 15
+            done
+            ablation_route=$(cat "$route_file" 2>/dev/null || printf 'NO_ROUTE')
+            if [[ "$ablation_route" == PROMOTE_ABLATION_TO_REMAINING_WEEKS ]]; then
+              variant=NO_CONTRACTION_V2
+              first_dir=research/candidate-08/evidence/shared-acceptance-no-contraction-ablation-v2/run
+              config_path=research/candidate-08/evidence/shared-acceptance-no-contraction-ablation-v2/config.json
+              runner_kind=BASE_ABLATION
+              downstream=SCREEN
+            else
+              downstream=DISCARD
+            fi
+          elif [[ "$original_route" == SAME_WEEK_IMPLEMENTATION_FIX ]]; then
+            route_file=research/candidate-08/evidence/shared-acceptance-implementation-v3/route.txt
+            for attempt in $(seq 1 240); do
+              git fetch origin research/candidate-08
+              git reset --hard origin/research/candidate-08
+              [[ -f "$route_file" ]] && break
+              sleep 15
+            done
+            implementation_route=$(cat "$route_file" 2>/dev/null || printf 'NO_ROUTE')
+            if [[ "$implementation_route" == PROMOTE_IMPLEMENTATION_V3 ]]; then
+              variant=IMPLEMENTATION_V3
+              first_dir=research/candidate-08/evidence/shared-acceptance-implementation-v3/run
+              config_path=research/candidate-08/config_aggtrade_acceptance_shared.json
+              runner_kind=IMPLEMENTATION
+              downstream=SCREEN
+            elif [[ "$implementation_route" == LOGIC_FAILURE_AFTER_IMPLEMENTATION_FIX ]]; then
+              variant=IMPLEMENTATION_V3_PENDING_ABLATION
+              first_dir=research/candidate-08/evidence/shared-acceptance-implementation-v3/run
+              config_path=research/candidate-08/config_aggtrade_acceptance_shared.json
+              runner_kind=IMPLEMENTATION_ABLATION
+              downstream=FIRST_ABLATION
+            else
+              downstream=DISCARD
+            fi
+          fi
+
+          mkdir -p "$OUTPUT_DIR"
+          cat > "$OUTPUT_DIR/selection.env" <<EOF
+          ORIGINAL_ROUTE=$original_route
+          VARIANT=$variant
+          FIRST_DIR=$first_dir
+          CONFIG_PATH=$config_path
+          RUNNER_KIND=$runner_kind
+          DOWNSTREAM=$downstream
+          EOF
+          printf 'variant=%s\n' "$variant" >> "$GITHUB_OUTPUT"
+          printf 'first_dir=%s\n' "$first_dir" >> "$GITHUB_OUTPUT"
+          printf 'config_path=%s\n' "$config_path" >> "$GITHUB_OUTPUT"
+          printf 'runner_kind=%s\n' "$runner_kind" >> "$GITHUB_OUTPUT"
+          printf 'downstream=%s\n' "$downstream" >> "$GITHUB_OUTPUT"
+          cat "$OUTPUT_DIR/selection.env"
+
+      - name: Restore accumulated verified data cache
+        if: steps.select.outputs.downstream == 'SCREEN' || steps.select.outputs.downstream == 'FIRST_ABLATION'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-shared-acceptance-continuation-v1-${{ github.sha }}
+          restore-keys: |
+            candidate-08-shared-acceptance-screen-v2-
+            candidate-08-shared-acceptance-implementation-v3-
+            candidate-08-shared-acceptance-ablation-v2-
+            candidate-08-shared-acceptance-first-v1-
+            candidate-08-aggtrade-acceptance-
+
+      - name: Run the one allowed ablation after a corrected implementation logic failure
+        if: steps.select.outputs.downstream == 'FIRST_ABLATION'
+        id: corrected_ablation
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          {
+            set -euo pipefail
+            smc4 doctor
+            impl=research/candidate-08/evidence/shared-acceptance-implementation-v3
+            mkdir -p "$OUTPUT_DIR/implementation-ablation-first"
+            python - <<'PY'
+            import json
+            from pathlib import Path
+            base = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_shared.json").read_text())
+            base["candidate"] = "candidate-08-aggtrade-acceptance-implementation-v3-no-contraction"
+            base["ablation"] = {
+                "removed_variable": "RETEST_ACTIVITY_AND_IMBALANCE_CONTRACTION",
+                "implementation_base": "shared-acceptance-implementation-v3",
+                "same_week": True,
+            }
+            root = Path("research/candidate-08/evidence/shared-acceptance-continuation-v1/implementation-ablation-first")
+            (root / "config.json").write_text(json.dumps(base, indent=2, sort_keys=True) + "\n")
+            (root / "run_impl_ablation.py").write_text('''from __future__ import annotations
+import run_first_v3 as base_runner
+from aggtrade_acceptance_no_contraction_ablation import build_acceptance_signals_no_contraction
+base_runner.build_acceptance_signals = build_acceptance_signals_no_contraction
+if __name__ == "__main__":
+    raise SystemExit(base_runner.main())
+''')
+            PY
+            PYTHONPATH="research/candidate-08:$impl:$OUTPUT_DIR/implementation-ablation-first" \
+              python "$OUTPUT_DIR/implementation-ablation-first/run_impl_ablation.py" \
+              --config "$OUTPUT_DIR/implementation-ablation-first/config.json" \
+              --output "$OUTPUT_DIR/implementation-ablation-first/run" \
+              --data-cache "$DATA_CACHE"
+            python - <<'PY'
+            import json
+            from pathlib import Path
+            root = Path("research/candidate-08/evidence/shared-acceptance-continuation-v1/implementation-ablation-first")
+            suite = json.loads((root / "run/suite_metrics.json").read_text())
+            metrics = json.loads((root / "run/metrics.json").read_text())
+            promoted = bool(suite.get("gate_passed"))
+            result = {
+                "removed_variable": "RETEST_ACTIVITY_AND_IMBALANCE_CONTRACTION",
+                "gate_passed": promoted,
+                "signals": metrics.get("signals_in_window"),
+                "closed_trades": metrics.get("position_metrics", {}).get("closed_trades"),
+                "wins": metrics.get("position_metrics", {}).get("wins"),
+                "total_return": metrics.get("total_return"),
+                "daily_geometric_growth": metrics.get("daily_geometric_growth"),
+                "decision": "PROMOTE" if promoted else "DISCARD",
+            }
+            (root / "decision.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+            Path("/tmp/corrected_ablation_promoted").write_text("true\n" if promoted else "false\n")
+            print(json.dumps(result, indent=2, sort_keys=True))
+            PY
+          } 2>&1 | tee "$OUTPUT_DIR/implementation-ablation-first/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          promoted=$(cat /tmp/corrected_ablation_promoted 2>/dev/null || printf 'false')
+          printf 'promoted=%s\n' "$promoted" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$status" > "$OUTPUT_DIR/implementation-ablation-first/runner_exit_status.txt"
+
+      - name: Materialize selected three-week runner plan
+        id: plan
+        if: steps.select.outputs.downstream == 'SCREEN' || steps.corrected_ablation.outputs.promoted == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          variant='${{ steps.select.outputs.variant }}'
+          first_dir='${{ steps.select.outputs.first_dir }}'
+          config_path='${{ steps.select.outputs.config_path }}'
+          runner_kind='${{ steps.select.outputs.runner_kind }}'
+          if [[ '${{ steps.corrected_ablation.outputs.promoted }}' == true ]]; then
+            variant=IMPLEMENTATION_V3_NO_CONTRACTION
+            first_dir="$OUTPUT_DIR/implementation-ablation-first/run"
+            config_path="$OUTPUT_DIR/implementation-ablation-first/config.json"
+            runner_kind=IMPLEMENTATION_ABLATION
+          fi
+          printf 'variant=%s\n' "$variant" >> "$GITHUB_OUTPUT"
+          printf 'first_dir=%s\n' "$first_dir" >> "$GITHUB_OUTPUT"
+          printf 'config_path=%s\n' "$config_path" >> "$GITHUB_OUTPUT"
+          printf 'runner_kind=%s\n' "$runner_kind" >> "$GITHUB_OUTPUT"
+          mkdir -p "$OUTPUT_DIR/screen/screen-01"
+          cp -a "$first_dir"/. "$OUTPUT_DIR/screen/screen-01/"
+          python - <<PY
+          import json
+          from pathlib import Path
+          source = Path("$config_path")
+          base = json.loads(source.read_text())
+          root = Path("$OUTPUT_DIR/screen")
+          for window in base["suites"]["screen"][1:]:
+              scoped = json.loads(json.dumps(base))
+              scoped["suites"]["first"] = [window]
+              (root / f"config-{window['name']}.json").write_text(
+                  json.dumps(scoped, indent=2, sort_keys=True) + "\n"
+              )
+          (Path("$OUTPUT_DIR") / "selected_variant.json").write_text(
+              json.dumps({
+                  "variant": "$variant",
+                  "runner_kind": "$runner_kind",
+                  "first_dir": "$first_dir",
+                  "config_path": "$config_path",
+              }, indent=2) + "\n"
+          )
+          PY
+
+      - name: Run remaining fixed weeks with selected variant
+        if: steps.plan.outputs.variant != ''
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          {
+            set -euo pipefail
+            smc4 doctor
+            kind='${{ steps.plan.outputs.runner_kind }}'
+            impl=research/candidate-08/evidence/shared-acceptance-implementation-v3
+            run_window() {
+              local name=$1
+              local config="$OUTPUT_DIR/screen/config-$name.json"
+              local destination="$OUTPUT_DIR/screen/$name"
+              case "$kind" in
+                BASE)
+                  python research/candidate-08/run_shared_acceptance_first_v1.py \
+                    --config "$config" --output "$destination" --data-cache "$DATA_CACHE"
+                  ;;
+                BASE_ABLATION)
+                  python research/candidate-08/run_shared_acceptance_no_contraction_ablation.py \
+                    --config "$config" --output "$destination" --data-cache "$DATA_CACHE"
+                  ;;
+                IMPLEMENTATION)
+                  PYTHONPATH="research/candidate-08:$impl" python "$impl/run_first_v3.py" \
+                    --config "$config" --output "$destination" --data-cache "$DATA_CACHE"
+                  ;;
+                IMPLEMENTATION_ABLATION)
+                  wrapper="$OUTPUT_DIR/implementation-ablation-first/run_impl_ablation.py"
+                  PYTHONPATH="research/candidate-08:$impl:$OUTPUT_DIR/implementation-ablation-first" python "$wrapper" \
+                    --config "$config" --output "$destination" --data-cache "$DATA_CACHE"
+                  ;;
+                *)
+                  echo "unsupported runner kind $kind" >&2
+                  exit 2
+                  ;;
+              esac
+            }
+            run_window screen-02
+            run_window screen-03
+            python - <<'PY'
+            import json
+            from math import exp, log
+            from pathlib import Path
+            import re
+            import pandas as pd
+
+            root = Path("research/candidate-08/evidence/shared-acceptance-continuation-v1/screen")
+            names = ["screen-01", "screen-02", "screen-03"]
+            metrics = [json.loads((root / name / "metrics.json").read_text()) for name in names]
+            days = sum(float(item["calendar_days"]) for item in metrics)
+            combined = exp(sum(log(float(item["nav_multiple"])) for item in metrics) / days) - 1.0
+            closed = [int(item["position_metrics"]["closed_trades"]) for item in metrics]
+            wins = sum(int(item["position_metrics"]["wins"]) for item in metrics)
+            total_closed = sum(closed)
+            positive_share = wins / total_closed if total_closed else 0.0
+
+            def number(value):
+                if isinstance(value, (int, float)):
+                    return float(value)
+                match = re.search(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", str(value).replace(",", ""))
+                return float(match.group()) if match else None
+
+            positive_pnls = []
+            for name in names:
+                path = root / name / "positions.csv"
+                if not path.exists():
+                    continue
+                frame = pd.read_csv(path)
+                columns = [c for c in frame.columns if c.lower() in {"realized_pnl", "pnl", "realized_return"}]
+                if columns:
+                    for raw in frame[columns[0]].tolist():
+                        value = number(raw)
+                        if value is not None and value > 0:
+                            positive_pnls.append(value)
+            total_positive = sum(positive_pnls)
+            max_positive_share = max(positive_pnls) / total_positive if total_positive else 0.0
+            checks = {
+                "minimum_closed_trades_each_week": all(value >= 3 for value in closed),
+                "all_windows_cost_after_positive": all(float(item["total_return"]) > 0 for item in metrics),
+                "minimum_positive_trade_share": positive_share >= 0.45,
+                "maximum_single_positive_pnl_share": max_positive_share <= 0.50,
+                "combined_daily_geometric_growth": combined >= 0.01,
+                "no_execution_failures": all(int(item["execution_failures"]) == 0 for item in metrics),
+                "no_residual_exposure": all(
+                    int(item["open_positions_after_run"]) == 0 and int(item["open_orders_after_run"]) == 0
+                    for item in metrics
+                ),
+                "complete_multiasset_timestamps": all(int(item["incomplete_multiasset_timestamps"]) == 0 for item in metrics),
+                "no_unexpected_or_liquidation_closes": all(int(item["unexpected_or_liquidation_closes"]) == 0 for item in metrics),
+            }
+            selected = json.loads(Path("research/candidate-08/evidence/shared-acceptance-continuation-v1/selected_variant.json").read_text())
+            summary = {
+                "candidate": "candidate-08-aggtrade-acceptance-nautilus",
+                "variant": selected["variant"],
+                "runner_kind": selected["runner_kind"],
+                "engine": "NautilusTrader",
+                "suite": "screen",
+                "combined_calendar_days": days,
+                "combined_daily_geometric_growth": combined,
+                "goal_daily_geometric_growth": 0.01,
+                "goal_met": combined >= 0.01,
+                "closed_trades_by_window": closed,
+                "total_closed_trades": total_closed,
+                "positive_trade_share": positive_share,
+                "maximum_single_positive_pnl_share": max_positive_share,
+                "gate_checks": checks,
+                "gate_passed": all(checks.values()),
+                "window_results": [
+                    {
+                        "name": item["window"]["name"],
+                        "signals": item["signals_in_window"],
+                        "closed_trades": item["position_metrics"]["closed_trades"],
+                        "wins": item["position_metrics"]["wins"],
+                        "win_rate": item["position_metrics"]["win_rate"],
+                        "final_nav_usdt": item["final_nav_usdt"],
+                        "total_return": item["total_return"],
+                        "daily_geometric_growth": item["daily_geometric_growth"],
+                        "maximum_realized_equity_drawdown": item["maximum_realized_equity_drawdown"],
+                    }
+                    for item in metrics
+                ],
+            }
+            (root / "suite_metrics.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+            Path("/tmp/screen_gate").write_text("true\n" if summary["gate_passed"] else "false\n")
+            print(json.dumps(summary, indent=2, sort_keys=True))
+            PY
+          } 2>&1 | tee "$OUTPUT_DIR/screen/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT_DIR/screen/runner_exit_status.txt"
+
+      - name: Run the one screen-level ablation when an unabated variant fails
+        if: steps.plan.outputs.variant != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          gate=$(cat /tmp/screen_gate 2>/dev/null || printf 'false')
+          variant='${{ steps.plan.outputs.variant }}'
+          kind='${{ steps.plan.outputs.runner_kind }}'
+          if [[ "$gate" == true ]]; then
+            printf 'SCREEN_GATE_PASSED\n' > "$OUTPUT_DIR/final_route.txt"
+            exit 0
+          fi
+          if [[ "$kind" == BASE_ABLATION || "$kind" == IMPLEMENTATION_ABLATION ]]; then
+            printf 'DISCARD_ACCEPTANCE_FAMILY\n' > "$OUTPUT_DIR/final_route.txt"
+            exit 0
+          fi
+
+          # Retest contraction is the only permitted screen-level ablation.
+          mkdir -p "$OUTPUT_DIR/screen-ablation"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          base = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_shared.json").read_text())
+          base["candidate"] = "candidate-08-aggtrade-acceptance-screen-no-contraction-ablation"
+          base["ablation"] = {
+              "removed_variable": "RETEST_ACTIVITY_AND_IMBALANCE_CONTRACTION",
+              "trigger": "clean three-week screen logical failure",
+              "only_ablation": True,
+          }
+          root = Path("research/candidate-08/evidence/shared-acceptance-continuation-v1/screen-ablation")
+          for window in base["suites"]["screen"]:
+              scoped = json.loads(json.dumps(base))
+              scoped["suites"]["first"] = [window]
+              (root / f"config-{window['name']}.json").write_text(json.dumps(scoped, indent=2, sort_keys=True) + "\n")
+          PY
+          impl=research/candidate-08/evidence/shared-acceptance-implementation-v3
+          if [[ "$kind" == IMPLEMENTATION ]]; then
+            cat > "$OUTPUT_DIR/screen-ablation/run_impl_ablation.py" <<'PY'
+          from __future__ import annotations
+          import run_first_v3 as base_runner
+          from aggtrade_acceptance_no_contraction_ablation import build_acceptance_signals_no_contraction
+          base_runner.build_acceptance_signals = build_acceptance_signals_no_contraction
+          if __name__ == "__main__":
+              raise SystemExit(base_runner.main())
+          PY
+          fi
+          for name in screen-01 screen-02 screen-03; do
+            config="$OUTPUT_DIR/screen-ablation/config-$name.json"
+            destination="$OUTPUT_DIR/screen-ablation/$name"
+            if [[ "$kind" == BASE ]]; then
+              python research/candidate-08/run_shared_acceptance_no_contraction_ablation.py \
+                --config "$config" --output "$destination" --data-cache "$DATA_CACHE"
+            else
+              PYTHONPATH="research/candidate-08:$impl:$OUTPUT_DIR/screen-ablation" \
+                python "$OUTPUT_DIR/screen-ablation/run_impl_ablation.py" \
+                --config "$config" --output "$destination" --data-cache "$DATA_CACHE"
+            fi
+          done
+          python - <<'PY'
+          import json
+          from math import exp, log
+          from pathlib import Path
+          root = Path("research/candidate-08/evidence/shared-acceptance-continuation-v1/screen-ablation")
+          names = ["screen-01", "screen-02", "screen-03"]
+          metrics = [json.loads((root / name / "metrics.json").read_text()) for name in names]
+          days = sum(float(item["calendar_days"]) for item in metrics)
+          combined = exp(sum(log(float(item["nav_multiple"])) for item in metrics) / days) - 1.0
+          closed = [int(item["position_metrics"]["closed_trades"]) for item in metrics]
+          wins = sum(int(item["position_metrics"]["wins"]) for item in metrics)
+          total_closed = sum(closed)
+          checks = {
+              "minimum_closed_trades_each_week": all(value >= 3 for value in closed),
+              "all_windows_cost_after_positive": all(float(item["total_return"]) > 0 for item in metrics),
+              "minimum_positive_trade_share": (wins / total_closed if total_closed else 0.0) >= 0.45,
+              "combined_daily_geometric_growth": combined >= 0.01,
+              "no_execution_failures": all(int(item["execution_failures"]) == 0 for item in metrics),
+              "no_residual_exposure": all(
+                  int(item["open_positions_after_run"]) == 0 and int(item["open_orders_after_run"]) == 0
+                  for item in metrics
+              ),
+              "complete_multiasset_timestamps": all(int(item["incomplete_multiasset_timestamps"]) == 0 for item in metrics),
+          }
+          summary = {
+              "variant": "NO_CONTRACTION_SCREEN_ABLATION",
+              "removed_variable": "RETEST_ACTIVITY_AND_IMBALANCE_CONTRACTION",
+              "combined_calendar_days": days,
+              "combined_daily_geometric_growth": combined,
+              "closed_trades_by_window": closed,
+              "wins": wins,
+              "gate_checks": checks,
+              "gate_passed": all(checks.values()),
+              "decision": "SCREEN_GATE_PASSED_AFTER_ABLATION" if all(checks.values()) else "DISCARD_ACCEPTANCE_FAMILY",
+              "window_results": [
+                  {
+                      "name": item["window"]["name"],
+                      "closed_trades": item["position_metrics"]["closed_trades"],
+                      "wins": item["position_metrics"]["wins"],
+                      "total_return": item["total_return"],
+                      "daily_geometric_growth": item["daily_geometric_growth"],
+                  }
+                  for item in metrics
+              ],
+          }
+          (root / "suite_metrics.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          Path("research/candidate-08/evidence/shared-acceptance-continuation-v1/final_route.txt").write_text(summary["decision"] + "\n")
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Record no-promotable first-week path
+        if: steps.select.outputs.downstream == 'DISCARD' || steps.corrected_ablation.outputs.promoted == 'false'
+        shell: bash
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          printf 'DISCARD_ACCEPTANCE_FAMILY\n' > "$OUTPUT_DIR/final_route.txt"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("research/candidate-08/evidence/shared-acceptance-continuation-v1")
+          selection = (root / "selection.env").read_text() if (root / "selection.env").exists() else ""
+          (root / "discard_reason.json").write_text(json.dumps({
+              "selection": selection,
+              "reason": "No first-week variant survived the clean implementation and one-ablation protocol.",
+          }, indent=2) + "\n")
+          PY
+
+      - name: Commit complete routed continuation evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin research/candidate-08
+          rm -f research/candidate-08/.run-shared-acceptance-continuation-v1
+          git add "$OUTPUT_DIR" research/candidate-08/.run-shared-acceptance-continuation-v1
+          git commit -m "candidate-08: record complete routed three-week continuation" || true
+          git push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-shared-acceptance-continuation-v1-${{ github.run_id }}
+          path: research/candidate-08/evidence/shared-acceptance-continuation-v1
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Preserve verified data cache
+        if: ${{ always() }}
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-shared-acceptance-continuation-v1-${{ github.sha }}
