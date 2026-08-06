@@ -209,7 +209,7 @@ def run_nautilus_segment(
     engine = BacktestEngine(
         config=BacktestEngineConfig(
             trader_id=TraderId("CANDIDATE-09"),
-            logging=LoggingConfig(log_level="ERROR"),
+            logging=LoggingConfig(bypass_logging=True),
         ),
     )
     engine.add_venue(
