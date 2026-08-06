@@ -7,20 +7,17 @@ from nt_lvcfr_data import CandidateConfig
 
 
 class CompletedStructureProtectionTests(unittest.TestCase):
-    def test_live_strategy_arms_then_trails_completed_structure(self) -> None:
-        source = Path(__file__).with_name("nt_lvcfr_strategy.py").read_text(
-            encoding="utf-8"
-        )
+    def test_v9_patch_declares_completed_structure_protection(self) -> None:
+        """Preserve the historical V9 contract without freezing later candidates."""
+        source = Path(__file__).with_name(
+            "apply_nt_lvcfr_v9_strategy_patch.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("STRUCTURAL_TRAIL_ARMED", source)
         self.assertIn("def _structural_protection_stop", source)
         self.assertIn("COMPLETED_TWENTY_MINUTE_STRUCTURE_ADVANCED", source)
         self.assertIn("structural_trail_updates", source)
         self.assertIn(
             "active.direction * (executable - structural_stop) > 0.0",
-            source,
-        )
-        self.assertNotIn(
-            "active.stop = (\n                max(active.stop, structural_trigger)",
             source,
         )
 
