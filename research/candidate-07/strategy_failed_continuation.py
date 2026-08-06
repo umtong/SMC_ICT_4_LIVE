@@ -59,13 +59,14 @@ class Candidate07Strategy(_CascadeCandidate07Strategy):
         )
         self._failed_acceptance = state
         self._append_manual_event(
-            scenario_id=plan.scenario_id,
-            previous_state=ScenarioState.TERMINAL.value,
+            scenario_id=self._acceptance_scenario_id(state),
+            previous_state=ScenarioState.IDLE.value,
             next_state="FAILED_ACCEPTANCE_ARMED",
             reason_code="ABSORPTION_STOP_ARMS_OPPOSITE_ACCEPTANCE",
             event_time_ns=int(event.ts_event),
             reference_price=state.acceptance_level,
             details={
+                "source_scenario_id": plan.scenario_id,
                 "continuation_direction": continuation_direction.value,
                 "liquidity_level": state.liquidity_level,
                 "acceptance_level": state.acceptance_level,
@@ -157,7 +158,7 @@ class Candidate07Strategy(_CascadeCandidate07Strategy):
             target = entry - risk * self.logic.continuation_target_rr
         if risk <= 0.0 or risk > self.logic.maximum_stop_atr * state.atr:
             return None
-        scenario_id = f"{state.source_scenario_id}-fac"
+        scenario_id = self._acceptance_scenario_id(state)
         return TradePlan(
             scenario_id=scenario_id,
             kind=ScenarioKind.ACCEPTANCE_CONTINUATION,
@@ -186,19 +187,24 @@ class Candidate07Strategy(_CascadeCandidate07Strategy):
         reason_code: str,
     ) -> None:
         self._append_manual_event(
-            scenario_id=state.source_scenario_id,
+            scenario_id=self._acceptance_scenario_id(state),
             previous_state="FAILED_ACCEPTANCE_ARMED",
             next_state=ScenarioState.INVALIDATED.value,
             reason_code=reason_code,
             event_time_ns=event_time_ns,
             reference_price=close,
             details={
+                "source_scenario_id": state.source_scenario_id,
                 "continuation_direction": state.direction.value,
                 "liquidity_level": state.liquidity_level,
                 "acceptance_level": state.acceptance_level,
                 "bars_seen": state.bars_seen,
             },
         )
+
+    @staticmethod
+    def _acceptance_scenario_id(state: FailedAbsorptionAcceptance) -> str:
+        return f"{state.source_scenario_id}-fac"
 
 
 __all__ = ["Candidate07Strategy", "Candidate07StrategyConfig"]
