@@ -1,0 +1,38 @@
+name: candidate-03-source-export
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - ".github/workflows/candidate-03-source-export.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package branch source
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -czf candidate-03-source.tar.gz \
+            .github \
+            docs \
+            research/candidate-03 \
+            scripts \
+            src \
+            tests \
+            AGENTS.md PROJECT_PRINCIPLES.md README.md REUSE_MAP.md \
+            Makefile pyproject.toml uv.lock
+      - name: Preserve source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-source-${{ github.sha }}
+          path: candidate-03-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
