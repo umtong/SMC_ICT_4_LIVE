@@ -1,0 +1,85 @@
+name: candidate-09-lrae-research
+
+on:
+  push:
+    branches:
+      - research/candidate-09
+    paths:
+      - "research/candidate-09/**"
+      - ".candidate09_bundle/**"
+      - ".github/workflows/candidate-09.yml"
+      - "src/smc_ict_4/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  frozen-btc-weeks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Materialize candidate source
+        id: materialize
+        shell: bash
+        run: |
+          if [ -d .candidate09_bundle ]; then
+            cat .candidate09_bundle/part-* | base64 -d > /tmp/candidate09.tar.gz
+            tar -xzf /tmp/candidate09.tar.gz
+            rm -rf .candidate09_bundle
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add research/candidate-09 .candidate09_bundle
+            git commit -m "research(candidate-09): materialize independent LRAE candidate"
+            git push origin HEAD:research/candidate-09
+            echo "did_materialize=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "did_materialize=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify pinned NautilusTrader environment
+        if: steps.materialize.outputs.did_materialize != 'true'
+        run: smc4 doctor
+
+      - name: Compile candidate
+        if: steps.materialize.outputs.did_materialize != 'true'
+        run: python -m compileall -q research/candidate-09
+
+      - name: Candidate causal and risk tests
+        if: steps.materialize.outputs.did_materialize != 'true'
+        run: python -m unittest discover -s research/candidate-09/tests -p 'test_*.py' -v
+
+      - name: Run frozen three-week protocol and one-variable ablation
+        if: steps.materialize.outputs.did_materialize != 'true'
+        run: |
+          python research/candidate-09/run_research.py \
+            --config research/candidate-09/config.json \
+            --output artifacts/candidate-09
+
+      - name: Show decision
+        if: always() && steps.materialize.outputs.did_materialize != 'true'
+        run: |
+          test -f artifacts/candidate-09/SUMMARY.md && cat artifacts/candidate-09/SUMMARY.md || true
+          test -f artifacts/candidate-09/decision.json && cat artifacts/candidate-09/decision.json || true
+
+      - name: Preserve complete reproducible evidence
+        if: always() && steps.materialize.outputs.did_materialize != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-evidence-${{ github.sha }}
+          path: artifacts/candidate-09
+          if-no-files-found: error
+          retention-days: 30
