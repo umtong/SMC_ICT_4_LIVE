@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -18,14 +19,10 @@ class AggTradeLoaderTests(unittest.TestCase):
         temporary = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
         temporary.close()
         path = Path(temporary.name)
+        stream = io.StringIO(newline="")
+        csv.writer(stream).writerows(rows)
         with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            with archive.open("sample.csv", "w") as raw:
-                import io
-
-                text = io.TextIOWrapper(raw, encoding="utf-8", newline="")
-                writer = csv.writer(text)
-                writer.writerows(rows)
-                text.flush()
+            archive.writestr("sample.csv", stream.getvalue().encode("utf-8"))
         self.addCleanup(path.unlink, missing_ok=True)
         return path
 
