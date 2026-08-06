@@ -857,7 +857,7 @@ def run_nautilus_plan_backtest(
         },
     )
     bar_type = BarType.from_str(
-        "BTCUSDT-PERP.BINANCE-1-TICK-LAST-EXTERNAL",
+        "BTCUSDT-PERP.BINANCE-1-MILLISECOND-LAST-EXTERNAL",
     )
 
     bars: list[Bar] = []
