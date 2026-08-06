@@ -1,0 +1,233 @@
+name: candidate-05-master-research-continuation
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/master_research.py"
+      - "research/candidate-05/master_research_v2.py"
+      - "research/candidate-05/strategy_v29b_external_displacement_fvg.py"
+      - "research/candidate-05/strategy_v30_external_acceptance_retest.py"
+      - "research/candidate-05/strategy_v31_impact_resiliency_reversal.py"
+      - "research/candidate-05/external_displacement_fvg_logic.py"
+      - "research/candidate-05/external_acceptance_retest_logic.py"
+      - "research/candidate-05/impact_resiliency_reversal_logic.py"
+      - "research/candidate-05/tests/test_master_research_contract.py"
+      - "research/candidate-05/tests/test_external_displacement_fvg_logic.py"
+      - "research/candidate-05/tests/test_external_acceptance_retest_logic.py"
+      - "research/candidate-05/tests/test_impact_resiliency_reversal_logic.py"
+      - ".github/workflows/candidate-05-master-research-continuation.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-master-research-continuation
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  sequential-research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-master-research-continuation
+      SUMMARY: research/candidate-05/evidence/master_research_continuation.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify the fixed environment and all contracts
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT" research/candidate-05/evidence
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover \
+              -s research/candidate-05/tests \
+              -p 'test_*.py' -v
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/verification_status.txt"
+          if test "$status" -eq 0; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Run the sequential NautilusTrader research program
+        id: master
+        if: steps.verify.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python research/candidate-05/master_research_v2.py \
+            --output "$ROOT/runs" \
+            --cache .cache/candidate-05-master-research-continuation \
+            --summary "$SUMMARY" \
+            2>&1 | tee "$ROOT/master_console.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/master_status.txt"
+          exit "$status"
+
+      - name: Build a trustworthy fallback or final report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-master-research-continuation")
+          summary_path = Path("research/candidate-05/evidence/master_research_continuation.json")
+          verification_status = (
+              (root / "verification_status.txt").read_text(encoding="utf-8").strip()
+              if (root / "verification_status.txt").exists()
+              else "missing"
+          )
+          verification_tail = (
+              (root / "verification.log").read_text(encoding="utf-8", errors="replace").splitlines()[-260:]
+              if (root / "verification.log").exists()
+              else []
+          )
+          master_status = (
+              (root / "master_status.txt").read_text(encoding="utf-8").strip()
+              if (root / "master_status.txt").exists()
+              else "not_run"
+          )
+          master_tail = (
+              (root / "master_console.log").read_text(encoding="utf-8", errors="replace").splitlines()[-300:]
+              if (root / "master_console.log").exists()
+              else []
+          )
+
+          if summary_path.exists():
+              summary = json.loads(summary_path.read_text(encoding="utf-8"))
+              summary["verification_status"] = verification_status
+              summary["master_process_status"] = master_status
+          elif verification_status != "exit_code=0":
+              summary = {
+                  "schema": "candidate-05-master-research-continuation-v2",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_STATIC_OR_CONTRACT",
+                  "winner": None,
+                  "verification_status": verification_status,
+                  "verification_log_tail": verification_tail,
+                  "master_process_status": master_status,
+                  "next_action": "Repair the static or contract error without changing any market hypothesis, then rerun this identical workflow.",
+              }
+          else:
+              summary = {
+                  "schema": "candidate-05-master-research-continuation-v2",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_MASTER_ORCHESTRATOR_RUNTIME",
+                  "winner": None,
+                  "verification_status": verification_status,
+                  "verification_log_tail": verification_tail,
+                  "master_process_status": master_status,
+                  "master_log_tail": master_tail,
+                  "next_action": "Repair the orchestrator runtime under variable control; all strategy conclusions remain unclassified.",
+              }
+          summary_path.write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          def metric_line(run):
+              if not isinstance(run, dict) or not run.get("available"):
+                  return "unavailable"
+              return (
+                  f"geo={run.get('geometric_daily_growth')}, return={run.get('total_return')}, "
+                  f"trades={run.get('trades')}, wins={run.get('wins')}, "
+                  f"MDD={run.get('max_drawdown')}, integrity={run.get('integrity_pass')}"
+              )
+
+          lines = [
+              "# Candidate 05 Master Research Continuation",
+              "",
+              f"- Source commit: `{summary.get('source_commit')}`",
+              f"- Workflow run: `{summary.get('workflow_run_id')}`",
+              f"- Classification: `{summary.get('classification')}`",
+              f"- Winner: `{summary.get('winner')}`",
+              f"- Verification: `{summary.get('verification_status')}`",
+              f"- Master process: `{summary.get('master_process_status')}`",
+              "",
+              "## Next action",
+              "",
+              str(summary.get("next_action")),
+              "",
+              "## Experiment decisions",
+              "",
+          ]
+          experiments = summary.get("experiments", {})
+          if isinstance(experiments, dict):
+              for name, experiment in experiments.items():
+                  lines.append(f"### {name}")
+                  if isinstance(experiment, dict):
+                      lines.append(f"- Classification: `{experiment.get('classification')}`")
+                      if "baseline_30d" in experiment:
+                          lines.append(f"- v26 30d: {metric_line(experiment.get('baseline_30d'))}")
+                      if "no_early_sponsored_30d" in experiment:
+                          lines.append(f"- no-early 30d: {metric_line(experiment.get('no_early_sponsored_30d'))}")
+                      runs = experiment.get("runs")
+                      if isinstance(runs, dict):
+                          for range_name, run in runs.items():
+                              lines.append(f"- {range_name}: {metric_line(run)}")
+                  lines.append("")
+          report_path = Path("research/candidate-05/evidence/master_research_continuation.md")
+          report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+          test -s "$SUMMARY"
+          test -s research/candidate-05/evidence/master_research_continuation.md
+
+      - name: Restore active strategy and persist one conflict-resistant evidence commit
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -- research/candidate-05/strategy.py || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-05/evidence/master_research_continuation.json \
+            research/candidate-05/evidence/master_research_continuation.md
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-05: record sequential master research evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-05
+            if git push origin HEAD:research/candidate-05; then
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "failed to persist master evidence after retries" >&2
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-master-research-continuation-${{ github.sha }}
+          path: artifacts/candidate-05-master-research-continuation/**
+          if-no-files-found: warn
+          retention-days: 90
