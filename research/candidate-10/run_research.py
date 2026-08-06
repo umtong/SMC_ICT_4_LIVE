@@ -15,6 +15,9 @@ from candidate import reproducible_weeks
 from candidate import run_backtest
 
 
+VARIANT_NAMES = ("full", "ablation-no-cluster-activation")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", choices=("gate", "three-weeks", "single"), default="gate")
@@ -24,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--variant",
-        choices=("full", "ablation-no-acceptance"),
+        choices=VARIANT_NAMES,
         help=argparse.SUPPRESS,
     )
     return parser.parse_args()
@@ -32,10 +35,13 @@ def parse_args() -> argparse.Namespace:
 
 def variants() -> dict[str, MachineParams]:
     full = MachineParams()
-    # Required one-variable ablation: remove acceptance while keeping every
-    # threshold, risk rule, target rule and execution assumption unchanged.
-    rejection_only = replace(full, enable_acceptance=False)
-    return {"full": full, "ablation-no-acceptance": rejection_only}
+    # One-variable ablation for v2: nearby confirmed pivots may still merge for
+    # coordinate de-duplication, but source count alone cannot activate a pool.
+    no_cluster_activation = replace(full, enable_pool_clustering=False)
+    return {
+        "full": full,
+        "ablation-no-cluster-activation": no_cluster_activation,
+    }
 
 
 def _worker(args: argparse.Namespace, output_root: Path) -> int:
@@ -118,6 +124,8 @@ def main() -> int:
         "phase": args.phase,
         "executed_weeks": [item.isoformat() for item in weeks],
         "engine_process_isolation": True,
+        "candidate_generation": "v2-confirmed-structural-liquidity-pools",
+        "variants": list(VARIANT_NAMES),
     }
     (output_root / "week_selection.json").write_text(
         json.dumps(selection, indent=2, sort_keys=True) + "\n",
