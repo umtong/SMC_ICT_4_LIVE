@@ -1,0 +1,77 @@
+name: candidate-04-v35-self-contained-controls-v2
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v35-self-contained-controls-v2.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-04-v35-self-contained-controls-v2
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Bootstrap exact source without marketplace actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin https://github.com/umtong/SMC_ICT_4_LIVE.git
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          smc4 doctor
+
+      - name: Verify controlled contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q \
+            research/candidate-04/nt_exact_causal_target_risk_sizing.py \
+            research/candidate-04/nt_expected_fill_risk_sizing.py \
+            research/candidate-04/nt_expected_fill_only_risk_sizing.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+            research/candidate-04/nt_backtest_v34_expected_fill_only.py \
+            research/candidate-04/nt_backtest_v34_expected_fill.py \
+            research/candidate-04/run_v35_self_contained_controls.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_exact_causal_target_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_expected_fill_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_expected_fill_only_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Run exact-target, expected-fill, and combined Nautilus controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-04/run_v35_self_contained_controls.py \
+            --repository "$GITHUB_WORKSPACE" \
+            --source-root "$GITHUB_WORKSPACE/sources-v35" \
+            --output-root "$GITHUB_WORKSPACE/artifacts/candidate-04-v35" \
+            --cache-root "$GITHUB_WORKSPACE/.cache/candidate-04-v35"
