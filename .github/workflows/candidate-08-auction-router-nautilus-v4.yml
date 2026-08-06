@@ -1,4 +1,4 @@
-name: candidate-08-auction-router-nautilus-v4
+name: candidate-08-flow-response-auction-nautilus-v1
 
 on:
   push:
@@ -11,33 +11,33 @@ permissions:
   packages: read
 
 concurrency:
-  # Share the v3 group so this source-complete run replaces every older queued attempt.
-  group: candidate-08-auction-router-nautilus-v3
+  group: candidate-08-flow-response-auction-nautilus-v1
   cancel-in-progress: true
 
 jobs:
   staged-validation:
     if: ${{ github.actor != 'github-actions[bot]' }}
-    runs-on: ubuntu-26.04
-    timeout-minutes: 240
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
     env:
       MARKER: research/candidate-08/.run-auction-router-nautilus-v4
-      ROOT: research/candidate-08/evidence/auction-router-nautilus-v2
+      ROOT: research/candidate-08/evidence/flow-response-auction-nautilus-v1
       CACHE: /tmp/candidate-08-aggtrade-acceptance-data
-      CONFIG: research/candidate-08/config_auction_router_nautilus_v1.json
+      CONFIG: research/candidate-08/config_flow_response_auction_btc_v1.json
       PATTERN: research/candidate-08/config_range_fvg.json
-      RUNNER: research/candidate-08/run_aggtrade_auction_router_nautilus_v2.py
-      ORCHESTRATOR: research/candidate-08/run_auction_router_staged_validation.py
-      AUCTION_ROUTER_FAMILY_MODE: both
+      RUNNER: research/candidate-08/run_aggtrade_flow_response_auction_nautilus.py
+      ORCHESTRATOR: research/candidate-08/run_flow_response_staged_validation.py
+      FLOW_RESPONSE_AUCTION_CONFIG_PATH: research/candidate-08/config_flow_response_auction_btc_v1.json
+      FLOW_RESPONSE_AUCTION_FAMILY_MODE: both
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Verify pinned environment and every causal/control contract
+      - name: Verify pinned environment and causal execution contracts
         id: preflight
         shell: bash
         run: |
@@ -53,68 +53,66 @@ jobs:
               research/candidate-08/aggtrade_acceptance_funding.py \
               research/candidate-08/aggtrade_acceptance_mark_price.py \
               research/candidate-08/aggtrade_acceptance_signals.py \
-              research/candidate-08/aggtrade_auction_router_signals.py \
-              research/candidate-08/aggtrade_auction_router_signals_v2.py \
+              research/candidate-08/aggtrade_flow_response.py \
+              research/candidate-08/aggtrade_flow_response_auction_signals.py \
+              research/candidate-08/aggtrade_flow_response_auction_signals_v2.py \
               research/candidate-08/aggtrade_acceptance_strategy.py \
               research/candidate-08/aggtrade_acceptance_evaluation.py \
-              research/candidate-08/auction_family_ablation_decision.py \
-              research/candidate-08/auction_family_ablation_stage.py \
-              research/candidate-08/auction_diagnostic_evaluation.py \
               research/candidate-08/run_aggtrade_acceptance_nautilus.py \
               research/candidate-08/run_aggtrade_auction_router_nautilus.py \
-              research/candidate-08/run_aggtrade_auction_router_nautilus_v2.py \
-              research/candidate-08/run_auction_router_staged_validation.py \
-              research/candidate-08/test_aggtrade_auction_runner.py \
-              research/candidate-08/test_aggtrade_auction_runner_v2.py \
-              research/candidate-08/test_aggtrade_auction_router_v2.py \
-              research/candidate-08/test_auction_family_ablation_decision.py \
-              research/candidate-08/test_auction_family_ablation_stage.py \
-              research/candidate-08/test_auction_diagnostic_evaluation.py \
-              research/candidate-08/test_run_auction_router_staged_validation.py
+              research/candidate-08/run_aggtrade_flow_response_auction_nautilus.py \
+              research/candidate-08/flow_response_family_ablation_decision.py \
+              research/candidate-08/flow_response_diagnostic_evaluation.py \
+              research/candidate-08/run_flow_response_staged_validation.py
             python research/candidate-08/test_aggtrade_orderflow.py -v
             python research/candidate-08/test_aggtrade_acceptance.py -v
             python research/candidate-08/test_aggtrade_acceptance_pure.py -v
             python research/candidate-08/test_aggtrade_acceptance_nautilus.py -v
-            python research/candidate-08/test_aggtrade_auction_router.py -v
-            python research/candidate-08/test_aggtrade_auction_router_v2.py -v
-            python research/candidate-08/test_aggtrade_auction_runner.py -v
-            python research/candidate-08/test_aggtrade_auction_runner_v2.py -v
-            python research/candidate-08/test_auction_family_ablation_decision.py -v
-            python research/candidate-08/test_auction_family_ablation_stage.py -v
-            python research/candidate-08/test_auction_diagnostic_evaluation.py -v
-            python research/candidate-08/test_run_auction_router_staged_validation.py -v
+            python research/candidate-08/test_aggtrade_flow_response.py -v
+            python research/candidate-08/test_aggtrade_flow_response_auction_signals.py -v
+            python research/candidate-08/test_aggtrade_flow_response_auction_runner.py -v
+            python research/candidate-08/test_flow_response_config_contract.py -v
+            python research/candidate-08/test_flow_response_family_ablation_decision.py -v
+            python research/candidate-08/test_flow_response_diagnostic_evaluation.py -v
+            python research/candidate-08/test_run_flow_response_staged_validation.py -v
             python - <<'PY'
+            import json
+            from dataclasses import asdict
             from pathlib import Path
 
-            detector = Path("research/candidate-08/aggtrade_auction_router_signals.py").read_text()
-            refinement = Path("research/candidate-08/aggtrade_auction_router_signals_v2.py").read_text()
-            wrapper = Path("research/candidate-08/run_aggtrade_auction_router_nautilus.py").read_text()
-            v2_runner = Path("research/candidate-08/run_aggtrade_auction_router_nautilus_v2.py").read_text()
-            orchestrator = Path("research/candidate-08/run_auction_router_staged_validation.py").read_text()
-            selector = Path("research/candidate-08/auction_family_ablation_decision.py").read_text()
-            workflow = Path(".github/workflows/candidate-08-auction-router-nautilus-v4.yml").read_text()
-            config = Path("research/candidate-08/config_auction_router_nautilus_v1.json").read_text()
+            from aggtrade_flow_response import FlowResponseConfig
+            from aggtrade_flow_response_auction_signals_v2 import (
+                IMPLEMENTATION_REVISION,
+                FlowResponseAuctionConfig,
+            )
 
-            assert "INITIATIVE_ACCEPTANCE_CONTINUATION" in detector
-            assert "FAILED_AUCTION_REVERSAL" in detector
-            assert "displacement_depth < reserve" in detector
-            assert "require_contraction=False" in detector
-            assert "FAILED_AUCTION_FULL_OBSERVED_SWEEP_THROUGH_CONFIRMATION_V2" in refinement
-            assert "_observed_sweep_through_confirmation" in refinement
-            assert "UPDATED_SWEEP_INSUFFICIENT_COST_AFTER_EXTERNAL_TARGET" in refinement
-            assert "_normalize_intent_scenario_families" in wrapper
-            assert 'summary["by_scenario_family"]' in wrapper
-            assert "runner.build_auction_router_signals = build_auction_router_signals" in v2_runner
-            assert 'summary["implementation_revision"] = IMPLEMENTATION_REVISION' in v2_runner
-            assert "AUCTION_ROUTER_STAGED_VALIDATION_V1" in orchestrator
+            root = Path("research/candidate-08")
+            detector = (root / "aggtrade_flow_response_auction_signals_v2.py").read_text()
+            wrapper = (root / "run_aggtrade_flow_response_auction_nautilus.py").read_text()
+            orchestrator = (root / "run_flow_response_staged_validation.py").read_text()
+            config = json.loads((root / "config_flow_response_auction_btc_v1.json").read_text())
+            workflow = Path(
+                ".github/workflows/candidate-08-auction-router-nautilus-v4.yml"
+            ).read_text()
+
+            assert config["implementation_revision"] == IMPLEMENTATION_REVISION
+            assert config["flow_response_config"] == asdict(FlowResponseConfig())
+            default_auction = FlowResponseAuctionConfig()
+            assert config["flow_response_auction_config"] == {
+                "interaction_response_windows": default_auction.interaction_response_windows,
+                "reversal_confirmation_windows": default_auction.reversal_confirmation_windows,
+            }
+            assert "position >= pending.armed_position + response_window" in detector
+            assert "position >= pending.absorption_position + response_window" in detector
+            assert "position >= pending.armed_position + response_window - 1" not in detector
+            assert "position >= pending.absorption_position + response_window - 1" not in detector
+            assert 'kwargs["auction_config"] = _load_auction_config()' in wrapper
+            assert "FLOW_RESPONSE_STAGED_VALIDATION_V1" in orchestrator
             assert "clear_staged_outputs(root)" in orchestrator
-            assert "ONE_POSITIVE_AND_ONE_NEGATIVE_FAMILY" in selector
-            assert "BOTH_FAMILIES_ECONOMICALLY_NEGATIVE" in selector
-            assert 'runs-on: ubuntu-26.04' in workflow
+            assert 'runs-on: ubuntu-24.04' in workflow
             assert 'cancel-in-progress: true' in workflow
-            assert "Generalize scenario reporting" not in workflow
-            assert '"risk_fraction": 0.03' in config
-            assert '"default_leverage": 125' in config
+            assert '"risk_fraction": 0.03' in (root / "config_flow_response_auction_btc_v1.json").read_text()
+            assert '"default_leverage": 125' in (root / "config_flow_response_auction_btc_v1.json").read_text()
             PY
           ) 2>&1 | tee "$ROOT/preflight.log"
           status=${PIPESTATUS[0]}
@@ -128,8 +126,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.CACHE }}
-          key: candidate-08-auction-router-v2-${{ hashFiles('research/candidate-08/config_auction_router_nautilus_v1.json') }}
+          key: candidate-08-flow-response-v2-${{ hashFiles('research/candidate-08/config_flow_response_auction_btc_v1.json') }}
           restore-keys: |
+            candidate-08-flow-response-v2-
             candidate-08-auction-router-v2-
             candidate-08-auction-router-v1-
             candidate-08-aggtrade-acceptance-v5-
@@ -162,11 +161,12 @@ jobs:
           python - <<'PY'
           import json, os
           from pathlib import Path
+
           root = Path(os.environ["ROOT"])
           root.mkdir(parents=True, exist_ok=True)
           payload = {
-              "candidate": "candidate-08-auction-router-nautilus-v1",
-              "protocol_revision": "AUCTION_ROUTER_STAGED_VALIDATION_V1",
+              "candidate": "candidate-08-flow-response-auction-btc-nautilus-v1",
+              "protocol_revision": "FLOW_RESPONSE_STAGED_VALIDATION_V1",
               "git_sha": os.environ.get("GITHUB_SHA"),
               "preflight_runner_status": int((root / "preflight_exit_status.txt").read_text()),
               "decision": "PREFLIGHT_IMPLEMENTATION_FAILURE",
@@ -182,9 +182,9 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ env.CACHE }}
-          key: candidate-08-auction-router-v2-${{ hashFiles('research/candidate-08/config_auction_router_nautilus_v1.json') }}
+          key: candidate-08-flow-response-v2-${{ hashFiles('research/candidate-08/config_flow_response_auction_btc_v1.json') }}
 
-      - name: Commit implementation evidence conflict-safely
+      - name: Commit implementation and evidence conflict-safely
         if: ${{ always() }}
         shell: bash
         run: |
@@ -195,7 +195,7 @@ jobs:
           rm -f "$MARKER"
           git add -A -- "$ROOT" "$MARKER"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m "candidate-08: record orchestrated auction-router evidence [skip ci]"
+          git commit -m "candidate-08: record flow-response staged evidence [skip ci]"
           for attempt in 1 2 3 4 5; do
             git fetch origin research/candidate-08
             if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
