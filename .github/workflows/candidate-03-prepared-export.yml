@@ -1,0 +1,35 @@
+name: candidate-03-prepared-first-week-export
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths: [".github/workflows/candidate-03-prepared-export.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore exact first-week prepared data
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr/validation-1/prepared
+          key: nt-lvcfr-v4-btc-2024-01-08-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
+          fail-on-cache-miss: true
+      - name: Normalize and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo chmod -R a+rX artifacts/candidate-03/nt-lvcfr/validation-1/prepared
+          tar -czf candidate-03-validation-1-prepared.tar.gz \
+            -C artifacts/candidate-03/nt-lvcfr/validation-1 prepared
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-validation-1-prepared-${{ github.sha }}
+          path: candidate-03-validation-1-prepared.tar.gz
+          if-no-files-found: error
+          retention-days: 3
