@@ -1,4 +1,4 @@
-name: Candidate 06 Hourly Auction First BTC Week
+name: Candidate 06 SAC Defense First BTC Week
 
 on:
   push:
@@ -54,25 +54,24 @@ jobs:
           print(f"NAUTILUS_VERSION={actual}")
           PY
 
-      - name: Verify causal auction implementation
+      - name: Verify causal defense implementation
         run: |
           set -euo pipefail
           python -m py_compile research/candidate-06/*.py
-          python research/candidate-06/test_logic_v2.py
-          python research/candidate-06/test_session_displacement_engine.py
-          python research/candidate-06/test_session_equilibrium_engine.py
+          python research/candidate-06/test_entry_confirmation.py
           python research/candidate-06/test_auction_relay_engine.py
+          python research/candidate-06/test_session_equilibrium_engine.py
 
-      - name: Run controlled hourly-auction matrix through NautilusTrader
+      - name: Run controlled SAC-defense matrix through NautilusTrader
         id: lab
         continue-on-error: true
         run: |
           set +e
-          rm -rf artifacts/candidate-06/auction-first-week
+          rm -rf artifacts/candidate-06/auction-defense-first-week
           mkdir -p "$SMC4_RESEARCH_DATA" artifacts
-          python research/candidate-06/run_auction_matrix.py \
-            --output artifacts/candidate-06/auction-first-week \
-            > artifacts/candidate-06-auction.stdout 2> artifacts/candidate-06-auction.stderr
+          python research/candidate-06/run_auction_defense_matrix.py \
+            --output artifacts/candidate-06/auction-defense-first-week \
+            > artifacts/candidate-06-auction-defense.stdout 2> artifacts/candidate-06-auction-defense.stderr
           code=$?
           echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
           exit 0
@@ -81,13 +80,13 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p artifacts/candidate-06/auction-first-week
-          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/auction-first-week/workflow_exit_code.txt
-          if [ ! -f artifacts/candidate-06/auction-first-week/summary.json ]; then
+          mkdir -p artifacts/candidate-06/auction-defense-first-week
+          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/auction-defense-first-week/workflow_exit_code.txt
+          if [ ! -f artifacts/candidate-06/auction-defense-first-week/summary.json ]; then
             python - <<'PY'
           import json
           from pathlib import Path
-          root = Path("artifacts/candidate-06/auction-first-week")
+          root = Path("artifacts/candidate-06/auction-defense-first-week")
           payload = {
               "all_three_weeks_passed": False,
               "long_evaluation_authorized": False,
@@ -97,8 +96,8 @@ jobs:
           (root / "summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
           fi
-          cp artifacts/candidate-06-auction.stdout artifacts/candidate-06/auction-first-week/workflow_stdout.txt 2>/dev/null || true
-          cp artifacts/candidate-06-auction.stderr artifacts/candidate-06/auction-first-week/workflow_stderr.txt 2>/dev/null || true
+          cp artifacts/candidate-06-auction-defense.stdout artifacts/candidate-06/auction-defense-first-week/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-06-auction-defense.stderr artifacts/candidate-06/auction-defense-first-week/workflow_stderr.txt 2>/dev/null || true
 
       - name: Commit reproducible first-week evidence
         if: always() && github.event_name == 'push'
@@ -106,22 +105,22 @@ jobs:
           set -euo pipefail
           git config user.name "candidate-06-research-bot"
           git config user.email "candidate-06-research-bot@users.noreply.github.com"
-          git add -f artifacts/candidate-06/auction-first-week
-          if [ -f research/candidate-06/config.auction.locked.json ]; then
-            git add -f research/candidate-06/config.auction.locked.json
+          git add -f artifacts/candidate-06/auction-defense-first-week
+          if [ -f research/candidate-06/config.auction-defense.locked.json ]; then
+            git add -f research/candidate-06/config.auction-defense.locked.json
           fi
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "Record candidate-06 hourly auction evidence [candidate-06 evidence]"
+          git commit -m "Record candidate-06 SAC defense evidence [candidate-06 evidence]"
           git push origin HEAD:research/candidate-06
 
       - name: Upload first-week evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-06-hourly-auction-${{ github.sha }}
-          path: artifacts/candidate-06/auction-first-week
+          name: candidate-06-sac-defense-${{ github.sha }}
+          path: artifacts/candidate-06/auction-defense-first-week
           include-hidden-files: true
           retention-days: 30
           if-no-files-found: error
