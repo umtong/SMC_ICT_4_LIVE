@@ -20,10 +20,15 @@ MODE_TO_RETAINED = {
     "initiative_only": INITIATIVE_FAMILY,
     "absorption_only": ABSORPTION_FAMILY,
 }
-_EXPECTED_EXCLUDED_CHECKS = {
+_EXPECTED_FALSE_CHECKS = {
     "base_contract_includes_both_auction_families",
     "base_contract_includes_both_flow_response_families",
 }
+_REQUIRED_TRUE_EVIDENCE_CHECKS = {
+    "complete_auction_scenario_attribution",
+    "complete_post_run_trade_path_diagnostics",
+}
+_EVIDENCE_ONLY_CHECKS = _EXPECTED_FALSE_CHECKS | _REQUIRED_TRUE_EVIDENCE_CHECKS
 
 
 def evaluate_diagnostic_summary(
@@ -36,11 +41,13 @@ def evaluate_diagnostic_summary(
 
     retained = MODE_TO_RETAINED[expected_mode]
     removed = ABSORPTION_FAMILY if retained == INITIATIVE_FAMILY else INITIATIVE_FAMILY
-    checks = dict(summary.get("suite_gate_checks", {}))
+    raw_checks = summary.get("suite_gate_checks", {})
+    checks_are_mapping = isinstance(raw_checks, Mapping)
+    checks = dict(raw_checks) if checks_are_mapping else {}
     economic_checks = {
         key: bool(value)
         for key, value in checks.items()
-        if key not in _EXPECTED_EXCLUDED_CHECKS
+        if key not in _EVIDENCE_ONLY_CHECKS
     }
     families = summary.get("scenario_family_results", {})
     retained_stats = dict(families.get(retained, {})) if isinstance(families, Mapping) else {}
@@ -51,6 +58,9 @@ def evaluate_diagnostic_summary(
             summary.get("auction_family_mode", ""),
         )
     )
+    path_summary = summary.get("trade_path_diagnostic_summary", {})
+    path_summary_is_mapping = isinstance(path_summary, Mapping)
+    closed_trades = int(summary.get("closed_trades", 0))
 
     evidence_checks = {
         "implementation_revision_exact": (
@@ -63,8 +73,21 @@ def evaluate_diagnostic_summary(
         "scenario_attribution_complete": bool(
             summary.get("scenario_attribution_passed", False)
         ),
+        "suite_gate_checks_are_mapping": checks_are_mapping,
         "both_family_gates_are_the_only_expected_exclusions": all(
-            checks.get(name) is False for name in _EXPECTED_EXCLUDED_CHECKS
+            checks.get(name) is False for name in _EXPECTED_FALSE_CHECKS
+        ),
+        "required_evidence_checks_true": all(
+            checks.get(name) is True for name in _REQUIRED_TRUE_EVIDENCE_CHECKS
+        ),
+        "trade_path_summary_present": path_summary_is_mapping,
+        "trade_path_record_count_exact": (
+            path_summary_is_mapping
+            and int(path_summary.get("records", -1)) == closed_trades
+        ),
+        "trade_path_complete_count_exact": (
+            path_summary_is_mapping
+            and int(path_summary.get("complete_records", -1)) == closed_trades
         ),
         "economic_check_set_nonempty": len(economic_checks) >= 5,
         "removed_family_has_no_signals": int(removed_stats.get("signals", 0)) == 0,
