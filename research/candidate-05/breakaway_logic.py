@@ -37,7 +37,23 @@ def breakaway_depth_state(
     depth_imbalance: float,
     minimum_ratio: float = BREAKAWAY_FAVORABLE_DEPTH_RATIO,
 ) -> bool:
-    """Whether resting liquidity is strong enough to expect no deep retrace."""
+    """Whether resting liquidity is strong enough to expect no deep retrace.
+
+    Compare in imbalance space rather than after the ratio transform so the
+    exact two-to-one boundary (directional imbalance == 1/3) remains stable
+    across Python/platform floating-point implementations.
+    """
+    if side not in (-1, 1):
+        raise ValueError("side must be -1 or 1")
     if minimum_ratio <= 1.0 or not math.isfinite(minimum_ratio):
         raise ValueError("minimum_ratio must be finite and greater than one")
-    return favorable_depth_ratio(side=side, depth_imbalance=depth_imbalance) >= minimum_ratio
+    if not math.isfinite(depth_imbalance):
+        return False
+    directional = side * depth_imbalance
+    minimum_directional = (minimum_ratio - 1.0) / (minimum_ratio + 1.0)
+    return directional >= minimum_directional or math.isclose(
+        directional,
+        minimum_directional,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
