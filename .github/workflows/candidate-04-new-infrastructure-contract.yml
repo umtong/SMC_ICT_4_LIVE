@@ -1,0 +1,93 @@
+name: candidate-04-new-infrastructure-contract
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-new-infrastructure-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify pinned research runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+
+      - name: Compile all V34-V36 and integrated execution modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q \
+            research/candidate-04/post_event_inventory_resolution_compiler.py \
+            research/candidate-04/post_event_inventory_resolution_compiler_v2.py \
+            research/candidate-04/event_time_flow_run_compiler.py \
+            research/candidate-04/micro_auction_balance_transition_compiler.py \
+            research/candidate-04/summarize_candidate_week.py \
+            research/candidate-04/filter_candidate_signals.py \
+            research/candidate-04/discover_cross_asset_candidates.py \
+            research/candidate-04/select_cross_asset_windows.py \
+            research/candidate-04/rich_features_for_symbol.py \
+            research/candidate-04/nt_global_rich_signal_strategy.py \
+            research/candidate-04/nt_multi_asset_rich_backtest.py \
+            research/candidate-04/reconcile_run_evidence.py \
+            research/candidate-04/build_current_status.py
+
+      - name: Parse every candidate-04 workflow as YAML
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          try:
+              import yaml
+          except ImportError as exc:
+              raise SystemExit("PyYAML is required by the prebuilt research image") from exc
+          for path in sorted(Path(".github/workflows").glob("candidate-04-*.yml")):
+              value = yaml.safe_load(path.read_text())
+              if not isinstance(value, dict):
+                  raise SystemExit(f"invalid workflow mapping: {path}")
+              if "jobs" not in value:
+                  raise SystemExit(f"workflow has no jobs: {path}")
+              print(path)
+          PY
+
+      - name: Run causal compiler and infrastructure unit contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            test_post_event_inventory_resolution_compiler.py
+            test_post_event_inventory_resolution_compatibility.py
+            test_event_time_flow_run_compiler.py
+            test_micro_auction_balance_transition_compiler.py
+            test_filter_candidate_signals.py
+            test_discover_cross_asset_candidates.py
+            test_select_cross_asset_windows.py
+            test_rich_features_for_symbol.py
+            test_nt_global_rich_signal_strategy.py
+            test_nt_multi_asset_rich_backtest.py
+            test_nt_multi_asset_runtime_contract.py
+            test_nt_rich_signal_strategy.py
+            test_nt_causal_risk_sizing.py
+          )
+          for test_file in "${tests[@]}"; do
+            python -m unittest discover \
+              -s research/candidate-04/tests \
+              -p "$test_file" -v
+          done
