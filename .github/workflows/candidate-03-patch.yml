@@ -1,0 +1,42 @@
+name: candidate-03-fix-catalog-batch-boundary
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths: [".github/workflows/candidate-03-patch.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Keep Parquet batches disjoint at equal timestamps
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('research/candidate-03/nt_lvcfr_data.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''        batch.append(\n            QuoteTick(\n                instrument_id=instrument.id,\n                bid_price=Price.from_str(bid_string),\n                ask_price=Price.from_str(ask_string),\n                bid_size=bid_size,\n                ask_size=ask_size,\n                ts_event=ts_event,\n                ts_init=ts_init,\n            )\n        )\n        retained += 1\n        if len(batch) >= 100_000:\n            catalog.write_data(batch)\n            batch.clear()\n'''
+          new = '''        # ParquetDataCatalog requires file time intervals to be disjoint.\n        # Multiple bookTicker updates can share one observed timestamp, so only\n        # flush after the threshold when the next timestamp is strictly newer.\n        if len(batch) >= 100_000 and ts_init > batch[-1].ts_init:\n            catalog.write_data(batch)\n            batch.clear()\n        batch.append(\n            QuoteTick(\n                instrument_id=instrument.id,\n                bid_price=Price.from_str(bid_string),\n                ask_price=Price.from_str(ask_string),\n                bid_size=bid_size,\n                ask_size=ask_size,\n                ts_event=ts_event,\n                ts_init=ts_init,\n            )\n        )\n        retained += 1\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one target block, found {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          PYTHONPYCACHEPREFIX=/tmp/candidate-03-pycache \
+            python -m compileall -q research/candidate-03/nt_lvcfr_data.py
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add research/candidate-03/nt_lvcfr_data.py
+          git commit -m "candidate-03: keep catalog batches time-disjoint"
+          git push origin HEAD:research/candidate-03
