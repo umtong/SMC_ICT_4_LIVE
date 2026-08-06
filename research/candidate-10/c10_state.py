@@ -117,6 +117,43 @@ class AuctionStateMachine:
         self.active = None
         self.consumed_block_id = None
 
+    def _execution_buffer(self, entry: float, atr: float) -> float:
+        round_trip_cost = entry * (
+            self.params.maker_fee + self.params.taker_fee
+        ) * self.params.cost_floor_multiple
+        tick_reserve = self.tick_size * self.params.execution_reserve_ticks
+        return max(
+            atr * self.params.stop_buffer_atr,
+            round_trip_cost + tick_reserve,
+        )
+
+    def _net_rr(
+        self,
+        *,
+        direction: int,
+        entry: float,
+        stop: float,
+        target: float,
+    ) -> float:
+        gross_reward = (target - entry) * direction
+        if gross_reward <= 0:
+            return float("-inf")
+        loss_per_unit = (
+            abs(entry - stop)
+            + entry * self.params.maker_fee
+            + stop * self.params.taker_fee
+            + self.tick_size * self.params.execution_reserve_ticks
+        )
+        reward_per_unit = (
+            gross_reward
+            - entry * self.params.maker_fee
+            - target * self.params.maker_fee
+            - self.tick_size * self.params.execution_reserve_ticks
+        )
+        if loss_per_unit <= 0 or reward_per_unit <= 0:
+            return float("-inf")
+        return reward_per_unit / loss_per_unit
+
     def _detect_setup(self, bar: BarView, atr: float) -> list[Transition]:
         transitions: list[Transition] = []
         pool = self.previous_range
@@ -131,8 +168,7 @@ class AuctionStateMachine:
         high_excess = bar.high - pool.high
         low_excess = pool.low - bar.low
 
-        # A bar that raids both sides of the prior block is an unresolved auction,
-        # not a directional signal.
+        # A bar which raids both sides has no directionally resolved auction result.
         if high_excess >= raid_buffer and low_excess >= raid_buffer:
             return transitions
 
@@ -214,6 +250,36 @@ class AuctionStateMachine:
         )
         return transitions
 
+    def _select_rejection_target(
+        self,
+        setup: Setup,
+        entry: float,
+        stop: float,
+    ) -> tuple[float | None, str, float]:
+        pool = self.previous_range
+        if pool is None:
+            return None, "NONE", float("-inf")
+        if setup.direction < 0:
+            candidates = [
+                (pool.midpoint, "PRIOR_BLOCK_MIDPOINT"),
+                (pool.low, "OPPOSITE_BLOCK_LOW"),
+            ]
+        else:
+            candidates = [
+                (pool.midpoint, "PRIOR_BLOCK_MIDPOINT"),
+                (pool.high, "OPPOSITE_BLOCK_HIGH"),
+            ]
+        for target, name in candidates:
+            net_rr = self._net_rr(
+                direction=setup.direction,
+                entry=entry,
+                stop=stop,
+                target=target,
+            )
+            if net_rr >= self.params.min_net_rr:
+                return target, name, net_rr
+        return None, "NONE", float("-inf")
+
     def _process_rejection(
         self,
         bar: BarView,
@@ -227,220 +293,188 @@ class AuctionStateMachine:
 
         if setup.direction < 0:
             setup.raid_extreme = max(setup.raid_extreme, bar.high)
-            if bar.close >= setup.boundary + accept_buffer:
-                transitions.append(
-                    self._transition(
-                        setup,
-                        bar,
-                        event_type="SCENARIO_INVALIDATED",
-                        next_state="INVALIDATED",
-                        reason_code="REJECTION_BECAME_ACCEPTANCE",
-                        reference_price=bar.close,
-                    ),
-                )
-                self.active = None
-                return transitions, None
+            accepted = bar.close >= setup.boundary + accept_buffer
         else:
             setup.raid_extreme = min(setup.raid_extreme, bar.low)
-            if bar.close <= setup.boundary - accept_buffer:
-                transitions.append(
-                    self._transition(
-                        setup,
-                        bar,
-                        event_type="SCENARIO_INVALIDATED",
-                        next_state="INVALIDATED",
-                        reason_code="REJECTION_BECAME_ACCEPTANCE",
-                        reference_price=bar.close,
-                    ),
-                )
-                self.active = None
-                return transitions, None
-
-        if setup.state == "RAIDED":
-            if age > self.params.rejection_confirm_bars:
-                transitions.append(
-                    self._transition(
-                        setup,
-                        bar,
-                        event_type="SCENARIO_EXPIRED",
-                        next_state="EXPIRED",
-                        reason_code="NO_DISPLACEMENT_AFTER_RAID",
-                    ),
-                )
-                self.active = None
-                return transitions, None
-
-            body = abs(bar.close - bar.open)
-            bar_range = max(self.tick_size, bar.high - bar.low)
-            close_location = (bar.close - bar.low) / bar_range
-            displacement = body >= atr * self.params.displacement_atr
-            if setup.direction < 0:
-                confirmed = (
-                    displacement
-                    and bar.close < setup.approach_level
-                    and bar.close < bar.open
-                    and close_location <= 0.35
-                )
-            else:
-                confirmed = (
-                    displacement
-                    and bar.close > setup.approach_level
-                    and bar.close > bar.open
-                    and close_location >= 0.65
-                )
-
-            if confirmed:
-                setup.confirmation_index = self.bar_index
-                origin = setup.raid_extreme
-                endpoint = bar.close
-                lower = min(origin, endpoint)
-                upper = max(origin, endpoint)
-                distance = upper - lower
-                if setup.direction < 0:
-                    setup.zone_low = endpoint + distance * 0.382
-                    setup.zone_high = endpoint + distance * 0.618
-                    setup.stop_price = origin + atr * self.params.stop_buffer_atr
-                else:
-                    setup.zone_low = endpoint - distance * 0.618
-                    setup.zone_high = endpoint - distance * 0.382
-                    setup.stop_price = origin - atr * self.params.stop_buffer_atr
-                transitions.append(
-                    self._transition(
-                        setup,
-                        bar,
-                        event_type="DISPLACEMENT_CONFIRMED",
-                        next_state="DISPLACED",
-                        reason_code="APPROACH_STRUCTURE_BROKEN",
-                        reference_price=bar.close,
-                        details={
-                            "approach_level": setup.approach_level,
-                            "body_atr": body / atr if atr else None,
-                            "close_location": close_location,
-                            "zone_low": setup.zone_low,
-                            "zone_high": setup.zone_high,
-                            "stop_price": setup.stop_price,
-                        },
-                    ),
-                )
+            accepted = bar.close <= setup.boundary - accept_buffer
+        if accepted:
+            transitions.append(
+                self._transition(
+                    setup,
+                    bar,
+                    event_type="SCENARIO_INVALIDATED",
+                    next_state="INVALIDATED",
+                    reason_code="REJECTION_BECAME_ACCEPTANCE",
+                    reference_price=bar.close,
+                ),
+            )
+            self.active = None
             return transitions, None
 
-        if setup.state == "DISPLACED":
-            assert setup.confirmation_index is not None
-            assert setup.zone_low is not None and setup.zone_high is not None
-            assert setup.stop_price is not None
-            since_confirmation = self.bar_index - setup.confirmation_index
-            if since_confirmation > self.params.retrace_expiry_bars:
-                transitions.append(
-                    self._transition(
-                        setup,
-                        bar,
-                        event_type="SCENARIO_EXPIRED",
-                        next_state="EXPIRED",
-                        reason_code="NO_FIRST_RETRACE",
-                    ),
-                )
-                self.active = None
-                return transitions, None
+        if age > self.params.rejection_confirm_bars:
+            transitions.append(
+                self._transition(
+                    setup,
+                    bar,
+                    event_type="SCENARIO_EXPIRED",
+                    next_state="EXPIRED",
+                    reason_code="NO_DISPLACEMENT_AFTER_RAID",
+                ),
+            )
+            self.active = None
+            return transitions, None
 
-            if setup.direction < 0 and bar.high >= setup.stop_price:
-                transitions.append(
-                    self._transition(
-                        setup,
-                        bar,
-                        event_type="SCENARIO_INVALIDATED",
-                        next_state="INVALIDATED",
-                        reason_code="RAID_EXTREME_BROKEN_BEFORE_ENTRY",
-                        reference_price=bar.high,
-                    ),
-                )
-                self.active = None
-                return transitions, None
-            if setup.direction > 0 and bar.low <= setup.stop_price:
-                transitions.append(
-                    self._transition(
-                        setup,
-                        bar,
-                        event_type="SCENARIO_INVALIDATED",
-                        next_state="INVALIDATED",
-                        reason_code="RAID_EXTREME_BROKEN_BEFORE_ENTRY",
-                        reference_price=bar.low,
-                    ),
-                )
-                self.active = None
-                return transitions, None
-
-            touched = bar.high >= setup.zone_low and bar.low <= setup.zone_high
-            directional_rejection = bar.close < bar.open if setup.direction < 0 else bar.close > bar.open
-            if since_confirmation >= 1 and touched and directional_rejection:
-                target, target_name = self._select_rejection_target(setup, bar.close)
-                if target is None:
-                    transitions.append(
-                        self._transition(
-                            setup,
-                            bar,
-                            event_type="SCENARIO_INVALIDATED",
-                            next_state="INVALIDATED",
-                            reason_code="NO_STRUCTURAL_TARGET_WITH_ROOM",
-                            reference_price=bar.close,
-                        ),
-                    )
-                    self.active = None
-                    return transitions, None
-                plan = TradePlan(
-                    scenario_id=setup.scenario_id,
-                    scenario=setup.scenario,
-                    direction=setup.direction,
-                    observed_ns=bar.ts_ns,
-                    entry_estimate=bar.close,
-                    stop_price=setup.stop_price,
-                    target_price=target,
-                    boundary=setup.boundary,
-                    atr=atr,
-                    structural_target=target_name,
-                    details={
-                        "zone_low": setup.zone_low,
-                        "zone_high": setup.zone_high,
-                        "raid_extreme": setup.raid_extreme,
-                    },
-                )
-                transitions.append(
-                    self._transition(
-                        setup,
-                        bar,
-                        event_type="ENTRY_READY",
-                        next_state="ENTRY_READY",
-                        reason_code="FIRST_CORRIDOR_RETEST_REJECTED",
-                        reference_price=bar.close,
-                        details={
-                            "target": target,
-                            "target_name": target_name,
-                            "stop": setup.stop_price,
-                        },
-                    ),
-                )
-                self.active = None
-                self.consumed_block_id = self.current_range.block_id if self.current_range else None
-                return transitions, plan
-
-        return transitions, None
-
-    def _select_rejection_target(self, setup: Setup, entry: float) -> tuple[float | None, str]:
-        pool = self.previous_range
-        if pool is None:
-            return None, "NONE"
-        candidates: list[tuple[float, str]]
+        body = abs(bar.close - bar.open)
+        bar_range = max(self.tick_size, bar.high - bar.low)
+        close_location = (bar.close - bar.low) / bar_range
+        displacement = body >= atr * self.params.displacement_atr
         if setup.direction < 0:
-            candidates = [(pool.midpoint, "PRIOR_BLOCK_MIDPOINT"), (pool.low, "OPPOSITE_BLOCK_LOW")]
+            confirmed = (
+                displacement
+                and bar.close < setup.approach_level
+                and bar.close < bar.open
+                and close_location <= 0.35
+            )
         else:
-            candidates = [(pool.midpoint, "PRIOR_BLOCK_MIDPOINT"), (pool.high, "OPPOSITE_BLOCK_HIGH")]
-        risk = abs(entry - float(setup.stop_price))
-        if risk <= self.tick_size:
-            return None, "NONE"
+            confirmed = (
+                displacement
+                and bar.close > setup.approach_level
+                and bar.close > bar.open
+                and close_location >= 0.65
+            )
+        if not confirmed:
+            return transitions, None
+
+        setup.confirmation_index = self.bar_index
+        origin = setup.raid_extreme
+        endpoint = bar.close
+        distance = abs(origin - endpoint)
+        if setup.direction < 0:
+            entry = endpoint + distance * self.params.rejection_limit_fraction
+            stop = origin + self._execution_buffer(entry, atr)
+            setup.zone_low = endpoint + distance * 0.382
+            setup.zone_high = entry
+        else:
+            entry = endpoint - distance * self.params.rejection_limit_fraction
+            stop = origin - self._execution_buffer(entry, atr)
+            setup.zone_low = entry
+            setup.zone_high = endpoint - distance * 0.382
+        setup.stop_price = stop
+        transitions.append(
+            self._transition(
+                setup,
+                bar,
+                event_type="DISPLACEMENT_CONFIRMED",
+                next_state="DISPLACED",
+                reason_code="APPROACH_STRUCTURE_BROKEN",
+                reference_price=bar.close,
+                details={
+                    "approach_level": setup.approach_level,
+                    "body_atr": body / atr if atr else None,
+                    "close_location": close_location,
+                    "zone_low": setup.zone_low,
+                    "zone_high": setup.zone_high,
+                    "resting_entry": entry,
+                    "stop_price": stop,
+                },
+            ),
+        )
+
+        target, target_name, net_rr = self._select_rejection_target(setup, entry, stop)
+        if target is None:
+            transitions.append(
+                self._transition(
+                    setup,
+                    bar,
+                    event_type="SCENARIO_INVALIDATED",
+                    next_state="INVALIDATED",
+                    reason_code="NO_COST_ADJUSTED_STRUCTURAL_TARGET",
+                    reference_price=entry,
+                    details={"stop": stop, "minimum_net_rr": self.params.min_net_rr},
+                ),
+            )
+            self.active = None
+            return transitions, None
+
+        plan = TradePlan(
+            scenario_id=setup.scenario_id,
+            scenario=setup.scenario,
+            direction=setup.direction,
+            observed_ns=bar.ts_ns,
+            entry_estimate=entry,
+            stop_price=stop,
+            target_price=target,
+            boundary=setup.boundary,
+            atr=atr,
+            structural_target=target_name,
+            entry_order_type="LIMIT",
+            entry_expiry_bars=self.params.retrace_expiry_bars,
+            invalidation_price=stop,
+            details={
+                "zone_low": setup.zone_low,
+                "zone_high": setup.zone_high,
+                "raid_extreme": setup.raid_extreme,
+                "cost_adjusted_net_rr": net_rr,
+            },
+        )
+        transitions.append(
+            self._transition(
+                setup,
+                bar,
+                event_type="ENTRY_READY",
+                next_state="ENTRY_READY",
+                reason_code="RESTING_DISPLACEMENT_RETRACE_ARMED",
+                reference_price=entry,
+                details={
+                    "target": target,
+                    "target_name": target_name,
+                    "stop": stop,
+                    "cost_adjusted_net_rr": net_rr,
+                    "expiry_bars": self.params.retrace_expiry_bars,
+                },
+            ),
+        )
+        self.active = None
+        self.consumed_block_id = self.current_range.block_id if self.current_range else None
+        return transitions, plan
+
+    def _select_acceptance_target(
+        self,
+        setup: Setup,
+        entry: float,
+        stop: float,
+    ) -> tuple[float | None, str, float]:
+        if setup.direction > 0:
+            historical = sorted({rng.high for rng in self.past_ranges if rng.high > entry})
+        else:
+            historical = sorted(
+                {rng.low for rng in self.past_ranges if rng.low < entry},
+                reverse=True,
+            )
+        candidates: list[tuple[float, str]] = [
+            (value, "OLDER_BLOCK_LIQUIDITY") for value in historical
+        ]
+        pool = self.previous_range
+        if pool is not None:
+            candidates.append(
+                (
+                    setup.boundary
+                    + setup.direction
+                    * pool.width
+                    * self.params.acceptance_target_extension,
+                    "RANGE_EXPANSION_PROJECTION",
+                ),
+            )
         for target, name in candidates:
-            reward = (target - entry) * setup.direction
-            if reward > 0 and reward / risk >= self.params.min_net_rr:
-                return target, name
-        return None, "NONE"
+            net_rr = self._net_rr(
+                direction=setup.direction,
+                entry=entry,
+                stop=stop,
+                target=target,
+            )
+            if net_rr >= self.params.min_net_rr:
+                return target, name, net_rr
+        return None, "NONE", float("-inf")
 
     def _process_acceptance(
         self,
@@ -451,7 +485,6 @@ class AuctionStateMachine:
         assert setup is not None and setup.scenario == "ACCEPTANCE"
         transitions: list[Transition] = []
         age = self.bar_index - setup.created_index
-        tolerance = max(self.tick_size * 2.0, atr * self.params.retest_tolerance_atr)
 
         if setup.direction > 0:
             setup.breakout_extreme = max(float(setup.breakout_extreme), bar.high)
@@ -461,7 +494,6 @@ class AuctionStateMachine:
             setup.breakout_extreme = min(float(setup.breakout_extreme), bar.low)
             outside = bar.close < setup.boundary
             reentered = bar.close > setup.boundary
-
         if reentered:
             transitions.append(
                 self._transition(
@@ -469,30 +501,17 @@ class AuctionStateMachine:
                     bar,
                     event_type="SCENARIO_INVALIDATED",
                     next_state="INVALIDATED",
-                    reason_code="BOUNDARY_REENTERED",
+                    reason_code="BOUNDARY_REENTERED_BEFORE_ACCEPTANCE",
                     reference_price=bar.close,
                 ),
             )
             self.active = None
             return transitions, None
 
-        if setup.state == "ACCEPTANCE_PROBE":
-            if outside:
-                setup.consecutive_closes += 1
-            if setup.consecutive_closes >= 2:
-                setup.confirmation_index = self.bar_index
-                transitions.append(
-                    self._transition(
-                        setup,
-                        bar,
-                        event_type="ACCEPTANCE_CONFIRMED",
-                        next_state="ACCEPTED",
-                        reason_code="TWO_CLOSES_OUTSIDE_AND_EXTENSION",
-                        reference_price=bar.close,
-                        details={"breakout_extreme": setup.breakout_extreme},
-                    ),
-                )
-            elif age > 3:
+        if outside:
+            setup.consecutive_closes += 1
+        if setup.consecutive_closes < 2:
+            if age > 3:
                 transitions.append(
                     self._transition(
                         setup,
@@ -505,95 +524,76 @@ class AuctionStateMachine:
                 self.active = None
             return transitions, None
 
-        if setup.state == "ACCEPTED":
-            assert setup.confirmation_index is not None
-            since_confirmation = self.bar_index - setup.confirmation_index
-            if since_confirmation > self.params.acceptance_retest_bars:
-                transitions.append(
-                    self._transition(
-                        setup,
-                        bar,
-                        event_type="SCENARIO_EXPIRED",
-                        next_state="EXPIRED",
-                        reason_code="NO_BOUNDARY_RETEST",
-                    ),
-                )
-                self.active = None
-                return transitions, None
+        setup.confirmation_index = self.bar_index
+        transitions.append(
+            self._transition(
+                setup,
+                bar,
+                event_type="ACCEPTANCE_CONFIRMED",
+                next_state="ACCEPTED",
+                reason_code="TWO_DISTINCT_CLOSES_OUTSIDE",
+                reference_price=bar.close,
+                details={"breakout_extreme": setup.breakout_extreme},
+            ),
+        )
+        entry = setup.boundary
+        buffer = self._execution_buffer(entry, atr)
+        stop = entry - setup.direction * buffer
+        target, target_name, net_rr = self._select_acceptance_target(setup, entry, stop)
+        if target is None:
+            transitions.append(
+                self._transition(
+                    setup,
+                    bar,
+                    event_type="SCENARIO_INVALIDATED",
+                    next_state="INVALIDATED",
+                    reason_code="NO_COST_ADJUSTED_STRUCTURAL_TARGET",
+                    reference_price=entry,
+                    details={"stop": stop, "minimum_net_rr": self.params.min_net_rr},
+                ),
+            )
+            self.active = None
+            return transitions, None
 
-            if setup.direction > 0:
-                touched = bar.low <= setup.boundary + tolerance
-                held = bar.close > setup.boundary and bar.close > bar.open
-                stop = min(bar.low, setup.boundary - atr * self.params.stop_buffer_atr)
-            else:
-                touched = bar.high >= setup.boundary - tolerance
-                held = bar.close < setup.boundary and bar.close < bar.open
-                stop = max(bar.high, setup.boundary + atr * self.params.stop_buffer_atr)
-
-            if since_confirmation >= 1 and touched and held:
-                target, target_name = self._select_acceptance_target(setup, bar.close)
-                risk = abs(bar.close - stop)
-                reward = (target - bar.close) * setup.direction if target is not None else -1.0
-                if target is None or risk <= self.tick_size or reward / risk < self.params.min_net_rr:
-                    transitions.append(
-                        self._transition(
-                            setup,
-                            bar,
-                            event_type="SCENARIO_INVALIDATED",
-                            next_state="INVALIDATED",
-                            reason_code="NO_STRUCTURAL_TARGET_WITH_ROOM",
-                            reference_price=bar.close,
-                        ),
-                    )
-                    self.active = None
-                    return transitions, None
-                plan = TradePlan(
-                    scenario_id=setup.scenario_id,
-                    scenario=setup.scenario,
-                    direction=setup.direction,
-                    observed_ns=bar.ts_ns,
-                    entry_estimate=bar.close,
-                    stop_price=stop,
-                    target_price=target,
-                    boundary=setup.boundary,
-                    atr=atr,
-                    structural_target=target_name,
-                    details={"breakout_extreme": setup.breakout_extreme, "retest_tolerance": tolerance},
-                )
-                transitions.append(
-                    self._transition(
-                        setup,
-                        bar,
-                        event_type="ENTRY_READY",
-                        next_state="ENTRY_READY",
-                        reason_code="ACCEPTED_BOUNDARY_RETEST_HELD",
-                        reference_price=bar.close,
-                        details={"target": target, "target_name": target_name, "stop": stop},
-                    ),
-                )
-                self.active = None
-                self.consumed_block_id = self.current_range.block_id if self.current_range else None
-                return transitions, plan
-
-        return transitions, None
-
-    def _select_acceptance_target(self, setup: Setup, entry: float) -> tuple[float | None, str]:
-        historical: list[float] = []
-        if setup.direction > 0:
-            historical = sorted({rng.high for rng in self.past_ranges if rng.high > entry})
-        else:
-            historical = sorted({rng.low for rng in self.past_ranges if rng.low < entry}, reverse=True)
-        for value in historical:
-            if (value - entry) * setup.direction > 0:
-                return value, "OLDER_BLOCK_LIQUIDITY"
-
-        pool = self.previous_range
-        if pool is None:
-            return None, "NONE"
-        projection = setup.boundary + setup.direction * pool.width * self.params.acceptance_target_extension
-        if (projection - entry) * setup.direction > 0:
-            return projection, "RANGE_EXPANSION_PROJECTION"
-        return None, "NONE"
+        plan = TradePlan(
+            scenario_id=setup.scenario_id,
+            scenario=setup.scenario,
+            direction=setup.direction,
+            observed_ns=bar.ts_ns,
+            entry_estimate=entry,
+            stop_price=stop,
+            target_price=target,
+            boundary=setup.boundary,
+            atr=atr,
+            structural_target=target_name,
+            entry_order_type="LIMIT",
+            entry_expiry_bars=self.params.acceptance_retest_bars,
+            invalidation_price=stop,
+            details={
+                "breakout_extreme": setup.breakout_extreme,
+                "cost_adjusted_net_rr": net_rr,
+            },
+        )
+        transitions.append(
+            self._transition(
+                setup,
+                bar,
+                event_type="ENTRY_READY",
+                next_state="ENTRY_READY",
+                reason_code="RESTING_ACCEPTED_BOUNDARY_RETEST_ARMED",
+                reference_price=entry,
+                details={
+                    "target": target,
+                    "target_name": target_name,
+                    "stop": stop,
+                    "cost_adjusted_net_rr": net_rr,
+                    "expiry_bars": self.params.acceptance_retest_bars,
+                },
+            ),
+        )
+        self.active = None
+        self.consumed_block_id = self.current_range.block_id if self.current_range else None
+        return transitions, plan
 
     def on_bar(self, bar: BarView) -> tuple[list[Transition], TradePlan | None]:
         self.bar_index += 1
