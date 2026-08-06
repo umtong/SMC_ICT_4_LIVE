@@ -6,7 +6,7 @@ on:
       - research/candidate-06
     paths:
       - ".github/workflows/candidate-06-campaign.yml"
-      - "research/candidate-06/afhr_payload.tar.gz"
+      - "research/candidate-06/afhr_payload.part-*"
       - "research/candidate-06/adaptive_fresh_core.py"
       - "research/candidate-06/adaptive_fresh_hierarchical_engine.py"
       - "research/candidate-06/register_adaptive_fresh_engine.py"
@@ -55,10 +55,12 @@ jobs:
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          cat research/candidate-06/afhr_payload.part-* > /tmp/afhr_payload.b64
+          base64 -d /tmp/afhr_payload.b64 > /tmp/afhr_payload.tar.gz
           printf '%s  %s\n' \
             '0d99bfa929cd81362adf5e9a7a02f55eb9c7154d15df9b854d15d86bc3b38ac2' \
-            'research/candidate-06/afhr_payload.tar.gz' | sha256sum -c -
-          tar -xzf research/candidate-06/afhr_payload.tar.gz
+            '/tmp/afhr_payload.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/afhr_payload.tar.gz
 
       - name: Verify fixed NautilusTrader environment
         run: |
@@ -107,7 +109,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts/candidate-06/afhr-first-week
-          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/afhr-first-week/workflow_exit_code.txt
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > artifacts/candidate-06/afhr-first-week/workflow_exit_code.txt
           if [ ! -f artifacts/candidate-06/afhr-first-week/summary.json ]; then
             python - <<'PY'
           import json
@@ -134,7 +138,7 @@ jobs:
           set -euo pipefail
           git config user.name "candidate-06-research-bot"
           git config user.email "candidate-06-research-bot@users.noreply.github.com"
-          git add \
+          for path in \
             research/candidate-06/adaptive_fresh_core.py \
             research/candidate-06/adaptive_fresh_hierarchical_engine.py \
             research/candidate-06/register_adaptive_fresh_engine.py \
@@ -142,7 +146,9 @@ jobs:
             research/candidate-06/test_adaptive_fresh_hierarchical_engine.py \
             research/candidate-06/run_adaptive_fresh_matrix.py \
             research/candidate-06/AFHR_RESEARCH_LEDGER.md \
-            research/candidate-06/nautilus_strategy.py
+            research/candidate-06/nautilus_strategy.py; do
+            if [ -e "$path" ]; then git add "$path"; fi
+          done
           git add -f artifacts/candidate-06/afhr-first-week
           if [ -f research/candidate-06/config.afhr.locked.json ]; then
             git add -f research/candidate-06/config.afhr.locked.json
@@ -167,8 +173,5 @@ jobs:
         if: always()
         run: |
           code='${{ steps.lab.outputs.exit_code }}'
-          if [ -z "$code" ]; then
-            echo "AFHR campaign did not report an exit code" >&2
-            exit 1
-          fi
+          if [ -z "$code" ]; then code=1; fi
           exit "$code"
