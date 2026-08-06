@@ -20,15 +20,37 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import urllib.error
           import urllib.request
 
           symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}
-          request = urllib.request.Request(
+          endpoints = (
               "https://fapi.binance.com/fapi/v1/exchangeInfo",
-              headers={"User-Agent": "SMC-ICT-4-LIVE-research/1.0"},
+              "https://fapi1.binance.com/fapi/v1/exchangeInfo",
+              "https://fapi2.binance.com/fapi/v1/exchangeInfo",
+              "https://fapi3.binance.com/fapi/v1/exchangeInfo",
+              "https://fapi4.binance.com/fapi/v1/exchangeInfo",
+              "https://demo-fapi.binance.com/fapi/v1/exchangeInfo",
+              "https://testnet.binancefuture.com/fapi/v1/exchangeInfo",
           )
-          with urllib.request.urlopen(request, timeout=30) as response:
-              payload = json.load(response)
+          errors = {}
+          payload = None
+          source = None
+          for endpoint in endpoints:
+              request = urllib.request.Request(
+                  endpoint,
+                  headers={"User-Agent": "SMC-ICT-4-LIVE-research/1.0"},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      payload = json.load(response)
+                  source = endpoint
+                  break
+              except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                  errors[endpoint] = f"{type(exc).__name__}: {exc}"
+          if payload is None or source is None:
+              raise SystemExit(json.dumps(errors, indent=2, sort_keys=True))
+
           result = {}
           for item in payload["symbols"]:
               if item["symbol"] not in symbols:
@@ -49,6 +71,6 @@ jobs:
                   "minNotional": filters.get("MIN_NOTIONAL", {}).get("notional"),
               }
           if set(result) != symbols:
-              raise SystemExit(f"missing symbols: {sorted(symbols - set(result))}")
-          print(json.dumps(result, indent=2, sort_keys=True))
+              raise SystemExit(f"missing symbols from {source}: {sorted(symbols - set(result))}")
+          print(json.dumps({"source": source, "symbols": result}, indent=2, sort_keys=True))
           PY
