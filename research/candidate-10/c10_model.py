@@ -74,9 +74,11 @@ class Setup:
     atr: float
     raid_extreme: float
     approach_level: float
-    path_last_close: float
-    path_travel: float
-    path_bars: int
+    # Defaults keep the v2 structural-pool detector reusable while the v2.1
+    # subclass owns the path certification state.
+    path_last_close: float = 0.0
+    path_travel: float = 0.0
+    path_bars: int = 0
     confirmation_index: int | None = None
     zone_low: float | None = None
     zone_high: float | None = None
