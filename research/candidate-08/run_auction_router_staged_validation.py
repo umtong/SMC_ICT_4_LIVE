@@ -7,15 +7,14 @@ The orchestrator runs exactly this predeclared sequence:
 3. at most one diagnostic-only family ablation, selected by the frozen economic-family rule;
 4. a final evidence-backed decision which never promotes an ablation result directly.
 
-Every destination is deleted before execution. A prior ``suite_metrics.json`` can therefore never
-stand in for a failed current run. Implementation failures return nonzero only after evidence and the
-failure decision have been written.
+Every staged destination is deleted before execution. A prior ``suite_metrics.json`` can therefore
+never stand in for a failed current run. Implementation failures return nonzero only after evidence
+and the failure decision have been written.
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 import hashlib
 import json
 import os
@@ -24,7 +23,7 @@ import shutil
 import subprocess
 import sys
 import traceback
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping
 
 from auction_diagnostic_evaluation import evaluate_diagnostic_summary
 from auction_family_ablation_stage import choose_failed_stage
@@ -34,6 +33,7 @@ from auction_family_ablation_decision import IMPLEMENTATION_REVISION
 BASE_MODE = "both"
 FIRST_NAME = "first-v3"
 SCREEN_NAME = "screen-v2"
+PROTOCOL_REVISION = "AUCTION_ROUTER_STAGED_VALIDATION_V1"
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -53,6 +53,25 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def clear_staged_outputs(root: Path) -> None:
+    """Remove only outputs owned by this staged protocol, preserving prior research evidence."""
+
+    for path in (root / FIRST_NAME, root / SCREEN_NAME):
+        _remove_path(path)
+    for pattern in ("first-ablation-*-v1", "screen-ablation-*-v1"):
+        for path in root.glob(pattern):
+            _remove_path(path)
+    for name in ("stage_decision.json", "ablation_decision.json"):
+        _remove_path(root / name)
+
+
 def _summary_ref(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
@@ -67,7 +86,7 @@ def _summary_ref(path: Path) -> dict[str, Any] | None:
         "closed_trades": int(summary.get("closed_trades", 0)),
         "wins": int(summary.get("wins", 0)),
         "combined_daily_geometric_growth": float(
-            summary.get("combined_daily_geometric_growth", 0.0)
+            summary.get("combined_daily_geometric_growth", 0.0) or 0.0
         ),
         "scenario_family_results": summary.get("scenario_family_results", {}),
     }
@@ -121,6 +140,7 @@ def _request_payload(
         "ablation": "none",
         "auction_family_mode": family_mode,
         "implementation_revision": IMPLEMENTATION_REVISION,
+        "protocol_revision": PROTOCOL_REVISION,
         "diagnostic_only": diagnostic_only,
         "promotable": not diagnostic_only,
         "reuse_first_dir": None if reuse_first_dir is None else str(reuse_first_dir),
@@ -143,8 +163,7 @@ def run_suite_process(
 ) -> int:
     """Run one exact suite while streaming output to console and immutable runner.log."""
 
-    if output.exists():
-        shutil.rmtree(output)
+    _remove_path(output)
     output.mkdir(parents=True, exist_ok=True)
     _write_json(
         output / "request.json",
@@ -223,6 +242,7 @@ def execute_staged_validation(
     decision: dict[str, Any] = {
         "candidate": "candidate-08-auction-router-nautilus-v1",
         "implementation_revision": IMPLEMENTATION_REVISION,
+        "protocol_revision": PROTOCOL_REVISION,
         "base_family_mode": BASE_MODE,
         "git_sha": os.environ.get("GITHUB_SHA"),
         "first_runner_status": None,
@@ -237,6 +257,7 @@ def execute_staged_validation(
     }
 
     try:
+        clear_staged_outputs(root)
         first_status = run_suite(
             python_executable=python_executable,
             runner=runner,
@@ -268,7 +289,6 @@ def execute_staged_validation(
         first_passed = bool(first_summary.get("suite_gate_passed", False))
         decision["first_gate_passed"] = first_passed
         screen_status = ""
-        failed_summary = first_summary
 
         if first_passed:
             screen_code = run_suite(
@@ -306,7 +326,6 @@ def execute_staged_validation(
                 decision["decision"] = "PROMOTE_TO_PREDECLARED_LONG_EVALUATION"
                 _write_json(stage_path, decision)
                 return 0, decision
-            failed_summary = screen_summary
 
         selector = choose_failed_stage(
             root=root,
