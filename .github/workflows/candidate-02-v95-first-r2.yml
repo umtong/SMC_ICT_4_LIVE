@@ -1,0 +1,151 @@
+name: candidate-02-v95-nautilustrader-first-week-r2
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v95-first-r2.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  first-week-mature-defended-swing-breakout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/repo/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/repo/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - name: Clone exact triggering branch without external actions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --branch research/candidate-02 --single-branch \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Fix verifier and commit all controlled implementation fixes before data
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          test ! -e inputs/v95-first-week
+
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('research/candidate-02/v95_prepare_before_data.py')
+          text=path.read_text(encoding='utf-8')
+          before='    assert lock["first_week"] == FIXED_WEEK | {"raw_data_status_at_lock": "NOT_COLLECTED_FOR_V95"}\n'
+          after='    for key, value in FIXED_WEEK.items():\n        assert lock["first_week"][key] == value\n    assert lock["first_week"]["raw_data_status_at_lock"] == "NOT_COLLECTED_FOR_V95"\n'
+          assert text.count(before)==1
+          path.write_text(text.replace(before,after),encoding='utf-8')
+          PY
+          python -m py_compile research/candidate-02/v95_prepare_before_data.py
+
+          if compgen -G '.candidate-02-v95-runner/payload.part*' >/dev/null; then
+            test "$(find .candidate-02-v95-runner -maxdepth 1 -name 'payload.part*' -type f | wc -l)" -eq 4
+            test "$(cat .candidate-02-v95-runner/payload.part* | wc -c)" -eq 15356
+            cat .candidate-02-v95-runner/payload.part* | base64 --decode > research/candidate-02/v95_first_week_runner.sh
+          fi
+          test "$(sha256sum research/candidate-02/v95_first_week_runner.sh | cut -d' ' -f1)" = "725db7f6347910f675fdf34a71d1ea34b628854dd574c2b213182c37e698525d"
+          chmod +x research/candidate-02/v95_first_week_runner.sh
+          bash -n research/candidate-02/v95_first_week_runner.sh
+
+          python research/candidate-02/v95_prepare_before_data.py
+          python -m py_compile \
+            research/candidate-02/v95_mature_swing_breakout_core.py \
+            research/candidate-02/v95_nt_backtest.py
+          python -m json.tool research/candidate-02/v95_implementation_fix_01.json >/dev/null
+          python -m json.tool research/candidate-02/v95_implementation_fix_02.json >/dev/null
+          python -m json.tool research/candidate-02/v95_predata_verification.json >/dev/null
+          test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "60ea90e83b3f1cffb0d816c0cb08ff6c6bf6b160a025c7da5f75d7d83e5598a8"
+          test "$(cat research/candidate-02/v95_payload_sha256.txt)" = "e5847fdb56138b4b09ddb3bf62d468d3e96cb6011957121169c5c121878f2356"
+          rm -rf .candidate-02-v95-runner
+
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add -A
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m "fix(candidate-02): finalize v95 causal implementation before data"
+            git push origin HEAD:research/candidate-02
+          fi
+          echo "V95_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Verify fixed runtime and execute locked first BTC week
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          test "$(git rev-parse HEAD)" = "$V95_SOURCE_COMMIT"
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          assert version('nautilus_trader')=='1.230.0'
+          PY
+          test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "60ea90e83b3f1cffb0d816c0cb08ff6c6bf6b160a025c7da5f75d7d83e5598a8"
+          test "$(cat research/candidate-02/v95_payload_sha256.txt)" = "e5847fdb56138b4b09ddb3bf62d468d3e96cb6011957121169c5c121878f2356"
+          set +e
+          bash research/candidate-02/v95_first_week_runner.sh 2>&1 | tee artifacts-v95-runner.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "$status" > artifacts-v95-runner-exit-code.txt
+          if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+
+      - name: Commit compact reproducible evidence and immutable data manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -d repo/.git ]] || exit 0
+          cd repo
+          source_commit="${V95_SOURCE_COMMIT:-$GITHUB_SHA}"
+          run_dir="research/candidate-02/results/v95_first_week/${source_commit}"
+          mkdir -p "$run_dir/variants" "$run_dir/manifests"
+          cp -f artifacts-v95-first-week-decision.json "$run_dir/" 2>/dev/null || true
+          cp -f artifacts-v95-variant-manifest.json "$run_dir/" 2>/dev/null || true
+          cp -f artifacts-v95-runner.log "$run_dir/" 2>/dev/null || true
+          cp -f artifacts-v95-runner-exit-code.txt "$run_dir/" 2>/dev/null || true
+          for directory in artifacts/candidate-02-v95-*; do
+            [[ -d "$directory" ]] || continue
+            label="$(basename "$directory")"
+            mkdir -p "$run_dir/variants/$label"
+            for file in metrics.json signals_schedule.json trades.jsonl risk_sizing.jsonl validation_exit_code.txt account.csv positions.csv fills.csv orders.csv; do
+              [[ -f "$directory/$file" ]] && cp "$directory/$file" "$run_dir/variants/$label/$file"
+            done
+          done
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os
+          root=Path('inputs/v95-first-week')
+          source=os.environ.get('V95_SOURCE_COMMIT',os.environ['GITHUB_SHA'])
+          output=Path('research/candidate-02/results/v95_first_week')/source/'manifests'
+          records=[]
+          if root.exists():
+              for path in sorted(p for p in root.rglob('*') if p.is_file()):
+                  records.append({'path':path.relative_to(root).as_posix(),'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+          manifest={'candidate':'candidate-02-v95-mature-defended-swing-common-accepted-breakout','symbol':'BTCUSDT','evaluation_start_utc':'2025-10-06T00:00:00Z','evaluation_end_utc':'2025-10-13T00:00:00Z','selection_seed':2026080695,'source_commit':source,'performance_engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':0.03,'files':records}
+          output.mkdir(parents=True,exist_ok=True)
+          (output/'immutable_input_sha256.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+          find "$run_dir" -type f -size +20M -delete
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add "$run_dir"
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m "results(candidate-02): preserve v95 first-week NautilusTrader evidence"
+            git push origin HEAD:research/candidate-02
+          fi
