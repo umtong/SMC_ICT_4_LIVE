@@ -92,6 +92,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from adaptive_fresh_hierarchical_engine import AdaptiveFreshHierarchicalEngine
 
         return AdaptiveFreshHierarchicalEngine(logic_params)
+    if name == "SURPRISE_IMPACT_HIERARCHICAL":
+        from surprise_impact_hierarchical_engine import SurpriseImpactHierarchicalEngine
+
+        return SurpriseImpactHierarchicalEngine(logic_params)
     if name == "PERIODIC_OPENING_LIQUIDITY_RELAY":
         from periodic_opening_engine import PeriodicOpeningLiquidityRelayEngine
 
