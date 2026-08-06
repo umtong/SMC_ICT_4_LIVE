@@ -1,9 +1,11 @@
 """Failed-absorption acceptance state for candidate-07.
 
 A structural stop on an absorption/reclaim trade is evidence that price was
-accepted beyond the swept pool. This module waits for a completed bar close to
-hold beyond the stop boundary, then emits one continuation confirmation in the
-opposite direction. It contains no order, fill, PnL, or portfolio logic.
+accepted beyond the swept pool only when the failure belongs to the same
+liquidity shock. The module therefore exposes a causal shock-window predicate,
+then waits for a completed bar close to hold beyond the stop boundary before
+emitting one continuation confirmation. It contains no order, fill, PnL, or
+portfolio logic.
 """
 from __future__ import annotations
 
@@ -11,6 +13,25 @@ from dataclasses import dataclass
 from enum import Enum
 
 from model import Direction
+
+
+NS_PER_MINUTE = 60_000_000_000
+
+
+def within_signal_shock_window(
+    *,
+    opened_ns: int,
+    closed_ns: int,
+    signal_minutes: int,
+) -> bool:
+    """Return whether a stop occurred within one causal signal interval."""
+    if opened_ns < 0 or closed_ns < 0:
+        raise ValueError("timestamps must be non-negative")
+    if closed_ns < opened_ns:
+        raise ValueError("closed_ns must not precede opened_ns")
+    if signal_minutes <= 0:
+        raise ValueError("signal_minutes must be positive")
+    return closed_ns - opened_ns <= signal_minutes * NS_PER_MINUTE
 
 
 class AcceptanceOutcome(str, Enum):
