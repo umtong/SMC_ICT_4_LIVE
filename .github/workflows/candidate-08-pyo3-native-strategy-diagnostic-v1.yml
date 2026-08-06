@@ -47,13 +47,24 @@ jobs:
           from typing import Any, Callable
 
           import pandas as pd
-
+          import nautilus_trader.config as config_module
+          import nautilus_trader.trading as trading_module
           from nautilus_trader.core import nautilus_pyo3 as pyo3
-          from nautilus_trader.config import StrategyConfig
-          from nautilus_trader.model import Bar, BarType, InstrumentId, OrderSide, OrderType, TimeInForce
-          from nautilus_trader.trading import Strategy
 
           from run_aggtrade_acceptance_nautilus import _build_instrument
+
+          Strategy = getattr(pyo3, "Strategy", getattr(trading_module, "Strategy", None))
+          StrategyConfig = getattr(
+              pyo3,
+              "StrategyConfig",
+              getattr(config_module, "StrategyConfig", None),
+          )
+          Bar = pyo3.Bar
+          BarType = pyo3.BarType
+          InstrumentId = pyo3.InstrumentId
+          OrderSide = pyo3.OrderSide
+          OrderType = pyo3.OrderType
+          TimeInForce = pyo3.TimeInForce
 
           OUT = Path("research/candidate-08/evidence/aggtrade-acceptance-nautilus/pyo3-native-strategy-diagnostic-v1")
           CONFIG = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_nautilus.json").read_text())
@@ -66,10 +77,14 @@ jobs:
           }
 
           def typename(value: Any) -> str:
+              if value is None:
+                  return "None"
               cls = value if isinstance(value, type) else type(value)
               return f"{cls.__module__}.{cls.__qualname__}"
 
           def signature(value: Any) -> str:
+              if value is None:
+                  return "None"
               try:
                   return str(inspect.signature(value))
               except Exception as exc:
@@ -93,19 +108,24 @@ jobs:
                   return False, None
 
           for label, value in {
-              "public.Strategy": Strategy,
-              "public.StrategyConfig": StrategyConfig,
-              "public.Bar": Bar,
-              "public.BarType": BarType,
-              "public.InstrumentId": InstrumentId,
+              "selected.Strategy": Strategy,
+              "selected.StrategyConfig": StrategyConfig,
+              "trading_module.Strategy": getattr(trading_module, "Strategy", None),
+              "config_module.StrategyConfig": getattr(config_module, "StrategyConfig", None),
               "pyo3.Strategy": getattr(pyo3, "Strategy", None),
               "pyo3.StrategyConfig": getattr(pyo3, "StrategyConfig", None),
+              "pyo3.Bar": Bar,
+              "pyo3.BarType": BarType,
+              "pyo3.OrderSide": OrderSide,
           }.items():
               result["types"][label] = {
                   "type": typename(value),
                   "repr": repr(value),
                   "signature": signature(value),
               }
+
+          if Strategy is None or StrategyConfig is None:
+              raise RuntimeError("native Strategy/StrategyConfig exports are unavailable")
 
           class ProbeConfig(StrategyConfig):
               _CUSTOM_FIELDS = ("instrument_id", "bar_type", "quantity")
@@ -162,16 +182,16 @@ jobs:
                   if self.submitted:
                       return
                   instrument = self.cache.instrument(self.config.instrument_id)
-                  quantity = instrument.make_qty(self.config.quantity)
+                  quantity = instrument.make_qty(float(self.config.quantity))
                   order_list = self.order_factory.bracket(
                       instrument_id=self.config.instrument_id,
                       order_side=OrderSide.BUY,
                       quantity=quantity,
                       entry_order_type=OrderType.MARKET,
                       time_in_force=TimeInForce.GTC,
-                      tp_price=instrument.make_price(Decimal("102.0")),
+                      tp_price=instrument.make_price(102.0),
                       tp_post_only=False,
-                      sl_trigger_price=instrument.make_price(Decimal("98.0")),
+                      sl_trigger_price=instrument.make_price(98.0),
                       entry_tags=["NATIVE_STRATEGY_DIAGNOSTIC"],
                       tp_tags=["NATIVE_TARGET"],
                       sl_tags=["NATIVE_STOP"],
