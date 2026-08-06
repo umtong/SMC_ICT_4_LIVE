@@ -17,7 +17,7 @@ permissions:
   packages: read
 
 jobs:
-  btc-week-1-aggtrade-resilience:
+  btc-week-1-event-time-tournament:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     container:
@@ -40,8 +40,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .research-data/candidate-07
-          key: candidate-07-aggtrade-resilience-week1-v1
+          key: candidate-07-aggtrade-event-tournament-week1-v1
           restore-keys: |
+            candidate-07-aggtrade-resilience-week1-v1
             candidate-07-impact-resilience-1s-week1-v2
             candidate-07-mark-index-overshoot-week1-v1
             candidate-07-cross-market-transfer-week1-v1
@@ -52,78 +53,28 @@ jobs:
             candidate-07-positioning-week1-v1
             candidate-07-flow-week1-v1
 
-      - name: Diagnose frozen BTC Week-1 baseline
+      - name: Run frozen BTC Week-1 structural tournament
         run: >-
-          python research/candidate-07/run_aggtrade_resilience_second_safe.py
+          python research/candidate-07/run_aggtrade_tournament.py
           --config research/candidate-07/config.json
-          --stage week-1
           --start 2025-12-22
           --end 2025-12-29
           --event-warmup-days 1
-          --output artifacts/candidate-07/week-1/aggtrade_resilience_baseline.json
+          --source-commit ${{ github.sha }}
+          --output-dir artifacts/candidate-07/week-1/event-tournament
           --data-root .research-data/candidate-07
 
-      - name: Classify baseline without masking implementation errors
-        id: classify
-        run: |
-          python - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
-          path = Path('artifacts/candidate-07/week-1/aggtrade_resilience_baseline.json')
-          payload = json.loads(path.read_text())
-          diagnostics = payload['loader_diagnostics']
-          implementation_clean = (
-              diagnostics['out_of_order_rows'] == 0
-              and diagnostics['duplicate_agg_trade_ids'] == 0
-              and diagnostics['second_rows'] > 0
-          )
-          print(f"implementation_clean={'true' if implementation_clean else 'false'}")
-          passed = bool(payload['summary']['diagnostic_gate']['passed'])
-          print(f"baseline_passed={'true' if passed else 'false'}")
-          print(f"need_ablation={'true' if implementation_clean and not passed else 'false'}")
-          PY
-
-      - name: Remove OI-release gate only
-        if: steps.classify.outputs.need_ablation == 'true'
-        run: >-
-          python research/candidate-07/run_aggtrade_resilience_second_safe.py
-          --config research/candidate-07/config.json
-          --stage week-1
-          --start 2025-12-22
-          --end 2025-12-29
-          --event-warmup-days 1
-          --ablate-oi-release
-          --output artifacts/candidate-07/week-1/aggtrade_resilience_ablation_no_oi.json
-          --data-root .research-data/candidate-07
-
-      - name: Print compact machine-readable comparison
+      - name: Print compact machine-readable result
         if: always()
         run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          result = {}
-          for name in ('baseline', 'ablation_no_oi'):
-              path = Path(f'artifacts/candidate-07/week-1/aggtrade_resilience_{name}.json')
-              if path.exists():
-                  payload = json.loads(path.read_text())
-                  result[name] = {
-                      'variant': payload['variant'],
-                      'summary': payload['summary'],
-                      'loader_diagnostics': payload['loader_diagnostics'],
-                      'preconsumption': payload['preconsumption'],
-                      'pool_collision_summary': payload['pool_collision_summary'],
-                  }
-          if not result:
-              raise SystemExit('no candidate report produced')
-          print(json.dumps(result, indent=2, sort_keys=True))
-          PY
+          test -f artifacts/candidate-07/week-1/event-tournament/tournament_summary.json
+          cat artifacts/candidate-07/week-1/event-tournament/tournament_summary.json
 
       - name: Preserve complete structural evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-aggtrade-resilience-week1-${{ github.sha }}
-          path: artifacts/candidate-07/week-1
+          name: candidate-07-event-tournament-week1-${{ github.sha }}
+          path: artifacts/candidate-07/week-1/event-tournament
           retention-days: 14
           if-no-files-found: error
