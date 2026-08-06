@@ -133,12 +133,13 @@ class Candidate07PositioningStrategy(ExecutionStrategy):
         if len(self._bucket) > self.logic.signal_minutes:
             raise RuntimeError("positioning aggregation bucket overflow")
 
-        positioning = self._positioning_by_ts.pop(now, None)
+        positioning = self._positioning_by_ts.pop(now - 1, None)
         if positioning is None:
             self._diagnostics.append(
                 {
                     "reason": "POSITIONING_SNAPSHOT_MISSING",
                     "signal_ts_event_ns": now,
+                    "expected_snapshot_ts_event_ns": now - 1,
                     "bucket_minutes": self.logic.signal_minutes,
                 }
             )
