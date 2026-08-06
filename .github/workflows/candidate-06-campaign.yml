@@ -1,4 +1,4 @@
-name: Candidate 06 Bootstrap Passive-Liquidity Response
+name: Candidate 06 Adaptive-Fresh Hierarchical Relay
 
 on:
   push:
@@ -6,7 +6,18 @@ on:
       - research/candidate-06
     paths:
       - ".github/workflows/candidate-06-campaign.yml"
-      - "research/candidate-06/dlvr_payload.part-*"
+      - "research/candidate-06/afhr_payload.tar.gz"
+      - "research/candidate-06/adaptive_fresh_core.py"
+      - "research/candidate-06/adaptive_fresh_hierarchical_engine.py"
+      - "research/candidate-06/register_adaptive_fresh_engine.py"
+      - "research/candidate-06/test_adaptive_fresh_core.py"
+      - "research/candidate-06/test_adaptive_fresh_hierarchical_engine.py"
+      - "research/candidate-06/run_adaptive_fresh_matrix.py"
+      - "research/candidate-06/AFHR_RESEARCH_LEDGER.md"
+      - "research/candidate-06/nautilus_strategy.py"
+      - "src/smc_ict_4/**"
+      - "pyproject.toml"
+      - "uv.lock"
   workflow_dispatch:
 
 permissions:
@@ -14,7 +25,7 @@ permissions:
   packages: read
 
 concurrency:
-  group: candidate-06-passive-liquidity-response
+  group: candidate-06-adaptive-fresh-hierarchical
   cancel-in-progress: true
 
 defaults:
@@ -22,7 +33,8 @@ defaults:
     shell: bash
 
 jobs:
-  first-week-lab:
+  afhr-campaign:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     container:
@@ -39,15 +51,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Reassemble and verify reviewed source payload
+      - name: Materialize and verify reviewed AFHR source payload
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          cat research/candidate-06/dlvr_payload.part-* > /tmp/dlvr_payload.tar.gz
           printf '%s  %s\n' \
-            '45ef60553046a051e395cf249480cf6cd96bf7d21337911d0280c61acdf6e85c' \
-            '/tmp/dlvr_payload.tar.gz' | sha256sum -c -
-          tar -xzf /tmp/dlvr_payload.tar.gz
+            '0d99bfa929cd81362adf5e9a7a02f55eb9c7154d15df9b854d15d86bc3b38ac2' \
+            'research/candidate-06/afhr_payload.tar.gz' | sha256sum -c -
+          tar -xzf research/candidate-06/afhr_payload.tar.gz
 
       - name: Verify fixed NautilusTrader environment
         run: |
@@ -60,28 +71,33 @@ jobs:
           print(f"NAUTILUS_VERSION={actual}")
           PY
 
-      - name: Verify detector, data adapter and scenario causality
+      - name: Register AFHR in the existing strategy selector
         run: |
           set -euo pipefail
-          python -m py_compile \
-            research/candidate-06/depth_liquidity_response_engine.py \
-            research/candidate-06/prepare_liquidity_series.py \
-            research/candidate-06/run_depth_campaign.py \
-            research/candidate-06/depth_shim/nautilus_strategy.py \
-            research/candidate-06/test_depth_liquidity_response_engine.py
-          python research/candidate-06/test_depth_liquidity_response_engine.py
+          python research/candidate-06/register_adaptive_fresh_engine.py
+          grep -q 'ADAPTIVE_FRESH_HIERARCHICAL' research/candidate-06/nautilus_strategy.py
 
-      - name: Run unchanged passive-liquidity campaign through NautilusTrader
+      - name: Verify adaptive-fresh causality and parent contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-06/*.py
+          python research/candidate-06/test_adaptive_fresh_core.py
+          python research/candidate-06/test_adaptive_fresh_hierarchical_engine.py
+          python research/candidate-06/test_hierarchical_flow_factor_engine.py
+          python research/candidate-06/test_hierarchical_multi_liquidity_engine.py
+          python research/candidate-06/test_excursion_diagnostics.py
+
+      - name: Run controlled AFHR matrix and sealed weeks through NautilusTrader
         id: lab
         continue-on-error: true
         run: |
           set +e
-          rm -rf artifacts/candidate-06/dlvr-first-week
+          rm -rf artifacts/candidate-06/afhr-first-week
           mkdir -p "$SMC4_RESEARCH_DATA" artifacts
-          python research/candidate-06/run_depth_campaign.py \
-            --output artifacts/candidate-06/dlvr-first-week \
-            > artifacts/candidate-06-dlvr.stdout \
-            2> artifacts/candidate-06-dlvr.stderr
+          python research/candidate-06/run_adaptive_fresh_matrix.py \
+            --output artifacts/candidate-06/afhr-first-week \
+            > artifacts/candidate-06-afhr.stdout \
+            2> artifacts/candidate-06-afhr.stderr
           code=$?
           echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
           exit 0
@@ -90,16 +106,15 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p artifacts/candidate-06/dlvr-first-week
-          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/dlvr-first-week/workflow_exit_code.txt
-          if [ ! -f artifacts/candidate-06/dlvr-first-week/summary.json ]; then
+          mkdir -p artifacts/candidate-06/afhr-first-week
+          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/afhr-first-week/workflow_exit_code.txt
+          if [ ! -f artifacts/candidate-06/afhr-first-week/summary.json ]; then
             python - <<'PY'
           import json
           from pathlib import Path
-          root = Path("artifacts/candidate-06/dlvr-first-week")
+          root = Path("artifacts/candidate-06/afhr-first-week")
           payload = {
               "all_three_weeks_passed": False,
-              "implementation_status": "FAILURE_BEFORE_SUMMARY",
               "long_evaluation_authorized": False,
               "selected": None,
               "terminal_status": "IMPLEMENTATION_OR_RUNTIME_FAILURE_BEFORE_SUMMARY",
@@ -110,37 +125,40 @@ jobs:
           )
           PY
           fi
-          cp artifacts/candidate-06-dlvr.stdout artifacts/candidate-06/dlvr-first-week/workflow_stdout.txt 2>/dev/null || true
-          cp artifacts/candidate-06-dlvr.stderr artifacts/candidate-06/dlvr-first-week/workflow_stderr.txt 2>/dev/null || true
+          cp artifacts/candidate-06-afhr.stdout artifacts/candidate-06/afhr-first-week/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-06-afhr.stderr artifacts/candidate-06/afhr-first-week/workflow_stderr.txt 2>/dev/null || true
 
-      - name: Commit reviewed source and reproducible evidence
+      - name: Commit reproducible source registration and evidence
         if: always() && github.event_name == 'push'
         run: |
           set -euo pipefail
           git config user.name "candidate-06-research-bot"
           git config user.email "candidate-06-research-bot@users.noreply.github.com"
           git add \
-            research/candidate-06/depth_liquidity_response_engine.py \
-            research/candidate-06/prepare_liquidity_series.py \
-            research/candidate-06/run_depth_campaign.py \
-            research/candidate-06/depth_shim/nautilus_strategy.py \
-            research/candidate-06/test_depth_liquidity_response_engine.py
-          git add -f artifacts/candidate-06/dlvr-first-week
-          if [ -f research/candidate-06/config.dlvr.locked.json ]; then
-            git add -f research/candidate-06/config.dlvr.locked.json
+            research/candidate-06/adaptive_fresh_core.py \
+            research/candidate-06/adaptive_fresh_hierarchical_engine.py \
+            research/candidate-06/register_adaptive_fresh_engine.py \
+            research/candidate-06/test_adaptive_fresh_core.py \
+            research/candidate-06/test_adaptive_fresh_hierarchical_engine.py \
+            research/candidate-06/run_adaptive_fresh_matrix.py \
+            research/candidate-06/AFHR_RESEARCH_LEDGER.md \
+            research/candidate-06/nautilus_strategy.py
+          git add -f artifacts/candidate-06/afhr-first-week
+          if [ -f research/candidate-06/config.afhr.locked.json ]; then
+            git add -f research/candidate-06/config.afhr.locked.json
           fi
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "Record candidate-06 passive-liquidity evidence [candidate-06 evidence]"
+          git commit -m "Record candidate-06 AFHR evidence [candidate-06 evidence]"
           git push origin HEAD:research/candidate-06
 
       - name: Upload staged evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-06-dlvr-${{ github.sha }}
-          path: artifacts/candidate-06/dlvr-first-week
+          name: candidate-06-afhr-${{ github.sha }}
+          path: artifacts/candidate-06/afhr-first-week
           include-hidden-files: true
           retention-days: 30
           if-no-files-found: error
@@ -150,7 +168,7 @@ jobs:
         run: |
           code='${{ steps.lab.outputs.exit_code }}'
           if [ -z "$code" ]; then
-            echo "passive-liquidity campaign did not report an exit code" >&2
+            echo "AFHR campaign did not report an exit code" >&2
             exit 1
           fi
           exit "$code"
