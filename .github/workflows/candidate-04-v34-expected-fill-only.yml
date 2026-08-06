@@ -1,0 +1,200 @@
+name: candidate-04-v34-expected-fill-only
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v34-expected-fill-only.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore all exact validated-core artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v31-ablation-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31114267295
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Verify isolated fill-expectation contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/nt_expected_fill_risk_sizing.py \
+            research/candidate-04/nt_expected_fill_only_risk_sizing.py \
+            research/candidate-04/nt_backtest_v34_expected_fill_only.py \
+            research/candidate-04/nt_rich_signal_strategy.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_expected_fill_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_expected_fill_only_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Replay identical seven weeks through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=(low_activity normal_basis stress_a year_end autumn may_2024 failed_untouched_2025_03)
+          build_starts=(2023-08-02 2023-12-16 2024-08-05 2024-12-25 2025-10-18 2024-05-25 2025-03-22)
+          build_ends=(2023-08-10 2023-12-24 2024-08-13 2025-01-02 2025-10-26 2024-06-02 2025-03-30)
+          eval_starts=(2023-08-04 2023-12-18 2024-08-07 2024-12-27 2025-10-20 2024-05-27 2025-03-24)
+          eval_ends=(2023-08-10 2023-12-24 2024-08-13 2025-01-02 2025-10-26 2024-06-02 2025-03-30)
+
+          for i in "${!names[@]}"; do
+            name="${names[$i]}"
+            source="$(find sources -mindepth 1 -maxdepth 1 -type d -name "candidate-04-v31-ablation-${name}-*" | head -n1)"
+            test -n "$source"
+            test -s "$source/ablated/signals/signals.json"
+            root="artifacts/candidate-04-v34/$name"
+            mkdir -p "$root/source"
+            cp "$source/comparison.json" "$root/source/comparison.json"
+            cp "$source/ablated/signals/signals.json" "$root/source/signals.json"
+
+            C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$root/source/signals.json" \
+            python research/candidate-04/nt_backtest_v34_expected_fill_only.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start "${build_starts[$i]}" \
+              --build-end "${build_ends[$i]}" \
+              --evaluation-start "${eval_starts[$i]}" \
+              --evaluation-end "${eval_ends[$i]}" \
+              --cache ".cache/candidate-04-v34/$name/raw" \
+              --output "$root/nautilus" \
+              > "$root/nautilus_console.json"
+            test -s "$root/nautilus/metrics.json"
+            test -e "$root/nautilus/positions.csv"
+            test -s "$root/nautilus/strategy_events.json"
+          done
+
+      - name: Verify risk and aggregate isolated change
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          from pathlib import Path
+          import pandas as pd
+          from pandas.errors import EmptyDataError
+
+          root = Path("artifacts/candidate-04-v34")
+          names = [
+              "low_activity",
+              "normal_basis",
+              "stress_a",
+              "year_end",
+              "autumn",
+              "may_2024",
+              "failed_untouched_2025_03",
+          ]
+          rows = []
+          for name in names:
+              base = root / name
+              metrics = json.loads((base / "nautilus/metrics.json").read_text())
+              events = json.loads((base / "nautilus/strategy_events.json").read_text())
+              comparison = json.loads((base / "source/comparison.json").read_text())
+              try:
+                  positions = pd.read_csv(base / "nautilus/positions.csv")
+              except EmptyDataError:
+                  positions = pd.DataFrame()
+              entries = [e for e in events if e.get("event_type") == "ENTRY_SUBMITTED"]
+              if len(entries) != len(positions.index):
+                  raise SystemExit(f"{name}: entry-position mismatch")
+              losses = []
+              expectation_rows = 0
+              for position, entry in zip(positions.to_dict("records"), entries):
+                  details = entry["details"]
+                  if details.get("fill_expectation") != "arithmetic_mean_completed_directional_excursion":
+                      raise SystemExit(f"{name}: unexpected fill contract")
+                  if details.get("target_contract") != "validated_v31_capped_reference":
+                      raise SystemExit(f"{name}: target contract changed")
+                  expectation_rows += 1
+                  pnl = float(str(position["realized_pnl"]).split()[0].replace("_", ""))
+                  if pnl < 0.0:
+                      losses.append(abs(pnl) / float(details["equity"]))
+              maximum = max(losses, default=0.0)
+              if maximum > 0.0301:
+                  raise SystemExit(
+                      f"{name}: realized loss exceeded 3% NAV: {maximum}"
+                  )
+              row = {
+                  "matrix": name,
+                  "engine": metrics.get("engine"),
+                  "trades": metrics.get("trades"),
+                  "wins": metrics.get("wins"),
+                  "win_rate": metrics.get("win_rate"),
+                  "total_return": metrics.get("total_return"),
+                  "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                  "active_days": metrics.get("active_days"),
+                  "max_drawdown": metrics.get("max_drawdown"),
+                  "largest_winner_share": metrics.get("largest_winner_share"),
+                  "scenario_metrics": metrics.get("scenario_metrics"),
+                  "maximum_realized_loss_fraction": maximum,
+                  "expected_fill_entries": expectation_rows,
+                  "original_validated_core": comparison["ablated"],
+              }
+              (base / "summary.json").write_text(
+                  json.dumps(row, indent=2, sort_keys=True) + "\n"
+              )
+              rows.append(row)
+
+          returns = [float(row["total_return"]) for row in rows]
+          compounded = math.prod(1.0 + value for value in returns) - 1.0
+          trades = sum(int(row["trades"]) for row in rows)
+          wins = sum(int(row["wins"]) for row in rows)
+          daily = (1.0 + compounded) ** (1.0 / 49.0) - 1.0
+          aggregate = {
+              "candidate": "candidate-04-v34-expected-fill-only",
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "controlled_change": "q95 same-direction reserve to arithmetic mean entry/opposite-stop expectations",
+              "changed_variables_from_validated_v31_core": 1,
+              "weeks": rows,
+              "calendar_days": 49,
+              "all_weeks_positive": all(value > 0.0 for value in returns),
+              "compounded_return": compounded,
+              "geometric_daily_growth": daily,
+              "trades": trades,
+              "wins": wins,
+              "win_rate": wins / trades if trades else 0.0,
+              "development_target_reached": all(value > 0.0 for value in returns) and daily >= 0.01,
+              "final_validation_completed": False,
+          }
+          (root / "aggregate.json").write_text(
+              json.dumps(aggregate, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(aggregate, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v34-expected-fill-only-${{ github.sha }}
+          path: artifacts/candidate-04-v34
+          if-no-files-found: error
+          retention-days: 90
