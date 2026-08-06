@@ -1,0 +1,249 @@
+name: candidate-08-auction-router-nautilus-v3
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-auction-router-nautilus-v3"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-auction-router-nautilus-v3
+  cancel-in-progress: false
+
+jobs:
+  staged-validation:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      MARKER: research/candidate-08/.run-auction-router-nautilus-v3
+      ROOT: research/candidate-08/evidence/auction-router-nautilus-v1
+      FIRST_OUTPUT: research/candidate-08/evidence/auction-router-nautilus-v1/first-v2
+      SCREEN_OUTPUT: research/candidate-08/evidence/auction-router-nautilus-v1/screen-v1
+      CACHE: /tmp/candidate-08-aggtrade-acceptance-data
+      CONFIG: research/candidate-08/config_auction_router_nautilus_v1.json
+      PATTERN: research/candidate-08/config_range_fvg.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify pinned environment and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-08/aggtrade_acceptance_funding.py \
+            research/candidate-08/aggtrade_acceptance_mark_price.py \
+            research/candidate-08/aggtrade_acceptance_signals.py \
+            research/candidate-08/aggtrade_auction_router_signals.py \
+            research/candidate-08/aggtrade_acceptance_strategy.py \
+            research/candidate-08/aggtrade_acceptance_evaluation.py \
+            research/candidate-08/run_aggtrade_acceptance_nautilus.py \
+            research/candidate-08/run_aggtrade_auction_router_nautilus.py
+          python research/candidate-08/test_aggtrade_orderflow.py -v
+          python research/candidate-08/test_aggtrade_acceptance.py -v
+          python research/candidate-08/test_aggtrade_acceptance_pure.py -v
+          python research/candidate-08/test_aggtrade_acceptance_nautilus.py -v
+          python research/candidate-08/test_aggtrade_auction_router.py -v
+          python - <<'PY'
+          from pathlib import Path
+
+          detector = Path("research/candidate-08/aggtrade_auction_router_signals.py").read_text()
+          wrapper = Path("research/candidate-08/run_aggtrade_auction_router_nautilus.py").read_text()
+          workflow = Path(".github/workflows/candidate-08-auction-router-nautilus-v3.yml").read_text()
+          config = Path("research/candidate-08/config_auction_router_nautilus_v1.json").read_text()
+
+          assert "INITIATIVE_ACCEPTANCE_CONTINUATION" in detector
+          assert "FAILED_AUCTION_REVERSAL" in detector
+          assert "displacement_depth < reserve" in detector
+          assert "require_contraction=False" in detector
+          assert "_normalize_intent_scenario_families" in wrapper
+          assert 'summary["by_scenario_family"]' in wrapper
+          assert "Generalize scenario reporting" not in workflow
+          assert '"risk_fraction": 0.03' in config
+          assert '"default_leverage": 125' in config
+          PY
+
+      - name: Restore checksum-verified official-data cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-auction-router-v1-${{ hashFiles('research/candidate-08/config_auction_router_nautilus_v1.json') }}
+          restore-keys: |
+            candidate-08-auction-router-v1-
+            candidate-08-aggtrade-acceptance-v5-
+            candidate-08-aggtrade-acceptance-
+
+      - name: Run fixed first NautilusTrader week
+        id: first
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$FIRST_OUTPUT"
+          cat > "$FIRST_OUTPUT/request.json" <<'JSON'
+          {
+            "suite": "first",
+            "ablation": "none",
+            "output_name": "first-v2",
+            "promotable": true,
+            "scenario_contract": "auction-router-v1"
+          }
+          JSON
+          set +e
+          python research/candidate-08/run_aggtrade_auction_router_nautilus.py \
+            --suite first \
+            --ablation none \
+            --config "$CONFIG" \
+            --pattern-config "$PATTERN" \
+            --output "$FIRST_OUTPUT" \
+            --data-cache "$CACHE" \
+            2>&1 | tee "$FIRST_OUTPUT/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$FIRST_OUTPUT/runner_exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          if [[ "$status" -ne 0 ]]; then
+            printf 'passed=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          from pathlib import Path
+          summary = json.loads((Path(os.environ["FIRST_OUTPUT"]) / "suite_metrics.json").read_text())
+          print(f"passed={'true' if bool(summary.get('suite_gate_passed')) else 'false'}")
+          PY
+
+      - name: Run the two remaining fixed weeks only after first-week promotion
+        id: screen
+        if: ${{ steps.first.outputs.status == '0' && steps.first.outputs.passed == 'true' }}
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$SCREEN_OUTPUT"
+          cat > "$SCREEN_OUTPUT/request.json" <<'JSON'
+          {
+            "suite": "screen",
+            "ablation": "none",
+            "output_name": "screen-v1",
+            "promotable": true,
+            "scenario_contract": "auction-router-v1",
+            "first_week_reused": "first-v2"
+          }
+          JSON
+          set +e
+          python research/candidate-08/run_aggtrade_auction_router_nautilus.py \
+            --suite screen \
+            --ablation none \
+            --config "$CONFIG" \
+            --pattern-config "$PATTERN" \
+            --output "$SCREEN_OUTPUT" \
+            --data-cache "$CACHE" \
+            --reuse-first-dir "$FIRST_OUTPUT" \
+            2>&1 | tee "$SCREEN_OUTPUT/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$SCREEN_OUTPUT/runner_exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Record staged decision
+        if: ${{ always() }}
+        shell: bash
+        env:
+          FIRST_STATUS: ${{ steps.first.outputs.status }}
+          FIRST_PASSED: ${{ steps.first.outputs.passed }}
+          SCREEN_STATUS: ${{ steps.screen.outputs.status }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          first = root / "first-v2" / "suite_metrics.json"
+          screen = root / "screen-v1" / "suite_metrics.json"
+          decision = {
+              "candidate": "candidate-08-auction-router-nautilus-v1",
+              "first_runner_status": os.environ.get("FIRST_STATUS", ""),
+              "first_gate_passed": os.environ.get("FIRST_PASSED", "false") == "true",
+              "screen_runner_status": os.environ.get("SCREEN_STATUS", ""),
+              "screen_executed": screen.exists(),
+              "screen_gate_passed": False,
+              "decision": "IMPLEMENTATION_FAILURE",
+          }
+          if first.exists():
+              first_summary = json.loads(first.read_text())
+              decision["first_summary"] = first_summary
+              if not decision["first_gate_passed"]:
+                  decision["decision"] = "FIRST_WEEK_LOGIC_FAILURE_REQUIRES_ONE_SCENARIO_FAMILY_ABLATION"
+              elif screen.exists():
+                  screen_summary = json.loads(screen.read_text())
+                  decision["screen_summary"] = screen_summary
+                  decision["screen_gate_passed"] = bool(screen_summary.get("suite_gate_passed"))
+                  decision["decision"] = (
+                      "PROMOTE_TO_PREDECLARED_LONG_EVALUATION"
+                      if decision["screen_gate_passed"]
+                      else "THREE_WEEK_LOGIC_FAILURE_REQUIRES_ONE_SCENARIO_FAMILY_ABLATION"
+                  )
+              else:
+                  decision["decision"] = "FIRST_WEEK_PASSED_BUT_SCREEN_IMPLEMENTATION_FAILED"
+          (root / "stage_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Save official-data cache
+        if: ${{ always() && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-auction-router-v1-${{ hashFiles('research/candidate-08/config_auction_router_nautilus_v1.json') }}
+
+      - name: Commit evidence conflict-safely
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- "$ROOT" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record source-stable auction-router evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce staged runner status
+        if: ${{ always() }}
+        shell: bash
+        env:
+          FIRST_STATUS: ${{ steps.first.outputs.status }}
+          FIRST_PASSED: ${{ steps.first.outputs.passed }}
+          SCREEN_STATUS: ${{ steps.screen.outputs.status }}
+        run: |
+          [[ -n "$FIRST_STATUS" ]]
+          [[ "$FIRST_STATUS" == "0" ]]
+          if [[ "$FIRST_PASSED" == "true" ]]; then
+            [[ -n "$SCREEN_STATUS" ]]
+            [[ "$SCREEN_STATUS" == "0" ]]
+          fi
