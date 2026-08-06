@@ -1,0 +1,43 @@
+{
+  "candidate": "candidate-04-v26b-causal-inventory-retest-router",
+  "status": "development_survivor_pending_untouched_validation",
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "frozen_source": {
+    "commit": "ea4fd231a90a86a9ea2e01cf66c9b28198afb958",
+    "tree": "c9ecc15a4f60bb2ab518c678b920131e773ac51d",
+    "compiler_blob": "71d0e5b807d623e5eb6d2cfd8ce7dd2eb8ad6907"
+  },
+  "implementation_error_and_controlled_fix": {
+    "v26_run_id": 31097029598,
+    "error": "trailing 15-minute OI at the retest included changes before the accepted parent state",
+    "intended_variable": "fresh countertrend inventory created between outside acceptance and first exact retest",
+    "incorrect_loss_events": [
+      {"week": "stress_a", "retest_wait_bars": 1, "rolling_oi_15m": 0.002700, "state_interval_oi": 0.0, "pnl_usdt": -1416.993614},
+      {"week": "autumn", "retest_wait_bars": 1, "rolling_oi_15m": 0.002502, "state_interval_oi": 0.0, "pnl_usdt": -2147.981629}
+    ],
+    "valid_win_events": [
+      {"week": "year_end", "retest_wait_bars": 74, "state_interval_oi": 0.006992, "pnl_usdt": 2062.338869},
+      {"week": "year_end", "retest_wait_bars": 24, "state_interval_oi": 0.001061, "pnl_usdt": 4174.864756}
+    ],
+    "fix": "use OI(retest) / OI(accepted outside bar) - 1 and change no other signal or execution variable",
+    "classification": "implementation/state-measurement error"
+  },
+  "controlled_rerun": {
+    "run_id": 31097719323,
+    "commit": "ea4fd231a90a86a9ea2e01cf66c9b28198afb958",
+    "weeks": {
+      "low_activity": {"artifact_id": 8966171748, "digest": "sha256:a41dc25720468f0e606da71289ca585c5b2e86c57c4c7c8055cb5f7cae526414", "trades": 4, "wins": 4, "return": 0.104868, "daily_growth": 0.014349, "active_days": 2, "max_drawdown": 0.030322},
+      "normal_basis": {"artifact_id": 8966172186, "digest": "sha256:95134ee2c176e5ecfa484cd458fcdab392ce6ed8ae67cef0ab9d4af0aa43cc1f", "trades": 7, "wins": 5, "return": 0.103660, "daily_growth": 0.014190, "active_days": 5, "max_drawdown": 0.046209, "gate_pass": true},
+      "stress_a": {"artifact_id": 8966176279, "digest": "sha256:d8e8da39442dc9ddff94521074b71406f5fcfabfb8ae427a6ea78ff9ead6166b", "trades": 4, "wins": 3, "return": 0.037110, "daily_growth": 0.005219, "active_days": 4, "max_drawdown": 0.036253},
+      "year_end": {"artifact_id": 8966171138, "digest": "sha256:473b6781cc998eb591a6d0b6eda740996573ab9d38ee5db81ed300b10df39e13", "trades": 2, "wins": 2, "return": 0.062372, "daily_growth": 0.008681, "active_days": 2, "max_drawdown": 0.008777},
+      "autumn": {"artifact_id": 8966169860, "digest": "sha256:d7b645b5103774ef048285b013bcbc21111ae7cda8a37f8744859fedc4466c89", "trades": 1, "wins": 1, "return": 0.040249, "daily_growth": 0.005653, "active_days": 1, "max_drawdown": 0.012667}
+    },
+    "combined_disjoint_path": {"trades": 18, "wins": 15, "win_rate": 0.8333333333333334, "compounded_return": 0.39760458755564776, "calendar_days": 35, "daily_growth": 0.00961045126357929, "all_weeks_positive": true}
+  },
+  "valid_mechanism": "countertrend inventory is added after an accepted external break, but completed parent displacement and absolute futures/index basis remain break-aligned and the exact pool is reclaimed",
+  "limitations": [
+    "opportunity count remains regime-dependent",
+    "combined development growth is 0.961% per day and is not final target evidence",
+    "development weeks cannot replace untouched validation"
+  ]
+}
