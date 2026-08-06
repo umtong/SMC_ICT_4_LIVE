@@ -19,6 +19,17 @@ class NautilusExecutionMixin:
     def _attempt_entry(self, signal: ScenarioSignal, snapshot: PrimitiveSnapshot) -> None:
         assert self._instrument is not None
         original_signal = signal
+        pending_validator = getattr(self._scenario_engine, "validate_pending_signal", None)
+        if callable(pending_validator):
+            validation_reason = pending_validator(signal, snapshot)
+            if validation_reason is not None:
+                self._abstain_signal(
+                    signal,
+                    snapshot,
+                    str(validation_reason),
+                    {"causal_engine": type(self._scenario_engine).__name__},
+                )
+                return
         reason: str | None = None
         trap_armed = False
         confirmation_mode = str(self._logic_params.get("sac_entry_confirmation", "NONE"))
@@ -259,6 +270,9 @@ class NautilusExecutionMixin:
                 "sac_entry_confirmation": confirmation_mode if original_signal.family == "SAC" else None,
                 "failed_acceptance_trap": trap_armed,
                 "favorable_drift_guard_enabled": enforce_drift_guard,
+                "scenario_details": dict(signal.details),
+                "bias_context_id": signal.details.get("bias_context_id"),
+                "olar_leg_id": signal.details.get("olar_leg_id"),
             }
             self._entry_inflight = True
             self.diagnostics["entries_submitted"] += 1
@@ -305,6 +319,23 @@ class NautilusExecutionMixin:
         trade = self._active_trade
         if trade is None or self._exit_inflight:
             return
+        structural_exit_provider = getattr(
+            self._scenario_engine,
+            "pop_position_exit_for",
+            None,
+        )
+        if callable(structural_exit_provider):
+            structural_exit = structural_exit_provider(
+                context_id=trade.get("bias_context_id"),
+                direction=str(trade.get("direction", "")),
+            )
+            if structural_exit is not None:
+                trade["forced_exit_reason"] = str(structural_exit["reason"])
+                trade["structural_exit_details"] = dict(structural_exit)
+                self._exit_inflight = True
+                self.cancel_all_orders(self.config.instrument_id)
+                self.close_all_positions(self.config.instrument_id)
+                return
         opened_index = trade.get("opened_bar_index")
         if opened_index is None:
             return
@@ -315,6 +346,9 @@ class NautilusExecutionMixin:
             self.close_all_positions(self.config.instrument_id)
 
     def _finalize_at_boundary(self, snapshot: PrimitiveSnapshot) -> None:
+        engine_diagnostics = getattr(self._scenario_engine, "diagnostics_snapshot", None)
+        if callable(engine_diagnostics):
+            self.diagnostics["scenario_engine"] = engine_diagnostics()
         if self._pending_signal is not None:
             signal = self._pending_signal
             self._pending_signal = None

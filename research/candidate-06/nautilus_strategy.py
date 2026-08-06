@@ -88,6 +88,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from hierarchical_multi_liquidity_engine import HierarchicalMultiLiquidityEngine
 
         return HierarchicalMultiLiquidityEngine(logic_params)
+    if name == "OBJECTIVE_LIFECYCLE_ACCEPTANCE_RELAY":
+        from objective_lifecycle_engine import ObjectiveLifecycleAcceptanceRelayEngine
+
+        return ObjectiveLifecycleAcceptanceRelayEngine(logic_params)
     if name == "ADAPTIVE_FRESH_HIERARCHICAL":
         from adaptive_fresh_hierarchical_engine import AdaptiveFreshHierarchicalEngine
 
