@@ -1,0 +1,74 @@
+name: candidate-08-nautilus-validation
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/**"
+      - ".github/workflows/candidate-08.yml"
+      - "src/smc_ict_4/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Validation suite"
+        required: true
+        default: "screen"
+        type: choice
+        options:
+          - screen
+          - long
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+    env:
+      SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'screen' }}
+      OUTPUT_DIR: artifacts/candidate-08-${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'screen' }}
+      DATA_CACHE: /tmp/smc4-candidate-08-data
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+
+      - name: Verify pinned research environment
+        run: smc4 doctor
+
+      - name: Compile candidate
+        run: python -m compileall -q research/candidate-08
+
+      - name: Run causal and risk contract tests
+        run: python research/candidate-08/test_logic.py -v
+
+      - name: Restore verified Binance archives
+        uses: actions/cache@v4
+        with:
+          path: /tmp/smc4-candidate-08-data
+          key: candidate-08-binance-vision-v1
+
+      - name: Run NautilusTrader validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_DIR"
+          python research/candidate-08/run.py \
+            --suite "$SUITE" \
+            --output "$OUTPUT_DIR" \
+            --data-cache "$DATA_CACHE" \
+            2>&1 | tee "$OUTPUT_DIR/runner.log"
+
+      - name: Preserve complete evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-08-${{ env.SUITE }}-${{ github.sha }}
+          path: ${{ env.OUTPUT_DIR }}
+          if-no-files-found: warn
+          retention-days: 30
