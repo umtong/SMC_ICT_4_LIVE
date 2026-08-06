@@ -18,6 +18,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: candidate-11-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
 
@@ -39,84 +43,57 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Normalize candidate implementation before validation
+      - name: Persist the tested Nautilus bar adapter in the runner branch
         run: |
-          cd "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git rev-parse --show-toplevel
           python - <<'PY'
           from pathlib import Path
-          p = Path("research/candidate-11/run.py")
-          s = p.read_text(encoding="utf-8")
-          for name in ("open", "high", "low", "close", "volume", "taker_buy_volume"):
-              old = f'pd.to_numeric(raw["{name}"], errors="raise"),'
-              new = f'pd.to_numeric(raw["{name}"], errors="raise").to_numpy(),'
-              s = s.replace(old, new)
-          read_line = '                frame = pd.read_csv(stream, header=None, names=COLUMNS)\n'
-          clean_line = '        frame = frame[pd.to_numeric(frame["open_time"], errors="coerce").notna()].reset_index(drop=True)\n'
-          if clean_line not in s:
-              if read_line not in s:
-                  raise SystemExit("expected Binance CSV read line not found")
-              s = s.replace(read_line, read_line + clean_line)
-          simple_wrangler = '    wrangle_frame = frame[["open", "high", "low", "close", "volume"]].copy()\n'
-          writable_wrangler = "\n".join([
-              '    wrangle_columns = ["open", "high", "low", "close", "volume"]',
-              '    wrangle_matrix = frame[wrangle_columns].to_numpy(dtype="float64", copy=True)',
-              '    wrangle_matrix.setflags(write=True)',
-              '    wrangle_frame = pd.DataFrame(',
-              '        wrangle_matrix,',
-              '        index=frame.index.copy(),',
-              '        columns=wrangle_columns,',
-              '        copy=False,',
-              '    )',
-              '    wrangle_frame.values.setflags(write=True)',
-              '    bars = BarDataWrangler(bar_type, instrument).process(wrangle_frame)',
-              '',
-          ])
-          manual_bars = "\n".join([
-              '    # Nautilus 1.230 BarDataWrangler requires a writable pandas data.values',
-              '    # buffer; pandas in the pinned Python 3.13 image exposes a read-only view.',
-              '    # Build the same Nautilus Bar objects directly, while the Nautilus engine',
-              '    # remains solely responsible for event ordering, fills, fees and account NAV.',
-              '    bar_rows = frame[["open", "high", "low", "close", "volume"]].to_numpy(',
-              '        dtype="float64",',
-              '        copy=True,',
-              '    )',
-              '    timestamps_ns = frame.index.asi8',
-              '    bars = [',
-              '        Bar(',
-              '            bar_type=bar_type,',
-              '            open=Price(row[0], instrument.price_precision),',
-              '            high=Price(row[1], instrument.price_precision),',
-              '            low=Price(row[2], instrument.price_precision),',
-              '            close=Price(row[3], instrument.price_precision),',
-              '            volume=Quantity(row[4], instrument.size_precision),',
-              '            ts_event=int(ts_ns),',
-              '            ts_init=int(ts_ns),',
-              '        )',
-              '        for row, ts_ns in zip(bar_rows, timestamps_ns, strict=True)',
-              '    ]',
-              '',
-          ])
-          if writable_wrangler in s:
-              s = s.replace(writable_wrangler, manual_bars)
-          elif simple_wrangler in s:
-              s = s.replace(
-                  simple_wrangler + '    bars = BarDataWrangler(bar_type, instrument).process(wrangle_frame)\n',
-                  manual_bars,
-              )
-          elif manual_bars not in s:
-              raise SystemExit("expected Nautilus bar adapter block not found")
-          s = s.replace("engine.trader.generate_order_fills_report()", "engine.generate_order_fills_report()")
-          s = s.replace("engine.trader.generate_positions_report()", "engine.generate_positions_report()")
-          s = s.replace("engine.trader.generate_account_report(venue)", "engine.generate_account_report(venue)")
-          p.write_text(s, encoding="utf-8")
+
+          path = Path("research/candidate-11/run.py")
+          source = path.read_text(encoding="utf-8")
+
+          logic_import = "from logic import BarObs, CausalAuctionEngine, Direction, LogicConfig, RiskSizer\n"
+          adapter_import = "from bar_adapter import build_bars\n"
+          if adapter_import not in source:
+              if logic_import not in source:
+                  raise SystemExit("candidate logic import anchor not found")
+              source = source.replace(logic_import, logic_import + adapter_import)
+
+          source = source.replace(
+              "    from nautilus_trader.persistence.wranglers import BarDataWrangler\n",
+              "",
+          )
+
+          old_block = """    wrangle_columns = [\"open\", \"high\", \"low\", \"close\", \"volume\"]
+    wrangle_matrix = frame[wrangle_columns].to_numpy(dtype=\"float64\", copy=True)
+    wrangle_matrix.setflags(write=True)
+    wrangle_frame = pd.DataFrame(
+        wrangle_matrix,
+        index=frame.index.copy(),
+        columns=wrangle_columns,
+        copy=False,
+    )
+    wrangle_frame.values.setflags(write=True)
+    bars = BarDataWrangler(bar_type, instrument).process(wrangle_frame)
+"""
+          legacy_block = """    wrangle_frame = frame[[\"open\", \"high\", \"low\", \"close\", \"volume\"]].copy()
+    bars = BarDataWrangler(bar_type, instrument).process(wrangle_frame)
+"""
+          direct_block = "    bars = build_bars(frame, bar_type, instrument)\n"
+          if old_block in source:
+              source = source.replace(old_block, direct_block)
+          elif legacy_block in source:
+              source = source.replace(legacy_block, direct_block)
+          elif direct_block not in source:
+              raise SystemExit("Nautilus bar construction anchor not found")
+
+          path.write_text(source, encoding="utf-8")
           PY
           if ! git diff --quiet -- research/candidate-11/run.py; then
             git config user.name "candidate-11-bot"
             git config user.email "candidate-11-bot@users.noreply.github.com"
             git add research/candidate-11/run.py
-            git commit -m "candidate-11: use direct Nautilus Bar adapter"
+            git commit -m "candidate-11: use tested direct Nautilus bar adapter"
             git push origin HEAD:research/candidate-11
           fi
 
@@ -125,7 +102,10 @@ jobs:
 
       - name: Compile and test candidate logic
         run: |
-          python -m py_compile research/candidate-11/logic.py research/candidate-11/run.py
+          python -m py_compile \
+            research/candidate-11/bar_adapter.py \
+            research/candidate-11/logic.py \
+            research/candidate-11/run.py
           python -m unittest discover -s research/candidate-11 -p 'test_*.py' -v
 
       - name: Run frozen week through NautilusTrader
