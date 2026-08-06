@@ -1,0 +1,107 @@
+name: candidate-08-aggtrade-acceptance-screen2
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-aggtrade-acceptance-screen2"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  probe:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/aggtrade-acceptance-screen2
+      DATA_CACHE: /tmp/candidate-08-aggtrade-acceptance-screen2-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed acceptance-only contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-08/aggtrade_acceptance_probe.py \
+            research/candidate-08/test_aggtrade_acceptance.py \
+            research/candidate-08/aggtrade_orderflow_probe.py \
+            research/candidate-08/test_aggtrade_orderflow.py
+          python research/candidate-08/test_aggtrade_orderflow.py -v
+          python research/candidate-08/test_aggtrade_acceptance.py -v
+
+      - name: Restore checksum-verified screen2 cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/candidate-08-aggtrade-acceptance-screen2-data
+          key: candidate-08-aggtrade-acceptance-btc-screen2-v1
+
+      - name: Run unchanged second BTC week
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          set +e
+          python research/candidate-08/aggtrade_acceptance_probe.py \
+            --config research/candidate-08/config_range_fvg.json \
+            --window screen-02 \
+            --output "$OUTPUT_DIR/summary.json" \
+            --data-cache "$DATA_CACHE" \
+            2>&1 | tee "$OUTPUT_DIR/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT_DIR/runner_exit_status.txt"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          output = Path(os.environ["OUTPUT_DIR"])
+          (output / "workflow.json").write_text(
+              json.dumps({
+                  "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                  "head_sha": os.environ.get("GITHUB_SHA"),
+                  "diagnostic_only": True,
+                  "fixed_window": "screen-02",
+                  "thresholds_changed_from_corrected_screen1": False,
+                  "removed_family": "SWEEP_ABSORPTION_REVERSAL",
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          exit "$status"
+
+      - name: Commit second-window evidence
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm research/candidate-08/.run-aggtrade-acceptance-screen2
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" add \
+            research/candidate-08/aggtrade_acceptance_probe.py \
+            research/candidate-08/test_aggtrade_acceptance.py \
+            research/candidate-08/evidence/aggtrade-acceptance-screen2 \
+            research/candidate-08/.run-aggtrade-acceptance-screen2
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: record acceptance-only second BTC week"
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-aggtrade-acceptance-screen2-${{ github.sha }}
+          path: research/candidate-08/evidence/aggtrade-acceptance-screen2
+          retention-days: 30
+          if-no-files-found: warn
