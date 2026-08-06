@@ -1,0 +1,243 @@
+name: candidate-04-v27-cross-development
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v27-cross-development.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - name: low_activity
+            source_run: 31083152629
+            source_name: candidate-04-v22-low_activity-a6a57d63d580e5baea6dc6703ac6e2a281817896
+            build_start: "2023-08-02"
+            build_end: "2023-08-10"
+            evaluation_start: "2023-08-04"
+            evaluation_end: "2023-08-10"
+          - name: normal_basis
+            source_run: 31083152629
+            source_name: candidate-04-v22-normal_basis-a6a57d63d580e5baea6dc6703ac6e2a281817896
+            build_start: "2023-12-16"
+            build_end: "2023-12-24"
+            evaluation_start: "2023-12-18"
+            evaluation_end: "2023-12-24"
+          - name: stress_a
+            source_run: 31083152629
+            source_name: candidate-04-v22-stress_a-a6a57d63d580e5baea6dc6703ac6e2a281817896
+            build_start: "2024-08-05"
+            build_end: "2024-08-13"
+            evaluation_start: "2024-08-07"
+            evaluation_end: "2024-08-13"
+          - name: year_end
+            source_run: 31083152629
+            source_name: candidate-04-v22-year_end-a6a57d63d580e5baea6dc6703ac6e2a281817896
+            build_start: "2024-12-25"
+            build_end: "2025-01-02"
+            evaluation_start: "2024-12-27"
+            evaluation_end: "2025-01-02"
+          - name: autumn
+            source_run: 31083152629
+            source_name: candidate-04-v22-autumn-a6a57d63d580e5baea6dc6703ac6e2a281817896
+            build_start: "2025-10-18"
+            build_end: "2025-10-26"
+            evaluation_start: "2025-10-20"
+            evaluation_end: "2025-10-26"
+          - name: may_2024
+            source_run: 31099167517
+            source_name: candidate-04-v26b-untouched-week-1-rerun-176dc36cb9918c4999fa43a8cb4733bb92163903
+            build_start: "2024-05-25"
+            build_end: "2024-06-02"
+            evaluation_start: "2024-05-27"
+            evaluation_end: "2024-06-02"
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      MATRIX_NAME: ${{ matrix.name }}
+      C04_BUILD_START: ${{ matrix.build_start }}
+      C04_BUILD_END: ${{ matrix.build_end }}
+      C04_EVALUATION_START: ${{ matrix.evaluation_start }}
+      C04_EVALUATION_END: ${{ matrix.evaluation_end }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore checksummed completed-data observations
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.source_name }}
+          path: artifacts/candidate-04-v27-cross/${{ matrix.name }}/source
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ matrix.source_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify fixed runtime and V27 contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          root="artifacts/candidate-04-v27-cross/$MATRIX_NAME"
+          test -s "$root/source/rich/data_manifest.json"
+          python -m compileall -q \
+            research/candidate-04/rich_signal_compiler_v22.py \
+            research/candidate-04/rich_signal_compiler_v22b.py \
+            research/candidate-04/rich_signal_compiler_v23.py \
+            research/candidate-04/rich_signal_compiler_v24.py \
+            research/candidate-04/rich_signal_compiler_v25.py \
+            research/candidate-04/rich_signal_compiler_v26.py \
+            research/candidate-04/rich_signal_compiler_v26b.py \
+            research/candidate-04/rich_signal_compiler_v26c.py \
+            research/candidate-04/external_break_retest_compiler.py \
+            research/candidate-04/failed_external_break_retest_reversal_compiler.py \
+            research/candidate-04/failed_external_break_retest_no_impact_cap_ablation_compiler.py \
+            research/candidate-04/balanced_session_liquidity_reversal_compiler.py \
+            research/candidate-04/directional_session_vwap_reclaim_compiler.py \
+            research/candidate-04/rich_signal_compiler_v27.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v22_rich_router.py
+          python -m unittest discover -s research/candidate-04/tests -p 'test_rich_signal_compiler_v27.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Compile V27 completed-data intents without execution or PnL
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v27-cross/$MATRIX_NAME"
+          python research/candidate-04/rich_signal_compiler_v27.py \
+            --base-config research/candidate-04/inventory_transfer_config.json \
+            --impact-config research/candidate-04/impact_exhaustion_config.json \
+            --router-config research/candidate-04/auction_activity_router_config.json \
+            --rich-dir "$root/source/rich" \
+            --kline-dir ".cache/candidate-04-v27-cross/$MATRIX_NAME/raw" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --output "$root/signals" \
+            --download-klines \
+            | tee "$root/signal_compiler_console.json"
+          test -s "$root/signals/signals.json"
+          test -s "$root/signals/summary.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-04-v27-cross") / os.environ["MATRIX_NAME"]
+          rows = json.loads((root / "signals/signals.json").read_text())
+          summary = json.loads((root / "signals/summary.json").read_text())
+          rejected = set(summary["router_contract"]["rejected_mechanisms"])
+          previous = -1
+          for row in rows:
+              timestamp = int(row["observe_time_ns"])
+              if timestamp < previous:
+                  raise SystemExit("signals are not time ordered")
+              previous = timestamp
+              scenario = str(row["scenario"])
+              if scenario in rejected:
+                  raise SystemExit(f"rejected scenario survived: {scenario}")
+              if int(row["side"]) not in (-1, 1):
+                  raise SystemExit("invalid signal side")
+          print(json.dumps({"validated_signals": len(rows)}, sort_keys=True))
+          PY
+
+      - name: Execute V27 through one NautilusTrader portfolio
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v27-cross/$MATRIX_NAME"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$root/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v22_rich_router.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start "$C04_BUILD_START" \
+            --build-end "$C04_BUILD_END" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --cache ".cache/candidate-04-v27-cross/$MATRIX_NAME/raw" \
+            --output "$root/nautilus" \
+            | tee "$root/nautilus_console.json"
+          test -s "$root/nautilus/metrics.json"
+          test -e "$root/nautilus/positions.csv"
+          test -s "$root/nautilus/strategy_events.json"
+
+      - name: Verify risk and summarize cross-development result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+          from pandas.errors import EmptyDataError
+
+          root = Path("artifacts/candidate-04-v27-cross") / os.environ["MATRIX_NAME"]
+          metrics = json.loads((root / "nautilus/metrics.json").read_text())
+          signals = json.loads((root / "signals/summary.json").read_text())
+          events = json.loads((root / "nautilus/strategy_events.json").read_text())
+          try:
+              positions = pd.read_csv(root / "nautilus/positions.csv")
+          except EmptyDataError:
+              positions = pd.DataFrame()
+          entries = [event for event in events if event.get("event_type") == "ENTRY_SUBMITTED"]
+          if len(entries) != len(positions.index):
+              raise SystemExit(
+                  f"entry/position mismatch entries={len(entries)} positions={len(positions.index)}"
+              )
+          losses = []
+          for position, entry in zip(positions.to_dict("records"), entries):
+              pnl = float(str(position["realized_pnl"]).split()[0].replace("_", ""))
+              if pnl < 0.0:
+                  losses.append(abs(pnl) / float(entry["details"]["equity"]))
+          maximum = max(losses, default=0.0)
+          summary = {
+              "candidate": "candidate-04-v27-auction-state-mosaic",
+              "stage": "cross_development",
+              "matrix": os.environ["MATRIX_NAME"],
+              "evaluation_start": os.environ["C04_EVALUATION_START"],
+              "evaluation_end": os.environ["C04_EVALUATION_END"],
+              "engine": metrics.get("engine"),
+              "signals": signals.get("written_signals"),
+              "route_counts": signals.get("route_counts"),
+              "trades": metrics.get("trades"),
+              "wins": metrics.get("wins"),
+              "win_rate": metrics.get("win_rate"),
+              "total_return": metrics.get("total_return"),
+              "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+              "active_days": metrics.get("active_days"),
+              "max_drawdown": metrics.get("max_drawdown"),
+              "largest_winner_share": metrics.get("largest_winner_share"),
+              "gate_pass": metrics.get("gate_pass"),
+              "gate_checks": metrics.get("gate_checks"),
+              "scenario_metrics": metrics.get("scenario_metrics"),
+              "maximum_realized_loss_fraction": maximum,
+              "risk_pass": maximum <= 0.0301,
+          }
+          (root / "summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if not summary["risk_pass"]:
+              raise SystemExit("realized loss exceeded 3% NAV contract")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v27-cross-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-04-v27-cross/${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 90
