@@ -1,0 +1,68 @@
+{
+  "candidate": "candidate-04-parent-internal-liquidation-resumption-v1",
+  "decision": "REJECT",
+  "implementation_separation": {
+    "problem": "One short market entry filled after price had already crossed the unchanged structural stop, leaving the contingent stop on the wrong side of the actual entry.",
+    "fix": "The NautilusTrader strategy now immediately flattens any actual entry fill that is not between the unchanged causal stop and target; it never re-anchors alpha geometry to the later fill.",
+    "same_signals_same_week_rerun": {
+      "workflow_run_id": 31092821556,
+      "signals_unchanged": true,
+      "dates_unchanged": true,
+      "invalid_fill_guards_exercised": 1,
+      "maximum_realized_loss_fraction_before": 0.032487458968671244,
+      "maximum_realized_loss_fraction_after": 0.018278782063810062,
+      "risk_contract_after": "PASS"
+    }
+  },
+  "logical_results_after_implementation_fix": [
+    {
+      "week": "2023-08-04..2023-08-10",
+      "signals": 6,
+      "trades": 4,
+      "wins": 0,
+      "total_return": -0.0516285406258,
+      "gate_pass": false
+    },
+    {
+      "week": "2024-12-27..2025-01-02",
+      "signals": 9,
+      "trades": 5,
+      "wins": 2,
+      "total_return": -0.0012590683218,
+      "gate_pass": false
+    }
+  ],
+  "one_variable_ablation": {
+    "removed_variable": "negative 15-minute open-interest change gate",
+    "workflow_run_id": 31093166801,
+    "results": [
+      {
+        "week": "2023-08-04..2023-08-10",
+        "signals": 14,
+        "trades": 11,
+        "wins": 1,
+        "total_return": -0.1181335651666,
+        "geometric_daily_growth": -0.01779893238071284,
+        "active_days": 7
+      },
+      {
+        "week": "2024-12-27..2025-01-02",
+        "signals": 14,
+        "trades": 8,
+        "wins": 2,
+        "total_return": -0.045936968249299936,
+        "geometric_daily_growth": -0.006695419226587673,
+        "active_days": 5
+      }
+    ],
+    "conclusion": "OI contraction filtered some noise but was not the source of alpha; removing it increased frequency while materially worsening expectancy."
+  },
+  "largest_failure_factor": "The detector treated the sign of a 480-minute net return as a complete parent auction and treated any aged pivot in its discount/premium half as post-displacement internal liquidity. Most selected pools were unrelated legacy pivots rather than liquidity formed by and subordinate to a causal accepted break.",
+  "valid_components": [
+    "Causal pivot observation with right-hand confirmation and first-penetration consumption.",
+    "Parent-versus-shock relative-strength relation.",
+    "Non-climactic reclaim relation requiring confirmation displacement not to exceed the interruption.",
+    "Actual-fill lifecycle guard preserving the 3% NAV risk contract without changing stop or target logic."
+  ],
+  "next_hypothesis": "A continuation state must begin with an accepted causal external-pool break. The only retest level eligible for the next scenario is the broken pool itself or a pivot formed after that break; arbitrary pre-existing pivots inside a net-return range are excluded."
+}
