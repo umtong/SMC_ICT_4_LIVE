@@ -1,0 +1,61 @@
+{
+  "candidate": "candidate-01-v22-calendar-target-mss-retest",
+  "frozen_btc_weeks": [
+    "2022-10-10",
+    "2026-03-02",
+    "2022-01-24"
+  ],
+  "week_selection": {
+    "candidate_pool": "every UTC Monday from 2022-01-03 through 2026-06-22",
+    "excluded_development_weeks": [
+      "2022-08-01",
+      "2023-06-19",
+      "2024-08-05",
+      "2025-08-04",
+      "2025-11-10",
+      "2026-06-01",
+      "2023-10-02",
+      "2025-05-19",
+      "2023-02-27"
+    ],
+    "method": "SHA-256(candidate-01-v22-calendar-target-mss-retest:<0..2>) modulo the remaining ordered Monday pool, removing each selected week before the next draw; frozen before execution"
+  },
+  "market": "BTCUSDT Binance USD-M perpetual",
+  "authoritative_engine": "NautilusTrader 1.230.0",
+  "execution_data": "official Binance Vision aggregate trades as one-for-one TradeTick",
+  "risk_fraction": 0.03,
+  "all_in_cost_bps_per_side": 7.0,
+  "maximum_hold_hours": 4,
+  "one_global_position_or_pending_entry": true,
+  "candidate_variable": "final external-liquidity target hierarchy only",
+  "frozen_v21_logic": {
+    "information_clock": "daily causal equal-notional target representing one minute of the immediately preceding completed UTC day",
+    "directional_change_threshold_bps": 40.0,
+    "failed_sweep": "same-side pivot sweep, close back inside, initiative/reversal flow sign change",
+    "mss": "completed event close through nearer opposing pivot with aligned aggressive flow",
+    "entry_confirmation": "later completed event retests the broken pivot and closes rejected with aligned aggressive flow",
+    "invalidation": "post-MSS retest-path adverse extreme plus unchanged 7-bps buffer"
+  },
+  "new_target_logic": {
+    "local_farther_pivot_role": "intermediate liquidity only",
+    "calendar_levels": [
+      "completed prior UTC-day highs and lows",
+      "completed prior UTC Monday-Sunday week highs and lows"
+    ],
+    "activation": "only after the full source day or all seven source week days complete",
+    "consumption": "removed on the first later completed equal-notional event whose range trades the level",
+    "selection": "nearest active level in the trade direction strictly beyond the farther local opposing pivot, selected at failed-sweep confirmation",
+    "reward_risk_selection": false
+  },
+  "context_days": 8,
+  "first_week_gate": {
+    "minimum_closed_positions": 7,
+    "minimum_win_rate": 0.45,
+    "minimum_total_return": 0.0,
+    "minimum_geometric_daily_return": 0.01,
+    "minimum_profit_factor": 1.2,
+    "maximum_drawdown_floor": -0.20
+  },
+  "second_and_third_week_policy": "run unchanged only when the preceding frozen week fully passes",
+  "long_evaluation_policy": "open only after all three frozen weeks fully pass without logic or parameter changes"
+}
