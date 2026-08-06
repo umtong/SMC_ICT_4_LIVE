@@ -210,7 +210,7 @@ def run_backtest(
 
     engine = BacktestEngine(
         config=BacktestEngineConfig(
-            logging=LoggingConfig(log_level=str(config.get("nautilus_log_level", "ERROR"))),
+            logging=LoggingConfig(bypass_logging=True),
         )
     )
     strategy = LRAEStrategy(
