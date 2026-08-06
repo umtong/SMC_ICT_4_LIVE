@@ -1,0 +1,259 @@
+name: candidate-04-v37-bucket-implementation-fix
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v37-bucket-implementation-fix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Patch incomplete volume buckets and explicit inventory retention
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path(
+              "research/candidate-04/volume_clock_impact_residual_compiler.py"
+          )
+          text = path.read_text()
+          text = text.replace(
+              "OI_RETENTION = 0.999\n",
+              "NEW_INVENTORY_RETENTION_FRACTION = 0.80\n"
+              "NEW_INVENTORY_UNWIND_FRACTION = 0.50\n",
+          )
+          old_loop = '''        while end < len(data) and end < start + MAX_BUCKET_BARS:
+            row = data.iloc[end]
+            minute_notional = max(finite(row["notional_60s"]), 0.0)
+            minute_flow = finite(row["flow_60s"])
+            if math.isfinite(minute_notional):
+                notional += minute_notional
+            if math.isfinite(minute_flow) and math.isfinite(minute_notional):
+                signed_effort += minute_flow * minute_notional
+            takes.extend(external_takes.get(end, ()))
+            if notional >= target:
+                break
+            end += 1
+        if end >= len(data):
+            break
+        if notional <= 0.0:
+            index = end + 1
+            continue
+'''
+          new_loop = '''        reached_target = False
+        last_processed = start - 1
+        while end < len(data) and end < start + MAX_BUCKET_BARS:
+            row = data.iloc[end]
+            minute_notional = max(finite(row["notional_60s"]), 0.0)
+            minute_flow = finite(row["flow_60s"])
+            if math.isfinite(minute_notional):
+                notional += minute_notional
+            if math.isfinite(minute_flow) and math.isfinite(minute_notional):
+                signed_effort += minute_flow * minute_notional
+            takes.extend(external_takes.get(end, ()))
+            last_processed = end
+            if notional >= target:
+                reached_target = True
+                break
+            end += 1
+        if last_processed < start:
+            break
+        end = last_processed
+        if not reached_target or notional <= 0.0:
+            # A volume-clock state exists only after the frozen information
+            # amount has actually arrived.  The skipped bars are still past
+            # observations for later targets but cannot form a partial bucket.
+            index = end + 1
+            continue
+'''
+          if old_loop not in text:
+              if new_loop not in text:
+                  raise SystemExit("V37 bucket loop marker not found")
+          else:
+              text = text.replace(old_loop, new_loop, 1)
+
+          old_retention = '''def oi_creation_retained(shock: VolumeBucket, later: VolumeBucket) -> bool:
+    return bool(
+        math.isfinite(later.oi_end)
+        and math.isfinite(shock.oi_end)
+        and later.oi_end >= OI_RETENTION * shock.oi_end
+    )
+'''
+          new_retention = '''def oi_creation_retained(shock: VolumeBucket, later: VolumeBucket) -> bool:
+    if not all(
+        math.isfinite(value)
+        for value in (shock.oi_before, shock.oi_end, later.oi_end)
+    ):
+        return False
+    created = shock.oi_end - shock.oi_before
+    if created <= 0.0:
+        return False
+    retained_floor = (
+        shock.oi_before + NEW_INVENTORY_RETENTION_FRACTION * created
+    )
+    return later.oi_end >= retained_floor
+'''
+          if old_retention in text:
+              text = text.replace(old_retention, new_retention, 1)
+          elif new_retention not in text:
+              raise SystemExit("V37 OI retention marker not found")
+
+          old_resolution = '''    if route == "NEW_INVENTORY":
+        return later.oi_end < shock.oi_end
+'''
+          new_resolution = '''    if route == "NEW_INVENTORY":
+        if not math.isfinite(shock.oi_before):
+            return False
+        created = shock.oi_end - shock.oi_before
+        if created <= 0.0:
+            return False
+        required_unwind = NEW_INVENTORY_UNWIND_FRACTION * created
+        return later.oi_end <= shock.oi_end - required_unwind
+'''
+          if old_resolution in text:
+              text = text.replace(old_resolution, new_resolution, 1)
+          elif new_resolution not in text:
+              raise SystemExit("V37 inventory unwind marker not found")
+
+          old_position = '''        position = max(position + 1, resolved_position + 1)
+
+    intents.sort(key=lambda item: int(item.signal_index))
+'''
+          new_position = '''        next_position = max(position + 1, resolved_position + 1)
+        # Pullback/reclaim/resumption buckets are completed observations even
+        # when consumed by one state machine.  Add them to the past-only
+        # distribution before evaluating any later bucket.
+        history.extend(buckets[position + 1 : next_position])
+        position = next_position
+
+    intents.sort(key=lambda item: int(item.signal_index))
+'''
+          if old_position in text:
+              text = text.replace(old_position, new_position, 1)
+          elif new_position not in text:
+              raise SystemExit("V37 history accounting marker not found")
+
+          text = text.replace(
+              '''        stop = structural_stop(
+            data,
+            pullback.start_index,
+            resume.end_index,
+            shock.side,
+            impact_parameters,
+        )
+''',
+              '''        if resume.end_index + 1 >= len(data):
+            continue
+        stop = structural_stop(
+            data,
+            pullback.start_index,
+            resume.end_index,
+            shock.side,
+            impact_parameters,
+        )
+''',
+              1,
+          )
+          text = text.replace(
+              '''        stop = structural_stop(
+            data,
+            shock.start_index,
+            reclaim.end_index,
+            trade_side,
+            impact_parameters,
+        )
+''',
+              '''        if reclaim.end_index + 1 >= len(data):
+            continue
+        stop = structural_stop(
+            data,
+            shock.start_index,
+            reclaim.end_index,
+            trade_side,
+            impact_parameters,
+        )
+''',
+              1,
+          )
+          path.write_text(text)
+          PY
+
+      - name: Update V37 tests for explicit inventory fractions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path(
+              "research/candidate-04/tests/"
+              "test_volume_clock_impact_residual_compiler.py"
+          )
+          text = path.read_text()
+          text = text.replace(
+              '''        lower_oi = self._bucket(2, oi_end=1005.0)
+        rebuilt = self._bucket(2, oi_end=1012.0)
+''',
+              '''        lower_oi = self._bucket(2, oi_end=1005.0)
+        insufficient_unwind = self._bucket(2, oi_end=1009.0)
+        rebuilt = self._bucket(2, oi_end=1012.0)
+''',
+          )
+          text = text.replace(
+              '''        self.assertFalse(
+            candidate.route_inventory_resolved(
+                "NEW_INVENTORY", shock, rebuilt
+            )
+        )
+''',
+              '''        self.assertFalse(
+            candidate.route_inventory_resolved(
+                "NEW_INVENTORY", shock, insufficient_unwind
+            )
+        )
+        self.assertFalse(
+            candidate.route_inventory_resolved(
+                "NEW_INVENTORY", shock, rebuilt
+            )
+        )
+''',
+              1,
+          )
+          path.write_text(text)
+          PY
+          python -m py_compile \
+            research/candidate-04/volume_clock_impact_residual_compiler.py \
+            research/candidate-04/tests/test_volume_clock_impact_residual_compiler.py
+
+      - name: Commit V37 implementation fix with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-04/volume_clock_impact_residual_compiler.py \
+            research/candidate-04/tests/test_volume_clock_impact_residual_compiler.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "fix V37 volume bucket boundary and inventory retention"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
