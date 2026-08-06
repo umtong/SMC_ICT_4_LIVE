@@ -20,30 +20,43 @@ class BarView:
 
 
 @dataclass(slots=True)
-class AuctionRange:
-    block_id: int
+class StructuralBar:
+    bucket_id: int
     start_ns: int
     end_ns: int
     open: float
     high: float
     low: float
     close: float
-    bars: int = 1
-
-    @property
-    def midpoint(self) -> float:
-        return (self.high + self.low) / 2.0
-
-    @property
-    def width(self) -> float:
-        return self.high - self.low
+    volume: float
+    minute_count: int = 1
 
     def update(self, bar: BarView) -> None:
         self.high = max(self.high, bar.high)
         self.low = min(self.low, bar.low)
         self.close = bar.close
+        self.volume += bar.volume
         self.end_ns = bar.ts_ns
-        self.bars += 1
+        self.minute_count += 1
+
+
+@dataclass(slots=True)
+class LiquidityPool:
+    pool_id: str
+    side: str
+    center: float
+    lower: float
+    upper: float
+    event_time_ns: int
+    observed_time_ns: int
+    last_source_time_ns: int
+    source_count: int
+    max_prominence_atr: float
+    status: str
+    outside_closes: int = 0
+    touch_count: int = 0
+    consumed_time_ns: int | None = None
+    consumed_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -51,19 +64,20 @@ class Setup:
     scenario_id: str
     scenario: str
     direction: int
-    boundary: float
+    source_pool_id: str
+    source_pool_side: str
+    source_lower: float
+    source_upper: float
     state: str
     created_index: int
     created_ns: int
     atr: float
     raid_extreme: float
     approach_level: float
-    consecutive_closes: int = 0
     confirmation_index: int | None = None
     zone_low: float | None = None
     zone_high: float | None = None
     stop_price: float | None = None
-    breakout_extreme: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,24 +113,32 @@ class Transition:
 
 @dataclass(frozen=True, slots=True)
 class MachineParams:
-    block_minutes: int = 240
+    # Pools are confirmed only after two complete 15-minute bars exist on each
+    # side of the candidate pivot. Numerical values are scale-normalized by ATR.
+    structure_minutes: int = 15
+    pivot_left: int = 2
+    pivot_right: int = 2
+    structural_atr_lookback: int = 20
+    single_swing_prominence_atr: float = 0.90
+    pool_zone_atr: float = 0.08
+    pool_merge_atr: float = 0.15
+    cluster_min_sources: int = 2
+    enable_pool_clustering: bool = True
+    pool_max_age_minutes: int = 4_320
+
     atr_lookback: int = 60
-    approach_lookback: int = 6
+    approach_lookback: int = 8
     raid_atr: float = 0.08
     acceptance_atr: float = 0.12
     displacement_atr: float = 0.75
-    # v1: invalidation must sit outside both event noise and one complete
-    # executable round-trip cost floor, not just a few ticks past a 1-minute wick.
+    rejection_confirm_bars: int = 10
+
+    # Executable entry/invalidation grammar retained from v1.
     stop_buffer_atr: float = 1.00
     cost_floor_multiple: float = 1.00
     maker_fee: float = 0.000400
     taker_fee: float = 0.000700
     execution_reserve_ticks: int = 2
     rejection_limit_fraction: float = 0.618
-    rejection_confirm_bars: int = 10
     retrace_expiry_bars: int = 16
-    acceptance_retest_bars: int = 24
-    acceptance_target_extension: float = 0.50
     min_net_rr: float = 1.35
-    enable_rejection: bool = True
-    enable_acceptance: bool = True
