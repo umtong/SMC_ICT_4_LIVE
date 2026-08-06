@@ -50,8 +50,8 @@ from state_engine import EngineConfig, FlowBar
 ABLATIONS = (
     "baseline",
     "no-flow",
-    "no-mss-confirmation",
     "no-acceptance-confirmation",
+    "no-retest-confirmation",
 )
 DAY_NS = 86_400_000_000_000
 
