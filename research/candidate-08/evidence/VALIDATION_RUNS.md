@@ -9,8 +9,11 @@ This ledger records immutable GitHub Actions run IDs and the reason for every re
 | 31076483095 | 009cc09c1f9074de71dce03e8b80cf54f02ef380 | data-adapter failure | environment, compilation, seven tests, official Binance archive download, and published checksum verification passed; pandas exposed `DataFrame.values` read-only to the pinned Cython `BarDataWrangler`, so replay stopped before the first engine bar |
 | 31076788907 | cb1c2efd3bb6af99fdca659c5667e8aaab332f65 | engine-config failure | official data was converted to Nautilus `Bar` objects; engine construction then rejected the unsupported `BacktestEngineConfig.shutdown_on_error` field before replay |
 | 31076904149 | 3c54c673db3be4b89ece67e7c8a1287cf285cfdf | superseded duplicate | the patch trigger itself started validation before the write-enabled patch job committed the fix, so it exercised the same pre-fix source and is not performance evidence |
+| 31076976101 | 0bb0d58454a8545c82c26887e42ad6ffd04be5a3 | venue-config failure | engine construction reached `add_venue`; the pinned legacy runtime rejected liquidation keywords exposed by the type stub but absent from the loaded Cython method |
 
 The execution models now use the pinned official `nautilus_trader.backtest.models` API. The data
 adapter constructs the official Nautilus `Bar` type directly from an owned float64 array, retaining
 source close time as both event and observation time. The runner uses only fields accepted by the
-pinned `BacktestEngineConfig`. Subsequent rows are added only after their exact result is known.
+loaded pinned runtime. Liquidation equivalence must be diagnosed from every realized position path
+before this candidate can be promoted; the unsupported direct-engine switch is not silently claimed
+as active. Subsequent rows are added only after their exact result is known.
