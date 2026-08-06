@@ -24,7 +24,10 @@ class TrendPriceDiscoveryConfig(PriceDiscoveryConfig):
         return cls(**dict(values))
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        # Python 3.13 can mis-bind zero-argument super() for frozen slot
+        # dataclass inheritance after code generation. Call the immutable parent
+        # validator explicitly; this changes no research parameter or signal.
+        PriceDiscoveryConfig.__post_init__(self)
         if not 0 < self.trend_abs_return_quantile < 1:
             raise ValueError("trend_abs_return_quantile must be in (0, 1)")
 
