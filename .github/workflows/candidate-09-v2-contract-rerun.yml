@@ -1,0 +1,164 @@
+name: Candidate 09 v2 contract-controlled rerun
+
+on:
+  push:
+    branches:
+      - research/candidate-09
+    paths:
+      - .github/workflows/candidate-09-v2-contract-rerun.yml
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v2-contract-rerun
+  cancel-in-progress: false
+
+jobs:
+  repair-contract-and-rerun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-v1
+
+      - name: Repair only v2 test import and synthetic OHLC contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          root = Path('research/candidate-09')
+          state_test = root / 'tests_v2/test_state_engine.py'
+          text = state_test.read_text(encoding='utf-8')
+          text = text.replace('import unittest\nfrom decimal import Decimal\n', 'import sys\nimport unittest\nfrom decimal import Decimal\nfrom pathlib import Path\n')
+          marker = 'from state_engine import EngineConfig, FlowBar, LiquidityStateEngine, risk_based_quantity\n'
+          prelude = '''ROOT = Path(__file__).resolve().parents[1]\nif str(ROOT) not in sys.path:\n    sys.path.insert(0, str(ROOT))\n\nfrom state_engine import EngineConfig, FlowBar, LiquidityStateEngine, risk_based_quantity\n'''
+          if 'sys.path.insert(0, str(ROOT))' not in text:
+              if marker not in text:
+                  raise SystemExit('state test import marker missing')
+              text = text.replace(marker, prelude, 1)
+          text = text.replace('bar(4, 98.0, 100.0, 98.2, 99.5', 'bar(4, 98.5, 100.0, 98.2, 99.5')
+          state_test.write_text(text, encoding='utf-8')
+
+          contract_test = root / 'tests_v2/test_nautilus_contract.py'
+          text = contract_test.read_text(encoding='utf-8')
+          text = text.replace('import json\nimport unittest\n', 'import json\nimport sys\nimport unittest\n')
+          marker = 'from run import run_nautilus_segment\nfrom state_engine import FlowBar\n'
+          prelude = '''ROOT = Path(__file__).resolve().parents[1]\nif str(ROOT) not in sys.path:\n    sys.path.insert(0, str(ROOT))\n\nfrom run import run_nautilus_segment\nfrom state_engine import FlowBar\n'''
+          if 'sys.path.insert(0, str(ROOT))' not in text:
+              if marker not in text:
+                  raise SystemExit('contract test import marker missing')
+              text = text.replace(marker, prelude, 1)
+          contract_test.write_text(text, encoding='utf-8')
+
+          active = root / 'tests'
+          if active.exists():
+              import shutil
+              shutil.rmtree(active)
+          import shutil
+          shutil.copytree(root / 'tests_v2', active)
+          PY
+
+      - name: Run doctor, corrected tests, and identical frozen-week gate
+        shell: bash
+        run: |
+          set +e
+          root=research/candidate-09
+          out="$root/evidence/latest"
+          diag="$root/diagnostics/v2-contract-rerun"
+          rm -rf "$out" "$diag"
+          mkdir -p "$out" "$diag"
+          smc4 doctor > "$diag/doctor.log" 2>&1
+          doctor_code=$?
+          python -m compileall -q "$root" > "$diag/compile.log" 2>&1
+          compile_code=$?
+          python -m unittest discover -s "$root/tests" -p 'test_*.py' -v > "$diag/tests.log" 2>&1
+          tests_code=$?
+          gate_code=99
+          if [[ "$doctor_code" == 0 && "$compile_code" == 0 && "$tests_code" == 0 ]]; then
+            python "$root/run.py" gate --config "$root/config.json" --cache "$SMC4_DATA_ROOT" --output "$out" > "$diag/gate.log" 2>&1
+            gate_code=$?
+          else
+            printf 'gate not run because a prerequisite failed\n' > "$diag/gate.log"
+          fi
+          DOCTOR_CODE="$doctor_code" COMPILE_CODE="$compile_code" TESTS_CODE="$tests_code" GATE_CODE="$gate_code" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path('research/candidate-09')
+          diag = root / 'diagnostics/v2-contract-rerun'
+          out = root / 'evidence/latest'
+          codes = {'doctor': int(os.environ['DOCTOR_CODE']), 'compile': int(os.environ['COMPILE_CODE']), 'tests': int(os.environ['TESTS_CODE']), 'gate': int(os.environ['GATE_CODE'])}
+          failure = next((name for name, value in codes.items() if value != 0), None)
+          (diag / 'diagnostic.json').write_text(json.dumps({
+              'classification': 'IMPLEMENTATION_ERROR' if failure else 'EXECUTED',
+              'codes': codes,
+              'first_failure': failure,
+              'fixed_weeks_preserved': True,
+              'strategy_parameters_preserved': True,
+              'controlled_change': 'test import path plus invalid synthetic OHLC only',
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'trigger_sha': os.environ.get('GITHUB_SHA'),
+          }, indent=2, sort_keys=True) + '\n')
+          if not (out / 'summary.json').exists():
+              (out / 'summary.json').write_text(json.dumps({'candidate': 'candidate-09-v2', 'status': 'IMPLEMENTATION_ERROR', 'first_failure': failure, 'codes': codes}, indent=2, sort_keys=True) + '\n')
+          for log in diag.glob('*.log'):
+              lines = log.read_text(errors='replace').splitlines()
+              log.write_text('\n'.join(lines[-1000:]) + ('\n' if lines else ''))
+          PY
+          exit 0
+
+      - name: Preserve exact corrected output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v2-contract-rerun-${{ github.run_id }}
+          path: |
+            research/candidate-09/evidence/latest
+            research/candidate-09/diagnostics/v2-contract-rerun
+            research/candidate-09/config.json
+            research/candidate-09/state_engine.py
+            research/candidate-09/nautilus_strategy.py
+            research/candidate-09/run.py
+            research/candidate-09/tests
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit corrected tests and evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=$(dirname "$(dirname "$(dirname "$(realpath research/candidate-09/run.py)")")")
+          git config --global --add safe.directory "$repo"
+          git -C "$repo" config user.name "candidate-09-research-bot"
+          git -C "$repo" config user.email "candidate-09-research-bot@users.noreply.github.com"
+          git -C "$repo" add -A research/candidate-09
+          if git -C "$repo" diff --cached --quiet; then exit 0; fi
+          status=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('research/candidate-09/evidence/latest/summary.json').read_text()).get('status','UNKNOWN'))
+          PY
+          )
+          git -C "$repo" commit -m "candidate-09 v2: contract-controlled result ${status}"
+          git -C "$repo" pull --rebase origin "${GITHUB_REF_NAME}"
+          git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
