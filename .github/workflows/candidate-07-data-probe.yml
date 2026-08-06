@@ -1,0 +1,42 @@
+name: candidate-07-official-data-probe
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - ".github/workflows/candidate-07-data-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - name: Probe exact frozen-week official archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=https://data.binance.vision/data/futures/um/daily
+          declare -a paths=(
+            "klines/BTCUSDT/1s/BTCUSDT-1s-2025-12-22.zip.CHECKSUM"
+            "markPriceKlines/BTCUSDT/1s/BTCUSDT-1s-2025-12-22.zip.CHECKSUM"
+            "indexPriceKlines/BTCUSDT/1s/BTCUSDT-1s-2025-12-22.zip.CHECKSUM"
+            "aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-12-22.zip.CHECKSUM"
+            "bookTicker/BTCUSDT/BTCUSDT-bookTicker-2025-12-22.zip.CHECKSUM"
+            "klines/BTCUSDT/1m/BTCUSDT-1m-2025-12-22.zip.CHECKSUM"
+            "markPriceKlines/BTCUSDT/1m/BTCUSDT-1m-2025-12-22.zip.CHECKSUM"
+            "indexPriceKlines/BTCUSDT/1m/BTCUSDT-1m-2025-12-22.zip.CHECKSUM"
+          )
+          for path in "${paths[@]}"; do
+            url="$base/$path"
+            code=$(curl -L --retry 3 --retry-all-errors --connect-timeout 15 \
+              --max-time 60 -sS -o /tmp/probe -w '%{http_code}' "$url" || true)
+            size=$(wc -c </tmp/probe 2>/dev/null || printf 0)
+            printf '%s\t%s\t%s\n' "$code" "$size" "$path"
+            if [[ "$code" == 200 ]]; then
+              head -c 200 /tmp/probe; printf '\n'
+            fi
+          done
