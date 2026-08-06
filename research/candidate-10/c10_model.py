@@ -134,9 +134,10 @@ class MachineParams:
     raid_atr: float = 0.08
     acceptance_atr: float = 0.12
 
-    # Displacement is an efficient event-time path, not one candle. The path
-    # must move away from the raid extreme, break approach structure, and avoid
-    # spending most of its travel oscillating in both directions.
+    # Displacement is an efficient event-time path, not one candle. The
+    # one-variable ablation disables path accumulation and restores the prior
+    # single-candle certification while preserving every other rule.
+    enable_path_displacement: bool = True
     displacement_atr: float = 0.75
     displacement_max_bars: int = 10
     displacement_min_efficiency: float = 0.55
