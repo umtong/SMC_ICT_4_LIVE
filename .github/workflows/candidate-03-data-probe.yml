@@ -1,0 +1,53 @@
+name: candidate-03-data-probe
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths: [".github/workflows/candidate-03-data-probe.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe-public-data:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect checksum-verified public data schemas
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=artifacts/candidate-03/data-probe
+          mkdir -p "$out"
+          base=https://data.binance.vision/data
+          declare -a urls=(
+            "$base/futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-01-07.zip"
+            "$base/futures/um/daily/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01-07.zip"
+            "$base/spot/daily/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01-07.zip"
+            "$base/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-2024-01-07.zip"
+          )
+          for url in "${urls[@]}"; do
+            file="$out/${url##*/}"
+            curl --fail --location --retry 5 --retry-all-errors "$url" --output "$file"
+            curl --fail --location --retry 5 --retry-all-errors "$url.CHECKSUM" --output "$file.CHECKSUM"
+            (cd "$out" && sha256sum --check "$(basename "$file").CHECKSUM")
+            {
+              echo "===== $(basename "$file") ====="
+              unzip -l "$file"
+              unzip -p "$file" | head -n 5 || true
+            } >> "$out/schema.txt"
+          done
+          curl --fail --location --retry 5 --retry-all-errors \
+            'https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&startTime=1704585600000&endTime=1704758400000&limit=1000' \
+            > "$out/funding.json"
+          cat "$out/schema.txt"
+          cat "$out/funding.json"
+      - name: Preserve schema evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-data-probe-${{ github.sha }}
+          path: artifacts/candidate-03/data-probe
+          if-no-files-found: error
+          retention-days: 1
