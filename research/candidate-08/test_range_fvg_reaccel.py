@@ -224,8 +224,9 @@ class RetestReaccelerationTests(unittest.TestCase):
         self.assertEqual(confirmed.signal_time_ns, follow.ts_event_ns)
         self.assertLess(confirmed.structural_stop, retest.low)
         self.assertGreater(confirmed.external_target, confirmed.limit_entry)
-        self.assertEqual(confirmed.events[-2].next_state, "RETEST_HELD")
-        self.assertEqual(confirmed.events[-1].previous_state, "RETEST_HELD")
+        self.assertEqual(len(confirmed.events), 1)
+        self.assertEqual(confirmed.events[0].previous_state, "IDLE")
+        self.assertEqual(confirmed.events[0].next_state, "CONFIRMED")
 
 
 if __name__ == "__main__":

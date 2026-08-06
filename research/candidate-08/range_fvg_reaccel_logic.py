@@ -138,42 +138,29 @@ def _confirmed_signal(
     if not valid:
         return None
 
-    scenario_id = f"{base.scenario_id}-rr"
-    events = tuple(base.events) + (
+    scenario_id = base.scenario_id
+    events = (
         LogicEvent(
             scenario_id=scenario_id,
-            event_type="FVG_RETEST_HELD",
-            event_time_ns=retest.ts_event_ns,
-            observed_time_ns=retest.ts_event_ns,
-            previous_state="CONFIRMED",
-            next_state="RETEST_HELD",
-            reason_code=f"CONTRACTED_CONSEQUENT_ENCROACHMENT_{base.direction.value}",
-            reference_price=base.limit_entry,
+            event_type="FVG_RETEST_REACCELERATION_CONFIRMED",
+            event_time_ns=reacceleration.ts_event_ns,
+            observed_time_ns=reacceleration.ts_event_ns,
+            previous_state="IDLE",
+            next_state="CONFIRMED",
+            reason_code=f"CONTRACTED_RETEST_SEPARATE_DISPLACEMENT_{base.direction.value}",
+            reference_price=entry,
             details={
-                "base_scenario_id": base.scenario_id,
-                "retest_index": retest.index,
-                "retest_low": retest.low,
-                "retest_high": retest.high,
+                "base_signal_time_ns": base.signal_time_ns,
+                "retest_time_ns": retest.ts_event_ns,
+                "reacceleration_time_ns": reacceleration.ts_event_ns,
+                "fvg_low": base.fvg_low,
+                "fvg_high": base.fvg_high,
+                "consequent_encroachment": base.limit_entry,
                 "volume_fraction_of_displacement": retest.volume / max(displacement.volume, 1e-12),
                 "trade_fraction_of_displacement": retest.trade_count / max(displacement.trade_count, 1e-12),
                 "retest_imbalance": retest.imbalance,
-            },
-        ),
-        LogicEvent(
-            scenario_id=scenario_id,
-            event_type="POST_RETEST_REACCELERATION",
-            event_time_ns=reacceleration.ts_event_ns,
-            observed_time_ns=reacceleration.ts_event_ns,
-            previous_state="RETEST_HELD",
-            next_state="CONFIRMED",
-            reason_code=f"SEPARATE_FIVE_MINUTE_DISPLACEMENT_{base.direction.value}",
-            reference_price=entry,
-            details={
-                "reacceleration_index": reacceleration.index,
-                "body_atr": reacceleration.body / reacceleration.atr,
-                "imbalance": reacceleration.imbalance,
-                "volume_ratio": reacceleration.volume_ratio,
-                "trade_ratio": reacceleration.trade_ratio,
+                "reacceleration_body_atr": reacceleration.body / reacceleration.atr,
+                "reacceleration_imbalance": reacceleration.imbalance,
             },
         ),
     )
