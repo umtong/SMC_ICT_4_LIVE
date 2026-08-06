@@ -1,0 +1,218 @@
+name: candidate-08-flow-response-auction-nautilus-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-flow-response-auction-nautilus-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-flow-response-auction-nautilus-v1
+  cancel-in-progress: true
+
+jobs:
+  staged-validation:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      MARKER: research/candidate-08/.run-flow-response-auction-nautilus-v1
+      ROOT: research/candidate-08/evidence/flow-response-auction-nautilus-v1
+      CACHE: /tmp/candidate-08-aggtrade-acceptance-data
+      CONFIG: research/candidate-08/config_flow_response_auction_btc_v1.json
+      PATTERN: research/candidate-08/config_range_fvg.json
+      RUNNER: research/candidate-08/run_aggtrade_flow_response_auction_nautilus.py
+      ORCHESTRATOR: research/candidate-08/run_flow_response_staged_validation.py
+      FLOW_RESPONSE_AUCTION_CONFIG_PATH: research/candidate-08/config_flow_response_auction_btc_v1.json
+      FLOW_RESPONSE_AUCTION_FAMILY_MODE: both
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify pinned environment and causal execution contracts
+        id: preflight
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT"
+          rm -f "$ROOT/preflight.log" "$ROOT/preflight_exit_status.txt"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/aggtrade_acceptance_funding.py \
+              research/candidate-08/aggtrade_acceptance_mark_price.py \
+              research/candidate-08/aggtrade_acceptance_signals.py \
+              research/candidate-08/aggtrade_flow_response.py \
+              research/candidate-08/aggtrade_flow_response_auction_signals.py \
+              research/candidate-08/aggtrade_flow_response_auction_signals_v2.py \
+              research/candidate-08/aggtrade_acceptance_strategy.py \
+              research/candidate-08/aggtrade_acceptance_evaluation.py \
+              research/candidate-08/run_aggtrade_acceptance_nautilus.py \
+              research/candidate-08/run_aggtrade_auction_router_nautilus.py \
+              research/candidate-08/run_aggtrade_flow_response_auction_nautilus.py \
+              research/candidate-08/flow_response_family_ablation_decision.py \
+              research/candidate-08/flow_response_diagnostic_evaluation.py \
+              research/candidate-08/run_flow_response_staged_validation.py
+            python research/candidate-08/test_aggtrade_orderflow.py -v
+            python research/candidate-08/test_aggtrade_acceptance.py -v
+            python research/candidate-08/test_aggtrade_acceptance_pure.py -v
+            python research/candidate-08/test_aggtrade_acceptance_nautilus.py -v
+            python research/candidate-08/test_aggtrade_flow_response.py -v
+            python research/candidate-08/test_aggtrade_flow_response_auction_signals.py -v
+            python research/candidate-08/test_aggtrade_flow_response_auction_runner.py -v
+            python research/candidate-08/test_flow_response_config_contract.py -v
+            python research/candidate-08/test_flow_response_family_ablation_decision.py -v
+            python research/candidate-08/test_flow_response_diagnostic_evaluation.py -v
+            python research/candidate-08/test_run_flow_response_staged_validation.py -v
+            python - <<'PY'
+            import json
+            from dataclasses import asdict
+            from pathlib import Path
+
+            from aggtrade_flow_response import FlowResponseConfig
+            from aggtrade_flow_response_auction_signals_v2 import (
+                IMPLEMENTATION_REVISION,
+                FlowResponseAuctionConfig,
+            )
+
+            root = Path("research/candidate-08")
+            detector = (root / "aggtrade_flow_response_auction_signals_v2.py").read_text()
+            wrapper = (root / "run_aggtrade_flow_response_auction_nautilus.py").read_text()
+            orchestrator = (root / "run_flow_response_staged_validation.py").read_text()
+            config = json.loads((root / "config_flow_response_auction_btc_v1.json").read_text())
+            workflow = Path(
+                ".github/workflows/candidate-08-flow-response-auction-nautilus-v1.yml"
+            ).read_text()
+
+            assert config["implementation_revision"] == IMPLEMENTATION_REVISION
+            assert config["flow_response_config"] == asdict(FlowResponseConfig())
+            default_auction = FlowResponseAuctionConfig()
+            assert config["flow_response_auction_config"] == {
+                "interaction_response_windows": default_auction.interaction_response_windows,
+                "reversal_confirmation_windows": default_auction.reversal_confirmation_windows,
+            }
+            assert "position >= pending.armed_position + response_window" in detector
+            assert "position >= pending.absorption_position + response_window" in detector
+            assert "position >= pending.armed_position + response_window - 1" not in detector
+            assert "position >= pending.absorption_position + response_window - 1" not in detector
+            assert 'kwargs["auction_config"] = _load_auction_config()' in wrapper
+            assert "FLOW_RESPONSE_STAGED_VALIDATION_V1" in orchestrator
+            assert "clear_staged_outputs(root)" in orchestrator
+            assert 'runs-on: ubuntu-24.04' in workflow
+            assert '"risk_fraction": 0.03' in (root / "config_flow_response_auction_btc_v1.json").read_text()
+            assert '"default_leverage": 125' in (root / "config_flow_response_auction_btc_v1.json").read_text()
+            PY
+          ) 2>&1 | tee "$ROOT/preflight.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$ROOT/preflight_exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Restore checksum-verified official-data cache
+        if: ${{ steps.preflight.outputs.status == '0' }}
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-flow-response-v2-${{ hashFiles('research/candidate-08/config_flow_response_auction_btc_v1.json') }}
+          restore-keys: |
+            candidate-08-flow-response-v2-
+            candidate-08-auction-router-v2-
+            candidate-08-auction-router-v1-
+            candidate-08-aggtrade-acceptance-v5-
+            candidate-08-aggtrade-acceptance-
+
+      - name: Run deterministic staged NautilusTrader protocol
+        if: ${{ steps.preflight.outputs.status == '0' }}
+        id: staged
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -f "$ROOT/staged_runner.log" "$ROOT/staged_runner_exit_status.txt"
+          set +e
+          python "$ORCHESTRATOR" \
+            --config "$CONFIG" \
+            --pattern-config "$PATTERN" \
+            --root "$ROOT" \
+            --data-cache "$CACHE" \
+            --runner "$RUNNER" \
+            2>&1 | tee "$ROOT/staged_runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$ROOT/staged_runner_exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Record preflight implementation failure
+        if: ${{ always() && steps.preflight.outputs.status != '0' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          root.mkdir(parents=True, exist_ok=True)
+          payload = {
+              "candidate": "candidate-08-flow-response-auction-btc-nautilus-v1",
+              "protocol_revision": "FLOW_RESPONSE_STAGED_VALIDATION_V1",
+              "git_sha": os.environ.get("GITHUB_SHA"),
+              "preflight_runner_status": int((root / "preflight_exit_status.txt").read_text()),
+              "decision": "PREFLIGHT_IMPLEMENTATION_FAILURE",
+          }
+          (root / "stage_decision.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Save official-data cache
+        if: ${{ always() && steps.preflight.outputs.status == '0' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-flow-response-v2-${{ hashFiles('research/candidate-08/config_flow_response_auction_btc_v1.json') }}
+
+      - name: Commit implementation and evidence conflict-safely
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- "$ROOT" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record flow-response staged evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce implementation status
+        if: ${{ always() }}
+        shell: bash
+        env:
+          PREFLIGHT_STATUS: ${{ steps.preflight.outputs.status }}
+          STAGED_STATUS: ${{ steps.staged.outputs.status }}
+        run: |
+          [[ -n "$PREFLIGHT_STATUS" ]]
+          [[ "$PREFLIGHT_STATUS" == "0" ]]
+          [[ -n "$STAGED_STATUS" ]]
+          [[ "$STAGED_STATUS" == "0" ]]
