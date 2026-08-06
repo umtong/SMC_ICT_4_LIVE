@@ -77,11 +77,19 @@ jobs:
               expected_root = Path(os.environ["ROOT"])
               if expected_root not in reuse_path.parents and reuse_path != expected_root:
                   raise SystemExit("reuse_first_dir must remain under the fixed evidence root")
-          mode = {
-              "suite": suite, "ablation": ablation, "output_name": output_name,
-              "output": str(output), "reuse_first_dir": reuse,
-              "diagnostic_only": ablation != "none",
-          }
+          # The ablation is diagnostic only and never opens a promotion path.
+          if ablation != "none":
+              mode = {
+                  "suite": suite, "ablation": ablation, "output_name": output_name,
+                  "output": str(output), "reuse_first_dir": reuse,
+                  "diagnostic_only": True, "promotable": False,
+              }
+          else:
+              mode = {
+                  "suite": suite, "ablation": ablation, "output_name": output_name,
+                  "output": str(output), "reuse_first_dir": reuse,
+                  "diagnostic_only": False, "promotable": True,
+              }
           output.mkdir(parents=True, exist_ok=True)
           (output / "request.json").write_text(json.dumps(mode, indent=2, sort_keys=True) + "\n")
           with Path(os.environ["GITHUB_OUTPUT"]).open("a") as stream:
@@ -147,7 +155,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           rm -f "$MARKER"
-          git add -A -- "$OUTPUT" "$MARKER"
+          if [[ -n "$OUTPUT" && -e "$OUTPUT" ]]; then
+            git add -A -- "$OUTPUT"
+          fi
+          git add -A -- "$MARKER"
           if git diff --cached --quiet; then exit 0; fi
           git commit -m "candidate-08: record controlled Nautilus acceptance evidence [skip ci]"
           for attempt in 1 2 3 4 5; do
@@ -166,6 +177,7 @@ jobs:
         env:
           OUTPUT: ${{ steps.request.outputs.output }}
         run: |
+          [[ -n "$OUTPUT" ]]
           test -f "$OUTPUT/runner_exit_status.txt"
           status=$(cat "$OUTPUT/runner_exit_status.txt")
           exit "$status"
