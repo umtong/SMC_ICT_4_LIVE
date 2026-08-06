@@ -96,6 +96,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from surprise_impact_hierarchical_engine import SurpriseImpactHierarchicalEngine
 
         return SurpriseImpactHierarchicalEngine(logic_params)
+    if name == "ABSORPTION_CONFIRMED_STRUCTURE_REVERSAL":
+        from absorption_structure_engine import AbsorptionConfirmedStructureReversalEngine
+
+        return AbsorptionConfirmedStructureReversalEngine(logic_params)
     if name == "PERIODIC_OPENING_LIQUIDITY_RELAY":
         from periodic_opening_engine import PeriodicOpeningLiquidityRelayEngine
 
