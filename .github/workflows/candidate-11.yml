@@ -52,13 +52,19 @@ jobs:
               old = f'pd.to_numeric(raw["{name}"], errors="raise"),'
               new = f'pd.to_numeric(raw["{name}"], errors="raise").to_numpy(),'
               s = s.replace(old, new)
+          read_line = '                frame = pd.read_csv(stream, header=None, names=COLUMNS)\n'
+          clean_line = '        frame = frame[pd.to_numeric(frame["open_time"], errors="coerce").notna()].reset_index(drop=True)\n'
+          if clean_line not in s:
+              if read_line not in s:
+                  raise SystemExit("expected Binance CSV read line not found")
+              s = s.replace(read_line, read_line + clean_line)
           p.write_text(s, encoding="utf-8")
           PY
           if ! git diff --quiet -- research/candidate-11/run.py; then
             git config user.name "candidate-11-bot"
             git config user.email "candidate-11-bot@users.noreply.github.com"
             git add research/candidate-11/run.py
-            git commit -m "candidate-11: preserve raw Binance row alignment"
+            git commit -m "candidate-11: normalize Binance kline rows"
             git push origin HEAD:research/candidate-11
           fi
 
