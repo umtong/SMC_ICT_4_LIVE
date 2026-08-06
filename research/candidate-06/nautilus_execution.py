@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 from entry_confirmation import DefenseCheck, continuation_defense_passes
+from failed_acceptance_trap import build_failed_acceptance_trap
 from logic import PrimitiveSnapshot, ScenarioSignal
 from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_strategy_common import utc_day as _utc_day, utc_hour as _utc_hour
@@ -16,24 +17,18 @@ class NautilusExecutionMixin:
 
     def _attempt_entry(self, signal: ScenarioSignal, snapshot: PrimitiveSnapshot) -> None:
         assert self._instrument is not None
-        entry = snapshot.observation.close
-        stop = signal.stop_price
-        target = signal.target_price
-        direction = signal.direction
+        original_signal = signal
         reason: str | None = None
-        if direction == "LONG" and not (stop < entry < target):
-            reason = "DELAYED_PRICE_OUTSIDE_LONG_BRACKET"
-        elif direction == "SHORT" and not (target < entry < stop):
-            reason = "DELAYED_PRICE_OUTSIDE_SHORT_BRACKET"
-
+        trap_armed = False
         confirmation_mode = str(self._logic_params.get("sac_entry_confirmation", "NONE"))
         confirmation_details: dict[str, Any] = {}
-        if signal.family == "SAC" and confirmation_mode.upper() != "NONE":
+
+        if original_signal.family == "SAC" and confirmation_mode.upper() != "NONE":
             check = DefenseCheck(
                 mode=confirmation_mode,
-                direction=direction,
-                boundary=float(signal.liquidity_level),
-                signal_reference=float(signal.reference_entry),
+                direction=original_signal.direction,
+                boundary=float(original_signal.liquidity_level),
+                signal_reference=float(original_signal.reference_entry),
                 open=float(snapshot.observation.open),
                 close=float(snapshot.observation.close),
                 flow_ratio=float(snapshot.flow_ratio),
@@ -54,21 +49,63 @@ class NautilusExecutionMixin:
             }
             self.diagnostics.setdefault("sac_entry_candidates", []).append(
                 {
-                    "scenario_id": signal.scenario_id,
-                    "direction": direction,
+                    "scenario_id": original_signal.scenario_id,
+                    "direction": original_signal.direction,
                     **confirmation_details,
                 },
             )
             confirmation_counts = self.diagnostics.setdefault("sac_entry_confirmation_counts", {})
             key = "passed" if passed else "failed"
             confirmation_counts[key] = int(confirmation_counts.get(key, 0)) + 1
-            if reason is None and not passed:
-                reason = "SAC_NEXT_COMPLETED_BAR_DEFENSE_FAILED"
+
+            if not passed:
+                action = str(self._logic_params.get("sac_failed_defense_action", "ABSTAIN")).upper()
+                trap_signal = build_failed_acceptance_trap(original_signal, snapshot, self._logic_params)
+                trap_counts = self.diagnostics.setdefault(
+                    "failed_acceptance_trap_counts",
+                    {"armed": 0, "not_armed": 0},
+                )
+                if trap_signal is not None:
+                    signal = trap_signal
+                    trap_armed = True
+                    trap_counts["armed"] = int(trap_counts.get("armed", 0)) + 1
+                    confirmation_details.update(
+                        {
+                            "failed_defense_action": action,
+                            "trap_armed": True,
+                            "trap_direction": trap_signal.direction,
+                            "trap_stop_price": trap_signal.stop_price,
+                            "trap_target_price": trap_signal.target_price,
+                            "trap_target_reason": trap_signal.target_reason,
+                        },
+                    )
+                else:
+                    if action.startswith("TRAP_"):
+                        trap_counts["not_armed"] = int(trap_counts.get("not_armed", 0)) + 1
+                    reason = "SAC_NEXT_COMPLETED_BAR_DEFENSE_FAILED"
+                    confirmation_details.update(
+                        {
+                            "failed_defense_action": action,
+                            "trap_armed": False,
+                        },
+                    )
+
+        entry = float(snapshot.observation.close)
+        stop = float(signal.stop_price)
+        target = float(signal.target_price)
+        direction = signal.direction
+        if reason is None and direction == "LONG" and not (stop < entry < target):
+            reason = "DELAYED_PRICE_OUTSIDE_LONG_BRACKET"
+        elif reason is None and direction == "SHORT" and not (target < entry < stop):
+            reason = "DELAYED_PRICE_OUTSIDE_SHORT_BRACKET"
 
         favorable_drift = (
             entry - signal.reference_entry if direction == "LONG" else signal.reference_entry - entry
         )
-        enforce_drift_guard = bool(self._logic_params.get("enforce_favorable_drift_guard", True))
+        enforce_drift_guard = (
+            bool(self._logic_params.get("enforce_favorable_drift_guard", True))
+            and not trap_armed
+        )
         if (
             reason is None
             and enforce_drift_guard
@@ -88,10 +125,12 @@ class NautilusExecutionMixin:
             reason = "NET_REWARD_RISK_ERODED_AFTER_DELAY"
         if reason is not None:
             self._abstain_signal(
-                signal,
+                original_signal,
                 snapshot,
                 reason,
                 {
+                    "resolved_family": signal.family,
+                    "resolved_direction": direction,
                     "net_rr": net_rr,
                     "entry": entry,
                     "favorable_drift_atr": favorable_drift / signal.atr if signal.atr > 0.0 else None,
@@ -107,12 +146,12 @@ class NautilusExecutionMixin:
         increment = self._instrument.size_increment.as_decimal()
         qty_decimal = (raw_qty / increment).to_integral_value(rounding=ROUND_DOWN) * increment
         if qty_decimal < self._instrument.min_quantity.as_decimal():
-            self._abstain_signal(signal, snapshot, "RISK_SIZE_BELOW_MINIMUM_QUANTITY", {})
+            self._abstain_signal(original_signal, snapshot, "RISK_SIZE_BELOW_MINIMUM_QUANTITY", {})
             return
         notional = qty_decimal * Decimal(str(entry))
         min_notional = self._instrument.min_notional.as_decimal()
         if notional < min_notional:
-            self._abstain_signal(signal, snapshot, "RISK_SIZE_BELOW_MINIMUM_NOTIONAL", {})
+            self._abstain_signal(original_signal, snapshot, "RISK_SIZE_BELOW_MINIMUM_NOTIONAL", {})
             return
 
         side = OrderSide.BUY if direction == "LONG" else OrderSide.SELL
@@ -120,6 +159,27 @@ class NautilusExecutionMixin:
         stop_price = self._instrument.make_price(Decimal(str(stop)))
         target_price = self._instrument.make_price(Decimal(str(target)))
         tags = [f"scenario={signal.scenario_id}", f"family={signal.family}"]
+        order_previous_state = "ENTRY_ARMED"
+        if trap_armed:
+            self._record_external_transition(
+                scenario_id=signal.scenario_id,
+                previous_state="ENTRY_ARMED",
+                next_state="FAILED_ACCEPTANCE_TRAP_ARMED",
+                reason="ACCEPTED_AUCTION_REENTERED_WITH_OPPOSITE_RESPONSE",
+                ts_ns=snapshot.observation.ts_ns,
+                reference_price=entry,
+                details={
+                    "source_direction": original_signal.direction,
+                    "trap_direction": direction,
+                    "liquidity_level": signal.liquidity_level,
+                    "stop_price": stop,
+                    "target_price": target,
+                    "target_reason": signal.target_reason,
+                    **confirmation_details,
+                },
+            )
+            order_previous_state = "FAILED_ACCEPTANCE_TRAP_ARMED"
+
         try:
             order_list = self.order_factory.bracket(
                 instrument_id=self.config.instrument_id,
@@ -137,6 +197,8 @@ class NautilusExecutionMixin:
             self._active_trade = {
                 "scenario_id": signal.scenario_id,
                 "family": signal.family,
+                "source_family": original_signal.family,
+                "source_direction": original_signal.direction,
                 "direction": direction,
                 "signal_ts_ns": signal.observed_ts_ns,
                 "signal_day_utc": _utc_day(signal.observed_ts_ns),
@@ -155,19 +217,25 @@ class NautilusExecutionMixin:
                 "loss_per_unit": loss_per_unit,
                 "net_rr_at_submission": net_rr,
                 "fee_rate_per_fill": fee,
-                "sac_entry_confirmation": confirmation_mode if signal.family == "SAC" else None,
+                "sac_entry_confirmation": confirmation_mode if original_signal.family == "SAC" else None,
+                "failed_acceptance_trap": trap_armed,
                 "favorable_drift_guard_enabled": enforce_drift_guard,
             }
             self._entry_inflight = True
             self.diagnostics["entries_submitted"] += 1
             self._record_external_transition(
                 scenario_id=signal.scenario_id,
-                previous_state="ENTRY_ARMED",
+                previous_state=order_previous_state,
                 next_state="ORDER_SUBMITTED",
-                reason="DELAYED_MARKET_ENTRY_WITH_STRUCTURAL_BRACKET",
+                reason=(
+                    "FAILED_ACCEPTANCE_TRAP_MARKET_ENTRY_WITH_STRUCTURAL_BRACKET"
+                    if trap_armed
+                    else "DELAYED_MARKET_ENTRY_WITH_STRUCTURAL_BRACKET"
+                ),
                 ts_ns=snapshot.observation.ts_ns,
                 reference_price=entry,
                 details={
+                    "family": signal.family,
                     "quantity": str(quantity),
                     "planned_loss_budget": planned_loss_budget,
                     "loss_per_unit": loss_per_unit,
@@ -186,7 +254,7 @@ class NautilusExecutionMixin:
             self._active_trade = None
             self._record_external_transition(
                 scenario_id=signal.scenario_id,
-                previous_state="ENTRY_ARMED",
+                previous_state=order_previous_state,
                 next_state="RESET",
                 reason="ORDER_CONSTRUCTION_FAILED",
                 ts_ns=snapshot.observation.ts_ns,
