@@ -20,9 +20,13 @@ import pandas as pd
 from smc_ict_4.manifest import build_data_manifest, write_data_manifest
 
 
-KLINE_URL = (
+KLINE_DAILY_URL = (
     "https://data.binance.vision/data/futures/um/daily/klines/{symbol}/1m/"
-    "{symbol}-1m-{day}.zip"
+    "{symbol}-1m-{stamp}.zip"
+)
+KLINE_MONTHLY_URL = (
+    "https://data.binance.vision/data/futures/um/monthly/klines/{symbol}/1m/"
+    "{symbol}-1m-{stamp}.zip"
 )
 FUNDING_URL = (
     "https://data.binance.vision/data/futures/um/monthly/fundingRate/{symbol}/"
@@ -39,6 +43,18 @@ class FundingPoint:
     ts_event_ns: int
     rate: Decimal
     interval_minutes: int
+
+
+@dataclass(frozen=True, slots=True)
+class KlineArchiveRequest:
+    cadence: str
+    stamp: str
+
+    def __post_init__(self) -> None:
+        if self.cadence not in {"daily", "monthly"}:
+            raise ValueError(f"unsupported kline archive cadence: {self.cadence}")
+        if not self.stamp:
+            raise ValueError("kline archive stamp must not be empty")
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +112,7 @@ def _days(start: date, end_exclusive: date) -> Iterable[date]:
 
 def _months(start: date, end_exclusive: date) -> Iterable[str]:
     year, month = start.year, start.month
-    final = (end_exclusive - timedelta(days=1))
+    final = end_exclusive - timedelta(days=1)
     while (year, month) <= (final.year, final.month):
         yield f"{year:04d}-{month:02d}"
         if month == 12:
@@ -104,6 +120,48 @@ def _months(start: date, end_exclusive: date) -> Iterable[str]:
             month = 1
         else:
             month += 1
+
+
+def _next_month(day: date) -> date:
+    if day.month == 12:
+        return date(day.year + 1, 1, 1)
+    return date(day.year, day.month + 1, 1)
+
+
+def _kline_archive_requests(
+    start: date,
+    end_exclusive: date,
+) -> tuple[KlineArchiveRequest, ...]:
+    """Use official monthly archives for complete months, daily at boundaries.
+
+    This changes only transfer granularity. The returned bars are filtered to
+    the same exact nanosecond interval after parsing, and every archive is still
+    verified against Binance Vision's published SHA-256 checksum.
+    """
+    if end_exclusive <= start:
+        raise ValueError("end_exclusive must follow start")
+    requests: list[KlineArchiveRequest] = []
+    cursor = start
+    while cursor < end_exclusive:
+        month_start = date(cursor.year, cursor.month, 1)
+        next_month = _next_month(cursor)
+        if cursor == month_start and next_month <= end_exclusive:
+            requests.append(
+                KlineArchiveRequest(
+                    cadence="monthly",
+                    stamp=f"{cursor.year:04d}-{cursor.month:02d}",
+                )
+            )
+            cursor = next_month
+        else:
+            requests.append(
+                KlineArchiveRequest(
+                    cadence="daily",
+                    stamp=cursor.isoformat(),
+                )
+            )
+            cursor += timedelta(days=1)
+    return tuple(requests)
 
 
 def _timestamp_ns(value: str | int | float) -> int:
@@ -224,13 +282,17 @@ def load_bundle(
     funding_root = data_root / "funding-rate"
     archives: list[Path] = []
     rows: list[dict[str, str]] = []
+    archive_counts = {"daily": 0, "monthly": 0}
 
-    for day in _days(load_start, trade_end):
-        stamp = day.isoformat()
-        url = KLINE_URL.format(symbol=symbol, day=stamp)
-        destination = kline_root / f"{symbol}-1m-{stamp}.zip"
+    for request in _kline_archive_requests(load_start, trade_end):
+        if request.cadence == "monthly":
+            url = KLINE_MONTHLY_URL.format(symbol=symbol, stamp=request.stamp)
+        else:
+            url = KLINE_DAILY_URL.format(symbol=symbol, stamp=request.stamp)
+        destination = kline_root / f"{symbol}-1m-{request.stamp}.zip"
         archive = _ensure_checked_archive(url, destination)
         archives.append(archive)
+        archive_counts[request.cadence] += 1
         rows.extend(_read_kline_archive(archive))
 
     funding_points: list[FundingPoint] = []
@@ -272,6 +334,8 @@ def load_bundle(
             "trade_start": trade_start.isoformat(),
             "trade_end_exclusive": trade_end.isoformat(),
             "kline_rows": int(len(frame.index)),
+            "daily_kline_archives": archive_counts["daily"],
+            "monthly_kline_archives": archive_counts["monthly"],
             "funding_points": len(funding),
             "source": "Binance Vision public data",
         },
