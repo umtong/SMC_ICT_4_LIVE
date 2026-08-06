@@ -31,7 +31,8 @@ jobs:
         run: |
           set -euo pipefail
           smc4 doctor
-          git diff --exit-code "$FROZEN_SOURCE_COMMIT" -- \
+          unset GIT_DIR GIT_WORK_TREE || true
+          git -C "$GITHUB_WORKSPACE" diff --exit-code "$FROZEN_SOURCE_COMMIT" -- \
             research/candidate-04/nt_liquidity_strategy.py \
             research/candidate-04/nt_auction_excess_strategy.py \
             research/candidate-04/nt_auction_failure_strategy.py \
