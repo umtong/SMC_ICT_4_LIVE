@@ -1,169 +1,52 @@
-name: candidate-02-v78-prospective-lock
+name: candidate-02-v103-first-week-dispatch-router
 
 on:
-  push:
-    branches: ["research/candidate-02"]
-    paths:
-      - ".github/workflows/candidate-02-v78-lock.yml"
-      - "research/candidate-02/v77_terminal_status.json"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  packages: read
+  actions: read
 
 jobs:
-  lock:
+  route-v103-first-week:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 55
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Run unchanged prospectively locked v103 first BTC week
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-02/v103_first_week_driver.py
+
+      - name: Preserve direct data and NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          fetch-depth: 1
-
-      - name: Gate on an actual v77 strategy rejection
-        id: gate
-        shell: bash
-        run: |
-          python - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          from pathlib import Path
-          path=Path('research/candidate-02/v77_terminal_status.json')
-          enabled=False
-          status='MISSING'
-          if path.exists():
-              data=json.loads(path.read_text())
-              status=str(data.get('status','UNKNOWN'))
-              enabled=status.startswith('REJECTED')
-          print(f"enabled={'true' if enabled else 'false'}")
-          print(f"status={status}")
-          PY
-
-      - name: Create immutable configs and select an unseen Monday
-        if: steps.gate.outputs.enabled == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m py_compile research/candidate-02/v78_impact_resilience_core.py research/candidate-02/v78_nt_backtest.py
-          python - <<'PY'
-          from __future__ import annotations
-          import copy
-          from datetime import date,timedelta,datetime,timezone
-          import hashlib,json,random,re
-          from pathlib import Path
-
-          root=Path('research/candidate-02')
-          source_path=root/'v76_60m_1x_config.json'
-          if not source_path.exists():
-              candidates=sorted(root.glob('v76_*_config.json'))
-              if not candidates: raise RuntimeError('no v76 config available as schema template')
-              source_path=candidates[0]
-          template=json.loads(source_path.read_text())
-          base=copy.deepcopy(template['scenario'])
-          for key in ('accepted_range_minutes','target_range_multiple','stop_range_multiple','minimum_rest_flow_alignment','minimum_minute_flow_alignment','maximum_front_depth_change'):
-              base.pop(key,None)
-
-          variants=[
-              ('continuation-ret60','RESILIENT_CONTINUATION',0.60),
-              ('continuation-ret70','RESILIENT_CONTINUATION',0.70),
-              ('failure-ret40','TRANSIENT_FAILURE_ROTATION',0.40),
-              ('failure-ret30','TRANSIENT_FAILURE_ROTATION',0.30),
-          ]
-
-          date_re=re.compile(r'^20\d{2}-\d{2}-\d{2}$')
-          excluded=set()
-          def scan(value,key=''):
-              if isinstance(value,dict):
-                  for k,v in value.items(): scan(v,str(k).lower())
-              elif isinstance(value,list):
-                  for v in value: scan(v,key)
-              elif isinstance(value,str):
-                  token=value[:10]
-                  if date_re.match(token) and any(x in key for x in ('week','start','window','date')):
-                      try:d=date.fromisoformat(token)
-                      except ValueError:return
-                      if d.weekday()==0: excluded.add(d)
-          for path in root.glob('*.json'):
-              try:scan(json.loads(path.read_text()))
-              except Exception:pass
-          for token in (
-              '2021-04-19','2022-04-25','2022-08-22','2024-04-15','2024-07-08',
-              '2024-10-28','2024-11-18','2024-12-16','2024-12-23','2025-02-17',
-              '2025-03-03','2025-08-04'
-          ):
-              excluded.add(date.fromisoformat(token))
-          eligible=[]; cursor=date(2023,1,2); last=date(2026,6,1)
-          while cursor<=last:
-              if cursor not in excluded: eligible.append(cursor)
-              cursor+=timedelta(days=7)
-          random.Random(2026080678).shuffle(eligible)
-          if not eligible: raise RuntimeError('no unseen v78 week remains')
-          week=eligible[0]
-
-          config_paths=[]
-          for slug,mode,retention in variants:
-              scenario=copy.deepcopy(base)
-              scenario.update({
-                  'mode':mode,
-                  'accepted_range_minutes':30,
-                  'retention_threshold':retention,
-                  'minimum_displacement_atr':0.20,
-                  'maximum_displacement_atr':3.00,
-                  'stop_buffer_atr':0.15,
-                  'target_range_multiple':1.00,
-                  'minimum_rest_flow_alignment':0.0,
-                  'minimum_minute_flow_alignment':0.10,
-                  'depth_transition_threshold':0.0,
-                  'maximum_holding_minutes':180,
-                  'minimum_cost_after_rr':0.80,
-                  'maximum_cost_after_rr':5.00,
-              })
-              cfg={
-                  'candidate':f'candidate-02-v78-{slug}',
-                  'scenario':scenario,
-                  'risk':copy.deepcopy(template['risk']),
-                  'costs':copy.deepcopy(template['costs']),
-                  'validation':copy.deepcopy(template['validation']),
-              }
-              cfg['risk']['risk_fraction']='0.03'
-              cfg['risk']['maximum_notional_cap']=None
-              cfg['risk']['score_risk_multiplier']=None
-              cfg['validation']['first_week_start']=week.isoformat()
-              cfg['validation']['selection_seed']=2026080678
-              cfg['validation']['selection_stage']='prospectively locked v78 first random BTC week'
-              path=root/f'v78_{slug.replace("-","_")}_config.json'
-              path.write_text(json.dumps(cfg,indent=2,sort_keys=True),encoding='utf-8')
-              config_paths.append(str(path))
-
-          source_hashes={}
-          for path in [root/'v78_impact_resilience_core.py',root/'v78_nt_backtest.py']+[Path(p) for p in config_paths]:
-              source_hashes[str(path)]=hashlib.sha256(path.read_bytes()).hexdigest()
-          lock={
-              'status':'LOCKED_BEFORE_FIRST_WEEK_COLLECTION',
-              'candidate_family':'candidate-02-v78-quarter-hour-impact-resilience',
-              'locked_utc':datetime.now(timezone.utc).isoformat(),
-              'triggering_v77_status':json.loads((root/'v77_terminal_status.json').read_text())['status'],
-              'first_week':{
-                  'symbol':'BTCUSDT','start_utc':week.isoformat()+'T00:00:00Z',
-                  'end_utc':(week+timedelta(days=7)).isoformat()+'T00:00:00Z',
-                  'selection_seed':2026080678,'raw_data_status_at_lock':'NOT_COLLECTED_FOR_V78'},
-              'mutually_exclusive_modes':['RESILIENT_CONTINUATION','TRANSIENT_FAILURE_ROTATION'],
-              'adjacent_retention_thresholds':{'continuation':[0.60,0.70],'failure':[0.30,0.40]},
-              'performance_engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,
-              'risk_fraction':0.03,'global_pending_entry_plus_position_limit':1,
-              'source_sha256':source_hashes,
-              'promotion_rule':'A mode advances only if at least one setting passes every first-week gate and its adjacent retention setting is not directionally contradictory. No weak modes are combined.',
-          }
-          (root/'v78_first_week_lock.json').write_text(json.dumps(lock,indent=2,sort_keys=True),encoding='utf-8')
-          print(json.dumps({'week':week.isoformat(),'configs':config_paths},indent=2))
-          PY
-          for f in research/candidate-02/v78_*_config.json research/candidate-02/v78_first_week_lock.json; do python -m json.tool "$f" >/dev/null; done
-
-      - name: Commit lock before any market-data collection
-        if: steps.gate.outputs.enabled == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add research/candidate-02/v78_*_config.json research/candidate-02/v78_first_week_lock.json
-          git commit -m "research(candidate-02): lock v78 first random BTC week"
-          git push origin HEAD:research/candidate-02
+          name: candidate-02-v103-first-week-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v103-*
+            artifacts-v103-*.log
+            artifacts-v103-baseline-decision.json
+            artifacts-v103-first-week-decision.json
+            artifacts-v103-variant-manifest.json
+            inputs/v103-first-week/artifacts
+            inputs/v103-first-week/candidate-02-v48-first-week
+            inputs/v103-first-week/.cache/candidate-02/v103-first-week/binance_1m
+            inputs/v103-first-week/direct
+            inputs/v103-first-week/spot
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
