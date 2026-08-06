@@ -1,0 +1,40 @@
+name: candidate-10-research
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/**
+      - .github/workflows/candidate-10-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-10-research-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify pinned environment and API
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            "${RESEARCH_IMAGE}" \
+            bash -lc 'smc4 doctor && python research/candidate-10/introspect.py'
