@@ -190,6 +190,14 @@ def run(args: argparse.Namespace) -> int:
         start_ns=start_ns,
         end_ns=end_ns,
     )
+    sweep_times: dict[str, int] = {}
+    for event in scenario.detector.events:
+        resolved_side = "short" if event.event_type == "DOWN" else "long"
+        scenario_id = (
+            f"dc-calendar-mss:{event.confirmation_index}:"
+            f"{resolved_side}:{event.confirmation_time_ns}"
+        )
+        sweep_times[scenario_id] = int(event.pivot_time_ns)
 
     metric_downloads = download_position_metric_days(
         symbol="BTCUSDT",
@@ -203,6 +211,7 @@ def run(args: argparse.Namespace) -> int:
         build_positioning_cycle_plans(
             source_plans=source_plans,
             transitions=scenario.transitions,
+            sweep_times=sweep_times,
             metrics=metric_book,
         )
     )
@@ -289,9 +298,9 @@ def run(args: argparse.Namespace) -> int:
         ),
         "primary_variable": (
             "official sum_open_interest strictly expands between the last two "
-            "causally available five-minute observations into the failed sweep, "
-            "then strictly contracts at a later causally available observation "
-            "by the completed MSS"
+            "causally available five-minute observations at the confirmed sweep "
+            "pivot, then strictly contracts at a later causally available "
+            "observation by the completed MSS"
             if args.rule == "oi-build-release-primary"
             else "single ablation removes only official open-interest cycle confirmation"
         ),
