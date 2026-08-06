@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/candidate-01-stop-api-probe.yml"
       - "research/candidate-01/nautilus_stop_api_probe.py"
+      - "research/candidate-01/nautilus_stop_bracket_smoke.py"
   workflow_dispatch:
 
 permissions:
@@ -25,7 +26,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Inspect fixed Nautilus order factory
+      - name: Inspect and execute fixed Nautilus stop bracket
         run: |
           set -euo pipefail
           docker run --rm \
@@ -39,5 +40,9 @@ jobs:
               set -euo pipefail
               export PATH=/opt/smc4/.venv/bin:$PATH
               smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/nautilus_stop_api_probe.py \
+                research/candidate-01/nautilus_stop_bracket_smoke.py
               python research/candidate-01/nautilus_stop_api_probe.py
+              python research/candidate-01/nautilus_stop_bracket_smoke.py
             '
