@@ -1,0 +1,121 @@
+name: candidate-03-discrete-funding-risk-patch
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths: [".github/workflows/candidate-03-funding-risk-patch.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Budget and track discrete funding settlements
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('research/candidate-03/nt_lvcfr_strategy.py')
+          text = path.read_text(encoding='utf-8')
+
+          marker = '''def native_equity_amount(portfolio: Any, venue: Any, currency: Any) -> float:\n'''
+          helper = '''def expected_funding_debit_per_unit(\n    *,\n    entry_price: float,\n    direction: int,\n    funding_rate: float,\n    entry_time_ns: int,\n    max_holding_minutes: int,\n    next_funding_ns: int | None,\n    funding_interval_minutes: int,\n) -> float:\n    \"\"\"Return full adverse funding settlements crossed by maximum holding.\n\n    Perpetual funding is discrete at settlement boundaries, not prorated by\n    elapsed holding time. Credits reduce realized cost but are not counted as a\n    risk-budget benefit.\n    \"\"\"\n    adverse_rate = direction * funding_rate\n    if adverse_rate <= 0.0 or next_funding_ns is None:\n        return 0.0\n    interval_ns = max(1, funding_interval_minutes) * NS_PER_MINUTE\n    holding_end_ns = entry_time_ns + max_holding_minutes * NS_PER_MINUTE\n    if next_funding_ns > holding_end_ns:\n        return 0.0\n    settlements = 1 + max(0, holding_end_ns - next_funding_ns) // interval_ns\n    return entry_price * adverse_rate * float(settlements)\n\n\n'''
+          if text.count(marker) != 1:
+              raise SystemExit(f'equity helper marker count={text.count(marker)}')
+          text = text.replace(marker, helper + marker)
+
+          old = '''    failure_low: float = math.inf\n    failure_high: float = -math.inf\n'''
+          new = '''    failure_low: float = math.inf\n    failure_high: float = -math.inf\n    settled_funding_cost_per_unit: float = 0.0\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'ActiveLeg funding field target count={text.count(old)}')
+          text = text.replace(old, new)
+
+          old = '''        self.latest_funding_rate = 0.0\n        self.latest_funding_interval_minutes = 480\n'''
+          new = '''        self.latest_funding_rate = 0.0\n        self.latest_funding_interval_minutes = 480\n        self.next_funding_ns: int | None = None\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'funding state target count={text.count(old)}')
+          text = text.replace(old, new)
+
+          old = '''    def on_funding_rate(self, update: FundingRateUpdate) -> None:\n        self.latest_funding_rate = float(update.rate)\n        if update.interval:\n            self.latest_funding_interval_minutes = int(update.interval)\n'''
+          new = '''    def on_funding_rate(self, update: FundingRateUpdate) -> None:\n        self.latest_funding_rate = float(update.rate)\n        if update.interval:\n            self.latest_funding_interval_minutes = int(update.interval)\n        event_ns = int(update.ts_event)\n        explicit_next = update.next_funding_ns\n        self.next_funding_ns = (\n            int(explicit_next)\n            if explicit_next is not None\n            else event_ns + self.latest_funding_interval_minutes * NS_PER_MINUTE\n        )\n        active = self.active\n        if (\n            active is not None\n            and active.entry_time_ns is not None\n            and active.entry_qty > 0.0\n            and active.entry_time_ns < event_ns\n        ):\n            if self.latest_quote is None:\n                reference_price = active.entry_avg\n            else:\n                reference_price = (\n                    float(self.latest_quote.bid_price) + float(self.latest_quote.ask_price)\n                ) / 2.0\n            active.settled_funding_cost_per_unit += (\n                active.direction * reference_price * self.latest_funding_rate\n            )\n            self._emit(\n                scenario_id=active.signal[\"scenario_id\"],\n                event_type=\"FUNDING_SETTLEMENT_OBSERVED\",\n                event_time_ns=event_ns,\n                observed_time_ns=int(update.ts_init),\n                previous_state=f\"{active.kind}_ACTIVE\",\n                next_state=f\"{active.kind}_ACTIVE\",\n                reason_code=\"NAUTILUS_NATIVE_DISCRETE_FUNDING_BOUNDARY\",\n                reference_price=reference_price,\n                details={\n                    \"rate\": self.latest_funding_rate,\n                    \"estimated_cost_per_unit\": active.direction * reference_price * self.latest_funding_rate,\n                    \"cumulative_estimated_cost_per_unit\": active.settled_funding_cost_per_unit,\n                },\n            )\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'on_funding_rate target count={text.count(old)}')
+          text = text.replace(old, new)
+
+          old = '''        debit_rate = max(0.0, direction * self.latest_funding_rate)\n        expected_funding = entry * debit_rate * hold / max(1, self.latest_funding_interval_minutes)\n'''
+          new = '''        expected_funding = expected_funding_debit_per_unit(\n            entry_price=entry,\n            direction=direction,\n            funding_rate=self.latest_funding_rate,\n            entry_time_ns=int(tick.ts_init),\n            max_holding_minutes=hold,\n            next_funding_ns=self.next_funding_ns,\n            funding_interval_minutes=self.latest_funding_interval_minutes,\n        )\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'entry funding target count={text.count(old)}')
+          text = text.replace(old, new)
+
+          old = '''    def _estimated_net_per_unit(self, active: ActiveLeg, exit_price: float, timestamp_ns: int) -> float:\n        fee = self.config.taker_fee_bps / 10_000.0\n        holding = max(0.0, (timestamp_ns - (active.entry_time_ns or timestamp_ns)) / NS_PER_MINUTE)\n        debit_rate = max(0.0, active.direction * self.latest_funding_rate)\n        funding = active.entry_avg * debit_rate * holding / max(1, self.latest_funding_interval_minutes)\n        return active.direction * (exit_price - active.entry_avg) - active.entry_avg * fee - exit_price * fee - funding\n'''
+          new = '''    def _estimated_net_per_unit(self, active: ActiveLeg, exit_price: float, timestamp_ns: int) -> float:\n        fee = self.config.taker_fee_bps / 10_000.0\n        return (\n            active.direction * (exit_price - active.entry_avg)\n            - active.entry_avg * fee\n            - exit_price * fee\n            - active.settled_funding_cost_per_unit\n        )\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'net funding target count={text.count(old)}')
+          text = text.replace(old, new)
+
+          old = '''            \"mfe_net_r\": active.mfe_net_r,\n        }\n'''
+          new = '''            \"mfe_net_r\": active.mfe_net_r,\n            \"settled_funding_cost_per_unit_estimate\": active.settled_funding_cost_per_unit,\n        }\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'leg funding output target count={text.count(old)}')
+          text = text.replace(old, new)
+
+          old = '''            \"last_funding_interval_minutes\": self.latest_funding_interval_minutes,\n'''
+          new = '''            \"last_funding_interval_minutes\": self.latest_funding_interval_minutes,\n            \"next_funding_ns\": self.next_funding_ns,\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'summary funding target count={text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+
+          test_path = Path('research/candidate-03/test_nt_lvcfr.py')
+          tests = test_path.read_text(encoding='utf-8')
+          old = '''from nt_lvcfr_strategy import native_equity_amount\n'''
+          new = '''from nt_lvcfr_strategy import expected_funding_debit_per_unit, native_equity_amount\n'''
+          if tests.count(old) != 1:
+              raise SystemExit(f'funding test import target count={tests.count(old)}')
+          tests = tests.replace(old, new)
+          marker = '''class NativeEquityTests(unittest.TestCase):\n'''
+          replacement = '''class FundingRiskTests(unittest.TestCase):\n    def test_no_prorated_cost_when_max_hold_ends_before_boundary(self) -> None:\n        self.assertEqual(\n            expected_funding_debit_per_unit(\n                entry_price=40_000.0, direction=1, funding_rate=0.0001,\n                entry_time_ns=2 * 60 * NS_PER_MINUTE, max_holding_minutes=240,\n                next_funding_ns=8 * 60 * NS_PER_MINUTE, funding_interval_minutes=480,\n            ),\n            0.0,\n        )\n\n    def test_full_adverse_rate_when_boundary_is_crossed(self) -> None:\n        self.assertEqual(\n            expected_funding_debit_per_unit(\n                entry_price=40_000.0, direction=1, funding_rate=0.0001,\n                entry_time_ns=5 * 60 * NS_PER_MINUTE, max_holding_minutes=240,\n                next_funding_ns=8 * 60 * NS_PER_MINUTE, funding_interval_minutes=480,\n            ),\n            4.0,\n        )\n\n    def test_favorable_funding_is_not_used_to_increase_risk_quantity(self) -> None:\n        self.assertEqual(\n            expected_funding_debit_per_unit(\n                entry_price=40_000.0, direction=-1, funding_rate=0.0001,\n                entry_time_ns=5 * 60 * NS_PER_MINUTE, max_holding_minutes=240,\n                next_funding_ns=8 * 60 * NS_PER_MINUTE, funding_interval_minutes=480,\n            ),\n            0.0,\n        )\n\n\nclass NativeEquityTests(unittest.TestCase):\n'''
+          if tests.count(marker) != 1:
+              raise SystemExit(f'funding test marker count={tests.count(marker)}')
+          test_path.write_text(tests.replace(marker, replacement), encoding='utf-8')
+
+          readme_path = Path('research/candidate-03/README.md')
+          readme = readme_path.read_text(encoding='utf-8')
+          old = '''  + 최대 보유 기준 불리한 funding\n'''
+          new = '''  + 최대 보유시간 안에 통과하는 정산 경계별 불리한 funding 전액\n'''
+          if readme.count(old) != 1:
+              raise SystemExit(f'README funding formula target count={readme.count(old)}')
+          readme_path.write_text(readme.replace(old, new), encoding='utf-8')
+          PY
+
+          IMAGE=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+          docker pull "$IMAGE"
+          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" bash -c '
+            smc4 doctor &&
+            PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+              python research/candidate-03/test_nt_lvcfr.py &&
+            PYTHONPYCACHEPREFIX=/tmp/candidate-03-pycache \
+              python -m compileall -q research/candidate-03 src/smc_ict_4
+          '
+
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add research/candidate-03/nt_lvcfr_strategy.py research/candidate-03/test_nt_lvcfr.py research/candidate-03/README.md
+          git commit -m "candidate-03: budget discrete funding settlements"
+          git push origin HEAD:research/candidate-03
