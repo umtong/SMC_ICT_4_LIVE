@@ -1,0 +1,55 @@
+name: candidate-04-multi-asset-runtime-contract
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-multi-asset-runtime-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify pinned runtime and compile integrated execution layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/nt_global_rich_signal_strategy.py \
+            research/candidate-04/nt_multi_asset_rich_backtest.py \
+            research/candidate-04/rich_features_for_symbol.py \
+            research/candidate-04/filter_candidate_signals.py
+
+      - name: Run global-entry and multi-asset configuration contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_global_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_multi_asset_rich_backtest.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_multi_asset_runtime_contract.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_rich_features_for_symbol.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_filter_candidate_signals.py' -v
