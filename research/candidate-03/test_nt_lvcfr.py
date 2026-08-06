@@ -9,6 +9,11 @@ from nt_lvcfr_data import CandidateConfig, MinuteFact, NS_PER_MINUTE, detect_sig
 
 
 class ConfigTests(unittest.TestCase):
+    def test_backtest_node_uses_funding_compatible_oneshot_loader(self) -> None:
+        source = Path(__file__).with_name("run_nt_lvcfr.py").read_text(encoding="utf-8")
+        self.assertIn("chunk_size=None", source)
+        self.assertNotIn("chunk_size=1_000_000", source)
+
     def test_frozen_validation_order_and_risk(self) -> None:
         config = CandidateConfig.load(Path(__file__).with_name("nt_lvcfr_config.json"))
         self.assertEqual(config.validation_weeks, ("2024-01-08", "2025-06-23", "2022-05-16"))

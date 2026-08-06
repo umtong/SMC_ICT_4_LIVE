@@ -245,7 +245,12 @@ def main() -> int:
                 liquidation_cancel_open_orders=True,
             )
         ],
-        chunk_size=1_000_000,
+        # NT 1.230 streaming uses a Rust-only DataBackendSession which
+        # misclassifies legacy FundingRateUpdate as custom data. One-shot
+        # BacktestNode instead dispatches QuoteTick to the Rust query and
+        # FundingRateUpdate to its registered PyArrow codec, sorts the mixed
+        # stream, and still executes the same native BacktestEngine.
+        chunk_size=None,
         start=start_ns - NS_PER_DAY,
         end=run_end_ns,
         raise_exception=True,
