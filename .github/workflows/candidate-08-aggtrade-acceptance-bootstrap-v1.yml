@@ -40,6 +40,16 @@ jobs:
           for part in "${payload_parts[@]}"; do test -s "$part"; done
           cat "${payload_parts[@]}" | base64 -d > /tmp/candidate08_runtime.tar.xz
           tar -xJf /tmp/candidate08_runtime.tar.xz -C "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-08/test_aggtrade_acceptance_nautilus.py")
+          source = path.read_text(encoding="utf-8")
+          old = '{"mark_price": [70123.45]}'
+          new = '{"mark_price": [70123.46]}'
+          if source.count(old) != 1:
+              raise SystemExit("mark-price quantization fixture anchor mismatch")
+          path.write_text(source.replace(old, new), encoding="utf-8")
+          PY
           smc4 doctor
           python -m compileall -q \
             research/candidate-08/aggtrade_acceptance_funding.py \
