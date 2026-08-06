@@ -1,0 +1,317 @@
+name: candidate-02-v94-nautilustrader-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v94-first.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  first-week-multilevel-common-breakout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed runtime and prospective v94 lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v94_multilevel_common_breakout_core.py \
+            research/candidate-02/v94_nt_backtest.py \
+            .candidate-02-v89/collect_spot.py \
+            .candidate-02-v89/augment_cross_market.py
+          python -m json.tool research/candidate-02/v94_multilevel_common_breakout_lock.json >/dev/null
+          python -m json.tool research/candidate-02/v94_base_config.json >/dev/null
+          grep -F '1aae197712e13a8bf2b2665f674e3738784995b17e80b01f262116c713ac8f26' research/candidate-02/v94_payload_sha256.txt
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v94_multilevel_common_breakout_lock.json').read_text())
+          cfg=json.loads(Path('research/candidate-02/v94_base_config.json').read_text())
+          assert lock['status']=='LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['first_week']['start_utc']=='2025-11-03T00:00:00Z'
+          assert lock['first_week']['end_utc']=='2025-11-10T00:00:00Z'
+          assert lock['first_week']['raw_data_status_at_lock']=='NOT_COLLECTED_FOR_V94'
+          assert lock['performance_engine']=='NautilusTrader 1.230.0'
+          assert lock['custom_backtest_engine'] is False
+          assert float(lock['risk_fraction'])==0.03
+          assert int(lock['global_pending_entry_plus_position_limit'])==1
+          assert cfg['validation']['first_week_start']=='2025-11-03'
+          assert int(cfg['validation']['selection_seed'])==2026080694
+          assert float(cfg['risk']['risk_fraction'])==0.03
+          assert cfg['risk']['maximum_notional_cap'] is None
+          assert cfg['risk']['score_risk_multiplier'] is None
+          assert cfg['scenario']['level_mode']=='ALL'
+          assert int(cfg['scenario']['retrace_minutes'])==20
+          assert float(cfg['scenario']['minimum_target_cost_after_rr'])==1.10
+          PY
+
+      - name: Materialize exact futures direct-data tools for locked week
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v94-futures-tools inputs/v94-first-week
+          cp -a .candidate-02-v75 /tmp/v94-futures-tools
+          python - <<'PY'
+          from datetime import date
+          import json,re
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v94_multilevel_common_breakout_lock.json').read_text())
+          start=date.fromisoformat(lock['first_week']['start_utc'][:10])
+          constructor=re.compile(r'EVALUATION_START\s*=\s*date\(\s*\d{4}\s*,\s*\d{1,2}\s*,\s*\d{1,2}\s*\)')
+          count=0
+          for path in Path('/tmp/v94-futures-tools').rglob('*'):
+              if not path.is_file() or path.suffix not in {'.py','.json','.md'}:
+                  continue
+              text=path.read_text(encoding='utf-8',errors='strict')
+              text=text.replace('inputs/v75-first-week','inputs/v94-first-week')
+              text=text.replace('candidate-02-v75-first-week','candidate-02-v94-first-week')
+              text=text.replace('v75-first-week','v94-first-week')
+              text=text.replace('candidate-02-v75-quarter-hour-algorithmic-opening-auction','candidate-02-v94-multilevel-common-spot-perpetual-accepted-breakout')
+              if path.name.startswith('collect') and path.suffix=='.py':
+                  text,n=constructor.subn(f'EVALUATION_START = date({start.year}, {start.month}, {start.day})',text)
+                  count+=n
+              path.write_text(text,encoding='utf-8')
+          if count!=1:
+              raise RuntimeError(f'expected one evaluation-date constructor, found {count}')
+          collector=next(Path('/tmp/v94-futures-tools').glob('collect*.py'))
+          expected=f'EVALUATION_START = date({start.year}, {start.month}, {start.day})'
+          materialized=collector.read_text(encoding='utf-8')
+          if expected not in materialized or 'inputs/v94-first-week' not in materialized:
+              raise RuntimeError('locked v94 week was not materialized')
+          PY
+          python -m py_compile /tmp/v94-futures-tools/collect_first_week.py /tmp/v94-futures-tools/build_features.py
+
+      - name: Collect locked futures direct data and build completed-minute features
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/v94-futures-tools/collect_first_week.py
+          python /tmp/v94-futures-tools/build_features.py
+          test -f inputs/v94-first-week/candidate-02-v48-first-week/v48_features.npz
+          test -f inputs/v94-first-week/candidate-02-v48-first-week/columns.json
+          test "$(find inputs/v94-first-week/direct/aggTrades -name '*.zip' | wc -l)" -eq 10
+          test "$(find inputs/v94-first-week/direct/bookDepth -name '*.zip' | wc -l)" -eq 10
+          test "$(find inputs/v94-first-week/.cache/candidate-02/v94-first-week/binance_1m -name '*.zip' | wc -l)" -eq 10
+
+      - name: Collect locked spot data and augment cross-market matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .candidate-02-v89/collect_spot.py /tmp/v94_collect_spot.py
+          cp .candidate-02-v89/augment_cross_market.py /tmp/v94_augment_cross_market.py
+          python - <<'PY'
+          from pathlib import Path
+          replacements={
+              'research/candidate-02/v89_cross_market_impact_lock.json':'research/candidate-02/v94_multilevel_common_breakout_lock.json',
+              'inputs/v89-first-week':'inputs/v94-first-week',
+              'candidate-02-v89-first-week':'candidate-02-v94-first-week',
+              'v89 first-week':'v94 first-week',
+              'for v89':'for v94',
+          }
+          for name in ('/tmp/v94_collect_spot.py','/tmp/v94_augment_cross_market.py'):
+              path=Path(name)
+              text=path.read_text(encoding='utf-8')
+              for old,new in replacements.items():
+                  text=text.replace(old,new)
+              path.write_text(text,encoding='utf-8')
+          PY
+          python -m py_compile /tmp/v94_collect_spot.py /tmp/v94_augment_cross_market.py
+          python /tmp/v94_collect_spot.py
+          python /tmp/v94_augment_cross_market.py
+
+      - name: Verify full causal v94 coverage
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          from v53_nt_core import load_feature_matrix, load_raw_one_minute
+          lock=json.loads(Path('research/candidate-02/v94_multilevel_common_breakout_lock.json').read_text())
+          start=pd.Timestamp(lock['first_week']['start_utc']); end=pd.Timestamp(lock['first_week']['end_utc'])
+          features=load_feature_matrix(
+              Path('inputs/v94-first-week/candidate-02-v48-first-week/v48_features.npz'),
+              Path('inputs/v94-first-week/candidate-02-v48-first-week/columns.json'))
+          raw=load_raw_one_minute(Path('inputs/v94-first-week/.cache/candidate-02/v94-first-week/binance_1m'))
+          required={
+              'close','aggressive_total_quote_1m','signed_flow_ratio_1m',
+              'spot_open','spot_high','spot_low','spot_close',
+              'spot_signed_flow_ratio_1m','perp_spot_log_basis',
+          }
+          missing=sorted(required-set(features.columns))
+          if missing: raise RuntimeError(f'missing v94 features: {missing}')
+          evaluation=features.loc[(features.index>=start)&(features.index<end)]
+          raw_eval=raw.loc[(raw.index>=start)&(raw.index<end)]
+          if len(evaluation)<7*24*60*.995: raise RuntimeError(f'feature coverage {len(evaluation)}')
+          if len(raw_eval)<7*24*60*.995: raise RuntimeError(f'raw coverage {len(raw_eval)}')
+          if features.index.min()>start-pd.Timedelta(days=2)+pd.Timedelta(minutes=2): raise RuntimeError('missing warmup')
+          if features.index.max()<end: raise RuntimeError('features end early')
+          print(json.dumps({
+              'feature_first_utc':features.index.min().isoformat(),
+              'feature_last_utc':features.index.max().isoformat(),
+              'evaluation_rows':len(evaluation),
+              'raw_evaluation_rows':len(raw_eval),
+              'forward_feature_columns_used':False,
+          }))
+          PY
+
+      - name: Materialize exact locked variant matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/v94-configs
+          python - <<'PY'
+          import copy,json
+          from pathlib import Path
+          base=json.loads(Path('research/candidate-02/v94_base_config.json').read_text())
+          variants={
+              'all15':{'level_mode':'ALL','retrace_minutes':15},
+              'all20':{'level_mode':'ALL','retrace_minutes':20},
+              'all25':{'level_mode':'ALL','retrace_minutes':25},
+              'four20':{'level_mode':'FOUR_HOUR','retrace_minutes':20},
+              'eight20':{'level_mode':'EIGHT_HOUR','retrace_minutes':20},
+              'day20':{'level_mode':'PREVIOUS_DAY','retrace_minutes':20},
+          }
+          for label,override in variants.items():
+              cfg=copy.deepcopy(base)
+              cfg['candidate']=f'candidate-02-v94-{label}'
+              cfg['scenario'].update(override)
+              path=Path('/tmp/v94-configs')/f'{label}.json'
+              path.write_text(json.dumps(cfg,indent=2,sort_keys=True))
+          Path('artifacts-v94-variant-manifest.json').write_text(json.dumps({
+              'base':'research/candidate-02/v94_base_config.json',
+              'variants':variants,
+          },indent=2,sort_keys=True))
+          PY
+          for file in /tmp/v94-configs/*.json; do python -m json.tool "$file" >/dev/null; done
+
+      - name: Run every prelocked source and horizon in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          labels=(all15 all20 all25 four20 eight20 day20)
+          for label in "${labels[@]}"; do
+            output="artifacts/candidate-02-v94-${label}"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v94_nt_backtest.py \
+              --config "/tmp/v94-configs/${label}.json" \
+              --input-root inputs/v94-first-week \
+              --output "$output" \
+              | tee "artifacts-v94-${label}.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish prospective first-week decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from collections import Counter
+          from pathlib import Path
+          labels=('all15','all20','all25','four20','eight20','day20')
+          rows={}
+          print('# Candidate-02 v94 multilevel common accepted breakout')
+          print('| Variant | Signals | Trades/day | Win | PF | Growth/day | MDD |')
+          print('|---|---:|---:|---:|---:|---:|---:|')
+          def passed(m):
+              return (
+                  m.get('trades_per_day',0)>=.75
+                  and m.get('win_rate',0)>=.5
+                  and m.get('profit_factor_after_cost',0)>=1.5
+                  and m.get('geometric_daily_growth_after_cost',-1)>=.01
+                  and abs(m.get('maximum_mark_to_market_drawdown',-1))<=.25
+                  and m.get('engine','').startswith('NautilusTrader')
+                  and m.get('custom_backtest_engine') is False
+                  and abs(m.get('risk_fraction',0)-.03)<=1e-12
+              )
+          for label in labels:
+              path=Path(f'artifacts/candidate-02-v94-{label}/metrics.json')
+              if not path.exists():
+                  rows[label]={'status':'IMPLEMENTATION_ERROR'}
+                  print(f'| {label} | - | - | - | - | - | - |')
+                  continue
+              m=json.loads(path.read_text()); rows[label]=m
+              print(f"| {label} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          central=rows.get('all20',{})
+          central_pass=passed(central)
+          adjacent_pass=any(passed(rows.get(x,{})) for x in ('all15','all25'))
+          sources=Counter()
+          sig=Path('artifacts/candidate-02-v94-all20/signals.jsonl')
+          if sig.exists():
+              for line in sig.read_text().splitlines():
+                  if not line.strip(): continue
+                  value=json.loads(line)
+                  if value.get('status')!='OBSERVED': continue
+                  for source in value.get('details',{}).get('level_sources',[]):
+                      sources[str(source)]+=1
+          component_checks={}
+          for label in ('four20','eight20','day20'):
+              m=rows.get(label,{})
+              trades=int(m.get('trades',0)) if isinstance(m,dict) else 0
+              component_checks[label]={
+                  'trades':trades,
+                  'nonnegative_if_active':trades<2 or (
+                      m.get('profit_factor_after_cost',0)>=1.0
+                      and m.get('geometric_daily_growth_after_cost',-1)>=0.0
+                  ),
+              }
+          component_sane=all(value['nonnegative_if_active'] for value in component_checks.values())
+          source_diversity=len(sources)>=2
+          promotion=central_pass and adjacent_pass and source_diversity and component_sane
+          decision={
+              'status':'FIRST_WEEK_PROMOTION_ELIGIBLE' if promotion else 'FIRST_WEEK_REJECT_OR_SINGLE_ABLATION',
+              'central_pass':central_pass,
+              'adjacent_pass':adjacent_pass,
+              'central_signal_sources':dict(sources),
+              'source_diversity':source_diversity,
+              'component_sane':component_sane,
+              'component_checks':component_checks,
+              'rows':rows,
+              'risk_fraction':.03,
+              'performance_engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+          }
+          Path('artifacts-v94-first-week-decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+
+      - name: Preserve direct data, manifests and NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v94-first-week-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v94-*
+            artifacts-v94-*.log
+            artifacts-v94-first-week-decision.json
+            artifacts-v94-variant-manifest.json
+            inputs/v94-first-week/artifacts
+            inputs/v94-first-week/candidate-02-v48-first-week
+            inputs/v94-first-week/.cache/candidate-02/v94-first-week/binance_1m
+            inputs/v94-first-week/direct
+            inputs/v94-first-week/spot
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
