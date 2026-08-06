@@ -1,0 +1,139 @@
+name: candidate-04-branch-status-snapshot
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-branch-status-snapshot.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Wait for currently active candidate research runs to settle
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 180); do
+            active="$(gh api \
+              "/repos/${GITHUB_REPOSITORY}/actions/runs?branch=research/candidate-04&per_page=100" \
+              --jq '[.workflow_runs[] | select((.status == "queued" or .status == "in_progress") and .name != "candidate-04-branch-status-snapshot" and .name != "foundation-ci")] | length')"
+            echo "active candidate runs: $active"
+            if [[ "$active" == "0" ]]; then
+              break
+            fi
+            sleep 60
+          done
+
+      - name: Persist workflow and evidence status
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-04/status
+          gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs?branch=research/candidate-04&per_page=100" \
+            > research/candidate-04/status/workflow-runs-raw.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          raw = json.loads(Path(
+              "research/candidate-04/status/workflow-runs-raw.json"
+          ).read_text())
+          relevant = []
+          prefixes = (
+              "candidate-04-v33",
+              "candidate-04-v34",
+              "candidate-04-v35",
+              "candidate-04-v36",
+              "candidate-04-branch",
+              "candidate-04-cross-asset",
+              "candidate-04-multi-asset",
+              "candidate-04-new-infrastructure",
+          )
+          for run in raw.get("workflow_runs", []):
+              if not str(run.get("name", "")).startswith(prefixes):
+                  continue
+              relevant.append({
+                  "id": run.get("id"),
+                  "name": run.get("name"),
+                  "head_sha": run.get("head_sha"),
+                  "status": run.get("status"),
+                  "conclusion": run.get("conclusion"),
+                  "event": run.get("event"),
+                  "created_at": run.get("created_at"),
+                  "updated_at": run.get("updated_at"),
+                  "run_number": run.get("run_number"),
+              })
+          evidence = []
+          for path in sorted(Path("research/candidate-04").glob("evidence-*.json")):
+              try:
+                  value = json.loads(path.read_text())
+              except Exception as exc:
+                  evidence.append({"path": str(path), "error": str(exc)})
+                  continue
+              evidence.append({
+                  "path": str(path),
+                  "candidate": value.get("candidate"),
+                  "stage": value.get("stage"),
+                  "decision": value.get("decision"),
+                  "status": value.get("status"),
+                  "executed": value.get("executed"),
+                  "project_target_reached": value.get("project_target_reached"),
+                  "failure_classification": value.get("failure_classification"),
+                  "validation_pending": value.get("validation_pending"),
+                  "economic_path_terminal": value.get("economic_path_terminal"),
+                  "source_commit": value.get("source_commit"),
+                  "run_id": value.get("run_id"),
+              })
+          status = {
+              "branch": "research/candidate-04",
+              "workflow_runs": relevant,
+              "evidence": evidence,
+              "project_target_reached": any(
+                  item.get("project_target_reached") is True
+                  for item in evidence
+              ),
+          }
+          Path("research/candidate-04/status/CURRENT_RUNS.json").write_text(
+              json.dumps(status, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          python research/candidate-04/build_current_status.py \
+            --root research/candidate-04 \
+            --output research/candidate-04/CURRENT_STATUS.md
+
+      - name: Commit status snapshot with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-04/status/CURRENT_RUNS.json \
+            research/candidate-04/status/workflow-runs-raw.json \
+            research/candidate-04/CURRENT_STATUS.md
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "refresh candidate-04 branch research status"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
