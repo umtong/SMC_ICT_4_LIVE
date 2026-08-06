@@ -1,0 +1,236 @@
+{
+  "engine": {
+    "doc": "PyO3 wrapper around [`BacktestEngine`].\n\nExposes the backtest engine to Python as `BacktestEngine`.\nUses `unsendable` because the inner engine holds `Rc<RefCell<...>>`.",
+    "module": "nautilus_trader.core.nautilus_pyo3.backtest",
+    "qualname": "BacktestEngine",
+    "signature": "(config)"
+  },
+  "engine_methods": {
+    "add_actor": {
+      "doc": "Adds an actor from a constructed Python instance.\n\nThe actor ID and logging flags are sourced from the instance's config.",
+      "module": null,
+      "qualname": "BacktestEngine.add_actor",
+      "signature": "(self, /, actor)"
+    },
+    "add_actor_from_config": {
+      "doc": "Adds an actor from an importable config.",
+      "module": null,
+      "qualname": "BacktestEngine.add_actor_from_config",
+      "signature": "(self, /, config)"
+    },
+    "add_actors": {
+      "doc": "Adds multiple actors from constructed Python instances. Stops at the first error.",
+      "module": null,
+      "qualname": "BacktestEngine.add_actors",
+      "signature": "(self, /, actors)"
+    },
+    "add_actors_from_configs": {
+      "doc": "Adds multiple actors from importable configs. Stops at the first error.",
+      "module": null,
+      "qualname": "BacktestEngine.add_actors_from_configs",
+      "signature": "(self, /, configs)"
+    },
+    "add_builtin_actor": {
+      "doc": "Adds a built-in example actor from its type name and config.\n\nThis method exists only to single-source bundled example actor code across\nRust and Python tests/examples. It is not a first-class extension path for\nadding native actors.",
+      "module": null,
+      "qualname": "BacktestEngine.add_builtin_actor",
+      "signature": "(self, /, type_name, config)"
+    },
+    "add_builtin_strategy": {
+      "doc": "Adds a built-in example strategy from its type name and config.\n\nThis method exists only to single-source bundled example strategy code across\nRust and Python tests/examples. It is not a first-class extension path for\nadding native strategies.",
+      "module": null,
+      "qualname": "BacktestEngine.add_builtin_strategy",
+      "signature": "(self, /, type_name, config)"
+    },
+    "add_data": {
+      "doc": "Adds data to the engine.",
+      "module": null,
+      "qualname": "BacktestEngine.add_data",
+      "signature": "(self, /, data, client_id=None, validate=True, sort=True)"
+    },
+    "add_instrument": {
+      "doc": "Adds an instrument to the engine.",
+      "module": null,
+      "qualname": "BacktestEngine.add_instrument",
+      "signature": "(self, /, instrument)"
+    },
+    "add_strategy": {
+      "doc": "Adds a strategy from a constructed Python instance.\n\nThe strategy ID, order ID tag, and logging flags are sourced from the instance's\nconfig.",
+      "module": null,
+      "qualname": "BacktestEngine.add_strategy",
+      "signature": "(self, /, strategy)"
+    },
+    "add_strategy_from_config": {
+      "doc": "Adds a strategy from an importable config.",
+      "module": null,
+      "qualname": "BacktestEngine.add_strategy_from_config",
+      "signature": "(self, /, config)"
+    },
+    "add_venue": {
+      "doc": "Adds a simulated exchange with the given parameters to the engine.\n\n# Liquidation parameters\n\n- `liquidation_enabled` (bool, default `False`): if margin liquidation should be\n  triggered when the account's equity falls to or below the maintenance\n  margin threshold scaled by `liquidation_trigger_ratio`.\n- `liquidation_trigger_ratio` (float, optional, default `1.0`): the ratio of\n  maintenance margin used as the liquidation threshold. A value of `1.0`\n  liquidates when equity <= maintenance margin; higher values trigger earlier.\n- `liquidation_cancel_open_orders` (bool, default `True`): if open resting\n  orders for the venue should be cancelled before synthetic close-out fills\n  are emitted for open positions.",
+      "module": null,
+      "qualname": "BacktestEngine.add_venue",
+      "signature": "(self, /, venue, oms_type, account_type, starting_balances, base_currency=None, default_leverage=None, leverages=None, margin_model=None, fill_model=None, fee_model=None, latency_model=None, modules=None, book_type=Ellipsis, routing=False, reject_stop_orders=True, support_gtd_orders=True, support_contingent_orders=True, use_position_ids=True, use_random_ids=False, use_reduce_only=True, use_message_queue=True, use_market_order_acks=False, bar_execution=True, bar_adaptive_high_low_ordering=False, trade_execution=True, liquidity_consumption=False, queue_position=False, allow_cash_borrowing=False, frozen_account=False, oto_trigger_mode=Ellipsis, price_protection_points=None, settlement_prices=None, liquidation_enabled=False, liquidation_trigger_ratio=None, liquidation_cancel_open_orders=True)"
+    },
+    "cache": {
+      "doc": "Returns the cache shared with the kernel and registered components.",
+      "module": null,
+      "qualname": "BacktestEngine.cache",
+      "signature_error": "TypeError(\"<attribute 'cache' of 'nautilus_trader.core.nautilus_pyo3.backtest.BacktestEngine' objects> is not a callable object\")"
+    },
+    "clear_actors": {
+      "doc": "Clears all actors from the engine.",
+      "module": null,
+      "qualname": "BacktestEngine.clear_actors",
+      "signature": "(self, /)"
+    },
+    "clear_data": {
+      "doc": "Clears all data from the engine.",
+      "module": null,
+      "qualname": "BacktestEngine.clear_data",
+      "signature": "(self, /)"
+    },
+    "clear_exec_algorithms": {
+      "doc": "Clears all execution algorithms from the engine.",
+      "module": null,
+      "qualname": "BacktestEngine.clear_exec_algorithms",
+      "signature": "(self, /)"
+    },
+    "clear_strategies": {
+      "doc": "Clears all strategies from the engine.",
+      "module": null,
+      "qualname": "BacktestEngine.clear_strategies",
+      "signature": "(self, /)"
+    },
+    "dispose": {
+      "doc": "Disposes of the engine, releasing all resources.",
+      "module": null,
+      "qualname": "BacktestEngine.dispose",
+      "signature": "(self, /)"
+    },
+    "generate_account_report": {
+      "doc": "Generates an account report as a pandas `DataFrame`.\n\nAt least one of `venue` or `account_id` must be provided.\n\n# Errors\n\nReturns an error if neither `venue` nor `account_id` is provided, or if the Python\n`ReportProvider` import or call fails.",
+      "module": null,
+      "qualname": "BacktestEngine.generate_account_report",
+      "signature": "(self, /, venue=None, account_id=None)"
+    },
+    "generate_fills_report": {
+      "doc": "Generates a fills report as a pandas `DataFrame`.\n\n# Errors\n\nReturns an error if the Python `ReportProvider` import or call fails.",
+      "module": null,
+      "qualname": "BacktestEngine.generate_fills_report",
+      "signature": "(self, /)"
+    },
+    "generate_order_fills_report": {
+      "doc": "Generates an order fills report as a pandas `DataFrame`.\n\n# Errors\n\nReturns an error if the Python `ReportProvider` import or call fails.",
+      "module": null,
+      "qualname": "BacktestEngine.generate_order_fills_report",
+      "signature": "(self, /)"
+    },
+    "generate_orders_report": {
+      "doc": "Generates an orders report as a pandas `DataFrame`.\n\n# Errors\n\nReturns an error if the Python `ReportProvider` import or call fails.",
+      "module": null,
+      "qualname": "BacktestEngine.generate_orders_report",
+      "signature": "(self, /)"
+    },
+    "generate_positions_report": {
+      "doc": "Generates a positions report as a pandas `DataFrame`.\n\n# Errors\n\nReturns an error if the Python `ReportProvider` import or call fails.",
+      "module": null,
+      "qualname": "BacktestEngine.generate_positions_report",
+      "signature": "(self, /)"
+    },
+    "get_result": {
+      "doc": "Returns the backtest result from the last run.",
+      "module": null,
+      "qualname": "BacktestEngine.get_result",
+      "signature": "(self, /)"
+    },
+    "list_venues": {
+      "doc": "Returns the list of registered venue identifiers.",
+      "module": null,
+      "qualname": "BacktestEngine.list_venues",
+      "signature": "(self, /)"
+    },
+    "portfolio": {
+      "doc": "Returns the portfolio shared with the kernel and registered components.",
+      "module": null,
+      "qualname": "BacktestEngine.portfolio",
+      "signature_error": "TypeError(\"<attribute 'portfolio' of 'nautilus_trader.core.nautilus_pyo3.backtest.BacktestEngine' objects> is not a callable object\")"
+    },
+    "run": {
+      "doc": "Runs the backtest engine.",
+      "module": null,
+      "qualname": "BacktestEngine.run",
+      "signature": "(self, /, start=None, end=None, run_config_id=None, streaming=False)"
+    },
+    "run_config_id": {
+      "doc": "Returns the last run config ID, if any.",
+      "module": null,
+      "qualname": "BacktestEngine.run_config_id",
+      "signature_error": "TypeError(\"<attribute 'run_config_id' of 'nautilus_trader.core.nautilus_pyo3.backtest.BacktestEngine' objects> is not a callable object\")"
+    },
+    "run_finished": {
+      "doc": "Returns when the last run finished, in nanoseconds since the UNIX epoch.",
+      "module": null,
+      "qualname": "BacktestEngine.run_finished",
+      "signature_error": "TypeError(\"<attribute 'run_finished' of 'nautilus_trader.core.nautilus_pyo3.backtest.BacktestEngine' objects> is not a callable object\")"
+    },
+    "run_id": {
+      "doc": "Returns the last run ID, if any.",
+      "module": null,
+      "qualname": "BacktestEngine.run_id",
+      "signature_error": "TypeError(\"<attribute 'run_id' of 'nautilus_trader.core.nautilus_pyo3.backtest.BacktestEngine' objects> is not a callable object\")"
+    },
+    "run_started": {
+      "doc": "Returns when the last run started, in nanoseconds since the UNIX epoch.",
+      "module": null,
+      "qualname": "BacktestEngine.run_started",
+      "signature_error": "TypeError(\"<attribute 'run_started' of 'nautilus_trader.core.nautilus_pyo3.backtest.BacktestEngine' objects> is not a callable object\")"
+    },
+    "sort_data": {
+      "doc": "Sorts the engine's internal data stream by timestamp.",
+      "module": null,
+      "qualname": "BacktestEngine.sort_data",
+      "signature": "(self, /)"
+    }
+  },
+  "engine_relevant_names": [
+    "add_actor",
+    "add_actor_from_config",
+    "add_actors",
+    "add_actors_from_configs",
+    "add_builtin_actor",
+    "add_builtin_strategy",
+    "add_data",
+    "add_instrument",
+    "add_strategy",
+    "add_strategy_from_config",
+    "add_venue",
+    "cache",
+    "clear_actors",
+    "clear_data",
+    "clear_exec_algorithms",
+    "clear_strategies",
+    "dispose",
+    "generate_account_report",
+    "generate_fills_report",
+    "generate_order_fills_report",
+    "generate_orders_report",
+    "generate_positions_report",
+    "get_result",
+    "list_venues",
+    "portfolio",
+    "run",
+    "run_config_id",
+    "run_finished",
+    "run_id",
+    "run_started",
+    "sort_data"
+  ],
+  "nautilus_version": "1.230.0",
+  "venue_config": {
+    "doc": "Represents a venue configuration for one specific backtest engine.",
+    "module": "nautilus_trader.core.nautilus_pyo3.backtest",
+    "qualname": "BacktestVenueConfig",
+    "signature": "(name, oms_type, account_type, book_type, starting_balances, routing=None, frozen_account=None, reject_stop_orders=None, support_gtd_orders=None, support_contingent_orders=None, use_position_ids=None, use_random_ids=None, use_reduce_only=None, bar_execution=None, bar_adaptive_high_low_ordering=None, trade_execution=None, use_market_order_acks=None, liquidity_consumption=None, allow_cash_borrowing=None, queue_position=None, oto_trigger_mode=None, base_currency=None, default_leverage=None, leverages=None, margin_model=None, modules=None, fill_model=None, latency_model=None, fee_model=None, price_protection_points=None, settlement_prices=None, liquidation_enabled=None, liquidation_trigger_ratio=None, liquidation_cancel_open_orders=None)"
+  }
+}
