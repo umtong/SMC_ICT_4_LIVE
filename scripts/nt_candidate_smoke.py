@@ -84,7 +84,6 @@ def main() -> int:
         config={
             "instrument_id": inst.id,
             "trade_size": Decimal("0.01"),
-            "strategy_id": "NT-SMOKE-001",
         },
     )
     run_config = BacktestRunConfig(
