@@ -1,0 +1,180 @@
+name: candidate-08-aggtrade-acceptance-stop-fix
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.fix-aggtrade-acceptance-stop"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  fix-and-validate:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/aggtrade-orderflow-first-corrected
+      DATA_CACHE: /tmp/candidate-08-aggtrade-orderflow-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Correct acceptance invalidation and run unchanged first week
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-08/aggtrade_orderflow_probe.py")
+          source = path.read_text(encoding="utf-8")
+          anchor = '''def _trade_record(
+    *,
+    pending: PendingEvent,
+'''
+          helper = '''def _structural_stop_reference(pending: PendingEvent, direction: int) -> tuple[float, str]:
+    """Return the market-state invalidation reference for the confirmed scenario."""
+
+    if pending.family == "BREAKOUT_ACCEPTANCE_CONTINUATION":
+        if direction > 0:
+            if pending.retest_low is None:
+                raise ValueError("long acceptance requires an observed retest low")
+            return pending.retest_low, "ACCEPTANCE_RETEST_LOW"
+        if pending.retest_high is None:
+            raise ValueError("short acceptance requires an observed retest high")
+        return pending.retest_high, "ACCEPTANCE_RETEST_HIGH"
+    return pending.extreme, "ABSORPTION_SWEEP_EXTREME"
+
+
+'''
+          if source.count(anchor) != 1:
+              raise SystemExit("trade-record anchor mismatch")
+          if helper not in source:
+              source = source.replace(anchor, helper + anchor)
+          old_stop = '''    minimum_distance = 0.10 * atr
+    buffer = 0.03 * atr
+    if direction > 0:
+        stop = min(pending.extreme - buffer, entry - minimum_distance)
+    else:
+        stop = max(pending.extreme + buffer, entry + minimum_distance)
+'''
+          new_stop = '''    minimum_distance = 0.10 * atr
+    buffer = 0.03 * atr
+    stop_reference, stop_reference_source = _structural_stop_reference(pending, direction)
+    if direction > 0:
+        stop = min(stop_reference - buffer, entry - minimum_distance)
+    else:
+        stop = max(stop_reference + buffer, entry + minimum_distance)
+'''
+          if source.count(old_stop) != 1:
+              raise SystemExit("structural-stop block mismatch")
+          source = source.replace(old_stop, new_stop)
+          record_anchor = '''        "entry": entry,
+        "stop": stop,
+        "net_reward_risk": net_rr,
+'''
+          record_replacement = '''        "entry": entry,
+        "stop": stop,
+        "stop_reference": stop_reference,
+        "stop_reference_source": stop_reference_source,
+        "net_reward_risk": net_rr,
+'''
+          if source.count(record_anchor) != 1:
+              raise SystemExit("trade record anchor mismatch")
+          source = source.replace(record_anchor, record_replacement)
+          path.write_text(source, encoding="utf-8")
+
+          test_path = Path("research/candidate-08/test_aggtrade_orderflow.py")
+          test_source = test_path.read_text(encoding="utf-8")
+          test_source = test_source.replace(
+              '    _select_target,\n',
+              '    _select_target,\n    _structural_stop_reference,\n    PendingEvent,\n',
+          )
+          class_anchor = 'class AggTradeOrderFlowTests(unittest.TestCase):\n'
+          test_method = '''class AggTradeOrderFlowTests(unittest.TestCase):
+    def test_acceptance_stop_uses_observed_retest_extreme(self) -> None:
+        boundary = level("boundary", LevelKind.HIGH, 100.0)
+        pending = PendingEvent(
+            scenario_id="acceptance-long",
+            family="BREAKOUT_ACCEPTANCE_CONTINUATION",
+            trade_direction=1,
+            outward_direction=1,
+            boundary=boundary,
+            armed_position=10,
+            expiry_position=20,
+            extreme=101.5,
+            reference_high=101.5,
+            reference_low=99.5,
+            displacement_volume=200.0,
+            displacement_trade_count=100.0,
+            displacement_imbalance=0.4,
+            retest_position=12,
+            retest_high=101.0,
+            retest_low=100.2,
+            retest_volume=80.0,
+            retest_trade_count=50.0,
+        )
+        reference, source = _structural_stop_reference(pending, 1)
+        self.assertEqual(reference, 100.2)
+        self.assertEqual(source, "ACCEPTANCE_RETEST_LOW")
+        pending.family = "SWEEP_ABSORPTION_REVERSAL"
+        reference, source = _structural_stop_reference(pending, 1)
+        self.assertEqual(reference, 101.5)
+        self.assertEqual(source, "ABSORPTION_SWEEP_EXTREME")
+
+'''
+          if test_source.count(class_anchor) != 1:
+              raise SystemExit("test class anchor mismatch")
+          test_source = test_source.replace(class_anchor, test_method)
+          test_path.write_text(test_source, encoding="utf-8")
+          PY
+          python -m compileall -q \
+            research/candidate-08/aggtrade_orderflow_probe.py \
+            research/candidate-08/test_aggtrade_orderflow.py
+          python research/candidate-08/test_aggtrade_orderflow.py -v
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          python research/candidate-08/aggtrade_orderflow_probe.py \
+            --config research/candidate-08/config_range_fvg.json \
+            --output "$OUTPUT_DIR/summary.json" \
+            --data-cache "$DATA_CACHE" \
+            2>&1 | tee "$OUTPUT_DIR/runner.log"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          output = Path(os.environ["OUTPUT_DIR"])
+          (output / "workflow.json").write_text(
+              json.dumps({
+                  "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                  "head_sha": os.environ.get("GITHUB_SHA"),
+                  "diagnostic_only": True,
+                  "controlled_correction": "acceptance stop references observed retest extreme",
+                  "scenario_thresholds_changed": False,
+                  "absorption_logic_changed": False,
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          rm research/candidate-08/.fix-aggtrade-acceptance-stop
+          rm .github/workflows/candidate-08-aggtrade-stop-fix.yml
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" add \
+            research/candidate-08/aggtrade_orderflow_probe.py \
+            research/candidate-08/test_aggtrade_orderflow.py \
+            research/candidate-08/evidence/aggtrade-orderflow-first-corrected \
+            research/candidate-08/.fix-aggtrade-acceptance-stop \
+            .github/workflows/candidate-08-aggtrade-stop-fix.yml
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: correct acceptance structural invalidation"
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
