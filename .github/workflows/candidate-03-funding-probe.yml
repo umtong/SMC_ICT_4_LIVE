@@ -48,72 +48,78 @@ jobs:
               lines.append(text)
               print(text)
 
-          emit(f"nautilus={nautilus_trader.__version__}")
-          emit(f"FundingRateUpdate_module={FundingRateUpdate.__module__}")
-          emit(f"FundingRateUpdate_attrs={[x for x in dir(FundingRateUpdate) if any(k in x.lower() for k in (\"arrow\", \"record\", \"schema\", \"json\", \"type_name\", \"field\", \"metadata\"))]}")
+          emit("nautilus=" + str(nautilus_trader.__version__))
+          emit("FundingRateUpdate_module=" + str(FundingRateUpdate.__module__))
+          keywords = ("arrow", "record", "schema", "json", "type_name", "field", "metadata")
+          attrs = [name for name in dir(FundingRateUpdate) if any(key in name.lower() for key in keywords)]
+          emit("FundingRateUpdate_attrs=" + repr(attrs))
           for name in ("get_fields", "get_metadata", "fully_qualified_name", "type_name_static", "decode_record_batch_py", "encode_record_batch_py", "from_json"):
-              emit(f"attr {name}: {getattr(FundingRateUpdate, name, None)!r}")
+              emit("attr " + name + ": " + repr(getattr(FundingRateUpdate, name, None)))
 
           try:
               from nautilus_trader.model import register_custom_data_class
-              emit(f"register_custom_data_class={register_custom_data_class}")
+              emit("register_custom_data_class=" + repr(register_custom_data_class))
               try:
                   register_custom_data_class(FundingRateUpdate)
                   emit("register_custom_data_class FundingRateUpdate: SUCCESS")
               except Exception as exc:
-                  emit(f"register_custom_data_class FundingRateUpdate: {type(exc).__name__}: {exc}")
+                  emit("register_custom_data_class FundingRateUpdate: " + type(exc).__name__ + ": " + str(exc))
           except Exception as exc:
-              emit(f"registration import failed: {type(exc).__name__}: {exc}")
+              emit("registration import failed: " + type(exc).__name__ + ": " + str(exc))
 
           try:
               import nautilus_trader.persistence.catalog.parquet as parquet_module
-              emit(f"parquet_module={parquet_module.__file__}")
+              emit("parquet_module=" + str(parquet_module.__file__))
               for name in ("backend_session", "_register_directory_table", "write_data", "_write_chunk"):
                   target = getattr(ParquetDataCatalog, name, None)
-                  emit(f"--- SOURCE {name} ---")
+                  emit("--- SOURCE " + name + " ---")
                   try:
                       emit(inspect.getsource(target))
                   except Exception as exc:
-                      emit(f"source unavailable: {type(exc).__name__}: {exc}")
+                      emit("source unavailable: " + type(exc).__name__ + ": " + str(exc))
           except Exception:
               emit(traceback.format_exc())
 
           root = pathlib.Path(nautilus_trader.__file__).resolve().parent
-          emit(f"package_root={root}")
+          emit("package_root=" + str(root))
           for path in sorted(root.rglob("*.py")):
               try:
                   text = path.read_text(encoding="utf-8")
               except Exception:
                   continue
               if "FundingRateUpdate" in text or "funding_rate_update" in text:
-                  emit(f"--- MATCH FILE {path.relative_to(root)} ---")
+                  emit("--- MATCH FILE " + str(path.relative_to(root)) + " ---")
                   for no, line in enumerate(text.splitlines(), 1):
                       if "FundingRateUpdate" in line or "funding_rate_update" in line or "CUSTOM_DATA_TYPES" in line:
-                          emit(f"{no}: {line}")
+                          emit(str(no) + ": " + line)
 
           temp = tempfile.mkdtemp(prefix="nt-funding-probe-")
           catalog = ParquetDataCatalog(temp)
-          item = FundingRateUpdate(
-              InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),
-              Decimal("0.0001"),
-              1,
-              1,
-              interval=480,
-              next_funding_ns=2,
-          )
-          emit(f"sample={item!r}")
           try:
-              catalog.write_data([item])
-              emit("write_data: SUCCESS")
+              item = FundingRateUpdate(
+                  InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),
+                  Decimal("0.0001"),
+                  1,
+                  1,
+                  interval=480,
+                  next_funding_ns=2,
+              )
+              emit("sample=" + repr(item))
+              try:
+                  catalog.write_data([item])
+                  emit("write_data: SUCCESS")
+              except Exception as exc:
+                  emit("write_data: " + type(exc).__name__ + ": " + str(exc))
+                  emit(traceback.format_exc())
+              try:
+                  emit("catalog files=" + repr(list(pathlib.Path(temp).rglob("*"))))
+                  loaded = catalog.funding_rates(instrument_ids=["BTCUSDT-PERP.BINANCE"])
+                  emit("catalog.funding_rates: SUCCESS " + repr(loaded))
+              except Exception as exc:
+                  emit("catalog.funding_rates: " + type(exc).__name__ + ": " + str(exc))
+                  emit(traceback.format_exc())
           except Exception as exc:
-              emit(f"write_data: {type(exc).__name__}: {exc}")
-              emit(traceback.format_exc())
-          try:
-              emit(f"catalog files={list(pathlib.Path(temp).rglob(\"*\"))}")
-              loaded = catalog.funding_rates(instrument_ids=["BTCUSDT-PERP.BINANCE"])
-              emit(f"catalog.funding_rates: SUCCESS {loaded!r}")
-          except Exception as exc:
-              emit(f"catalog.funding_rates: {type(exc).__name__}: {exc}")
+              emit("sample construction failed: " + type(exc).__name__ + ": " + str(exc))
               emit(traceback.format_exc())
           out.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
