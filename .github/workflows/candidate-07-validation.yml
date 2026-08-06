@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 jobs:
-  week-1:
+  staged-btc-weeks:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -36,29 +36,31 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .research-data/candidate-07
-          key: candidate-07-btcusdt-week1-v1
+          key: candidate-07-btcusdt-three-weeks-v1
+          restore-keys: |
+            candidate-07-btcusdt-week1-v1
 
-      - name: NautilusTrader frozen week-1 replay
+      - name: NautilusTrader frozen staged BTC replays
         run: >-
           python research/candidate-07/candidate.py pipeline
           --config research/candidate-07/config.json
           --week-plan research/candidate-07/week_plan.json
           --output artifacts/candidate-07
           --data-root .research-data/candidate-07
-          --max-weeks 1
+          --max-weeks 3
 
-      - name: Print machine-readable result
+      - name: Print machine-readable results
         if: always()
         run: |
           test -f artifacts/candidate-07/pipeline_summary.json
           cat artifacts/candidate-07/pipeline_summary.json
-          cat artifacts/candidate-07/week-1/metrics.json
+          find artifacts/candidate-07 -name metrics.json -print -exec cat {} \;
 
       - name: Preserve complete replay evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-week1-${{ github.sha }}
+          name: candidate-07-staged-weeks-${{ github.sha }}
           path: artifacts/candidate-07
           retention-days: 14
           if-no-files-found: error
