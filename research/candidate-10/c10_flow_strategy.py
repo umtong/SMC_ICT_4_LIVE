@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - compatibility for static tooling
 from nautilus_trader.model.enums import AggressorSide
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderType
+from nautilus_trader.model.enums import TriggerType
 from nautilus_trader.model.identifiers import InstrumentId
 
 from smc_ict_4.contracts import ResearchEvent
@@ -27,6 +28,13 @@ from c10_flow_state import FlowAuctionStateMachine
 from c10_model import BarView
 from c10_model import NS_PER_MINUTE
 from c10_strategy import Candidate10Strategy
+
+
+# The flow runner contains TradeTick and one-minute NAV bars but no historical
+# bid/ask quotes. Protective stops therefore must be evaluated on LAST_PRICE,
+# not the OrderFactory bracket default (TriggerType.DEFAULT), which can consult a
+# synthetic bid/ask and reject a valid child as already marketable at parent fill.
+FLOW_STOP_TRIGGER_TYPE = TriggerType.LAST_PRICE
 
 
 class FlowCandidate10Config(StrategyConfig, frozen=True):
@@ -137,6 +145,7 @@ class FlowCandidate10Strategy(Candidate10Strategy):
             tp_price=target,
             tp_post_only=True,
             sl_trigger_price=stop,
+            sl_trigger_type=FLOW_STOP_TRIGGER_TYPE,
         )
         start_equity = self._equity()
         current_sequence = (
@@ -187,6 +196,7 @@ class FlowCandidate10Strategy(Candidate10Strategy):
                     "target": target.as_double(),
                     "risk_fraction": str(self.config.risk_fraction),
                     "expiry_sequence": self.pending_expiry_sequence,
+                    "stop_trigger_type": str(FLOW_STOP_TRIGGER_TYPE),
                     "cost_adjusted_net_rr": plan.details[
                         "cost_adjusted_net_rr"
                     ],
