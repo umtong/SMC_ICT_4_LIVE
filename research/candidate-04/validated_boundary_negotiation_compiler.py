@@ -31,6 +31,7 @@ import two_stage_auction_resolution_compiler as v30
 
 Intent = v22.Intent
 FAILED_STRESS_ROUTE = v31.SCENARIOS[v30.STRESS_PARENT]["parent_side"]
+_ORIGINAL_SETTLED_CAUSE = v31.settled_cause
 
 
 def validated_settled_cause(
@@ -55,7 +56,7 @@ def validated_settled_cause(
                 "seven-week ablation"
             ),
         }
-    return v31.settled_cause(
+    return _ORIGINAL_SETTLED_CAUSE(
         data,
         parent,
         expansion_index,
