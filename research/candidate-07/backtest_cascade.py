@@ -1,6 +1,6 @@
-"""Select the combined auction router with non-chasing limit entries."""
+"""Select the positioning-routed external-liquidity auction."""
 from __future__ import annotations
 
-from backtest_auction_limit import run_week
+from backtest_positioning import run_week
 
 __all__ = ["run_week"]
