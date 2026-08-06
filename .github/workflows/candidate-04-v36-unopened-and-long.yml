@@ -1,0 +1,495 @@
+name: candidate-04-v36-unopened-and-long
+
+on:
+  workflow_run:
+    workflows: ["candidate-04-v36-survivor-followup"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  unopened:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    outputs:
+      pass: ${{ steps.evaluate.outputs.pass }}
+      survivors: ${{ steps.evaluate.outputs.survivors }}
+      source_commit: ${{ steps.freeze.outputs.source_commit }}
+      long_build_start: ${{ steps.evaluate.outputs.long_build_start }}
+      long_start: ${{ steps.evaluate.outputs.long_start }}
+      long_end: ${{ steps.evaluate.outputs.long_end }}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      FOLLOWUP_RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Restore frozen V36 survivor decision
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: candidate-04-v36-survivor-followup-*
+          path: followup
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Freeze source and preselect all windows before market data access
+        id: freeze
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-04-v36-unopened
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import json
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          paths = list(Path("followup").rglob("research_decision.json"))
+          if not paths:
+              fallback = Path("research/candidate-04/evidence-v36-survivor-followup.json")
+              if fallback.exists():
+                  paths = [fallback]
+          if not paths:
+              print("should_run=false")
+              print("source_commit=")
+              raise SystemExit(0)
+          decision = json.loads(paths[0].read_text())
+          survivors = sorted(set(decision.get("survivors") or []))
+          source_commit = decision.get("source_commit") or "${{ github.event.workflow_run.head_sha }}"
+          if not survivors:
+              print("should_run=false")
+              print(f"source_commit={source_commit}")
+              raise SystemExit(0)
+
+          corpus = ""
+          for path in Path(".").rglob("*"):
+              if not path.is_file() or ".git" in path.parts:
+                  continue
+              try:
+                  corpus += path.read_text(errors="ignore")
+              except OSError:
+                  pass
+          seed = f"{source_commit}:candidate-04-v36:{','.join(survivors)}"
+          candidates = []
+          cursor = date(2023, 1, 2)
+          while cursor <= date(2025, 12, 1):
+              week_end = cursor + timedelta(days=6)
+              if str(cursor) not in corpus and str(week_end) not in corpus:
+                  candidates.append((
+                      hashlib.sha256(f"{seed}:week:{cursor}".encode()).hexdigest(),
+                      cursor - timedelta(days=2),
+                      cursor,
+                      week_end,
+                  ))
+              cursor += timedelta(days=7)
+          candidates.sort()
+          if len(candidates) < 3:
+              raise SystemExit("fewer than three repository-unseen weeks")
+          weeks = [
+              {
+                  "build_start": str(item[1]),
+                  "evaluation_start": str(item[2]),
+                  "evaluation_end": str(item[3]),
+              }
+              for item in candidates[:3]
+          ]
+
+          blocks = []
+          cursor = date(2023, 2, 1)
+          while cursor <= date(2025, 8, 1):
+              block_end = cursor + timedelta(days=90)
+              overlaps = any(
+                  date.fromisoformat(week["evaluation_start"]) <= block_end
+                  and date.fromisoformat(week["evaluation_end"]) >= cursor
+                  for week in weeks
+              )
+              if not overlaps and str(cursor) not in corpus and str(block_end) not in corpus:
+                  blocks.append((
+                      hashlib.sha256(f"{seed}:long:{cursor}".encode()).hexdigest(),
+                      cursor - timedelta(days=2),
+                      cursor,
+                      block_end,
+                  ))
+              cursor += timedelta(days=31)
+          blocks.sort()
+          if not blocks:
+              raise SystemExit("no disjoint repository-unseen 91-day block")
+          selection = {
+              "candidate": "candidate-04-v36-micro-auction-balance-transition",
+              "survivors": survivors,
+              "source_commit": source_commit,
+              "selection_time": "before_market_data_access",
+              "selection_method": "sha256 rank over repository-unseen windows",
+              "weeks": weeks,
+              "long_evaluation": {
+                  "build_start": str(blocks[0][1]),
+                  "evaluation_start": str(blocks[0][2]),
+                  "evaluation_end": str(blocks[0][3]),
+              },
+          }
+          Path("artifacts/candidate-04-v36-unopened/selection.json").write_text(json.dumps(selection, indent=2, sort_keys=True) + "\n")
+          print("should_run=true")
+          print(f"source_commit={source_commit}")
+          PY
+
+      - name: Verify frozen candidate source
+        if: steps.freeze.outputs.should_run == 'true'
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.freeze.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "$SOURCE_COMMIT^{commit}"
+          git diff --exit-code "$SOURCE_COMMIT" -- \
+            research/candidate-04/micro_auction_balance_transition_compiler.py \
+            research/candidate-04/nt_exact_causal_target_risk_sizing.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/inventory_transfer_config.json \
+            research/candidate-04/impact_exhaustion_config.json \
+            research/candidate-04/auction_activity_router_config.json \
+            research/candidate-04/nt_liquidity_config.json
+          smc4 doctor
+
+      - name: Evaluate every frozen route on three unseen weeks
+        if: steps.freeze.outputs.should_run == 'true'
+        id: evaluate
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v36-unopened"
+          routes="$(python -c 'import json; print(" ".join(json.load(open("artifacts/candidate-04-v36-unopened/selection.json"))["survivors"]))')"
+          declare -A alive
+          for route in $routes; do alive[$route]=1; done
+
+          for index in 0 1 2; do
+            export C04_BUILD_START="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["build_start"])' "$root/selection.json" "$index")"
+            export C04_EVALUATION_START="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["evaluation_start"])' "$root/selection.json" "$index")"
+            export C04_EVALUATION_END="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["evaluation_end"])' "$root/selection.json" "$index")"
+            export C04_BUILD_END="$C04_EVALUATION_END"
+            shared="$root/week_$((index + 1))/shared"
+            mkdir -p "$shared"
+            python research/candidate-04/rich_features_v2.py \
+              --start "$C04_BUILD_START" \
+              --end "$C04_BUILD_END" \
+              --cache ".cache/candidate-04-v36-unopened/$index/rich" \
+              --output "$shared/rich"
+            python research/candidate-04/micro_auction_balance_transition_compiler.py \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --rich-dir "$shared/rich" \
+              --kline-dir ".cache/candidate-04-v36-unopened/$index/raw" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --output "$shared/all_signals" \
+              --download-klines \
+              > "$shared/compiler_console.json"
+
+            for route in $routes; do
+              if [[ "${alive[$route]}" != "1" ]]; then continue; fi
+              week="$root/week_$((index + 1))/$route"
+              mkdir -p "$week/signals"
+              export V36_ALL_SIGNALS="$shared/all_signals/signals.json"
+              export V36_ROUTE="$route"
+              export V36_ROUTE_WEEK="$week"
+              python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          rows = json.loads(Path(os.environ["V36_ALL_SIGNALS"]).read_text())
+          route = os.environ["V36_ROUTE"]
+          continuation = {
+              "MICRO_BALANCE_NEW_INVENTORY_RETEST_CONTINUATION",
+              "MICRO_BALANCE_LIQUIDATION_RETEST_CONTINUATION",
+          }
+          reversal = {
+              "MICRO_BALANCE_TRAPPED_BREAKOUT_REVERSAL",
+              "MICRO_BALANCE_LIQUIDATION_EXHAUSTION_REVERSAL",
+          }
+          if route == "continuation":
+              keep = continuation
+          elif route == "reversal":
+              keep = reversal
+          else:
+              keep = continuation | reversal
+          selected = [row for row in rows if row["scenario"] in keep]
+          root = Path(os.environ["V36_ROUTE_WEEK"])
+          (root / "signals/signals.json").write_text(json.dumps(selected, indent=2, sort_keys=True) + "\n")
+          (root / "signals/summary.json").write_text(json.dumps({
+              "written_signals": len(selected),
+              "route_counts": {"frozen_route": route},
+          }, indent=2, sort_keys=True) + "\n")
+          PY
+              C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$week/signals/signals.json" \
+              python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+                --config research/candidate-04/nt_liquidity_config.json \
+                --build-start "$C04_BUILD_START" \
+                --build-end "$C04_BUILD_END" \
+                --evaluation-start "$C04_EVALUATION_START" \
+                --evaluation-end "$C04_EVALUATION_END" \
+                --cache ".cache/candidate-04-v36-unopened/$index/raw" \
+                --output "$week/nautilus" \
+                > "$week/nautilus_console.json"
+              python research/candidate-04/summarize_candidate_week.py \
+                --root "$week" \
+                --candidate "candidate-04-v36-${route}" \
+                --stage "unopened_week_$((index + 1))" \
+                --output "$week/summary.json"
+              passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$week/summary.json")"
+              if [[ "$passed" != "true" ]]; then alive[$route]=0; fi
+            done
+          done
+
+          export V36_UNOPENED_ROUTES="$routes"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path("artifacts/candidate-04-v36-unopened")
+          selection = json.loads((root / "selection.json").read_text())
+          routes = os.environ["V36_UNOPENED_ROUTES"].split()
+          route_results = {}
+          survivors = []
+          for route in routes:
+              weeks = {
+                  path.parent.parent.name: json.loads(path.read_text())
+                  for path in root.glob(f"week_*/{route}/summary.json")
+              }
+              passed = len(weeks) == 3 and all(item["candidate_pass"] for item in weeks.values())
+              route_results[route] = {"weeks": weeks, "three_unopened_weeks_pass": passed}
+              if passed:
+                  survivors.append(route)
+          evidence = {
+              "candidate": selection["candidate"],
+              "source_commit": selection["source_commit"],
+              "selection": selection,
+              "routes": route_results,
+              "survivors": survivors,
+              "three_unopened_weeks_pass": bool(survivors),
+              "candidate_modified_after_selection": False,
+              "decision": "progress_survivors_to_long_evaluation" if survivors else "reject_v36_after_unopened_weeks",
+          }
+          (root / "research_decision.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          Path("research/candidate-04/evidence-v36-unopened.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+          survivors="$(python -c 'import json; print(" ".join(json.load(open("artifacts/candidate-04-v36-unopened/research_decision.json"))["survivors"]))')"
+          if [[ -n "$survivors" ]]; then pass=true; else pass=false; fi
+          echo "pass=$pass" >> "$GITHUB_OUTPUT"
+          echo "survivors=$survivors" >> "$GITHUB_OUTPUT"
+          echo "long_build_start=$(python -c 'import json; print(json.load(open("artifacts/candidate-04-v36-unopened/selection.json"))["long_evaluation"]["build_start"])')" >> "$GITHUB_OUTPUT"
+          echo "long_start=$(python -c 'import json; print(json.load(open("artifacts/candidate-04-v36-unopened/selection.json"))["long_evaluation"]["evaluation_start"])')" >> "$GITHUB_OUTPUT"
+          echo "long_end=$(python -c 'import json; print(json.load(open("artifacts/candidate-04-v36-unopened/selection.json"))["long_evaluation"]["evaluation_end"])')" >> "$GITHUB_OUTPUT"
+
+      - name: Record unopened stage not permitted
+        if: steps.freeze.outputs.should_run != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = {"candidate": "candidate-04-v36-micro-auction-balance-transition", "stage": "unopened", "executed": False, "reason": "no frozen development survivor"}
+          Path("research/candidate-04/evidence-v36-unopened.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v36-unopened-${{ github.sha }}
+          path: artifacts/candidate-04-v36-unopened
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Commit V36 unopened evidence with rebase retry
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/evidence-v36-unopened.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record V36 unopened-week evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
+
+  long_evaluation:
+    needs: unopened
+    if: needs.unopened.outputs.pass == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 420
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      ROUTES: ${{ needs.unopened.outputs.survivors }}
+      SOURCE_COMMIT: ${{ needs.unopened.outputs.source_commit }}
+      C04_BUILD_START: ${{ needs.unopened.outputs.long_build_start }}
+      C04_EVALUATION_START: ${{ needs.unopened.outputs.long_start }}
+      C04_EVALUATION_END: ${{ needs.unopened.outputs.long_end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Verify frozen source and build shared 91-day observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code "$SOURCE_COMMIT" -- \
+            research/candidate-04/micro_auction_balance_transition_compiler.py \
+            research/candidate-04/nt_exact_causal_target_risk_sizing.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/inventory_transfer_config.json \
+            research/candidate-04/impact_exhaustion_config.json \
+            research/candidate-04/auction_activity_router_config.json \
+            research/candidate-04/nt_liquidity_config.json
+          export C04_BUILD_END="$C04_EVALUATION_END"
+          root="artifacts/candidate-04-v36-long"
+          mkdir -p "$root/shared"
+          smc4 doctor
+          python research/candidate-04/rich_features_v2.py \
+            --start "$C04_BUILD_START" \
+            --end "$C04_BUILD_END" \
+            --cache ".cache/candidate-04-v36-long/rich" \
+            --output "$root/shared/rich"
+          python research/candidate-04/micro_auction_balance_transition_compiler.py \
+            --base-config research/candidate-04/inventory_transfer_config.json \
+            --impact-config research/candidate-04/impact_exhaustion_config.json \
+            --router-config research/candidate-04/auction_activity_router_config.json \
+            --rich-dir "$root/shared/rich" \
+            --kline-dir ".cache/candidate-04-v36-long/raw" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --output "$root/shared/all_signals" \
+            --download-klines \
+            > "$root/shared/compiler_console.json"
+
+      - name: Evaluate every surviving route on the same long block
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v36-long"
+          export C04_BUILD_END="$C04_EVALUATION_END"
+          for route in $ROUTES; do
+            route_root="$root/$route"
+            mkdir -p "$route_root/signals"
+            export V36_LONG_ROUTE="$route"
+            export V36_LONG_ROOT="$route_root"
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          rows = json.loads(Path("artifacts/candidate-04-v36-long/shared/all_signals/signals.json").read_text())
+          route = os.environ["V36_LONG_ROUTE"]
+          continuation = {
+              "MICRO_BALANCE_NEW_INVENTORY_RETEST_CONTINUATION",
+              "MICRO_BALANCE_LIQUIDATION_RETEST_CONTINUATION",
+          }
+          reversal = {
+              "MICRO_BALANCE_TRAPPED_BREAKOUT_REVERSAL",
+              "MICRO_BALANCE_LIQUIDATION_EXHAUSTION_REVERSAL",
+          }
+          keep = continuation if route == "continuation" else reversal if route == "reversal" else continuation | reversal
+          selected = [row for row in rows if row["scenario"] in keep]
+          root = Path(os.environ["V36_LONG_ROOT"])
+          (root / "signals/signals.json").write_text(json.dumps(selected, indent=2, sort_keys=True) + "\n")
+          (root / "signals/summary.json").write_text(json.dumps({"written_signals": len(selected), "route_counts": {"frozen_route": route}}, indent=2, sort_keys=True) + "\n")
+          PY
+            C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$route_root/signals/signals.json" \
+            python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start "$C04_BUILD_START" \
+              --build-end "$C04_BUILD_END" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --cache ".cache/candidate-04-v36-long/raw" \
+              --output "$route_root/nautilus" \
+              > "$route_root/nautilus_console.json"
+            python research/candidate-04/summarize_candidate_week.py \
+              --root "$route_root" \
+              --candidate "candidate-04-v36-${route}" \
+              --stage long_91_day_evaluation \
+              --min-trades 90 \
+              --min-active-days 45 \
+              --min-win-rate 0.55 \
+              --min-geometric-daily 0.01 \
+              --output "$route_root/summary.json"
+          done
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path("artifacts/candidate-04-v36-long")
+          routes = {}
+          winners = []
+          for path in root.glob("*/summary.json"):
+              value = json.loads(path.read_text())
+              route = path.parent.name
+              routes[route] = value
+              if value.get("candidate_pass"):
+                  winners.append(route)
+          evidence = {
+              "candidate": "candidate-04-v36-micro-auction-balance-transition",
+              "source_commit": os.environ["SOURCE_COMMIT"],
+              "evaluation_start": os.environ["C04_EVALUATION_START"],
+              "evaluation_end": os.environ["C04_EVALUATION_END"],
+              "routes": routes,
+              "successful_routes": winners,
+              "final_validation_completed": True,
+              "project_target_reached": bool(winners),
+              "candidate_modified_after_unopened_weeks": False,
+              "decision": "project_target_reached_on_btc_long_evaluation" if winners else "reject_v36_after_long_evaluation",
+          }
+          (root / "final_decision.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          Path("research/candidate-04/evidence-v36-long.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v36-long-${{ github.sha }}
+          path: artifacts/candidate-04-v36-long
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Commit V36 long evidence with rebase retry
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/evidence-v36-long.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record V36 long BTC evaluation"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
