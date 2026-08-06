@@ -52,6 +52,22 @@ def expected_funding_debit_per_unit(
     return entry_price * adverse_rate * float(settlements)
 
 
+def position_closed_peak_qty(event: Any) -> float:
+    """Return peak position quantity across NT 1.230 Python backends."""
+    value = getattr(event, "peak_qty", None)
+    if value is None:
+        value = getattr(event, "peak_quantity")
+    return float(value)
+
+
+def position_closed_duration_ns(event: Any) -> int:
+    """Return closed-position duration across NT 1.230 Python backends."""
+    value = getattr(event, "duration_ns", None)
+    if value is None:
+        value = getattr(event, "duration")
+    return int(value)
+
+
 def native_equity_amount(portfolio: Any, venue: Any, currency: Any) -> float:
     """Return one currency's native Portfolio equity as a scalar.
 
@@ -345,7 +361,7 @@ class NTLvcfrStrategy(Strategy):
             "exit_time_ns": timestamp_ns,
             "entry_price": active.entry_avg,
             "exit_price": exit_price,
-            "quantity": float(event.peak_quantity),
+            "quantity": position_closed_peak_qty(event),
             "planned_loss": active.planned_loss,
             "native_equity_before": equity_before,
             "native_equity_after": equity_after,
@@ -353,7 +369,7 @@ class NTLvcfrStrategy(Strategy):
             "net_r": pnl / active.planned_loss if active.planned_loss > 0 else 0.0,
             "realized_pnl_event": str(event.realized_pnl),
             "realized_return_event": float(event.realized_return),
-            "duration_ns": int(event.duration),
+            "duration_ns": position_closed_duration_ns(event),
             "exit_reason": self.exit_reason or "UNKNOWN",
             "protection_active": active.protection_active,
             "mfe_net_r": active.mfe_net_r,

@@ -6,7 +6,14 @@ import unittest
 from pathlib import Path
 
 from nt_lvcfr_data import CandidateConfig, MinuteFact, NS_PER_MINUTE, detect_signals, merge_windows, select_second_extrema
-from nt_lvcfr_strategy import expected_funding_debit_per_unit, native_equity_amount
+from nautilus_trader.model.events import PositionClosed
+
+from nt_lvcfr_strategy import (
+    expected_funding_debit_per_unit,
+    native_equity_amount,
+    position_closed_duration_ns,
+    position_closed_peak_qty,
+)
 
 
 class FundingRiskTests(unittest.TestCase):
@@ -66,12 +73,36 @@ class EntryExecutionContractTests(unittest.TestCase):
 
 
 class PositionEventContractTests(unittest.TestCase):
-    def test_strategy_uses_nautilus_1230_position_closed_fields(self) -> None:
+    class CythonEvent:
+        peak_qty = 12.5
+        duration_ns = 123
+
+    class RustEvent:
+        peak_quantity = 7.5
+        duration = 456
+
+    def test_installed_runtime_exposes_a_supported_position_contract(self) -> None:
+        self.assertTrue(
+            hasattr(PositionClosed, "peak_qty")
+            or hasattr(PositionClosed, "peak_quantity"),
+        )
+        self.assertTrue(
+            hasattr(PositionClosed, "duration_ns")
+            or hasattr(PositionClosed, "duration"),
+        )
+
+    def test_cython_position_contract(self) -> None:
+        event = self.CythonEvent()
+        self.assertEqual(position_closed_peak_qty(event), 12.5)
+        self.assertEqual(position_closed_duration_ns(event), 123)
+
+    def test_rust_position_contract(self) -> None:
+        event = self.RustEvent()
+        self.assertEqual(position_closed_peak_qty(event), 7.5)
+        self.assertEqual(position_closed_duration_ns(event), 456)
+
+    def test_optional_close_fields_are_guarded(self) -> None:
         source = Path(__file__).with_name("nt_lvcfr_strategy.py").read_text(encoding="utf-8")
-        self.assertIn("event.peak_quantity", source)
-        self.assertIn("event.duration", source)
-        self.assertNotIn("event.peak_qty", source)
-        self.assertNotIn("event.duration_ns", source)
         self.assertIn("event.ts_closed is not None", source)
         self.assertIn("event.avg_px_close is not None", source)
 
