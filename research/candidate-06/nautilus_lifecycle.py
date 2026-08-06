@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from excursion_diagnostics import calculate_excursion_diagnostics
 from nautilus_strategy_common import money_to_float as _money_to_float, utc_day as _utc_day, utc_hour as _utc_hour
 
 
@@ -43,6 +44,13 @@ class NautilusLifecycleMixin:
         pnl = _money_to_float(event.realized_pnl)
         close_price = float(event.avg_px_close)
         tick = float(self._instrument.price_increment)
+        closed_ts_ns = int(event.ts_event)
+        excursion = calculate_excursion_diagnostics(
+            trade,
+            self._observations.values(),
+            closed_ts_ns=closed_ts_ns,
+            tick=tick,
+        )
         forced = trade.get("forced_exit_reason")
         if forced:
             outcome = str(forced)
@@ -63,11 +71,12 @@ class NautilusLifecycleMixin:
         planned_budget = float(trade["planned_loss_budget"])
         record = {
             **trade,
+            **excursion,
             "actual_entry_price": float(event.avg_px_open),
             "actual_exit_price": close_price,
-            "closed_ts_ns": int(event.ts_event),
-            "closed_day_utc": _utc_day(int(event.ts_event)),
-            "closed_hour_utc": _utc_hour(int(event.ts_event)),
+            "closed_ts_ns": closed_ts_ns,
+            "closed_day_utc": _utc_day(closed_ts_ns),
+            "closed_hour_utc": _utc_hour(closed_ts_ns),
             "duration_minutes": float(event.duration_ns) / 60_000_000_000,
             "realized_pnl_after_cost": pnl,
             "realized_return": float(event.realized_return),
@@ -80,18 +89,21 @@ class NautilusLifecycleMixin:
             previous_state="POSITION",
             next_state=outcome,
             reason=f"POSITION_CLOSED_{outcome}",
-            ts_ns=int(event.ts_event),
+            ts_ns=closed_ts_ns,
             reference_price=close_price,
             details={
                 "realized_pnl_after_cost": pnl,
                 "realized_r_multiple": record["realized_r_multiple"],
                 "duration_minutes": record["duration_minutes"],
+                "mfe_close_net_r_after_cost": record["mfe_close_net_r_after_cost"],
+                "mfe_intrabar_net_r_after_cost": record["mfe_intrabar_net_r_after_cost"],
+                "mae_stop_units": record["mae_stop_units"],
             },
         )
         self._active_trade = None
         self._entry_inflight = False
         self._exit_inflight = False
-        self._sample_equity(int(event.ts_event))
+        self._sample_equity(closed_ts_ns)
 
     def on_order_denied(self, event: Any) -> None:
         self.diagnostics["order_denials"] += 1
@@ -106,4 +118,3 @@ class NautilusLifecycleMixin:
         # to be flat before engine shutdown. This hook is a last-resort guard.
         if not self.portfolio.is_flat(self.config.instrument_id):
             self.errors.append("engine stopped with an open position")
-
