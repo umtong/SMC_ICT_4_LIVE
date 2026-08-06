@@ -70,18 +70,31 @@ def frame_to_observations(frame: pd.DataFrame) -> dict[int, BarObservation]:
     return observations
 
 
-def _detached_bar_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    """Create fresh writable column buffers for the Cython BarDataWrangler.
+def frame_to_nautilus_bars(frame: pd.DataFrame, *, bar_type: Any) -> list[Any]:
+    """Convert completed observations to native Nautilus `Bar` objects.
 
-    Pandas may expose read-only views after concatenating checksum-verified daily
-    archives.  Reconstructing from Python lists changes no values or timestamps;
-    it only gives NautilusTrader writable, independently owned arrays.
+    This is a data adapter only. Event replay, OHLC path ordering, fills, orders,
+    positions, margin and accounting remain entirely inside NautilusTrader.
     """
-    columns = ("open", "high", "low", "close", "volume")
-    return pd.DataFrame(
-        {column: [float(value) for value in frame[column].tolist()] for column in columns},
-        index=pd.DatetimeIndex(frame.index.tolist()),
-    )
+    from nautilus_trader.model.data import Bar
+    from nautilus_trader.model.objects import Price, Quantity
+
+    bars: list[Any] = []
+    for timestamp, row in frame.iterrows():
+        ts_ns = int(timestamp.value)
+        bars.append(
+            Bar(
+                bar_type=bar_type,
+                open=Price.from_str(f"{float(row['open']):.1f}"),
+                high=Price.from_str(f"{float(row['high']):.1f}"),
+                low=Price.from_str(f"{float(row['low']):.1f}"),
+                close=Price.from_str(f"{float(row['close']):.1f}"),
+                volume=Quantity.from_str(f"{float(row['volume']):.3f}"),
+                ts_event=ts_ns,
+                ts_init=ts_ns,
+            ),
+        )
+    return bars
 
 
 def run_nautilus_backtest(
@@ -98,13 +111,11 @@ def run_nautilus_backtest(
     from nautilus_trader.model.enums import AccountType, OmsType
     from nautilus_trader.model.identifiers import Venue
     from nautilus_trader.model.objects import Currency, Money
-    from nautilus_trader.persistence.wranglers import BarDataWrangler
 
     effective_fee = Decimal(str(config["effective_fee_rate_per_fill"]))
     instrument = build_btcusdt_perpetual(effective_fee)
     bar_type = BarType.from_str("BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL")
-    bars_frame = _detached_bar_frame(frame)
-    bars = BarDataWrangler(bar_type, instrument).process(bars_frame)
+    bars = frame_to_nautilus_bars(frame, bar_type=bar_type)
     observations = frame_to_observations(frame)
     if len(bars) != len(observations):
         raise RuntimeError(f"bar conversion mismatch: bars={len(bars)}, observations={len(observations)}")
