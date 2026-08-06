@@ -17,7 +17,7 @@ class CandidateNTSmokeConfig(StrategyConfig, frozen=True):
 
 class CandidateNTSmoke(Strategy):
     def __init__(self, config: CandidateNTSmokeConfig) -> None:
-        super().__init__(config)
+        super().__init__(config=config)
         self.instrument = None
         self.quotes_seen = 0
         self.open_submitted = False
