@@ -14,25 +14,128 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Clone exact triggering branch without external actions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --branch research/candidate-02 --single-branch \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
-      - name: Reconstruct and verify the locked first-week runner
+      - name: Reconstruct runner and apply controlled pre-data implementation fix
         shell: bash
         run: |
           set -euo pipefail
+          cd repo
+          test ! -e inputs/v95-first-week
           test "$(find .candidate-02-v95-runner -maxdepth 1 -name 'payload.part*' -type f | wc -l)" -eq 4
           test "$(cat .candidate-02-v95-runner/payload.part* | wc -c)" -eq 15356
-          mkdir -p research/candidate-02
           cat .candidate-02-v95-runner/payload.part* | base64 --decode > research/candidate-02/v95_first_week_runner.sh
           test "$(sha256sum research/candidate-02/v95_first_week_runner.sh | cut -d' ' -f1)" = "725db7f6347910f675fdf34a71d1ea34b628854dd574c2b213182c37e698525d"
           chmod +x research/candidate-02/v95_first_week_runner.sh
           bash -n research/candidate-02/v95_first_week_runner.sh
+
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+          import hashlib
+          import json
+
+          root = Path('research/candidate-02')
+          core = root / 'v95_mature_swing_breakout_core.py'
+          old = core.read_text(encoding='utf-8')
+          old_sha = hashlib.sha256(old.encode()).hexdigest()
+          assert old_sha == 'cbb08f4ed11b02638c30a898444e1d8bc8a1867cfc61036044905866524295b0'
+          replacements = {
+              'if not 1 <= self.minimum_outside_closes <= self.classification_minutes + 1:':
+                  'if not 1 <= self.minimum_outside_closes <= self.classification_minutes:',
+              'confirm_end = min(position + config.defense_confirmation_minutes, right - 1)':
+                  'confirm_end = min(position + config.defense_confirmation_minutes - 1, right - 1)',
+              'classification_end = min(event_position + config.classification_minutes, len(x) - 1)':
+                  'classification_end = min(event_position + config.classification_minutes - 1, len(x) - 1)',
+          }
+          new = old
+          for before, after in replacements.items():
+              assert new.count(before) == 1, before
+              new = new.replace(before, after)
+          ast.parse(new)
+          core.write_text(new, encoding='utf-8')
+          new_sha = hashlib.sha256(new.encode()).hexdigest()
+          assert new_sha == 'd519683c3e3c5df6351cf003ca30a5ab5fa21053622f4434fd6422813a851663'
+
+          fix = {
+              'candidate': 'candidate-02-v95-mature-defended-swing-common-accepted-breakout',
+              'classification': 'IMPLEMENTATION_ERROR_FIXED_BEFORE_FIRST_WEEK_DATA_COLLECTION',
+              'data_status_before_fix': 'NO_V95_RAW_OR_DERIVED_MARKET_DATA_COLLECTED',
+              'locked_week_unchanged': {
+                  'symbol': 'BTCUSDT',
+                  'start_utc': '2025-10-06T00:00:00Z',
+                  'end_utc': '2025-10-13T00:00:00Z',
+                  'selection_seed': 2026080695,
+              },
+              'strategy_logic_and_parameters_unchanged': True,
+              'risk_and_cost_model_unchanged': True,
+              'performance_engine_unchanged': 'NautilusTrader 1.230.0',
+              'custom_backtest_engine': False,
+              'implementation_error': {
+                  'cause': 'inclusive dataframe endpoints made a configured N-completed-minute window evaluate N+1 bars',
+                  'affected_windows': [
+                      {
+                          'name': 'defense_confirmation_minutes',
+                          'locked_meaning': 'reject within five completed one-minute bars beginning with the approach bar',
+                          'before': 'position through position + 5 inclusive (six bars)',
+                          'after': 'position through position + 4 inclusive (five bars)',
+                      },
+                      {
+                          'name': 'classification_minutes',
+                          'locked_meaning': 'three completed one-minute bars beginning with the first external-breach bar',
+                          'before': 'event_position through event_position + 3 inclusive (four bars)',
+                          'after': 'event_position through event_position + 2 inclusive (three bars)',
+                      },
+                      {
+                          'name': 'minimum_outside_closes validation',
+                          'before': 'allowed classification_minutes + 1 closes',
+                          'after': 'allows at most classification_minutes closes',
+                      },
+                  ],
+              },
+              'controlled_change': {
+                  'old_core_sha256': old_sha,
+                  'new_core_sha256': new_sha,
+                  'source_line_deltas': 3,
+              },
+              'precommitted_logic_ablation_unchanged': 'require_defense_memory true to false',
+          }
+          (root / 'v95_implementation_fix_01.json').write_text(
+              json.dumps(fix, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          payload_files = [
+              'v95_mature_swing_breakout_core.py',
+              'v95_nt_backtest.py',
+              'v95_base_config.json',
+              'v95_mature_swing_breakout_lock.json',
+              'v95_design.md',
+          ]
+          combined = hashlib.sha256(b''.join((root / name).read_bytes() for name in payload_files)).hexdigest()
+          assert combined == '1bbdf8de3c5ee84407b3ea28d0792a06d9a9c11974cd46bfd141f4b68a804e94'
+          (root / 'v95_payload_sha256.txt').write_text(combined, encoding='utf-8')
+          assert json.loads((root / 'v95_mature_swing_breakout_lock.json').read_text())['first_week']['raw_data_status_at_lock'] == 'NOT_COLLECTED_FOR_V95'
+          assert json.loads((root / 'v95_base_config.json').read_text())['scenario']['require_defense_memory'] is True
+          PY
+
+          python -m py_compile \
+            research/candidate-02/v95_mature_swing_breakout_core.py \
+            research/candidate-02/v95_nt_backtest.py
+          python -m json.tool research/candidate-02/v95_implementation_fix_01.json >/dev/null
+          test "$(cat research/candidate-02/v95_payload_sha256.txt)" = "1bbdf8de3c5ee84407b3ea28d0792a06d9a9c11974cd46bfd141f4b68a804e94"
           rm -rf .candidate-02-v95-runner
+
           git config user.name "umtong"
           git config user.email "dddgjj03@gmail.com"
           git add -A
           git diff --cached --check
-          git commit -m "research(candidate-02): materialize v95 first-week runner"
+          git commit -m "fix(candidate-02): correct v95 completed-minute window endpoints"
           git push origin HEAD:research/candidate-02
