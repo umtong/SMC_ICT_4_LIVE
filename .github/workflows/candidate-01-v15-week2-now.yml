@@ -1,0 +1,113 @@
+name: candidate-01-v15-week2-now
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v15-week2-now.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v15-week-2
+          key: candidate-01-v15-week-2-BTCUSDT-2022-07-27-2022-08-09-${{ runner.os }}-v1
+      - name: Run frozen 2022-08-01 BTC week through NautilusTrader
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/nautilus_plan_backtest.py \
+                research/candidate-01/nautilus_tick_plan_backtest.py \
+                research/candidate-01/intrinsic_tick_daily_markers_v15_nautilus_week.py
+              rm -rf artifacts/candidate-01-v15-week-2
+              python research/candidate-01/intrinsic_tick_daily_markers_v15_nautilus_week.py \
+                --week 2022-08-01 \
+                --rule full-measured-composite \
+                --cache .cache/candidate-01-v15-week-2 \
+                --output artifacts/candidate-01-v15-week-2 \
+                --workers 4
+            '
+      - name: Verify and classify without opening later periods
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          root = Path("artifacts/candidate-01-v15-week-2")
+          summary = json.loads((root / "intrinsic_tick_daily_markers_v15_summary.json").read_text())
+          metrics = json.loads((root / "nautilus_metrics.json").read_text())
+          contract = json.loads((root / "execution_contract.json").read_text())
+          daily = pd.read_csv(root / "daily_nav.csv")
+          assert summary["execution_engine"] == "NautilusTrader"
+          assert summary["custom_fill_simulator"] is False
+          assert summary["custom_pnl_or_nav_ledger"] is False
+          assert summary["risk_fraction"] == 0.03
+          assert metrics["execution_engine"] == "NautilusTrader"
+          assert metrics["trade_execution"] is True
+          assert contract["authoritative_performance_engine"] == "NautilusTrader"
+          assert daily["date"].tolist() == [
+              "2022-08-01", "2022-08-02", "2022-08-03", "2022-08-04",
+              "2022-08-05", "2022-08-06", "2022-08-07",
+          ]
+          trades = int(metrics["closed_positions"])
+          geo = float(metrics["geometric_mean_daily_return"])
+          total = float(metrics["total_return"])
+          win = float(metrics["win_rate"] or 0.0)
+          pf = metrics["profit_factor"]
+          pfv = float(pf) if pf is not None else (999.0 if trades and win == 1.0 else 0.0)
+          mdd = float(metrics["max_drawdown"])
+          full = trades >= 7 and geo >= 0.01 and total > 0 and win >= 0.40 and pfv > 1 and mdd > -0.20
+          near = (not full and trades >= 5 and geo >= 0.005 and total > 0 and pfv >= 1 and mdd > -0.15)
+          gate = {
+              "classification": "full_pass" if full else "near_target" if near else "stop",
+              "advance": full or near,
+              "plans": summary["submitted_plan_pool"],
+              "trades": trades,
+              "win_rate": metrics["win_rate"],
+              "total_return": total,
+              "geometric_daily": geo,
+              "profit_factor": pf,
+              "max_drawdown": mdd,
+              "rejection_counts": metrics["rejection_counts"],
+              "ended_flat": metrics["ended_flat"],
+          }
+          (root / "week_gate.json").write_text(json.dumps(gate, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(gate, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-v15-week-2-${{ github.sha }}
+          path: artifacts/candidate-01-v15-week-2
+          if-no-files-found: error
+          retention-days: 30
