@@ -1,26 +1,23 @@
-name: candidate-02-v102-nautilustrader-dispatch-runner
+name: candidate-02-v103-nautilustrader-pr-runner
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["research/candidate-02"]
-    paths:
-      - ".github/workflows/candidate-02-v77-terminal-router.yml"
   pull_request:
     branches: ["research/candidate-02"]
     paths:
-      - "research/candidate-02/v102_pr_trigger.txt"
+      - "research/candidate-02/v103_pr_trigger.txt"
 
 permissions:
-  contents: write
+  contents: read
+  packages: read
   actions: read
 
 concurrency:
-  group: candidate-02-v102-nautilustrader-dispatch-runner
+  group: candidate-02-v103-nautilustrader-pr-runner
   cancel-in-progress: false
 
 jobs:
-  retained-impact-controls:
+  first-week-endogenous-flow-clock:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     container:
@@ -32,112 +29,52 @@ jobs:
     env:
       PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
       SMC4_PREBUILT_ENV: "1"
-      BRANCH: research/candidate-02
 
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: research/candidate-02
           fetch-depth: 0
 
-      - name: Exit when the immutable v102 decision already exists
-        id: guard
-        shell: bash
-        run: |
-          if [[ -f research/candidate-02/v102_development_decision.json ]]; then
-            echo 'skip=true' >> "$GITHUB_OUTPUT"
-            cat research/candidate-02/v102_development_decision.json >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo 'skip=false' >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Verify fixed engine and locked controls
-        if: steps.guard.outputs.skip != 'true'
+      - name: Verify PR only triggers the prospectively locked v103 branch state
         shell: bash
         run: |
           set -euo pipefail
-          smc4 doctor
-          python -m py_compile \
-            research/candidate-02/v102_impact_retention_core.py \
-            research/candidate-02/v102_nt_backtest.py \
-            research/candidate-02/v102_orchestrate.py \
-            .candidate-02-v75/collect_first_week.py \
-            .candidate-02-v75/build_features.py
-          python -m json.tool research/candidate-02/v102_base_config.json >/dev/null
-          python -m json.tool research/candidate-02/v102_development_lock.json >/dev/null
+          test "$(git branch --show-current)" = "research/candidate-02"
+          test -f research/candidate-02/v103_endogenous_flow_clock_lock.json
           python - <<'PY'
           import json
           from pathlib import Path
-          lock=json.loads(Path('research/candidate-02/v102_development_lock.json').read_text())
-          cfg=json.loads(Path('research/candidate-02/v102_base_config.json').read_text())
-          assert lock['status']=='DEVELOPMENT_CONTROL_LOCKED'
-          assert lock['performance_engine']=='NautilusTrader 1.230.0'
-          assert lock['custom_backtest_engine'] is False
+          lock=json.loads(Path('research/candidate-02/v103_endogenous_flow_clock_lock.json').read_text())
+          assert lock['status']=='LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['first_week']['raw_data_status_at_lock']=='NOT_COLLECTED_FOR_V103'
+          assert lock['first_week']['start_utc']=='2025-11-17T00:00:00Z'
           assert float(lock['risk_fraction'])==0.03
-          assert int(lock['global_pending_entry_plus_position_limit'])==1
-          assert [x['start_utc'] for x in lock['development_weeks']]==[
-              '2024-09-16T00:00:00Z','2024-01-29T00:00:00Z']
-          assert float(cfg['risk']['risk_fraction'])==0.03
-          assert cfg['risk']['maximum_notional_cap'] is None
-          assert cfg['risk']['score_risk_multiplier'] is None
-          assert int(cfg['scenario']['response_minutes'])==3
-          assert float(cfg['scenario']['minimum_impact_retention'])==1.0
-          assert float(cfg['scenario']['minimum_response_flow_alignment'])==0.0
+          assert lock['custom_backtest_engine'] is False
           PY
 
-      - name: Run revealed controls and one-variable ablation through NautilusTrader
-        if: steps.guard.outputs.skip != 'true'
+      - name: Run unchanged locked v103 first BTC week through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          python research/candidate-02/v102_orchestrate.py | tee artifacts-v102-development.log
-          test -f artifacts-v102-development-decision.json
+          python research/candidate-02/v103_first_week_driver.py
 
-      - name: Persist machine decision without altering the strategy
-        if: steps.guard.outputs.skip != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp artifacts-v102-development-decision.json research/candidate-02/v102_development_decision.json
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add research/candidate-02/v102_development_decision.json
-          git commit -m "research(candidate-02): record v102 NautilusTrader controls"
-          for attempt in 1 2 3 4 5; do
-            git pull --rebase origin "$BRANCH"
-            if git push origin HEAD:"$BRANCH"; then break; fi
-            sleep $((attempt * 3))
-          done
-
-      - name: Publish decision summary
+      - name: Preserve direct data and NautilusTrader evidence
         if: always()
-        shell: bash
-        run: |
-          {
-            echo '# Candidate-02 v102 impact-retention controls'
-            if [[ -f artifacts-v102-development-decision.json ]]; then
-              echo '```json'
-              cat artifacts-v102-development-decision.json
-              echo '```'
-            elif [[ -f research/candidate-02/v102_development_decision.json ]]; then
-              echo '```json'
-              cat research/candidate-02/v102_development_decision.json
-              echo '```'
-            else
-              echo 'Implementation failed before a decision file was produced.'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Preserve NautilusTrader evidence
-        if: always() && steps.guard.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-02-v102-development-${{ github.sha }}
+          name: candidate-02-v103-first-week-pr-${{ github.sha }}
           path: |
-            artifacts/candidate-02-v102-*
-            artifacts-v102-development-decision.json
-            artifacts-v102-development.log
-            inputs/v102-week1/artifacts
-            inputs/v102-week2/artifacts
+            artifacts/candidate-02-v103-*
+            artifacts-v103-*.log
+            artifacts-v103-baseline-decision.json
+            artifacts-v103-first-week-decision.json
+            artifacts-v103-variant-manifest.json
+            inputs/v103-first-week/artifacts
+            inputs/v103-first-week/candidate-02-v48-first-week
+            inputs/v103-first-week/.cache/candidate-02/v103-first-week/binance_1m
+            inputs/v103-first-week/direct
+            inputs/v103-first-week/spot
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
