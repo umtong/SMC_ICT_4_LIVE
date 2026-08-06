@@ -1,5 +1,6 @@
-# Verified source: b481befeb701cedc13536f7924b3207cc46912aeb4ec4d688fee294db514dec7
-name: candidate-10-v20-1-slim-container
+# Source SHA256: b481befeb701cedc13536f7924b3207cc46912aeb4ec4d688fee294db514dec7
+# Patch SHA256: ad93590e75c6c68f0de2daaae1525bc5aa4503afa91795e829e787c58fb1dc6f
+name: candidate-10-v20-2-live-impact
 
 on:
   push:
@@ -7,8 +8,8 @@ on:
       - research/candidate-10
     paths:
       - research/candidate-10/v20_source.zip
-      - research/candidate-10/v20_1_patch/**
-      - research/candidate-10/V20_1_COST_CONTROL.md
+      - research/candidate-10/v20_2_patch.zip
+      - research/candidate-10/sitecustomize.py
       - .github/workflows/candidate-10-v20-1-slim-container.yml
   workflow_dispatch:
 
@@ -17,12 +18,12 @@ permissions:
   packages: read
 
 concurrency:
-  group: candidate-10-v20-1-slim-container-${{ github.ref }}
+  group: candidate-10-v20-2-live-impact-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   gate:
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
@@ -33,51 +34,62 @@ jobs:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
 
-      - name: Verify and extract immutable v20 signal source
+      - name: Verify and extract immutable source and live-impact control
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/candidate10-v20 /tmp/candidate-10-v20-1-data
-          mkdir -p /tmp/candidate10-v20 artifacts/candidate-10-v20-1
+          rm -rf /tmp/candidate10-v20 /tmp/candidate10-v20-patch /tmp/candidate-10-v20-2-data
+          mkdir -p /tmp/candidate10-v20 /tmp/candidate10-v20-patch artifacts/candidate-10-v20-2
           python - <<'PY'
           from hashlib import sha256
           from pathlib import Path
           import zipfile
 
-          source = Path('research/candidate-10/v20_source.zip')
-          expected = 'b481befeb701cedc13536f7924b3207cc46912aeb4ec4d688fee294db514dec7'
-          actual = sha256(source.read_bytes()).hexdigest()
-          if actual != expected:
-              raise SystemExit(f'v20 source SHA256 mismatch: {actual} != {expected}')
-          with zipfile.ZipFile(source) as archive:
-              bad = archive.testzip()
-              if bad is not None:
-                  raise SystemExit(f'corrupt v20 member: {bad}')
-              archive.extractall(Path('/tmp/candidate10-v20'))
-          print(f'VERIFIED_V20_SOURCE_SHA256={actual}')
+          inputs = [
+              (
+                  Path('research/candidate-10/v20_source.zip'),
+                  'b481befeb701cedc13536f7924b3207cc46912aeb4ec4d688fee294db514dec7',
+                  Path('/tmp/candidate10-v20'),
+              ),
+              (
+                  Path('research/candidate-10/v20_2_patch.zip'),
+                  'ad93590e75c6c68f0de2daaae1525bc5aa4503afa91795e829e787c58fb1dc6f',
+                  Path('/tmp/candidate10-v20-patch'),
+              ),
+          ]
+          for source, expected, destination in inputs:
+              actual = sha256(source.read_bytes()).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f'{source} SHA256 mismatch: {actual} != {expected}')
+              with zipfile.ZipFile(source) as archive:
+                  bad = archive.testzip()
+                  if bad is not None:
+                      raise SystemExit(f'corrupt member in {source}: {bad}')
+                  archive.extractall(destination)
+              print(f'VERIFIED={source}:{actual}')
           PY
 
-      - name: Test and run v20.1 cost control in pinned NautilusTrader image
+      - name: Test and run controlled BTC gate in pinned NautilusTrader
         shell: bash
         env:
           SMC4_PREBUILT_ENV: "1"
-          PYTHONPATH: ${{ github.workspace }}/research/candidate-10/v20_1_patch:/tmp/candidate10-v20:${{ github.workspace }}/research/candidate-10:${{ github.workspace }}/src
+          PYTHONPATH: /tmp/candidate10-v20-patch:/tmp/candidate10-v20:${{ github.workspace }}/research/candidate-10:${{ github.workspace }}/src
         run: |
           set -euo pipefail
           smc4 doctor
-          python -m py_compile /tmp/candidate10-v20/*.py research/candidate-10/v20_1_patch/*.py
+          python -m py_compile /tmp/candidate10-v20/*.py /tmp/candidate10-v20-patch/*.py
           python -m unittest discover -s /tmp/candidate10-v20 -p 'test_*.py' -v
-          python -m unittest discover -s research/candidate-10/v20_1_patch -p 'test_*.py' -v
+          python -m unittest discover -s /tmp/candidate10-v20-patch -p 'test_*.py' -v
           python /tmp/candidate10-v20/run_research.py \
             --phase auto \
-            --output artifacts/candidate-10-v20-1 \
-            --data-root /tmp/candidate-10-v20-1-data
+            --output artifacts/candidate-10-v20-2 \
+            --data-root /tmp/candidate-10-v20-2-data
 
-      - name: Upload reproducible v20.1 evidence
+      - name: Upload reproducible v20.2 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-10-v20-1-${{ github.sha }}
-          path: artifacts/candidate-10-v20-1
+          name: candidate-10-v20-2-${{ github.sha }}
+          path: artifacts/candidate-10-v20-2
           if-no-files-found: warn
           retention-days: 14
