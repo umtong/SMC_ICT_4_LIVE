@@ -32,6 +32,12 @@ def snap(*, open_: float, high: float, low: float, close: float, flow: float) ->
 
 
 def signal(direction: str) -> ScenarioSignal:
+    if direction == "LONG":
+        range_high, range_low = 100.0, 90.0
+        episode_extreme = 104.0
+    else:
+        range_high, range_low = 110.0, 100.0
+        episode_extreme = 96.0
     return ScenarioSignal(
         scenario_id="trap",
         family="SAC",
@@ -44,9 +50,9 @@ def signal(direction: str) -> ScenarioSignal:
         atr=1.0,
         liquidity_level=100.0,
         details={
-            "episode_extreme": 104.0 if direction == "LONG" else 96.0,
-            "auction_range_high": 100.0,
-            "auction_range_low": 90.0,
+            "episode_extreme": episode_extreme,
+            "auction_range_high": range_high,
+            "auction_range_low": range_low,
         },
     )
 
@@ -82,7 +88,7 @@ class FailedAcceptanceTrapTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.direction, "LONG")
         self.assertAlmostEqual(result.stop_price, 95.9)
-        self.assertEqual(result.target_price, 100.0)
+        self.assertEqual(result.target_price, 105.0)
 
     def test_boundary_not_reclaimed_does_not_arm(self) -> None:
         result = build_failed_acceptance_trap(
