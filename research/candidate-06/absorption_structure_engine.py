@@ -340,7 +340,10 @@ class AbsorptionConfirmedStructureReversalEngine(SurpriseImpactHierarchicalEngin
 
         self._bias_sequence += 1
         direction = anchor.reversal_direction
-        context_id = f"ACSR-BIAS-{bar.end_ts_ns}-{self._bias_sequence:06d}"
+        # Preserve one causal state chain from ABSORPTION_ARMED into BIAS_ACTIVE.
+        # The event recorder keys state by scenario_id, so a new ID here would
+        # incorrectly make the transition appear to start from IDLE.
+        context_id = anchor.anchor_id
         relative_volume = 1.0
         if self._liquidity_history:
             volumes = [value.volume for value in self._liquidity_history[-range_lookback:]]
