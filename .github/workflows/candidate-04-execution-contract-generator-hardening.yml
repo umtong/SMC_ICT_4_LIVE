@@ -1,0 +1,137 @@
+name: candidate-04-execution-contract-generator-hardening
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-execution-contract-generator-hardening.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Accept assigned or inline trusted model constructors
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path(
+              "research/candidate-04/generate_nt_single_execution_contract.py"
+          )
+          text = path.read_text()
+          old = '''def model_assignments(
+    function: ast.FunctionDef,
+) -> dict[str, tuple[str, ast.Assign | ast.AnnAssign]]:
+    result: dict[str, tuple[str, ast.Assign | ast.AnnAssign]] = {}
+    for node in ast.walk(function):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Call):
+            continue
+        class_name = call_name(value)
+        if class_name not in TARGET_CLASSES:
+            continue
+        variable = assigned_name(node) or TARGET_CLASSES[class_name]
+        result[class_name] = (variable, node)
+    missing = sorted(set(TARGET_CLASSES) - set(result))
+    if missing:
+        raise RuntimeError(
+            "trusted single-asset runner does not instantiate: "
+            + ", ".join(missing)
+        )
+    return result
+'''
+          new = '''def model_assignments(
+    function: ast.FunctionDef,
+) -> dict[str, ast.Call]:
+    """Return the exact constructor calls whether assigned or inline."""
+
+    result: dict[str, ast.Call] = {}
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        class_name = call_name(node)
+        if class_name not in TARGET_CLASSES:
+            continue
+        if class_name in result:
+            previous = ast.dump(result[class_name], include_attributes=False)
+            current = ast.dump(node, include_attributes=False)
+            if current != previous:
+                raise RuntimeError(
+                    f"trusted runner has multiple distinct {class_name} calls"
+                )
+            continue
+        result[class_name] = node
+    missing = sorted(set(TARGET_CLASSES) - set(result))
+    if missing:
+        raise RuntimeError(
+            "trusted single-asset runner does not instantiate: "
+            + ", ".join(missing)
+        )
+    return result
+'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit("model_assignments marker not found")
+          text = text.replace(
+              '''    for _, node in models.values():
+        for dependency in dependencies(node.value, assignments, global_names):
+''',
+              '''    for node in models.values():
+        for dependency in dependencies(node, assignments, global_names):
+''',
+          )
+          text = text.replace(
+              '''    for class_name in TARGET_CLASSES:
+        variable, node = models[class_name]
+        standard = TARGET_CLASSES[class_name]
+        call_source = ast.unparse(node.value)
+        lines.append(f"    {standard} = {call_source}")
+''',
+              '''    for class_name in TARGET_CLASSES:
+        node = models[class_name]
+        standard = TARGET_CLASSES[class_name]
+        call_source = ast.unparse(node)
+        lines.append(f"    {standard} = {call_source}")
+''',
+          )
+          text = text.replace(
+              "    global_names.update(dir(__builtins__))\n",
+              "    import builtins\n    global_names.update(dir(builtins))\n",
+          )
+          path.write_text(text)
+          PY
+          python -m py_compile \
+            research/candidate-04/generate_nt_single_execution_contract.py
+
+      - name: Commit hardening with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/generate_nt_single_execution_contract.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "harden trusted execution model AST extraction"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
