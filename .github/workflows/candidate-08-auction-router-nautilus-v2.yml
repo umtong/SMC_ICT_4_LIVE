@@ -1,0 +1,214 @@
+name: candidate-08-auction-router-nautilus-v2
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-auction-router-nautilus-v2"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-auction-router-nautilus-v2
+  cancel-in-progress: false
+
+jobs:
+  validate-first:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      MARKER: research/candidate-08/.run-auction-router-nautilus-v2
+      OUTPUT: research/candidate-08/evidence/auction-router-nautilus-v1/first-v1
+      CACHE: /tmp/candidate-08-aggtrade-acceptance-data
+      CONFIG: research/candidate-08/config_auction_router_nautilus_v1.json
+      PATTERN: research/candidate-08/config_range_fvg.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generalize scenario reporting by exact surrounding context
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-08/aggtrade_acceptance_strategy.py")
+          source = path.read_text(encoding="utf-8")
+          order_side = "        order_side = OrderSide.BUY if signal.direction > 0 else OrderSide.SELL\n"
+          insertion = (
+              "        scenario_family = str(\n"
+              "            signal.details.get(\n"
+              "                \"scenario_family\",\n"
+              "                \"BREAKOUT_ACCEPTANCE_CONTINUATION\",\n"
+              "            )\n"
+              "        )\n"
+              "        stop_order_tag = str(\n"
+              "            signal.details.get(\n"
+              "                \"stop_order_tag\",\n"
+              "                \"OBSERVED_RETEST_INVALIDATION\",\n"
+              "            )\n"
+              "        )\n"
+          )
+          if "scenario_family = str(" not in source:
+              if source.count(order_side) != 1:
+                  raise SystemExit("scenario-family insertion anchor mismatch")
+              source = source.replace(order_side, insertion + order_side)
+
+          entry_old = '''            entry_tags=[
+                      signal.scenario_id,
+                      "BREAKOUT_ACCEPTANCE_CONTINUATION",
+                      signal.direction_name,
+                      "TEN_SECOND_MARKET_ENTRY",
+                  ],
+          '''
+          entry_new = '''            entry_tags=[
+                      signal.scenario_id,
+                      scenario_family,
+                      signal.direction_name,
+                      "TEN_SECOND_MARKET_ENTRY",
+                  ],
+          '''
+          stop_old = '            sl_tags=[signal.scenario_id, "OBSERVED_RETEST_INVALIDATION"],\n'
+          stop_new = '            sl_tags=[signal.scenario_id, stop_order_tag],\n'
+          intent_old = '                "scenario_family": "BREAKOUT_ACCEPTANCE_CONTINUATION",\n'
+          intent_new = '                "scenario_family": scenario_family,\n'
+          for old, new, label in (
+              (entry_old, entry_new, "entry scenario tag"),
+              (stop_old, stop_new, "stop scenario tag"),
+              (intent_old, intent_new, "intent scenario family"),
+          ):
+              if old in source:
+                  if source.count(old) != 1:
+                      raise SystemExit(f"{label} replacement not unique")
+                  source = source.replace(old, new)
+              elif new not in source:
+                  raise SystemExit(f"{label} contract missing")
+
+          required = (
+              "scenario_family = str(",
+              "stop_order_tag = str(",
+              "signal.scenario_id,\n                scenario_family,",
+              "sl_tags=[signal.scenario_id, stop_order_tag]",
+              '"scenario_family": scenario_family',
+          )
+          if not all(token in source for token in required):
+              raise SystemExit("generalized scenario reporting contract incomplete")
+          path.write_text(source, encoding="utf-8")
+          PY
+
+      - name: Verify environment and causal scenario contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-08/aggtrade_auction_router_signals.py \
+            research/candidate-08/aggtrade_acceptance_strategy.py \
+            research/candidate-08/run_aggtrade_auction_router_nautilus.py
+          python research/candidate-08/test_aggtrade_orderflow.py -v
+          python research/candidate-08/test_aggtrade_acceptance.py -v
+          python research/candidate-08/test_aggtrade_acceptance_pure.py -v
+          python research/candidate-08/test_aggtrade_acceptance_nautilus.py -v
+          python research/candidate-08/test_aggtrade_auction_router.py -v
+          python - <<'PY'
+          from pathlib import Path
+          detector = Path("research/candidate-08/aggtrade_auction_router_signals.py").read_text()
+          strategy = Path("research/candidate-08/aggtrade_acceptance_strategy.py").read_text()
+          config = Path("research/candidate-08/config_auction_router_nautilus_v1.json").read_text()
+          assert "INITIATIVE_ACCEPTANCE_CONTINUATION" in detector
+          assert "FAILED_AUCTION_REVERSAL" in detector
+          assert "displacement_depth < reserve" in detector
+          assert "require_contraction=False" in detector
+          assert '"scenario_family": scenario_family' in strategy
+          assert '"risk_fraction": 0.03' in config
+          assert '"default_leverage": 125' in config
+          PY
+
+      - name: Restore checksum-verified official-data cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-auction-router-v1-${{ hashFiles('research/candidate-08/config_auction_router_nautilus_v1.json') }}
+          restore-keys: |
+            candidate-08-auction-router-v1-
+            candidate-08-aggtrade-acceptance-v5-
+            candidate-08-aggtrade-acceptance-
+
+      - name: Run fixed first NautilusTrader week
+        id: run
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$OUTPUT"
+          cat > "$OUTPUT/request.json" <<'JSON'
+          {
+            "suite": "first",
+            "ablation": "none",
+            "output_name": "first-v1",
+            "promotable": true,
+            "reuse_first_dir": ""
+          }
+          JSON
+          set +e
+          python research/candidate-08/run_aggtrade_auction_router_nautilus.py \
+            --suite first \
+            --ablation none \
+            --config "$CONFIG" \
+            --pattern-config "$PATTERN" \
+            --output "$OUTPUT" \
+            --data-cache "$CACHE" \
+            2>&1 | tee "$OUTPUT/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT/runner_exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Save official-data cache
+        if: ${{ always() && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-auction-router-v1-${{ hashFiles('research/candidate-08/config_auction_router_nautilus_v1.json') }}
+
+      - name: Commit implementation and evidence conflict-safely
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- \
+            research/candidate-08/aggtrade_acceptance_strategy.py \
+            "$OUTPUT" \
+            "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record auction-router first-week evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce runner status
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          test -f "$OUTPUT/runner_exit_status.txt"
+          status=$(cat "$OUTPUT/runner_exit_status.txt")
+          exit "$status"
