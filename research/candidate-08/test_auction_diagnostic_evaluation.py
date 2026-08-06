@@ -30,6 +30,7 @@ def _summary(*, mode: str = "initiative_only") -> dict:
         "promotable": False,
         "suite_gate_passed": False,
         "scenario_attribution_passed": True,
+        "closed_trades": 3,
         "suite_gate_checks": {
             "all_signal_times_processed": True,
             "all_submitted_entries_observed": True,
@@ -112,6 +113,50 @@ class DiagnosticEvaluationContracts(unittest.TestCase):
         checks = evaluation["evidence_contract_checks"]
         self.assertFalse(checks["removed_family_has_no_signals"])
         self.assertFalse(checks["removed_family_has_no_closed_trades"])
+        self.assertFalse(evaluation["new_base_rebuild_supported"])
+
+    def test_zero_opportunity_retained_family_blocks_rebuild(self) -> None:
+        value = _summary()
+        value["closed_trades"] = 0
+        retained = value["scenario_family_results"][INITIATIVE_FAMILY]
+        retained["signals"] = 0
+        retained["closed_trades"] = 0
+        evaluation = evaluate_diagnostic_summary(
+            value,
+            expected_mode="initiative_only",
+        )
+        checks = evaluation["evidence_contract_checks"]
+        self.assertFalse(checks["retained_family_has_signals"])
+        self.assertFalse(checks["retained_family_has_closed_trades"])
+        self.assertFalse(evaluation["new_base_rebuild_supported"])
+
+    def test_extra_or_unclassified_family_blocks_rebuild(self) -> None:
+        value = _summary()
+        value["scenario_family_results"]["UNCLASSIFIED_AUCTION_SCENARIO"] = {
+            "signals": 0,
+            "closed_trades": 0,
+        }
+        evaluation = evaluate_diagnostic_summary(
+            value,
+            expected_mode="initiative_only",
+        )
+        self.assertFalse(
+            evaluation["evidence_contract_checks"]["scenario_family_set_exact"]
+        )
+        self.assertFalse(evaluation["new_base_rebuild_supported"])
+
+    def test_reported_trade_count_mismatch_blocks_rebuild(self) -> None:
+        value = _summary()
+        value["closed_trades"] = 4
+        evaluation = evaluate_diagnostic_summary(
+            value,
+            expected_mode="initiative_only",
+        )
+        self.assertFalse(
+            evaluation["evidence_contract_checks"][
+                "reported_closed_trades_match_retained_family"
+            ]
+        )
         self.assertFalse(evaluation["new_base_rebuild_supported"])
 
     def test_wrong_implementation_revision_blocks_rebuild(self) -> None:
