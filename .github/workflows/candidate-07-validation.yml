@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 jobs:
-  btc-week-1-cross-market-1m-ablation:
+  btc-week-1-mark-index-overshoot:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -36,8 +36,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .research-data/candidate-07
-          key: candidate-07-cross-market-transfer-week1-v1
+          key: candidate-07-mark-index-overshoot-week1-v1
           restore-keys: |
+            candidate-07-cross-market-transfer-week1-v1
             candidate-07-mtf-index-week1-v1
             candidate-07-inventory-pressure-week1-v1
             candidate-07-inventory-handoff-week1-v1
@@ -46,35 +47,27 @@ jobs:
             candidate-07-positioning-week1-v1
             candidate-07-flow-week1-v1
 
-      - name: Reproduce frozen BTC Week-1 one-minute baseline
+      - name: Diagnose frozen BTC Week-1 mark-confirmed overshoot
         run: >-
-          python research/candidate-07/diagnose_cross_market_transfer_1m.py
+          python research/candidate-07/diagnose_mark_index_overshoot_5m.py
           --config research/candidate-07/config.json
           --stage week-1
           --start 2025-12-22
           --end 2025-12-29
-          --output artifacts/candidate-07/week-1/cross_market_transfer_1m.json
+          --output artifacts/candidate-07/week-1/mark_index_overshoot_5m.json
           --data-root .research-data/candidate-07
 
-      - name: Remove common-price-discovery continuation only
-        run: >-
-          python research/candidate-07/ablate_cross_market_1m_common.py
-          --baseline artifacts/candidate-07/week-1/cross_market_transfer_1m.json
-          --output artifacts/candidate-07/week-1/cross_market_transfer_1m_ablation.json
-
-      - name: Print controlled comparison
+      - name: Print machine-readable diagnosis
         if: always()
         run: |
-          test -f artifacts/candidate-07/week-1/cross_market_transfer_1m.json
-          test -f artifacts/candidate-07/week-1/cross_market_transfer_1m_ablation.json
-          cat artifacts/candidate-07/week-1/cross_market_transfer_1m.json
-          cat artifacts/candidate-07/week-1/cross_market_transfer_1m_ablation.json
+          test -f artifacts/candidate-07/week-1/mark_index_overshoot_5m.json
+          cat artifacts/candidate-07/week-1/mark_index_overshoot_5m.json
 
-      - name: Preserve controlled evidence
+      - name: Preserve structural evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-cross-market-1m-ablation-${{ github.sha }}
+          name: candidate-07-mark-index-overshoot-week1-${{ github.sha }}
           path: artifacts/candidate-07/week-1
           retention-days: 14
           if-no-files-found: error
