@@ -217,7 +217,16 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
         ts_event=0, ts_init=0,
     )
     bar_type = BarType.from_str("BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL")
-    wrangle_frame = frame[["open", "high", "low", "close", "volume"]].copy()
+    wrangle_columns = ["open", "high", "low", "close", "volume"]
+    wrangle_matrix = frame[wrangle_columns].to_numpy(dtype="float64", copy=True)
+    wrangle_matrix.setflags(write=True)
+    wrangle_frame = pd.DataFrame(
+        wrangle_matrix,
+        index=frame.index.copy(),
+        columns=wrangle_columns,
+        copy=False,
+    )
+    wrangle_frame.values.setflags(write=True)
     bars = BarDataWrangler(bar_type, instrument).process(wrangle_frame)
     flows = frame["taker_buy_volume"].astype(float).tolist()
     if len(bars) != len(flows):
