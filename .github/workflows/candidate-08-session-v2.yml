@@ -1,0 +1,42 @@
+name: candidate-08-session-v2-materialize
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.session-v2/trigger"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  materialize:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize and test session external-liquidity candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          cat research/candidate-08/.session-v2/part-* | base64 -d > /tmp/c08-v2.tar.gz
+          echo "23ae586263e8b836f263ec9768dd903488a6d33b6e303305531c7fbfb6544dbf  /tmp/c08-v2.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/c08-v2.tar.gz -C .
+          rm -rf research/candidate-08/.session-v2
+          python -m compileall -q research/candidate-08
+          python research/candidate-08/test_logic.py -v
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" add research/candidate-08/logic.py research/candidate-08/test_logic.py research/candidate-08/config.json research/candidate-08/.session-v2
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: replace noisy pivots with session external liquidity"
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
