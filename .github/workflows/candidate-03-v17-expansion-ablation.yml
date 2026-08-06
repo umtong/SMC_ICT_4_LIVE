@@ -1,0 +1,146 @@
+name: candidate-03-v17-expansion-ablation
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - "research/candidate-03/results/v17-development-2/gate.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  PYTHONPATH: /workspace/src:/workspace/research/candidate-03
+  CONFIG: research/candidate-03/nt_lvcfr_v17_config.json
+
+jobs:
+  controlled-ablation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Clone branch and classify the frozen V17 result
+        id: classify
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch research/candidate-03 \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          path = Path('research/candidate-03/results/v17-development-2/gate.json')
+          if not path.exists():
+              print('run_ablation=false')
+              print('reason=missing_official_gate')
+          else:
+              gate = json.loads(path.read_text())
+              passed = bool(gate.get('passed'))
+              print(f'run_ablation={str(not passed).lower()}')
+              print('reason=' + ('v17_passed_no_ablation' if passed else 'valid_v17_gate_failure'))
+          PY
+
+      - name: Verify fixed runtime and the one-variable ablation contract
+        if: steps.classify.outputs.run_ablation == 'true'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd repo
+          test "$(git hash-object research/candidate-03/derive_nt_lvcfr_v17_signals.py)" = "fcc05dd19bbfc621226250743979d341a7194bf7"
+          test "$(git hash-object research/candidate-03/nt_lvcfr_v17_config.json)" = "64c7ef99cc076582ffff59c961208bc09d22cae7"
+          test "$(git hash-object research/candidate-03/nt_lvcfr_strategy.py)" = "e4d00ae0c6fa1d24198c846bccb247baacdc0456"
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker pull "$IMAGE"
+          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -lc '
+              smc4 doctor &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_trade_proxy.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_v13.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_v17.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_v17_ablation.py
+            '
+
+      - name: Remove only OI-expansion continuation and replay the same week
+        if: steps.classify.outputs.run_ablation == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          prepared=artifacts/candidate-03/nt-lvcfr-v17-expansion-ablation/development-2/prepared
+          out=artifacts/candidate-03/nt-lvcfr-v17-expansion-ablation/development-2/output
+          mkdir -p "$prepared" "$out"
+          sudo chmod -R a+rwX artifacts
+          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -lc "PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr_trade_proxy.py --week-start 2025-06-23 --output $prepared --config $CONFIG" \
+            2>&1 | tee "$out/preparation.log"
+          cp "$prepared/signals.json" "$prepared/signals-v1.json"
+          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -lc "PYTHONPATH=$PYTHONPATH python research/candidate-03/derive_nt_lvcfr_v17_signals.py --prepared-root $prepared --output-manifest $out/v17_full_signal_manifest.json"
+          cp "$prepared/signals.json" "$prepared/signals-v17-full.json"
+          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -lc "PYTHONPATH=$PYTHONPATH python research/candidate-03/ablate_nt_lvcfr_v17_expansion.py --prepared-root $prepared --output-manifest $out/v17_expansion_ablation_manifest.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('artifacts/candidate-03/nt-lvcfr-v17-expansion-ablation/development-2/output/v17_expansion_ablation_manifest.json').read_text())
+          expected = {
+              'source_signal_count': 8,
+              'removed_signal_count': 4,
+              'retained_signal_count': 4,
+              'retained_state_counts': {
+                  'FIRST_BREAK_CHOCH_REVERSAL': 3,
+                  'MEASURED_ACCEPTANCE_CONTINUATION': 1,
+              },
+          }
+          if any(manifest.get(key) != value for key, value in expected.items()):
+              raise SystemExit(f'V17 expansion ablation regression: {manifest}')
+          PY
+          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -lc "PYTHONPATH=$PYTHONPATH python research/candidate-03/rebuild_nt_lvcfr_trade_proxy_catalog.py --prepared-root $prepared --config $CONFIG" \
+            2>&1 | tee "$out/catalog_rebuild.log"
+          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -lc "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py --week-start 2025-06-23 --prepared-root $prepared --output $out --config $CONFIG" \
+            2>&1 | tee "$out/backtest.log"
+          set +e
+          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" --config "$CONFIG" | tee "$out/gate.json"
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "$status" > "$out/gate_status.txt"
+
+      - name: Commit controlled ablation evidence
+        if: steps.classify.outputs.run_ablation == 'true'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd repo
+          src=artifacts/candidate-03/nt-lvcfr-v17-expansion-ablation/development-2/output
+          dst=research/candidate-03/results/v17-expansion-ablation-development-2
+          rm -rf "$dst"
+          mkdir -p "$dst"
+          cp "$src"/*.json "$dst"/
+          cp "$src"/*.jsonl "$dst"/ 2>/dev/null || true
+          cp "$src"/*.csv "$dst"/ 2>/dev/null || true
+          cp "$src"/*.log "$dst"/
+          cp "$src/gate_status.txt" "$dst"/
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add "$dst"
+          git commit -m "candidate-03: record V17 expansion ablation evidence"
+          git pull --rebase origin research/candidate-03
+          git push origin HEAD:research/candidate-03
