@@ -1,0 +1,307 @@
+name: candidate-05-decision-ledger
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/v26_30d_early_sponsored_ablation.json"
+      - "research/candidate-05/evidence/v26_90d_promotion.json"
+      - "research/candidate-05/evidence/v29_external_displacement_fvg.json"
+      - "research/candidate-05/evidence/v29b_implementation_control.json"
+      - "research/candidate-05/evidence/v29b_promoted_screen.json"
+      - "research/candidate-05/evidence/v30_fvg_ablation.json"
+      - "research/candidate-05/evidence/v30_promoted_screen.json"
+      - "research/candidate-05/evidence/v30_91d_repair.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ledger:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build cumulative implementation-versus-logic ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from typing import Any
+
+          root = Path("research/candidate-05/evidence")
+          root.mkdir(parents=True, exist_ok=True)
+
+          evidence_specs = [
+              (
+                  "v26_30d_early_sponsored_ablation.json",
+                  "v26-30d-early-sponsored-ablation",
+                  "Remove only early sponsored-CHoCH immediate participation.",
+                  "strategy_v26 is the control; signal thresholds, target, stop, costs, 3% NAV risk and Nautilus execution are unchanged.",
+              ),
+              (
+                  "v26_90d_promotion.json",
+                  "v26-evidence-driven-90d",
+                  "Promote the stronger integrity-valid v26 variant only after a completed 30-day >=1% geometric-daily result.",
+                  "Long evaluation is conditional on the fixed 30-day whole-period objective, not on every week.",
+              ),
+              (
+                  "v29_external_displacement_fvg.json",
+                  "v29-external-displacement-fvg",
+                  "Completed 4h external acceptance -> displacement FVG -> first defended retest.",
+                  "v26 is the exact branch-removal control.",
+              ),
+              (
+                  "v29b_implementation_control.json",
+                  "v29b-armed-entry-contract-repair",
+                  "Repair only the ArmedEntryPath constructor contract and rerun the same week.",
+                  "Signal logic is identical to v29; created_ts is replaced with the existing expires_index field.",
+              ),
+              (
+                  "v29b_promoted_screen.json",
+                  "v29b-promoted-screen",
+                  "Escalate v29b from Week 1 to two more frozen weeks, 30 days and 91 days only when prior evidence passes.",
+                  "No per-week 1% gate and no threshold search.",
+              ),
+              (
+                  "v30_fvg_ablation.json",
+                  "v30-remove-fvg-requirement",
+                  "Remove only the displacement-FVG formation condition while retaining external acceptance and first defended retest.",
+                  "This tests whether failure belongs to FVG geometry or to the higher-level external-acceptance continuation hypothesis.",
+              ),
+              (
+                  "v30_promoted_screen.json",
+                  "v30-promoted-screen",
+                  "Escalate the FVG-removal ablation only after positive incremental same-week evidence.",
+                  "Same frozen weeks, costs, risk and Nautilus execution as the controls.",
+              ),
+              (
+                  "v30_91d_repair.json",
+                  "v30-91d-workflow-control-repair",
+                  "Separate 91-day promotion into a later workflow step because GITHUB_ENV changes are not visible inside the producing step.",
+                  "The completed 30-day result and all strategy logic remain unchanged.",
+              ),
+          ]
+
+          def load(path: Path) -> dict[str, Any] | None:
+              if not path.exists():
+                  return None
+              try:
+                  value = json.loads(path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
+                  return {"classification": "UNREADABLE_EVIDENCE"}
+              return value if isinstance(value, dict) else {"classification": "INVALID_EVIDENCE_SHAPE"}
+
+          def classification_of(data: dict[str, Any]) -> str:
+              value = data.get("classification")
+              if value is not None:
+                  return str(value)
+              if "promote_to_weeks_2_3" in data:
+                  return "LOGIC_SCREEN_PASSED_WEEK_1" if data.get("promote_to_weeks_2_3") else "SCREEN_STOPPED"
+              return "CLASSIFICATION_NOT_RECORDED"
+
+          def category_of(classification: str) -> str:
+              upper = classification.upper()
+              if "PROJECT_GROWTH_GOAL_REACHED" in upper:
+                  return "GOAL_REACHED"
+              if any(token in upper for token in ("IMPLEMENTATION", "EVIDENCE_ERROR", "UNREADABLE", "INVALID_EVIDENCE", "MISSING_")):
+                  return "IMPLEMENTATION_OR_EVIDENCE_ERROR"
+              if any(token in upper for token in ("LOGIC_FAILURE", "ROBUSTNESS_FAILURE", "NONPOSITIVE", "DID_NOT_IMPROVE", "STOPPED_AT_WEEK1")):
+                  return "LOGIC_FAILURE"
+              if any(token in upper for token in ("PROMOTION_NOT_ELIGIBLE", "PROMOTION_BLOCKED", "BELOW_GOAL")):
+                  return "INSUFFICIENT_ALPHA"
+              if any(token in upper for token in ("PASSED", "IMPROVED", "PROMOTE")):
+                  return "PROMOTED"
+              return "OTHER"
+
+          def metric_digest(data: dict[str, Any]) -> dict[str, Any]:
+              candidates: list[dict[str, Any]] = []
+              for key in (
+                  "baseline", "ablation", "v29b", "v30",
+                  "continuous-30d", "continuous-91d",
+              ):
+                  value = data.get(key)
+                  if isinstance(value, dict):
+                      candidates.append({"name": key, **value})
+              runs = data.get("runs")
+              if isinstance(runs, dict):
+                  for key, value in runs.items():
+                      if isinstance(value, dict) and value.get("available"):
+                          candidates.append({"name": key, **value})
+              compact = []
+              for item in candidates:
+                  compact.append({
+                      key: item.get(key)
+                      for key in (
+                          "name", "available", "integrity_pass",
+                          "evaluation_start", "evaluation_end", "calendar_days",
+                          "total_return", "geometric_daily_growth", "max_drawdown",
+                          "trades", "wins", "losses", "win_rate", "profit_factor",
+                          "active_days", "largest_winner_share",
+                      )
+                      if key in item
+                  })
+              return {"runs": compact}
+
+          entries: list[dict[str, Any]] = []
+          for filename, experiment, hypothesis, control in evidence_specs:
+              data = load(root / filename)
+              if data is None:
+                  entries.append({
+                      "experiment": experiment,
+                      "evidence_file": filename,
+                      "status": "NOT_YET_RECORDED",
+                      "hypothesis": hypothesis,
+                      "control": control,
+                  })
+                  continue
+              classification = classification_of(data)
+              entry = {
+                  "experiment": experiment,
+                  "evidence_file": filename,
+                  "status": "RECORDED",
+                  "hypothesis": hypothesis,
+                  "control": control,
+                  "classification": classification,
+                  "error_or_decision_category": category_of(classification),
+                  "source_commit": data.get("source_commit"),
+                  "workflow_run_id": data.get("workflow_run_id"),
+                  "metrics": metric_digest(data),
+              }
+              for key in (
+                  "delta_ablation_minus_baseline",
+                  "removed_branch_baseline_attribution",
+                  "new_branch",
+                  "new_branch_aggregate",
+                  "week_1_decision",
+                  "three_week_decision",
+                  "three_week_comparison",
+                  "selection",
+                  "selected_30d_variant",
+              ):
+                  if key in data:
+                      entry[key] = data[key]
+              entries.append(entry)
+
+          recorded = [entry for entry in entries if entry.get("status") == "RECORDED"]
+          categories: dict[str, int] = {}
+          for entry in recorded:
+              category = str(entry.get("error_or_decision_category", "OTHER"))
+              categories[category] = categories.get(category, 0) + 1
+
+          goal_entries = [
+              entry for entry in recorded
+              if entry.get("error_or_decision_category") == "GOAL_REACHED"
+          ]
+          implementation_entries = [
+              entry for entry in recorded
+              if entry.get("error_or_decision_category") == "IMPLEMENTATION_OR_EVIDENCE_ERROR"
+          ]
+          logic_entries = [
+              entry for entry in recorded
+              if entry.get("error_or_decision_category") == "LOGIC_FAILURE"
+          ]
+
+          latest_recorded = recorded[-1] if recorded else None
+          if goal_entries:
+              next_action = (
+                  "Freeze the goal-reaching logic and verify the real one-account, four-symbol global-slot implementation "
+                  "before any further parameter or leverage changes."
+              )
+          elif implementation_entries and latest_recorded in implementation_entries:
+              next_action = (
+                  "Repair the latest implementation or evidence-control error without changing the market hypothesis, "
+                  "then rerun the identical frozen range."
+              )
+          elif latest_recorded and latest_recorded.get("experiment") == "v30-remove-fvg-requirement" and latest_recorded.get("error_or_decision_category") == "LOGIC_FAILURE":
+              next_action = (
+                  "Discard the external-acceptance continuation family: both the FVG-confirmed form and its one-variable "
+                  "FVG-removal ablation lack positive incremental expectancy. Start an orthogonal impact-resiliency hypothesis."
+              )
+          elif latest_recorded and latest_recorded.get("error_or_decision_category") in {"PROMOTED", "OTHER"}:
+              next_action = "Follow the evidence-driven promotion workflow already encoded for the latest candidate."
+          else:
+              next_action = (
+                  "Complete the currently encoded same-range controlled experiment; do not infer alpha from missing evidence."
+              )
+
+          ledger = {
+              "schema": "candidate-05-decision-ledger-v1",
+              "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+              "branch": "research/candidate-05",
+              "repository": "umtong/SMC_ICT_4_LIVE",
+              "research_rules": {
+                  "implementation_error": "Fix under variable control and rerun the identical frozen range.",
+                  "logic_error": "Ablate one core variable once; discard when no structural path remains.",
+                  "promotion": "Week 1 incremental evidence -> two additional frozen weeks -> continuous 30d -> continuous 91d only after >=1% 30d geometric daily growth.",
+                  "execution": "NautilusTrader only; 3% current-NAV planned-loss sizing; one executable entry intent or position.",
+              },
+              "summary_counts": categories,
+              "goal_reached_entries": [entry["experiment"] for entry in goal_entries],
+              "implementation_or_evidence_errors": [entry["experiment"] for entry in implementation_entries],
+              "logic_failures": [entry["experiment"] for entry in logic_entries],
+              "next_action": next_action,
+              "entries": entries,
+          }
+          json_path = root / "decision_ledger.json"
+          json_path.write_text(
+              json.dumps(ledger, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          lines = [
+              "# Candidate 05 Research Decision Ledger",
+              "",
+              f"Generated: {ledger['generated_at_utc']}",
+              "",
+              "## Current decision",
+              "",
+              ledger["next_action"],
+              "",
+              "## Experiments",
+              "",
+              "| Experiment | Status | Classification | Category |",
+              "|---|---|---|---|",
+          ]
+          for entry in entries:
+              lines.append(
+                  "| {experiment} | {status} | {classification} | {category} |".format(
+                      experiment=entry["experiment"],
+                      status=entry.get("status", ""),
+                      classification=entry.get("classification", ""),
+                      category=entry.get("error_or_decision_category", ""),
+                  )
+              )
+          lines.extend([
+              "",
+              "## Rules",
+              "",
+              "- Implementation errors are repaired without changing the hypothesis and rerun on the identical range.",
+              "- Logic failures receive one core-variable ablation, then are discarded if no structural path remains.",
+              "- The 1% objective is evaluated on the whole fixed period, not imposed on every week.",
+              "- No custom backtest engine is permitted; execution and NAV remain NautilusTrader-owned.",
+              "",
+          ])
+          (root / "decision_ledger.md").write_text("\n".join(lines), encoding="utf-8")
+          print(json.dumps(ledger, indent=2, sort_keys=True))
+          PY
+
+      - name: Persist ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-05/evidence/decision_ledger.json \
+            research/candidate-05/evidence/decision_ledger.md
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-05: refresh implementation-versus-logic ledger [skip ci]"
+            git push origin HEAD:research/candidate-05
+          fi
