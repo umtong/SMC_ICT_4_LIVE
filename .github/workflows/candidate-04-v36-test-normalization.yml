@@ -1,0 +1,76 @@
+name: candidate-04-v36-test-normalization
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v36-test-normalization.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Replace representation-sensitive assertions only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path(
+              "research/candidate-04/tests/"
+              "test_micro_auction_balance_transition_compiler.py"
+          )
+          text = path.read_text()
+          old = '''        self.assertEqual(expansion, ("NEW_INVENTORY", 0.01))
+        self.assertEqual(contraction, ("LIQUIDATION", -0.01))
+        self.assertIsNone(marginal)
+'''
+          new = '''        self.assertIsNotNone(expansion)
+        self.assertIsNotNone(contraction)
+        assert expansion is not None and contraction is not None
+        self.assertEqual(expansion[0], "NEW_INVENTORY")
+        self.assertEqual(contraction[0], "LIQUIDATION")
+        self.assertAlmostEqual(expansion[1], 0.01, places=12)
+        self.assertAlmostEqual(contraction[1], -0.01, places=12)
+        self.assertIsNone(marginal)
+'''
+          if old not in text:
+              if new in text:
+                  raise SystemExit(0)
+              raise SystemExit("expected assertion block not found")
+          path.write_text(text.replace(old, new))
+          PY
+          python -m py_compile \
+            research/candidate-04/micro_auction_balance_transition_compiler.py \
+            research/candidate-04/tests/test_micro_auction_balance_transition_compiler.py
+
+      - name: Commit controlled test fix with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/tests/test_micro_auction_balance_transition_compiler.py
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "fix V36 representation-sensitive test assertion"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
