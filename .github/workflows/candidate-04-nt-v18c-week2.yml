@@ -1,0 +1,163 @@
+name: candidate-04-nt-v18c-week2
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-nt-v18c-week2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      FROZEN_SOURCE_COMMIT: 98fde73e34bfc525d52751cfab11633579c953fd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify frozen source and fixed NautilusTrader runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          git diff --exit-code "$FROZEN_SOURCE_COMMIT" -- \
+            research/candidate-04/nt_liquidity_strategy.py \
+            research/candidate-04/nt_auction_excess_strategy.py \
+            research/candidate-04/nt_auction_failure_strategy.py \
+            research/candidate-04/nt_low_impact_external_strategy.py \
+            research/candidate-04/nt_low_impact_hybrid_target_strategy.py \
+            research/candidate-04/nt_composite_liquidity_strategy.py \
+            research/candidate-04/nt_causal_risk_sizing.py \
+            research/candidate-04/nt_backtest.py \
+            research/candidate-04/nt_backtest_v18.py \
+            research/candidate-04/nt_liquidity_config.json \
+            research/candidate-04/tests/test_nt_liquidity_strategy.py \
+            research/candidate-04/tests/test_nt_composite_liquidity_strategy.py \
+            research/candidate-04/tests/test_nt_causal_risk_sizing.py
+          python -m compileall -q \
+            research/candidate-04/nt_liquidity_strategy.py \
+            research/candidate-04/nt_auction_excess_strategy.py \
+            research/candidate-04/nt_auction_failure_strategy.py \
+            research/candidate-04/nt_low_impact_external_strategy.py \
+            research/candidate-04/nt_low_impact_hybrid_target_strategy.py \
+            research/candidate-04/nt_composite_liquidity_strategy.py \
+            research/candidate-04/nt_causal_risk_sizing.py \
+            research/candidate-04/nt_backtest.py \
+            research/candidate-04/nt_backtest_v18.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_liquidity_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_composite_liquidity_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Run untouched BTC week two exclusively through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="artifacts/candidate-04-nt-v18c/week2"
+          mkdir -p "$out"
+          python research/candidate-04/nt_backtest_v18.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start 2023-06-24 \
+            --build-end 2023-07-02 \
+            --evaluation-start 2023-06-26 \
+            --evaluation-end 2023-07-02 \
+            --cache .cache/candidate-04-nt-v18c/week2 \
+            --output "$out" \
+            | tee "$out/console.json"
+          test -s "$out/metrics.json"
+          test -s "$out/run.json"
+          test -s "$out/data_manifest.json"
+          test -s "$out/orders.csv"
+          test -s "$out/positions.csv"
+          test -s "$out/account.csv"
+          test -s "$out/equity.csv"
+          test -s "$out/strategy_events.json"
+
+      - name: Verify week-two realized losses and complete stage gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("artifacts/candidate-04-nt-v18c/week2")
+          metrics = json.loads((root / "metrics.json").read_text())
+          events = json.loads((root / "strategy_events.json").read_text())
+          positions = pd.read_csv(root / "positions.csv")
+          entries = [event for event in events if event.get("event_type") == "ENTRY_SUBMITTED"]
+          if len(entries) != len(positions.index):
+              raise SystemExit(
+                  f"entry/position mismatch: entries={len(entries)} positions={len(positions.index)}"
+              )
+          losses = []
+          for row, entry in zip(positions.to_dict("records"), entries):
+              pnl = float(str(row["realized_pnl"]).split()[0].replace("_", ""))
+              if pnl < 0.0:
+                  equity = float(entry["details"]["equity"])
+                  losses.append(abs(pnl) / equity)
+          maximum = max(losses, default=0.0)
+          risk = {
+              "maximum_realized_loss_fraction": maximum,
+              "loss_fractions": losses,
+              "limit": 0.03,
+              "pass": maximum <= 0.0301,
+          }
+          stage = {
+              "stage": "week2",
+              "evaluation_start": "2023-06-26",
+              "evaluation_end": "2023-07-02",
+              "source_commit": "98fde73e34bfc525d52751cfab11633579c953fd",
+              "engine": metrics.get("engine"),
+              "metrics_gate_pass": bool(metrics.get("gate_pass")),
+              "risk_gate_pass": bool(risk["pass"]),
+              "stage_pass": bool(metrics.get("gate_pass")) and bool(risk["pass"]),
+          }
+          (root / "risk_verification.json").write_text(
+              json.dumps(risk, indent=2, sort_keys=True) + "\n"
+          )
+          (root / "stage_gate.json").write_text(
+              json.dumps(stage, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps({"metrics": metrics, "risk": risk, "stage": stage}, indent=2, sort_keys=True))
+          if not stage["stage_pass"]:
+              raise SystemExit("untouched week two did not pass the frozen stage gate")
+          PY
+
+      - name: Print week-two result
+        if: always()
+        run: |
+          for path in \
+            artifacts/candidate-04-nt-v18c/week2/metrics.json \
+            artifacts/candidate-04-nt-v18c/week2/risk_verification.json \
+            artifacts/candidate-04-nt-v18c/week2/stage_gate.json; do
+            if test -f "$path"; then
+              echo "=== $path ==="
+              python -m json.tool "$path"
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-nt-v18c-week2-${{ github.sha }}
+          path: artifacts/candidate-04-nt-v18c/week2
+          if-no-files-found: warn
+          retention-days: 90
