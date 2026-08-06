@@ -59,12 +59,21 @@ jobs:
           --output artifacts/candidate-07
           --data-root .research-data/candidate-07
 
+      - name: Measure full-hold excursions
+        if: always()
+        run: >-
+          python research/candidate-07/diagnose_excursions.py
+          --config research/candidate-07/config.json
+          --output artifacts/candidate-07
+          --data-root .research-data/candidate-07
+
       - name: Print machine-readable results
         if: always()
         run: |
           test -f artifacts/candidate-07/pipeline_summary.json
           cat artifacts/candidate-07/pipeline_summary.json
           find artifacts/candidate-07 -name metrics.json -print -exec cat {} \;
+          find artifacts/candidate-07 -name excursion_summary.json -print -exec cat {} \;
 
       - name: Preserve complete replay evidence
         if: always()
