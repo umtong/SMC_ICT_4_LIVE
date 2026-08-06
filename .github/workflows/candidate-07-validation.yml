@@ -1,6 +1,11 @@
 name: candidate-07-nautilus-validation
 
 on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/**"
+      - ".github/workflows/candidate-07-validation.yml"
   workflow_dispatch:
 
 permissions:
@@ -8,7 +13,56 @@ permissions:
   packages: read
 
 jobs:
-  staging-hold:
+  btc-week-1-balance-no-oi-ablation:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
     steps:
-      - run: echo "Balance-auction OI ablation is being staged."
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Verify prebuilt NautilusTrader foundation
+        run: smc4 doctor
+
+      - name: Compile candidate
+        run: python -m compileall -q research/candidate-07
+
+      - name: Causal state-machine and data tests
+        run: python -m unittest discover -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-balance-week1-v1
+          restore-keys: |
+            candidate-07-positioning-three-weeks-v1
+            candidate-07-positioning-week1-v1
+            candidate-07-flow-week1-v1
+
+      - name: NautilusTrader frozen Week-1 OI-removal ablation
+        run: >-
+          python research/candidate-07/candidate_cascade.py week
+          --config research/candidate-07/config_balance_ablation_no_oi.json
+          --stage week-1-ablation-no-oi
+          --start 2025-12-22
+          --end 2025-12-29
+          --output artifacts/candidate-07/week-1-ablation-no-oi
+          --data-root .research-data/candidate-07
+
+      - name: Print machine-readable ablation result
+        if: always()
+        run: |
+          test -f artifacts/candidate-07/week-1-ablation-no-oi/metrics.json
+          cat artifacts/candidate-07/week-1-ablation-no-oi/metrics.json
+
+      - name: Preserve complete ablation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-balance-week1-no-oi-${{ github.sha }}
+          path: artifacts/candidate-07/week-1-ablation-no-oi
+          retention-days: 14
+          if-no-files-found: error
