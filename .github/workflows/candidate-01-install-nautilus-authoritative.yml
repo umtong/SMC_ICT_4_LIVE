@@ -26,6 +26,16 @@ jobs:
       - name: Materialize the NautilusTrader-only path
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-01/install_nautilus_authoritative_path.py")
+          source = path.read_text(encoding="utf-8")
+          source = source.replace(
+              '    for member in archive.getmembers():\n        print(f"wrote {member.name}")',
+              '        for member in archive.getmembers():\n            print(f"wrote {member.name}")',
+          )
+          path.write_text(source, encoding="utf-8")
+          PY
           python3 research/candidate-01/install_nautilus_authoritative_path.py
           python3 -m compileall -q \
             research/candidate-01/nautilus_plan_backtest.py \
@@ -97,6 +107,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
+            research/candidate-01/install_nautilus_authoritative_path.py \
             research/candidate-01/nautilus_plan_backtest.py \
             research/candidate-01/nautilus_execution.json \
             research/candidate-01/intrinsic_external_liquidity_v4_nautilus_week.py \
