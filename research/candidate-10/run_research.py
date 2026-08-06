@@ -15,7 +15,7 @@ from candidate import reproducible_weeks
 from candidate import run_backtest
 
 
-VARIANT_NAMES = ("full", "ablation-range-extreme-approach")
+VARIANT_NAMES = ("full", "ablation-immediate-resting-entry")
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,14 +35,14 @@ def parse_args() -> argparse.Namespace:
 
 def variants() -> dict[str, MachineParams]:
     full = MachineParams()
-    # One-variable v2.2 ablation: displacement breaks the preceding eight-bar
-    # range extreme rather than the nearest already right-confirmed micro pivot.
-    # Pools, cost gate, target, order type, risk, seed and every threshold stay
-    # identical.
-    range_extreme = replace(full, enable_nearest_micro_pivot=False)
+    # One-variable v2.3 ablation: submit the old passive 61.8% parent as soon as
+    # displacement is certified. Full waits for the first corridor touch and a
+    # close through the preceding minute's opposing extreme. Pools, targets,
+    # costs, risk, seed and all numerical thresholds remain identical.
+    immediate_entry = replace(full, enable_retrace_confirmation=False)
     return {
         "full": full,
-        "ablation-range-extreme-approach": range_extreme,
+        "ablation-immediate-resting-entry": immediate_entry,
     }
 
 
@@ -126,7 +126,7 @@ def main() -> int:
         "phase": args.phase,
         "executed_weeks": [item.isoformat() for item in weeks],
         "engine_process_isolation": True,
-        "candidate_generation": "v2.2-nearest-right-confirmed-micro-pivot",
+        "candidate_generation": "v2.3-confirmed-first-retrace-rejection",
         "variants": list(VARIANT_NAMES),
     }
     (output_root / "week_selection.json").write_text(
