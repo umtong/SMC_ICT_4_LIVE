@@ -1,0 +1,233 @@
+name: Candidate 07 Objective-Lifecycle Acceptance Relay
+
+on:
+  push:
+    branches:
+      - research/candidate-07-objective-lifecycle
+    paths:
+      - ".github/workflows/candidate-07-olar.yml"
+      - "research/candidate-06/bootstrap_objective_lifecycle_payload.py"
+      - "research/candidate-06/olar_payload.part-*"
+      - "research/candidate-06/objective_lifecycle_core.py"
+      - "research/candidate-06/objective_lifecycle_engine.py"
+      - "research/candidate-06/register_objective_lifecycle_engine.py"
+      - "research/candidate-06/test_objective_lifecycle_core.py"
+      - "research/candidate-06/test_objective_lifecycle_engine.py"
+      - "research/candidate-06/test_register_objective_lifecycle_engine.py"
+      - "research/candidate-06/run_objective_lifecycle_matrix.py"
+      - "research/candidate-06/config.olar.json"
+      - "research/candidate-06/OBJECTIVE_LIFECYCLE_RESEARCH_LEDGER.md"
+      - "research/candidate-06/hierarchical_sweep_engine.py"
+      - "research/candidate-06/hierarchical_pool_engine.py"
+      - "research/candidate-06/hierarchical_flow_factor_engine.py"
+      - "research/candidate-06/hierarchical_multi_liquidity_engine.py"
+      - "research/candidate-06/nautilus_strategy.py"
+      - "research/candidate-06/nautilus_execution.py"
+      - "research/candidate-06/nautilus_lifecycle.py"
+      - "research/candidate-06/nautilus_runner.py"
+      - "research/candidate-06/run_validation.py"
+      - "src/smc_ict_4/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-07-objective-lifecycle
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  olar-campaign:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-07 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-07
+
+    steps:
+      - name: Checkout isolated candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct checksum-verified OLAR source payload
+        run: |
+          set -euo pipefail
+          python research/candidate-06/bootstrap_objective_lifecycle_payload.py
+
+      - name: Verify predeclared OLAR source and research ledger
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          for path in \
+            research/candidate-06/objective_lifecycle_core.py \
+            research/candidate-06/objective_lifecycle_engine.py \
+            research/candidate-06/register_objective_lifecycle_engine.py \
+            research/candidate-06/test_objective_lifecycle_core.py \
+            research/candidate-06/test_objective_lifecycle_engine.py \
+            research/candidate-06/test_register_objective_lifecycle_engine.py \
+            research/candidate-06/run_objective_lifecycle_matrix.py \
+            research/candidate-06/config.olar.json \
+            research/candidate-06/OBJECTIVE_LIFECYCLE_RESEARCH_LEDGER.md; do
+            test -s "$path"
+          done
+
+      - name: Verify fixed prebuilt NautilusTrader environment
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(f"NAUTILUS_VERSION={actual}")
+          PY
+
+      - name: Register OLAR without changing execution economics
+        run: |
+          set -euo pipefail
+          python research/candidate-06/register_objective_lifecycle_engine.py
+          grep -q 'OBJECTIVE_LIFECYCLE_ACCEPTANCE_RELAY' research/candidate-06/nautilus_strategy.py
+          grep -q 'validate_pending_signal' research/candidate-06/nautilus_execution.py
+          grep -q 'pop_position_exit_for' research/candidate-06/nautilus_execution.py
+          grep -q 'scenario_details' research/candidate-06/nautilus_execution.py
+
+      - name: Verify causality, state contracts, and unchanged parent detector
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-06/*.py
+          python research/candidate-06/test_objective_lifecycle_core.py
+          python research/candidate-06/test_objective_lifecycle_engine.py
+          python research/candidate-06/test_register_objective_lifecycle_engine.py
+          python research/candidate-06/test_hierarchical_pool_engine.py
+          python research/candidate-06/test_hierarchical_flow_factor_engine.py
+          python research/candidate-06/test_hierarchical_multi_liquidity_engine.py
+          python research/candidate-06/test_entry_confirmation.py
+          python research/candidate-06/test_excursion_diagnostics.py
+          python - <<'PY'
+          import inspect
+          import json
+          from pathlib import Path
+          from objective_lifecycle_engine import ObjectiveLifecycleAcceptanceRelayEngine
+          from nautilus_execution import NautilusExecutionMixin
+          from nautilus_strategy import _make_scenario_engine
+
+          source = inspect.getsource(ObjectiveLifecycleAcceptanceRelayEngine)
+          execution = inspect.getsource(NautilusExecutionMixin)
+          config = json.loads(Path("research/candidate-06/config.olar.json").read_text())
+          engine = _make_scenario_engine(config["logic"])
+          assert isinstance(engine, ObjectiveLifecycleAcceptanceRelayEngine)
+          assert "upper_fast" not in source
+          assert "lower_fast" not in source
+          assert "hsc_extension_atr_htf" not in source
+          assert "validate_pending_signal" in execution
+          assert "pop_position_exit_for" in execution
+          assert config["execution"]["risk_fraction"] == 0.03
+          assert config["execution"]["effective_fee_rate_per_fill"] == 0.0007
+          assert config["execution"]["prob_fill_on_limit_touch"] == 0.65
+          assert config["validation"]["frozen_week_starts_utc"] == [
+              "2024-01-29", "2024-12-09", "2024-05-13"
+          ]
+          print("OLAR causal and invariant contracts verified")
+          PY
+
+      - name: Run new BTC first week and conditional sealed weeks through NautilusTrader
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          rm -rf artifacts/candidate-07/olar-first-week
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts
+          python research/candidate-06/run_objective_lifecycle_matrix.py \
+            --output artifacts/candidate-07/olar-first-week \
+            > artifacts/candidate-07-olar.stdout \
+            2> artifacts/candidate-07-olar.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Guarantee terminal evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-07/olar-first-week
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > artifacts/candidate-07/olar-first-week/workflow_exit_code.txt
+          if [ ! -f artifacts/candidate-07/olar-first-week/summary.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-07/olar-first-week")
+          payload = {
+              "candidate": "candidate-07-olar-v1.0",
+              "all_three_weeks_passed": False,
+              "long_evaluation_authorized": False,
+              "selected": None,
+              "terminal_decision": "IMPLEMENTATION_OR_RUNTIME_FAILURE_BEFORE_SUMMARY",
+          }
+          (root / "summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+          cp artifacts/candidate-07-olar.stdout artifacts/candidate-07/olar-first-week/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-07-olar.stderr artifacts/candidate-07/olar-first-week/workflow_stderr.txt 2>/dev/null || true
+
+      - name: Commit integrated source and reproducible evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-07-research-bot"
+          git config user.email "candidate-07-research-bot@users.noreply.github.com"
+          for path in \
+            research/candidate-06/objective_lifecycle_core.py \
+            research/candidate-06/objective_lifecycle_engine.py \
+            research/candidate-06/register_objective_lifecycle_engine.py \
+            research/candidate-06/test_objective_lifecycle_core.py \
+            research/candidate-06/test_objective_lifecycle_engine.py \
+            research/candidate-06/test_register_objective_lifecycle_engine.py \
+            research/candidate-06/run_objective_lifecycle_matrix.py \
+            research/candidate-06/config.olar.json \
+            research/candidate-06/OBJECTIVE_LIFECYCLE_RESEARCH_LEDGER.md \
+            research/candidate-06/nautilus_strategy.py \
+            research/candidate-06/nautilus_execution.py; do
+            if [ -e "$path" ]; then git add "$path"; fi
+          done
+          git add -f artifacts/candidate-07/olar-first-week
+          if [ -f research/candidate-06/config.olar.locked.json ]; then
+            git add -f research/candidate-06/config.olar.locked.json
+          fi
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record candidate-07 OLAR evidence [candidate-07 evidence]"
+          git push origin HEAD:research/candidate-07-objective-lifecycle
+
+      - name: Upload OLAR evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-olar-${{ github.sha }}
+          path: artifacts/candidate-07/olar-first-week
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce staged decision
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          exit "$code"
