@@ -1,0 +1,54 @@
+name: candidate-05-symbol-spec-probe
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-symbol-spec-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Fetch official Binance USD-M exchange filters
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.request
+
+          symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}
+          request = urllib.request.Request(
+              "https://fapi.binance.com/fapi/v1/exchangeInfo",
+              headers={"User-Agent": "SMC-ICT-4-LIVE-research/1.0"},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              payload = json.load(response)
+          result = {}
+          for item in payload["symbols"]:
+              if item["symbol"] not in symbols:
+                  continue
+              filters = {entry["filterType"]: entry for entry in item["filters"]}
+              result[item["symbol"]] = {
+                  "status": item["status"],
+                  "baseAsset": item["baseAsset"],
+                  "quoteAsset": item["quoteAsset"],
+                  "pricePrecision": item["pricePrecision"],
+                  "quantityPrecision": item["quantityPrecision"],
+                  "tickSize": filters["PRICE_FILTER"]["tickSize"],
+                  "minPrice": filters["PRICE_FILTER"]["minPrice"],
+                  "maxPrice": filters["PRICE_FILTER"]["maxPrice"],
+                  "stepSize": filters["LOT_SIZE"]["stepSize"],
+                  "minQty": filters["LOT_SIZE"]["minQty"],
+                  "maxQty": filters["LOT_SIZE"]["maxQty"],
+                  "minNotional": filters.get("MIN_NOTIONAL", {}).get("notional"),
+              }
+          if set(result) != symbols:
+              raise SystemExit(f"missing symbols: {sorted(symbols - set(result))}")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
