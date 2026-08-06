@@ -1,0 +1,117 @@
+name: candidate-02-v55-nautilustrader-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v55_*.py"
+      - "research/candidate-02/v55_*.json"
+      - ".candidate-02-v55/collect_first_week.py"
+      - ".github/workflows/candidate-02-v55-first.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  first-week-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - name: Checkout locked candidate
+        uses: actions/checkout@v4
+
+      - name: Download immutable historical feature matrix
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e
+          path: inputs/v55-first-week
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31036754667"
+
+      - name: Remove unrelated previously collected raw week
+        run: rm -rf inputs/v55-first-week/.cache
+
+      - name: Verify fixed runtime and prospective lock
+        run: |
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v55_nt_core.py \
+            research/candidate-02/v55_nt_backtest.py \
+            .candidate-02-v55/collect_first_week.py
+          python -m json.tool research/candidate-02/v55_frozen_auction_lock.json >/dev/null
+          python -m json.tool research/candidate-02/v55_first_week_config.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock = json.loads(Path("research/candidate-02/v55_frozen_auction_lock.json").read_text())
+          config = json.loads(Path("research/candidate-02/v55_first_week_config.json").read_text())
+          assert lock["first_week_selection"]["selected_first_week"] == "2024-11-18"
+          assert config["validation"]["first_week_start"] == "2024-11-18"
+          assert lock["raw_first_week_data_collected_before_this_lock"] is False
+          assert float(config["risk"]["risk_fraction"]) == 0.03
+          assert lock["execution"]["custom_backtest_engine"] is False
+          PY
+
+      - name: Collect only locked first-week raw bars
+        run: python .candidate-02-v55/collect_first_week.py
+
+      - name: Run v55 first week through NautilusTrader
+        shell: bash
+        run: |
+          mkdir -p artifacts/candidate-02-v55-first-week
+          set +e
+          python research/candidate-02/v55_nt_backtest.py \
+            --config research/candidate-02/v55_first_week_config.json \
+            --input-root inputs/v55-first-week \
+            --output artifacts/candidate-02-v55-first-week \
+            | tee artifacts-v55-console.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "$status" > artifacts/candidate-02-v55-first-week/validation_exit_code.txt
+          if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+
+      - name: Publish first-week decision
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f artifacts/candidate-02-v55-first-week/metrics.json ]]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          m = json.loads(Path("artifacts/candidate-02-v55-first-week/metrics.json").read_text())
+          print("# Candidate-02 v55 frozen auction first week")
+          print(f"- Decision: **{m['decision']}**")
+          print(f"- Signals/trades: **{m['scheduled_signals']}/{m['trades']}**")
+          print(f"- Trades/day: **{m['trades_per_day']:.3f}**")
+          print(f"- Win rate: **{m['win_rate']:.2%}**")
+          print(f"- Cost-after PF: **{m['profit_factor_after_cost']:.3f}**")
+          print(f"- Cost-after geometric daily growth: **{m['geometric_daily_growth_after_cost']:.3%}**")
+          print(f"- MDD: **{m['maximum_mark_to_market_drawdown']:.2%}**")
+          PY
+          else
+            echo "v55 did not produce metrics.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Preserve raw data and NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v55-first-week-${{ github.sha }}
+          path: |
+            inputs/v55-first-week/.cache/candidate-02/v55-first-week
+            inputs/v55-first-week/artifacts/candidate-02-v55-first-week-data
+            artifacts/candidate-02-v55-first-week
+            artifacts-v55-console.log
+          if-no-files-found: warn
+          retention-days: 30
