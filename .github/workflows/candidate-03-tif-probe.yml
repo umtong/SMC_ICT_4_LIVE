@@ -27,14 +27,18 @@ jobs:
           set -euo pipefail
           IMAGE=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
           out=artifacts/candidate-03/tif-probe
-          mkdir -p "$out" && chmod -R 0777 artifacts
+          rm -rf "$out"
+          mkdir -p "$out"
+          chmod -R 0777 artifacts
           docker pull "$IMAGE"
-          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" bash -c '
-            cat > artifacts/candidate-03/tif-probe/tif_strategy.py <<"PY"
+
+          cat > "$out/tif_strategy.py" <<'PY'
           from __future__ import annotations
+
           import json
           from decimal import Decimal
           from pathlib import Path
+
           from nautilus_trader.config import StrategyConfig
           from nautilus_trader.model.data import QuoteTick
           from nautilus_trader.model.enums import OrderSide, TimeInForce
@@ -42,11 +46,13 @@ jobs:
           from nautilus_trader.model.identifiers import InstrumentId
           from nautilus_trader.trading.strategy import Strategy
 
+
           class TIFProbeConfig(StrategyConfig, frozen=True):
               instrument_id: InstrumentId
               tif: str
               output: str
               quantity: Decimal = Decimal("5")
+
 
           class TIFProbe(Strategy):
               def __init__(self, config: TIFProbeConfig) -> None:
@@ -55,9 +61,11 @@ jobs:
                   self.quotes = 0
                   self.entry_sent = False
                   self.close_sent = False
-                  self.filled_qty = 0.0
-                  self.fill_prices = []
-                  self.canceled = 0
+                  self.entry_order_id = None
+                  self.entry_fill_qty = 0.0
+                  self.entry_fill_prices: list[float] = []
+                  self.exit_fill_qty = 0.0
+                  self.canceled_order_ids: list[str] = []
 
               def on_start(self) -> None:
                   self.instrument = self.cache.instrument(self.config.instrument_id)
@@ -72,38 +80,61 @@ jobs:
                           quantity=self.instrument.make_qty(self.config.quantity),
                           time_in_force=TimeInForce[self.config.tif],
                       )
+                      self.entry_order_id = order.client_order_id
                       self.submit_order(order)
                       self.entry_sent = True
                       return
-                  if self.quotes >= 5 and not self.close_sent and not self.portfolio.is_flat(self.config.instrument_id):
+                  if (
+                      self.quotes >= 5
+                      and not self.close_sent
+                      and not self.portfolio.is_flat(self.config.instrument_id)
+                  ):
                       self.close_all_positions(self.config.instrument_id, reduce_only=True)
                       self.close_sent = True
 
               def on_order_filled(self, event: OrderFilled) -> None:
-                  self.filled_qty += float(event.last_qty)
-                  self.fill_prices.append(float(event.last_px))
+                  if event.client_order_id == self.entry_order_id:
+                      self.entry_fill_qty += float(event.last_qty)
+                      self.entry_fill_prices.append(float(event.last_px))
+                  else:
+                      self.exit_fill_qty += float(event.last_qty)
 
               def on_order_canceled(self, event: OrderCanceled) -> None:
-                  self.canceled += 1
+                  self.canceled_order_ids.append(str(event.client_order_id))
 
               def on_stop(self) -> None:
-                  Path(self.config.output).write_text(json.dumps({
-                      "tif": self.config.tif,
-                      "filled_qty_all_orders": self.filled_qty,
-                      "fill_prices": self.fill_prices,
-                      "canceled_events": self.canceled,
-                      "flat": self.portfolio.is_flat(self.config.instrument_id),
-                  }, sort_keys=True) + "\n", encoding="utf-8")
+                  Path(self.config.output).write_text(
+                      json.dumps(
+                          {
+                              "tif": self.config.tif,
+                              "requested_entry_qty": float(self.config.quantity),
+                              "entry_fill_qty": self.entry_fill_qty,
+                              "entry_fill_prices": self.entry_fill_prices,
+                              "exit_fill_qty": self.exit_fill_qty,
+                              "canceled_order_ids": self.canceled_order_ids,
+                              "flat_at_end": self.portfolio.is_flat(self.config.instrument_id),
+                          },
+                          sort_keys=True,
+                      )
+                      + "\n",
+                      encoding="utf-8",
+                  )
           PY
 
-            cat > artifacts/candidate-03/tif-probe/run_probe.py <<"PY"
+          cat > "$out/run_one.py" <<'PY'
           from __future__ import annotations
+
           import json
           import shutil
           import sys
           from decimal import Decimal
           from pathlib import Path
-          from nautilus_trader.backtest.node import BacktestDataConfig, BacktestEngineConfig, BacktestNode, BacktestRunConfig, BacktestVenueConfig
+
+          from nautilus_trader.backtest.node import BacktestDataConfig
+          from nautilus_trader.backtest.node import BacktestEngineConfig
+          from nautilus_trader.backtest.node import BacktestNode
+          from nautilus_trader.backtest.node import BacktestRunConfig
+          from nautilus_trader.backtest.node import BacktestVenueConfig
           from nautilus_trader.config import ImportableStrategyConfig
           from nautilus_trader.model.data import QuoteTick
           from nautilus_trader.model.identifiers import InstrumentId, Symbol
@@ -114,73 +145,154 @@ jobs:
           ROOT = Path("/workspace/artifacts/candidate-03/tif-probe")
           sys.path.insert(0, str(ROOT))
 
-          def instrument():
+
+          def instrument() -> CryptoPerpetual:
               usdt = Currency.from_str("USDT")
               return CryptoPerpetual(
                   instrument_id=InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),
-                  raw_symbol=Symbol("BTCUSDT"), base_currency=Currency.from_str("BTC"),
-                  quote_currency=usdt, settlement_currency=usdt, is_inverse=False,
-                  price_precision=1, size_precision=3, price_increment=Price.from_str("0.1"),
-                  size_increment=Quantity.from_str("0.001"), ts_event=0, ts_init=0,
-                  multiplier=Quantity.from_int(1), lot_size=Quantity.from_str("0.001"),
-                  min_quantity=Quantity.from_str("0.001"), min_notional=Money.from_str("5 USDT"),
-                  margin_init=Decimal("0"), margin_maint=Decimal("0.004"),
-                  maker_fee=Decimal("0.0002"), taker_fee=Decimal("0.0005"),
+                  raw_symbol=Symbol("BTCUSDT"),
+                  base_currency=Currency.from_str("BTC"),
+                  quote_currency=usdt,
+                  settlement_currency=usdt,
+                  is_inverse=False,
+                  price_precision=1,
+                  size_precision=3,
+                  price_increment=Price.from_str("0.1"),
+                  size_increment=Quantity.from_str("0.001"),
+                  ts_event=0,
+                  ts_init=0,
+                  multiplier=Quantity.from_int(1),
+                  lot_size=Quantity.from_str("0.001"),
+                  min_quantity=Quantity.from_str("0.001"),
+                  min_notional=Money.from_str("5 USDT"),
+                  margin_init=Decimal("0"),
+                  margin_maint=Decimal("0.004"),
+                  maker_fee=Decimal("0.0002"),
+                  taker_fee=Decimal("0.0005"),
               )
 
-          results = []
-          for tif in ("FOK", "IOC", "GTC"):
+
+          def main() -> int:
+              tif = sys.argv[1]
               root = ROOT / tif.lower()
               shutil.rmtree(root, ignore_errors=True)
               root.mkdir(parents=True)
               catalog_path = root / "catalog"
               inst = instrument()
               base = 1_700_000_000_000_000_000
-              quotes = []
-              for index, mid in enumerate((40_000.0, 40_010.0, 40_020.0, 40_030.0, 40_040.0, 40_050.0, 40_060.0)):
+              quotes: list[QuoteTick] = []
+              for index, mid in enumerate(
+                  (40_000.0, 40_010.0, 40_020.0, 40_030.0, 40_040.0, 40_050.0, 40_060.0),
+              ):
                   ts = base + index * 1_000_000_000
-                  quotes.append(QuoteTick(
-                      instrument_id=inst.id,
-                      bid_price=inst.make_price(mid - 0.5), ask_price=inst.make_price(mid + 0.5),
-                      bid_size=inst.make_qty(Decimal("0.1")), ask_size=inst.make_qty(Decimal("0.1")),
-                      ts_event=ts, ts_init=ts,
-                  ))
+                  quotes.append(
+                      QuoteTick(
+                          instrument_id=inst.id,
+                          bid_price=inst.make_price(mid - 0.5),
+                          ask_price=inst.make_price(mid + 0.5),
+                          bid_size=inst.make_qty(Decimal("0.1")),
+                          ask_size=inst.make_qty(Decimal("0.1")),
+                          ts_event=ts,
+                          ts_init=ts,
+                      ),
+                  )
               catalog = ParquetDataCatalog(str(catalog_path))
-              catalog.write_data([inst]); catalog.write_data(quotes)
-              summary_path = root / "strategy.json"
+              catalog.write_data([inst])
+              catalog.write_data(quotes)
+              strategy_path = root / "strategy.json"
               strategy = ImportableStrategyConfig(
                   strategy_path="tif_strategy:TIFProbe",
                   config_path="tif_strategy:TIFProbeConfig",
-                  config={"instrument_id": inst.id, "tif": tif, "output": str(summary_path), "quantity": Decimal("5")},
+                  config={
+                      "instrument_id": inst.id,
+                      "tif": tif,
+                      "output": str(strategy_path),
+                      "quantity": Decimal("5"),
+                  },
               )
               run_config = BacktestRunConfig(
-                  engine=BacktestEngineConfig(strategies=[strategy], run_analysis=True),
-                  data=[BacktestDataConfig(catalog_path=str(catalog_path), data_cls=QuoteTick, instrument_id=inst.id)],
-                  venues=[BacktestVenueConfig(
-                      name="BINANCE", oms_type="NETTING", account_type="MARGIN", base_currency="USDT",
-                      starting_balances=["100_000 USDT"], default_leverage=1.0,
-                      book_type="L1_MBP", reject_stop_orders=False, use_position_ids=False,
-                      use_reduce_only=True, bar_execution=False, trade_execution=False,
-                      liquidity_consumption=True,
-                  )],
-                  raise_exception=True, dispose_on_completion=False,
+                  engine=BacktestEngineConfig(
+                      strategies=[strategy],
+                      run_analysis=False,
+                      bypass_logging=True,
+                  ),
+                  data=[
+                      BacktestDataConfig(
+                          catalog_path=str(catalog_path),
+                          data_cls=QuoteTick,
+                          instrument_id=inst.id,
+                      ),
+                  ],
+                  venues=[
+                      BacktestVenueConfig(
+                          name="BINANCE",
+                          oms_type="NETTING",
+                          account_type="MARGIN",
+                          base_currency="USDT",
+                          starting_balances=["100_000 USDT"],
+                          default_leverage=1.0,
+                          book_type="L1_MBP",
+                          reject_stop_orders=False,
+                          use_position_ids=False,
+                          use_reduce_only=True,
+                          bar_execution=False,
+                          trade_execution=False,
+                          liquidity_consumption=True,
+                      ),
+                  ],
+                  raise_exception=True,
+                  dispose_on_completion=False,
               )
-              node = BacktestNode(configs=[run_config]); native = node.run()[0]
-              payload = json.loads(summary_path.read_text())
-              payload.update({"native_orders": native.total_orders, "native_positions": native.total_positions})
-              results.append(payload)
+              node = BacktestNode(configs=[run_config])
+              native = node.run()[0]
+              payload = json.loads(strategy_path.read_text(encoding="utf-8"))
+              payload.update(
+                  {
+                      "native_orders": native.total_orders,
+                      "native_positions": native.total_positions,
+                  },
+              )
+              result_path = ROOT / f"result-{tif.lower()}.json"
+              result_path.write_text(
+                  json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+              print(json.dumps(payload, indent=2, sort_keys=True))
               node.dispose()
-          (ROOT / "result.json").write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
-          print(json.dumps(results, indent=2, sort_keys=True))
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
           PY
 
-            PYTHONPATH=/workspace/artifacts/candidate-03/tif-probe \
-              python artifacts/candidate-03/tif-probe/run_probe.py
-          '
+          for tif in FOK IOC GTC; do
+            docker run --rm \
+              -v "$PWD:/workspace" \
+              -w /workspace \
+              "$IMAGE" \
+              bash -c "PYTHONPATH=/workspace/$out python $out/run_one.py $tif"
+          done
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-03/tif-probe")
+          results = [
+              json.loads((root / f"result-{tif}.json").read_text(encoding="utf-8"))
+              for tif in ("fok", "ioc", "gtc")
+          ]
+          (root / "result.json").write_text(
+              json.dumps(results, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(results, indent=2, sort_keys=True))
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: candidate-03-tif-probe-${{ github.sha }}
-          path: artifacts/candidate-03/tif-probe/result.json
+          path: artifacts/candidate-03/tif-probe/result*.json
           if-no-files-found: error
           retention-days: 3
