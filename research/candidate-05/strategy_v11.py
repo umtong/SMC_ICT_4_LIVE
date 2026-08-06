@@ -214,7 +214,7 @@ class ConfirmedLiquidityProtectionStrategy(ObservedEntryPathStrategy):
                         self._protection_details(),
                     )
                 self.modify_order(
-                    stop_order.client_order_id,
+                    stop_order,
                     trigger_price=self.instrument.make_price(self.protection_stop),
                 )
 
