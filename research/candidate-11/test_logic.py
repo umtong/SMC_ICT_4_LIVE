@@ -29,7 +29,16 @@ class CausalityTests(unittest.TestCase):
         self.assertGreater(pool.confirmed_ts_ns, pool.candidate_ts_ns)
 
     def test_far_requires_confirmation_before_retrace(self) -> None:
-        cfg = LogicConfig(atr_period=2, volume_period=2, pivot_wing=1, min_net_r=0.1)
+        # The test isolates scenario ordering. Its synthetic sweep has an
+        # intentionally broad stop, so the unrelated production stop-bound
+        # gate is widened only for this fixture.
+        cfg = LogicConfig(
+            atr_period=2,
+            volume_period=2,
+            pivot_wing=1,
+            min_net_r=0.1,
+            max_stop_atr=3.0,
+        )
         engine = CausalAuctionEngine(cfg, "BTCUSDT.BINANCE")
         pool = Pool("p", Side.HIGH, 100.0, "TEST", 1, 2, 0, 100)
         engine.pools.extend([pool, Pool("target", Side.LOW, 90.0, "TEST", 1, 2, 0, 100)])
