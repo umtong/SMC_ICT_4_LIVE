@@ -16,7 +16,8 @@ import zipfile
 
 import pandas as pd
 
-from nautilus_trader.persistence.wranglers import BarDataWrangler
+from nautilus_trader.model.data import Bar
+from nautilus_trader.model.objects import Price, Quantity
 
 
 BINANCE_COLUMNS = [
@@ -224,8 +225,29 @@ def load_official_binance_bars(
             f"data completeness below contract: missing_ratio={missing_ratio:.6f}, gaps={gap_count}"
         )
 
-    wrangler_frame = frame[["open", "high", "low", "close", "volume"]].astype(float)
-    bars = BarDataWrangler(bar_type, instrument).process(wrangler_frame)
+    # Build official Nautilus ``Bar`` objects directly. Pandas 3 copy-on-write can
+    # expose ``DataFrame.values`` as read-only, while the pinned Cython wrangler
+    # requests a writable memoryview. Direct construction preserves the exact same
+    # Nautilus data type and timestamp semantics without a compatibility-dependent
+    # pandas buffer hand-off.
+    values = frame[["open", "high", "low", "close", "volume"]].to_numpy(
+        dtype="float64",
+        copy=True,
+    )
+    timestamps_ns = frame.index.asi8
+    bars = [
+        Bar(
+            bar_type=bar_type,
+            open=Price(float(row[0]), instrument.price_precision),
+            high=Price(float(row[1]), instrument.price_precision),
+            low=Price(float(row[2]), instrument.price_precision),
+            close=Price(float(row[3]), instrument.price_precision),
+            volume=Quantity(float(row[4]), instrument.size_precision),
+            ts_event=int(timestamp_ns),
+            ts_init=int(timestamp_ns),
+        )
+        for row, timestamp_ns in zip(values, timestamps_ns, strict=True)
+    ]
     quality = {
         "rows": len(frame.index),
         "expected_rows": expected_rows,
