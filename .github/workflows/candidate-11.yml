@@ -39,7 +39,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Normalize raw Binance columns before validation
+      - name: Normalize candidate implementation before validation
         run: |
           cd "$GITHUB_WORKSPACE"
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -58,13 +58,16 @@ jobs:
               if read_line not in s:
                   raise SystemExit("expected Binance CSV read line not found")
               s = s.replace(read_line, read_line + clean_line)
+          s = s.replace("engine.trader.generate_order_fills_report()", "engine.generate_order_fills_report()")
+          s = s.replace("engine.trader.generate_positions_report()", "engine.generate_positions_report()")
+          s = s.replace("engine.trader.generate_account_report(venue)", "engine.generate_account_report(venue)")
           p.write_text(s, encoding="utf-8")
           PY
           if ! git diff --quiet -- research/candidate-11/run.py; then
             git config user.name "candidate-11-bot"
             git config user.email "candidate-11-bot@users.noreply.github.com"
             git add research/candidate-11/run.py
-            git commit -m "candidate-11: normalize Binance kline rows"
+            git commit -m "candidate-11: align data and Nautilus result APIs"
             git push origin HEAD:research/candidate-11
           fi
 
