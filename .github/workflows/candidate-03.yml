@@ -48,31 +48,48 @@ jobs:
             '
 
       - name: Restore exact first-week prepared data
-        uses: actions/cache@v4
+        id: restore-first
+        uses: actions/cache/restore@v4
         with:
           path: artifacts/candidate-03/nt-lvcfr/validation-1/prepared
-          key: nt-lvcfr-v3-btc-2024-01-08-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
+          key: nt-lvcfr-v4-btc-2024-01-08-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
+
+      - name: Prepare first frozen BTC week — 2024-01-08
+        if: steps.restore-first.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          week=2024-01-08
+          out="artifacts/candidate-03/nt-lvcfr/validation-1"
+          mkdir -p "$out/prepared"
+          chmod -R 0777 artifacts
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "smc4 doctor && PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr.py --week-start $week --output $out/prepared --require-minimum" \
+            2>&1 | tee "$out/preflight.log"
+
+      - name: Save exact first-week prepared data
+        if: steps.restore-first.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr/validation-1/prepared
+          key: nt-lvcfr-v4-btc-2024-01-08-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
 
       - name: First frozen BTC week — 2024-01-08
         shell: bash
         run: |
           set -euo pipefail
           week=2024-01-08
-          label=validation-1
-          out="artifacts/candidate-03/nt-lvcfr/$label"
-          mkdir -p "$out/prepared"
+          out="artifacts/candidate-03/nt-lvcfr/validation-1"
+          mkdir -p "$out"
           chmod -R 0777 artifacts
-
-          docker run --rm \
-            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            bash -c "smc4 doctor && PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr.py --week-start $week --output $out/prepared --require-minimum" \
-            2>&1 | tee "$out/preflight.log"
-
+          if [[ "${{ steps.restore-first.outputs.cache-hit }}" == "true" ]]; then
+            printf '%s\n' 'restored exact prepared catalog from immutable cache key' > "$out/preflight.log"
+          fi
           docker run --rm \
             -v "$PWD:/workspace" -w /workspace "$IMAGE" \
             bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py --week-start $week --output $out" \
             2>&1 | tee "$out/backtest.log"
-
           docker run --rm \
             -v "$PWD:/workspace" -w /workspace "$IMAGE" \
             python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
@@ -80,31 +97,48 @@ jobs:
             | tee "$out/gate.json"
 
       - name: Restore exact second-week prepared data
-        uses: actions/cache@v4
+        id: restore-second
+        uses: actions/cache/restore@v4
         with:
           path: artifacts/candidate-03/nt-lvcfr/validation-2/prepared
-          key: nt-lvcfr-v3-btc-2025-06-23-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
+          key: nt-lvcfr-v4-btc-2025-06-23-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
+
+      - name: Prepare second frozen BTC week — 2025-06-23
+        if: steps.restore-second.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          week=2025-06-23
+          out="artifacts/candidate-03/nt-lvcfr/validation-2"
+          mkdir -p "$out/prepared"
+          chmod -R 0777 artifacts
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "smc4 doctor && PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr.py --week-start $week --output $out/prepared --require-minimum" \
+            2>&1 | tee "$out/preflight.log"
+
+      - name: Save exact second-week prepared data
+        if: steps.restore-second.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr/validation-2/prepared
+          key: nt-lvcfr-v4-btc-2025-06-23-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
 
       - name: Second frozen BTC week — 2025-06-23
         shell: bash
         run: |
           set -euo pipefail
           week=2025-06-23
-          label=validation-2
-          out="artifacts/candidate-03/nt-lvcfr/$label"
-          mkdir -p "$out/prepared"
+          out="artifacts/candidate-03/nt-lvcfr/validation-2"
+          mkdir -p "$out"
           chmod -R 0777 artifacts
-
-          docker run --rm \
-            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            bash -c "smc4 doctor && PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr.py --week-start $week --output $out/prepared --require-minimum" \
-            2>&1 | tee "$out/preflight.log"
-
+          if [[ "${{ steps.restore-second.outputs.cache-hit }}" == "true" ]]; then
+            printf '%s\n' 'restored exact prepared catalog from immutable cache key' > "$out/preflight.log"
+          fi
           docker run --rm \
             -v "$PWD:/workspace" -w /workspace "$IMAGE" \
             bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py --week-start $week --output $out" \
             2>&1 | tee "$out/backtest.log"
-
           docker run --rm \
             -v "$PWD:/workspace" -w /workspace "$IMAGE" \
             python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
@@ -112,31 +146,48 @@ jobs:
             | tee "$out/gate.json"
 
       - name: Restore exact third-week prepared data
-        uses: actions/cache@v4
+        id: restore-third
+        uses: actions/cache/restore@v4
         with:
           path: artifacts/candidate-03/nt-lvcfr/validation-3/prepared
-          key: nt-lvcfr-v3-btc-2022-05-16-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
+          key: nt-lvcfr-v4-btc-2022-05-16-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
+
+      - name: Prepare third frozen BTC week — 2022-05-16
+        if: steps.restore-third.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          week=2022-05-16
+          out="artifacts/candidate-03/nt-lvcfr/validation-3"
+          mkdir -p "$out/prepared"
+          chmod -R 0777 artifacts
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "smc4 doctor && PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr.py --week-start $week --output $out/prepared --require-minimum" \
+            2>&1 | tee "$out/preflight.log"
+
+      - name: Save exact third-week prepared data
+        if: steps.restore-third.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr/validation-3/prepared
+          key: nt-lvcfr-v4-btc-2022-05-16-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
 
       - name: Third frozen BTC week — 2022-05-16
         shell: bash
         run: |
           set -euo pipefail
           week=2022-05-16
-          label=validation-3
-          out="artifacts/candidate-03/nt-lvcfr/$label"
-          mkdir -p "$out/prepared"
+          out="artifacts/candidate-03/nt-lvcfr/validation-3"
+          mkdir -p "$out"
           chmod -R 0777 artifacts
-
-          docker run --rm \
-            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            bash -c "smc4 doctor && PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr.py --week-start $week --output $out/prepared --require-minimum" \
-            2>&1 | tee "$out/preflight.log"
-
+          if [[ "${{ steps.restore-third.outputs.cache-hit }}" == "true" ]]; then
+            printf '%s\n' 'restored exact prepared catalog from immutable cache key' > "$out/preflight.log"
+          fi
           docker run --rm \
             -v "$PWD:/workspace" -w /workspace "$IMAGE" \
             bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py --week-start $week --output $out" \
             2>&1 | tee "$out/backtest.log"
-
           docker run --rm \
             -v "$PWD:/workspace" -w /workspace "$IMAGE" \
             python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
