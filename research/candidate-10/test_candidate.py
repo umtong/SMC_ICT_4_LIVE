@@ -133,6 +133,7 @@ class Candidate10Tests(unittest.TestCase):
     def test_confirmed_pool_sweep_displacement_arms_pool_to_pool_limit(self) -> None:
         params = replace(
             MachineParams(),
+            enable_retrace_confirmation=False,
             maker_fee=0.0,
             taker_fee=0.0,
             min_net_rr=0.5,
@@ -195,6 +196,7 @@ class Candidate10Tests(unittest.TestCase):
         params = replace(
             MachineParams(),
             enable_path_displacement=enable_path,
+            enable_retrace_confirmation=False,
             displacement_atr=0.75,
             displacement_max_bars=10,
             displacement_min_efficiency=0.55,
