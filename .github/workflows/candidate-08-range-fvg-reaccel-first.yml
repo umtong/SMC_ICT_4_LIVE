@@ -1,0 +1,213 @@
+name: candidate-08-range-fvg-reaccel-first
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-range-fvg-reaccel-first"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  validate:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/range-fvg-reaccel-first
+      DATA_CACHE: /tmp/candidate-08-range-fvg-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize causal runner and validate contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          from pathlib import Path
+
+          logic_path = Path("research/candidate-08/range_fvg_reaccel_logic.py")
+          source = logic_path.read_text(encoding="utf-8")
+          block_start = source.index('    scenario_id = f"{base.scenario_id}-rr"')
+          return_start = source.index("    return RangeFVGSignal(", block_start)
+          compressed = '''    scenario_id = base.scenario_id
+    events = (
+        LogicEvent(
+            scenario_id=scenario_id,
+            event_type="FVG_RETEST_REACCELERATION_CONFIRMED",
+            event_time_ns=reacceleration.ts_event_ns,
+            observed_time_ns=reacceleration.ts_event_ns,
+            previous_state="IDLE",
+            next_state="CONFIRMED",
+            reason_code=f"CONTRACTED_RETEST_SEPARATE_DISPLACEMENT_{base.direction.value}",
+            reference_price=entry,
+            details={
+                "base_signal_time_ns": base.signal_time_ns,
+                "retest_time_ns": retest.ts_event_ns,
+                "reacceleration_time_ns": reacceleration.ts_event_ns,
+                "fvg_low": base.fvg_low,
+                "fvg_high": base.fvg_high,
+                "consequent_encroachment": base.limit_entry,
+                "volume_fraction_of_displacement": retest.volume / max(displacement.volume, 1e-12),
+                "trade_fraction_of_displacement": retest.trade_count / max(displacement.trade_count, 1e-12),
+                "retest_imbalance": retest.imbalance,
+                "reacceleration_body_atr": reacceleration.body / reacceleration.atr,
+                "reacceleration_imbalance": reacceleration.imbalance,
+            },
+        ),
+    )
+'''
+          source = source[:block_start] + compressed + source[return_start:]
+          logic_path.write_text(source, encoding="utf-8")
+
+          test_path = Path("research/candidate-08/test_range_fvg_reaccel.py")
+          test_source = test_path.read_text(encoding="utf-8")
+          old = '''        self.assertEqual(confirmed.events[-2].next_state, "RETEST_HELD")
+        self.assertEqual(confirmed.events[-1].previous_state, "RETEST_HELD")
+'''
+          new = '''        self.assertEqual(len(confirmed.events), 1)
+        self.assertEqual(confirmed.events[0].previous_state, "IDLE")
+        self.assertEqual(confirmed.events[0].next_state, "CONFIRMED")
+'''
+          if test_source.count(old) != 1:
+              raise SystemExit("reacceleration event assertion anchor mismatch")
+          test_path.write_text(test_source.replace(old, new), encoding="utf-8")
+
+          base_runner = Path("research/candidate-08/run_range_fvg.py").read_text(encoding="utf-8")
+          runner = base_runner.replace(
+              '"""Reproducible NautilusTrader runner for the completed-range FVG candidate."""',
+              '"""Reproducible NautilusTrader runner for completed-range FVG retest/reacceleration."""',
+          )
+          old_import = 'from range_fvg_logic import RangeFVGConfig, build_range_fvg_signals, group_events_by_reason\n'
+          new_import = '''from range_fvg_logic import RangeFVGConfig
+from range_fvg_reaccel_logic import (
+    RetestReaccelConfig,
+    build_range_fvg_reacceleration_signals,
+    group_events_by_reason,
+)
+'''
+          if runner.count(old_import) != 1:
+              raise SystemExit("runner import anchor mismatch")
+          runner = runner.replace(old_import, new_import)
+          old_build = '''    pattern_config = RangeFVGConfig.from_mapping(dict(config["pattern"]))
+    bundle = build_range_fvg_signals(loaded.frame, pattern_config)
+'''
+          new_build = '''    pattern_config = RangeFVGConfig.from_mapping(dict(config["pattern"]))
+    confirmation_config = RetestReaccelConfig.from_mapping(dict(config["confirmation"]))
+    bundle = build_range_fvg_reacceleration_signals(
+        loaded.frame,
+        pattern_config,
+        confirmation_config,
+    )
+'''
+          if runner.count(old_build) != 1:
+              raise SystemExit("runner detector anchor mismatch")
+          runner = runner.replace(old_build, new_build)
+          runner = runner.replace(
+              '"signal_observation": "third five-minute bar close",',
+              '"signal_observation": "separate five-minute reacceleration close after contracted FVG retest",',
+          )
+          runner = runner.replace(
+              '"entry": "NautilusTrader limit order submitted after signal observation",',
+              '"entry": "NautilusTrader limit at observed reacceleration close; no midpoint touch entry",',
+          )
+          runner = runner.replace(
+              'run_id=f"candidate-08-range-fvg-{suite}"',
+              'run_id=f"candidate-08-range-fvg-reaccel-{suite}"',
+          )
+          runner = runner.replace(
+              'default=HERE / "config_range_fvg.json"',
+              'default=HERE / "config_range_fvg_reaccel.json"',
+          )
+          runner = runner.replace(
+              '"candidate-08-range-fvg"',
+              '"candidate-08-range-fvg-reaccel"',
+          )
+          Path("research/candidate-08/run_range_fvg_reaccel.py").write_text(
+              runner,
+              encoding="utf-8",
+          )
+          PY
+          python -m compileall -q \
+            research/candidate-08/range_fvg_reaccel_logic.py \
+            research/candidate-08/test_range_fvg_reaccel.py \
+            research/candidate-08/run_range_fvg_reaccel.py
+          python research/candidate-08/test_range_fvg.py -v
+          python research/candidate-08/test_range_fvg_reaccel.py -v
+
+      - name: Restore official Binance archive cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/candidate-08-range-fvg-data
+          key: candidate-08-range-fvg-binance-v1
+
+      - name: Run revised first BTC week in NautilusTrader
+        id: run_candidate
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          set +e
+          python research/candidate-08/run_range_fvg_reaccel.py \
+            --suite first \
+            --config research/candidate-08/config_range_fvg_reaccel.json \
+            --output "$OUTPUT_DIR" \
+            --data-cache "$DATA_CACHE" \
+            2>&1 | tee "$OUTPUT_DIR/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT_DIR/runner_exit_status.txt"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          output = Path(os.environ["OUTPUT_DIR"])
+          (output / "workflow.json").write_text(
+              json.dumps({
+                  "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                  "head_sha": os.environ.get("GITHUB_SHA"),
+                  "suite": "first",
+                  "engine": "NautilusTrader",
+                  "revision": "contracted retest plus separate five-minute reacceleration",
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          exit "$status"
+
+      - name: Commit revised source and reproducible evidence
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm research/candidate-08/.run-range-fvg-reaccel-first
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" add \
+            research/candidate-08/range_fvg_reaccel_logic.py \
+            research/candidate-08/test_range_fvg_reaccel.py \
+            research/candidate-08/run_range_fvg_reaccel.py \
+            research/candidate-08/config_range_fvg_reaccel.json \
+            research/candidate-08/evidence/range-fvg-reaccel-first \
+            research/candidate-08/.run-range-fvg-reaccel-first
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: record range-FVG reacceleration first week"
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-range-fvg-reaccel-first-${{ github.sha }}
+          path: research/candidate-08/evidence/range-fvg-reaccel-first
+          retention-days: 30
+          if-no-files-found: warn
