@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 jobs:
-  btc-week-1-session-handoff-ablation:
+  btc-week-1-inventory-handoff-diagnostic:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -36,48 +36,36 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .research-data/candidate-07
-          key: candidate-07-session-handoff-week1-v1
+          key: candidate-07-inventory-handoff-week1-v1
           restore-keys: |
+            candidate-07-session-handoff-week1-v1
             candidate-07-mtf-index-week1-v1
             candidate-07-valuation-week1-v1
-            candidate-07-balance-week1-v1
             candidate-07-positioning-three-weeks-v1
             candidate-07-positioning-week1-v1
             candidate-07-flow-week1-v1
 
-      - name: Reproduce baseline diagnosis
+      - name: Diagnose frozen BTC Week-1 inventory handoffs
         run: >-
-          python research/candidate-07/diagnose_session_handoff.py
+          python research/candidate-07/diagnose_inventory_handoff.py
           --config research/candidate-07/config.json
           --stage week-1
           --start 2025-12-22
           --end 2025-12-29
-          --output artifacts/candidate-07/week-1/session_handoff_diagnostic.json
+          --output artifacts/candidate-07/week-1/inventory_handoff_diagnostic.json
           --data-root .research-data/candidate-07
 
-      - name: Remove continuation route only
-        run: >-
-          python research/candidate-07/diagnose_session_handoff_ablation.py
-          --config research/candidate-07/config.json
-          --stage week-1-ablation
-          --start 2025-12-22
-          --end 2025-12-29
-          --output artifacts/candidate-07/week-1/session_handoff_ablation.json
-          --data-root .research-data/candidate-07
-
-      - name: Print controlled comparison
+      - name: Print machine-readable diagnosis
         if: always()
         run: |
-          test -f artifacts/candidate-07/week-1/session_handoff_diagnostic.json
-          test -f artifacts/candidate-07/week-1/session_handoff_ablation.json
-          cat artifacts/candidate-07/week-1/session_handoff_diagnostic.json
-          cat artifacts/candidate-07/week-1/session_handoff_ablation.json
+          test -f artifacts/candidate-07/week-1/inventory_handoff_diagnostic.json
+          cat artifacts/candidate-07/week-1/inventory_handoff_diagnostic.json
 
-      - name: Preserve controlled evidence
+      - name: Preserve structural evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-session-handoff-ablation-${{ github.sha }}
+          name: candidate-07-inventory-handoff-week1-${{ github.sha }}
           path: artifacts/candidate-07/week-1
           retention-days: 14
           if-no-files-found: error
