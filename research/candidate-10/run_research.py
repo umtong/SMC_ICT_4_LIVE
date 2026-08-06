@@ -11,8 +11,8 @@ import subprocess
 import sys
 
 from c10_flow_model import FlowParams
-from c10_flow_research import reproducible_weeks
-from c10_flow_research import run_flow_backtest
+from c10_flow_precision_fix import reproducible_weeks
+from c10_flow_precision_fix import run_flow_backtest
 
 VARIANT_NAMES = ("full", "ablation-price-only")
 
@@ -133,6 +133,10 @@ def main() -> int:
         "ablation_contract": (
             "only FlowParams.enable_order_flow changes; all price, execution, "
             "cost, target, risk and selection rules remain identical"
+        ),
+        "implementation_control": (
+            "Binance decimal strings are normalized to instrument Price/Quantity "
+            "precision without changing numeric values"
         ),
     }
     (output_root / "week_selection.json").write_text(
