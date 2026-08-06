@@ -7,6 +7,7 @@ from typing import Any
 
 from entry_confirmation import DefenseCheck, continuation_defense_passes
 from failed_acceptance_trap import build_failed_acceptance_trap
+from synchronous_depth_gate import evaluate_failed_acceptance_depth
 from logic import PrimitiveSnapshot, ScenarioSignal
 from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_strategy_common import utc_day as _utc_day, utc_hour as _utc_hour
@@ -67,18 +68,56 @@ class NautilusExecutionMixin:
                 )
                 if trap_signal is not None:
                     signal = trap_signal
-                    trap_armed = True
-                    trap_counts["armed"] = int(trap_counts.get("armed", 0)) + 1
+                    depth_required = bool(
+                        self._logic_params.get("fatr_require_depth_confirmation", False)
+                    )
+                    depth_passed = True
+                    depth_result = None
+                    if depth_required:
+                        depth_result = evaluate_failed_acceptance_depth(
+                            original_signal,
+                            trap_signal,
+                            snapshot,
+                            self._logic_params,
+                        )
+                        depth_passed = bool(depth_result.passed)
+                        depth_counts = self.diagnostics.setdefault(
+                            "failed_acceptance_depth_gate_counts",
+                            {"passed": 0, "failed": 0},
+                        )
+                        depth_key = "passed" if depth_passed else "failed"
+                        depth_counts[depth_key] = int(depth_counts.get(depth_key, 0)) + 1
+                        self.diagnostics.setdefault("failed_acceptance_depth_candidates", []).append(
+                            {
+                                "scenario_id": original_signal.scenario_id,
+                                "direction": trap_signal.direction,
+                                "passed": depth_passed,
+                                "reason": depth_result.reason,
+                                **dict(depth_result.metrics),
+                            },
+                        )
                     confirmation_details.update(
                         {
                             "failed_defense_action": action,
-                            "trap_armed": True,
+                            "depth_confirmation_required": depth_required,
+                            "depth_confirmation_passed": depth_passed,
+                            "depth_confirmation_reason": (
+                                None if depth_result is None else depth_result.reason
+                            ),
                             "trap_direction": trap_signal.direction,
                             "trap_stop_price": trap_signal.stop_price,
                             "trap_target_price": trap_signal.target_price,
                             "trap_target_reason": trap_signal.target_reason,
                         },
                     )
+                    if depth_passed:
+                        trap_armed = True
+                        trap_counts["armed"] = int(trap_counts.get("armed", 0)) + 1
+                        confirmation_details["trap_armed"] = True
+                    else:
+                        trap_counts["not_armed"] = int(trap_counts.get("not_armed", 0)) + 1
+                        reason = "FAILED_ACCEPTANCE_DEPTH_RESILIENCY_NOT_CONFIRMED"
+                        confirmation_details["trap_armed"] = False
                 else:
                     if action.startswith("TRAP_"):
                         trap_counts["not_armed"] = int(trap_counts.get("not_armed", 0)) + 1
