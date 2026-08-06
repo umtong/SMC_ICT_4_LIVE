@@ -1,0 +1,45 @@
+name: candidate-09-v0.2-context-week
+
+on:
+  push:
+    branches:
+      - research/candidate-09
+    paths:
+      - "research/candidate-09/v0_2/context_week.py"
+      - ".github/workflows/candidate-09-context-week.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build-context:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: smc4 doctor
+      - run: python -m py_compile research/candidate-09/v0_2/aggtrade_probe.py research/candidate-09/v0_2/context_week.py
+      - name: Build prior-day warmup plus frozen discovery week context
+        run: |
+          python research/candidate-09/v0_2/context_week.py \
+            --symbol BTCUSDT \
+            --start-date 2024-10-13 \
+            --days 8 \
+            --output artifacts/candidate-09-context-week
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-context-week-${{ github.sha }}
+          path: artifacts/candidate-09-context-week
+          if-no-files-found: error
+          retention-days: 30
