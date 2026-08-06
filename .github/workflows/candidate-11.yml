@@ -1,6 +1,12 @@
 name: Candidate 11 V3 frozen validation
 
 on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/**"
+      - ".github/workflows/candidate-11.yml"
   pull_request:
     branches:
       - research/candidate-11
@@ -19,10 +25,6 @@ on:
 permissions:
   contents: write
   packages: read
-
-concurrency:
-  group: candidate-11-v3-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 env:
   RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
@@ -44,7 +46,7 @@ jobs:
         working-directory: ${{ github.workspace }}
 
     steps:
-      - name: Checkout candidate base branch
+      - name: Checkout candidate branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -95,8 +97,7 @@ jobs:
                       raise SystemExit(f"bundle size mismatch: {name}")
                   if sha256(payload).hexdigest() != record["sha256"]:
                       raise SystemExit(f"bundle content hash mismatch: {name}")
-                  destination = root / name
-                  destination.write_bytes(payload)
+                  (root / name).write_bytes(payload)
           bundle.unlink()
           print(f"materialized {len(expected_files)} verified V3 files")
           PY
@@ -104,7 +105,7 @@ jobs:
             git config user.name "candidate-11-bot"
             git config user.email "candidate-11-bot@users.noreply.github.com"
             git add research/candidate-11
-            git commit -m "candidate-11: materialize verified V3 research candidate"
+            git commit -m "candidate-11: materialize verified V3 research candidate [skip ci]"
             git push origin HEAD:research/candidate-11
           fi
 
