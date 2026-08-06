@@ -1,0 +1,140 @@
+name: candidate-08-shared-acceptance-route-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.route-shared-acceptance-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  classify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for immutable first-week evidence and classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence=research/candidate-08/evidence/shared-acceptance-first-v1
+          for attempt in $(seq 1 160); do
+            git fetch origin research/candidate-08
+            git reset --hard origin/research/candidate-08
+            if [[ -f "$evidence/runner_exit_status.txt" ]]; then
+              break
+            fi
+            sleep 15
+          done
+          mkdir -p research/candidate-08/evidence/shared-acceptance-routing-v1
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          evidence = Path("research/candidate-08/evidence/shared-acceptance-first-v1")
+          output = Path("research/candidate-08/evidence/shared-acceptance-routing-v1")
+          exit_path = evidence / "runner_exit_status.txt"
+          suite_path = evidence / "suite_metrics.json"
+          metrics_path = evidence / "metrics.json"
+          failure_path = evidence / "execution_failures.json"
+          log_path = evidence / "runner.log"
+
+          result = {
+              "candidate": "candidate-08-aggtrade-acceptance-nautilus",
+              "first_evidence_present": exit_path.exists(),
+              "classification": "NO_EVIDENCE_AFTER_WAIT",
+              "route": "STOP_AND_DIAGNOSE_INFRASTRUCTURE",
+          }
+          if exit_path.exists():
+              try:
+                  exit_status = int(exit_path.read_text().strip())
+              except Exception:
+                  exit_status = 999
+              result["runner_exit_status"] = exit_status
+              suite = json.loads(suite_path.read_text()) if suite_path.exists() else None
+              metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else None
+              failures = json.loads(failure_path.read_text()) if failure_path.exists() else {}
+              result["suite_metrics_present"] = suite is not None
+              result["metrics_present"] = metrics is not None
+              result["execution_failure_count"] = len(failures.get("execution_failures", []))
+              if exit_status != 0 or suite is None or metrics is None:
+                  result["classification"] = "IMPLEMENTATION_CRASH"
+                  result["route"] = "SAME_WEEK_IMPLEMENTATION_FIX"
+              elif bool(suite.get("gate_passed")):
+                  result["classification"] = "FIRST_GATE_PASSED"
+                  result["route"] = "RUN_REMAINING_FIXED_WEEKS"
+              elif (
+                  int(metrics.get("execution_failures", 0)) > 0
+                  or int(metrics.get("incomplete_multiasset_timestamps", 0)) > 0
+                  or int(metrics.get("open_positions_after_run", 0)) > 0
+                  or int(metrics.get("open_orders_after_run", 0)) > 0
+                  or int(metrics.get("unexpected_or_liquidation_closes", 0)) > 0
+              ):
+                  result["classification"] = "IMPLEMENTATION_RESULT_FAILURE"
+                  result["route"] = "SAME_WEEK_IMPLEMENTATION_FIX"
+              else:
+                  result["classification"] = "LOGIC_GATE_FAILURE"
+                  result["route"] = "ONE_CORE_VARIABLE_ABLATION"
+              if suite is not None:
+                  result["first_gate_checks"] = suite.get("gate_checks")
+                  result["first_window_result"] = (suite.get("window_results") or [None])[0]
+              if metrics is not None:
+                  result["signals_in_window"] = metrics.get("signals_in_window")
+                  result["position_metrics"] = metrics.get("position_metrics")
+                  result["total_return"] = metrics.get("total_return")
+                  result["daily_geometric_growth"] = metrics.get("daily_geometric_growth")
+                  result["maximum_realized_equity_drawdown"] = metrics.get("maximum_realized_equity_drawdown")
+
+          patterns = {
+              "TRACEBACK": "Traceback (most recent call last)",
+              "AGG_LOADER_SIGNATURE": "unsupported aggTrades loader signature",
+              "AGG_RESULT_TYPE": "unsupported aggTrades result",
+              "BAR_TYPE": "BarType",
+              "STRATEGY_CONFIG": "StrategyConfig",
+              "INSTRUMENT": "CryptoPerpetual",
+              "ADD_INSTRUMENT": "add_instrument",
+              "ORDER_BRACKET": "bracket",
+              "RESIDUAL_EXPOSURE": "residual exposure",
+              "OUT_OF_MEMORY": "Killed",
+          }
+          if log_path.exists():
+              log = log_path.read_text(errors="replace")
+              result["log_tail"] = log[-12000:]
+              result["matched_error_patterns"] = [
+                  name for name, needle in patterns.items() if needle in log
+              ]
+          (output / "status.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          (output / "route.txt").write_text(result["route"] + "\n", encoding="utf-8")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit routing evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin research/candidate-08
+          rm -f research/candidate-08/.route-shared-acceptance-v1
+          git add \
+            research/candidate-08/evidence/shared-acceptance-routing-v1 \
+            research/candidate-08/.route-shared-acceptance-v1
+          git commit -m "candidate-08: classify shared acceptance first week" || true
+          git push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-shared-acceptance-routing-v1-${{ github.run_id }}
+          path: research/candidate-08/evidence/shared-acceptance-routing-v1
+          retention-days: 30
