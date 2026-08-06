@@ -1,0 +1,111 @@
+{
+  "candidate_family": "candidate-02-v73-inventory-aware-direct-depth-auction",
+  "status": "LOCKED_REVEALED_WEEK_INVENTORY_DEPTH_FAMILY_BEFORE_NAUTILUSTRADER_RUN",
+  "locked_utc": "2026-08-06T06:43:00Z",
+  "performance_engine": "NautilusTrader 1.230.0 only",
+  "custom_backtest_engine": false,
+  "entry_execution": "five-minute post-only LIMIT at the frozen short-horizon boundary with contingent TP/SL",
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "development_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2024-10-28T00:00:00Z",
+    "end_utc": "2024-11-04T00:00:00Z",
+    "status": "ALREADY_REVEALED_BY_V66",
+    "use": "inventory/depth family development only; not counted as a fresh random-week pass"
+  },
+  "feature_causality": {
+    "direct_features": "completed one-minute aggTrades, bookDepth and price bars",
+    "oi_features": "original five-minute OI bar timestamp plus five minutes, then backward as-of joined to direct minutes",
+    "future_labels": "not copied into the merged feature matrix",
+    "adaptive_thresholds": "all use shift(1) before rolling quantiles"
+  },
+  "causal_question": "When aggressive flow reaches a short-horizon external boundary, is rising OI plus front-depth withdrawal creating accepted new-inventory price discovery, or is falling OI revealing forced liquidation that exhausts after depth recovery and a range reclaim?",
+  "prelocked_boundary_horizons": [
+    {"label": "boundary_10m", "boundary_minutes": 10},
+    {"label": "boundary_15m", "boundary_minutes": 15},
+    {"label": "boundary_20m", "boundary_minutes": 20}
+  ],
+  "base_scenario": {
+    "mode": "INVENTORY_DEPTH_AUCTION_CLASSIFIER",
+    "event_minutes": 3,
+    "prior_window_minutes": 720,
+    "prior_minimum_minutes": 180,
+    "flow_abs_quantile": 0.60,
+    "turnover_quantile": 0.50,
+    "depth_change_abs_quantile": 0.55,
+    "impact_efficiency_low_quantile": 0.40,
+    "impact_efficiency_high_quantile": 0.60,
+    "oi_abs_quantile": 0.60,
+    "vpin_quantile": 0.60,
+    "flow_floor": 0.05,
+    "minimum_directional_flow": 0.08,
+    "boundary_break_atr": 0.05,
+    "discovery_confirmation_minutes": 2,
+    "discovery_stop_inside_atr": 0.15,
+    "discovery_range_extension": 0.75,
+    "liquidation_confirmation_minutes": 3,
+    "liquidation_minimum_depth_recovery": 0.0,
+    "liquidation_stop_buffer_atr": 0.10,
+    "entry_expiry_minutes": 5,
+    "maximum_holding_minutes": 120,
+    "cooldown_minutes": 5,
+    "atr_lookback_minutes": 60,
+    "minimum_cost_after_rr": 0.75,
+    "maximum_cost_after_rr": 5.0
+  },
+  "mutually_exclusive_states": [
+    {
+      "state": "NEW_INVENTORY_DISCOVERY",
+      "setup": "aligned three-minute aggressive flow and return, above-threshold turnover, OI increase, efficient impact, front-depth withdrawal and a close outside the frozen boundary",
+      "confirmation": "a completed one-minute outside hold with non-opposing flow",
+      "entry": "post-only limit at the accepted boundary",
+      "invalidation": "0.15 ATR back inside",
+      "target": "0.75 frozen-boundary-range extension"
+    },
+    {
+      "state": "LIQUIDATION_EXHAUSTION",
+      "setup": "aligned three-minute aggressive flow and return, above-threshold turnover, OI decline, toxic flow and an external boundary sweep",
+      "confirmation": "completed close back inside after front-depth recovery and directional flow failure",
+      "entry": "post-only limit at the consumed boundary",
+      "invalidation": "beyond the event extreme plus 0.10 ATR",
+      "target": "frozen short-horizon range center"
+    }
+  ],
+  "event_count_diagnostic_before_performance": {
+    "scope": "event definitions only; no orders, fills, PnL or NAV",
+    "new_inventory_discovery": {"10m": 19, "15m": 15, "20m": 14},
+    "oi_decline_liquidation_impulse": {"10m": 17, "15m": 16, "20m": 16}
+  },
+  "fixed_risk": {
+    "starting_nav_usdt": "100000",
+    "risk_fraction": "0.03",
+    "maximum_notional_cap": null,
+    "score_risk_multiplier": null
+  },
+  "fixed_costs": {
+    "entry_fee_rate": "0.00050",
+    "target_fee_rate": "0.00020",
+    "stop_fee_rate": "0.00050",
+    "entry_slippage_rate": "0.00015",
+    "stop_slippage_rate": "0.00025",
+    "market_impact_rate": "0.00005",
+    "funding_rate_allowance": "0.00010"
+  },
+  "pass_criteria": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor_after_cost": 1.50,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25
+  },
+  "family_promotion_rule": "The central 15-minute boundary and at least one adjacent 10- or 20-minute boundary must satisfy every gate. Only then is the unchanged 15-minute classifier locked before a newly selected uncollected first BTC week.",
+  "fresh_data_rule": "No fresh random-week data is collected before the revealed-week horizon plateau passes.",
+  "locked_files": [
+    ".candidate-02-v73/merge_features.py",
+    "research/candidate-02/v70_limit_strategy.py",
+    "research/candidate-02/v73_inventory_depth_core.py",
+    "research/candidate-02/v73_nt_backtest.py",
+    "research/candidate-02/v73_inventory_depth_family_lock.json"
+  ]
+}
