@@ -1,0 +1,110 @@
+name: Candidate 09 render current result
+
+on:
+  push:
+    branches:
+      - research/candidate-09
+    paths:
+      - .github/workflows/candidate-09-render-result.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Render summary and oracle markers
+        shell: bash
+        run: |
+          python -m pip install --quiet pillow
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          from PIL import Image, ImageDraw, ImageFont
+
+          root = Path('research/candidate-09')
+          summary_path = root / 'evidence/latest/summary.json'
+          oracle = root / 'oracle/20260806a'
+          lines = ['CANDIDATE-09 CURRENT RESULT']
+          if summary_path.exists():
+              try:
+                  s = json.loads(summary_path.read_text())
+              except Exception as exc:
+                  s = {'status':'SUMMARY_PARSE_ERROR','error':repr(exc)}
+              lines.append(f"STATUS: {s.get('status')}")
+              gate = s.get('gate') or {}
+              pooled = gate.get('pooled') or {}
+              lines += [
+                  f"GATE PASSED: {gate.get('passed')}",
+                  f"GATE DAILY GEO: {pooled.get('daily_geometric_return')}",
+                  f"GATE NAV MULTIPLE: {pooled.get('nav_multiple')}",
+                  f"GATE TRADES: {pooled.get('trades')}",
+                  f"GATE MAX SEGMENT DD: {pooled.get('maximum_segment_drawdown')}",
+                  f"GATE MAX SINGLE PROFIT SHARE: {pooled.get('maximum_single_trade_profit_share')}",
+              ]
+              diagnosis = s.get('diagnosis') or {}
+              lines += [
+                  f"DIAGNOSIS: {diagnosis.get('classification')}",
+                  f"LARGEST INFLUENCE: {diagnosis.get('largest_influence')}",
+              ]
+              for o in s.get('baseline_weeks') or []:
+                  lines.append(
+                      f"{o.get('segment')}: ret={o.get('total_return')} geo={o.get('daily_geometric_return')} "
+                      f"trades={o.get('trades')} win={o.get('win_rate')} dd={o.get('max_drawdown')} "
+                      f"rev={o.get('reversal_trades')} cont={o.get('continuation_trades')} impl={o.get('implementation_status')}"
+                  )
+              for name, m in (s.get('ablations') or {}).items():
+                  lines.append(
+                      f"ABLATION {name}: geo={m.get('daily_geometric_return')} navx={m.get('nav_multiple')} trades={m.get('trades')}"
+                  )
+              le = s.get('long_evaluation')
+              if le:
+                  o = le.get('outcome') or {}
+                  lines.append(
+                      f"LONG {le.get('status')}: geo={o.get('daily_geometric_return')} ret={o.get('total_return')} "
+                      f"trades={o.get('trades')} dd={o.get('max_drawdown')}"
+                  )
+          else:
+              lines.append('STATUS: NO SUMMARY FILE')
+          lines.append('')
+          lines.append('ORACLE MARKERS:')
+          if oracle.exists():
+              lines.extend(sorted(p.name for p in oracle.iterdir() if p.is_file()))
+          else:
+              lines.append('NO ORACLE DIRECTORY')
+
+          font = ImageFont.load_default(size=18)
+          max_chars = 150
+          wrapped=[]
+          for line in lines:
+              line=str(line)
+              if not line:
+                  wrapped.append('')
+              while len(line)>max_chars:
+                  wrapped.append(line[:max_chars]); line=line[max_chars:]
+              wrapped.append(line)
+          width=2400
+          line_height=25
+          height=max(600, 30 + line_height*len(wrapped))
+          image=Image.new('RGB',(width,height),'white')
+          draw=ImageDraw.Draw(image)
+          draw.multiline_text((20,20),'\n'.join(wrapped),font=font,fill='black',spacing=7)
+          target=root/'evidence/latest/RESULT.png'
+          target.parent.mkdir(parents=True,exist_ok=True)
+          image.save(target)
+          (root/'evidence/latest/RESULT.txt').write_text('\n'.join(lines)+'\n')
+          PY
+      - name: Commit rendered result
+        shell: bash
+        run: |
+          git config user.name "candidate-09-research-bot"
+          git config user.email "candidate-09-research-bot@users.noreply.github.com"
+          git add -f research/candidate-09/evidence/latest/RESULT.png research/candidate-09/evidence/latest/RESULT.txt
+          git commit -m "candidate-09: render current result [candidate-09 evidence]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
