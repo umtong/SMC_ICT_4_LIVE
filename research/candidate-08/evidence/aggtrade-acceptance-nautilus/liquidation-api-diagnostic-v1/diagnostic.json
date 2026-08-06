@@ -1,0 +1,84 @@
+{
+  "cython": {
+    "BacktestEngine": {
+      "doc": "BacktestEngine(config: BacktestEngineConfig | None = None) -> None\n\nProvides a backtest engine to run a portfolio of strategies over historical\ndata.\n\nParameters\n----------\nconfig : BacktestEngineConfig, optional\n    The configuration for the instance.\n\nRaises\n------\nTypeError\n    If `config` is not of type `BacktestEngineConfig`.",
+      "module": "nautilus_trader.backtest.engine",
+      "qualname": "BacktestEngine",
+      "signature_error": "ValueError(\"no signature found for builtin type <class 'nautilus_trader.backtest.engine.BacktestEngine'>\")"
+    },
+    "BacktestEngine.add_venue": {
+      "doc": "BacktestEngine.add_venue(self, Venue venue: Venue, OmsType oms_type: OmsType, AccountType account_type: AccountType, list starting_balances: list[Money], Currency base_currency: Currency | None = None, default_leverage: Decimal | None = None, dict leverages: dict[InstrumentId, Decimal] | None = None, MarginModel margin_model: MarginModel = None, list modules: list[SimulationModule] | None = None, FillModel fill_model: FillModel | None = None, FeeModel fee_model: FeeModel | None = None, LatencyModel latency_model: LatencyModel | None = None, BookType book_type: BookType = BookType.L1_MBP, bool routing: bool = False, bool reject_stop_orders: bool = True, bool support_gtd_orders: bool = True, bool support_contingent_orders: bool = True, OtoTriggerMode oto_trigger_mode: OtoTriggerMode = OtoTriggerMode.PARTIAL, bool use_position_ids: bool = True, bool use_random_ids: bool = False, bool use_reduce_only: bool = True, bool use_message_queue: bool = True, bool use_market_order_acks: bool = False, bool bar_execution: bool = True, bool bar_adaptive_high_low_ordering: bool = False, bool trade_execution: bool = True, bool liquidity_consumption: bool = False, bool queue_position: bool = False, bool allow_cash_borrowing: bool = False, bool frozen_account: bool = False, price_protection_points=None, dict settlement_prices: dict[InstrumentId, float] | None = None) -> None\n\nAdd a `SimulatedExchange` with the given parameters to the backtest engine.\n\nParameters\n----------\nvenue : Venue\n    The venue ID.\noms_type : OmsType {``HEDGING``, ``NETTING``}\n    The order management system type for the exchange. If ``HEDGING`` will\n    generate new position IDs.\naccount_type : AccountType\n    The account type for the exchange.\nstarting_balances : list[Money]\n    The starting account balances (specify one for a single asset account).\nbase_currency : Currency, optional\n    The account base currency for the client. Use ``None`` for multi-currency accounts.\ndefault_leverage : Decimal, optional\n    The account default leverage (for margin accounts).\nleverages : dict[InstrumentId, Decimal], optional\n    The instrument specific leverage configuration (for margin accounts).\nmargin_model : MarginModelConfig, optional\n    The margin calculation model configuration. Default 'leveraged'.\nmodules : list[SimulationModule], optional\n    The simulation modules to load into the exchange.\nfill_model : FillModel, optional\n    The fill model for the exchange.\nfee_model : FeeModel, optional\n    The fee model for the venue.\nlatency_model : LatencyModel, optional\n    The latency model for the exchange.\nbook_type : BookType, default ``BookType.L1_MBP``\n    The default order book type.\nrouting : bool, default False\n    If multi-venue routing should be enabled for the execution client.\nreject_stop_orders : bool, default True\n    If stop orders are rejected on submission if trigger price is in the market.\nsupport_gtd_orders : bool, default True\n    If orders with GTD time in force will be supported by the venue.\nsupport_contingent_orders : bool, default True\n    If contingent orders will be supported/respected by the venue.\n    If False, then it's expected the strategy will be managing any contingent orders.\noto_trigger_mode : OtoTriggerMode, default ``OtoTriggerMode.PARTIAL``\n    The OTO trigger mode for contingent orders:\n    - ``PARTIAL``: release child orders pro-rata to each partial fill (default).\n    - ``FULL``: release child orders only once the parent is fully filled.\nuse_position_ids : bool, default True\n    If venue position IDs will be generated on order fills.\nuse_random_ids : bool, default False\n    If venue order IDs and position IDs will be random UUID4's.\n    Trade IDs are always deterministic and not affected by this flag.\nuse_reduce_only : bool, default True\n    If the `reduce_only` execution instruction on orders will be honored.\nuse_message_queue : bool, default True\n    If an internal message queue should be used to process trading commands in sequence after\n    they have initially arrived. Setting this to False would be appropriate for real-time\n    sandbox environments, where we don't want to introduce additional latency of waiting for\n    the next data event before processing the trading command.\nuse_market_order_acks : bool, default False\n    If OrderAccepted events will be generated for market orders before filling.\nbar_execution : bool, default True\n    If bars should be processed by the matching engine(s) (and move the market).\nbar_adaptive_high_low_ordering : bool, default False\n    Determines whether the processing order of bar prices is adaptive based on a heuristic.\n    This setting is only relevant when `bar_execution` is True.\n    If False, bar prices are always processed in the fixed order: Open, High, Low, Close.\n    If True, the processing order adapts with the heuristic:\n    - If High is closer to Open than Low then the processing order is Open, High, Low, Close.\n    - If Low is closer to Open than High then the processing order is Open, Low, High, Close.\ntrade_execution : bool, default True\n    If trades should be processed by the matching engine(s) (and move the market).\nliquidity_consumption : bool, default False\n    If liquidity consumption should be tracked per price level. When enabled, fills\n    consume available liquidity which resets when fresh data arrives at that level.\n    When disabled, each iteration can fill against the full book liquidity independently.\nqueue_position : bool, default False\n    If queue position tracking should be enabled for limit orders during trade\n    execution mode. When enabled, limit orders only fill after the quantity ahead\n    of them (at order placement time) has been traded through or the price level\n    is deleted. Requires trade_execution=True.\nallow_cash_borrowing : bool, default False\n    If cash accounts should allow borrowing (negative balances).\nfrozen_account : bool, default False\n    If the account for this exchange is frozen (balances will not change).\nprice_protection_points : int, optional\n    Defines an exchange-calculated price boundary (in points) to prevent\n    marketable orders from executing at excessively aggressive prices.\nsettlement_prices : dict[InstrumentId, float], optional\n    Map of instrument ID to settlement price for expiring instruments.\n    For futures, positions close at this price instead of market.\n    For options, the option leg settles at this price.\n\nRaises\n------\nValueError\n    If `venue` is already registered with the engine.",
+      "module": "nautilus_trader.backtest.engine",
+      "qualname": "BacktestEngine.add_venue",
+      "signature": "(self, venue: 'Venue', oms_type: 'OmsType', account_type: 'AccountType', starting_balances: 'list[Money]', base_currency: 'Currency | None' = None, default_leverage: 'Decimal | None' = None, leverages: 'dict[InstrumentId, Decimal] | None' = None, margin_model: 'MarginModel' = None, modules: 'list[SimulationModule] | None' = None, fill_model: 'FillModel | None' = None, fee_model: 'FeeModel | None' = None, latency_model: 'LatencyModel | None' = None, book_type: 'BookType' = <BookType.L1_MBP: 1>, routing: 'bool' = False, reject_stop_orders: 'bool' = True, support_gtd_orders: 'bool' = True, support_contingent_orders: 'bool' = True, oto_trigger_mode: 'OtoTriggerMode' = <OtoTriggerMode.PARTIAL: 0>, use_position_ids: 'bool' = True, use_random_ids: 'bool' = False, use_reduce_only: 'bool' = True, use_message_queue: 'bool' = True, use_market_order_acks: 'bool' = False, bar_execution: 'bool' = True, bar_adaptive_high_low_ordering: 'bool' = False, trade_execution: 'bool' = True, liquidity_consumption: 'bool' = False, queue_position: 'bool' = False, allow_cash_borrowing: 'bool' = False, frozen_account: 'bool' = False, price_protection_points=None, settlement_prices: 'dict[InstrumentId, float] | None' = None) -> 'None'"
+    }
+  },
+  "nautilus_version": "1.230.0",
+  "pyo3_descriptions": {
+    "BacktestDataConfig": {
+      "doc": "Represents the data configuration for one specific backtest run.",
+      "module": "nautilus_trader.core.nautilus_pyo3.backtest",
+      "qualname": "BacktestDataConfig",
+      "signature": "(data_type, catalog_path, catalog_fs_protocol=None, catalog_fs_storage_options=None, catalog_fs_rust_storage_options=None, instrument_id=None, instrument_ids=None, start_time=None, end_time=None, filter_expr=None, client_id=None, metadata=None, bar_spec=None, bar_types=None, optimize_file_loading=None)"
+    },
+    "BacktestEngine": {
+      "doc": "PyO3 wrapper around [`BacktestEngine`].\n\nExposes the backtest engine to Python as `BacktestEngine`.\nUses `unsendable` because the inner engine holds `Rc<RefCell<...>>`.",
+      "module": "nautilus_trader.core.nautilus_pyo3.backtest",
+      "qualname": "BacktestEngine",
+      "signature": "(config)"
+    },
+    "BacktestEngineConfig": {
+      "doc": "Configuration for ``BacktestEngine`` instances.",
+      "module": "nautilus_trader.core.nautilus_pyo3.backtest",
+      "qualname": "BacktestEngineConfig",
+      "signature": "(trader_id=None, load_state=None, save_state=None, shutdown_on_error=None, bypass_logging=None, run_analysis=None, timeout_connection=None, timeout_reconciliation=None, timeout_portfolio=None, timeout_disconnection=None, delay_post_stop=None, timeout_shutdown=None, logging=None, instance_id=None, cache=None, msgbus=None, data_engine=None, risk_engine=None, exec_engine=None, portfolio=None)"
+    },
+    "BacktestNode": {
+      "doc": "Orchestrates catalog-driven backtests from run configurations.\n\n`BacktestNode` connects the [`ParquetDataCatalog`] with [`BacktestEngine`] to load\nhistorical data and run backtests. Supports both oneshot and streaming modes.",
+      "module": "nautilus_trader.core.nautilus_pyo3.backtest",
+      "qualname": "BacktestNode",
+      "signature": "(configs)"
+    },
+    "BacktestResult": {
+      "doc": "Results from a completed backtest run.",
+      "module": "nautilus_trader.core.nautilus_pyo3.backtest",
+      "qualname": "BacktestResult",
+      "signature": "()"
+    },
+    "BacktestRunConfig": {
+      "doc": "Represents the configuration for one specific backtest run.\nThis includes a backtest engine with its actors and strategies, with the external inputs of venues and data.",
+      "module": "nautilus_trader.core.nautilus_pyo3.backtest",
+      "qualname": "BacktestRunConfig",
+      "signature": "(venues, data, engine=None, id=None, chunk_size=None, raise_exception=None, dispose_on_completion=None, start=None, end=None)"
+    },
+    "BacktestVenueConfig": {
+      "doc": "Represents a venue configuration for one specific backtest engine.",
+      "module": "nautilus_trader.core.nautilus_pyo3.backtest",
+      "qualname": "BacktestVenueConfig",
+      "signature": "(name, oms_type, account_type, book_type, starting_balances, routing=None, frozen_account=None, reject_stop_orders=None, support_gtd_orders=None, support_contingent_orders=None, use_position_ids=None, use_random_ids=None, use_reduce_only=None, bar_execution=None, bar_adaptive_high_low_ordering=None, trade_execution=None, use_market_order_acks=None, liquidity_consumption=None, allow_cash_borrowing=None, queue_position=None, oto_trigger_mode=None, base_currency=None, default_leverage=None, leverages=None, margin_model=None, modules=None, fill_model=None, latency_model=None, fee_model=None, price_protection_points=None, settlement_prices=None, liquidation_enabled=None, liquidation_trigger_ratio=None, liquidation_cancel_open_orders=None)"
+    },
+    "BinanceFuturesLiquidation": {
+      "doc": "Binance Futures liquidation update from the `forceOrder` stream.",
+      "module": "nautilus_trader.core.nautilus_pyo3.binance",
+      "qualname": "BinanceFuturesLiquidation",
+      "signature": "()"
+    },
+    "backtest": {
+      "doc": "Loaded as `nautilus_pyo3.backtest`.\n\n# Errors\n\nReturns a `PyErr` if registering any module components fails.",
+      "module": null,
+      "qualname": null,
+      "signature_error": "TypeError(\"<module 'backtest'> is not a callable object\")"
+    }
+  },
+  "pyo3_matching_names": [
+    "BacktestDataConfig",
+    "BacktestEngine",
+    "BacktestEngineConfig",
+    "BacktestNode",
+    "BacktestResult",
+    "BacktestRunConfig",
+    "BacktestVenueConfig",
+    "BinanceFuturesLiquidation",
+    "backtest"
+  ]
+}
