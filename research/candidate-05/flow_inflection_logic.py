@@ -190,6 +190,69 @@ def has_adverse_slippage_room(
     return limit_price >= required if side > 0 else limit_price <= required
 
 
+def choose_protectable_liquidity_milestone(
+    *,
+    entry: float,
+    target: float,
+    side: int,
+    pools: list[object],
+    atr: float,
+    stop_buffer_atr: float,
+    cost_rate: float,
+    adverse_slippage_rate: float,
+) -> tuple[str, float, float, float] | None:
+    """Choose the nearest intermediate pool which can defend positive net PnL.
+
+    The final target remains unchanged. This function only identifies an opposing
+    liquidity pool strictly between entry and target. Once consumed, a stop one
+    structural ATR buffer behind that pool must still yield positive expected PnL
+    after round-trip fees and adverse stop slippage.
+    """
+    if side not in (-1, 1):
+        raise ValueError("side must be -1 or 1")
+    if not _finite(
+        entry,
+        target,
+        atr,
+        stop_buffer_atr,
+        cost_rate,
+        adverse_slippage_rate,
+    ) or entry <= 0.0 or target <= 0.0 or atr <= 0.0 or stop_buffer_atr < 0.0:
+        return None
+    if (side > 0 and target <= entry) or (side < 0 and target >= entry):
+        return None
+
+    opposing_kind = "HIGH" if side > 0 else "LOW"
+    candidates: list[tuple[str, float, float, float]] = []
+    for pool in pools:
+        if str(getattr(pool, "kind", "")) != opposing_kind:
+            continue
+        level = float(getattr(pool, "level", math.nan))
+        if not math.isfinite(level):
+            continue
+        between = entry < level < target if side > 0 else target < level < entry
+        if not between:
+            continue
+        protected_stop = level - side * stop_buffer_atr * atr
+        expected_exit = protected_stop * (1.0 - side * adverse_slippage_rate)
+        expected_net = side * (expected_exit - entry) - cost_rate * (entry + expected_exit)
+        if expected_net <= 0.0:
+            continue
+        candidates.append(
+            (
+                str(getattr(pool, "pool_id", "unknown-pool")),
+                level,
+                protected_stop,
+                expected_net,
+            ),
+        )
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[1], reverse=side < 0)
+    return candidates[0]
+
+
 __all__ = [
     "BREAKAWAY_DIRECTIONAL_DEPTH_MIN",
     "BREAKAWAY_DIRECTIONAL_FLOW_3M_MIN",
@@ -205,6 +268,7 @@ __all__ = [
     "SWEEP_TAIL_IMPROVEMENT_MIN",
     "breakaway_follow_through",
     "choch_flow_state",
+    "choose_protectable_liquidity_milestone",
     "directional_tail_improvement",
     "has_adverse_slippage_room",
     "sweep_tail_recovers",
