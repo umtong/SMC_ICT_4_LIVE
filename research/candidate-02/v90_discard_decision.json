@@ -1,0 +1,141 @@
+{
+  "status": "DISCARDED_AFTER_FIRST_WEEK_AND_SINGLE_ABLATION",
+  "candidate_family": "candidate-02-v90-common-spot-perpetual-failed-auction",
+  "performance_engine": "NautilusTrader 1.230.0",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "first_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2022-02-14T00:00:00Z",
+    "selection_seed": 2026080690,
+    "prospectively_locked_before_collection": true,
+    "portfolio_15m": {
+      "trades": 4,
+      "trades_per_day": 0.5714285714285714,
+      "win_rate": 0.5,
+      "profit_factor_after_cost": 1.0328107989930515,
+      "geometric_daily_growth_after_cost": 0.0002959560752806567,
+      "maximum_mark_to_market_drawdown": -0.07023069304861762,
+      "final_nav_usdt": 100207.35328245
+    },
+    "portfolio_30m": {
+      "trades": 7,
+      "trades_per_day": 1.0,
+      "win_rate": 0.14285714285714285,
+      "profit_factor_after_cost": 0.1272344965525532,
+      "geometric_daily_growth_after_cost": -0.023017211170891838,
+      "maximum_mark_to_market_drawdown": -0.19834256525436955,
+      "final_nav_usdt": 84958.80414584
+    },
+    "portfolio_60m": {
+      "trades": 8,
+      "trades_per_day": 1.1428571428571428,
+      "win_rate": 0.25,
+      "profit_factor_after_cost": 0.2608602782871292,
+      "geometric_daily_growth_after_cost": -0.01969334213159002,
+      "maximum_mark_to_market_drawdown": -0.1790539496066076,
+      "final_nav_usdt": 87002.88730127
+    },
+    "component_attribution": {
+      "persistent_flow_absorption_30m": {
+        "trades": 0,
+        "interpretation": "The locked persistent-flow absorption state did not occur at any central event."
+      },
+      "active_flow_reversal_30m": {
+        "trades": 7,
+        "wins": 1,
+        "losses": 6,
+        "win_rate": 0.14285714285714285,
+        "profit_factor_after_cost": 0.1272344965525532,
+        "geometric_daily_growth_after_cost": -0.023017211170891838,
+        "interpretation": "All material central losses came from this branch."
+      }
+    },
+    "decision": "FIRST_WEEK_REJECT_OR_REDESIGN"
+  },
+  "implementation_errors": [
+    {
+      "error": "Binance Vision has no USD-M daily bookDepth archive for the locked 2022-02-14 week.",
+      "control_fix": "Removed only the unavailable non-gating source and explicitly created neutral depth columns. v90 did not gate entry, direction, price geometry or risk on depth; it used the derived value only as a same-timestamp score multiplier while emitting mutually exclusive states.",
+      "strategy_variables_changed": false,
+      "outcome": "Full 14,400-row causal futures and spot feature matrix was built before any strategy run."
+    },
+    {
+      "error": "The controlled validation initially required front_depth_change as a stored feature although v90 derives it inside build_state from bid/ask depth-change columns.",
+      "control_fix": "Removed the incorrect stored-column assertion only and reused the same feature matrix and week.",
+      "strategy_variables_changed": false
+    },
+    {
+      "error": "The prior artifact excluded hidden .cache raw bars.",
+      "control_fix": "Recollected the same ten official locked one-minute archives without rebuilding or changing features or rules.",
+      "strategy_variables_changed": false,
+      "outcome": "All five locked configurations completed in fresh NautilusTrader processes."
+    }
+  ],
+  "single_ablation": {
+    "removed_core_state": "ACTIVE_FLOW_REVERSAL",
+    "retained_state": "PERSISTENT_FLOW_ABSORPTION",
+    "all_other_variables_unchanged": true,
+    "results": {
+      "15m": {
+        "scheduled_signals": 0,
+        "trades": 0,
+        "geometric_daily_growth_after_cost": 0.0
+      },
+      "30m": {
+        "scheduled_signals": 0,
+        "trades": 0,
+        "geometric_daily_growth_after_cost": 0.0
+      },
+      "60m": {
+        "scheduled_signals": 0,
+        "trades": 0,
+        "geometric_daily_growth_after_cost": 0.0
+      }
+    },
+    "decision": "NO_STRUCTURAL_PATH_DISCARD_V90"
+  },
+  "failure_analysis": {
+    "primary_failure": "A short completed flow reversal after a common spot-perpetual external sweep and reclaim was not durable evidence of auction rotation. Six of seven central trades resumed the original shock direction or invalidated immediately.",
+    "largest_performance_driver": "The ACTIVE_FLOW_REVERSAL branch created every central trade and every material loss. The PERSISTENT_FLOW_ABSORPTION branch created no trade at any adjacent accepted-range horizon.",
+    "frequency": "The 30m and 60m portfolios had day-trading frequency, but it came entirely from the losing active-reversal branch. The only approximately breakeven 15m result had insufficient frequency and only 0.03% daily growth.",
+    "reward_geometry": "Changing accepted-range horizon altered target geometry but did not change the sign of expectancy; central and long horizons remained deeply negative. The root problem was state direction, not target distance.",
+    "why_no_more_parameter_search": "The one permitted core-state ablation removed all opportunities across 15m, 30m and 60m. The surviving state is too rare, while the active state is decisively negative. Further threshold tuning would fit noise around a falsified state machine."
+  },
+  "valid_components": [
+    {
+      "component": "frozen external auction boundary before event",
+      "why_useful": "It gives a causal liquidity location and prevents arbitrary wick classification."
+    },
+    {
+      "component": "cross-market common-shock decomposition",
+      "why_useful": "It separates synchronized spot-perpetual events from derivative-only dislocations and improves failure attribution."
+    },
+    {
+      "component": "failure retracement and observed sweep-extreme invalidation",
+      "why_useful": "It expresses a coherent failed-auction geometry even though the chosen confirmation did not predict direction."
+    },
+    {
+      "component": "15m opposite-edge rotation geometry",
+      "why_useful": "It produced two wins from four and approximately flat after costs, suggesting short accepted ranges can define useful liquidity objectives after a genuinely valid reversal. It was not frequent or strong enough to retain as a candidate."
+    }
+  ],
+  "next_hypothesis_requirements": [
+    "Do not infer direction from a common shock or a brief opposite flow average.",
+    "Trade a cross-market relative-value gap where the target is observable fair-value convergence rather than a directional forecast of the whole market.",
+    "Distinguish spot-led perpetual underreaction from perpetual-only overshoot using pre-event basis and leader-laggard timing.",
+    "Require basis convergence to begin before entry and use restored pre-event basis as the natural target.",
+    "Keep the event, confirmation and target mechanically distinct, with an ambiguous no-trade state.",
+    "Preserve NautilusTrader-only execution, current-NAV 3% risk and sequential unseen-week gates."
+  ],
+  "evidence": {
+    "first_week_lock": "research/candidate-02/v90_common_failed_auction_lock.json",
+    "first_week_run_id": 31097419753,
+    "first_week_artifact_id": 8966042747,
+    "ablation_lock": "research/candidate-02/v90_active_reversal_branch_ablation_lock.json",
+    "ablation_run_id": 31098054630,
+    "ablation_artifact_id": 8966291469
+  },
+  "second_week_or_long_evaluation_permitted": false
+}
