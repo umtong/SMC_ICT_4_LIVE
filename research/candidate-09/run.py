@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run candidate-09 with NautilusTrader and emit reproducible evidence.
 
-No search or parameter optimizer is present.  The structurally frozen v11 baseline and three
+No search or parameter optimizer is present.  The structurally frozen v12 baseline and three
 single-variable ablations run on the same predeclared BTC weeks.  The three-year
 monthly evaluation is allowed only after the gate passes.
 """
@@ -49,8 +49,8 @@ from state_engine import EngineConfig, FlowBar
 
 ABLATIONS = (
     "baseline",
-    "no-retest-salvage",
-    "retest-all",
+    "no-limit-salvage",
+    "limit-all",
     "no-flow",
 )
 DAY_NS = 86_400_000_000_000

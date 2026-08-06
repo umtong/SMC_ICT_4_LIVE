@@ -2,9 +2,9 @@
 
 - Status: **GATE_FAIL**
 - Gate passed: **False**
-- Baseline pooled daily geometric return: **0.534724%**
-- Baseline pooled NAV multiple across sampled days: **1.118505x**
-- Baseline trades: **8**
+- Baseline pooled daily geometric return: **0.680629%**
+- Baseline pooled NAV multiple across sampled days: **1.153093x**
+- Baseline trades: **7**
 - Maximum sampled-segment drawdown: **5.910882%**
 
 ## Fixed-week results
@@ -13,7 +13,7 @@
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | week-a | 8.0446% | 1.1115% | 6 | 66.67% | 2.245 | 5.9109% | 6 | 0 | OK |
 | week-b | 0.0000% | 0.0000% | 0 | n/a | n/a | 0.0000% | 0 | 0 | OK |
-| week-c | 3.5225% | 0.4958% | 2 | 50.00% | 2.174 | 2.9997% | 2 | 0 | OK |
+| week-c | 6.7237% | 0.9340% | 1 | 100.00% | inf | 0.0000% | 1 | 0 | OK |
 
 ## Gate checks
 
@@ -25,9 +25,10 @@
 
 ## Failure classification / structural diagnosis
 
-- Classification: **LOGIC_ERROR_WITH_STRUCTURAL_PATH**
-- Largest influence: **no-limit-salvage**
-- Required action: The single-variable ablation no-limit-salvage improved pooled cost-after growth; revise only that confirmation layer, then freeze and retest.
+- Classification: **LOGIC_ERROR_NO_STRUCTURAL_PATH**
+- Largest influence: **insufficient cost-after conditional edge or opportunity rate**
+- Required action: Discard candidate-09 as a complete candidate; preserve only the listed mechanisms for later hypotheses.
+- Parts worth preserving: absorption/reclaim branch produced executable events; risk-budgeted loss path remained recoverable in the gate sample
 
 ## Known failure conditions
 
