@@ -1,0 +1,448 @@
+name: candidate-05-end-to-end-research-v2
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/validated_btc_research.py"
+      - "research/candidate-05/controlled_candidate_research.py"
+      - "research/candidate-05/shared_account_backtest.py"
+      - "research/candidate-05/shared_account_research.py"
+      - "research/candidate-05/global_entry_slot_v3.py"
+      - "research/candidate-05/global_entry_slot_v4.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v4.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v5.py"
+      - "research/candidate-05/shared_account_strategy_variants_v2.py"
+      - "research/candidate-05/strategy_v29b_external_displacement_fvg.py"
+      - "research/candidate-05/strategy_v30_external_acceptance_retest.py"
+      - "research/candidate-05/strategy_v31_impact_resiliency_reversal.py"
+      - "research/candidate-05/strategy_v32_queue_pressure_release.py"
+      - "research/candidate-05/tests/test_*.py"
+      - ".github/workflows/candidate-05-end-to-end-research-v2.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-end-to-end-research-v2
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  btc-exact-control-research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-end-to-end-v2/btc
+      SUMMARY: artifacts/candidate-05-end-to-end-v2/btc/compact/validated_btc_research_v2.json
+      WINNER: artifacts/candidate-05-end-to-end-v2/btc/compact/validated_btc_winner_v2.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed Nautilus environment and all BTC contracts
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT/compact"
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover \
+              -s research/candidate-05/tests \
+              -p 'test_*.py' -v
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/verification_status.txt"
+          echo "valid=$([[ $status -eq 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run self-contained exact-control BTC research
+        id: research
+        if: steps.verify.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python research/candidate-05/validated_btc_research.py \
+            --output "$ROOT/runs" \
+            --cache .cache/candidate-05-end-to-end-v2/btc \
+            --summary "$SUMMARY" \
+            --winner "$WINNER" \
+            2>&1 | tee "$ROOT/research_console.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/research_status.txt"
+          exit "$status"
+
+      - name: Build trustworthy BTC fallback and compact report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-end-to-end-v2/btc")
+          summary_path = root / "compact/validated_btc_research_v2.json"
+          winner_path = root / "compact/validated_btc_winner_v2.json"
+          verification = (root / "verification_status.txt").read_text(encoding="utf-8").strip() if (root / "verification_status.txt").exists() else "missing"
+          research_status = (root / "research_status.txt").read_text(encoding="utf-8").strip() if (root / "research_status.txt").exists() else "not_run"
+          verification_tail = (root / "verification.log").read_text(encoding="utf-8", errors="replace").splitlines()[-280:] if (root / "verification.log").exists() else []
+          research_tail = (root / "research_console.log").read_text(encoding="utf-8", errors="replace").splitlines()[-340:] if (root / "research_console.log").exists() else []
+
+          if summary_path.exists() and winner_path.exists():
+              summary = json.loads(summary_path.read_text(encoding="utf-8"))
+              winner = json.loads(winner_path.read_text(encoding="utf-8"))
+              summary["verification_status"] = verification
+              summary["research_process_status"] = research_status
+          elif verification != "exit_code=0":
+              summary = {
+                  "schema": "candidate-05-validated-btc-research-v2",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_BTC_STATIC_OR_CONTRACT",
+                  "qualified": [],
+                  "winner": None,
+                  "verification_status": verification,
+                  "verification_log_tail": verification_tail,
+                  "research_process_status": research_status,
+                  "next_action": "Repair the static or contract error without changing hypotheses or ranges, then rerun this workflow.",
+              }
+              winner = {
+                  "schema": "candidate-05-validated-btc-winner-v2",
+                  "classification": "NO_VALIDATED_BTC_WINNER",
+                  "winner": None,
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "research_classification": summary["classification"],
+                  "next_action": summary["next_action"],
+              }
+          else:
+              summary = {
+                  "schema": "candidate-05-validated-btc-research-v2",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_BTC_RESEARCH_RUNTIME",
+                  "qualified": [],
+                  "winner": None,
+                  "verification_status": verification,
+                  "research_process_status": research_status,
+                  "research_log_tail": research_tail,
+                  "next_action": "Repair the research runtime under variable control and rerun the identical frozen stage.",
+              }
+              winner = {
+                  "schema": "candidate-05-validated-btc-winner-v2",
+                  "classification": "NO_VALIDATED_BTC_WINNER",
+                  "winner": None,
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "research_classification": summary["classification"],
+                  "next_action": summary["next_action"],
+              }
+
+          summary_path.parent.mkdir(parents=True, exist_ok=True)
+          summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          winner_path.write_text(json.dumps(winner, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          lines = [
+              "# Candidate 05 Exact-Control BTC Research v2",
+              "",
+              f"- Classification: `{summary.get('classification')}`",
+              f"- Winner: `{summary.get('winner')}`",
+              f"- Verification: `{summary.get('verification_status')}`",
+              f"- Research process: `{summary.get('research_process_status')}`",
+              "",
+              "## Next action",
+              "",
+              str(summary.get("next_action")),
+              "",
+              "## Experiments",
+              "",
+          ]
+          experiments = summary.get("experiments", {})
+          if isinstance(experiments, dict):
+              for name, value in experiments.items():
+                  lines.append(f"### {name}")
+                  if isinstance(value, dict):
+                      lines.append(f"- Classification: `{value.get('classification')}`")
+                      runs = value.get("runs")
+                      if isinstance(runs, dict):
+                          for stage, run in runs.items():
+                              if isinstance(run, dict):
+                                  lines.append(
+                                      f"- {stage}: geo={run.get('geometric_daily_growth')}, return={run.get('total_return')}, trades={run.get('trades')}, wins={run.get('wins')}, MDD={run.get('max_drawdown')}, integrity={run.get('integrity_pass')}"
+                                  )
+                  lines.append("")
+          (root / "compact/validated_btc_research_v2.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print(json.dumps({"summary": summary, "winner": winner}, indent=2, sort_keys=True))
+          PY
+          test -s "$SUMMARY"
+          test -s "$WINNER"
+          test -s "$ROOT/compact/validated_btc_research_v2.md"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-btc-v2-compact-${{ github.run_id }}
+          path: artifacts/candidate-05-end-to-end-v2/btc/compact/**
+          if-no-files-found: error
+          retention-days: 90
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-btc-v2-full-${{ github.run_id }}
+          path: artifacts/candidate-05-end-to-end-v2/btc/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  shared-account-research:
+    needs: btc-exact-control-research
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-end-to-end-v2/shared
+      SUMMARY: artifacts/candidate-05-end-to-end-v2/shared/compact/shared_account_research_v2.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-05-btc-v2-compact-${{ github.run_id }}
+          path: artifacts/candidate-05-end-to-end-v2/btc-compact
+
+      - name: Verify shared-account contracts independently
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT/compact"
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover \
+              -s research/candidate-05/tests \
+              -p 'test_*.py' -v
+            test -s artifacts/candidate-05-end-to-end-v2/btc-compact/validated_btc_winner_v2.json
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/verification_status.txt"
+          echo "valid=$([[ $status -eq 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run staged one-account four-symbol research
+        id: research
+        if: steps.verify.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python research/candidate-05/shared_account_research.py \
+            --winner-evidence artifacts/candidate-05-end-to-end-v2/btc-compact/validated_btc_winner_v2.json \
+            --output "$ROOT/runs" \
+            --cache .cache/candidate-05-end-to-end-v2/shared \
+            --summary "$SUMMARY" \
+            2>&1 | tee "$ROOT/research_console.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/research_status.txt"
+          exit "$status"
+
+      - name: Build final combined research evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          btc_root = Path("artifacts/candidate-05-end-to-end-v2/btc-compact")
+          root = Path("artifacts/candidate-05-end-to-end-v2/shared")
+          compact = root / "compact"
+          compact.mkdir(parents=True, exist_ok=True)
+          btc_summary = json.loads((btc_root / "validated_btc_research_v2.json").read_text(encoding="utf-8"))
+          btc_winner = json.loads((btc_root / "validated_btc_winner_v2.json").read_text(encoding="utf-8"))
+          shared_path = compact / "shared_account_research_v2.json"
+          verification = (root / "verification_status.txt").read_text(encoding="utf-8").strip() if (root / "verification_status.txt").exists() else "missing"
+          research_status = (root / "research_status.txt").read_text(encoding="utf-8").strip() if (root / "research_status.txt").exists() else "not_run"
+          verification_tail = (root / "verification.log").read_text(encoding="utf-8", errors="replace").splitlines()[-280:] if (root / "verification.log").exists() else []
+          research_tail = (root / "research_console.log").read_text(encoding="utf-8", errors="replace").splitlines()[-360:] if (root / "research_console.log").exists() else []
+
+          if shared_path.exists():
+              shared = json.loads(shared_path.read_text(encoding="utf-8"))
+              shared["verification_status"] = verification
+              shared["research_process_status"] = research_status
+          elif verification != "exit_code=0":
+              shared = {
+                  "schema": "candidate-05-shared-account-research-v2",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_SHARED_STATIC_OR_CONTRACT",
+                  "winner": None,
+                  "verification_status": verification,
+                  "verification_log_tail": verification_tail,
+                  "research_process_status": research_status,
+                  "next_action": "Repair shared-account implementation without changing strategy logic or ranges, then rerun the identical stage.",
+              }
+          else:
+              shared = {
+                  "schema": "candidate-05-shared-account-research-v2",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_SHARED_RUNTIME",
+                  "winner": None,
+                  "verification_status": verification,
+                  "research_process_status": research_status,
+                  "research_log_tail": research_tail,
+                  "next_action": "Repair shared-account runtime under variable control and rerun the identical frozen stage.",
+              }
+          shared_path.write_text(json.dumps(shared, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          if shared.get("classification") == "PROJECT_ONE_ACCOUNT_FOUR_SYMBOL_91D_GATE_PASSED":
+              final_classification = "PROJECT_GOAL_REACHED_ONE_ACCOUNT_FOUR_SYMBOLS"
+              final_winner = shared.get("winner")
+              next_action = shared.get("next_action")
+          elif btc_winner.get("classification") != "VALIDATED_BTC_WINNER_RESOLVED":
+              final_classification = btc_summary.get("classification")
+              final_winner = None
+              next_action = btc_summary.get("next_action")
+          else:
+              final_classification = shared.get("classification")
+              final_winner = None
+              next_action = shared.get("next_action")
+          combined = {
+              "schema": "candidate-05-end-to-end-research-v2",
+              "source_commit": "${{ github.sha }}",
+              "workflow_run_id": "${{ github.run_id }}",
+              "classification": final_classification,
+              "winner": final_winner,
+              "btc": btc_summary,
+              "validated_btc_winner": btc_winner,
+              "shared_account": shared,
+              "next_action": next_action,
+              "project_contract": {
+                  "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+                  "engine": "NautilusTrader only",
+                  "one_account": True,
+                  "risk_fraction": 0.03,
+                  "global_constraint": "unfilled new-entry intents plus open positions <= 1",
+                  "whole_period_geometric_daily_growth_goal": 0.01,
+              },
+          }
+          (compact / "end_to_end_research_v2.json").write_text(json.dumps(combined, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          lines = [
+              "# Candidate 05 End-to-End Research v2",
+              "",
+              f"- Final classification: `{combined.get('classification')}`",
+              f"- Final winner: `{combined.get('winner')}`",
+              f"- BTC classification: `{btc_summary.get('classification')}`",
+              f"- BTC winner state: `{btc_winner.get('classification')}`",
+              f"- Shared-account classification: `{shared.get('classification')}`",
+              "",
+              "## Next action",
+              "",
+              str(combined.get("next_action")),
+              "",
+              "## Shared-account stages",
+              "",
+              "| Stage | Integrity | Geo/day | Return | Trades | Wins | Active days | MDD | Winner share |",
+              "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+          ]
+          runs = shared.get("runs", {})
+          if isinstance(runs, dict):
+              for name, run in runs.items():
+                  if isinstance(run, dict):
+                      lines.append(
+                          "| {name} | {integrity} | {geo} | {ret} | {trades} | {wins} | {active} | {mdd} | {share} |".format(
+                              name=name,
+                              integrity=run.get("integrity_pass"),
+                              geo=run.get("geometric_daily_growth"),
+                              ret=run.get("total_return"),
+                              trades=run.get("trades"),
+                              wins=run.get("wins"),
+                              active=run.get("active_days"),
+                              mdd=run.get("max_drawdown"),
+                              share=run.get("largest_winner_share"),
+                          )
+                      )
+          lines.extend([
+              "",
+              "Independent symbol-account returns are never added. Every shared stage is one account, one venue and one BacktestNode.",
+              "",
+          ])
+          (compact / "end_to_end_research_v2.md").write_text("\n".join(lines), encoding="utf-8")
+          (compact / "validated_btc_research_v2.json").write_text(json.dumps(btc_summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          (compact / "validated_btc_winner_v2.json").write_text(json.dumps(btc_winner, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(combined, indent=2, sort_keys=True))
+          PY
+          test -s "$ROOT/compact/end_to_end_research_v2.json"
+          test -s "$ROOT/compact/end_to_end_research_v2.md"
+          test -s "$ROOT/compact/shared_account_research_v2.json"
+
+      - name: Persist one conflict-resistant final evidence commit
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$ROOT/compact/validated_btc_research_v2.json" research/candidate-05/evidence/validated_btc_research_v2.json
+          cp "$ROOT/compact/validated_btc_winner_v2.json" research/candidate-05/evidence/validated_btc_winner_v2.json
+          cp "$ROOT/compact/shared_account_research_v2.json" research/candidate-05/evidence/shared_account_research_v2.json
+          cp "$ROOT/compact/end_to_end_research_v2.json" research/candidate-05/evidence/end_to_end_research_v2.json
+          cp "$ROOT/compact/end_to_end_research_v2.md" research/candidate-05/evidence/end_to_end_research_v2.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-05/evidence/validated_btc_research_v2.json \
+            research/candidate-05/evidence/validated_btc_winner_v2.json \
+            research/candidate-05/evidence/shared_account_research_v2.json \
+            research/candidate-05/evidence/end_to_end_research_v2.json \
+            research/candidate-05/evidence/end_to_end_research_v2.md
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-05: record end-to-end exact-control research v2"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-05
+            if git push origin HEAD:research/candidate-05; then
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "failed to persist end-to-end evidence after retries" >&2
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-end-to-end-v2-compact-${{ github.run_id }}
+          path: artifacts/candidate-05-end-to-end-v2/shared/compact/**
+          if-no-files-found: error
+          retention-days: 90
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-shared-v2-full-${{ github.run_id }}
+          path: artifacts/candidate-05-end-to-end-v2/shared/**
+          if-no-files-found: warn
+          retention-days: 90
