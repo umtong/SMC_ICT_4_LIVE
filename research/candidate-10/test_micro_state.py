@@ -55,6 +55,7 @@ class MicroApproachStructureTests(unittest.TestCase):
             MachineParams(),
             enable_nearest_micro_pivot=micro_pivot,
             enable_path_displacement=False,
+            enable_retrace_confirmation=False,
             maker_fee=0.0,
             taker_fee=0.0,
             stop_buffer_atr=0.5,
