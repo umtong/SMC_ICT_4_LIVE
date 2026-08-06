@@ -15,20 +15,22 @@ permissions:
 
 env:
   IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-  CANDIDATE: research/candidate-03
+  PYTHONPATH: /workspace/src:/workspace/research/candidate-03
 
 jobs:
-  causal-contracts:
+  staged-btc-validation:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
+
       - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Test detector, frozen weeks, and Nautilus strategy source
+
+      - name: Verify pinned NautilusTrader path and causal contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -37,188 +39,101 @@ jobs:
             -v "$PWD:/workspace" \
             -w /workspace \
             "$IMAGE" \
-            bash -c 'smc4 doctor && PYTHONPATH=/workspace/src:/workspace/research/candidate-03 python research/candidate-03/test_nt_lvcfr.py && python -m compileall -q research/candidate-03 src/smc_ict_4'
+            bash -c '
+              smc4 doctor &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr.py &&
+              PYTHONPYCACHEPREFIX=/tmp/nt-lvcfr-pycache \
+                python -m compileall -q research/candidate-03 src/smc_ict_4
+            '
 
-  validation-week-1:
-    needs: causal-contracts
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    env:
-      WEEK: "2024-01-08"
-      LABEL: validation-1
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/cache@v4
-        with:
-          path: artifacts/candidate-03/nt-lvcfr/validation-1/prepared/raw
-          key: nt-lvcfr-v1-btc-2024-01-08-raw
-      - name: Causal opportunity preflight
+      - name: First frozen BTC week — 2024-01-08
         shell: bash
         run: |
-          set -o pipefail
-          out="artifacts/candidate-03/nt-lvcfr/$LABEL"
+          set -euo pipefail
+          week=2024-01-08
+          label=validation-1
+          out="artifacts/candidate-03/nt-lvcfr/$label"
           mkdir -p "$out/prepared"
           chmod -R 0777 artifacts
-          docker pull "$IMAGE"
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            "$IMAGE" \
-            bash -c "smc4 doctor && PYTHONPATH=/workspace/src:/workspace/research/candidate-03 python research/candidate-03/prepare_nt_lvcfr.py --week-start $WEEK --output $out/prepared --require-minimum" \
-            2>&1 | tee "$out/preflight.log"
-      - name: Run frozen week through NautilusTrader BacktestNode
-        shell: bash
-        run: |
-          set -o pipefail
-          out="artifacts/candidate-03/nt-lvcfr/$LABEL"
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            "$IMAGE" \
-            bash -c "PYTHONPATH=/workspace/src:/workspace/research/candidate-03 python research/candidate-03/run_nt_lvcfr.py --week-start $WEEK --output $out" \
-            2>&1 | tee "$out/backtest.log"
-      - name: Gate native after-cost NAV result
-        shell: bash
-        run: |
-          out="artifacts/candidate-03/nt-lvcfr/$LABEL"
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            "$IMAGE" \
-            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" --config research/candidate-03/nt_lvcfr_config.json \
-            | tee "$out/gate.json"
-      - name: Preserve first-week evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: candidate-03-nt-lvcfr-validation-1-${{ github.sha }}
-          path: |
-            artifacts/candidate-03/nt-lvcfr/validation-1/*.json
-            artifacts/candidate-03/nt-lvcfr/validation-1/*.jsonl
-            artifacts/candidate-03/nt-lvcfr/validation-1/*.csv
-            artifacts/candidate-03/nt-lvcfr/validation-1/*.log
-            artifacts/candidate-03/nt-lvcfr/validation-1/prepared/data_manifest.json
-            artifacts/candidate-03/nt-lvcfr/validation-1/prepared/signal_manifest.json
-            artifacts/candidate-03/nt-lvcfr/validation-1/prepared/signals.json
-          if-no-files-found: warn
 
-  validation-week-2:
-    needs: validation-week-1
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    env:
-      WEEK: "2025-06-23"
-      LABEL: validation-2
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/cache@v4
-        with:
-          path: artifacts/candidate-03/nt-lvcfr/validation-2/prepared/raw
-          key: nt-lvcfr-v1-btc-2025-06-23-raw
-      - name: Causal opportunity preflight
-        shell: bash
-        run: |
-          set -o pipefail
-          out="artifacts/candidate-03/nt-lvcfr/$LABEL"
-          mkdir -p "$out/prepared" && chmod -R 0777 artifacts
-          docker pull "$IMAGE"
-          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            bash -c "smc4 doctor && PYTHONPATH=/workspace/src:/workspace/research/candidate-03 python research/candidate-03/prepare_nt_lvcfr.py --week-start $WEEK --output $out/prepared --require-minimum" \
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "smc4 doctor && PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr.py --week-start $week --output $out/prepared --require-minimum" \
             2>&1 | tee "$out/preflight.log"
-      - name: Run frozen week through NautilusTrader BacktestNode
-        shell: bash
-        run: |
-          set -o pipefail
-          out="artifacts/candidate-03/nt-lvcfr/$LABEL"
-          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            bash -c "PYTHONPATH=/workspace/src:/workspace/research/candidate-03 python research/candidate-03/run_nt_lvcfr.py --week-start $WEEK --output $out" \
-            2>&1 | tee "$out/backtest.log"
-      - name: Gate native after-cost NAV result
-        shell: bash
-        run: |
-          out="artifacts/candidate-03/nt-lvcfr/$LABEL"
-          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" --config research/candidate-03/nt_lvcfr_config.json \
-            | tee "$out/gate.json"
-      - name: Preserve second-week evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: candidate-03-nt-lvcfr-validation-2-${{ github.sha }}
-          path: |
-            artifacts/candidate-03/nt-lvcfr/validation-2/*.json
-            artifacts/candidate-03/nt-lvcfr/validation-2/*.jsonl
-            artifacts/candidate-03/nt-lvcfr/validation-2/*.csv
-            artifacts/candidate-03/nt-lvcfr/validation-2/*.log
-            artifacts/candidate-03/nt-lvcfr/validation-2/prepared/data_manifest.json
-            artifacts/candidate-03/nt-lvcfr/validation-2/prepared/signal_manifest.json
-            artifacts/candidate-03/nt-lvcfr/validation-2/prepared/signals.json
-          if-no-files-found: warn
 
-  validation-week-3:
-    needs: validation-week-2
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    env:
-      WEEK: "2022-05-16"
-      LABEL: validation-3
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/cache@v4
-        with:
-          path: artifacts/candidate-03/nt-lvcfr/validation-3/prepared/raw
-          key: nt-lvcfr-v1-btc-2022-05-16-raw
-      - name: Causal opportunity preflight
-        shell: bash
-        run: |
-          set -o pipefail
-          out="artifacts/candidate-03/nt-lvcfr/$LABEL"
-          mkdir -p "$out/prepared" && chmod -R 0777 artifacts
-          docker pull "$IMAGE"
-          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            bash -c "smc4 doctor && PYTHONPATH=/workspace/src:/workspace/research/candidate-03 python research/candidate-03/prepare_nt_lvcfr.py --week-start $WEEK --output $out/prepared --require-minimum" \
-            2>&1 | tee "$out/preflight.log"
-      - name: Run frozen week through NautilusTrader BacktestNode
-        shell: bash
-        run: |
-          set -o pipefail
-          out="artifacts/candidate-03/nt-lvcfr/$LABEL"
-          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            bash -c "PYTHONPATH=/workspace/src:/workspace/research/candidate-03 python research/candidate-03/run_nt_lvcfr.py --week-start $WEEK --output $out" \
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py --week-start $week --output $out" \
             2>&1 | tee "$out/backtest.log"
-      - name: Gate native after-cost NAV result
+
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
+              --config research/candidate-03/nt_lvcfr_config.json \
+            | tee "$out/gate.json"
+
+      - name: Second frozen BTC week — 2025-06-23
         shell: bash
         run: |
-          out="artifacts/candidate-03/nt-lvcfr/$LABEL"
-          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" --config research/candidate-03/nt_lvcfr_config.json \
+          set -euo pipefail
+          week=2025-06-23
+          label=validation-2
+          out="artifacts/candidate-03/nt-lvcfr/$label"
+          mkdir -p "$out/prepared"
+          chmod -R 0777 artifacts
+
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "smc4 doctor && PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr.py --week-start $week --output $out/prepared --require-minimum" \
+            2>&1 | tee "$out/preflight.log"
+
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py --week-start $week --output $out" \
+            2>&1 | tee "$out/backtest.log"
+
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
+              --config research/candidate-03/nt_lvcfr_config.json \
             | tee "$out/gate.json"
-      - name: Preserve third-week evidence
+
+      - name: Third frozen BTC week — 2022-05-16
+        shell: bash
+        run: |
+          set -euo pipefail
+          week=2022-05-16
+          label=validation-3
+          out="artifacts/candidate-03/nt-lvcfr/$label"
+          mkdir -p "$out/prepared"
+          chmod -R 0777 artifacts
+
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "smc4 doctor && PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr.py --week-start $week --output $out/prepared --require-minimum" \
+            2>&1 | tee "$out/preflight.log"
+
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py --week-start $week --output $out" \
+            2>&1 | tee "$out/backtest.log"
+
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
+              --config research/candidate-03/nt_lvcfr_config.json \
+            | tee "$out/gate.json"
+
+      - name: Preserve reproducible evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-03-nt-lvcfr-validation-3-${{ github.sha }}
+          name: candidate-03-nt-lvcfr-${{ github.sha }}
           path: |
-            artifacts/candidate-03/nt-lvcfr/validation-3/*.json
-            artifacts/candidate-03/nt-lvcfr/validation-3/*.jsonl
-            artifacts/candidate-03/nt-lvcfr/validation-3/*.csv
-            artifacts/candidate-03/nt-lvcfr/validation-3/*.log
-            artifacts/candidate-03/nt-lvcfr/validation-3/prepared/data_manifest.json
-            artifacts/candidate-03/nt-lvcfr/validation-3/prepared/signal_manifest.json
-            artifacts/candidate-03/nt-lvcfr/validation-3/prepared/signals.json
+            artifacts/candidate-03/nt-lvcfr/**/*.json
+            artifacts/candidate-03/nt-lvcfr/**/*.jsonl
+            artifacts/candidate-03/nt-lvcfr/**/*.csv
+            artifacts/candidate-03/nt-lvcfr/**/*.log
           if-no-files-found: warn
+          retention-days: 30
