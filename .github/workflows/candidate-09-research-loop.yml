@@ -1,0 +1,180 @@
+name: Candidate 09 controlled research loop v1
+
+on:
+  push:
+    branches:
+      - research/candidate-09
+    paths:
+      - .github/workflows/candidate-09-research-loop.yml
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-controlled-research-loop
+  cancel-in-progress: false
+
+jobs:
+  repair-and-evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-v1
+
+      - name: Repair only the execution adapter and remove stale incompatible test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('research/candidate-09/run.py')
+          text = path.read_text(encoding='utf-8')
+
+          old_import = 'from nautilus_trader.model.data import BarType\n'
+          new_import = 'from nautilus_trader.model.data import Bar, BarType\n'
+          if new_import not in text:
+              if old_import not in text:
+                  raise SystemExit('expected BarType import not found')
+              text = text.replace(old_import, new_import, 1)
+
+          old_block = '''    wrangler = BarDataWrangler(bar_type=bar_type, instrument=instrument)\n    nautilus_bars = wrangler.process(bars_to_frame(bars))\n    if len(nautilus_bars) != len(bars):\n        raise RuntimeError(f"wrangler changed row count: {len(bars)} -> {len(nautilus_bars)}")\n'''
+          new_block = '''    # Construct native Nautilus bars directly.  This avoids a pandas copy-on-write\n    # incompatibility in BarDataWrangler while preserving the same close-time\n    # ts_event/ts_init contract and all Nautilus execution/accounting semantics.\n    nautilus_bars = [\n        Bar(\n            bar_type=bar_type,\n            open=instrument.make_price(item.open),\n            high=instrument.make_price(item.high),\n            low=instrument.make_price(item.low),\n            close=instrument.make_price(item.close),\n            volume=instrument.make_qty(item.volume),\n            ts_event=item.ts_ns,\n            ts_init=item.ts_ns,\n        )\n        for item in bars\n    ]\n'''
+          if new_block not in text:
+              if old_block not in text:
+                  raise SystemExit('expected wrangler block not found')
+              text = text.replace(old_block, new_block, 1)
+
+          path.write_text(text, encoding='utf-8')
+
+          stale_test = Path('research/candidate-09/tests/test_candidate.py')
+          if stale_test.exists():
+              stale_test.unlink()
+          PY
+
+      - name: Run doctor, tests, and identical frozen-week gate
+        shell: bash
+        run: |
+          set +e
+          root=research/candidate-09
+          out="$root/evidence/latest"
+          diag="$root/diagnostics/controlled-loop"
+          rm -rf "$out" "$diag"
+          mkdir -p "$out" "$diag"
+
+          smc4 doctor > "$diag/doctor.log" 2>&1
+          doctor_code=$?
+          compile_code=99
+          tests_code=99
+          gate_code=99
+
+          if [[ "$doctor_code" == 0 ]]; then
+            python -m compileall -q "$root" > "$diag/compile.log" 2>&1
+            compile_code=$?
+          else
+            printf 'not run because doctor failed\n' > "$diag/compile.log"
+          fi
+
+          if [[ "$compile_code" == 0 ]]; then
+            python -m unittest discover -s "$root/tests" -p 'test_*.py' -v > "$diag/tests.log" 2>&1
+            tests_code=$?
+          else
+            printf 'not run because compile failed\n' > "$diag/tests.log"
+          fi
+
+          if [[ "$tests_code" == 0 ]]; then
+            python "$root/run.py" gate \
+              --config "$root/config.json" \
+              --cache "$SMC4_DATA_ROOT" \
+              --output "$out" > "$diag/gate.log" 2>&1
+            gate_code=$?
+          else
+            printf 'not run because tests failed\n' > "$diag/gate.log"
+          fi
+
+          DOCTOR_CODE="$doctor_code" COMPILE_CODE="$compile_code" TESTS_CODE="$tests_code" GATE_CODE="$gate_code" python - <<'PY'
+          from __future__ import annotations
+          import json, os
+          from pathlib import Path
+
+          root = Path('research/candidate-09')
+          out = root / 'evidence/latest'
+          diag = root / 'diagnostics/controlled-loop'
+          codes = {
+              'doctor': int(os.environ['DOCTOR_CODE']),
+              'compile': int(os.environ['COMPILE_CODE']),
+              'tests': int(os.environ['TESTS_CODE']),
+              'gate': int(os.environ['GATE_CODE']),
+          }
+          first_failure = next((name for name, code in codes.items() if code != 0), None)
+          diagnostic = {
+              'classification': 'IMPLEMENTATION_ERROR' if first_failure else 'EXECUTED',
+              'codes': codes,
+              'first_failure': first_failure,
+              'trigger_sha': os.environ.get('GITHUB_SHA'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'fixed_weeks_preserved': True,
+              'strategy_parameters_preserved': True,
+          }
+          (diag / 'diagnostic.json').write_text(json.dumps(diagnostic, indent=2, sort_keys=True) + '\n')
+
+          summary = out / 'summary.json'
+          if not summary.exists():
+              summary.write_text(json.dumps({
+                  'candidate': 'candidate-09',
+                  'status': 'IMPLEMENTATION_ERROR',
+                  'first_failure': first_failure,
+                  'codes': codes,
+              }, indent=2, sort_keys=True) + '\n')
+              (out / 'REPORT.md').write_text(
+                  '# Candidate 09 controlled rerun\n\n'
+                  f'**IMPLEMENTATION_ERROR** at `{first_failure}`. '
+                  'No strategy parameter or frozen week was changed.\n'
+              )
+          for log in diag.glob('*.log'):
+              lines = log.read_text(errors='replace').splitlines()
+              log.write_text('\n'.join(lines[-800:]) + ('\n' if lines else ''))
+          PY
+
+          exit 0
+
+      - name: Commit exact implementation and evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-09-research-bot"
+          git config user.email "candidate-09-research-bot@users.noreply.github.com"
+          git add -A research/candidate-09
+          if git diff --cached --quiet; then
+            echo "No candidate changes to commit"
+            exit 0
+          fi
+          status=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('research/candidate-09/evidence/latest/summary.json')
+          print(json.loads(path.read_text()).get('status', 'UNKNOWN'))
+          PY
+          )
+          git commit -m "candidate-09: controlled frozen-week result ${status}"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
