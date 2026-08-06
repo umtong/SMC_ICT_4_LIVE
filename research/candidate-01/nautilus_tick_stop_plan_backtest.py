@@ -1,9 +1,9 @@
-"""Authoritative NautilusTrader TradeTick execution for causal stop entries.
+"""Authoritative NautilusTrader TradeTick execution for causal stop-limit entries.
 
-Candidate logic supplies completed ScenarioPlan objects plus a causal stop-entry
+Candidate logic supplies completed ScenarioPlan objects plus a causal stop-limit entry
 instruction. Official Binance Vision USD-M aggregate trades are converted
 one-for-one into NautilusTrader TradeTick objects. NautilusTrader exclusively
-owns stop-entry matching, contingent orders, commissions, margin, positions,
+owns stop-limit entry matching, contingent orders, commissions, margin, positions,
 account equity and reports. No fill, stop/target, PnL or NAV simulator exists.
 """
 from __future__ import annotations
@@ -36,16 +36,23 @@ from nautilus_plan_backtest import (
 
 @dataclass(frozen=True, slots=True)
 class StopEntryInstruction:
-    """Immutable plan plus its causal stop-entry contract."""
+    """Immutable plan plus its causal STOP_LIMIT execution contract."""
 
     plan: ScenarioPlan
     trigger_price: float
+    limit_price: float
     expiry_time_ns: int
     entry_reason: str
 
     def __post_init__(self) -> None:
         if self.trigger_price <= 0.0:
             raise ValueError("trigger_price must be positive")
+        if self.limit_price <= 0.0:
+            raise ValueError("limit_price must be positive")
+        if self.plan.side is Side.LONG and self.limit_price < self.trigger_price:
+            raise ValueError("long STOP_LIMIT cap cannot be below its trigger")
+        if self.plan.side is Side.SHORT and self.limit_price > self.trigger_price:
+            raise ValueError("short STOP_LIMIT floor cannot be above its trigger")
         if self.expiry_time_ns <= int(self.plan.signal_time_ns):
             raise ValueError("expiry_time_ns must be after signal_time_ns")
 
@@ -159,6 +166,7 @@ def run_nautilus_tick_stop_plan_backtest(
             self.pending_instruction: StopEntryInstruction | None = None
             self.pending_submission_ns: int | None = None
             self.pending_trigger_price: float | None = None
+            self.pending_limit_price: float | None = None
             self.pending_stop_price: float | None = None
             self.pending_target_price: float | None = None
             self.position_opened_ns: int | None = None
@@ -212,6 +220,7 @@ def run_nautilus_tick_stop_plan_backtest(
                 "side": plan.side.value,
                 "response": plan.response,
                 "planned_trigger_price": instruction.trigger_price,
+                "planned_limit_price": instruction.limit_price,
                 "entry_expiry_time_ns": instruction.expiry_time_ns,
                 "entry_reason": instruction.entry_reason,
                 "reason": reason,
@@ -290,6 +299,7 @@ def run_nautilus_tick_stop_plan_backtest(
             self.pending_instruction = None
             self.pending_submission_ns = None
             self.pending_trigger_price = None
+            self.pending_limit_price = None
             self.pending_stop_price = None
             self.pending_target_price = None
 
@@ -349,22 +359,30 @@ def run_nautilus_tick_stop_plan_backtest(
             instruction: StopEntryInstruction,
             *,
             ts_ns: int,
-        ) -> tuple[float, float, float, float, float, float] | None:
+        ) -> tuple[float, float, float, float, float, float, float] | None:
             plan = instruction.plan
-            entry = _as_float(self.instrument.make_price(instruction.trigger_price))
+            trigger = _as_float(
+                self.instrument.make_price(instruction.trigger_price),
+            )
+            # The limit is the worst permitted entry, so risk and reward are
+            # evaluated here. Any better actual Nautilus fill risks <= 3% NAV.
+            entry = _as_float(self.instrument.make_price(instruction.limit_price))
             stop = _as_float(self.instrument.make_price(plan.stop_price))
             target = _as_float(self.instrument.make_price(plan.target_price))
             rounded_hold = _as_float(
                 self.instrument.make_price(plan.confirmation_hold_price),
             )
             hold_ok = (
-                entry >= rounded_hold if plan.side is Side.LONG else entry <= rounded_hold
+                trigger >= rounded_hold
+                if plan.side is Side.LONG
+                else trigger <= rounded_hold
             )
             if not hold_ok:
                 self._reject(
                     instruction,
                     ts_ns=ts_ns,
                     reason="ENTRY_TRIGGER_OUTSIDE_CONFIRMATION_CONTRACT",
+                    trigger=trigger,
                     entry=entry,
                     rounded_hold=rounded_hold,
                     stop=stop,
@@ -372,15 +390,16 @@ def run_nautilus_tick_stop_plan_backtest(
                 )
                 return None
             geometry_ok = (
-                stop < entry < target
+                stop < trigger <= entry < target
                 if plan.side is Side.LONG
-                else target < entry < stop
+                else target < entry <= trigger < stop
             )
             if not geometry_ok:
                 self._reject(
                     instruction,
                     ts_ns=ts_ns,
-                    reason="INVALID_STOP_ENTRY_GEOMETRY",
+                    reason="INVALID_STOP_LIMIT_ENTRY_GEOMETRY",
+                    trigger=trigger,
                     entry=entry,
                     stop=stop,
                     target=target,
@@ -399,7 +418,8 @@ def run_nautilus_tick_stop_plan_backtest(
                 self._reject(
                     instruction,
                     ts_ns=ts_ns,
-                    reason="COST_DOMINATED_AT_STOP_ENTRY",
+                    reason="COST_DOMINATED_AT_STOP_LIMIT_ENTRY",
+                    trigger=trigger,
                     entry=entry,
                     stop=stop,
                     target=target,
@@ -413,7 +433,8 @@ def run_nautilus_tick_stop_plan_backtest(
                 self._reject(
                     instruction,
                     ts_ns=ts_ns,
-                    reason="INSUFFICIENT_NET_REWARD_RISK_AT_STOP_ENTRY",
+                    reason="INSUFFICIENT_NET_REWARD_RISK_AT_STOP_LIMIT_ENTRY",
+                    trigger=trigger,
                     entry=entry,
                     stop=stop,
                     target=target,
@@ -421,7 +442,15 @@ def run_nautilus_tick_stop_plan_backtest(
                     net_reward_risk=net_rr,
                 )
                 return None
-            return entry, stop, target, planned_loss, price_fraction, net_rr
+            return (
+                trigger,
+                entry,
+                stop,
+                target,
+                planned_loss,
+                price_fraction,
+                net_rr,
+            )
 
         def _manage_pending(self, tick: TradeTick) -> bool:
             instruction = self.pending_instruction
@@ -508,6 +537,7 @@ def run_nautilus_tick_stop_plan_backtest(
                     float,
                     float,
                     float,
+                    float,
                 ]
             ] = []
             for instruction in due:
@@ -532,7 +562,7 @@ def run_nautilus_tick_stop_plan_backtest(
                     self._reject(
                         instruction,
                         ts_ns=ts_ns,
-                        reason="FAILED_CONFIRMATION_HOLD_BEFORE_LIMIT_ARMING",
+                        reason="FAILED_CONFIRMATION_HOLD_BEFORE_STOP_LIMIT_ARMING",
                         observed_price=current,
                         rounded_hold=rounded_hold,
                     )
@@ -540,9 +570,19 @@ def run_nautilus_tick_stop_plan_backtest(
                 geometry = self._geometry(instruction, ts_ns=ts_ns)
                 if geometry is None:
                     continue
-                entry, stop, target, planned_loss, price_fraction, net_rr = geometry
+                (
+                    trigger,
+                    entry,
+                    stop,
+                    target,
+                    planned_loss,
+                    price_fraction,
+                    net_rr,
+                ) = geometry
                 not_yet_triggered = (
-                    entry > current if plan.side is Side.LONG else entry < current
+                    trigger > current
+                    if plan.side is Side.LONG
+                    else trigger < current
                 )
                 if not not_yet_triggered:
                     self._reject(
@@ -550,6 +590,7 @@ def run_nautilus_tick_stop_plan_backtest(
                         ts_ns=ts_ns,
                         reason="STOP_ENTRY_TRIGGER_ALREADY_CROSSED_AT_ARMING",
                         observed_price=current,
+                        trigger=trigger,
                         entry=entry,
                     )
                     continue
@@ -557,6 +598,7 @@ def run_nautilus_tick_stop_plan_backtest(
                     (
                         net_rr,
                         instruction,
+                        trigger,
                         entry,
                         stop,
                         target,
@@ -573,6 +615,7 @@ def run_nautilus_tick_stop_plan_backtest(
             (
                 net_rr,
                 instruction,
+                trigger,
                 entry,
                 stop,
                 target,
@@ -616,8 +659,9 @@ def run_nautilus_tick_stop_plan_backtest(
                 instrument_id=self.config.instrument_id,
                 order_side=side,
                 quantity=quantity,
-                entry_order_type=OrderType.STOP_MARKET,
-                entry_trigger_price=self.instrument.make_price(entry),
+                entry_order_type=OrderType.STOP_LIMIT,
+                entry_trigger_price=self.instrument.make_price(trigger),
+                entry_price=self.instrument.make_price(entry),
                 time_in_force=TimeInForce.GTC,
                 tp_price=self.instrument.make_price(target),
                 sl_trigger_price=self.instrument.make_price(stop),
@@ -625,7 +669,8 @@ def run_nautilus_tick_stop_plan_backtest(
             self.active_owner = plan.scenario_id
             self.pending_instruction = instruction
             self.pending_submission_ns = ts_ns
-            self.pending_trigger_price = entry
+            self.pending_trigger_price = trigger
+            self.pending_limit_price = entry
             self.pending_stop_price = stop
             self.pending_target_price = target
             self.submit_order_list(order_list)
@@ -637,8 +682,9 @@ def run_nautilus_tick_stop_plan_backtest(
                 "submission_time_ns": ts_ns,
                 "submission_trade_id": str(tick.trade_id),
                 "market_price_at_submission": current,
-                "entry_order_type": "STOP_MARKET",
-                "planned_trigger_price": entry,
+                "entry_order_type": "STOP_LIMIT",
+                "planned_trigger_price": trigger,
+                "planned_limit_price": entry,
                 "entry_expiry_time_ns": instruction.expiry_time_ns,
                 "entry_reason": instruction.entry_reason,
                 "rounded_stop_price": stop,
@@ -653,7 +699,7 @@ def run_nautilus_tick_stop_plan_backtest(
                 "signal_to_submission_ns": ts_ns - int(plan.signal_time_ns),
             }
             self.submissions.append(submission)
-            self._record("STOP_BRACKET_SUBMITTED", ts_ns, **submission)
+            self._record("STOP_LIMIT_BRACKET_SUBMITTED", ts_ns, **submission)
 
         def _collect_due(self, ts_ns: int) -> list[StopEntryInstruction]:
             due: list[StopEntryInstruction] = []
@@ -783,7 +829,7 @@ def run_nautilus_tick_stop_plan_backtest(
             "execution_engine": "NautilusTrader",
             "market_data": "official Binance Vision USD-M aggregate trades",
             "all_in_cost_bps_per_side": execution.all_in_cost_bps_per_side,
-            "entry_order_type": "STOP_MARKET",
+            "entry_order_type": "STOP_LIMIT",
         },
     )
 
@@ -872,11 +918,11 @@ def run_nautilus_tick_stop_plan_backtest(
                     "NautilusTrader TradeTick"
                 ),
                 "entry_semantics": (
-                    "stop-market bracket armed on first venue trade strictly after "
-                    "completed signal; entry triggers only on a later "
-                    "NautilusTrader trade at the causal resumption level"
+                    "stop-limit bracket armed on first venue trade strictly after "
+                    "completed signal; a later venue trade triggers the "
+                    "order and the causal 7bp price-protection cap bounds fill"
                 ),
-                "entry_order_type": "STOP_MARKET",
+                "entry_order_type": "STOP_LIMIT",
                 "trade_execution": True,
                 "execution_trade_ticks": len(ticks),
                 "evaluation_trade_ticks": evaluation_count,
@@ -933,16 +979,17 @@ def run_nautilus_tick_stop_plan_backtest(
                     "official Binance Vision USD-M aggregate trades converted "
                     "one-for-one to NautilusTrader TradeTick"
                 ),
-                "entry_order_type": "STOP_MARKET",
+                "entry_order_type": "STOP_LIMIT",
                 "entry_delay": (
-                    "arm on first venue trade strictly after signal; trigger and fill "
-                    "only on later venue trade at the resumption level"
+                    "arm on first venue trade strictly after signal; trigger on a later "
+                    "resumption trade and fill only within the declared cap"
                 ),
                 "risk_budget": (
                     "current NautilusTrader portfolio equity * fixed 3%"
                 ),
                 "one_global_pending_or_open_position": True,
                 "pending_invalidation_and_target_first_cancel": True,
+                "risk_sized_at_worst_permitted_limit_price": True,
             },
         )
         return NautilusRunEvidence(
