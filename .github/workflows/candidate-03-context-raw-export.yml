@@ -1,0 +1,52 @@
+name: candidate-03-context-raw-export
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths: [".github/workflows/candidate-03-context-raw-export.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore first-week uniform prepared data
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr-v3/validation-1/prepared
+          key: nt-lvcfr-aggtrade-v1-btc-2024-01-08-${{ hashFiles('research/candidate-03/nt_lvcfr_trade_proxy.py', 'research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_v3_config.json') }}
+          fail-on-cache-miss: true
+
+      - name: Restore second-week uniform prepared data
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr-v3/validation-2/prepared
+          key: nt-lvcfr-aggtrade-v1-btc-2025-06-23-${{ hashFiles('research/candidate-03/nt_lvcfr_trade_proxy.py', 'research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_v3_config.json') }}
+          fail-on-cache-miss: true
+
+      - name: Package causal bars, OI and frozen signals
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -czf candidate-03-context-raw.tar.gz \
+            artifacts/candidate-03/nt-lvcfr-v3/validation-1/prepared/raw/futures_kline \
+            artifacts/candidate-03/nt-lvcfr-v3/validation-1/prepared/raw/spot_kline \
+            artifacts/candidate-03/nt-lvcfr-v3/validation-1/prepared/raw/open_interest \
+            artifacts/candidate-03/nt-lvcfr-v3/validation-1/prepared/signals-v1.json \
+            artifacts/candidate-03/nt-lvcfr-v3/validation-2/prepared/raw/futures_kline \
+            artifacts/candidate-03/nt-lvcfr-v3/validation-2/prepared/raw/spot_kline \
+            artifacts/candidate-03/nt-lvcfr-v3/validation-2/prepared/raw/open_interest \
+            artifacts/candidate-03/nt-lvcfr-v3/validation-2/prepared/signals-v1.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-context-raw-${{ github.sha }}
+          path: candidate-03-context-raw.tar.gz
+          if-no-files-found: error
+          retention-days: 3
