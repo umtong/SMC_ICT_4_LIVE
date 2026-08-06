@@ -37,6 +37,18 @@ jobs:
           path.write_text(source, encoding="utf-8")
           PY
           python3 research/candidate-01/install_nautilus_authoritative_path.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-01/nautilus_plan_backtest.py")
+          source = path.read_text(encoding="utf-8")
+          old = 'BTCUSDT-PERP.BINANCE-1-TICK-LAST-EXTERNAL'
+          new = 'BTCUSDT-PERP.BINANCE-1-MILLISECOND-LAST-EXTERNAL'
+          if old in source:
+              source = source.replace(old, new)
+          elif new not in source:
+              raise SystemExit("authoritative external BarType marker missing")
+          path.write_text(source, encoding="utf-8")
+          PY
           python3 -m compileall -q \
             research/candidate-01/nautilus_plan_backtest.py \
             research/candidate-01/intrinsic_external_liquidity_v4_nautilus_week.py \
