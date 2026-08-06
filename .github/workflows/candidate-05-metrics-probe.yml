@@ -1,0 +1,66 @@
+name: candidate-05-binance-metrics-probe
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-metrics-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify fixed environment and official metrics archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          mkdir -p artifacts/candidate-05-metrics-probe
+          cd artifacts/candidate-05-metrics-probe
+          base="https://data.binance.vision/data/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-2023-07-09.zip"
+          curl --fail --location --silent --show-error "$base" --output BTCUSDT-metrics-2023-07-09.zip
+          curl --fail --location --silent --show-error "$base.CHECKSUM" --output BTCUSDT-metrics-2023-07-09.zip.CHECKSUM
+          sha256sum --check BTCUSDT-metrics-2023-07-09.zip.CHECKSUM | tee checksum_result.txt
+          unzip -l BTCUSDT-metrics-2023-07-09.zip | tee archive_listing.txt
+          unzip -p BTCUSDT-metrics-2023-07-09.zip | head -n 8 | tee sample.csv
+          python - <<'PY'
+          import json
+          import zipfile
+          import pandas as pd
+          path = "BTCUSDT-metrics-2023-07-09.zip"
+          with zipfile.ZipFile(path) as archive:
+              names = archive.namelist()
+              if len(names) != 1:
+                  raise RuntimeError(f"expected one CSV, got {names}")
+              with archive.open(names[0]) as stream:
+                  frame = pd.read_csv(stream)
+          report = {
+              "rows": len(frame),
+              "columns": list(frame.columns),
+              "dtypes": {str(k): str(v) for k, v in frame.dtypes.items()},
+              "first": frame.head(3).to_dict(orient="records"),
+              "last": frame.tail(3).to_dict(orient="records"),
+              "null_counts": {str(k): int(v) for k, v in frame.isna().sum().items()},
+          }
+          with open("schema_report.json", "w", encoding="utf-8") as stream:
+              json.dump(report, stream, indent=2, sort_keys=True, default=str)
+              stream.write("\n")
+          print(json.dumps(report, indent=2, sort_keys=True, default=str))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-binance-metrics-probe-${{ github.sha }}
+          path: artifacts/candidate-05-metrics-probe
+          if-no-files-found: error
+          retention-days: 30
