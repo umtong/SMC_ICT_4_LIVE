@@ -74,8 +74,8 @@ class Setup:
     atr: float
     raid_extreme: float
     approach_level: float
-    # Defaults keep the v2 structural-pool detector reusable while the v2.1
-    # subclass owns the path certification state.
+    # Defaults keep the structural-pool detector reusable while subclasses own
+    # optional path and micro-structure certification state.
     path_last_close: float = 0.0
     path_travel: float = 0.0
     path_bars: int = 0
@@ -136,10 +136,17 @@ class MachineParams:
     raid_atr: float = 0.08
     acceptance_atr: float = 0.12
 
-    # Displacement is an efficient event-time path, not one candle. The
-    # one-variable ablation disables path accumulation and restores the prior
-    # single-candle certification while preserving every other rule.
-    enable_path_displacement: bool = True
+    # v2.2: displacement must break the nearest already right-confirmed 1-minute
+    # pivot, not an arbitrary whole-window extreme. The ablation restores the
+    # previous eight-bar range extreme while every other rule remains fixed.
+    enable_nearest_micro_pivot: bool = True
+    micro_pivot_left: int = 1
+    micro_pivot_right: int = 1
+
+    # The v2.1 path ablation was performance-identical. The active candidate
+    # therefore returns to the simpler single-bar displacement certificate; the
+    # path implementation is retained only as a tested diagnostic option.
+    enable_path_displacement: bool = False
     displacement_atr: float = 0.75
     displacement_max_bars: int = 10
     displacement_min_efficiency: float = 0.55
