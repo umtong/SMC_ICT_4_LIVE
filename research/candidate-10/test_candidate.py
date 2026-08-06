@@ -10,6 +10,7 @@ from candidate import AuctionStateMachine
 from candidate import BarView
 from candidate import LiquidityPool
 from candidate import MachineParams
+from candidate import Setup
 from candidate import StructuralBar
 from candidate import reproducible_weeks
 
@@ -189,6 +190,77 @@ class Candidate10Tests(unittest.TestCase):
         self.assertEqual(plan.details["target_pool_id"], "HIGH-TARGET")
         self.assertGreater(plan.target_price, plan.entry_estimate)
         self.assertLess(plan.stop_price, plan.entry_estimate)
+
+    def _path_machine(self, enable_path: bool) -> AuctionStateMachine:
+        params = replace(
+            MachineParams(),
+            enable_path_displacement=enable_path,
+            displacement_atr=0.75,
+            displacement_max_bars=10,
+            displacement_min_efficiency=0.55,
+            displacement_speed_atr=0.32,
+            maker_fee=0.0,
+            taker_fee=0.0,
+            stop_buffer_atr=0.5,
+            min_net_rr=0.1,
+        )
+        machine = AuctionStateMachine(
+            params,
+            tick_size=0.1,
+            instrument_id="PATH" if enable_path else "SINGLE",
+        )
+        machine.bar_index = 0
+        machine.active = Setup(
+            scenario_id="SCENARIO",
+            scenario="STRUCTURAL_SWEEP_REJECTION",
+            direction=1,
+            source_pool_id="LOW-SOURCE",
+            source_pool_side="LOW",
+            source_lower=94.8,
+            source_upper=95.2,
+            state="RAIDED",
+            created_index=0,
+            created_ns=100,
+            atr=2.0,
+            raid_extreme=95.0,
+            approach_level=101.0,
+        )
+        machine.pools.append(
+            LiquidityPool(
+                pool_id="HIGH-TARGET",
+                side="HIGH",
+                center=110.0,
+                lower=109.8,
+                upper=110.2,
+                event_time_ns=1,
+                observed_time_ns=2,
+                last_source_time_ns=1,
+                source_count=2,
+                max_prominence_atr=1.2,
+                status="ACTIVE",
+            ),
+        )
+        return machine
+
+    def test_multi_bar_path_confirms_when_each_individual_candle_is_too_small(self) -> None:
+        bars = [
+            BarView(101, 95.2, 96.2, 95.1, 96.0, 1.0),
+            BarView(102, 97.0, 98.2, 96.8, 98.0, 1.0),
+            BarView(103, 101.0, 102.2, 100.8, 102.0, 1.0),
+        ]
+        full = self._path_machine(True)
+        ablation = self._path_machine(False)
+        full_plan = None
+        ablation_plan = None
+        for bar in bars:
+            full.bar_index += 1
+            _, maybe_full = full._process_rejection(bar, 2.0)
+            full_plan = maybe_full or full_plan
+            ablation.bar_index += 1
+            _, maybe_ablation = ablation._process_rejection(bar, 2.0)
+            ablation_plan = maybe_ablation or ablation_plan
+        self.assertIsNotNone(full_plan)
+        self.assertIsNone(ablation_plan)
 
     def test_execution_buffer_covers_noise_and_round_trip_cost_floor(self) -> None:
         params = replace(
