@@ -1,6 +1,7 @@
 {
   "candidate": "candidate-08-aggtrade-acceptance-nautilus",
   "description": "Shared-account ten-second aggressive-flow breakout acceptance at completed 4-hour/day/week external liquidity",
+  "implementation_revision": "2026-08-06-corrected-retest-invalidation-causal-boundaries-funding-mark-liquidation-causal-stop-slippage-exit-causality-ablation",
   "random_seed": 8808,
   "starting_nav_usdt": 100000.0,
   "risk_fraction": 0.03,
@@ -9,30 +10,90 @@
   "maximum_hold_minutes": 240,
   "funding_avoidance_minutes": 5,
   "assets": {
-    "BTCUSDT": {"instrument_id": "BTCUSDT-PERP.BINANCE", "base_currency": "BTC", "price_precision": 1, "size_precision": 3, "tick_size": "0.1", "size_increment": "0.001", "min_quantity": "0.001"},
-    "ETHUSDT": {"instrument_id": "ETHUSDT-PERP.BINANCE", "base_currency": "ETH", "price_precision": 2, "size_precision": 3, "tick_size": "0.01", "size_increment": "0.001", "min_quantity": "0.001"},
-    "SOLUSDT": {"instrument_id": "SOLUSDT-PERP.BINANCE", "base_currency": "SOL", "price_precision": 3, "size_precision": 1, "tick_size": "0.001", "size_increment": "0.1", "min_quantity": "0.1"},
-    "XRPUSDT": {"instrument_id": "XRPUSDT-PERP.BINANCE", "base_currency": "XRP", "price_precision": 4, "size_precision": 1, "tick_size": "0.0001", "size_increment": "0.1", "min_quantity": "0.1"}
+    "BTCUSDT": {
+      "instrument_id": "BTCUSDT-PERP.BINANCE",
+      "base_currency": "BTC",
+      "price_precision": 1,
+      "size_precision": 3,
+      "tick_size": "0.1",
+      "size_increment": "0.001",
+      "min_quantity": "0.001"
+    },
+    "ETHUSDT": {
+      "instrument_id": "ETHUSDT-PERP.BINANCE",
+      "base_currency": "ETH",
+      "price_precision": 2,
+      "size_precision": 3,
+      "tick_size": "0.01",
+      "size_increment": "0.001",
+      "min_quantity": "0.001"
+    },
+    "SOLUSDT": {
+      "instrument_id": "SOLUSDT-PERP.BINANCE",
+      "base_currency": "SOL",
+      "price_precision": 3,
+      "size_precision": 1,
+      "tick_size": "0.001",
+      "size_increment": "0.1",
+      "min_quantity": "0.1"
+    },
+    "XRPUSDT": {
+      "instrument_id": "XRPUSDT-PERP.BINANCE",
+      "base_currency": "XRP",
+      "price_precision": 4,
+      "size_precision": 1,
+      "tick_size": "0.0001",
+      "size_increment": "0.1",
+      "min_quantity": "0.1"
+    }
   },
   "cost_assumptions": {
     "maker_fee_rate": 0.0006,
     "taker_fee_rate": 0.0006,
     "one_tick_slippage_probability": 1.0,
-    "latency_ms": {"base": 0, "insert": 0, "update": 0, "cancel": 0},
-    "rationale": "Every fill is charged the same conservative 6 bp used by the diagnostic. Market entry, stop and target remain subject to Nautilus one-tick adverse slippage and bar ordering."
+    "latency_ms": {
+      "base": 0,
+      "insert": 0,
+      "update": 0,
+      "cancel": 0
+    },
+    "rationale": "Every fill is charged the configured 6 bp rate. Entry reserves one adverse tick; stop-market execution reserves the shifted 99th percentile of completed ten-second true range over the preceding hour. NautilusTrader separately settles checksum-verified official funding rates and uses adaptive bar ordering.",
+    "actual_funding_settlement": "checksum-verified Binance Vision monthly fundingRate archives; funding_interval_hours converted to Nautilus minutes",
+    "stop_market_slippage_reserve": "Shifted 99th percentile of completed ten-second true range over the preceding 60 minutes, minimum one tick; independent of signal direction and outcome."
   },
   "venue": {
     "default_leverage": 125,
     "bar_adaptive_high_low_ordering": true,
-    "runtime_liquidation_switch_supported": false
+    "liquidation_enabled": true,
+    "liquidation_trigger_ratio": 1.0,
+    "liquidation_cancel_open_orders": true,
+    "runtime_liquidation_switch_supported": true
   },
   "pattern_source_config": "config_range_fvg.json",
   "suites": {
-    "first": [{"name": "screen-01", "start": "2024-04-08T00:00:00Z", "end": "2024-04-15T00:00:00Z"}],
+    "first": [
+      {
+        "name": "screen-01",
+        "start": "2024-04-08T00:00:00Z",
+        "end": "2024-04-15T00:00:00Z"
+      }
+    ],
     "screen": [
-      {"name": "screen-01", "start": "2024-04-08T00:00:00Z", "end": "2024-04-15T00:00:00Z"},
-      {"name": "screen-02", "start": "2025-06-09T00:00:00Z", "end": "2025-06-16T00:00:00Z"},
-      {"name": "screen-03", "start": "2025-09-29T00:00:00Z", "end": "2025-10-06T00:00:00Z"}
+      {
+        "name": "screen-01",
+        "start": "2024-04-08T00:00:00Z",
+        "end": "2024-04-15T00:00:00Z"
+      },
+      {
+        "name": "screen-02",
+        "start": "2025-06-09T00:00:00Z",
+        "end": "2025-06-16T00:00:00Z"
+      },
+      {
+        "name": "screen-03",
+        "start": "2025-09-29T00:00:00Z",
+        "end": "2025-10-06T00:00:00Z"
+      }
     ]
   },
   "first_window_gate": {
@@ -54,8 +115,11 @@
     "signal_contract": "Completed external level; high aggressive-flow close beyond; contracted ten-second retest holds; separate same-direction aggressive-flow reacceleration.",
     "global_selection": "At any timestamp only the highest causal cost-after net reward-risk signal is eligible; while any order or position exists all other assets are unavailable.",
     "entry": "Market OUO bracket submitted after the completed ten-second confirmation bar.",
-    "sizing": "Current full shared USDT NAV times 3 percent divided by expected entry-to-stop loss including two fill fees and two adverse ticks.",
+    "sizing": "Current full shared USDT NAV times 3 percent divided by expected entry-to-stop loss including two 6 bp fill charges, one adverse entry tick, a shifted causal 60-minute ten-second true-range Q99 stop-slippage reserve, and a causal funding reserve based only on the last observed settlement rate and interval; actual funding is then settled in account NAV.",
     "target": "Nearest active completed 4-hour/day/week external level; no fitted R fallback.",
-    "promotion": "First Nautilus week must pass before the other two fixed weeks. All three must then meet the screen gate before any long evaluation."
+    "promotion": "First Nautilus week must pass before the other two fixed weeks. All three must then meet the screen gate before any long evaluation.",
+    "funding": "Official archive funding settlements are injected as NautilusTrader FundingRateUpdate data. The last already-observed settlement rate and interval reserve expected funding cost in position sizing, entry is vetoed within five minutes of the next causal boundary, and actual debit or credit is applied to NAV.",
+    "execution_causality": "A normal position close must occur strictly after the recorded entry fill timestamp; same-timestamp entry/exit is an implementation failure, not usable performance evidence.",
+    "ablation": "After a valid logic/opportunity failure, run exactly one diagnostic-only ablation which removes the retest activity-contraction requirement while preserving completed liquidity, boundary hold, reacceleration, structural stop, external target, costs, and shared-account execution. Ablated results are never promotable."
   }
 }
