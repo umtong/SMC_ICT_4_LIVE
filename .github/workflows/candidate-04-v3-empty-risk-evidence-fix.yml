@@ -1,0 +1,114 @@
+name: candidate-04-v3-empty-risk-evidence-fix
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v3-empty-risk-evidence-fix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Distinguish empty report from missing instrument evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path(
+              "research/candidate-04/nt_multi_asset_risk_evidence.py"
+          )
+          text = path.read_text()
+          old = '''def position_rows(
+    positions: pd.DataFrame,
+    symbol: str,
+) -> tuple[list[dict[str, Any]], str]:
+    instrument_column = position_instrument_column(positions)
+'''
+          new = '''def position_rows(
+    positions: pd.DataFrame,
+    symbol: str,
+) -> tuple[list[dict[str, Any]], str]:
+    if positions.empty:
+        return [], "empty_report"
+    instrument_column = position_instrument_column(positions)
+'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit("multi-asset position_rows marker not found")
+          path.write_text(text)
+          PY
+
+      - name: Add empty evidence regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path(
+              "research/candidate-04/tests/"
+              "test_nt_multi_asset_risk_evidence.py"
+          )
+          text = path.read_text()
+          marker = '''    def test_missing_instrument_column_fails_closed(self) -> None:
+'''
+          test = '''    def test_empty_positions_and_empty_entries_are_valid(self) -> None:
+        events = {symbol: [] for symbol in candidate.SYMBOLS}
+        evidence = candidate.reconcile_risk_evidence(
+            pd.DataFrame(),
+            events,
+        )
+        self.assertTrue(evidence.pass_)
+        self.assertEqual(evidence.matched_positions, 0)
+        self.assertEqual(evidence.matched_entries, 0)
+        self.assertEqual(evidence.maximum_realized_loss_fraction, 0.0)
+        self.assertTrue(
+            all(
+                method == "empty_report"
+                for method in evidence.ordering.values()
+            )
+        )
+
+'''
+          if 'test_empty_positions_and_empty_entries_are_valid' not in text:
+              if marker not in text:
+                  raise SystemExit("risk test marker not found")
+              text = text.replace(marker, test + marker, 1)
+          path.write_text(text)
+          PY
+          python -m py_compile \
+            research/candidate-04/nt_multi_asset_risk_evidence.py \
+            research/candidate-04/tests/test_nt_multi_asset_risk_evidence.py
+
+      - name: Commit controlled V3 risk evidence fix with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-04/nt_multi_asset_risk_evidence.py \
+            research/candidate-04/tests/test_nt_multi_asset_risk_evidence.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "fix empty four-asset risk evidence handling"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
