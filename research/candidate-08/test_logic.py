@@ -4,6 +4,15 @@ import importlib.util
 import sys
 from pathlib import Path
 import unittest
+import pandas as pd
+
+
+DATA_MODULE_PATH = Path(__file__).with_name("data.py")
+DATA_SPEC = importlib.util.spec_from_file_location("candidate08_data", DATA_MODULE_PATH)
+assert DATA_SPEC and DATA_SPEC.loader
+candidate_data = importlib.util.module_from_spec(DATA_SPEC)
+sys.modules[DATA_SPEC.name] = candidate_data
+DATA_SPEC.loader.exec_module(candidate_data)
 
 
 MODULE_PATH = Path(__file__).with_name("logic.py")
@@ -15,6 +24,11 @@ SPEC.loader.exec_module(logic)
 
 
 class LogicContractTests(unittest.TestCase):
+    def test_millisecond_index_is_converted_to_epoch_nanoseconds(self) -> None:
+        index = pd.to_datetime([1_712_534_459_999], unit="ms", utc=True)
+        converted = candidate_data._index_to_nanoseconds(index)
+        self.assertEqual(int(converted[0]), 1_712_534_459_999_000_000)
+
     def test_risk_quantity_never_exceeds_three_percent_budget(self) -> None:
         qty, planned = logic.risk_sized_quantity(
             nav=100_000.0,

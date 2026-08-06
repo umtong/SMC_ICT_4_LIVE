@@ -465,7 +465,7 @@ def run_window(
                 "total_positions": result.total_positions,
                 "stats_pnls": result.stats_pnls,
                 "stats_returns": result.stats_returns,
-                "stats_general": result.stats_general,
+                "stats_general": getattr(result, "stats_general", {}),
             },
             "data_quality": loaded.quality,
             "cost_assumptions": config["cost_assumptions"],

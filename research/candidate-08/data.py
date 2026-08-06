@@ -156,6 +156,12 @@ def _timestamp_unit(series: pd.Series) -> str:
     return "us" if value > 100_000_000_000_000 else "ms"
 
 
+def _index_to_nanoseconds(index: pd.DatetimeIndex) -> Any:
+    """Return explicit epoch nanoseconds regardless of pandas index resolution."""
+
+    return index.as_unit("ns").asi8.copy()
+
+
 def load_official_binance_bars(
     *,
     symbol: str,
@@ -234,7 +240,7 @@ def load_official_binance_bars(
         dtype="float64",
         copy=True,
     )
-    timestamps_ns = frame.index.asi8
+    timestamps_ns = _index_to_nanoseconds(frame.index)
     bars = [
         Bar(
             bar_type=bar_type,
