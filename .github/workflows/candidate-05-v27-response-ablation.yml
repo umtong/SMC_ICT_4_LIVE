@@ -1,0 +1,71 @@
+name: candidate-05-v27-response-ablation
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/strategy_v27_ablation.py"
+      - "research/candidate-05/strategy.py"
+      - ".github/workflows/candidate-05-v27-response-ablation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  week-3-direct:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed research environment
+        run: |
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Run frozen BTC week 3 directly through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-05-v27-response-ablation/week-3
+          mkdir -p "$root"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-09-06 \
+            --build-end 2023-09-14 \
+            --evaluation-start 2023-09-08 \
+            --evaluation-end 2023-09-14 \
+            --cache .cache/candidate-05-v27-response-ablation/week-3 \
+            --output "$root" | tee "$root/console.json"
+
+      - name: Verify evidence
+        if: always()
+        shell: bash
+        run: |
+          root=artifacts/candidate-05-v27-response-ablation/week-3
+          if test -f "$root/metrics.json"; then
+            python -m json.tool "$root/metrics.json"
+            for file in run.json data_manifest.json orders.csv positions.csv account.csv equity.csv scenario_events.jsonl strategy_diagnostics.json; do
+              test -s "$root/$file"
+            done
+          fi
+          if test -f "$root/errors.log"; then cat "$root/errors.log"; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v27-response-ablation-${{ github.sha }}
+          path: artifacts/candidate-05-v27-response-ablation/**
+          if-no-files-found: warn
+          retention-days: 90
