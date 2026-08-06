@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from bisect import bisect_left, bisect_right
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from hashlib import sha256
@@ -10,6 +11,7 @@ import csv
 import io
 from pathlib import Path
 import random
+import re
 import time
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
@@ -62,6 +64,7 @@ KLINE_COLUMNS = (
     "taker_buy_quote",
     "ignore",
 )
+_MONEY_PATTERN = re.compile(r"([-+]?\d+(?:\.\d+)?)\s+USDT")
 
 
 def reproducible_weeks(seed: int = 20260806) -> list[date]:
@@ -209,6 +212,111 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _money_value(value: Any) -> float:
+    if value is None:
+        return 0.0
+    return sum(float(match) for match in _MONEY_PATTERN.findall(str(value)))
+
+
+def _filled_execution_diagnostics(fills: Any) -> dict[str, Any]:
+    if fills is None or getattr(fills, "empty", True):
+        return {
+            "reported_commissions": 0.0,
+            "filled_order_count": 0,
+            "turnover_notional": 0.0,
+            "maker_notional": 0.0,
+            "taker_notional": 0.0,
+            "liquidity_fill_counts": {},
+        }
+    filled = fills[fills["status"].astype(str) == "FILLED"].copy()
+    commissions = sum(_money_value(value) for value in filled["commissions"].tolist())
+    notional = (
+        filled["filled_qty"].fillna(0.0).astype(float)
+        * filled["avg_px"].fillna(0.0).astype(float)
+    )
+    liquidity = filled["liquidity_side"].fillna("UNKNOWN").astype(str)
+    maker_mask = liquidity == "MAKER"
+    taker_mask = liquidity == "TAKER"
+    return {
+        "reported_commissions": commissions,
+        "filled_order_count": int(len(filled)),
+        "turnover_notional": float(notional.sum()),
+        "maker_notional": float(notional[maker_mask].sum()),
+        "taker_notional": float(notional[taker_mask].sum()),
+        "liquidity_fill_counts": dict(Counter(liquidity.tolist())),
+    }
+
+
+def _enrich_trades(
+    trades: list[dict[str, Any]],
+    positions: Any,
+    bars: list[Bar],
+    *,
+    tick_size: float,
+) -> None:
+    if not trades:
+        return
+    timestamps = [bar.ts_event for bar in bars]
+    ordered_trades = sorted(trades, key=lambda row: int(row.get("opened_ts_ns", 0)))
+    position_rows: list[dict[str, Any]] = []
+    if positions is not None and not getattr(positions, "empty", True):
+        frame = positions.copy()
+        if "ts_closed" in frame.columns:
+            frame = frame[frame["ts_closed"].notna()]
+        if "ts_init" in frame.columns:
+            frame = frame.sort_values("ts_init")
+        position_rows = frame.to_dict("records")
+
+    for index, trade in enumerate(ordered_trades):
+        position = position_rows[index] if index < len(position_rows) else None
+        actual_entry = float(trade["entry_estimate"])
+        actual_exit: float | None = None
+        if position is not None:
+            actual_entry = float(position.get("avg_px_open", actual_entry))
+            actual_exit = float(position.get("avg_px_close", 0.0))
+            position_commissions = _money_value(position.get("commissions"))
+            reported_realized = _money_value(position.get("realized_pnl"))
+            trade["actual_entry"] = actual_entry
+            trade["actual_exit"] = actual_exit
+            trade["reported_commissions"] = position_commissions
+            trade["reported_realized_pnl"] = reported_realized
+            trade["gross_price_pnl_after_slippage"] = (
+                reported_realized + position_commissions
+            )
+
+        opened_ns = int(trade.get("opened_ts_ns", trade.get("signal_ts_ns", 0)))
+        closed_ns = int(trade.get("closed_ts_ns", opened_ns))
+        left = bisect_left(timestamps, opened_ns)
+        right = bisect_right(timestamps, closed_ns)
+        window = bars[left:right]
+        direction = int(trade["direction"])
+        if window:
+            if direction > 0:
+                favorable = max(bar.high - actual_entry for bar in window)
+                adverse = max(actual_entry - bar.low for bar in window)
+            else:
+                favorable = max(actual_entry - bar.low for bar in window)
+                adverse = max(bar.high - actual_entry for bar in window)
+            planned_risk = abs(actual_entry - float(trade["stop"]))
+            trade["mfe_price"] = favorable
+            trade["mae_price"] = adverse
+            trade["mfe_entry_return"] = favorable / actual_entry if actual_entry else None
+            trade["mae_entry_return"] = adverse / actual_entry if actual_entry else None
+            trade["mfe_r"] = favorable / planned_risk if planned_risk > 0 else None
+            trade["mae_r"] = adverse / planned_risk if planned_risk > 0 else None
+        trade["holding_minutes"] = max(0.0, (closed_ns - opened_ns) / NS_PER_MINUTE)
+        if actual_exit is not None:
+            target = float(trade["target"])
+            stop = float(trade["stop"])
+            tolerance = max(tick_size * 3.0, actual_entry * 0.00002)
+            if abs(actual_exit - target) <= tolerance:
+                trade["exit_class"] = "STRUCTURAL_TARGET"
+            elif abs(actual_exit - stop) <= tolerance:
+                trade["exit_class"] = "STRUCTURAL_STOP"
+            else:
+                trade["exit_class"] = "SCHEDULED_OR_OTHER"
+
+
 def _daily_metrics(
     starting_balance: float,
     daily_nav: dict[str, float],
@@ -332,18 +440,35 @@ def run_backtest(
         positions.to_csv(destination / "positions.csv", index=False)
         account.to_csv(destination / "account.csv", index=False)
 
+        _enrich_trades(
+            strategy.trade_records,
+            positions,
+            bars,
+            tick_size=instrument.price_increment.as_double(),
+        )
+        execution = _filled_execution_diagnostics(fills)
         write_events(destination / "scenario_events.jsonl", strategy.events)
         _write_csv(destination / "trades.csv", strategy.trade_records)
         _write_csv(destination / "equity_curve.csv", strategy.equity_curve)
         _write_csv(destination / "order_errors.csv", strategy.order_errors)
 
         end_equity = strategy._equity()
+        net_pnl = end_equity - float(starting_balance)
+        reported_commissions = float(execution["reported_commissions"])
+        gross_price_pnl = net_pnl + reported_commissions
         daily = _daily_metrics(float(starting_balance), strategy.daily_nav)
         wins = [row for row in strategy.trade_records if row["net_pnl"] > 0]
         losses = [row for row in strategy.trade_records if row["net_pnl"] < 0]
         scenario_pnl: dict[str, float] = defaultdict(float)
+        scenario_gross_pnl: dict[str, float] = defaultdict(float)
+        exit_classes: Counter[str] = Counter()
         for row in strategy.trade_records:
-            scenario_pnl[str(row["scenario"])] += float(row["net_pnl"])
+            scenario = str(row["scenario"])
+            scenario_pnl[scenario] += float(row["net_pnl"])
+            scenario_gross_pnl[scenario] += float(
+                row.get("gross_price_pnl_after_slippage", row["net_pnl"]),
+            )
+            exit_classes[str(row.get("exit_class", "UNKNOWN"))] += 1
         positive_pnls = sorted(
             (float(row["net_pnl"]) for row in wins),
             reverse=True,
@@ -357,16 +482,31 @@ def run_backtest(
         metrics = {
             "run_id": run_id,
             "candidate": "candidate-10",
+            "execution_generation": "v1-resting-structural-limit",
             "variant": variant,
             "week_start": week_start.isoformat(),
             "starting_nav": float(starting_balance),
             "ending_nav": end_equity,
+            "net_pnl": net_pnl,
             "net_return": end_equity / float(starting_balance) - 1.0,
+            "gross_price_pnl_after_slippage_before_commissions": gross_price_pnl,
+            "reported_commissions": reported_commissions,
+            "commission_to_abs_gross_price_pnl": (
+                reported_commissions / abs(gross_price_pnl)
+                if gross_price_pnl
+                else None
+            ),
             "intraday_max_drawdown": strategy.max_drawdown,
             "signals_seen": strategy.signals_seen,
             "signals_outside_evaluation": strategy.signals_outside_evaluation,
             "orders_submitted": strategy.orders_submitted,
+            "pending_cancellations": strategy.pending_cancellations,
             "closed_trades": len(strategy.trade_records),
+            "parent_fill_rate": (
+                len(strategy.trade_records) / strategy.orders_submitted
+                if strategy.orders_submitted
+                else 0.0
+            ),
             "wins": len(wins),
             "losses": len(losses),
             "win_rate": (
@@ -376,20 +516,29 @@ def run_backtest(
             ),
             "profit_concentration_largest_win": concentration,
             "scenario_net_pnl": dict(scenario_pnl),
+            "scenario_gross_price_pnl_after_slippage": dict(scenario_gross_pnl),
+            "exit_classes": dict(exit_classes),
+            "execution": execution,
             "forced_exits": strategy.forced_exits,
             "order_error_count": len(strategy.order_errors),
             "data_quality": quality,
             "cost_model": {
+                "entry": "post-only limit at cost-qualified structure; maker fee",
+                "target": "post-only structural limit; maker fee",
+                "stop": "stop-market; taker fee and deterministic one-tick adverse slippage",
                 "maker_fee_plus_execution_reserve": str(instrument.maker_fee),
                 "taker_fee_plus_execution_reserve": str(instrument.taker_fee),
                 "fill_model_prob_slippage": 1.0,
                 "funding": (
-                    "positions forced flat before 00:00, 08:00, 16:00 UTC windows"
+                    "positions and parents canceled/flattened before 00:00, 08:00, 16:00 UTC windows"
                 ),
             },
             "risk": {
                 "risk_fraction": str(risk_fraction),
                 "sizing_basis": "current Nautilus portfolio equity",
+                "planned_loss_components": (
+                    "entry-to-stop distance + maker entry fee + taker stop fee + two ticks"
+                ),
                 "arbitrary_notional_cap": False,
                 "default_leverage": "20 derived from 5% instrument initial margin",
             },
@@ -418,6 +567,7 @@ def run_backtest(
                     "variant": variant,
                     "week_start": week_start.isoformat(),
                     "engine": "NautilusTrader BacktestEngine",
+                    "execution_generation": "v1-resting-structural-limit",
                     "data_quality": quality,
                 },
             ),
