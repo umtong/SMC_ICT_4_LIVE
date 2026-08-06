@@ -9,15 +9,19 @@ verified candidate-08 base runner.
 from __future__ import annotations
 
 from collections import Counter
+import json
 import os
+from pathlib import Path
 from typing import Any, Mapping
 
 import run_aggtrade_auction_router_nautilus as runner
 from aggtrade_acceptance_signals import AcceptanceSignalBundle
+from aggtrade_flow_response import FlowResponseConfig
 from aggtrade_flow_response_auction_signals_v2 import (
     ABSORPTION_FAMILY,
     IMPLEMENTATION_REVISION,
     INITIATIVE_FAMILY,
+    FlowResponseAuctionConfig,
     build_flow_response_auction_signals,
 )
 
@@ -28,6 +32,9 @@ FAMILY_MODES = {
     "initiative_only": frozenset((INITIATIVE_FAMILY,)),
     "absorption_only": frozenset((ABSORPTION_FAMILY,)),
 }
+DEFAULT_CONTRACT_CONFIG = (
+    Path(__file__).resolve().parent / "config_flow_response_auction_btc_v1.json"
+)
 
 
 def _active_family_mode() -> str:
@@ -38,6 +45,29 @@ def _active_family_mode() -> str:
             f"expected one of {sorted(FAMILY_MODES)}"
         )
     return mode
+
+
+def _contract_config_path() -> Path:
+    value = os.environ.get("FLOW_RESPONSE_AUCTION_CONFIG_PATH")
+    return (Path(value) if value else DEFAULT_CONTRACT_CONFIG).resolve()
+
+
+def _load_auction_config() -> FlowResponseAuctionConfig:
+    path = _contract_config_path()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    revision = str(payload.get("implementation_revision", ""))
+    if revision != IMPLEMENTATION_REVISION:
+        raise RuntimeError(
+            f"flow-response implementation/config revision mismatch: {revision!r} "
+            f"!= {IMPLEMENTATION_REVISION!r}"
+        )
+    response = FlowResponseConfig(**dict(payload["flow_response_config"]))
+    auction = FlowResponseAuctionConfig(
+        response=response,
+        **dict(payload["flow_response_auction_config"]),
+    )
+    auction.validate()
+    return auction
 
 
 def _signal_family(signal: Any) -> str:
@@ -96,6 +126,7 @@ def _filter_bundle(bundle: AcceptanceSignalBundle) -> AcceptanceSignalBundle:
 
 
 def _build_flow_response_signals(**kwargs: Any) -> AcceptanceSignalBundle:
+    kwargs["auction_config"] = _load_auction_config()
     return _filter_bundle(build_flow_response_auction_signals(**kwargs))
 
 
