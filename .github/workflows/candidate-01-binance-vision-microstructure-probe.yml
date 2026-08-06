@@ -1,0 +1,35 @@
+name: candidate-01-binance-vision-microstructure-probe
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-binance-vision-microstructure-probe.yml"
+      - "research/candidate-01/binance_vision_microstructure_probe.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe exact official archive keys, sizes and bounded schemas
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            research/candidate-01/binance_vision_microstructure_probe.py
+          rm -rf artifacts/candidate-01-binance-vision-probe
+          python3 research/candidate-01/binance_vision_microstructure_probe.py \
+            --output artifacts/candidate-01-binance-vision-probe \
+            --max-download-bytes 50000000
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-binance-vision-microstructure-probe-${{ github.sha }}
+          path: artifacts/candidate-01-binance-vision-probe
+          if-no-files-found: error
+          retention-days: 30
