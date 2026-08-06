@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 jobs:
-  btc-week-1-mark-index-overshoot-ablation:
+  btc-week-1-impact-resilience-1s:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -36,80 +36,39 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .research-data/candidate-07
-          key: candidate-07-mark-index-overshoot-week1-v1
+          key: candidate-07-impact-resilience-1s-week1-v1
           restore-keys: |
+            candidate-07-mark-index-overshoot-week1-v1
             candidate-07-cross-market-transfer-week1-v1
             candidate-07-mtf-index-week1-v1
             candidate-07-inventory-pressure-week1-v1
             candidate-07-inventory-handoff-week1-v1
-            candidate-07-valuation-week1-v1
             candidate-07-positioning-three-weeks-v1
             candidate-07-positioning-week1-v1
             candidate-07-flow-week1-v1
 
-      - name: Reproduce int64-safe baseline
+      - name: Diagnose frozen BTC Week-1 one-second impact resilience
         run: >-
-          python research/candidate-07/diagnose_mark_index_overshoot_5m_int64.py
+          python research/candidate-07/diagnose_impact_resilience_1s.py
           --config research/candidate-07/config.json
           --stage week-1
           --start 2025-12-22
           --end 2025-12-29
-          --output artifacts/candidate-07/week-1/mark_index_overshoot_baseline.json
+          --micro-warmup-days 1
+          --output artifacts/candidate-07/week-1/impact_resilience_1s.json
           --data-root .research-data/candidate-07
 
-      - name: Remove contact mark-penetration condition only
-        run: >-
-          python research/candidate-07/diagnose_mark_index_overshoot_5m_ablation.py
-          --config research/candidate-07/config.json
-          --stage week-1-ablation
-          --start 2025-12-22
-          --end 2025-12-29
-          --output artifacts/candidate-07/week-1/mark_index_overshoot_ablation.json
-          --data-root .research-data/candidate-07
-
-      - name: Build controlled comparison
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          root = Path('artifacts/candidate-07/week-1')
-          baseline = json.loads((root / 'mark_index_overshoot_baseline.json').read_text())
-          ablation = json.loads((root / 'mark_index_overshoot_ablation.json').read_text())
-          comparison = {
-              'candidate': 'candidate-07',
-              'stage': 'week-1-ablation',
-              'ablation': 'REMOVE_MARK_PENETRATION_AT_CONTACT',
-              'controlled_variables': {
-                  'period': baseline['period'],
-                  'data_contract': baseline['data_contract'],
-                  'logic': baseline['logic'],
-                  'changed_variable': 'contact mark-price penetration ratio only',
-                  'mark_reclaim_confirmation_retained': True,
-                  'orders_or_pnl': False,
-              },
-              'baseline_summary': baseline['summary'],
-              'ablation_summary': ablation['summary'],
-          }
-          (root / 'mark_index_overshoot_ablation_comparison.json').write_text(
-              json.dumps(comparison, indent=2, sort_keys=True) + '\n'
-          )
-          PY
-
-      - name: Print controlled comparison
+      - name: Print machine-readable diagnosis
         if: always()
         run: |
-          test -f artifacts/candidate-07/week-1/mark_index_overshoot_baseline.json
-          test -f artifacts/candidate-07/week-1/mark_index_overshoot_ablation.json
-          test -f artifacts/candidate-07/week-1/mark_index_overshoot_ablation_comparison.json
-          cat artifacts/candidate-07/week-1/mark_index_overshoot_baseline.json
-          cat artifacts/candidate-07/week-1/mark_index_overshoot_ablation.json
-          cat artifacts/candidate-07/week-1/mark_index_overshoot_ablation_comparison.json
+          test -f artifacts/candidate-07/week-1/impact_resilience_1s.json
+          cat artifacts/candidate-07/week-1/impact_resilience_1s.json
 
-      - name: Preserve controlled evidence
+      - name: Preserve structural evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-mark-index-overshoot-ablation-${{ github.sha }}
+          name: candidate-07-impact-resilience-1s-week1-${{ github.sha }}
           path: artifacts/candidate-07/week-1
           retention-days: 14
           if-no-files-found: error
