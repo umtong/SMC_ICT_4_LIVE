@@ -195,9 +195,14 @@ class AuctionExcessFailureContinuationStrategy(LiquidityTransitionStrategy):
         ):
             return
 
-        if not self._entry_gate_open() or self.entry_pending or not self.portfolio.is_flat(
-            self.config.instrument_id,
-        ):
+        ts_event = int(row["ts"])
+        entry_gate_open = (
+            self._in_evaluation(ts_event)
+            and not self._funding_blackout(ts_event)
+            and not self.entry_pending
+            and self.portfolio.is_flat(self.config.instrument_id)
+        )
+        if not entry_gate_open:
             self._event("ACCEPTANCE_CONFIRMED_BUT_OCCUPIED", SCENARIO, row, probe.details)
             self.excess_probe = None
             return
