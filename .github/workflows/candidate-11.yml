@@ -59,17 +59,19 @@ jobs:
                   raise SystemExit("expected Binance CSV read line not found")
               s = s.replace(read_line, read_line + clean_line)
           old_wrangler = '    wrangle_frame = frame[["open", "high", "low", "close", "volume"]].copy()\n'
-          new_wrangler = '''    wrangle_columns = ["open", "high", "low", "close", "volume"]
-    wrangle_matrix = frame[wrangle_columns].to_numpy(dtype="float64", copy=True)
-    wrangle_matrix.setflags(write=True)
-    wrangle_frame = pd.DataFrame(
-        wrangle_matrix,
-        index=frame.index.copy(),
-        columns=wrangle_columns,
-        copy=False,
-    )
-    wrangle_frame.values.setflags(write=True)
-'''
+          new_wrangler = "\n".join([
+              '    wrangle_columns = ["open", "high", "low", "close", "volume"]',
+              '    wrangle_matrix = frame[wrangle_columns].to_numpy(dtype="float64", copy=True)',
+              '    wrangle_matrix.setflags(write=True)',
+              '    wrangle_frame = pd.DataFrame(',
+              '        wrangle_matrix,',
+              '        index=frame.index.copy(),',
+              '        columns=wrangle_columns,',
+              '        copy=False,',
+              '    )',
+              '    wrangle_frame.values.setflags(write=True)',
+              '',
+          ])
           if old_wrangler in s:
               s = s.replace(old_wrangler, new_wrangler)
           elif new_wrangler not in s:
