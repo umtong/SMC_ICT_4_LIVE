@@ -47,6 +47,15 @@ jobs:
             --max-weeks 1 \
             | tee artifacts/candidate-05/console.json
 
+      - name: Preserve observational diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts/candidate-05/week-1/raw-klines
+          if compgen -G '.cache/candidate-05/klines/*.zip' > /dev/null; then
+            cp .cache/candidate-05/klines/*.zip artifacts/candidate-05/week-1/raw-klines/
+          fi
+
       - name: Verify and print evidence
         if: always()
         shell: bash
@@ -77,6 +86,8 @@ jobs:
             artifacts/candidate-05/week-1/run.json
             artifacts/candidate-05/week-1/data_manifest.json
             artifacts/candidate-05/week-1/raw_evidence.json
+            artifacts/candidate-05/week-1/features.csv.gz
+            artifacts/candidate-05/week-1/raw-klines/*.zip
             artifacts/candidate-05/week-1/orders.csv
             artifacts/candidate-05/week-1/positions.csv
             artifacts/candidate-05/week-1/account.csv
@@ -84,6 +95,7 @@ jobs:
             artifacts/candidate-05/week-1/scenario_events.jsonl
             artifacts/candidate-05/week-1/strategy_diagnostics.json
             artifacts/candidate-05/week-1/closed_scenarios.json
+            artifacts/candidate-05/week-1/order_rejections.json
             artifacts/candidate-05/week-1/errors.log
           if-no-files-found: warn
           retention-days: 90
