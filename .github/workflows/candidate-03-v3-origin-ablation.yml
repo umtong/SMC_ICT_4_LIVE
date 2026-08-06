@@ -51,7 +51,7 @@ jobs:
       - name: Restore immutable first-week uniform execution catalog
         uses: actions/cache/restore@v4
         with:
-          path: artifacts/candidate-03/nt-lvcfr-v3-ablation/validation-1/prepared
+          path: artifacts/candidate-03/nt-lvcfr-v3/validation-1/prepared
           key: nt-lvcfr-aggtrade-v1-btc-2024-01-08-${{ hashFiles('research/candidate-03/nt_lvcfr_trade_proxy.py', 'research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_v3_config.json') }}
           fail-on-cache-miss: true
 
@@ -59,7 +59,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          prepared=artifacts/candidate-03/nt-lvcfr-v3-ablation/validation-1/prepared
+          prepared=artifacts/candidate-03/nt-lvcfr-v3/validation-1/prepared
           out=artifacts/candidate-03/nt-lvcfr-v3-ablation/validation-1
           mkdir -p "$out"
           sudo chmod -R a+rwX artifacts
@@ -71,7 +71,7 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          path = Path('artifacts/candidate-03/nt-lvcfr-v3-ablation/validation-1/prepared/signals.json')
+          path = Path('artifacts/candidate-03/nt-lvcfr-v3/validation-1/prepared/signals.json')
           count = len(json.loads(path.read_text(encoding='utf-8')))
           if count < 8:
               raise SystemExit(f'ablation opportunity preflight failed: {count} < 8')
