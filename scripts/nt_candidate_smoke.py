@@ -52,8 +52,9 @@ def instrument() -> CryptoPerpetual:
 
 def main() -> int:
     output = Path("artifacts/candidate-03/nt-smoke").resolve()
+    output.mkdir(parents=True, exist_ok=True)
     catalog_path = output / "catalog"
-    shutil.rmtree(output, ignore_errors=True)
+    shutil.rmtree(catalog_path, ignore_errors=True)
     catalog_path.mkdir(parents=True)
 
     inst = instrument()
