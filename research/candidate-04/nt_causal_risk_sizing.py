@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """Causal entry/stop fill estimates for candidate-04 NautilusTrader orders.
 
-The signal bar close is not assumed to equal the later market-order fill. With
-minute OHLC data, a pure close-to-next-open gap understates execution uncertainty
-because the matching engine can encounter the next bar path before the order is
-filled. The planned loss therefore includes a direction-specific 95th percentile
-of completed close-to-next-bar adverse excursions and one exchange tick beyond
-the stop trigger.
+The strategy's causal liquidity target is selected from the signal state and is
+not changed by risk sizing. Position quantity, however, must not assume that the
+signal close equals later market and stop fills. The planned loss per unit uses
+a direction-specific 95th percentile of completed close-to-next-bar adverse
+excursions plus one exchange tick beyond the stop trigger.
 
-This is the project's expected entry/stop fill calculation before order
-submission. It is not a leverage cap, score multiplier, or separate execution
-simulator.
+This cleanly separates alpha logic from the project's expected-fill risk formula.
+It is not a leverage cap, score multiplier, or separate execution simulator.
 """
 from __future__ import annotations
 
@@ -33,8 +31,6 @@ GAP_MIN_OBSERVATIONS = 120
 
 
 def nearest_rank_quantile(values: Iterable[float], probability: float) -> float:
-    """Return a deterministic nearest-rank quantile for finite values."""
-
     finite = sorted(float(value) for value in values if math.isfinite(float(value)))
     if not finite:
         return 0.0
@@ -49,12 +45,7 @@ def adverse_transition_gaps(
     side: int,
     window: int = GAP_WINDOW_BARS,
 ) -> list[float]:
-    """Return past close-to-next-bar excursions adverse to ``side``.
-
-    For a long order the next bar high is the conservative adverse executable
-    path from the previous close. For a short order the corresponding path is
-    the next bar low. Every observation is fully completed before calibration.
-    """
+    """Return completed close-to-next-bar excursions adverse to ``side``."""
 
     selected = rows[-(window + 1) :]
     gaps: list[float] = []
@@ -93,7 +84,7 @@ def risk_sized_submit_bracket(
     target_net_r: float,
     details: dict[str, Any],
 ) -> bool:
-    """Submit a Nautilus bracket using causal adverse fill estimates."""
+    """Submit a Nautilus bracket with conservative quantity and frozen target."""
 
     side = setup.side
     atr = float(self._atr())
@@ -101,57 +92,37 @@ def risk_sized_submit_bracket(
         return False
     stop_trigger = setup.extreme - side * self.config.stop_buffer_atr * atr
     signal_entry = float(row["close"])
-    excursion_buffer, gap_observations = causal_gap_buffer(list(self.bars), side)
-    tick = _tick_size(self.instrument)
-
-    expected_entry_fill = signal_entry + side * excursion_buffer
-    expected_stop_fill = stop_trigger - side * (excursion_buffer + tick)
-    price_loss = side * (expected_entry_fill - expected_stop_fill)
-    if not math.isfinite(price_loss) or price_loss <= 0.0:
-        return False
-
     cost_rate = self.config.all_in_cost_bps_each_side / 10_000.0
-    planned_loss = price_loss + cost_rate * (
-        expected_entry_fill + expected_stop_fill
-    )
-    equity = float(self._equity_value())
-    risk_budget = equity * self.config.risk_fraction
-    raw_qty = risk_budget / planned_loss
-    quantity_value = floor_quantity(raw_qty, int(self.instrument.size_precision))
-    if quantity_value <= 0.0 or quantity_value * expected_entry_fill < 10.0:
-        return False
 
+    # Alpha/target contract: exactly the same signal-state prices used by V17.
+    signal_price_loss = side * (signal_entry - stop_trigger)
+    if not math.isfinite(signal_price_loss) or signal_price_loss <= 0.0:
+        return False
+    signal_planned_loss = signal_price_loss + cost_rate * (
+        signal_entry + stop_trigger
+    )
     target = cost_aware_target(
-        expected_entry_fill,
+        signal_entry,
         side,
-        planned_loss,
+        signal_planned_loss,
         target_net_r,
         cost_rate,
     )
+    reference_r_signal: float | None = None
     if setup.target_reference is not None:
-        reference_r = net_r_at_price(
-            expected_entry_fill,
+        reference_r_signal = net_r_at_price(
+            signal_entry,
             setup.target_reference,
             side,
-            planned_loss,
+            signal_planned_loss,
             cost_rate,
         )
-        if reference_r < self.config.session_min_opposite_target_r:
-            self._event(
-                "INSUFFICIENT_OPPOSING_LIQUIDITY_AFTER_EXCURSION",
-                setup.scenario,
-                row,
-                {
-                    **details,
-                    "reference_net_r_after_excursion": reference_r,
-                    "adverse_excursion_buffer": excursion_buffer,
-                },
-            )
+        if reference_r_signal < self.config.session_min_opposite_target_r:
             return False
         cap_target = cost_aware_target(
-            expected_entry_fill,
+            signal_entry,
             side,
-            planned_loss,
+            signal_planned_loss,
             self.config.session_max_target_r,
             cost_rate,
         )
@@ -160,6 +131,25 @@ def risk_sized_submit_bracket(
             if side > 0
             else max(setup.target_reference, cap_target)
         )
+
+    # Risk contract: expected later fills determine quantity only.
+    excursion_buffer, gap_observations = causal_gap_buffer(list(self.bars), side)
+    tick = _tick_size(self.instrument)
+    expected_entry_fill = signal_entry + side * excursion_buffer
+    expected_stop_fill = stop_trigger - side * (excursion_buffer + tick)
+    execution_price_loss = side * (expected_entry_fill - expected_stop_fill)
+    if not math.isfinite(execution_price_loss) or execution_price_loss <= 0.0:
+        return False
+    execution_planned_loss = execution_price_loss + cost_rate * (
+        expected_entry_fill + expected_stop_fill
+    )
+
+    equity = float(self._equity_value())
+    risk_budget = equity * self.config.risk_fraction
+    raw_qty = risk_budget / execution_planned_loss
+    quantity_value = floor_quantity(raw_qty, int(self.instrument.size_precision))
+    if quantity_value <= 0.0 or quantity_value * expected_entry_fill < 10.0:
+        return False
 
     order_side = OrderSide.BUY if side > 0 else OrderSide.SELL
     order_list = self.order_factory.bracket(
@@ -182,14 +172,16 @@ def risk_sized_submit_bracket(
         {
             **details,
             "signal_entry": signal_entry,
-            "expected_entry_fill": expected_entry_fill,
             "stop_trigger": stop_trigger,
-            "expected_stop_fill": expected_stop_fill,
             "target": target,
+            "reference_net_r_at_signal": reference_r_signal,
+            "signal_planned_loss_per_unit": signal_planned_loss,
+            "expected_entry_fill": expected_entry_fill,
+            "expected_stop_fill": expected_stop_fill,
+            "execution_planned_loss_per_unit": execution_planned_loss,
             "quantity": quantity_value,
             "equity": equity,
             "risk_budget": risk_budget,
-            "planned_loss_per_unit": planned_loss,
             "adverse_excursion_buffer": excursion_buffer,
             "excursion_quantile": GAP_QUANTILE,
             "excursion_window_bars": GAP_WINDOW_BARS,
