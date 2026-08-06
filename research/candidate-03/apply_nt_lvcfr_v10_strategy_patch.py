@@ -22,7 +22,10 @@ from pathlib import Path
 
 
 def replace_once(source: str, old: str, new: str, label: str) -> str:
-    if new in source:
+    if new:
+        if new in source:
+            return source
+    elif old not in source:
         return source
     count = source.count(old)
     if count != 1:
