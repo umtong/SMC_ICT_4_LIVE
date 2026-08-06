@@ -9,7 +9,7 @@ from c10_model import Setup
 from c10_model import StructuralBar
 from c10_model import TradePlan
 from c10_model import Transition
-from c10_micro_state import AuctionStateMachine
+from c10_retest_state import AuctionStateMachine
 
 # Candidate10Strategy resolves this module global when on_start runs. Patching it
 # here keeps the stable Nautilus execution wrapper while swapping only the
