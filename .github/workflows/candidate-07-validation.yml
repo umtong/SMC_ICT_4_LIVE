@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 jobs:
-  btc-week-1-mtf-index-valuation:
+  btc-week-1-session-handoff-diagnostic:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -36,35 +36,36 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .research-data/candidate-07
-          key: candidate-07-mtf-index-week1-v1
+          key: candidate-07-session-handoff-week1-v1
           restore-keys: |
+            candidate-07-mtf-index-week1-v1
             candidate-07-valuation-week1-v1
             candidate-07-balance-week1-v1
             candidate-07-positioning-three-weeks-v1
             candidate-07-positioning-week1-v1
             candidate-07-flow-week1-v1
 
-      - name: NautilusTrader frozen BTC Week-1 MTF index replay
+      - name: Diagnose frozen BTC Week-1 session handoffs
         run: >-
-          python research/candidate-07/staged_cascade.py
+          python research/candidate-07/diagnose_session_handoff.py
           --config research/candidate-07/config.json
-          --week-plan research/candidate-07/week_plan.json
-          --output artifacts/candidate-07
+          --stage week-1
+          --start 2025-12-22
+          --end 2025-12-29
+          --output artifacts/candidate-07/week-1/session_handoff_diagnostic.json
           --data-root .research-data/candidate-07
-          --max-weeks 1
 
-      - name: Print machine-readable result
+      - name: Print machine-readable diagnosis
         if: always()
         run: |
-          test -f artifacts/candidate-07/pipeline_summary.json
-          cat artifacts/candidate-07/pipeline_summary.json
-          cat artifacts/candidate-07/week-1/metrics.json
+          test -f artifacts/candidate-07/week-1/session_handoff_diagnostic.json
+          cat artifacts/candidate-07/week-1/session_handoff_diagnostic.json
 
-      - name: Preserve complete replay evidence
+      - name: Preserve structural evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-mtf-index-week1-${{ github.sha }}
-          path: artifacts/candidate-07
+          name: candidate-07-session-handoff-week1-${{ github.sha }}
+          path: artifacts/candidate-07/week-1
           retention-days: 14
           if-no-files-found: error
