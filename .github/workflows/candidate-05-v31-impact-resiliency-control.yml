@@ -1,0 +1,245 @@
+name: candidate-05-v31-impact-resiliency-control
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/v30_fvg_ablation.json"
+      - "research/candidate-05/evidence/v30_promoted_screen.json"
+      - "research/candidate-05/impact_resiliency_reversal_logic.py"
+      - "research/candidate-05/strategy_v31_impact_resiliency_reversal.py"
+      - "research/candidate-05/tests/test_impact_resiliency_reversal_logic.py"
+      - ".github/workflows/candidate-05-v31-impact-resiliency-control.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  conditional-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v31-impact-resiliency-control
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment, contracts and prior logical eligibility
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT" research/candidate-05/evidence
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+            python - <<'PY'
+          from dataclasses import fields
+          from strategy_v9 import ArmedEntryPath
+          from strategy_v31_impact_resiliency_reversal import ImpactResiliencyReversalStrategy
+          names = {field.name for field in fields(ArmedEntryPath)}
+          assert "expires_index" in names and "created_ts" not in names
+          assert ImpactResiliencyReversalStrategy.BRANCH == "EXTERNAL_IMPACT_RESILIENCY_REVERSAL"
+          print(sorted(names))
+          PY
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "verification_exit_code=$status" > "$ROOT/verification_status.txt"
+          exit "$status"
+
+      - name: Decide whether v30 has been logically discarded
+        id: prior
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("research/candidate-05/evidence")
+          promoted_path = root / "v30_promoted_screen.json"
+          week1_path = root / "v30_fvg_ablation.json"
+          promoted = json.loads(promoted_path.read_text(encoding="utf-8")) if promoted_path.exists() else None
+          week1 = json.loads(week1_path.read_text(encoding="utf-8")) if week1_path.exists() else None
+
+          source = promoted if promoted is not None else week1
+          classification = str((source or {}).get("classification", "MISSING_V30_EVIDENCE"))
+          upper = classification.upper()
+          eligible = (
+              "LOGIC_FAILURE" in upper
+              or "LOGIC_OR_ROBUSTNESS_FAILURE" in upper
+              or "STOPPED_AT_WEEK1_LOGIC_FAILURE" in upper
+          ) and not any(token in upper for token in ("IMPLEMENTATION", "EVIDENCE_ERROR"))
+          decision = {
+              "source": "v30_promoted_screen.json" if promoted is not None else "v30_fvg_ablation.json" if week1 is not None else None,
+              "classification": classification,
+              "eligible_for_orthogonal_v31": eligible,
+          }
+          Path("/tmp/v31_prior.json").write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          with Path("/tmp/v31_prior_outputs.txt").open("w", encoding="utf-8") as f:
+              f.write(f"eligible={'true' if eligible else 'false'}\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          cat /tmp/v31_prior_outputs.txt >> "$GITHUB_OUTPUT"
+
+      - name: Run frozen v26 branch-removal control on Week 1
+        if: steps.verify.outcome == 'success' && steps.prior.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v26 import ScenarioValidEntryStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          out="$ROOT/baseline"; mkdir -p "$out"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-07-07 --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-05-v31/baseline \
+            --output "$out" | tee "$out/console.json"
+
+      - name: Run v31 on the identical frozen Week 1
+        if: steps.verify.outcome == 'success' && steps.prior.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v31_impact_resiliency_reversal import ImpactResiliencyReversalStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          out="$ROOT/v31"; mkdir -p "$out"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-07-07 --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-05-v31/v31 \
+            --output "$out" | tee "$out/console.json"
+
+      - name: Persist implementation-versus-logic evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-v31-impact-resiliency-control")
+          prior = json.loads(Path("/tmp/v31_prior.json").read_text(encoding="utf-8"))
+          verification = (root / "verification_status.txt").read_text(encoding="utf-8").strip() if (root / "verification_status.txt").exists() else "missing"
+          verification_tail = (root / "verification.log").read_text(encoding="utf-8", errors="replace").splitlines()[-180:] if (root / "verification.log").exists() else []
+
+          def compact(name):
+              path = root / name / "metrics.json"
+              if not path.exists():
+                  return {"available": False}
+              m = json.loads(path.read_text(encoding="utf-8"))
+              d = m.get("strategy_diagnostics", {})
+              checks = {
+                  "engine_is_nautilus": m.get("engine") == "NautilusTrader BacktestNode",
+                  "positive_nav": m.get("ending_nav", 0.0) > 0.0,
+                  "no_liquidation": m.get("liquidations", 0) == 0,
+                  "no_order_rejections": d.get("order_rejections", 0) == 0,
+                  "single_entry_intent": d.get("max_simultaneous_entry_intents", 0) <= 1,
+                  "single_position": d.get("max_open_positions_observed", 0) <= 1,
+                  "nautilus_orders": m.get("gate_checks", {}).get("nautilus_orders", False),
+                  "nautilus_positions": m.get("gate_checks", {}).get("nautilus_positions", False),
+              }
+              return {
+                  "available": True,
+                  "evaluation_start": m.get("evaluation_start"),
+                  "evaluation_end": m.get("evaluation_end"),
+                  "starting_nav": m.get("starting_nav"),
+                  "ending_nav": m.get("ending_nav"),
+                  "total_return": m.get("total_return"),
+                  "geometric_daily_growth": m.get("geometric_daily_growth"),
+                  "max_drawdown": m.get("max_drawdown"),
+                  "trades": m.get("trades"),
+                  "wins": m.get("wins"),
+                  "losses": m.get("losses"),
+                  "win_rate": m.get("win_rate"),
+                  "profit_factor": m.get("profit_factor"),
+                  "active_days": m.get("active_days"),
+                  "largest_winner_share": m.get("largest_winner_share"),
+                  "scenario_metrics": m.get("scenario_metrics", {}),
+                  "impact_resiliency_diagnostics": {
+                      key: value for key, value in d.items()
+                      if key.startswith("impact_resiliency_") or key.startswith("external_fvg_")
+                  },
+                  "integrity_checks": checks,
+                  "integrity_pass": all(checks.values()),
+              }
+
+          baseline = compact("baseline")
+          candidate = compact("v31")
+          branch = candidate.get("scenario_metrics", {}).get(
+              "EXTERNAL_IMPACT_RESILIENCY_REVERSAL",
+              {"trades": 0, "wins": 0, "net_pnl": 0.0},
+          )
+          promote = False
+          if verification != "verification_exit_code=0":
+              classification = "IMPLEMENTATION_ERROR_STATIC_OR_CONTRACT"
+          elif not prior.get("eligible_for_orthogonal_v31", False):
+              classification = "NOT_RUN_PRIOR_V30_NOT_LOGICALLY_DISCARDED"
+          elif not baseline.get("available") or not baseline.get("integrity_pass"):
+              classification = "IMPLEMENTATION_ERROR_BASELINE_CONTROL"
+          elif not candidate.get("available") or not candidate.get("integrity_pass"):
+              classification = "IMPLEMENTATION_ERROR_V31_RUNTIME_OR_EVIDENCE"
+          elif int(branch.get("trades", 0)) == 0:
+              classification = "LOGIC_FAILURE_NO_INCREMENTAL_EXECUTABLE_OPPORTUNITY"
+          elif float(branch.get("net_pnl", 0.0)) <= 0.0:
+              classification = "LOGIC_FAILURE_NONPOSITIVE_INCREMENTAL_EXPECTANCY"
+          elif float(candidate["geometric_daily_growth"]) <= float(baseline["geometric_daily_growth"]):
+              classification = "LOGIC_FAILURE_DID_NOT_IMPROVE_CONTROL"
+          else:
+              classification = "LOGIC_SCREEN_PASSED_WEEK_1"
+              promote = True
+
+          result = {
+              "schema": "candidate-05-v31-impact-resiliency-control-v1",
+              "source_commit": "${{ github.sha }}",
+              "workflow_run_id": "${{ github.run_id }}",
+              "fixed_week": "2023-07-09..2023-07-15 UTC",
+              "hypothesis": "accepted external shock -> impact decay and book refill -> first defended failed-level retest",
+              "prior_v30_decision": prior,
+              "classification": classification,
+              "promote_to_weeks_2_3": promote,
+              "verification_status": verification,
+              "verification_log_tail": verification_tail,
+              "baseline": baseline,
+              "v31": candidate,
+              "new_branch": branch,
+              "ablation_contract": "v26 is the identical same-week system with the full impact-resiliency branch removed.",
+          }
+          output = Path("research/candidate-05/evidence/v31_impact_resiliency_control.json")
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          git checkout -- research/candidate-05/strategy.py || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-05/evidence/v31_impact_resiliency_control.json
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-05: record v31 impact-resiliency control [skip ci]"
+            git push origin HEAD:research/candidate-05
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.prior.outputs.eligible == 'true'
+        with:
+          name: candidate-05-v31-impact-resiliency-control-${{ github.sha }}
+          path: artifacts/candidate-05-v31-impact-resiliency-control/**
+          if-no-files-found: warn
+          retention-days: 90
