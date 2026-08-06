@@ -1,0 +1,134 @@
+name: Candidate 09 isolate failing test
+
+on:
+  push:
+    branches:
+      - research/candidate-09
+    paths:
+      - .github/workflows/candidate-09-test-diagnose.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --all-groups
+      - run: uv run smc4 doctor
+      - name: Capture structured unittest failure
+        shell: bash
+        run: |
+          rm -rf research/candidate-09/diagnostics/test-failure
+          mkdir -p research/candidate-09/diagnostics/test-failure
+          uv run python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import re
+          import sys
+          import unittest
+          from pathlib import Path
+
+          root = Path('research/candidate-09').resolve()
+          tests = root / 'tests'
+          sys.path.insert(0, str(root))
+          sys.path.insert(0, str(tests))
+          out = root / 'diagnostics' / 'test-failure'
+
+          suite = unittest.defaultTestLoader.loadTestsFromName(
+              'test_nautilus_contract.NautilusContractTest.'
+              'test_engine_wrangler_subscription_and_accounting_without_signal'
+          )
+          result = unittest.TestResult()
+          suite.run(result)
+          issues = [('error', test, text) for test, text in result.errors]
+          issues += [('failure', test, text) for test, text in result.failures]
+
+          def safe(value: str, limit: int = 150) -> str:
+              value = re.sub(r'[^A-Za-z0-9_.=-]+', '_', value.strip())
+              return value[:limit] or 'EMPTY'
+
+          payload = {
+              'tests_run': result.testsRun,
+              'errors': len(result.errors),
+              'failures': len(result.failures),
+              'successful': result.wasSuccessful(),
+          }
+          if not issues:
+              (out / 'STATUS_TEST_PASSED').write_text('passed\n')
+          else:
+              kind, test, trace = issues[0]
+              lines = [line.rstrip() for line in trace.splitlines()]
+              last = next((line.strip() for line in reversed(lines) if line.strip()), 'UNKNOWN')
+              exc_class, _, exc_message = last.partition(':')
+              frames = []
+              for index, line in enumerate(lines):
+                  match = re.match(r'\s*File "([^"]+)", line (\d+), in (.+)', line)
+                  if not match:
+                      continue
+                  source = lines[index + 1].strip() if index + 1 < len(lines) else ''
+                  frames.append({
+                      'file': match.group(1),
+                      'line': int(match.group(2)),
+                      'function': match.group(3).strip(),
+                      'source': source,
+                  })
+              payload.update({
+                  'kind': kind,
+                  'test': str(test),
+                  'exception_class': exc_class.strip(),
+                  'exception_message': exc_message.strip(),
+                  'frames': frames,
+              })
+              (out / f'KIND_{safe(kind)}').write_text(kind + '\n')
+              (out / f'EXCEPTION_{safe(exc_class)}').write_text(last + '\n')
+              (out / f'MESSAGE_{safe(exc_message)}').write_text(exc_message + '\n')
+              for number, frame in enumerate(frames):
+                  basename = Path(frame['file']).name
+                  (out / (
+                      f'FRAME_{number:02d}_{safe(basename, 40)}_'
+                      f'LINE_{frame["line"]}_FUNC_{safe(frame["function"], 55)}'
+                  )).write_text(json.dumps(frame, sort_keys=True) + '\n')
+                  if frame['source']:
+                      (out / f'SOURCE_{number:02d}_{safe(frame["source"])}').write_text(frame['source'] + '\n')
+              categories = {
+                  'CONFIG_READ': 'read_text' in trace or 'json.loads' in trace,
+                  'TEST_DATA_CONSTRUCTION': 'FlowBar(' in trace or 'bars.append' in trace,
+                  'INSTRUMENT_PROVIDER': 'TestInstrumentProvider' in trace,
+                  'BAR_TYPE': 'BarType.from_str' in trace,
+                  'WRANGLER': 'BarDataWrangler' in trace or 'wrangler.process' in trace,
+                  'ENGINE_CONFIG': 'BacktestEngineConfig' in trace,
+                  'ENGINE_CREATE': 'BacktestEngine(' in trace,
+                  'ADD_VENUE': 'add_venue' in trace,
+                  'ADD_INSTRUMENT': 'add_instrument' in trace,
+                  'ADD_DATA': 'add_data' in trace,
+                  'STRATEGY_CONFIG': 'Candidate09StrategyConfig' in trace,
+                  'ADD_STRATEGY': 'add_strategy' in trace,
+                  'ENGINE_RUN': 'engine.run' in trace,
+                  'OUTCOME': 'calculate_outcome' in trace,
+              }
+              matched = [name for name, yes in categories.items() if yes]
+              payload['categories'] = matched
+              for name in matched:
+                  (out / f'CATEGORY_{name}').write_text(name + '\n')
+              (out / 'traceback.txt').write_text(trace)
+          (out / 'diagnostic.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+          PY
+      - name: Commit structured failure markers
+        if: always()
+        shell: bash
+        run: |
+          git config user.name "candidate-09-research-bot"
+          git config user.email "candidate-09-research-bot@users.noreply.github.com"
+          git add -f research/candidate-09/diagnostics/test-failure
+          git commit -m "candidate-09: isolate Nautilus test failure [candidate-09 evidence]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
