@@ -202,7 +202,7 @@ class Candidate08Strategy(Strategy):
             tp_tags=[setup.scenario_id, setup.family.value, "TARGET"],
             sl_tags=[setup.scenario_id, setup.family.value, "STOP"],
         )
-        entry_order, stop_order, target_order = orders
+        entry_order, stop_order, target_order = orders.orders
         self.current_scenario_id = setup.scenario_id
         self.current_family = setup.family.value
         self.current_direction = setup.direction.value
