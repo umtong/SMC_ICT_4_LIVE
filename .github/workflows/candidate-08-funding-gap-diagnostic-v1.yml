@@ -1,0 +1,109 @@
+name: candidate-08-funding-gap-diagnostic-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-funding-gap-diagnostic-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  diagnose:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      CACHE: /tmp/candidate-08-aggtrade-acceptance-data
+      OUT: research/candidate-08/evidence/aggtrade-acceptance-nautilus/funding-gap-diagnostic-v1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-aggtrade-acceptance-v5-${{ hashFiles('research/candidate-08/config_aggtrade_acceptance_nautilus.json') }}
+          restore-keys: |
+            candidate-08-aggtrade-acceptance-v5-
+            candidate-08-aggtrade-acceptance-
+      - name: Inspect official archive cadence without changing the loader
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          mkdir -p "$OUT"
+          PYTHONPATH=research/candidate-08 python - <<'PY'
+          from datetime import datetime, timezone
+          import json, os
+          from pathlib import Path
+          import pandas as pd
+          from aggtrade_acceptance_funding import _verified_monthly_archive, _read_month, _timestamp_unit
+
+          start = datetime(2024, 4, 7, 15, 55, tzinfo=timezone.utc)
+          end = datetime(2024, 4, 15, 4, 1, tzinfo=timezone.utc)
+          cache = Path(os.environ["CACHE"]) / "fundingRate"
+          result = {"start": start.isoformat(), "end": end.isoformat(), "symbols": {}}
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              archive, source = _verified_monthly_archive(cache / symbol, symbol, start)
+              raw = _read_month(archive)
+              unit = _timestamp_unit(raw["calc_time"])
+              data = raw[["calc_time", "funding_interval_hours", "last_funding_rate"]].copy()
+              for column in data.columns:
+                  data[column] = pd.to_numeric(data[column], errors="coerce")
+              data = data.dropna().copy()
+              data.index = pd.to_datetime(data.pop("calc_time").astype("int64"), unit=unit, utc=True)
+              data = data.sort_index()
+              data["interval_minutes"] = data["funding_interval_hours"].round().astype("int64") * 60
+              data = data.loc[(data.index >= start) & (data.index < end)].copy()
+              deltas = data.index.to_series().diff().dt.total_seconds().div(60)
+              allowed = pd.concat([
+                  data["interval_minutes"].shift(1).astype(float),
+                  data["interval_minutes"].astype(float),
+              ], axis=1).max(axis=1)
+              mask = deltas.notna() & (deltas > allowed + 1e-9)
+              gaps = []
+              for ts in data.index[mask]:
+                  pos = data.index.get_loc(ts)
+                  prev = data.index[pos - 1]
+                  gaps.append({
+                      "previous_time": prev.isoformat(), "current_time": ts.isoformat(),
+                      "delta_minutes": float(deltas.loc[ts]), "allowed_minutes": float(allowed.loc[ts]),
+                      "previous_interval_hours": float(data.loc[prev, "funding_interval_hours"]),
+                      "current_interval_hours": float(data.loc[ts, "funding_interval_hours"]),
+                      "previous_rate": float(data.loc[prev, "last_funding_rate"]),
+                      "current_rate": float(data.loc[ts, "last_funding_rate"]),
+                  })
+              result["symbols"][symbol] = {
+                  "archive_sha256": source.sha256, "rows": len(data), "unit": unit,
+                  "interval_hours": sorted(float(x) for x in data["funding_interval_hours"].unique()),
+                  "max_delta_minutes": float(deltas.max()), "gap_count": len(gaps), "gaps": gaps,
+                  "times": [ts.isoformat() for ts in data.index],
+              }
+          out = Path(os.environ["OUT"])
+          (out / "diagnostic.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+      - name: Commit diagnostic evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f research/candidate-08/.run-funding-gap-diagnostic-v1
+          git add -A -- "$OUT" research/candidate-08/.run-funding-gap-diagnostic-v1
+          git commit -m "candidate-08: diagnose official funding cadence [skip ci]"
+          for attempt in 1 2 3 4; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
+            git rebase --abort || true
+            sleep $((attempt * 3))
+          done
+          exit 1
