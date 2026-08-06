@@ -1,0 +1,177 @@
+name: candidate-04-v34-branch-evidence-collector
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v34-branch-evidence-collector.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_WORKFLOW: candidate-04-v34-staged-research.yml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Locate and wait for latest V34 staged run
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id="$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/${TARGET_WORKFLOW}/runs?branch=research/candidate-04&per_page=20" \
+            --jq '[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")][0].id // empty')"
+          if [[ -z "$run_id" ]]; then
+            raise_file="research/candidate-04/evidence-v34-post-event-inventory-resolution.json"
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          Path("research/candidate-04/evidence-v34-post-event-inventory-resolution.json").write_text(
+              json.dumps({
+                  "candidate": "candidate-04-v34-post-event-inventory-resolution",
+                  "executed": False,
+                  "failure_classification": "implementation_or_workflow",
+                  "status": "no_staged_run_found",
+              }, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+            echo "RUN_ID=" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
+          for attempt in $(seq 1 120); do
+            status="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq .status)"
+            if [[ "$status" == "completed" ]]; then
+              break
+            fi
+            sleep 60
+          done
+          status="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq .status)"
+          if [[ "$status" != "completed" ]]; then
+            raise_file="research/candidate-04/evidence-v34-post-event-inventory-resolution.json"
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          Path("research/candidate-04/evidence-v34-post-event-inventory-resolution.json").write_text(
+              json.dumps({
+                  "candidate": "candidate-04-v34-post-event-inventory-resolution",
+                  "run_id": int(os.environ["RUN_ID"]),
+                  "executed": False,
+                  "failure_classification": "implementation_or_workflow",
+                  "status": "staged_run_did_not_complete_before_collector_timeout",
+              }, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+            exit 0
+          fi
+          echo "HEAD_SHA=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq .head_sha)" >> "$GITHUB_ENV"
+          echo "CONCLUSION=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq .conclusion)" >> "$GITHUB_ENV"
+
+      - name: Download all V34 staged artifacts
+        if: env.RUN_ID != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p restored-v34
+          gh run download "$RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir restored-v34 || true
+
+      - name: Reconcile run and create branch decision
+        if: env.RUN_ID != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-04/run-evidence
+          run_path="research/candidate-04/run-evidence/candidate-04-v34-staged-research-${RUN_ID}.json"
+          python research/candidate-04/reconcile_run_evidence.py \
+            --artifacts restored-v34 \
+            --workflow candidate-04-v34-staged-research \
+            --run-id "$RUN_ID" \
+            --head-sha "$HEAD_SHA" \
+            --conclusion "$CONCLUSION" \
+            --output "$run_path"
+          export V34_RUN_EVIDENCE="$run_path"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          record = json.loads(Path(os.environ["V34_RUN_EVIDENCE"]).read_text())
+          primary = record.get("primary_evidence")
+          primary_value = (
+              primary.get("value")
+              if isinstance(primary, dict)
+              and isinstance(primary.get("value"), dict)
+              else None
+          )
+          if primary_value is None:
+              decision = {
+                  "candidate": "candidate-04-v34-post-event-inventory-resolution",
+                  "run_id": record["run_id"],
+                  "source_commit": record["head_sha"],
+                  "workflow_conclusion": record["workflow_conclusion"],
+                  "failure_classification": "implementation_or_workflow",
+                  "status": "implementation_or_workflow_failure_before_decision",
+                  "run_evidence": os.environ["V34_RUN_EVIDENCE"],
+              }
+          else:
+              decision = {
+                  **primary_value,
+                  "candidate": primary_value.get(
+                      "candidate",
+                      "candidate-04-v34-post-event-inventory-resolution",
+                  ),
+                  "run_id": record["run_id"],
+                  "source_commit": primary_value.get(
+                      "source_commit",
+                      record["head_sha"],
+                  ),
+                  "workflow_conclusion": record["workflow_conclusion"],
+                  "failure_classification": record["failure_classification"],
+                  "status": (
+                      primary_value.get("status")
+                      or primary_value.get("stage")
+                      or primary_value.get("decision")
+                      or "economic_decision_available"
+                  ),
+                  "run_evidence": os.environ["V34_RUN_EVIDENCE"],
+              }
+          Path(
+              "research/candidate-04/evidence-v34-post-event-inventory-resolution.json"
+          ).write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit V34 evidence with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-04/evidence-v34-post-event-inventory-resolution.json \
+            research/candidate-04/run-evidence/candidate-04-v34-staged-research-*.json \
+            2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "collect V34 staged research evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
