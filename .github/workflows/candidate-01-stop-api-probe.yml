@@ -1,0 +1,47 @@
+name: candidate-01-stop-api-probe
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-stop-api-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Inspect fixed Nautilus order factory
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e HOME=/tmp \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python - <<"PY"
+              import inspect
+              from nautilus_trader.model.orders import OrderFactory
+              from nautilus_trader.model.enums import OrderType, TriggerType
+              print("ORDER_TYPES", OrderType.STOP_MARKET, OrderType.STOP_LIMIT)
+              print("TRIGGER", TriggerType.LAST_PRICE)
+              print("BRACKET_SIGNATURE", inspect.signature(OrderFactory.bracket))
+              print("STOP_MARKET_SIGNATURE", inspect.signature(OrderFactory.stop_market))
+              print("BRACKET_DOC", OrderFactory.bracket.__doc__)
+              PY
+            '
