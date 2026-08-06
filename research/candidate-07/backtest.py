@@ -15,7 +15,7 @@ import pandas as pd
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.backtest.models import FillModel, MakerTakerFeeModel
 from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
-from nautilus_trader.model.data import BarType
+from nautilus_trader.model.data import Bar, BarType
 try:
     from nautilus_trader.model.data import FundingRateUpdate
 except ImportError:  # pragma: no cover - compatibility for older module layout
@@ -23,7 +23,6 @@ except ImportError:  # pragma: no cover - compatibility for older module layout
 from nautilus_trader.model.enums import AccountType, OmsType
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency, Money
-from nautilus_trader.persistence.wranglers import BarDataWrangler
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 
 from smc_ict_4.event_log import write_events
@@ -259,24 +258,24 @@ def run_week(
 
     instrument = TestInstrumentProvider.btcusdt_perp_binance()
     bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-LAST-EXTERNAL")
-    # Pandas copy-on-write exposes read-only NumPy views in recent releases,
-    # while NautilusTrader 1.230.0's Cython wrangler requires writable buffers.
-    # Rebuild an owned contiguous frame without changing any market values.
-    writable_frame = pd.DataFrame(
-        {
-            column: bundle.frame[column].to_numpy(dtype="float64", copy=True)
-            for column in ("open", "high", "low", "close", "volume")
-        },
-        index=pd.DatetimeIndex(
-            bundle.frame.index.to_numpy(dtype="datetime64[ns]", copy=True),
-            tz="UTC",
-            name=bundle.frame.index.name,
-        ),
-    )
-    for column in writable_frame.columns:
-        writable_frame[column].to_numpy(copy=False).setflags(write=True)
-    writable_frame.index.to_numpy(copy=False).setflags(write=True)
-    bars = BarDataWrangler(bar_type, instrument).process(writable_frame)
+    # Construct canonical Nautilus Bar objects directly. This avoids a known
+    # pandas copy-on-write incompatibility in the legacy Cython wrangler while
+    # retaining NautilusTrader as the sole replay and execution engine.
+    bars = []
+    for row in bundle.frame.itertuples():
+        ts_event = int(row.Index.value)
+        bars.append(
+            Bar(
+                bar_type=bar_type,
+                open=instrument.make_price(row.open),
+                high=instrument.make_price(row.high),
+                low=instrument.make_price(row.low),
+                close=instrument.make_price(row.close),
+                volume=instrument.make_qty(row.volume),
+                ts_event=ts_event,
+                ts_init=ts_event,
+            ),
+        )
     funding_updates = [
         FundingRateUpdate(
             instrument_id=instrument.id,
