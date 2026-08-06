@@ -37,17 +37,25 @@ jobs:
           path: .cache/candidate-09
           key: candidate-09-binance-vision-v1
 
-      - name: Normalize text transport and reconstruct the identical frozen v5 source
+      - name: Reconstruct the identical frozen v5 source from small verified chunks
         shell: bash
         run: |
           set -euo pipefail
           root=research/candidate-09
 
-          tr -d '\r\n\t ' < "$root/bootstrap/v5-engine.gz.b64" > /tmp/v5-engine.gz.b64
+          cat \
+            "$root/bootstrap/v5-engine.part00" \
+            "$root/bootstrap/v5-engine.part01" \
+            "$root/bootstrap/v5-engine.part02" \
+            "$root/bootstrap/v5-engine.part03" \
+            "$root/bootstrap/v5-engine.part04" \
+            "$root/bootstrap/v5-engine.part05" | tr -d '\r\n\t ' > /tmp/v5-engine.gz.b64
+          echo "ca0cc58f027762702507d2f7b5beb6e4b86330cb2ad8bd876849d11fa5334978  /tmp/v5-engine.gz.b64" | sha256sum -c -
           base64 -d /tmp/v5-engine.gz.b64 | gzip -dc > "$root/state_engine_v5.py"
           echo "1e26e4dd60088319a121aa1dadb8ef1c1d67f9587a2a14210b04623fb85e98ea  $root/state_engine_v5.py" | sha256sum -c -
 
           tr -d '\r\n\t ' < "$root/bootstrap/v5-test.gz.b64" > /tmp/v5-test.gz.b64
+          echo "e23c1da45770bd59797882139c83382d5bb330ab905d978763cc25c1e42ae316  /tmp/v5-test.gz.b64" | sha256sum -c -
           base64 -d /tmp/v5-test.gz.b64 | gzip -dc > /tmp/test_state_engine_v5.py
           echo "f34c405465d3aaee91e46e5b5fe76f1aea94101ed163b5680a15ed93b4bf1efe  /tmp/test_state_engine_v5.py" | sha256sum -c -
 
@@ -124,7 +132,7 @@ jobs:
               'fixed_weeks_preserved': True,
               'strategy_parameters_preserved': True,
               'parameter_search_performed': False,
-              'controlled_change': 'normalize base64 transport whitespace only',
+              'controlled_change': 'split text transport into small chunks; candidate unchanged',
               'engine_sha256': '1e26e4dd60088319a121aa1dadb8ef1c1d67f9587a2a14210b04623fb85e98ea',
               'run_id': os.environ.get('GITHUB_RUN_ID'),
               'trigger_sha': os.environ.get('GITHUB_SHA'),
