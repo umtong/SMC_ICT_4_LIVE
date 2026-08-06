@@ -24,6 +24,15 @@ def _attribution_checks() -> dict[str, bool]:
     }
 
 
+def _base_evidence_checks() -> dict[str, bool]:
+    return {
+        "complete_auction_scenario_attribution": True,
+        "complete_post_run_trade_path_diagnostics": True,
+        "base_contract_includes_both_auction_families": True,
+        "base_contract_includes_both_flow_response_families": True,
+    }
+
+
 def _base_summary(
     *,
     suite: str,
@@ -41,9 +50,14 @@ def _base_summary(
         "scenario_attribution_passed": True,
         "scenario_attribution_checks": _attribution_checks(),
         "suite_gate_passed": gate,
+        "suite_gate_checks": _base_evidence_checks(),
         "closed_trades": 5,
         "wins": 2,
         "combined_daily_geometric_growth": 0.02 if gate else -0.01,
+        "trade_path_diagnostic_summary": {
+            "records": 5,
+            "complete_records": 5,
+        },
         "scenario_family_results": {
             INITIATIVE_FAMILY: {
                 "signals": 4,
@@ -77,6 +91,10 @@ def _diagnostic_summary(*, suite: str, mode: str, economic_pass: bool) -> dict:
         "closed_trades": 3,
         "wins": 2,
         "combined_daily_geometric_growth": 0.02 if economic_pass else -0.01,
+        "trade_path_diagnostic_summary": {
+            "records": 3,
+            "complete_records": 3,
+        },
         "suite_gate_checks": {
             "minimum_closed_trades": True,
             "cost_after_total_return_positive": economic_pass,
@@ -88,6 +106,7 @@ def _diagnostic_summary(*, suite: str, mode: str, economic_pass: bool) -> dict:
             "realized_loss_budget_respected": True,
             "funding_cost_state_is_causal_and_complete": True,
             "complete_auction_scenario_attribution": True,
+            "complete_post_run_trade_path_diagnostics": True,
             "base_contract_includes_both_auction_families": False,
             "base_contract_includes_both_flow_response_families": False,
         },
@@ -109,7 +128,11 @@ def _diagnostic_summary(*, suite: str, mode: str, economic_pass: bool) -> dict:
 
 
 class _FakeRunner:
-    def __init__(self, summaries: dict[tuple[str, str], dict], failures: set[tuple[str, str]] = set()):
+    def __init__(
+        self,
+        summaries: dict[tuple[str, str], dict],
+        failures: set[tuple[str, str]] = set(),
+    ):
         self.summaries = summaries
         self.failures = failures
         self.calls: list[tuple[str, str, bool]] = []
@@ -217,6 +240,57 @@ class FlowResponseStagedValidationContracts(unittest.TestCase):
             fake.calls,
             [("first", "both", False), ("first", "initiative_only", False)],
         )
+
+    def test_incomplete_base_path_evidence_is_not_a_logic_failure(self) -> None:
+        summary = _base_summary(
+            suite="first",
+            gate=False,
+            initiative_pnl=-500.0,
+            absorption_pnl=-100.0,
+        )
+        summary["suite_gate_checks"]["complete_post_run_trade_path_diagnostics"] = False
+        summary["trade_path_diagnostic_summary"]["complete_records"] = 4
+        fake = _FakeRunner({("first", "both"): summary})
+        status, decision = self._execute(fake)
+        self.assertEqual(status, 1)
+        self.assertEqual(decision["decision"], "FIRST_WEEK_EVIDENCE_CONTRACT_FAILURE")
+        self.assertIn(
+            "EVIDENCE_COMPLETE_POST_RUN_TRADE_PATH_DIAGNOSTICS_FAILED",
+            decision["first_evidence_contract_errors"],
+        )
+        self.assertIn(
+            "TRADE_PATH_COMPLETE_COUNT_MISMATCH",
+            decision["first_evidence_contract_errors"],
+        )
+        self.assertFalse(decision["ablation_selected"])
+        self.assertEqual(fake.calls, [("first", "both", False)])
+
+    def test_incomplete_diagnostic_path_evidence_is_implementation_failure(self) -> None:
+        diagnostic = _diagnostic_summary(
+            suite="first",
+            mode="initiative_only",
+            economic_pass=True,
+        )
+        diagnostic["suite_gate_checks"]["complete_post_run_trade_path_diagnostics"] = False
+        diagnostic["trade_path_diagnostic_summary"]["complete_records"] = 2
+        fake = _FakeRunner(
+            {
+                ("first", "both"): _base_summary(
+                    suite="first",
+                    gate=False,
+                    initiative_pnl=500.0,
+                    absorption_pnl=-300.0,
+                ),
+                ("first", "initiative_only"): diagnostic,
+            }
+        )
+        status, decision = self._execute(fake)
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            decision["decision"],
+            "DIAGNOSTIC_ABLATION_EVIDENCE_CONTRACT_FAILURE",
+        )
+        self.assertFalse(decision["ablation_new_base_rebuild_supported"])
 
     def test_runner_failure_is_implementation_failure(self) -> None:
         fake = _FakeRunner({}, failures={("first", "both")})
