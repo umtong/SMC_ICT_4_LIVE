@@ -7,11 +7,15 @@ import tempfile
 import unittest
 import zipfile
 
+import numpy as np
 import pandas as pd
 
 from data_aggtrades_1s import _read_archive_to_seconds
 from diagnose_aggtrade_resilience_v2 import preconsume_before_event_window
 from diagnose_impact_resilience_1s import Pool
+from run_aggtrade_resilience_second_safe import (
+    first_touch_after_complete_confirmation_second,
+)
 
 
 class AggTradeLoaderTests(unittest.TestCase):
@@ -69,6 +73,37 @@ class AggTradeLoaderTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertAlmostEqual(records[0]["taker_sell_quote"], 100.0)
         self.assertAlmostEqual(records[0]["taker_buy_quote"], 199.0)
+
+
+class CausalSecondBoundaryTests(unittest.TestCase):
+    def test_confirmation_second_is_not_a_post_confirmation_touch(self) -> None:
+        second = 1_766_103_599
+        timestamps = np.array(
+            [
+                second * 1_000_000_000 + 999_999_999,
+                (second + 1) * 1_000_000_000 + 999_999_999,
+            ],
+            dtype=np.int64,
+        )
+        previous_close = np.array([99.0, 99.0])
+        highs = np.array([101.0, 101.0])
+        lows = np.array([98.0, 98.0])
+        pool = Pool(
+            "5MH-causal",
+            "5M",
+            "UPPER",
+            100.0,
+            0,
+            second * 1_000_000_000 + 999_000_000,
+        )
+        touch = first_touch_after_complete_confirmation_second(
+            pool,
+            timestamps=timestamps,
+            previous_close=previous_close,
+            highs=highs,
+            lows=lows,
+        )
+        self.assertEqual(touch, 1)
 
 
 class PreconsumptionTests(unittest.TestCase):
