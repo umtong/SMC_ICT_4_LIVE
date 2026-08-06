@@ -516,6 +516,12 @@ def build_catalog(
         ask_size = instrument.make_qty(ask_qty)
         if float(bid_size) <= 0 or float(ask_size) <= 0:
             return
+        # ParquetDataCatalog requires file time intervals to be disjoint.
+        # Multiple bookTicker updates can share one observed timestamp, so only
+        # flush after the threshold when the next timestamp is strictly newer.
+        if len(batch) >= 100_000 and ts_init > batch[-1].ts_init:
+            catalog.write_data(batch)
+            batch.clear()
         batch.append(
             QuoteTick(
                 instrument_id=instrument.id,
@@ -528,9 +534,6 @@ def build_catalog(
             )
         )
         retained += 1
-        if len(batch) >= 100_000:
-            catalog.write_data(batch)
-            batch.clear()
 
     for path in sorted(book_ticker_paths, key=lambda item: item.name):
         archive, reader = _one_csv_reader(path)
