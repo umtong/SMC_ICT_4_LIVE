@@ -1,4 +1,4 @@
-"""Reproducible candidate 10 v4 acceptance-continuation runner."""
+"""Reproducible candidate 10 v4 controlled-execution runner."""
 
 from __future__ import annotations
 
@@ -9,7 +9,9 @@ from pathlib import Path
 import subprocess
 import sys
 
+import c10_flow_research as _flow_research_module
 from c10_flow_model import FlowParams
+from c10_flow_parent_execution import ParentProtectedFlowCandidate10Strategy
 from c10_flow_precision_fix import reproducible_weeks
 from c10_flow_v4 import run_v4_backtest
 
@@ -41,13 +43,33 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
     week = date.fromisoformat(args.week)
     params, require_flow = variants()[args.variant]
     destination = output_root / args.phase / week.isoformat() / args.variant
-    metrics = run_v4_backtest(
-        require_acceptance_order_flow=require_flow,
-        week_start=week,
-        variant=args.variant,
-        params=params,
-        output_dir=destination,
-        data_root=Path(args.data_root) / week.isoformat(),
+
+    # Controlled implementation rerun: only the Nautilus order lifecycle is
+    # replaced. The v4 state machine, all parameters, data, risk, costs, seed and
+    # the one-variable flow ablation are unchanged.
+    previous_strategy = _flow_research_module.FlowCandidate10Strategy
+    _flow_research_module.FlowCandidate10Strategy = (
+        ParentProtectedFlowCandidate10Strategy
+    )
+    try:
+        metrics = run_v4_backtest(
+            require_acceptance_order_flow=require_flow,
+            week_start=week,
+            variant=args.variant,
+            params=params,
+            output_dir=destination,
+            data_root=Path(args.data_root) / week.isoformat(),
+        )
+    finally:
+        _flow_research_module.FlowCandidate10Strategy = previous_strategy
+
+    metrics["execution_lifecycle"] = (
+        "PARENT_ONLY_CANCEL_REMAINDER_PER_FILL_REDUCE_ONLY_PROTECTION"
+    )
+    metrics_path = destination / "metrics.json"
+    metrics_path.write_text(
+        json.dumps(metrics, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
     print("RESULT_JSON=" + json.dumps(metrics, sort_keys=True), flush=True)
     return 0
@@ -113,6 +135,11 @@ def main() -> int:
             "both variants retain fast-range price acceptance, price efficiency, "
             "accepted-boundary entry, macro target, stop, cost, risk and seed; "
             "only same-side executed aggressor-flow confirmation is removed"
+        ),
+        "implementation_control": (
+            "parent LIMIT only; cancel remainder after first actual execution; "
+            "each fill quantity receives independent reduce-only LAST_PRICE stop "
+            "and post-only target; already-crossed protection exits at market"
         ),
     }
     (output_root / "week_selection.json").write_text(
