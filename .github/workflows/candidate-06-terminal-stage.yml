@@ -1,0 +1,128 @@
+name: Candidate 06 Terminal Multi-timescale Stage
+
+on:
+  push:
+    branches:
+      - research/candidate-06
+    paths:
+      - "artifacts/candidate-06/final-breakthrough/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-06-terminal-stage
+  cancel-in-progress: true
+
+jobs:
+  terminal-stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+    steps:
+      - name: Checkout candidate branch and prior evidence
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed environment and composite causality
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(actual)
+          PY
+          python -m py_compile research/candidate-06/*.py
+          python research/candidate-06/test_composite_engine.py
+
+      - name: Run conditional v0.8 terminal stage
+        id: terminal
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/terminal-stage
+          python research/candidate-06/run_terminal_stage.py \
+            --output artifacts/candidate-06/terminal-stage
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Guarantee auditable terminal evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts/candidate-06/terminal-stage
+          printf '%s\n' '${{ steps.terminal.outputs.exit_code }}' > artifacts/candidate-06/terminal-stage/workflow_exit_code.txt
+          if [ ! -f artifacts/candidate-06/terminal-stage/TERMINAL.md ]; then
+            printf '%s\n' '# Candidate 06 terminal stage failed before report generation' > artifacts/candidate-06/terminal-stage/TERMINAL.md
+          fi
+          if [ ! -f artifacts/candidate-06/terminal-stage/terminal.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          Path("artifacts/candidate-06/terminal-stage/terminal.json").write_text(
+              json.dumps(
+                  {
+                      "path": "IMPLEMENTATION_OR_RUNTIME_FAILURE_BEFORE_TERMINAL_REPORT",
+                      "complete_candidate": False,
+                      "selected_candidate": None,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              ) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+
+      - name: Commit terminal evidence
+        if: always() && github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add -f artifacts/candidate-06/terminal-stage
+          if [ -f research/candidate-06/config.composite.locked.json ]; then
+            git add -f research/candidate-06/config.composite.locked.json
+          fi
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Record candidate-06 terminal-stage evidence [skip ci]"
+          for attempt in 1 2 3 4; do
+            if git pull --rebase origin research/candidate-06 && git push origin HEAD:research/candidate-06; then
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+          echo "failed to persist terminal-stage evidence" >&2
+          exit 1
+
+      - name: Upload terminal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-terminal-stage
+          path: |
+            artifacts/candidate-06/terminal-stage
+            research/candidate-06/config.composite.locked.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Enforce complete-candidate result
+        if: always()
+        shell: bash
+        run: |
+          code='${{ steps.terminal.outputs.exit_code }}'
+          if [ -z "$code" ]; then
+            echo "terminal step did not report an exit code" >&2
+            exit 1
+          fi
+          exit "$code"
