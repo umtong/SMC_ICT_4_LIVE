@@ -1,10 +1,11 @@
 """Evidence-chain correction for the controlled parent-only lifecycle.
 
-Protection submission is an execution side effect of a parent fill, not a new
-scenario state. Before Nautilus emits POSITION_OPENED the scenario remains
-ORDER_PENDING; later fill chunks remain POSITION_OPEN. This subclass changes
-only ResearchEvent previous/next labels so the evidence chain reflects that
-ordering without altering any order or trading behavior.
+Nautilus can emit parent fills, position events, protective-order events and
+rejections at the same venue timestamp. These callbacks are execution side
+effects, not extra market-scenario states. This subclass derives every execution
+event's ``previous_state`` from the scenario's actual active state. Protection
+submission is a self-transition; genuine state-changing events update the active
+state after they are recorded. No order or trading behavior is changed.
 """
 
 from __future__ import annotations
@@ -28,10 +29,18 @@ class EvidenceValidatedParentProtectedStrategy(
         reference_price: float | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
-        if event_type == "PROTECTION_SUBMITTED" and self.active_trade is not None:
-            state = str(self.active_trade.get("event_state", "ORDER_PENDING"))
-            previous_state = state
-            next_state = state
+        if self.active_trade is not None:
+            current_state = str(
+                self.active_trade.get("event_state", "ORDER_PENDING"),
+            )
+            # ORDER_SUBMITTED is the first execution event and must retain the
+            # detector's ENTRY_READY -> ORDER_PENDING transition. Every later
+            # execution callback starts from the state actually reached so far.
+            if event_type != "ORDER_SUBMITTED":
+                previous_state = current_state
+            if event_type == "PROTECTION_SUBMITTED":
+                next_state = current_state
+
         super()._append_execution_event(
             event_type=event_type,
             reason_code=reason_code,
@@ -42,10 +51,8 @@ class EvidenceValidatedParentProtectedStrategy(
             details=details,
         )
 
-    def _handle_parent_execution_error(self, event: Any, kind: str) -> None:
-        super()._handle_parent_execution_error(event, kind)
-        if self.active_trade is not None:
-            self.active_trade["event_state"] = "ORDER_ERROR"
+        if self.active_trade is not None and event_type != "PROTECTION_SUBMITTED":
+            self.active_trade["event_state"] = next_state
 
 
 __all__ = ["EvidenceValidatedParentProtectedStrategy"]
