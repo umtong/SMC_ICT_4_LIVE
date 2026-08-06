@@ -1,6 +1,6 @@
-"""Select the balance-to-initiative inventory auction."""
+"""Select valuation-dislocation contraction reversion."""
 from __future__ import annotations
 
-from backtest_balance_auction import run_week
+from backtest_valuation_dislocation import run_week
 
 __all__ = ["run_week"]
