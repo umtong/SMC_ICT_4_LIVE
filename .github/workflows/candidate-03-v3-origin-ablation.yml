@@ -1,0 +1,101 @@
+name: candidate-03-v3-origin-ablation
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - "research/candidate-03/derive_nt_lvcfr_origin_ablation_signals.py"
+      - "research/candidate-03/nt_lvcfr_v3_ablation_config.json"
+      - ".github/workflows/candidate-03-v3-origin-ablation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  PYTHONPATH: /workspace/src:/workspace/research/candidate-03
+  CONFIG: research/candidate-03/nt_lvcfr_v3_ablation_config.json
+
+jobs:
+  first-week-ablation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify pinned NautilusTrader and ablation contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c '
+              smc4 doctor &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_trade_proxy.py &&
+              PYTHONPYCACHEPREFIX=/tmp/candidate03-origin-ablation \
+                python -m py_compile research/candidate-03/derive_nt_lvcfr_origin_ablation_signals.py
+            '
+
+      - name: Restore immutable first-week uniform execution catalog
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr-v3-ablation/validation-1/prepared
+          key: nt-lvcfr-aggtrade-v1-btc-2024-01-08-${{ hashFiles('research/candidate-03/nt_lvcfr_trade_proxy.py', 'research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_v3_config.json') }}
+          fail-on-cache-miss: true
+
+      - name: Remove only outer-third origin and run same frozen week
+        shell: bash
+        run: |
+          set -euo pipefail
+          prepared=artifacts/candidate-03/nt-lvcfr-v3-ablation/validation-1/prepared
+          out=artifacts/candidate-03/nt-lvcfr-v3-ablation/validation-1
+          mkdir -p "$out"
+          sudo chmod -R a+rwX artifacts
+          cp "$prepared/signals.json" "$prepared/signals-v1.json"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/derive_nt_lvcfr_origin_ablation_signals.py \
+              --prepared-root $prepared --output-manifest $out/ablation_manifest.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('artifacts/candidate-03/nt-lvcfr-v3-ablation/validation-1/prepared/signals.json')
+          count = len(json.loads(path.read_text(encoding='utf-8')))
+          if count < 8:
+              raise SystemExit(f'ablation opportunity preflight failed: {count} < 8')
+          print({'origin_ablation_signals': count})
+          PY
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py \
+              --week-start 2024-01-08 --prepared-root $prepared --output $out --config $CONFIG" \
+            2>&1 | tee "$out/backtest.log"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
+              --config "$CONFIG" | tee "$out/gate.json"
+
+      - name: Preserve controlled ablation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-v3-origin-ablation-${{ github.sha }}
+          path: |
+            artifacts/candidate-03/nt-lvcfr-v3-ablation/**/*.json
+            artifacts/candidate-03/nt-lvcfr-v3-ablation/**/*.jsonl
+            artifacts/candidate-03/nt-lvcfr-v3-ablation/**/*.csv
+            artifacts/candidate-03/nt-lvcfr-v3-ablation/**/*.log
+          if-no-files-found: warn
+          retention-days: 30
