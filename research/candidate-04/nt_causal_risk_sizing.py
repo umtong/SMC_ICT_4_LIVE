@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Causal entry/stop fill estimates for candidate-04 NautilusTrader orders.
 
-The signal bar close is not assumed to equal the later market-order fill. The
-planned loss per unit includes direction-specific adverse bar-to-bar gaps from
-completed history and one exchange tick beyond the stop trigger. This is the
-project risk formula implemented before order submission; it is not a leverage
-cap, score multiplier, or separate execution simulator.
+The signal bar close is not assumed to equal the later market-order fill. With
+minute OHLC data, a pure close-to-next-open gap understates execution uncertainty
+because the matching engine can encounter the next bar path before the order is
+filled. The planned loss therefore includes a direction-specific 95th percentile
+of completed close-to-next-bar adverse excursions and one exchange tick beyond
+the stop trigger.
+
+This is the project's expected entry/stop fill calculation before order
+submission. It is not a leverage cap, score multiplier, or separate execution
+simulator.
 """
 from __future__ import annotations
 
@@ -23,7 +28,7 @@ from nt_liquidity_strategy import net_r_at_price
 
 
 GAP_WINDOW_BARS = 720
-GAP_QUANTILE = 0.99
+GAP_QUANTILE = 0.95
 GAP_MIN_OBSERVATIONS = 120
 
 
@@ -44,17 +49,21 @@ def adverse_transition_gaps(
     side: int,
     window: int = GAP_WINDOW_BARS,
 ) -> list[float]:
-    """Return past completed close-to-next-open gaps adverse to ``side``."""
+    """Return past close-to-next-bar excursions adverse to ``side``.
+
+    For a long order the next bar high is the conservative adverse executable
+    path from the previous close. For a short order the corresponding path is
+    the next bar low. Every observation is fully completed before calibration.
+    """
 
     selected = rows[-(window + 1) :]
     gaps: list[float] = []
     for previous, current in zip(selected, selected[1:]):
         previous_close = float(previous["close"])
-        current_open = float(current["open"])
         adverse = (
-            current_open - previous_close
+            float(current["high"]) - previous_close
             if side > 0
-            else previous_close - current_open
+            else previous_close - float(current["low"])
         )
         gaps.append(max(adverse, 0.0))
     return gaps
@@ -92,11 +101,11 @@ def risk_sized_submit_bracket(
         return False
     stop_trigger = setup.extreme - side * self.config.stop_buffer_atr * atr
     signal_entry = float(row["close"])
-    gap_buffer, gap_observations = causal_gap_buffer(list(self.bars), side)
+    excursion_buffer, gap_observations = causal_gap_buffer(list(self.bars), side)
     tick = _tick_size(self.instrument)
 
-    expected_entry_fill = signal_entry + side * gap_buffer
-    expected_stop_fill = stop_trigger - side * (gap_buffer + tick)
+    expected_entry_fill = signal_entry + side * excursion_buffer
+    expected_stop_fill = stop_trigger - side * (excursion_buffer + tick)
     price_loss = side * (expected_entry_fill - expected_stop_fill)
     if not math.isfinite(price_loss) or price_loss <= 0.0:
         return False
@@ -129,13 +138,13 @@ def risk_sized_submit_bracket(
         )
         if reference_r < self.config.session_min_opposite_target_r:
             self._event(
-                "INSUFFICIENT_OPPOSING_LIQUIDITY_AFTER_GAP",
+                "INSUFFICIENT_OPPOSING_LIQUIDITY_AFTER_EXCURSION",
                 setup.scenario,
                 row,
                 {
                     **details,
-                    "reference_net_r_after_gap": reference_r,
-                    "adverse_gap_buffer": gap_buffer,
+                    "reference_net_r_after_excursion": reference_r,
+                    "adverse_excursion_buffer": excursion_buffer,
                 },
             )
             return False
@@ -181,10 +190,10 @@ def risk_sized_submit_bracket(
             "equity": equity,
             "risk_budget": risk_budget,
             "planned_loss_per_unit": planned_loss,
-            "adverse_gap_buffer": gap_buffer,
-            "gap_quantile": GAP_QUANTILE,
-            "gap_window_bars": GAP_WINDOW_BARS,
-            "gap_observations": gap_observations,
+            "adverse_excursion_buffer": excursion_buffer,
+            "excursion_quantile": GAP_QUANTILE,
+            "excursion_window_bars": GAP_WINDOW_BARS,
+            "excursion_observations": gap_observations,
             "stop_slippage_ticks": 1,
         },
     )
