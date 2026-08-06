@@ -1,0 +1,75 @@
+name: candidate-08-time-scale-patch
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.patch-time-scale"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Enforce nanosecond event time and tolerate optional runtime statistics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          data_path = Path("research/candidate-08/data.py")
+          data_source = data_path.read_text(encoding="utf-8")
+          unit_anchor = '''def _timestamp_unit(series: pd.Series) -> str:\n    value = float(series.dropna().iloc[len(series.dropna()) // 2])\n    return "us" if value > 100_000_000_000_000 else "ms"\n\n\n'''
+          helper = '''def _index_to_nanoseconds(index: pd.DatetimeIndex) -> Any:\n    """Return explicit epoch nanoseconds regardless of pandas index resolution."""\n\n    return index.as_unit("ns").asi8.copy()\n\n\n'''
+          old_ts = '    timestamps_ns = frame.index.asi8\n'
+          new_ts = '    timestamps_ns = _index_to_nanoseconds(frame.index)\n'
+          if data_source.count(unit_anchor) != 1:
+              raise SystemExit("timestamp-unit anchor mismatch")
+          if data_source.count(old_ts) != 1:
+              raise SystemExit("raw asi8 timestamp assignment mismatch")
+          if helper not in data_source:
+              data_source = data_source.replace(unit_anchor, unit_anchor + helper)
+          data_source = data_source.replace(old_ts, new_ts)
+          data_path.write_text(data_source, encoding="utf-8")
+
+          run_path = Path("research/candidate-08/run.py")
+          run_source = run_path.read_text(encoding="utf-8")
+          old_stats = '            "stats_general": result.stats_general,\n'
+          new_stats = '            "stats_general": getattr(result, "stats_general", {}),\n'
+          if run_source.count(old_stats) != 1:
+              raise SystemExit("stats_general assignment mismatch")
+          run_path.write_text(run_source.replace(old_stats, new_stats), encoding="utf-8")
+
+          test_path = Path("research/candidate-08/test_logic.py")
+          test_source = test_path.read_text(encoding="utf-8")
+          import_anchor = 'import unittest\n\n\n'
+          data_loader = '''import pandas as pd\n\n\nDATA_MODULE_PATH = Path(__file__).with_name("data.py")\nDATA_SPEC = importlib.util.spec_from_file_location("candidate08_data", DATA_MODULE_PATH)\nassert DATA_SPEC and DATA_SPEC.loader\ncandidate_data = importlib.util.module_from_spec(DATA_SPEC)\nsys.modules[DATA_SPEC.name] = candidate_data\nDATA_SPEC.loader.exec_module(candidate_data)\n\n\n'''
+          class_anchor = 'class LogicContractTests(unittest.TestCase):\n'
+          regression_test = '''class LogicContractTests(unittest.TestCase):\n    def test_millisecond_index_is_converted_to_epoch_nanoseconds(self) -> None:\n        index = pd.to_datetime([1_712_534_459_999], unit="ms", utc=True)\n        converted = candidate_data._index_to_nanoseconds(index)\n        self.assertEqual(int(converted[0]), 1_712_534_459_999_000_000)\n\n'''
+          if test_source.count(import_anchor) != 1:
+              raise SystemExit("test import anchor mismatch")
+          if data_loader not in test_source:
+              test_source = test_source.replace(import_anchor, 'import unittest\n' + data_loader)
+          if test_source.count(class_anchor) != 1:
+              raise SystemExit("test class anchor mismatch")
+          test_source = test_source.replace(class_anchor, regression_test)
+          test_path.write_text(test_source, encoding="utf-8")
+          PY
+          rm research/candidate-08/.patch-time-scale
+          python -m compileall -q research/candidate-08
+          python research/candidate-08/test_logic.py -v
+          grep -nE '_index_to_nanoseconds|getattr\(result, "stats_general"' research/candidate-08/data.py research/candidate-08/run.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-08/data.py research/candidate-08/run.py research/candidate-08/test_logic.py research/candidate-08/.patch-time-scale
+          git commit -m "candidate-08: enforce Nautilus nanosecond event time"
+          git push origin HEAD:research/candidate-08
