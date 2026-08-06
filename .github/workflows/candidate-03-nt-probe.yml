@@ -36,7 +36,6 @@ jobs:
           cat > artifacts/nt-probe/probe.py <<'PY'
           import importlib
           import inspect
-          import json
           import pkgutil
           import traceback
 
@@ -44,24 +43,22 @@ jobs:
 
           print("nautilus_version", getattr(nautilus_trader, "__version__", "unknown"))
 
-          targets = [
-              ("nautilus_trader.backtest.node", ["BacktestDataConfig", "BacktestEngineConfig", "BacktestNode", "BacktestRunConfig", "BacktestVenueConfig"]),
-              ("nautilus_trader.config", ["ImportableStrategyConfig", "StrategyConfig"]),
-              ("nautilus_trader.persistence.catalog", ["ParquetDataCatalog"]),
-              ("nautilus_trader.model.data", ["TradeTick", "QuoteTick", "Bar", "CustomData", "DataType"]),
-              ("nautilus_trader.model.instruments", ["CryptoPerpetual", "CurrencyPair"]),
-              ("nautilus_trader.model.orders", ["MarketOrder", "StopMarketOrder", "LimitOrder"]),
-              ("nautilus_trader.model.events", ["OrderFilled", "OrderRejected", "PositionOpened", "PositionClosed"]),
-              ("nautilus_trader.trading.strategy", ["Strategy"]),
-              ("nautilus_trader.execution", ["DefaultFillModel", "OneTickSlippageFillModel", "ProbabilisticFillModel"]),
-          ]
-
           def signature(obj):
               try:
                   return str(inspect.signature(obj))
               except Exception as exc:
                   return f"<{type(exc).__name__}: {exc}>"
 
+          targets = [
+              ("nautilus_trader.backtest.node", ["BacktestDataConfig", "BacktestEngineConfig", "BacktestNode", "BacktestRunConfig", "BacktestVenueConfig"]),
+              ("nautilus_trader.config", ["ImportableStrategyConfig", "StrategyConfig"]),
+              ("nautilus_trader.persistence.catalog", ["ParquetDataCatalog"]),
+              ("nautilus_trader.model.data", ["TradeTick", "QuoteTick", "Bar", "CustomData", "DataType", "FundingRateUpdate"]),
+              ("nautilus_trader.model.instruments", ["CryptoPerpetual", "CurrencyPair"]),
+              ("nautilus_trader.model.events", ["OrderFilled", "OrderRejected", "PositionOpened", "PositionClosed"]),
+              ("nautilus_trader.trading.strategy", ["Strategy"]),
+              ("nautilus_trader.execution", ["DefaultFillModel", "OneTickSlippageFillModel", "ProbabilisticFillModel"]),
+          ]
           for module_name, names in targets:
               try:
                   module = importlib.import_module(module_name)
@@ -81,7 +78,7 @@ jobs:
                   if doc:
                       print("doc", doc[:6000])
 
-          discover_modules = [
+          for module_name in [
               "nautilus_trader.model",
               "nautilus_trader.model.data",
               "nautilus_trader.serialization",
@@ -91,8 +88,8 @@ jobs:
               "nautilus_trader.common.factories",
               "nautilus_trader.model.events",
               "nautilus_trader.model.accounts",
-          ]
-          for module_name in discover_modules:
+              "nautilus_trader.portfolio",
+          ]:
               try:
                   module = importlib.import_module(module_name)
               except Exception as exc:
@@ -101,59 +98,63 @@ jobs:
               print("\nDISCOVER", module_name)
               print([n for n in dir(module) if any(k in n.lower() for k in ("custom", "register", "data_type", "datatype", "funding", "account", "transaction"))])
 
-          candidates = []
-          for finder, name, ispkg in pkgutil.walk_packages(nautilus_trader.__path__, nautilus_trader.__name__ + "."):
-              if any(k in name.lower() for k in ("serialization", "custom", "persistence", "funding")):
-                  candidates.append(name)
           print("\nPACKAGE_CANDIDATES")
-          print("\n".join(candidates[:300]))
+          try:
+              candidates = []
+              for _, name, _ in pkgutil.walk_packages(nautilus_trader.__path__, nautilus_trader.__name__ + "."):
+                  if any(k in name.lower() for k in ("serialization", "custom", "persistence", "funding")):
+                      candidates.append(name)
+              print("\n".join(candidates[:300]))
+          except Exception:
+              traceback.print_exc()
 
           from nautilus_trader.persistence.catalog import ParquetDataCatalog
           print("\nCATALOG_METHODS")
           for name in dir(ParquetDataCatalog):
               if any(k in name.lower() for k in ("write", "query", "custom", "instrument", "trade", "quote", "bar")):
-                  obj = getattr(ParquetDataCatalog, name)
-                  print(name, signature(obj))
+                  print(name, signature(getattr(ParquetDataCatalog, name)))
 
           from nautilus_trader.trading.strategy import Strategy
           print("\nSTRATEGY_METHODS")
           for name in dir(Strategy):
               if any(k in name.lower() for k in ("subscribe", "submit", "close", "cancel", "portfolio", "account", "data", "order", "position")):
-                  obj = getattr(Strategy, name)
-                  print(name, signature(obj))
+                  print(name, signature(getattr(Strategy, name)))
 
-          try:
-              from nautilus_trader.common.factories import OrderFactory
-              print("\nORDER_FACTORY_METHODS")
-              for name in dir(OrderFactory):
-                  if not name.startswith("_"):
-                      print(name, signature(getattr(OrderFactory, name)))
-          except Exception:
-              traceback.print_exc()
-
-          try:
-              from nautilus_trader.portfolio import Portfolio
-              print("\nPORTFOLIO_METHODS")
-              for name in dir(Portfolio):
-                  if any(k in name.lower() for k in ("account", "balance", "equity", "pnl", "position", "margin", "exposure", "net")):
-                      print(name, signature(getattr(Portfolio, name)))
-          except Exception:
-              traceback.print_exc()
+          for module_name, object_name in [
+              ("nautilus_trader.common.factories", "OrderFactory"),
+              ("nautilus_trader.portfolio", "Portfolio"),
+          ]:
+              try:
+                  obj = getattr(importlib.import_module(module_name), object_name)
+                  print(f"\n{object_name.upper()}_METHODS")
+                  for name in dir(obj):
+                      if not name.startswith("_"):
+                          print(name, signature(getattr(obj, name)))
+              except Exception:
+                  traceback.print_exc()
           PY
 
       - name: Verify prebuilt runtime and inspect NautilusTrader 1.230.0 APIs
         shell: bash
         run: |
-          set -euo pipefail
-          docker pull "$IMAGE"
+          set -uo pipefail
+          docker pull "$IMAGE" > artifacts/nt-probe/docker-pull.txt 2>&1
+          pull_status=$?
           docker run --rm \
             -v "$PWD:/workspace" \
             -w /workspace \
             "$IMAGE" \
-            bash -lc 'smc4 doctor && python artifacts/nt-probe/probe.py | tee artifacts/nt-probe/api.txt'
-          test -s artifacts/nt-probe/api.txt
+            bash -lc 'smc4 doctor; python artifacts/nt-probe/probe.py' \
+            > artifacts/nt-probe/api.txt 2>&1
+          probe_status=$?
+          printf 'pull_status=%s\nprobe_status=%s\n' "$pull_status" "$probe_status" > artifacts/nt-probe/status.txt
+          cat artifacts/nt-probe/docker-pull.txt
+          cat artifacts/nt-probe/api.txt
+          cat artifacts/nt-probe/status.txt
+          exit 0
 
       - name: Preserve API probe
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: candidate-03-nt-probe-${{ github.sha }}
