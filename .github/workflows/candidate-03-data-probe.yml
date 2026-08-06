@@ -27,6 +27,7 @@ jobs:
             "$base/futures/um/daily/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01-07.zip"
             "$base/spot/daily/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01-07.zip"
             "$base/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-2024-01-07.zip"
+            "$base/futures/um/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2024-01.zip"
           )
           for url in "${urls[@]}"; do
             file="$out/${url##*/}"
@@ -38,13 +39,11 @@ jobs:
               unzip -l "$file"
               unzip -p "$file" | head -n 5 || true
             } >> "$out/schema.txt"
+            rm -f "$file"
           done
-          curl --fail --location --retry 5 --retry-all-errors \
-            'https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&startTime=1704585600000&endTime=1704758400000&limit=1000' \
-            > "$out/funding.json"
           cat "$out/schema.txt"
-          cat "$out/funding.json"
       - name: Preserve schema evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: candidate-03-data-probe-${{ github.sha }}
