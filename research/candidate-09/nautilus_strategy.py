@@ -122,10 +122,10 @@ class Candidate09Strategy(Strategy):
             quantity=quantity,
             time_in_force=TimeInForce.GTC,
             entry_order_type=OrderType.MARKET,
-            stop_loss_order_type=OrderType.STOP_MARKET,
-            stop_loss_trigger_price=stop,
-            take_profit_order_type=OrderType.LIMIT,
-            take_profit_price=target,
+            sl_order_type=OrderType.STOP_MARKET,
+            sl_trigger_price=stop,
+            tp_order_type=OrderType.LIMIT,
+            tp_price=target,
         )
         self._active_signal = signal
         self._planned_loss = float(sizing.planned_loss)
