@@ -1,0 +1,638 @@
+name: candidate-04-cross-asset-integrated-validation
+
+on:
+  workflow_run:
+    workflows:
+      - "candidate-04-v33-unopened-and-long"
+      - "candidate-04-v34-staged-research"
+      - "candidate-04-v34-survivor-long"
+      - "candidate-04-v35-unopened-and-long"
+      - "candidate-04-v36-unopened-and-long"
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      candidate_count: ${{ steps.metadata.outputs.candidate_count }}
+      screen_build_start: ${{ steps.metadata.outputs.screen_build_start }}
+      screen_start: ${{ steps.metadata.outputs.screen_start }}
+      screen_end: ${{ steps.metadata.outputs.screen_end }}
+      long_build_start: ${{ steps.metadata.outputs.long_build_start }}
+      long_start: ${{ steps.metadata.outputs.long_start }}
+      long_end: ${{ steps.metadata.outputs.long_end }}
+    env:
+      ORIGIN_WORKFLOW: ${{ github.event.workflow_run.name }}
+      ORIGIN_RUN_ID: ${{ github.event.workflow_run.id }}
+      ORIGIN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Restore every upstream final-validation artifact
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: "*"
+          path: upstream-artifacts
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Supply committed final evidence for manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upstream-artifacts/manual
+          find research/candidate-04 -maxdepth 1 -type f \
+            \( -name 'evidence-v33-long.json' \
+            -o -name 'evidence-v34-*-long.json' \
+            -o -name 'evidence-v35-long.json' \
+            -o -name 'evidence-v36-long.json' \) \
+            -exec cp {} upstream-artifacts/manual/ \;
+          echo "ORIGIN_WORKFLOW=manual-dispatch" >> "$GITHUB_ENV"
+          echo "ORIGIN_RUN_ID=${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          echo "ORIGIN_HEAD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Discover frozen BTC-long winners and preselect common windows
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-04-cross-asset/metadata
+          python research/candidate-04/discover_cross_asset_candidates.py \
+            --artifacts upstream-artifacts \
+            --head-sha "$ORIGIN_HEAD_SHA" \
+            --workflow "$ORIGIN_WORKFLOW" \
+            --run-id "$ORIGIN_RUN_ID" \
+            --output artifacts/candidate-04-cross-asset/metadata/candidates.json
+          count="$(python -c 'import json; print(json.load(open("artifacts/candidate-04-cross-asset/metadata/candidates.json"))["candidate_count"])')"
+          echo "candidate_count=$count" >> "$GITHUB_OUTPUT"
+          if [[ "$count" == "0" ]]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("artifacts/candidate-04-cross-asset/metadata/selection.json")
+          path.write_text(json.dumps({
+              "selected": False,
+              "reason": "upstream run has no BTC-long candidate satisfying the project gate",
+          }, indent=2, sort_keys=True) + "\n")
+          PY
+            for name in screen_build_start screen_start screen_end long_build_start long_start long_end; do
+              echo "$name=" >> "$GITHUB_OUTPUT"
+            done
+            exit 0
+          fi
+          python research/candidate-04/select_cross_asset_windows.py \
+            --repository-root . \
+            --evidence-root research/candidate-04 \
+            --candidates artifacts/candidate-04-cross-asset/metadata/candidates.json \
+            --origin-run-id "$ORIGIN_RUN_ID" \
+            --output artifacts/candidate-04-cross-asset/metadata/selection.json
+          echo "screen_build_start=$(python -c 'import json; print(json.load(open("artifacts/candidate-04-cross-asset/metadata/selection.json"))["screen"]["build_start"])')" >> "$GITHUB_OUTPUT"
+          echo "screen_start=$(python -c 'import json; print(json.load(open("artifacts/candidate-04-cross-asset/metadata/selection.json"))["screen"]["evaluation_start"])')" >> "$GITHUB_OUTPUT"
+          echo "screen_end=$(python -c 'import json; print(json.load(open("artifacts/candidate-04-cross-asset/metadata/selection.json"))["screen"]["evaluation_end"])')" >> "$GITHUB_OUTPUT"
+          echo "long_build_start=$(python -c 'import json; print(json.load(open("artifacts/candidate-04-cross-asset/metadata/selection.json"))["long_evaluation"]["build_start"])')" >> "$GITHUB_OUTPUT"
+          echo "long_start=$(python -c 'import json; print(json.load(open("artifacts/candidate-04-cross-asset/metadata/selection.json"))["long_evaluation"]["evaluation_start"])')" >> "$GITHUB_OUTPUT"
+          echo "long_end=$(python -c 'import json; print(json.load(open("artifacts/candidate-04-cross-asset/metadata/selection.json"))["long_evaluation"]["evaluation_end"])')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-cross-asset-metadata-${{ github.run_id }}
+          path: artifacts/candidate-04-cross-asset/metadata
+          if-no-files-found: error
+          retention-days: 90
+
+  runtime_smoke:
+    needs: discover
+    if: needs.discover.outputs.candidate_count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+
+      - name: Verify four-instrument runtime with empty causal signal streams
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          root="artifacts/candidate-04-cross-asset/runtime-smoke"
+          mkdir -p "$root/signals"
+          for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+            mkdir -p "$root/signals/$symbol"
+            printf '[]\n' > "$root/signals/$symbol/signals.json"
+          done
+          python research/candidate-04/nt_multi_asset_rich_backtest.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --signals-root "$root/signals" \
+            --build-start 2025-01-01 \
+            --build-end 2025-01-02 \
+            --evaluation-start 2025-01-01 \
+            --evaluation-end 2025-01-02 \
+            --cache ".cache/candidate-04-cross-asset/runtime-smoke" \
+            --output "$root/nautilus" \
+            --min-trades 0 \
+            --min-active-days 0 \
+            --min-win-rate 0 \
+            --min-geometric-daily -1 \
+            > "$root/console.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          metrics = json.loads(Path(
+              "artifacts/candidate-04-cross-asset/runtime-smoke/nautilus/metrics.json"
+          ).read_text())
+          coordinator = metrics["global_entry_coordinator"]
+          if not metrics["global_entry_pass"]:
+              raise SystemExit("portfolio-wide entry coordinator failed empty-stream smoke")
+          if coordinator["maximum_live_entries"] != 0:
+              raise SystemExit("empty signal streams unexpectedly opened a position")
+          if coordinator["invariant_violations"] != 0:
+              raise SystemExit("global entry invariant violation in smoke run")
+          if metrics["trades"] != 0:
+              raise SystemExit("empty signal streams produced trades")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-cross-asset-runtime-smoke-${{ github.run_id }}
+          path: artifacts/candidate-04-cross-asset/runtime-smoke
+          if-no-files-found: error
+          retention-days: 90
+
+  screen_features:
+    needs: [discover, runtime_smoke]
+    if: needs.discover.outputs.candidate_count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      BUILD_START: ${{ needs.discover.outputs.screen_build_start }}
+      BUILD_END: ${{ needs.discover.outputs.screen_end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+
+      - name: Build one common corrected rich stream for the screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          root="artifacts/candidate-04-cross-asset/screen-rich/${{ matrix.symbol }}"
+          mkdir -p "$root"
+          python research/candidate-04/rich_features_for_symbol.py \
+            --symbol "${{ matrix.symbol }}" \
+            --start "$BUILD_START" \
+            --end "$BUILD_END" \
+            --cache ".cache/candidate-04-cross-asset/screen-rich/${{ matrix.symbol }}" \
+            --output "$root/rich"
+          test -s "$root/rich/data_manifest.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-cross-asset-screen-rich-${{ matrix.symbol }}-${{ github.run_id }}
+          path: artifacts/candidate-04-cross-asset/screen-rich/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 90
+
+  screen:
+    needs: [discover, screen_features]
+    if: needs.discover.outputs.candidate_count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    outputs:
+      pass_count: ${{ steps.evaluate.outputs.pass_count }}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      C04_BUILD_START: ${{ needs.discover.outputs.screen_build_start }}
+      C04_BUILD_END: ${{ needs.discover.outputs.screen_end }}
+      C04_EVALUATION_START: ${{ needs.discover.outputs.screen_start }}
+      C04_EVALUATION_END: ${{ needs.discover.outputs.screen_end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-04-cross-asset-metadata-${{ github.run_id }}
+          path: artifacts/candidate-04-cross-asset/metadata
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-cross-asset-screen-rich-*-${{ github.run_id }}
+          path: restored-screen-rich
+          merge-multiple: false
+
+      - name: Compile every frozen candidate on identical four-symbol observations
+        id: evaluate
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          root="artifacts/candidate-04-cross-asset/screen"
+          mkdir -p "$root/candidates" "$root/config"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          base = json.loads(Path(
+              "research/candidate-04/inventory_transfer_config.json"
+          ).read_text())
+          target = Path("artifacts/candidate-04-cross-asset/screen/config")
+          target.mkdir(parents=True, exist_ok=True)
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              config = dict(base)
+              config["symbol"] = symbol
+              (target / f"{symbol}.json").write_text(
+                  json.dumps(config, indent=2, sort_keys=True) + "\n"
+              )
+          PY
+          candidate_count="$(python -c 'import json; print(json.load(open("artifacts/candidate-04-cross-asset/metadata/candidates.json"))["candidate_count"])')"
+          for index in $(seq 0 $((candidate_count - 1))); do
+            export CANDIDATE_JSON="$(python -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["successful_btc_long_candidates"][int(sys.argv[2])]))' artifacts/candidate-04-cross-asset/metadata/candidates.json "$index")"
+            candidate_id="$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATE_JSON"])["candidate_id"])')"
+            family="$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATE_JSON"])["family"])')"
+            route="$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATE_JSON"])["route"])')"
+            compiler="$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATE_JSON"])["compiler"])')"
+            source_commit="$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATE_JSON"])["source_commit"])')"
+            export CANDIDATE_ID="$candidate_id" CANDIDATE_FAMILY="$family" CANDIDATE_ROUTE="$route" CANDIDATE_COMPILER="$compiler" CANDIDATE_SOURCE_COMMIT="$source_commit"
+
+            python - <<'PY'
+          import json
+          import os
+          import subprocess
+          item = json.loads(os.environ["CANDIDATE_JSON"])
+          command = ["git", "diff", "--exit-code", item["source_commit"], "--", *item["source_paths"]]
+          subprocess.run(command, check=True)
+          PY
+            candidate_root="$root/candidates/$candidate_id"
+            mkdir -p "$candidate_root"
+            for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+              rich_dir="$(find restored-screen-rich -type f -path "*${symbol}*/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+              test -n "$rich_dir"
+              python "research/candidate-04/$compiler" \
+                --base-config "$root/config/$symbol.json" \
+                --impact-config research/candidate-04/impact_exhaustion_config.json \
+                --router-config research/candidate-04/auction_activity_router_config.json \
+                --rich-dir "$rich_dir" \
+                --kline-dir ".cache/candidate-04-cross-asset/screen/compiler-klines/$symbol" \
+                --evaluation-start "$C04_EVALUATION_START" \
+                --evaluation-end "$C04_EVALUATION_END" \
+                --output "$candidate_root/all_signals/$symbol" \
+                --download-klines \
+                > "$candidate_root/compiler-${symbol}.json"
+              python research/candidate-04/filter_candidate_signals.py \
+                --input "$candidate_root/all_signals/$symbol/signals.json" \
+                --output-dir "$candidate_root/signals/$symbol" \
+                --family "$family" \
+                --route "$route" \
+                > "$candidate_root/filter-${symbol}.json"
+            done
+            python research/candidate-04/nt_multi_asset_rich_backtest.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --signals-root "$candidate_root/signals" \
+              --build-start "$C04_BUILD_START" \
+              --build-end "$C04_BUILD_END" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --cache ".cache/candidate-04-cross-asset/screen/nautilus/$candidate_id" \
+              --output "$candidate_root/nautilus" \
+              --min-trades 28 \
+              --min-active-days 14 \
+              --min-win-rate 0.55 \
+              --min-geometric-daily 0.01 \
+              > "$candidate_root/nautilus-console.json"
+          done
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          metadata = json.loads(Path(
+              "artifacts/candidate-04-cross-asset/metadata/candidates.json"
+          ).read_text())
+          root = Path("artifacts/candidate-04-cross-asset/screen/candidates")
+          results = {}
+          passing = []
+          specs = {
+              item["candidate_id"]: item
+              for item in metadata["successful_btc_long_candidates"]
+          }
+          for candidate_id, spec in sorted(specs.items()):
+              metrics = json.loads((
+                  root / candidate_id / "nautilus/metrics.json"
+              ).read_text())
+              results[candidate_id] = {
+                  "specification": spec,
+                  "metrics": metrics,
+              }
+              if metrics.get("candidate_pass"):
+                  passing.append(spec)
+          decision = {
+              "candidate": "candidate-04-four-instrument-global-account",
+              "stage": "common_unseen_28_day_screen",
+              "selection": json.loads(Path(
+                  "artifacts/candidate-04-cross-asset/metadata/selection.json"
+              ).read_text()),
+              "results": results,
+              "passing_candidates": passing,
+              "pass_count": len(passing),
+              "candidate_specific_period_selection": False,
+              "candidate_source_modified_after_btc_long": False,
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "global_pending_or_position_limit": 1,
+          }
+          Path("artifacts/candidate-04-cross-asset/screen/research_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n"
+          )
+          Path("artifacts/candidate-04-cross-asset/screen/passing_candidates.json").write_text(
+              json.dumps({"candidates": passing}, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          pass_count="$(python -c 'import json; print(json.load(open("artifacts/candidate-04-cross-asset/screen/research_decision.json"))["pass_count"])')"
+          echo "pass_count=$pass_count" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-cross-asset-screen-${{ github.run_id }}
+          path: artifacts/candidate-04-cross-asset/screen
+          if-no-files-found: error
+          retention-days: 90
+
+  long_features:
+    needs: [discover, screen]
+    if: needs.screen.outputs.pass_count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      BUILD_START: ${{ needs.discover.outputs.long_build_start }}
+      BUILD_END: ${{ needs.discover.outputs.long_end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+
+      - name: Build one common corrected rich stream for the 91-day evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          root="artifacts/candidate-04-cross-asset/long-rich/${{ matrix.symbol }}"
+          mkdir -p "$root"
+          python research/candidate-04/rich_features_for_symbol.py \
+            --symbol "${{ matrix.symbol }}" \
+            --start "$BUILD_START" \
+            --end "$BUILD_END" \
+            --cache ".cache/candidate-04-cross-asset/long-rich/${{ matrix.symbol }}" \
+            --output "$root/rich"
+          test -s "$root/rich/data_manifest.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-cross-asset-long-rich-${{ matrix.symbol }}-${{ github.run_id }}
+          path: artifacts/candidate-04-cross-asset/long-rich/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 90
+
+  long_evaluation:
+    needs: [discover, screen, long_features]
+    if: needs.screen.outputs.pass_count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      C04_BUILD_START: ${{ needs.discover.outputs.long_build_start }}
+      C04_BUILD_END: ${{ needs.discover.outputs.long_end }}
+      C04_EVALUATION_START: ${{ needs.discover.outputs.long_start }}
+      C04_EVALUATION_END: ${{ needs.discover.outputs.long_end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-04-cross-asset-metadata-${{ github.run_id }}
+          path: artifacts/candidate-04-cross-asset/metadata
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-04-cross-asset-screen-${{ github.run_id }}
+          path: restored-screen
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-cross-asset-long-rich-*-${{ github.run_id }}
+          path: restored-long-rich
+          merge-multiple: false
+
+      - name: Execute every screen survivor on the identical 91-day four-symbol block
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          root="artifacts/candidate-04-cross-asset/long"
+          mkdir -p "$root/candidates" "$root/config"
+          cp restored-screen/passing_candidates.json "$root/passing_candidates.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          base = json.loads(Path(
+              "research/candidate-04/inventory_transfer_config.json"
+          ).read_text())
+          target = Path("artifacts/candidate-04-cross-asset/long/config")
+          target.mkdir(parents=True, exist_ok=True)
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              value = dict(base)
+              value["symbol"] = symbol
+              (target / f"{symbol}.json").write_text(
+                  json.dumps(value, indent=2, sort_keys=True) + "\n"
+              )
+          PY
+          pass_count="$(python -c 'import json; print(len(json.load(open("artifacts/candidate-04-cross-asset/long/passing_candidates.json"))["candidates"]))')"
+          for index in $(seq 0 $((pass_count - 1))); do
+            export CANDIDATE_JSON="$(python -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["candidates"][int(sys.argv[2])]))' "$root/passing_candidates.json" "$index")"
+            candidate_id="$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATE_JSON"])["candidate_id"])')"
+            family="$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATE_JSON"])["family"])')"
+            route="$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATE_JSON"])["route"])')"
+            compiler="$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATE_JSON"])["compiler"])')"
+            python - <<'PY'
+          import json
+          import os
+          import subprocess
+          item = json.loads(os.environ["CANDIDATE_JSON"])
+          subprocess.run(
+              ["git", "diff", "--exit-code", item["source_commit"], "--", *item["source_paths"]],
+              check=True,
+          )
+          PY
+            candidate_root="$root/candidates/$candidate_id"
+            mkdir -p "$candidate_root"
+            for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+              rich_dir="$(find restored-long-rich -type f -path "*${symbol}*/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+              test -n "$rich_dir"
+              python "research/candidate-04/$compiler" \
+                --base-config "$root/config/$symbol.json" \
+                --impact-config research/candidate-04/impact_exhaustion_config.json \
+                --router-config research/candidate-04/auction_activity_router_config.json \
+                --rich-dir "$rich_dir" \
+                --kline-dir ".cache/candidate-04-cross-asset/long/compiler-klines/$symbol" \
+                --evaluation-start "$C04_EVALUATION_START" \
+                --evaluation-end "$C04_EVALUATION_END" \
+                --output "$candidate_root/all_signals/$symbol" \
+                --download-klines \
+                > "$candidate_root/compiler-${symbol}.json"
+              python research/candidate-04/filter_candidate_signals.py \
+                --input "$candidate_root/all_signals/$symbol/signals.json" \
+                --output-dir "$candidate_root/signals/$symbol" \
+                --family "$family" \
+                --route "$route" \
+                > "$candidate_root/filter-${symbol}.json"
+            done
+            python research/candidate-04/nt_multi_asset_rich_backtest.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --signals-root "$candidate_root/signals" \
+              --build-start "$C04_BUILD_START" \
+              --build-end "$C04_BUILD_END" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --cache ".cache/candidate-04-cross-asset/long/nautilus/$candidate_id" \
+              --output "$candidate_root/nautilus" \
+              --min-trades 90 \
+              --min-active-days 45 \
+              --min-win-rate 0.55 \
+              --min-geometric-daily 0.01 \
+              > "$candidate_root/nautilus-console.json"
+          done
+
+          export CROSS_ASSET_ORIGIN_RUN_ID="$(python -c 'import json; print(json.load(open("artifacts/candidate-04-cross-asset/metadata/candidates.json"))["origin_run_id"])')"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          metadata = json.loads(Path(
+              "artifacts/candidate-04-cross-asset/metadata/candidates.json"
+          ).read_text())
+          selection = json.loads(Path(
+              "artifacts/candidate-04-cross-asset/metadata/selection.json"
+          ).read_text())
+          passing = json.loads(Path(
+              "artifacts/candidate-04-cross-asset/long/passing_candidates.json"
+          ).read_text())["candidates"]
+          root = Path("artifacts/candidate-04-cross-asset/long/candidates")
+          results = {}
+          successful = []
+          for spec in passing:
+              candidate_id = spec["candidate_id"]
+              metrics = json.loads((
+                  root / candidate_id / "nautilus/metrics.json"
+              ).read_text())
+              results[candidate_id] = {
+                  "specification": spec,
+                  "metrics": metrics,
+              }
+              if metrics.get("candidate_pass"):
+                  successful.append(spec)
+          evidence = {
+              "candidate": "candidate-04-four-instrument-global-account",
+              "origin_workflow": metadata["origin_workflow"],
+              "origin_run_id": metadata["origin_run_id"],
+              "selection": selection,
+              "screen_survivors": passing,
+              "long_results": results,
+              "successful_candidates": successful,
+              "final_validation_completed": True,
+              "project_target_reached": bool(successful),
+              "global_pending_new_entries_plus_positions_limit": 1,
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "candidate_specific_period_selection": False,
+              "performance_recalculated_outside_nautilus": False,
+              "decision": (
+                  "four_instrument_project_target_reached"
+                  if successful
+                  else "reject_all_btc_long_candidates_after_integrated_long_evaluation"
+              ),
+          }
+          target = Path("artifacts/candidate-04-cross-asset/long/final_decision.json")
+          target.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          committed = Path(
+              f"research/candidate-04/evidence-cross-asset-{metadata['origin_run_id']}.json"
+          )
+          committed.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-cross-asset-long-${{ github.run_id }}
+          path: artifacts/candidate-04-cross-asset/long
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Commit integrated validation evidence with rebase retry
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/evidence-cross-asset-*.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record four-instrument integrated validation"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
