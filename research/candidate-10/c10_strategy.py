@@ -14,6 +14,7 @@ except ImportError:  # Pinned 1.230 exports it from model; fallback aids static 
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import Venue
@@ -46,7 +47,7 @@ class Candidate10Config(StrategyConfig, frozen=True):
 
 
 class Candidate10Strategy(Strategy):
-    """Nautilus strategy wrapper; fills, positions and accounting stay in Nautilus."""
+    """Nautilus wrapper; fills, positions and accounting stay in Nautilus."""
 
     def __init__(self, config: Candidate10Config):
         super().__init__(config)
@@ -56,6 +57,9 @@ class Candidate10Strategy(Strategy):
         self.machine: AuctionStateMachine | None = None
         self.events: list[ResearchEvent] = []
         self.entry_pending = False
+        self.pending_expiry_ns: int | None = None
+        self.pending_invalidation_price: float | None = None
+        self.pending_direction: int | None = None
         self.active_trade: dict[str, Any] | None = None
         self.trade_records: list[dict[str, Any]] = []
         self.equity_curve: list[dict[str, Any]] = []
@@ -67,6 +71,7 @@ class Candidate10Strategy(Strategy):
         self.order_errors: list[dict[str, Any]] = []
         self.signals_seen = 0
         self.orders_submitted = 0
+        self.pending_cancellations = 0
         self.forced_exits = 0
         self.signals_outside_evaluation = 0
         self.eval_start_date = datetime.fromtimestamp(
@@ -163,17 +168,22 @@ class Candidate10Strategy(Strategy):
         )
         return self.instrument.make_price(units * tick)
 
-    def _risk_quantity(self, plan: TradePlan) -> Quantity | None:
+    def _risk_quantity(self, plan: TradePlan, entry_price: float, stop_price: float) -> Quantity | None:
         assert self.instrument is not None
         equity = Decimal(str(self._equity()))
         risk_budget = equity * self.config.risk_fraction
-        entry = Decimal(str(plan.entry_estimate))
-        stop = Decimal(str(plan.stop_price))
-        fee = Decimal(str(self.instrument.taker_fee))
+        entry = Decimal(str(entry_price))
+        stop = Decimal(str(stop_price))
+        maker_fee = Decimal(str(self.instrument.maker_fee))
+        taker_fee = Decimal(str(self.instrument.taker_fee))
         tick = Decimal(str(self.instrument.price_increment))
-        # Entry and stop are aggressive. The cost-loaded fee includes ordinary
-        # fees plus a two-basis-point execution reserve.
-        per_unit_loss = abs(entry - stop) + (entry + stop) * fee + tick * Decimal(2)
+        # The resting parent is maker; the protective stop is aggressive.
+        per_unit_loss = (
+            abs(entry - stop)
+            + entry * maker_fee
+            + stop * taker_fee
+            + tick * Decimal(2)
+        )
         if per_unit_loss <= 0:
             return None
         raw_qty = risk_budget / per_unit_loss
@@ -184,49 +194,92 @@ class Candidate10Strategy(Strategy):
             return None
         return self.instrument.make_qty(qty_value)
 
+    def _clear_pending_fields(self) -> None:
+        self.entry_pending = False
+        self.pending_expiry_ns = None
+        self.pending_invalidation_price = None
+        self.pending_direction = None
+
+    def _cancel_pending(self, ts_ns: int, reason: str, reference_price: float | None) -> None:
+        if not self.entry_pending:
+            return
+        self.cancel_all_orders(self.config.instrument_id)
+        self.pending_cancellations += 1
+        if self.active_trade is not None:
+            scenario_id = str(self.active_trade["scenario_id"])
+            self.events.append(
+                ResearchEvent(
+                    scenario_id=scenario_id,
+                    instrument_id=str(self.config.instrument_id),
+                    event_type="ORDER_CANCELED",
+                    event_time_ns=ts_ns,
+                    observed_time_ns=ts_ns,
+                    previous_state="ORDER_PENDING",
+                    next_state="CANCELED",
+                    reason_code=reason,
+                    reference_price=(None if reference_price is None else str(reference_price)),
+                    details={
+                        "expiry_ns": self.pending_expiry_ns,
+                        "invalidation_price": self.pending_invalidation_price,
+                    },
+                ),
+            )
+        self.active_trade = None
+        self._clear_pending_fields()
+
     def _submit_plan(self, plan: TradePlan, bar: BarView) -> None:
         assert self.instrument is not None
-        quantity = self._risk_quantity(plan)
-        if quantity is None:
-            return
-        entry = plan.entry_estimate
+        if plan.entry_order_type != "LIMIT":
+            raise RuntimeError(f"unsupported v1 entry order type: {plan.entry_order_type}")
         if plan.direction > 0:
+            entry = self._round_price(plan.entry_estimate, upward=False)
             stop = self._round_price(plan.stop_price, upward=False)
             target = self._round_price(plan.target_price, upward=False)
-            valid = stop.as_double() < entry < target.as_double()
+            valid = stop.as_double() < entry.as_double() < target.as_double()
             side = OrderSide.BUY
         else:
+            entry = self._round_price(plan.entry_estimate, upward=True)
             stop = self._round_price(plan.stop_price, upward=True)
             target = self._round_price(plan.target_price, upward=True)
-            valid = target.as_double() < entry < stop.as_double()
+            valid = target.as_double() < entry.as_double() < stop.as_double()
             side = OrderSide.SELL
         if not valid:
+            return
+        quantity = self._risk_quantity(plan, entry.as_double(), stop.as_double())
+        if quantity is None:
             return
 
         bracket = self.order_factory.bracket(
             instrument_id=self.config.instrument_id,
             order_side=side,
             quantity=quantity,
+            entry_order_type=OrderType.LIMIT,
+            entry_price=entry,
+            entry_post_only=True,
             tp_price=target,
-            tp_post_only=False,
+            tp_post_only=True,
             sl_trigger_price=stop,
         )
         start_equity = self._equity()
-        # Register state before dispatch because the backtest command queue can
-        # emit fills at the same market timestamp.
+        # Register state before dispatch because callbacks may share a timestamp.
         self.entry_pending = True
+        self.pending_expiry_ns = bar.ts_ns + plan.entry_expiry_bars * NS_PER_MINUTE
+        self.pending_invalidation_price = stop.as_double()
+        self.pending_direction = plan.direction
         self.orders_submitted += 1
         self.active_trade = {
             "scenario_id": plan.scenario_id,
             "scenario": plan.scenario,
             "direction": plan.direction,
             "signal_ts_ns": bar.ts_ns,
-            "entry_estimate": entry,
+            "entry_estimate": entry.as_double(),
             "stop": stop.as_double(),
             "target": target.as_double(),
             "quantity": quantity.as_double(),
             "start_equity": start_equity,
             "structural_target": plan.structural_target,
+            "entry_order_type": "LIMIT_POST_ONLY",
+            "planned_expiry_ns": self.pending_expiry_ns,
             "event_state": "ORDER_PENDING",
         }
         self.events.append(
@@ -238,27 +291,44 @@ class Candidate10Strategy(Strategy):
                 observed_time_ns=bar.ts_ns,
                 previous_state="ENTRY_READY",
                 next_state="ORDER_PENDING",
-                reason_code="NAUTILUS_BRACKET_SUBMITTED",
-                reference_price=str(entry),
+                reason_code="NAUTILUS_POST_ONLY_LIMIT_BRACKET_SUBMITTED",
+                reference_price=str(entry.as_double()),
                 details={
                     "quantity": quantity.as_double(),
+                    "entry": entry.as_double(),
                     "stop": stop.as_double(),
                     "target": target.as_double(),
                     "risk_fraction": str(self.config.risk_fraction),
                     "structural_target": plan.structural_target,
+                    "expiry_ns": self.pending_expiry_ns,
                 },
             ),
         )
         self.submit_order_list(bracket)
 
-    def _force_flat(self) -> None:
+    def _force_flat(self, ts_ns: int) -> None:
         if self.entry_pending:
-            self.cancel_all_orders(self.config.instrument_id)
-            self.entry_pending = False
+            self._cancel_pending(ts_ns, "SCHEDULED_FLAT_WINDOW", None)
         if not self.portfolio.is_flat(self.config.instrument_id):
             self.cancel_all_orders(self.config.instrument_id)
             self.close_all_positions(self.config.instrument_id)
             self.forced_exits += 1
+
+    def _check_pending_invalidation(self, view: BarView) -> None:
+        if not self.entry_pending:
+            return
+        if self.pending_expiry_ns is not None and view.ts_ns > self.pending_expiry_ns:
+            self._cancel_pending(view.ts_ns, "RESTING_ENTRY_EXPIRED", view.close)
+            return
+        if self.pending_direction is None or self.pending_invalidation_price is None:
+            return
+        invalidated = (
+            view.close <= self.pending_invalidation_price
+            if self.pending_direction > 0
+            else view.close >= self.pending_invalidation_price
+        )
+        if invalidated:
+            self._cancel_pending(view.ts_ns, "STRUCTURE_INVALIDATED_BEFORE_FILL", view.close)
 
     def on_bar(self, bar: Bar) -> None:
         view = BarView(
@@ -280,8 +350,9 @@ class Candidate10Strategy(Strategy):
             self.current_day = day
 
         self._record_equity(view.ts_ns)
+        self._check_pending_invalidation(view)
         if self._must_flatten(view.ts_ns):
-            self._force_flat()
+            self._force_flat(view.ts_ns)
 
         if self.machine is None:
             return
@@ -307,11 +378,28 @@ class Candidate10Strategy(Strategy):
                 self.signals_outside_evaluation += 1
 
     def on_position_opened(self, event: Any) -> None:
-        self.entry_pending = False
-        if self.active_trade is not None:
-            self.active_trade["opened_ts_ns"] = int(
-                getattr(event, "ts_event", self.clock.timestamp_ns()),
-            )
+        if self.active_trade is None:
+            self._clear_pending_fields()
+            return
+        ts_ns = int(getattr(event, "ts_event", self.clock.timestamp_ns()))
+        self.active_trade["opened_ts_ns"] = ts_ns
+        self.active_trade["event_state"] = "POSITION_OPEN"
+        scenario_id = str(self.active_trade["scenario_id"])
+        self.events.append(
+            ResearchEvent(
+                scenario_id=scenario_id,
+                instrument_id=str(self.config.instrument_id),
+                event_type="POSITION_OPENED",
+                event_time_ns=ts_ns,
+                observed_time_ns=ts_ns,
+                previous_state="ORDER_PENDING",
+                next_state="POSITION_OPEN",
+                reason_code="RESTING_PARENT_FILLED",
+                reference_price=str(self.active_trade["entry_estimate"]),
+                details={"quantity": self.active_trade["quantity"]},
+            ),
+        )
+        self._clear_pending_fields()
 
     def on_position_closed(self, event: Any) -> None:
         if self.active_trade is None:
@@ -333,7 +421,7 @@ class Candidate10Strategy(Strategy):
                 event_type="POSITION_CLOSED",
                 event_time_ns=record["closed_ts_ns"],
                 observed_time_ns=record["closed_ts_ns"],
-                previous_state=str(record.get("event_state", "ORDER_PENDING")),
+                previous_state=str(record.get("event_state", "POSITION_OPEN")),
                 next_state="CLOSED",
                 reason_code="NAUTILUS_POSITION_CLOSED",
                 reference_price=None,
@@ -341,13 +429,13 @@ class Candidate10Strategy(Strategy):
             ),
         )
         self.active_trade = None
-        self.entry_pending = False
+        self._clear_pending_fields()
 
     def _order_error(self, event: Any, kind: str) -> None:
         ts_ns = int(getattr(event, "ts_event", self.clock.timestamp_ns()))
         payload = {"kind": kind, "ts_ns": ts_ns, "event": str(event)}
         self.order_errors.append(payload)
-        self.entry_pending = False
+        self._clear_pending_fields()
         if self.active_trade is None:
             return
         scenario_id = str(self.active_trade["scenario_id"])
@@ -381,7 +469,7 @@ class Candidate10Strategy(Strategy):
         self._order_error(event, "REJECTED")
 
     def on_stop(self) -> None:
-        self._force_flat()
+        self._force_flat(self.clock.timestamp_ns())
         if self.current_day is not None and self._is_evaluation_day(self.current_day):
             self.daily_nav[self.current_day] = self._equity()
 
