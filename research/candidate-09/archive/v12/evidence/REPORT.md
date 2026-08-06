@@ -2,18 +2,18 @@
 
 - Status: **GATE_FAIL**
 - Gate passed: **False**
-- Baseline pooled daily geometric return: **0.871956%**
-- Baseline pooled NAV multiple across sampled days: **1.199994x**
-- Baseline trades: **16**
-- Maximum sampled-segment drawdown: **5.911134%**
+- Baseline pooled daily geometric return: **0.534724%**
+- Baseline pooled NAV multiple across sampled days: **1.118505x**
+- Baseline trades: **8**
+- Maximum sampled-segment drawdown: **5.910882%**
 
 ## Fixed-week results
 
 | week | return | daily geo | trades | win rate | PF | max DD | reversal | continuation | implementation |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| week-a | 14.6670% | 1.9744% | 9 | 66.67% | 2.486 | 3.0008% | 9 | 0 | OK |
-| week-b | -5.9111% | -0.8667% | 2 | 0.00% | 0.000 | 5.9111% | 2 | 0 | OK |
-| week-c | 11.2251% | 1.5314% | 5 | 60.00% | 2.743 | 2.9999% | 5 | 0 | OK |
+| week-a | 8.0446% | 1.1115% | 6 | 66.67% | 2.245 | 5.9109% | 6 | 0 | OK |
+| week-b | 0.0000% | 0.0000% | 0 | n/a | n/a | 0.0000% | 0 | 0 | OK |
+| week-c | 3.5225% | 0.4958% | 2 | 50.00% | 2.174 | 2.9997% | 2 | 0 | OK |
 
 ## Gate checks
 
@@ -26,8 +26,8 @@
 ## Failure classification / structural diagnosis
 
 - Classification: **LOGIC_ERROR_WITH_STRUCTURAL_PATH**
-- Largest influence: **boundary-stop-all**
-- Required action: The single-variable ablation boundary-stop-all improved pooled cost-after growth; revise only that confirmation layer, then freeze and retest.
+- Largest influence: **no-limit-salvage**
+- Required action: The single-variable ablation no-limit-salvage improved pooled cost-after growth; revise only that confirmation layer, then freeze and retest.
 
 ## Known failure conditions
 

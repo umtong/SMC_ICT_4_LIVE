@@ -1,4 +1,4 @@
-"""NautilusTrader strategy adapter for the pure candidate-09 state engine."""
+"""NautilusTrader strategy adapter for candidate-09 v12 market and limit signals."""
 
 from __future__ import annotations
 
@@ -8,11 +8,10 @@ from decimal import Decimal
 from typing import Any, Mapping, MutableSequence
 
 from nautilus_trader.config import StrategyConfig
-from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import Bar, BarType
 from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
 from nautilus_trader.model.events import OrderCanceled, OrderFilled, OrderRejected, PositionClosed, PositionOpened
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.data import BarType
 from nautilus_trader.trading.strategy import Strategy
 
 from state_engine import DiagnosticEvent, EngineConfig, FlowBar, LiquidityStateEngine, Signal, risk_based_quantity
@@ -55,6 +54,10 @@ class Candidate09Strategy(Strategy):
         self._active_extra_cost = 0.0
         self._opened_ns: int | None = None
         self._entry_pending = False
+        self._entry_pending_bars = 0
+        self._entry_timeout_bars = 0
+        self._entry_cancel_requested = False
+        self._entry_order_type = "MARKET"
         self._bars_held = 0
         self.rejected_orders = 0
         self.time_exits = 0
@@ -80,7 +83,6 @@ class Candidate09Strategy(Strategy):
                 self.cancel_all_orders(self.config.instrument_id)
                 self.close_all_positions(self.config.instrument_id)
                 self.time_exits += 1
-            # Continue updating the detector, but never create a second entry.
             result = self.logic.on_bar(flow_bar)
             self._record_events(result.events)
             if result.signal is not None:
@@ -88,6 +90,29 @@ class Candidate09Strategy(Strategy):
             return
 
         if self._entry_pending:
+            self._entry_pending_bars += 1
+            timed_out = self._entry_timeout_bars > 0 and self._entry_pending_bars >= self._entry_timeout_bars
+            day_end = self._entry_blackout(flow_bar)
+            if (timed_out or day_end) and not self._entry_cancel_requested:
+                self._entry_cancel_requested = True
+                self.cancel_all_orders(self.config.instrument_id)
+                self.diagnostic_events.append(
+                    {
+                        "scenario_id": self._active_signal.scenario_id if self._active_signal else "pending-entry",
+                        "event_type": "ENTRY_ORDER_CANCEL_REQUESTED",
+                        "event_time_ns": observed_ns,
+                        "observed_time_ns": observed_ns,
+                        "previous_state": "ENTRY_PENDING",
+                        "next_state": "CANCEL_PENDING",
+                        "reason_code": "ENTRY_LIMIT_TIMEOUT" if timed_out else "UTC_DAY_END_ENTRY_BLACKOUT",
+                        "reference_price": self._active_signal.entry_reference if self._active_signal else None,
+                        "details": {
+                            "entry_order_type": self._entry_order_type,
+                            "pending_bars": self._entry_pending_bars,
+                            "timeout_bars": self._entry_timeout_bars,
+                        },
+                    },
+                )
             result = self.logic.on_bar(flow_bar)
             self._record_events(result.events)
             if result.signal is not None:
@@ -116,12 +141,19 @@ class Candidate09Strategy(Strategy):
         quantity = self.instrument.make_qty(sizing.quantity)
         stop = self.instrument.make_price(signal.stop_price)
         target = self.instrument.make_price(signal.target_price)
+        requested_entry_type = str(signal.details.get("entry_order_type", "MARKET")).upper()
+        if requested_entry_type not in {"MARKET", "LIMIT"}:
+            raise ValueError(f"unsupported signal entry_order_type: {requested_entry_type}")
+        entry_order_type = OrderType.LIMIT if requested_entry_type == "LIMIT" else OrderType.MARKET
+        entry_price = self.instrument.make_price(signal.entry_reference) if requested_entry_type == "LIMIT" else None
         order_list = self.order_factory.bracket(
             instrument_id=self.config.instrument_id,
             order_side=side,
             quantity=quantity,
             time_in_force=TimeInForce.GTC,
-            entry_order_type=OrderType.MARKET,
+            entry_order_type=entry_order_type,
+            entry_price=entry_price,
+            entry_post_only=False,
             sl_order_type=OrderType.STOP_MARKET,
             sl_trigger_price=stop,
             tp_order_type=OrderType.LIMIT,
@@ -134,6 +166,10 @@ class Candidate09Strategy(Strategy):
         self._opened_ns = None
         self._bars_held = 0
         self._entry_pending = True
+        self._entry_pending_bars = 0
+        self._entry_timeout_bars = int(signal.details.get("entry_timeout_bars", 0))
+        self._entry_cancel_requested = False
+        self._entry_order_type = requested_entry_type
         self.submit_order_list(order_list)
 
     def on_order_filled(self, event: OrderFilled) -> None:
@@ -166,15 +202,15 @@ class Candidate09Strategy(Strategy):
         if self._active_signal is None:
             return
         self._entry_pending = False
+        self._entry_pending_bars = 0
+        self._entry_timeout_bars = 0
+        self._entry_cancel_requested = False
         self._opened_ns = int(event.ts_event)
         self._bars_held = 0
 
     def on_position_closed(self, event: PositionClosed) -> None:
         if self._active_signal is None:
             return
-        # Nautilus PositionClosed.realized_pnl is already net of native venue
-        # commissions. Reconstruct price PnL for diagnostics, and subtract only
-        # the explicit reserve needed to reach the configured composite cost.
         native_net_realized_pnl = _money(event.realized_pnl)
         gross_pnl = native_net_realized_pnl + self._active_commissions
         net_pnl = native_net_realized_pnl - self._active_extra_cost
@@ -188,6 +224,7 @@ class Candidate09Strategy(Strategy):
             "opened_ns": self._opened_ns,
             "closed_ns": int(event.ts_event),
             "entry_reference": self._active_signal.entry_reference,
+            "entry_order_type": self._entry_order_type,
             "stop_price": self._active_signal.stop_price,
             "target_price": self._active_signal.target_price,
             "planned_loss": self._planned_loss,
@@ -203,13 +240,7 @@ class Candidate09Strategy(Strategy):
             "reason_code": self._active_signal.reason_code,
         }
         self.trade_records.append(record)
-        self._active_signal = None
-        self._planned_loss = 0.0
-        self._active_commissions = 0.0
-        self._active_extra_cost = 0.0
-        self._opened_ns = None
-        self._entry_pending = False
-        self._bars_held = 0
+        self._reset_pending_trade()
 
     def on_order_rejected(self, event: OrderRejected) -> None:
         self.rejected_orders += 1
@@ -230,15 +261,11 @@ class Candidate09Strategy(Strategy):
             self._reset_pending_trade()
 
     def on_order_canceled(self, event: OrderCanceled) -> None:
-        # A protective sibling is normally canceled by the OCO contingency after
-        # the position closes.  Only reset an unfilled entry when the account is flat.
         if self._entry_pending and self.portfolio.is_flat(self.config.instrument_id):
             self._reset_pending_trade()
 
     def on_stop(self) -> None:
         if not self.portfolio.is_flat(self.config.instrument_id):
-            # This is an implementation failure in the run contract: each fixed week
-            # contains a day-end liquidation window before data ends.
             self.diagnostic_events.append(
                 {
                     "scenario_id": self._active_signal.scenario_id if self._active_signal else "unknown-open-position",
@@ -289,6 +316,10 @@ class Candidate09Strategy(Strategy):
         self._active_extra_cost = 0.0
         self._opened_ns = None
         self._entry_pending = False
+        self._entry_pending_bars = 0
+        self._entry_timeout_bars = 0
+        self._entry_cancel_requested = False
+        self._entry_order_type = "MARKET"
         self._bars_held = 0
 
 
