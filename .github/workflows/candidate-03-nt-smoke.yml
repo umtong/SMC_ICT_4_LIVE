@@ -1,0 +1,48 @@
+name: candidate-03-nt-smoke
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - "scripts/nt_candidate_smoke.py"
+      - "scripts/nt_candidate_smoke_strategy.py"
+      - ".github/workflows/candidate-03-nt-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  backtest-node-path:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run native NautilusTrader smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-03/nt-smoke
+          chmod -R 0777 artifacts
+          docker pull "$IMAGE"
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            "$IMAGE" \
+            bash -c 'smc4 doctor && PYTHONPATH=/workspace python scripts/nt_candidate_smoke.py'
+      - name: Preserve native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-nt-smoke-${{ github.sha }}
+          path: artifacts/candidate-03/nt-smoke
+          if-no-files-found: error
+          retention-days: 3
