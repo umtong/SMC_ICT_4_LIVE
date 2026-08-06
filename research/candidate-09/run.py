@@ -28,8 +28,8 @@ from typing import Any, Iterable, Mapping, Sequence
 import pandas as pd
 
 import nautilus_trader
-from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
-from nautilus_trader.config import LoggingConfig
+from nautilus_trader.backtest.engine import BacktestEngine
+from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
 from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import AccountType, OmsType
@@ -189,7 +189,7 @@ def run_nautilus_segment(
     nautilus_bars = wrangler.process(bars_to_frame(bars))
     if len(nautilus_bars) != len(bars):
         raise RuntimeError(f"wrangler changed row count: {len(bars)} -> {len(nautilus_bars)}")
-    flow_map = {bar.ts_ns: bar for bar in bars}
+    flow_map = {int(nautilus_bar.ts_init): flow_bar for nautilus_bar, flow_bar in zip(nautilus_bars, bars)}
     events: list[dict[str, Any]] = []
     trades: list[dict[str, Any]] = []
     fills: list[dict[str, Any]] = []

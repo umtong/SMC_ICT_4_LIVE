@@ -1,3 +1,3 @@
-# Candidate 09 repaired identical-contract rerun
+# Candidate 09 final controlled evaluator
 
-**IMPLEMENTATION_ERROR** at `tests`. Strategy thresholds and weeks were unchanged.
+**IMPLEMENTATION_ERROR** at `tests`. The fixed weeks and strategy thresholds were not reinterpreted.
