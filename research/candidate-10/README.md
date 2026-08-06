@@ -1,78 +1,99 @@
 # Candidate 10 — Causal Liquidity-Auction State Machine
 
-Candidate 10 is an independent SMC/ICT day-trading candidate implemented as a causal market-state machine and executed exclusively by NautilusTrader. It does not treat a wick, BOS, FVG, order block, or session label as a standalone entry signal.
+Candidate 10 is an independent SMC/ICT day-trading candidate implemented as a causal market-state machine and executed exclusively by NautilusTrader. A wick, BOS, FVG, order block, session label, or fixed reward multiple is never a standalone entry signal.
+
+## Current status
+
+- **v0 is discarded.** Its market-after-confirmation entry and narrow event stop produced positive aggregate price PnL before commissions, but turnover and execution costs overwhelmed it. Exact evidence is in [`V0_FAILURE.md`](V0_FAILURE.md).
+- **v1 is the active structural revision.** It preserves the causal raid/acceptance/rejection sequence while replacing confirmation chasing with resting structural entries, executable cost floors, and cost-adjusted structural targets.
+- No success claim is made until the pinned NautilusTrader gate produces the required cost-after NAV result and the preselected follow-up weeks confirm it.
 
 ## Research hypothesis
 
-A completed four-hour UTC auction block provides observable external liquidity at its high and low. When price reaches one of those boundaries, the next tradeable information is not the raid itself but the auction result:
+A completed auction range creates observable external liquidity at its high and low. A boundary touch is not a direction signal. The tradable information is the subsequent auction result:
 
-1. **Rejection** — price raids the boundary, closes back inside, displaces through the approach structure, and rejects the first retrace into the displacement corridor.
-2. **Acceptance** — price closes beyond the boundary twice, then retests and holds the accepted boundary before continuing toward older external liquidity or a range expansion projection.
+1. **Rejection** — price raids the boundary, closes back inside, and displaces through the approach structure.
+2. **Acceptance** — price establishes two distinct closes outside the boundary and leaves the old range available as a retest location.
 
-A trade is submitted only after the complete causal sequence is observable at bar close. Targets are structural liquidity locations, not fixed arbitrary R multiples.
+The candidate trades only after this sequence is observable at bar close. It then rests at the structural retrace rather than buying or selling the already-completed displacement.
 
-## Mechanical state definitions
+## v1 mechanical state definitions
 
 ### Common detector
 
 - Input: Binance USD-M `BTCUSDT` perpetual 1-minute bars.
-- Bar knowledge time: `open_time + 60 seconds`; no signal uses the bar before its close.
-- Auction range: a completed 240-minute UTC block with at least 90% of expected bars.
-- External liquidity pool: prior completed block high or low.
+- Bar knowledge time: `open_time + 60 seconds`; no signal uses a bar before its close.
+- v1 auction range: a completed 240-minute UTC block with at least 90% of expected bars.
+- v1 external pool: the previous completed block high or low.
 - Raid: boundary excursion of at least `max(2 ticks, 0.08 × robust ATR60)`.
 - A bar raiding both boundaries is unresolved and ignored.
-- At most one setup and one trade are consumed per current auction block.
+- At most one setup is consumed per current auction block.
+
+The fixed four-hour pool is an explicit v1 hypothesis, not a permanent project assumption. If v1 execution still fails, this pool generator is replaced by causally confirmed swing/equal-high/equal-low liquidity rather than optimized by hour or week.
 
 ### Rejection path
 
 ```text
 POOL_ACTIVE
-→ RAIDED (boundary swept and close returned inside)
-→ DISPLACED (opposite body ≥ 0.75 ATR and breaks the last six-bar approach structure)
-→ ENTRY_READY (first 38.2–61.8% corridor retrace rejects in the new direction)
+→ RAIDED
+  boundary swept and close returned inside
+→ DISPLACED
+  opposite body ≥ 0.75 ATR, closes near its directional extreme,
+  and breaks the last six-bar approach structure
+→ ENTRY_READY
+  post-only parent armed at the 61.8% displacement retrace
 → ORDER_PENDING
+  expires after 16 bars or cancels on structural invalidation
+→ POSITION_OPEN
 → CLOSED
 ```
 
-The stop is beyond the raid extreme plus a `0.12 ATR` buffer. The target is the prior block midpoint or opposite boundary, whichever is the first structural target with sufficient room.
+The stop is beyond the raid extreme by the greater of:
+
+- `1.0 × robust ATR60`; or
+- one executable maker-entry/taker-stop cost floor plus two ticks.
+
+The target is the first prior-block midpoint or opposite boundary whose **net** structural reward/risk is at least 1.35 after entry, target, stop, and tick reserves.
 
 ### Acceptance path
 
 ```text
 POOL_ACTIVE
-→ ACCEPTANCE_PROBE (close outside the boundary)
-→ ACCEPTED (second outside close)
-→ ENTRY_READY (first boundary retest holds and closes in the accepted direction)
+→ ACCEPTANCE_PROBE
+  first close outside the boundary
+→ ACCEPTED
+  second distinct outside close without re-entry
+→ ENTRY_READY
+  post-only parent armed at the accepted boundary
 → ORDER_PENDING
+  expires after 24 bars or cancels on re-entry/invalidation
+→ POSITION_OPEN
 → CLOSED
 ```
 
-The stop is beyond the retest/boundary invalidation. The target is older block liquidity in the continuation direction; if none exists, a half-range expansion projection is used.
+The stop sits one executable noise/cost buffer inside the old range. The target is older block liquidity in the continuation direction; if none is available, a half-range expansion projection is eligible only when its net structural reward/risk passes the same cost-aware gate.
 
-### Expiry and invalidation
-
-A setup expires when its required next state does not occur within the declared bar budget. It is invalidated when price establishes the opposite auction result, breaks the raid extreme before entry, re-enters an accepted range, or lacks a structural target with sufficient room. Block rollover is explicitly logged as expiry rather than silently resetting state.
-
-## Risk and execution
+## Risk and Nautilus execution
 
 - Position sizing basis: current whole-account Nautilus portfolio equity.
 - Planned loss budget: `NAV × 3%`.
-- Per-unit planned loss includes entry-to-stop distance, aggressive entry and stop fees, and a two-tick reserve.
+- Per-unit planned loss: entry-to-stop distance + maker entry fee + taker stop fee + two ticks.
 - No model-score risk multiplier, candidate-specific notional cap, or strategy-level leverage cap is applied.
-- Only one pending entry/position can exist because the strategy is single-instrument and refuses a new order unless the portfolio is flat and no entry is pending.
-- Entry: Nautilus market parent.
-- Exit: contingent target limit plus stop-market bracket.
-- Target post-only is disabled so a crossed target cannot leave an unprotected/rejected child.
-- Fill model: one-tick adverse slippage with deterministic seed `20260806`.
-- Cost-loaded metadata: maker `4 bp`, taker `7 bp`. These include the ordinary venue fee assumption plus an additional execution/adverse-selection reserve.
-- Positions are flattened before the 00:00, 08:00, and 16:00 UTC funding windows and before daily/evaluation close; therefore no funding credit is assumed.
+- Only one pending parent or position can exist.
+- Entry: Nautilus post-only limit parent at the structural retrace.
+- Target: contingent post-only structural limit.
+- Stop: contingent stop-market.
+- Pending parent: canceled on expiry, close beyond structural invalidation, funding guard, daily close, or evaluation close.
+- Fill model: deterministic seed `20260806`; one-tick adverse slippage probability 1.0 for eligible aggressive fills.
+- Cost-loaded metadata: maker `4 bp`, taker `7 bp`, including an ordinary fee assumption and an additional execution/adverse-selection reserve.
+- Positions are flat before 00:00, 08:00, and 16:00 UTC funding windows; no funding credit is assumed.
 - Within-bar high/low ordering uses NautilusTrader adaptive bar execution.
 
-All order matching, bracket contingencies, fees, position accounting, margin checks, reports, and NAV are produced by NautilusTrader. Candidate code does not implement a replacement backtest engine.
+All matching, bracket contingencies, fees, positions, margin checks, reports, and NAV are produced by NautilusTrader. Candidate code does not implement a replacement backtest engine.
 
 ## Reproducible evaluation gate
 
-The first three BTC weeks are selected before results are viewed:
+The first three BTC weeks were selected before results were viewed:
 
 ```text
 population: every Monday from 2022-01-03 through 2024-12-23
@@ -82,9 +103,9 @@ week 2:     2023-05-15
 week 3:     2024-01-15
 ```
 
-The gate workflow runs week 1 first. The `full` candidate and one-variable `ablation-no-acceptance` variant use identical thresholds, risk, data, and execution assumptions. The ablation removes only the acceptance path.
+The workflow runs week 1 first. The `full` candidate and `ablation-no-acceptance` use identical data, seed, risk, costs, thresholds, and execution; the ablation changes only `enable_acceptance=False`.
 
-A weekly gate is marked `target_pass` only when all of the following hold:
+A weekly gate is marked `target_pass` only when all conditions hold:
 
 - net geometric daily NAV growth is at least 1%;
 - at least seven closed, block-independent trades occur;
@@ -93,7 +114,7 @@ A weekly gate is marked `target_pass` only when all of the following hold:
 - no order denial/rejection occurs; and
 - intraday NAV drawdown is below 30%.
 
-This gate is not an optimization objective and does not cap growth above 1%. It is an efficient screening rule before the additional random weeks and longer evaluation.
+The 1% threshold is a promotion criterion, not an optimization target or performance cap.
 
 ## Reproduction
 
@@ -108,7 +129,7 @@ python research/candidate-10/run_research.py \
   --data-root /tmp/candidate-10-data
 ```
 
-For all preselected weeks:
+For all preselected weeks after the first gate supports continuation:
 
 ```bash
 python research/candidate-10/run_research.py \
@@ -117,21 +138,31 @@ python research/candidate-10/run_research.py \
   --data-root /tmp/candidate-10-data
 ```
 
-Every Binance archive is paired with and verified against its published checksum. Each run writes a data manifest, run manifest, metrics, Nautilus order/position/account reports, scenario event log, trade ledger, equity curve, and order-error ledger.
+Every Binance archive is verified against its published checksum. Each isolated Nautilus process writes:
+
+- data and run manifests;
+- metrics and daily NAV;
+- Nautilus order, position, and account reports;
+- causal scenario event log;
+- enriched trade ledger with holding time, MFE, MAE, actual entry/exit, commissions, and exit class;
+- equity curve and order-error ledger; and
+- turnover, maker/taker fill, gross-price-PnL, and commission diagnostics.
 
 ## Error classification policy
 
-- Environment, API, timestamp, event-chain, data, order, and accounting failures are implementation errors. They are corrected under variable control and the same week is rerun.
-- A completed run with insufficient opportunity or weak cost-after expectancy is a logic result. The required acceptance-path ablation is compared once; if the failure has no structural improvement path, the candidate is discarded rather than parameter-mined.
-- A profitable component inside an overall failed candidate is recorded separately, including the market state in which it worked and why it did not generalize.
+- Environment, API, timestamp, data, order, callback, accounting, or artifact failure is an implementation error. It is corrected under variable control and the same week is rerun.
+- A completed run with insufficient opportunity or weak cost-after expectancy is a logic result.
+- The required one-variable acceptance ablation is performed once under identical execution conditions.
+- A failed version is not rescued by a parameter grid. A structural causal improvement is stated first, implemented once, and tested on the same week.
+- A valid component inside a failed candidate is recorded separately rather than misreported as candidate success.
 
-## Known failure conditions declared before results
+## Known failure conditions
 
-- A four-hour block boundary may be economically irrelevant during continuous one-direction repricing; the acceptance path is intended to capture rather than fade that case, but can still enter late.
-- A raid can reverse without a body large enough to satisfy displacement, producing no trade.
-- A displacement corridor can be skipped without retrace, producing no trade.
-- A fast retest can occur inside the same 1-minute bar as confirmation and remain unobservable at bar resolution; the candidate deliberately does not infer that fill.
-- A structural target can be too close after costs, invalidating an otherwise correct directional read.
-- Bar data cannot reproduce queue position, intrabar depth depletion, liquidation cascades, or nonlinear market impact. The fee reserve and deterministic one-tick slippage are conservative approximations, not substitutes for later tick/order-book validation.
-- Constant instrument margin metadata approximates a tiered live exchange margin schedule. A successful candidate still requires live-venue tier and liquidation-distance validation before deployment.
-- Fixed UTC four-hour blocks may underperform when liquidity migrates to different activity windows; this is a logic failure condition, not a reason to optimize separate hours per week.
+- A fixed four-hour boundary may not contain meaningful resting liquidity; repeated failure after v1 invalidates the pool generator.
+- A raid can reverse without certified displacement, producing no trade.
+- Price can continue without retracing to the resting parent, producing a correct read but no fill.
+- A post-only parent can be rejected if a gap makes it marketable; that is recorded as an order error, not silently converted to a market fill.
+- A fast retest entirely inside the confirmation bar is unobservable at 1-minute resolution and is deliberately not inferred.
+- A cost-qualified structural target may not exist, invalidating an otherwise directionally plausible setup.
+- Bar data cannot reproduce queue position, intrabar depth depletion, liquidation cascades, or nonlinear market impact. The fee reserve and deterministic slippage remain approximations requiring later tick/order-book validation.
+- Constant margin metadata approximates a live tiered exchange schedule. Any promoted candidate still requires live tier, liquidation-distance, and venue-rule validation.
