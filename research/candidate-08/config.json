@@ -1,0 +1,100 @@
+{
+  "candidate": "candidate-08",
+  "description": "Liquidity acceptance/rejection bifurcation with causal swing pools and structural invalidation",
+  "random_seed": 8008,
+  "instrument_id": "BTCUSDT-PERP.BINANCE",
+  "bar_type": "BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL",
+  "starting_nav_usdt": 100000.0,
+  "risk_fraction": 0.03,
+  "effective_fee_rate_per_fill": 0.0006,
+  "cost_assumptions": {
+    "base_taker_fee_rate": 0.0005,
+    "execution_and_funding_reserve_rate": 0.0001,
+    "one_tick_slippage_probability": 1.0,
+    "limit_fill_probability": 1.0,
+    "latency_ms": {
+      "base": 0,
+      "insert": 0,
+      "update": 0,
+      "cancel": 0
+    },
+    "latency_rationale": "Sub-minute latency is not identifiable in 1-minute OHLC; zero event latency avoids an artificial full-bar delay. One-tick adverse slippage and an additional 1 bp per fill reserve remain charged."
+  },
+  "venue": {
+    "default_leverage": 125,
+    "liquidation_enabled": true,
+    "liquidation_trigger_ratio": 1.0,
+    "bar_adaptive_high_low_ordering": true
+  },
+  "logic": {
+    "atr_period": 20,
+    "volume_period": 30,
+    "swing_left": 3,
+    "swing_right": 3,
+    "pool_merge_atr": 0.12,
+    "pool_max_age_bars": 1440,
+    "minimum_pool_touches": 1,
+    "minimum_atr_fraction": 0.00035,
+    "minimum_sweep_atr": 0.04,
+    "maximum_sweep_atr": 1.8,
+    "reclaim_atr": 0.02,
+    "minimum_rejection_wick_body": 0.55,
+    "minimum_interaction_range_atr": 0.55,
+    "minimum_volume_ratio": 0.75,
+    "rejection_confirmation_bars": 3,
+    "rejection_confirmation_atr": 0.08,
+    "acceptance_close_atr": 0.12,
+    "acceptance_body_atr": 0.5,
+    "acceptance_close_location": 0.68,
+    "acceptance_volume_ratio": 0.95,
+    "acceptance_retest_bars": 10,
+    "retest_outer_atr": 0.22,
+    "retest_inner_atr": 0.38,
+    "retest_close_atr": 0.01,
+    "stop_buffer_atr": 0.1,
+    "minimum_stop_atr": 0.18,
+    "minimum_net_reward_risk": 1.2,
+    "projection_fraction": 0.786,
+    "maximum_hold_bars": 180,
+    "funding_avoidance_minutes": 185,
+    "cooldown_bars": 3
+  },
+  "suites": {
+    "screen": [
+      {
+        "name": "screen-01",
+        "start": "2024-04-08T00:00:00Z",
+        "end": "2024-04-15T00:00:00Z"
+      },
+      {
+        "name": "screen-02",
+        "start": "2025-06-09T00:00:00Z",
+        "end": "2025-06-16T00:00:00Z"
+      },
+      {
+        "name": "screen-03",
+        "start": "2025-09-29T00:00:00Z",
+        "end": "2025-10-06T00:00:00Z"
+      }
+    ],
+    "long": [
+      {
+        "name": "long-2024-2026h1",
+        "start": "2024-01-01T00:00:00Z",
+        "end": "2026-07-01T00:00:00Z"
+      }
+    ]
+  },
+  "screen_gate": {
+    "minimum_closed_trades_per_week": 8,
+    "minimum_positive_weeks": 2,
+    "minimum_profitable_scenario_families": 1,
+    "maximum_single_trade_positive_pnl_share": 0.5
+  },
+  "validation_protocol": {
+    "screen_seed": 8008,
+    "screen_selection": "Uniformly shuffled Monday starts from 2024-01-01 through 2025-12-22, accepting the first dates at least 84 days apart; fixed before outcomes were observed.",
+    "promotion_rule": "All three predeclared BTC weeks must have cost-after positive returns, no execution failures, minimum opportunity and concentration gates before long evaluation.",
+    "long_period": "2024-01-01T00:00:00Z to 2026-07-01T00:00:00Z (exclusive end)."
+  }
+}
