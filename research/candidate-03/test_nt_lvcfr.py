@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from nt_lvcfr_data import CandidateConfig, MinuteFact, NS_PER_MINUTE, detect_signals, merge_windows
+from nt_lvcfr_data import CandidateConfig, MinuteFact, NS_PER_MINUTE, detect_signals, merge_windows, select_second_extrema
 
 
 class ConfigTests(unittest.TestCase):
@@ -78,6 +78,20 @@ class DetectorTests(unittest.TestCase):
         self.assertEqual(windows[0][0], signal.confirm_time_ns)
         minimum = config.continuation_max_holding_minutes * NS_PER_MINUTE
         self.assertGreaterEqual(windows[0][1] - windows[0][0], minimum)
+
+
+class QuoteCompressionTests(unittest.TestCase):
+    def test_original_time_second_envelope_preserves_price_extrema(self) -> None:
+        rows = [
+            (1, 100.0, 1.0, 101.0, 1.0, 1, 1),
+            (2, 100.0, 2.0, 101.0, 2.0, 2, 2),
+            (3, 99.0, 3.0, 101.0, 3.0, 3, 3),
+            (4, 101.0, 4.0, 102.0, 4.0, 4, 4),
+            (5, 100.0, 5.0, 100.0, 5.0, 5, 5),
+        ]
+        selected = select_second_extrema(rows)
+        self.assertEqual([row[0] for row in selected], [1, 3, 4, 5])
+        self.assertEqual(selected, sorted(selected, key=lambda row: row[6]))
 
 
 if __name__ == "__main__":

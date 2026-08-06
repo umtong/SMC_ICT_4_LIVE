@@ -88,8 +88,8 @@ checksum-verified Binance Vision data
 - 공식 Binance Vision 파일과 `.CHECKSUM`을 검증한다.
 - 선물 실제 `bookTicker`의 bid/ask와 top size를 사용한다.
 - signal 관측 전 정보는 사용하지 않는다.
-- signal이 존재할 수 있는 보유 구간은 원본 bookTicker 해상도를 유지한다.
-- 그 외 구간은 분당 마지막 quote만 남겨 BacktestNode 반복을 빠르게 한다. 포지션이 열릴 수 있는 구간의 주문·손절·목표 판단은 축약하지 않는다.
+- signal이 존재할 수 있는 보유 구간은 원래 시각을 유지한 초당 첫·마지막 quote와 bid/ask 가격 극값을 보존한다. stop·target을 건드릴 수 있는 초내 가격 극값과 진입 가능한 첫 quote는 제거하지 않는다.
+- 그 외 구간은 분당 마지막 quote만 남긴다. 이 압축은 주문·체결·NAV를 계산하지 않으며, 동일 NautilusTrader BacktestNode 반복 시간을 줄이기 위한 데이터 표현이다.
 - 시장 데이터는 `ParquetDataCatalog`에 기록하며, 전략은 `BacktestNode`에서 실행한다.
 
 ## 순차 BTC 게이트

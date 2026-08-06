@@ -150,6 +150,25 @@ class SourceFile:
     size_bytes: int
 
 
+BookTickerRecord = tuple[int, float, float, float, float, int, int]
+
+
+def select_second_extrema(rows: Sequence[BookTickerRecord]) -> list[BookTickerRecord]:
+    """Return an original-time execution envelope for one observed second.
+
+    First and last quotes plus bid/ask price extrema are retained in original
+    event order. No value or timestamp is shifted earlier, while redundant
+    top-size churn that cannot change a stop or target decision is removed.
+    """
+    if not rows:
+        return []
+    indices = {0, len(rows) - 1}
+    for field in (1, 3):
+        indices.add(min(range(len(rows)), key=lambda index: (rows[index][field], index)))
+        indices.add(max(range(len(rows)), key=lambda index: (rows[index][field], -index)))
+    return [rows[index] for index in sorted(indices)]
+
+
 def sha256_file(path: str | Path) -> str:
     digest = sha256()
     with Path(path).open("rb") as stream:
@@ -499,10 +518,12 @@ def build_catalog(
     previous_init = -1
     pointer = 0
     batch: list[QuoteTick] = []
-    outside_last: tuple[int, float, float, float, float, int, int] | None = None
+    outside_last: BookTickerRecord | None = None
     outside_minute = -1
+    inside_second = -1
+    inside_bucket: list[BookTickerRecord] = []
 
-    def append_quote(values: tuple[int, float, float, float, float, int, int]) -> None:
+    def append_quote(values: BookTickerRecord) -> None:
         nonlocal retained, previous_init
         _, bid, bid_qty, ask, ask_qty, ts_event, ts_init = values
         if ts_init < previous_init:
@@ -535,6 +556,15 @@ def build_catalog(
         )
         retained += 1
 
+    def flush_inside_bucket() -> None:
+        nonlocal inside_second
+        if not inside_bucket:
+            return
+        for retained_row in select_second_extrema(inside_bucket):
+            append_quote(retained_row)
+        inside_bucket.clear()
+        inside_second = -1
+
     for path in sorted(book_ticker_paths, key=lambda item: item.name):
         archive, reader = _one_csv_reader(path)
         try:
@@ -557,8 +587,14 @@ def build_catalog(
                     if outside_last is not None:
                         append_quote(outside_last)
                         outside_last = None
-                    append_quote(values)
+                    second = observed_ns // NS_PER_SECOND
+                    if inside_bucket and second != inside_second:
+                        flush_inside_bucket()
+                    if not inside_bucket:
+                        inside_second = second
+                    inside_bucket.append(values)
                 else:
+                    flush_inside_bucket()
                     minute = observed_ns // NS_PER_MINUTE
                     if outside_last is not None and minute != outside_minute:
                         append_quote(outside_last)
@@ -566,6 +602,7 @@ def build_catalog(
                     outside_minute = minute
         finally:
             archive.close()
+    flush_inside_bucket()
     if outside_last is not None:
         append_quote(outside_last)
     if batch:
@@ -614,7 +651,9 @@ def build_catalog(
         "book_ticker_source_rows": rows,
         "quote_ticks_retained": retained,
         "funding_updates": len(funding_updates),
-        "full_resolution_windows": windows,
+        "execution_windows": windows,
+        "inside_window_quote_retention": "original-time first/last and bid/ask extrema per observed second",
+        "outside_window_quote_retention": "last quote per observed minute",
         "impact_bps_each_fill": config.slippage_impact_bps,
     }
 
