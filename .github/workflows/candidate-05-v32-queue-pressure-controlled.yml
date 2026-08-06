@@ -1,0 +1,222 @@
+name: candidate-05-v32-queue-pressure-controlled
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/master_research_continuation.json"
+      - "research/candidate-05/controlled_candidate_research.py"
+      - "research/candidate-05/queue_pressure_release_logic.py"
+      - "research/candidate-05/strategy_v32_queue_pressure_release.py"
+      - "research/candidate-05/tests/test_queue_pressure_release_logic.py"
+      - "research/candidate-05/tests/test_controlled_candidate_research.py"
+      - ".github/workflows/candidate-05-v32-queue-pressure-controlled.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v32-queue-pressure-controlled
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  conditional-controlled-research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v32-queue-pressure-controlled
+      SUMMARY: research/candidate-05/evidence/v32_queue_pressure_controlled.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify environment and all contracts
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT" research/candidate-05/evidence
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+            python - <<'PY'
+          from dataclasses import fields
+          from strategy_v9 import ArmedEntryPath
+          from strategy_v32_queue_pressure_release import QueuePressureReleaseStrategy
+          names = {field.name for field in fields(ArmedEntryPath)}
+          assert "expires_index" in names and "created_ts" not in names
+          assert QueuePressureReleaseStrategy.BRANCH == "QUEUE_PRESSURE_CONFIRMED_RELEASE"
+          print(sorted(names))
+          PY
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/verification_status.txt"
+          echo "valid=$([[ $status -eq 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Require a completed v31 logical failure and no prior winner
+        id: prior
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("research/candidate-05/evidence/master_research_continuation.json")
+          master = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {
+              "classification": "MISSING_MASTER_EVIDENCE",
+              "winner": None,
+              "experiments": {},
+          }
+          v31 = master.get("experiments", {}).get("v31_impact_resiliency_reversal", {})
+          classification = str(v31.get("classification", master.get("classification", "")))
+          upper = classification.upper()
+          eligible = (
+              master.get("winner") is None
+              and not any(token in upper for token in ("IMPLEMENTATION", "EVIDENCE_ERROR"))
+              and any(token in upper for token in ("LOGIC_FAILURE", "BTC_91D_ALPHA_GATE_FAILED"))
+              and bool(v31)
+          )
+          decision = {
+              "master_classification": master.get("classification"),
+              "master_winner": master.get("winner"),
+              "v31_classification": classification,
+              "eligible_for_v32": eligible,
+          }
+          Path("/tmp/v32_prior.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          with Path("/tmp/v32_prior_outputs.txt").open("w", encoding="utf-8") as f:
+              f.write(f"eligible={'true' if eligible else 'false'}\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          cat /tmp/v32_prior_outputs.txt >> "$GITHUB_OUTPUT"
+
+      - name: Run exact-control staged v32 research through NautilusTrader
+        id: research
+        if: steps.verify.outputs.valid == 'true' && steps.prior.outputs.eligible == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python research/candidate-05/controlled_candidate_research.py \
+            --name v32_queue_pressure_release \
+            --strategy-module strategy_v32_queue_pressure_release \
+            --strategy-class QueuePressureReleaseStrategy \
+            --branch QUEUE_PRESSURE_CONFIRMED_RELEASE \
+            --output "$ROOT/runs" \
+            --cache .cache/candidate-05-v32-queue-pressure-controlled \
+            --summary "$SUMMARY" \
+            2>&1 | tee "$ROOT/research_console.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/research_status.txt"
+          exit "$status"
+
+      - name: Persist explicit not-run or implementation fallback evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-v32-queue-pressure-controlled")
+          summary_path = Path("research/candidate-05/evidence/v32_queue_pressure_controlled.json")
+          prior = json.loads(Path("/tmp/v32_prior.json").read_text(encoding="utf-8"))
+          verification = (root / "verification_status.txt").read_text(encoding="utf-8").strip() if (root / "verification_status.txt").exists() else "missing"
+          research_status = (root / "research_status.txt").read_text(encoding="utf-8").strip() if (root / "research_status.txt").exists() else "not_run"
+          verification_tail = (root / "verification.log").read_text(encoding="utf-8", errors="replace").splitlines()[-220:] if (root / "verification.log").exists() else []
+          research_tail = (root / "research_console.log").read_text(encoding="utf-8", errors="replace").splitlines()[-260:] if (root / "research_console.log").exists() else []
+
+          if summary_path.exists():
+              summary = json.loads(summary_path.read_text(encoding="utf-8"))
+              summary["prior_decision"] = prior
+              summary["verification_status"] = verification
+              summary["research_process_status"] = research_status
+          elif verification != "exit_code=0":
+              summary = {
+                  "schema": "candidate-05-v32-queue-pressure-controlled-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_STATIC_OR_CONTRACT",
+                  "winner": None,
+                  "prior_decision": prior,
+                  "verification_status": verification,
+                  "verification_log_tail": verification_tail,
+                  "research_process_status": research_status,
+                  "next_action": "Repair the implementation without changing the queue-pressure hypothesis, then rerun the identical frozen range.",
+              }
+          elif not prior.get("eligible_for_v32", False):
+              summary = {
+                  "schema": "candidate-05-v32-queue-pressure-controlled-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "NOT_RUN_V31_NOT_LOGICALLY_DISCARDED_OR_PRIOR_WINNER_EXISTS",
+                  "winner": None,
+                  "prior_decision": prior,
+                  "verification_status": verification,
+                  "research_process_status": research_status,
+                  "next_action": "Follow the latest completed master evidence rather than opening a redundant candidate family.",
+              }
+          else:
+              summary = {
+                  "schema": "candidate-05-v32-queue-pressure-controlled-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_CONTROLLED_RESEARCH_RUNTIME",
+                  "winner": None,
+                  "prior_decision": prior,
+                  "verification_status": verification,
+                  "research_process_status": research_status,
+                  "research_log_tail": research_tail,
+                  "next_action": "Repair the orchestrator/runtime without changing v32 logic, then rerun the identical range.",
+              }
+          summary_path.write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+          git checkout -- research/candidate-05/strategy.py || true
+          test -s "$SUMMARY"
+
+      - name: Commit conflict-resistant compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$SUMMARY"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-05: record v32 exact-control evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-05
+            if git push origin HEAD:research/candidate-05; then
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.prior.outputs.eligible == 'true'
+        with:
+          name: candidate-05-v32-queue-pressure-controlled-${{ github.sha }}
+          path: artifacts/candidate-05-v32-queue-pressure-controlled/**
+          if-no-files-found: warn
+          retention-days: 90
