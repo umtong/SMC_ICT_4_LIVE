@@ -88,10 +88,11 @@ class AuctionRunnerAttributionContracts(unittest.TestCase):
         results = [
             {
                 "detector": {
+                    "signals": 5,
                     "by_scenario_family": {
                         "INITIATIVE_ACCEPTANCE_CONTINUATION": 3,
                         "FAILED_AUCTION_REVERSAL": 2,
-                    }
+                    },
                 },
                 "closed_trade_records": [
                     {
@@ -124,21 +125,27 @@ class AuctionRunnerAttributionContracts(unittest.TestCase):
         )
         self.assertEqual(failed["signals"], 2)
         self.assertEqual(failed["closed_trades"], 0)
+        self.assertEqual(summary["signals_attributed"], 5)
         self.assertTrue(summary["attribution_complete"])
 
-    def test_suite_summary_adds_auditable_attribution_contract(self) -> None:
+    def test_suite_summary_adds_and_enforces_attribution_contract(self) -> None:
         original = runner._original_suite_summary
         try:
-            runner._original_suite_summary = lambda *_args: {"closed_trades": 1}
+            runner._original_suite_summary = lambda *_args: {
+                "closed_trades": 1,
+                "suite_gate_checks": {},
+                "suite_gate_passed": True,
+            }
             result = runner._auction_suite_summary(
                 {},
                 "first",
                 [
                     {
                         "detector": {
+                            "signals": 1,
                             "by_scenario_family": {
                                 "FAILED_AUCTION_REVERSAL": 1
-                            }
+                            },
                         },
                         "closed_trade_records": [
                             {
@@ -155,10 +162,48 @@ class AuctionRunnerAttributionContracts(unittest.TestCase):
             runner._original_suite_summary = original
 
         checks = result["scenario_attribution_checks"]
+        self.assertEqual(checks["signals_attributed"], 1)
+        self.assertEqual(checks["reported_signals"], 1)
+        self.assertTrue(checks["all_signals_attributed"])
         self.assertEqual(checks["closed_trades_attributed"], 1)
         self.assertEqual(checks["reported_closed_trades"], 1)
         self.assertTrue(checks["all_closed_trades_attributed"])
+        self.assertTrue(checks["no_unclassified_signals"])
         self.assertTrue(checks["no_unclassified_closed_trades"])
+        self.assertTrue(result["scenario_attribution_passed"])
+        self.assertTrue(
+            result["suite_gate_checks"]["complete_auction_scenario_attribution"]
+        )
+        self.assertTrue(result["suite_gate_passed"])
+
+    def test_unclassified_signal_blocks_an_otherwise_passing_suite(self) -> None:
+        original = runner._original_suite_summary
+        try:
+            runner._original_suite_summary = lambda *_args: {
+                "closed_trades": 0,
+                "suite_gate_checks": {},
+                "suite_gate_passed": True,
+            }
+            result = runner._auction_suite_summary(
+                {},
+                "first",
+                [
+                    {
+                        "detector": {
+                            "signals": 1,
+                            "by_scenario_family": {
+                                "UNCLASSIFIED_AUCTION_SCENARIO": 1
+                            },
+                        },
+                        "closed_trade_records": [],
+                    }
+                ],
+            )
+        finally:
+            runner._original_suite_summary = original
+
+        self.assertFalse(result["scenario_attribution_passed"])
+        self.assertFalse(result["suite_gate_passed"])
 
     def test_wrapper_patches_reporting_but_reuses_base_execution_entrypoint(self) -> None:
         self.assertIs(runner.base_runner.build_acceptance_signals, runner.build_auction_router_signals)
