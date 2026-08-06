@@ -1,0 +1,131 @@
+name: candidate-05-v26-30d-continuous
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/strategy.py"
+      - ".github/workflows/candidate-05-v26-30d-continuous.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  continuous-30d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed research environment and active baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+          python - <<'PY'
+          from strategy import LiquidityResponseStrategy
+          from strategy_v26 import ScenarioValidEntryStrategy
+          if LiquidityResponseStrategy is not ScenarioValidEntryStrategy:
+              raise SystemExit(
+                  f"active strategy is not v26: {LiquidityResponseStrategy!r}",
+              )
+          print("active_strategy=strategy_v26:ScenarioValidEntryStrategy")
+          PY
+
+      - name: Run continuous 30-day BTC evaluation through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-05-v26-30d
+          mkdir -p "$root"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-30 \
+            --cache .cache/candidate-05-v26-30d \
+            --output "$root" \
+            | tee "$root/console.json"
+
+      - name: Build research screen summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-05-v26-30d
+          if test -f "$root/metrics.json"; then
+            python -m json.tool "$root/metrics.json"
+            python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-v26-30d")
+          metrics = json.loads((root / "metrics.json").read_text(encoding="utf-8"))
+          diagnostics = metrics.get("strategy_diagnostics", {})
+          integrity = {
+              "positive_nav": metrics.get("ending_nav", 0.0) > 0.0,
+              "no_liquidation": metrics.get("liquidations", 0) == 0,
+              "no_order_rejections": diagnostics.get("order_rejections", 0) == 0,
+              "single_entry_intent": diagnostics.get("max_simultaneous_entry_intents", 0) <= 1,
+              "single_position": diagnostics.get("max_open_positions_observed", 0) <= 1,
+          }
+          summary = {
+              "candidate": metrics.get("candidate"),
+              "engine": metrics.get("engine"),
+              "evaluation_start": metrics.get("evaluation_start"),
+              "evaluation_end": metrics.get("evaluation_end"),
+              "calendar_days": metrics.get("calendar_days"),
+              "total_return": metrics.get("total_return"),
+              "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+              "max_drawdown": metrics.get("max_drawdown"),
+              "trades": metrics.get("trades"),
+              "wins": metrics.get("wins"),
+              "win_rate": metrics.get("win_rate"),
+              "active_days": metrics.get("active_days"),
+              "largest_winner_share": metrics.get("largest_winner_share"),
+              "integrity_checks": integrity,
+              "integrity_pass": all(integrity.values()),
+              "project_growth_goal_reached_on_30d": (
+                  metrics.get("geometric_daily_growth", -1.0) >= 0.01
+                  and all(integrity.values())
+              ),
+              "interpretation_contract": (
+                  "30-day result is evidence for or against long-horizon promotion; "
+                  "it is not a parameter-fitting objective and does not retroactively "
+                  "change any weekly signal or execution rule"
+              ),
+          }
+          (root / "research_screen_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+            for file in run.json data_manifest.json orders.csv positions.csv account.csv equity.csv scenario_events.jsonl strategy_diagnostics.json research_screen_summary.json; do
+              test -s "$root/$file"
+            done
+          fi
+          if test -f "$root/errors.log"; then
+            cat "$root/errors.log"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v26-30d-${{ github.sha }}
+          path: artifacts/candidate-05-v26-30d/**
+          if-no-files-found: warn
+          retention-days: 90
