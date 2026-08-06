@@ -1,0 +1,317 @@
+name: candidate-04-v35-staged-research
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v35-staged-research.yml"
+  workflow_run:
+    workflows: ["candidate-04-v34-survivor-followup"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  staged:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      UPSTREAM_RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Restore upstream survivor decision when available
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: candidate-04-v34-survivor-followup-*
+          path: upstream
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Allow V35 only after V34 structural path is exhausted
+        id: route
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          paths = list(Path("upstream").rglob("research_decision.json"))
+          if not paths:
+              fallback = Path(
+                  "research/candidate-04/evidence-v34-survivor-followup.json"
+              )
+              if fallback.exists():
+                  paths = [fallback]
+          if not paths:
+              print("should_run=false")
+              print("reason=await_v34_decision")
+              raise SystemExit(0)
+          decision = json.loads(paths[0].read_text())
+          survivor = decision.get("survivor") or decision.get("surviving_mechanism")
+          if survivor == "implementation_failure":
+              print("should_run=false")
+              print("reason=v34_requires_same_week_implementation_fix")
+          elif decision.get("three_week_pass"):
+              print("should_run=false")
+              print("reason=v34_survivor_progressed")
+          elif survivor in {"none", None} or decision.get("decision") == "discard_surviving_mechanism_no_cross_week_path":
+              print("should_run=true")
+              print("reason=v34_economic_path_exhausted")
+          else:
+              print("should_run=false")
+              print("reason=v34_followup_not_terminal")
+          PY
+
+      - name: Restore exact completed-data development observations
+        if: steps.route.outputs.should_run == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v27-cross-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Verify runtime and event-time contracts
+        if: steps.route.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/event_time_flow_run_compiler.py \
+            research/candidate-04/summarize_candidate_week.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_event_time_flow_run_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Run sequential V35 development and scenario ablations
+        if: steps.route.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=(low_activity normal_basis stress_a)
+          build_starts=(2023-08-02 2023-12-16 2024-08-05)
+          build_ends=(2023-08-10 2023-12-24 2024-08-13)
+          eval_starts=(2023-08-04 2023-12-18 2024-08-07)
+          eval_ends=(2023-08-10 2023-12-24 2024-08-13)
+          root="artifacts/candidate-04-v35-development"
+          mkdir -p "$root"
+          failed=""
+
+          for i in "${!names[@]}"; do
+            name="${names[$i]}"
+            export C04_BUILD_START="${build_starts[$i]}"
+            export C04_BUILD_END="${build_ends[$i]}"
+            export C04_EVALUATION_START="${eval_starts[$i]}"
+            export C04_EVALUATION_END="${eval_ends[$i]}"
+            source="$(find sources -mindepth 1 -maxdepth 1 -type d -name "candidate-04-v27-cross-${name}-*" | head -n1)"
+            week="$root/$name"
+            mkdir -p "$week"
+            python research/candidate-04/event_time_flow_run_compiler.py \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --rich-dir "$source/source/rich" \
+              --kline-dir ".cache/candidate-04-v35/$name/raw" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --output "$week/signals" \
+              --download-klines \
+              | tee "$week/compiler_console.json"
+            C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$week/signals/signals.json" \
+            python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start "$C04_BUILD_START" \
+              --build-end "$C04_BUILD_END" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --cache ".cache/candidate-04-v35/$name/raw" \
+              --output "$week/nautilus" \
+              | tee "$week/nautilus_console.json"
+            python research/candidate-04/summarize_candidate_week.py \
+              --root "$week" \
+              --candidate candidate-04-v35-event-time-flow-runs \
+              --stage "development_${name}" \
+              --output "$week/summary.json"
+            passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$week/summary.json")"
+            if [[ "$passed" != "true" ]]; then
+              failed="$name"
+              break
+            fi
+          done
+
+          export V35_ROOT="$root"
+          export V35_FAILED="$failed"
+          if [[ -n "$failed" ]]; then
+            for i in "${!names[@]}"; do
+              if [[ "${names[$i]}" == "$failed" ]]; then
+                export C04_BUILD_START="${build_starts[$i]}"
+                export C04_BUILD_END="${build_ends[$i]}"
+                export C04_EVALUATION_START="${eval_starts[$i]}"
+                export C04_EVALUATION_END="${eval_ends[$i]}"
+              fi
+            done
+            export V35_FAILED_ROOT="$root/$failed"
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["V35_FAILED_ROOT"])
+          rows = json.loads((root / "signals/signals.json").read_text())
+          variants = {
+              "reversal_only": [
+                  row for row in rows
+                  if row["scenario"] == "EVENT_TIME_EXTERNAL_LIQUIDITY_ABSORPTION_REVERSAL"
+              ],
+              "continuation_only": [
+                  row for row in rows
+                  if row["scenario"] == "EVENT_TIME_INFORMED_FLOW_PULLBACK_CONTINUATION"
+              ],
+          }
+          for name, selected in variants.items():
+              path = root / "ablations" / name / "signals"
+              path.mkdir(parents=True, exist_ok=True)
+              (path / "signals.json").write_text(
+                  json.dumps(selected, indent=2, sort_keys=True) + "\n"
+              )
+              (path / "summary.json").write_text(
+                  json.dumps({
+                      "written_signals": len(selected),
+                      "route_counts": {
+                          "controlled_ablation": name,
+                          "removed_signals": len(rows) - len(selected),
+                      },
+                  }, indent=2, sort_keys=True) + "\n"
+              )
+          PY
+            for variant in reversal_only continuation_only; do
+              variant_root="$root/$failed/ablations/$variant"
+              C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$variant_root/signals/signals.json" \
+              python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+                --config research/candidate-04/nt_liquidity_config.json \
+                --build-start "$C04_BUILD_START" \
+                --build-end "$C04_BUILD_END" \
+                --evaluation-start "$C04_EVALUATION_START" \
+                --evaluation-end "$C04_EVALUATION_END" \
+                --cache ".cache/candidate-04-v35/$failed/raw" \
+                --output "$variant_root/nautilus" \
+                > "$variant_root/nautilus_console.json"
+              python research/candidate-04/summarize_candidate_week.py \
+                --root "$variant_root" \
+                --candidate candidate-04-v35-event-time-flow-runs \
+                --stage "${failed}_${variant}_ablation" \
+                --output "$variant_root/summary.json"
+            done
+          fi
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["V35_ROOT"])
+          weeks = {
+              path.parent.name: json.loads(path.read_text())
+              for path in root.glob("*/summary.json")
+          }
+          failed = os.environ["V35_FAILED"] or None
+          passed = failed is None and len(weeks) == 3 and all(
+              item["candidate_pass"] for item in weeks.values()
+          )
+          ablations = None
+          if failed:
+              failed_root = root / failed / "ablations"
+              ablations = {
+                  path.parent.name: json.loads(path.read_text())
+                  for path in failed_root.glob("*/summary.json")
+              }
+          evidence = {
+              "candidate": "candidate-04-v35-event-time-flow-runs",
+              "stage": "sequential_development",
+              "weeks": weeks,
+              "failed_week": failed,
+              "controlled_ablations": ablations,
+              "three_week_pass": passed,
+              "decision": (
+                  "freeze_before_unopened_weeks"
+                  if passed
+                  else "discard_or_follow_only_an_independently_surviving_scenario"
+              ),
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+          }
+          (root / "research_decision.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          Path("research/candidate-04/evidence-v35-event-time-flow-runs.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Record deferred V35 status
+        if: steps.route.outputs.should_run != 'true'
+        shell: bash
+        env:
+          REASON: ${{ steps.route.outputs.reason }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          value = {
+              "candidate": "candidate-04-v35-event-time-flow-runs",
+              "executed": False,
+              "reason": os.environ["REASON"],
+          }
+          Path("research/candidate-04/evidence-v35-event-time-flow-runs.json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v35-development-${{ github.sha }}
+          path: artifacts/candidate-04-v35-development
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Commit V35 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/evidence-v35-event-time-flow-runs.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "record V35 event-time flow-run evidence"
+          git push origin HEAD:research/candidate-04
