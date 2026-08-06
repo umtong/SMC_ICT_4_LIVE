@@ -1,0 +1,243 @@
+name: candidate-05-current-research-state
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/v26_30d_early_sponsored_ablation.json"
+      - "research/candidate-05/evidence/v26_90d_promotion.json"
+      - "research/candidate-05/evidence/v29_external_displacement_fvg.json"
+      - "research/candidate-05/evidence/v29b_implementation_control.json"
+      - "research/candidate-05/evidence/v29b_promoted_screen.json"
+      - "research/candidate-05/evidence/v30_fvg_ablation.json"
+      - "research/candidate-05/evidence/v30_promoted_screen.json"
+      - "research/candidate-05/evidence/v30_91d_repair.json"
+      - "research/candidate-05/evidence/v31_impact_resiliency_control.json"
+      - "research/candidate-05/evidence/v31_promoted_screen.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  summarize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build authoritative current research state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from typing import Any
+
+          root = Path("research/candidate-05/evidence")
+          root.mkdir(parents=True, exist_ok=True)
+          ordered = [
+              ("v31_promoted_screen.json", "v31-promoted-screen"),
+              ("v31_impact_resiliency_control.json", "v31-week1-control"),
+              ("v30_91d_repair.json", "v30-91d-control-repair"),
+              ("v30_promoted_screen.json", "v30-promoted-screen"),
+              ("v30_fvg_ablation.json", "v30-week1-fvg-ablation"),
+              ("v29b_promoted_screen.json", "v29b-promoted-screen"),
+              ("v29b_implementation_control.json", "v29b-week1-control"),
+              ("v29_external_displacement_fvg.json", "v29-original"),
+              ("v26_90d_promotion.json", "v26-90d-promotion"),
+              ("v26_30d_early_sponsored_ablation.json", "v26-30d-ablation"),
+          ]
+
+          def load(path: Path) -> dict[str, Any] | None:
+              if not path.exists():
+                  return None
+              try:
+                  value = json.loads(path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError) as exc:
+                  return {"classification": "UNREADABLE_EVIDENCE", "error": repr(exc)}
+              return value if isinstance(value, dict) else {"classification": "INVALID_EVIDENCE_SHAPE"}
+
+          records = []
+          for filename, experiment in ordered:
+              data = load(root / filename)
+              if data is None:
+                  continue
+              classification = str(data.get("classification", "CLASSIFICATION_NOT_RECORDED"))
+              records.append({
+                  "experiment": experiment,
+                  "evidence_file": filename,
+                  "classification": classification,
+                  "source_commit": data.get("source_commit"),
+                  "workflow_run_id": data.get("workflow_run_id"),
+                  "data": data,
+              })
+
+          latest = records[0] if records else None
+          classification = latest["classification"] if latest else "NO_EVIDENCE_RECORDED"
+          upper = classification.upper()
+
+          implementation_error = any(
+              token in upper
+              for token in (
+                  "IMPLEMENTATION", "EVIDENCE_ERROR", "UNREADABLE_EVIDENCE",
+                  "INVALID_EVIDENCE", "MISSING_",
+              )
+          )
+          logic_failure = any(
+              token in upper
+              for token in (
+                  "LOGIC_FAILURE", "LOGIC_OR_ROBUSTNESS_FAILURE",
+                  "NONPOSITIVE", "DID_NOT_IMPROVE",
+              )
+          )
+          btc_alpha_passed = classification == "BTC_91D_ALPHA_GATE_PASSED"
+          legacy_growth_passed = classification == "PROJECT_GROWTH_GOAL_REACHED_ON_91D"
+
+          if btc_alpha_passed:
+              next_action = (
+                  "Freeze v31 and construct the real one-account four-symbol NautilusTrader competition. "
+                  "The sum of pending new-entry intents and open positions must remain at most one."
+              )
+          elif implementation_error:
+              next_action = (
+                  "Repair the latest implementation or evidence-control error without changing the hypothesis, "
+                  "then rerun the identical frozen range."
+              )
+          elif logic_failure and latest and latest["experiment"].startswith("v31"):
+              next_action = (
+                  "Record the useful impact-resiliency observations, discard the failed executable branch after one "
+                  "core-variable ablation, and formulate the next orthogonal auction mechanism."
+              )
+          elif logic_failure and latest and latest["experiment"].startswith("v30"):
+              next_action = (
+                  "The external-acceptance continuation family has failed its FVG-removal ablation; proceed to the "
+                  "orthogonal v31 impact-resiliency reversal control."
+              )
+          elif legacy_growth_passed:
+              next_action = (
+                  "Treat the result as a BTC growth screen, not final project completion; verify trade independence and "
+                  "the shared four-symbol account before activation."
+              )
+          elif latest and "PASSED_WEEK_1" in upper:
+              next_action = "Follow the encoded two-week, 30-day and 91-day evidence-driven promotion sequence."
+          elif latest and any(token in upper for token in ("BELOW_GOAL", "PROMOTION_NOT_ELIGIBLE", "PROMOTION_BLOCKED")):
+              next_action = "Do not spend time on long validation; continue actual alpha discovery with the next structural hypothesis."
+          else:
+              next_action = "Complete the current controlled experiment and do not infer performance from missing evidence."
+
+          def compact_run(value: Any) -> dict[str, Any] | None:
+              if not isinstance(value, dict):
+                  return None
+              keys = (
+                  "available", "integrity_pass", "evaluation_start", "evaluation_end",
+                  "calendar_days", "starting_nav", "ending_nav", "total_return",
+                  "geometric_daily_growth", "max_drawdown", "trades", "wins",
+                  "losses", "win_rate", "profit_factor", "active_days",
+                  "largest_winner_share",
+              )
+              return {key: value.get(key) for key in keys if key in value}
+
+          latest_metrics: dict[str, Any] = {}
+          if latest:
+              data = latest["data"]
+              for key in ("baseline", "ablation", "v29b", "v30", "v31"):
+                  compact = compact_run(data.get(key))
+                  if compact:
+                      latest_metrics[key] = compact
+              runs = data.get("runs")
+              if isinstance(runs, dict):
+                  latest_metrics["runs"] = {
+                      key: compact_run(value)
+                      for key, value in runs.items()
+                      if compact_run(value) is not None
+                  }
+              for key in (
+                  "new_branch", "new_branch_aggregate",
+                  "delta_ablation_minus_baseline", "removed_branch_baseline_attribution",
+                  "week1_control", "week_1_decision", "three_week_comparison",
+                  "three_week_decision", "continuous_30d_decision", "selection",
+              ):
+                  if key in data:
+                      latest_metrics[key] = data[key]
+
+          state = {
+              "schema": "candidate-05-current-research-state-v1",
+              "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+              "repository": "umtong/SMC_ICT_4_LIVE",
+              "branch": "research/candidate-05",
+              "latest_experiment": latest["experiment"] if latest else None,
+              "latest_evidence_file": latest["evidence_file"] if latest else None,
+              "classification": classification,
+              "implementation_or_evidence_error": implementation_error,
+              "logic_failure": logic_failure,
+              "btc_91d_alpha_gate_passed": btc_alpha_passed,
+              "next_action": next_action,
+              "latest_metrics": latest_metrics,
+              "recorded_evidence": [
+                  {
+                      "experiment": record["experiment"],
+                      "evidence_file": record["evidence_file"],
+                      "classification": record["classification"],
+                      "source_commit": record["source_commit"],
+                      "workflow_run_id": record["workflow_run_id"],
+                  }
+                  for record in records
+              ],
+              "fixed_research_contract": {
+                  "engine": "NautilusTrader only",
+                  "risk_fraction": 0.03,
+                  "risk_basis": "full current account NAV and planned stop-fill loss including costs",
+                  "global_entry_constraint": "pending new-entry intents plus open positions <= 1 across BTC, ETH, SOL and XRP",
+                  "objective": "whole-period cost-after NAV geometric daily growth >= 1%",
+                  "no_per_week_one_percent_gate": True,
+              },
+          }
+          json_path = root / "current_research_state.json"
+          json_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          lines = [
+              "# Candidate 05 Current Research State",
+              "",
+              f"Generated: {state['generated_at_utc']}",
+              "",
+              f"- Latest experiment: `{state['latest_experiment']}`",
+              f"- Classification: `{state['classification']}`",
+              f"- Implementation/evidence error: `{state['implementation_or_evidence_error']}`",
+              f"- Logic failure: `{state['logic_failure']}`",
+              f"- BTC 91-day alpha gate passed: `{state['btc_91d_alpha_gate_passed']}`",
+              "",
+              "## Next action",
+              "",
+              state["next_action"],
+              "",
+              "## Recorded evidence",
+              "",
+              "| Experiment | Classification | Evidence |",
+              "|---|---|---|",
+          ]
+          for record in state["recorded_evidence"]:
+              lines.append(
+                  f"| {record['experiment']} | {record['classification']} | `{record['evidence_file']}` |"
+              )
+          lines.append("")
+          (root / "current_research_state.md").write_text("\n".join(lines), encoding="utf-8")
+          print(json.dumps(state, indent=2, sort_keys=True))
+          PY
+
+      - name: Persist current state
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-05/evidence/current_research_state.json \
+            research/candidate-05/evidence/current_research_state.md
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-05: refresh authoritative research state [skip ci]"
+            git push origin HEAD:research/candidate-05
+          fi
