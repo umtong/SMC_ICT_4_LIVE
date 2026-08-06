@@ -5,7 +5,9 @@ on:
     branches: ["research/candidate-01"]
     paths:
       - ".github/workflows/candidate-01-v28-materialize.yml"
-      - ".candidate01-bootstrap/v28/**"
+      - ".candidate01-bootstrap/v28/candidate.py.gz.b64"
+      - ".candidate01-bootstrap/v28/gate.py.gz.b64"
+      - ".candidate01-bootstrap/v28/protocol.json.gz.b64"
   workflow_dispatch:
 
 permissions:
@@ -19,7 +21,7 @@ jobs:
         with:
           ref: research/candidate-01
           fetch-depth: 0
-      - name: Decode and validate frozen v28 files
+      - name: Decode and validate frozen v28 research files
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -34,7 +36,6 @@ jobs:
               root / "candidate.py.gz.b64": Path("research/candidate-01/impact_elasticity_resumption_v28_nautilus_week.py"),
               root / "gate.py.gz.b64": Path("research/candidate-01/candidate_01_v28_gate.py"),
               root / "protocol.json.gz.b64": Path("research/candidate-01/candidate_01_v28_protocol.json"),
-              root / "workflow.yml.gz.b64": Path(".github/workflows/candidate-01-v28-impact-elasticity-weeks.yml"),
           }
           for source, destination in mapping.items():
               encoded = source.read_text(encoding="utf-8").strip()
@@ -61,7 +62,7 @@ jobs:
               ),
           )
           PY
-      - name: Commit generated candidate and workflow
+      - name: Commit generated research files
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -69,8 +70,7 @@ jobs:
           git add \
             research/candidate-01/impact_elasticity_resumption_v28_nautilus_week.py \
             research/candidate-01/candidate_01_v28_gate.py \
-            research/candidate-01/candidate_01_v28_protocol.json \
-            .github/workflows/candidate-01-v28-impact-elasticity-weeks.yml
+            research/candidate-01/candidate_01_v28_protocol.json
           if git diff --cached --quiet; then
             exit 0
           fi
