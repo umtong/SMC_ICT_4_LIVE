@@ -11,7 +11,7 @@ import sys
 
 import c10_flow_research as _flow_research_module
 import c10_flow_v4 as _v4_module
-from c10_flow_evidence_fix import EvidenceValidatedParentProtectedStrategy
+from c10_flow_emulated_stop import EmulatedStopEvidenceValidatedStrategy
 from c10_flow_l1_research import run_l1_flow_backtest
 from c10_flow_model import FlowParams
 from c10_flow_precision_fix import reproducible_weeks
@@ -50,14 +50,15 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
     destination = output_root / args.phase / week.isoformat() / args.variant
 
     # Controlled implementation rerun:
-    # - v4 state machine, parameters, seed, costs, risk, signal prices and the
-    #   one-variable order-flow ablation are unchanged.
-    # - only the execution data path gains the official latest-known Binance
-    #   best bid/ask before each aggregate trade.
+    # - v4 state machine, official L1 data, parameters, seed, costs, risk,
+    #   signal/entry/stop/target prices and the one-variable order-flow
+    #   ablation are unchanged.
+    # - only the unchanged LAST_PRICE protective stop is held in Nautilus'
+    #   OrderEmulator until an actual trade triggers its market release.
     previous_strategy = _flow_research_module.FlowCandidate10Strategy
     previous_backtest = _v4_module._run_flow_backtest
     _flow_research_module.FlowCandidate10Strategy = (
-        EvidenceValidatedParentProtectedStrategy
+        EmulatedStopEvidenceValidatedStrategy
     )
     _v4_module._run_flow_backtest = run_l1_flow_backtest
     try:
@@ -75,7 +76,7 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
 
     metrics["execution_lifecycle"] = (
         "OFFICIAL_CAUSAL_L1_PARENT_ONLY_CANCEL_REMAINDER_"
-        "PER_FILL_REDUCE_ONLY_PROTECTION"
+        "PER_FILL_REDUCE_ONLY_EMULATED_LAST_PRICE_STOP"
     )
     metrics["implementation_control"] = {
         "strategy_logic_changed": False,
@@ -84,9 +85,11 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
         "costs_changed": False,
         "seed_changed": False,
         "week_changed": False,
-        "execution_data_change": (
-            "TradeTick-only synthetic BBO replaced by latest official bookTicker "
-            "event_time <= aggregate-trade transact_time"
+        "execution_data_changed_from_prior_control": False,
+        "protective_stop_routing_change": (
+            "native STOP_MARKET submission replaced by Nautilus OrderEmulator "
+            "held on LAST_PRICE and released as reduce-only MARKET; structural "
+            "stop price and all strategy variables unchanged"
         ),
     }
     metrics_path = destination / "metrics.json"
@@ -163,7 +166,9 @@ def main() -> int:
         "executed_weeks": [item.isoformat() for item in weeks],
         "engine_process_isolation": True,
         "candidate_generation": "v4-efficient-flow-acceptance-continuation",
-        "execution_generation": "official-causal-l1-streaming-control",
+        "execution_generation": (
+            "official-causal-l1-emulated-last-price-stop-control"
+        ),
         "variants": list(VARIANT_NAMES),
         "ablation_contract": (
             "both variants retain fast-range price acceptance, price efficiency, "
@@ -171,10 +176,10 @@ def main() -> int:
             "only same-side executed aggressor-flow confirmation is removed"
         ),
         "implementation_control": (
-            "same BTC week, strategy, signal/entry/stop/target, risk, fees, seed "
-            "and fill model; add only latest official Binance bookTicker quote "
-            "whose event_time is no later than each aggregate-trade transact_time; "
-            "stream bounded daily batches through NautilusTrader"
+            "same BTC week, official L1 data, strategy, signal/entry/stop/target, "
+            "risk, fees, seed and fill model; only route the unchanged structural "
+            "STOP_MARKET through Nautilus OrderEmulator with LAST_PRICE trigger "
+            "so transient bid/ask width cannot reject a last-trade stop"
         ),
     }
     (output_root / "week_selection.json").write_text(
