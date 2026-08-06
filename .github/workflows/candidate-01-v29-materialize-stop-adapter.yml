@@ -5,8 +5,8 @@ on:
     branches: ["research/candidate-01"]
     paths:
       - ".github/workflows/candidate-01-v29-materialize-stop-adapter.yml"
-      - ".candidate01-bootstrap/v29/materialize_stop_adapter.py"
-      - "research/candidate-01/nautilus_tick_limit_plan_backtest.py"
+      - ".candidate01-bootstrap/v29/convert_stop_adapter_to_stop_limit.py"
+      - "research/candidate-01/nautilus_tick_stop_plan_backtest.py"
   workflow_dispatch:
 
 permissions:
@@ -20,12 +20,23 @@ jobs:
         with:
           ref: research/candidate-01
           fetch-depth: 0
-      - name: Generate and validate stop adapter
+      - name: Convert and validate authoritative stop-limit adapter
         run: |
           set -euo pipefail
-          python3 .candidate01-bootstrap/v29/materialize_stop_adapter.py
+          python3 .candidate01-bootstrap/v29/convert_stop_adapter_to_stop_limit.py
           python3 -m py_compile research/candidate-01/nautilus_tick_stop_plan_backtest.py
-      - name: Commit generated adapter
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path(
+              "research/candidate-01/nautilus_tick_stop_plan_backtest.py",
+          ).read_text(encoding="utf-8")
+          assert "entry_order_type=OrderType.STOP_LIMIT" in source
+          assert "entry_trigger_price=self.instrument.make_price(trigger)" in source
+          assert "entry_price=self.instrument.make_price(entry)" in source
+          assert "risk_sized_at_worst_permitted_limit_price" in source
+          assert "entry_order_type=OrderType.STOP_MARKET" not in source
+          PY
+      - name: Commit converted adapter
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -34,5 +45,5 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "research(candidate-01): add authoritative stop-market adapter"
+          git commit -m "research(candidate-01): use authoritative stop-limit adapter"
           git push origin HEAD:research/candidate-01
