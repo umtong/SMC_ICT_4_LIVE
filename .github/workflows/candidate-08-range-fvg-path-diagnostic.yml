@@ -1,0 +1,60 @@
+name: candidate-08-range-fvg-path-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-range-fvg-path-diagnostic"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  diagnose:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore official Binance archive cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/candidate-08-range-fvg-data
+          key: candidate-08-range-fvg-binance-v1
+
+      - name: Decompose signal-fill-invalidation paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-08/range_fvg_path_diagnostic.py
+          python research/candidate-08/range_fvg_path_diagnostic.py \
+            --evidence research/candidate-08/evidence/range-fvg-first/screen-01 \
+            --output research/candidate-08/evidence/range-fvg-first/screen-01/path_diagnostic.json \
+            --data-cache /tmp/candidate-08-range-fvg-data \
+            2>&1 | tee research/candidate-08/evidence/range-fvg-first/screen-01/path_diagnostic.log
+          rm research/candidate-08/.run-range-fvg-path-diagnostic
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" add \
+            research/candidate-08/range_fvg_path_diagnostic.py \
+            research/candidate-08/evidence/range-fvg-first/screen-01/path_diagnostic.json \
+            research/candidate-08/evidence/range-fvg-first/screen-01/path_diagnostic.log \
+            research/candidate-08/.run-range-fvg-path-diagnostic
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: record first-week FVG path diagnosis"
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-range-fvg-path-${{ github.sha }}
+          path: research/candidate-08/evidence/range-fvg-first/screen-01/path_diagnostic*
+          retention-days: 30
