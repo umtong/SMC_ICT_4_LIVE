@@ -1,0 +1,50 @@
+name: candidate-08-report-patch
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.patch-reporting"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use pinned ReportProvider over legacy engine cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-08/run.py")
+          source = path.read_text(encoding="utf-8")
+          import_anchor = "from nautilus_trader.backtest.engine import BacktestEngine\n"
+          report_import = "from nautilus_trader.analysis.reporter import ReportProvider\n"
+          old_block = '''        orders = engine.generate_orders_report()\n        fills = engine.generate_fills_report()\n        positions = engine.generate_positions_report()\n        account_report = engine.generate_account_report(venue=Venue("BINANCE"))\n        orders.to_csv(output_dir / "orders.csv", index=True)\n        fills.to_csv(output_dir / "fills.csv", index=True)\n        positions.to_csv(output_dir / "positions.csv", index=True)\n        account_report.to_csv(output_dir / "account.csv", index=True)\n\n        account = engine.cache.account_for_venue(Venue("BINANCE"))\n        if account is None:\n            raise RuntimeError("NautilusTrader did not retain the Binance margin account")\n'''
+          new_block = '''        account = engine.cache.account_for_venue(Venue("BINANCE"))\n        if account is None:\n            raise RuntimeError("NautilusTrader did not retain the Binance margin account")\n        cached_orders = engine.cache.orders()\n        cached_positions = engine.cache.positions()\n        orders = ReportProvider.generate_orders_report(cached_orders)\n        fills = ReportProvider.generate_fills_report(cached_orders)\n        positions = ReportProvider.generate_positions_report(cached_positions)\n        account_report = ReportProvider.generate_account_report(account)\n        orders.to_csv(output_dir / "orders.csv", index=True)\n        fills.to_csv(output_dir / "fills.csv", index=True)\n        positions.to_csv(output_dir / "positions.csv", index=True)\n        account_report.to_csv(output_dir / "account.csv", index=True)\n\n'''
+          if source.count(import_anchor) != 1:
+              raise SystemExit(f"expected one engine import anchor, found {source.count(import_anchor)}")
+          if report_import not in source:
+              source = source.replace(import_anchor, report_import + import_anchor)
+          if source.count(old_block) != 1:
+              raise SystemExit(f"expected one legacy report block, found {source.count(old_block)}")
+          source = source.replace(old_block, new_block)
+          path.write_text(source, encoding="utf-8")
+          PY
+          rm research/candidate-08/.patch-reporting
+          python -m compileall -q research/candidate-08/run.py
+          grep -nE 'ReportProvider|cached_orders|cached_positions' research/candidate-08/run.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-08/run.py research/candidate-08/.patch-reporting
+          git commit -m "candidate-08: generate reports from pinned engine cache"
+          git push origin HEAD:research/candidate-08
