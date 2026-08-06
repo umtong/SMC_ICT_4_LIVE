@@ -1,3 +1,3 @@
-# Candidate 09 final controlled evaluator
+# Candidate 09 oracle evaluation
 
-**IMPLEMENTATION_ERROR** at `tests`. The fixed weeks and strategy thresholds were not reinterpreted.
+**IMPLEMENTATION_ERROR** at `tests`. Fixed weeks and strategy thresholds were unchanged.
