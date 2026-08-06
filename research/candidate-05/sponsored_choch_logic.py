@@ -4,6 +4,36 @@ from __future__ import annotations
 import math
 
 
+# A normalized aggressor imbalance of 1/3 is a favorable-to-opposing flow
+# ratio of 2:1: (2 - 1) / (2 + 1). Immediate participation is reserved for the
+# earlier transition before three-minute flow reaches that mature imbalance.
+EARLY_CHOCH_DIRECTIONAL_FLOW_MAX = 1.0 / 3.0
+
+
+def sponsored_choch_flow_phase_ready(
+    *,
+    side: int,
+    flow_3m: float,
+    maximum: float = EARLY_CHOCH_DIRECTIONAL_FLOW_MAX,
+) -> bool:
+    """Whether three-minute flow is early, aligned, and not yet mature.
+
+    Negative mirrored flow means the final 15-second turn has not propagated
+    through the broader auction. A mirrored value at or above one third means
+    the three-minute aggressor ratio is already at least 2:1 and the CHoCH is no
+    longer an early transition suitable for immediate participation. Those
+    states remain eligible for the existing one-minute path observation.
+    """
+    if side not in (-1, 1):
+        raise ValueError("side must be -1 or 1")
+    if not math.isfinite(float(flow_3m)) or not math.isfinite(float(maximum)):
+        return False
+    if maximum <= 0.0:
+        return False
+    directional = side * float(flow_3m)
+    return 0.0 <= directional < float(maximum)
+
+
 def sponsored_choch_participation_ready(
     *,
     flow_state: str | None,
@@ -70,6 +100,8 @@ def slippage_protected_marketable_limit(
 
 
 __all__ = [
+    "EARLY_CHOCH_DIRECTIONAL_FLOW_MAX",
     "slippage_protected_marketable_limit",
+    "sponsored_choch_flow_phase_ready",
     "sponsored_choch_participation_ready",
 ]

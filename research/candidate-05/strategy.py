@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""Candidate 05 diagnostic import surface: no sponsored CHoCH participation."""
+"""Candidate 05 production import surface: early sponsored CHoCH v17."""
 from strategy_base import LiquidityResponseConfig
-from strategy_ablation_no_sponsored_choch import (
-    NoSponsoredChochParticipationAblationStrategy as LiquidityResponseStrategy,
-)
+from strategy_v17 import EarlySponsoredChochStrategy as LiquidityResponseStrategy
 
 __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
