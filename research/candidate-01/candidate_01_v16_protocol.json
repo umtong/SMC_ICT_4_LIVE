@@ -1,0 +1,65 @@
+{
+  "candidate": "hierarchical external-liquidity auction portfolio",
+  "candidate_version": "v16",
+  "research_question": "Does a local failed sweep reverse only when it occurs at completed higher-order external liquidity, while outside-value acceptance is handled as a separate continuation response?",
+  "selection": {
+    "method": "Deterministic SHA-256 sampling of Monday-start BTC weeks from 2021-01-04 through 2026-07-20, excluding weeks previously used for candidate-01 development or confirmation.",
+    "seed_material": "candidate-01-v16-hierarchical-auction",
+    "frozen_order": [
+      "2024-08-05",
+      "2024-03-25",
+      "2022-01-31"
+    ]
+  },
+  "rules": {
+    "primary": "hierarchical-full-composite",
+    "ablation_control": "hierarchical-reversal-only",
+    "selection_after_first_week": "Use the primary whenever it advances. Use the reversal-only control only when the primary stops and the control advances. Freeze that rule before opening week two."
+  },
+  "execution": {
+    "authoritative_engine": "NautilusTrader 1.230.0",
+    "data": "Official Binance Vision USD-M BTCUSDT aggTrades represented one-for-one as NautilusTrader TradeTick",
+    "risk_fraction": 0.03,
+    "all_in_cost_bps_per_side": 7.0,
+    "maximum_hold_hours": 4,
+    "global_pending_or_open_positions": 1,
+    "custom_fill_simulator": false,
+    "custom_pnl_or_nav_ledger": false
+  },
+  "week_gate": {
+    "operational_requirements": {
+      "ended_flat": true,
+      "one_global_entry_gate_violations": 0,
+      "protective_order_failures": 0,
+      "liquidation_marker_rows": 0
+    },
+    "full_pass": {
+      "minimum_closed_positions": 7,
+      "minimum_win_rate": 0.45,
+      "minimum_total_return": 0.0,
+      "minimum_geometric_mean_daily_return": 0.01,
+      "minimum_profit_factor": 1.2,
+      "maximum_drawdown_strictly_greater_than": -0.2
+    },
+    "promising_but_not_complete": {
+      "minimum_closed_positions": 7,
+      "minimum_win_rate": 0.45,
+      "minimum_total_return": 0.0,
+      "minimum_geometric_mean_daily_return": 0.0075,
+      "minimum_profit_factor": 1.1,
+      "maximum_drawdown_strictly_greater_than": -0.15
+    },
+    "advance_rule": "Advance a weekly candidate only when it is full_pass or promising_but_not_complete. A promising result is permission to test the next frozen week, not project success."
+  },
+  "long_evaluation_gate": {
+    "prerequisite": "All three frozen weeks advanced, at least two are full_pass, and the continuous three-week pooled NAV geometric daily return is at least 1% before any long-period runner is added.",
+    "long_run_must_be": "One continuous NautilusTrader engine/account/strategy state, never stitched weekly NAV."
+  },
+  "invalidation": [
+    "Do not alter scenario rules, parameters, gate thresholds, weeks, cost, risk or execution semantics after viewing a frozen week.",
+    "Do not use ETH, SOL or XRP to rescue a BTC failure.",
+    "Do not open week two when both first-week rules stop.",
+    "Do not open week three when the selected rule stops on week two.",
+    "Do not create a long evaluation until the frozen weekly prerequisite is met."
+  ]
+}
