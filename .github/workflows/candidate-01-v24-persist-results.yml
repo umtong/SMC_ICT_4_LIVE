@@ -1,0 +1,90 @@
+name: candidate-01-v24-persist-results
+
+on:
+  workflow_run:
+    workflows: ["candidate-01-v24-absorption-weeks"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  persist:
+    if: github.event.workflow_run.head_branch == 'research/candidate-01'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-01
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .persist-v24
+      - name: Build and commit compact evidence report
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, shutil
+
+          source = Path('.persist-v24')
+          destination = Path('research/candidate-01/evidence/v24')
+          destination.mkdir(parents=True, exist_ok=True)
+          sections = ['# Candidate v24 frozen-week result', '']
+          found = 0
+          for artifact in sorted(path for path in source.iterdir() if path.is_dir()):
+              gates = list(artifact.rglob('week_gate.json'))
+              summaries = list(artifact.rglob('mss_absorption_reacceleration_v24_summary.json'))
+              if not gates and not summaries:
+                  continue
+              found += 1
+              target = destination / artifact.name
+              target.mkdir(parents=True, exist_ok=True)
+              sections.extend([f'## {artifact.name}', ''])
+              for path in gates + summaries:
+                  shutil.copy2(path, target / path.name)
+              if gates:
+                  gate = json.loads(gates[0].read_text())
+                  sections.extend([
+                      f"- classification: `{gate['classification']}`",
+                      f"- advance: `{gate['advance']}`",
+                      f"- plans: `{gate['selected_plan_count']}`",
+                      f"- trades: `{gate['trades']}`",
+                      f"- win rate: `{gate['win_rate']}`",
+                      f"- total return: `{gate['total_return']}`",
+                      f"- geometric daily: `{gate['geometric_daily']}`",
+                      f"- profit factor: `{gate['profit_factor']}`",
+                      f"- max drawdown: `{gate['max_drawdown']}`",
+                      f"- rejections: `{json.dumps(gate['rejection_counts'], sort_keys=True)}`",
+                      f"- state counts: `{json.dumps(gate['state_counts'], sort_keys=True)}`",
+                      '',
+                  ])
+              elif summaries:
+                  summary = json.loads(summaries[0].read_text())
+                  metrics = summary['metrics']
+                  sections.extend([
+                      '- gate file absent because the execution job failed before verification.',
+                      f"- rule: `{summary['rule']}`",
+                      f"- plans: `{summary['selected_plan_count']}`",
+                      f"- trades: `{metrics.get('closed_positions')}`",
+                      f"- total return: `{metrics.get('total_return')}`",
+                      '',
+                  ])
+          if found == 0:
+              raise SystemExit('no compact v24 evidence found')
+          Path('research/candidate-01/CANDIDATE_V24_RESULT.md').write_text(
+              '\n'.join(sections) + '\n',
+              encoding='utf-8',
+          )
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-01/CANDIDATE_V24_RESULT.md research/candidate-01/evidence/v24
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "research(candidate-01): record v24 frozen-week evidence"
+          git push origin HEAD:research/candidate-01
