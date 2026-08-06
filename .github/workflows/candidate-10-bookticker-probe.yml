@@ -1,0 +1,61 @@
+name: candidate-10-bookticker-probe
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/probe_bookticker.py
+      - .github/workflows/candidate-10-bookticker-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-10-bookticker-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare artifact directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-10-bookticker-probe
+          chmod -R a+rwx artifacts
+
+      - name: Verify bookTicker archive and Nautilus QuoteTick dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/workspace/src:/workspace/research/candidate-10 \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              smc4 doctor
+              python research/candidate-10/probe_bookticker.py
+            '
+
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-bookticker-probe-${{ github.sha }}
+          path: artifacts/candidate-10-bookticker-probe
+          if-no-files-found: warn
+          retention-days: 14
