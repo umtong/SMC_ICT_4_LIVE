@@ -29,6 +29,11 @@ REQUIRED_COLUMNS = {
     "last_funding_rate",
 }
 
+# Official Binance funding archives occasionally stamp an intended settlement boundary
+# a few milliseconds late. This is data timestamp jitter, not a missing settlement.
+# Canonicalization is allowed only inside one second; material off-boundary rows fail.
+MAX_FUNDING_BOUNDARY_JITTER_NS = 1_000_000_000
+
 
 @dataclass(frozen=True, slots=True)
 class FundingSource:
@@ -192,6 +197,35 @@ def _normalize_funding_frame(
             f"rate={invalid_rate_count}, interval={invalid_interval_count}"
         )
 
+    raw_timestamps = data.index
+    canonical_timestamps: list[int] = []
+    boundary_jitter_ns: list[int] = []
+    boundary_failures = 0
+    for timestamp, interval_minutes in zip(
+        raw_timestamps,
+        data["funding_interval_minutes"],
+        strict=True,
+    ):
+        raw_ns = int(timestamp.as_unit("ns").value)
+        interval_ns = int(interval_minutes) * 60_000_000_000
+        remainder = raw_ns % interval_ns
+        if remainder <= interval_ns // 2:
+            canonical_ns = raw_ns - remainder
+            jitter_ns = remainder
+        else:
+            canonical_ns = raw_ns + (interval_ns - remainder)
+            jitter_ns = interval_ns - remainder
+        if jitter_ns > MAX_FUNDING_BOUNDARY_JITTER_NS:
+            boundary_failures += 1
+        canonical_timestamps.append(canonical_ns)
+        boundary_jitter_ns.append(jitter_ns)
+    if boundary_failures:
+        raise FundingDataError(
+            "funding calc_time did not land within the verified settlement-boundary "
+            f"jitter tolerance: {boundary_failures} rows"
+        )
+    data.index = pd.to_datetime(canonical_timestamps, unit="ns", utc=True)
+    data.index.name = "funding_time"
     data = data.sort_index()
     duplicate_rows = int(data.index.duplicated(keep=False).sum())
     if duplicate_rows:
@@ -207,19 +241,15 @@ def _normalize_funding_frame(
             raise FundingDataError("conflicting duplicate funding timestamp rows")
         data = data.loc[~data.index.duplicated(keep="last")].copy()
 
-    boundary_failures = 0
     for timestamp, interval_minutes in zip(
         data.index,
         data["funding_interval_minutes"],
         strict=True,
     ):
-        epoch_minutes = int(timestamp.as_unit("ns").value) // 60_000_000_000
-        if epoch_minutes % int(interval_minutes) != 0:
-            boundary_failures += 1
-    if boundary_failures:
-        raise FundingDataError(
-            f"funding calc_time did not land on its interval boundary: {boundary_failures} rows"
-        )
+        timestamp_ns = int(timestamp.as_unit("ns").value)
+        interval_ns = int(interval_minutes) * 60_000_000_000
+        if timestamp_ns % interval_ns != 0:
+            raise FundingDataError("canonical funding timestamp was not on its boundary")
 
     data = data.loc[(data.index >= start) & (data.index < end)].copy()
     if data.empty:
@@ -241,6 +271,7 @@ def _normalize_funding_frame(
         "duplicate_rows_observed": duplicate_rows,
         "internal_gap_count": gap_count,
         "max_gap_minutes": float(deltas.max()) if deltas.notna().any() else 0.0,
+        "max_boundary_jitter_milliseconds": max(boundary_jitter_ns, default=0) / 1_000_000.0,
         "timestamp_unit_detected": unit,
         "first_funding_time": data.index[0].isoformat(),
         "last_funding_time": data.index[-1].isoformat(),

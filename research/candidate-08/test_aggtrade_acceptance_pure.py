@@ -431,6 +431,27 @@ class FundingDataContracts(unittest.TestCase):
         self.assertEqual(quality["internal_gap_count"], 0)
         self.assertEqual(quality["timestamp_unit_detected"], "ms")
 
+    def test_millisecond_funding_boundary_jitter_is_canonicalized(self) -> None:
+        start = pd.Timestamp("2024-04-08T00:00:00Z").to_pydatetime()
+        end = pd.Timestamp("2024-04-09T00:00:00Z").to_pydatetime()
+        frame = pd.DataFrame(
+            {
+                "calc_time": [
+                    self._calc_ms("2024-04-08T00:00:00Z") + 1,
+                    self._calc_ms("2024-04-08T08:00:00Z") + 6,
+                ],
+                "funding_interval_hours": [8, 8],
+                "last_funding_rate": [0.0001, -0.00005],
+            }
+        )
+        normalized, quality = _normalize_funding_frame(frame, start=start, end=end)
+        self.assertEqual(
+            list(normalized.index),
+            [pd.Timestamp("2024-04-08T00:00:00Z"), pd.Timestamp("2024-04-08T08:00:00Z")],
+        )
+        self.assertEqual(quality["internal_gap_count"], 0)
+        self.assertAlmostEqual(quality["max_boundary_jitter_milliseconds"], 6.0)
+
     def test_off_boundary_or_conflicting_duplicate_funding_is_rejected(self) -> None:
         start = pd.Timestamp("2024-04-08T00:00:00Z").to_pydatetime()
         end = pd.Timestamp("2024-04-09T00:00:00Z").to_pydatetime()
