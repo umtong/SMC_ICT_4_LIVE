@@ -1,0 +1,62 @@
+{
+  "candidate": "funding-window initial-balance two-sided auction resolver",
+  "version": 27,
+  "frozen_before_execution": true,
+  "primary_rule": "two-sided-resolver",
+  "controls": ["failure-only", "acceptance-only"],
+  "symbol": "BTCUSDT",
+  "weeks": ["2023-10-23", "2021-05-10", "2025-09-08"],
+  "week_selection": {
+    "method": "candidate-specific deterministic Monday selection from previously unused BTC weeks",
+    "selection_seed": "candidate-01-v27-funding-initial-balance",
+    "result_dependent_selection": false
+  },
+  "market_representation": {
+    "auction_windows": "independent 8-hour UTC perpetual-funding windows starting 00/08/16 UTC",
+    "initial_balance": "first two completed cost-resolved equal-notional events in each window",
+    "event_clock": "causal daily equal-notional clock selected from the immediately preceding completed UTC day",
+    "candidate_clock_minutes": [5, 10, 20, 30],
+    "minimum_preceding_day_median_range_bps": 14.0,
+    "context_days": 4
+  },
+  "scenario": {
+    "opportunity_limit": "one resolved raid per funding window",
+    "raid": "first event after initial-balance completion that trades beyond exactly one balance edge",
+    "ambiguous_two_sided_raid": "discard the window",
+    "response_events": 2,
+    "precedence": "failed auction before durable acceptance",
+    "failure": "completed close returns inside the raided edge with aggressive flow toward the opposite edge",
+    "failure_target": "opposite initial-balance edge, provided it was not consumed before entry",
+    "failure_stop": "complete raid-to-resolution path extreme plus one 7-bp side-cost buffer",
+    "acceptance": "two outside closes and positive cumulative aligned flow",
+    "acceptance_target": "one initial-balance width projected beyond the raided edge, provided it was not consumed",
+    "acceptance_stop": "raided edge plus one 7-bp inside buffer",
+    "entry": "market bracket on first official venue trade strictly after completed resolution",
+    "expiry": "end of the same funding window",
+    "maximum_hold_hours": 4
+  },
+  "execution": {
+    "authoritative_engine": "NautilusTrader 1.230.0",
+    "market_data": "official Binance Vision USD-M aggregate trades converted one-for-one to TradeTick",
+    "custom_fill_simulator": false,
+    "custom_pnl_or_nav_ledger": false,
+    "risk_fraction_of_current_nav": 0.03,
+    "all_in_cost_bps_per_side": 7.0,
+    "one_global_pending_entry_or_position": true
+  },
+  "strict_week_gate": {
+    "minimum_closed_positions": 7,
+    "minimum_win_rate": 0.45,
+    "minimum_total_return": 0.0,
+    "minimum_geometric_daily_return": 0.01,
+    "minimum_profit_factor": 1.2,
+    "maximum_drawdown_floor": -0.2,
+    "operational_integrity_required": true,
+    "promising_partial_pass_allowed": false
+  },
+  "advancement": {
+    "week_2_runs_only_after_week_1_full_pass": true,
+    "week_3_runs_only_after_week_2_full_pass": true,
+    "long_evaluation_runs_only_after_all_three_full_pass": true
+  }
+}
