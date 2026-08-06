@@ -1,0 +1,59 @@
+{
+  "candidate": "failed-sweep MSS counterflow absorption and reacceleration",
+  "version": 24,
+  "frozen_before_execution": true,
+  "primary_rule": "absorption-reacceleration",
+  "controlled_rule": "immediate-mss-control",
+  "symbol": "BTCUSDT",
+  "weeks": [
+    "2025-11-03",
+    "2022-06-13",
+    "2024-11-18"
+  ],
+  "week_selection": {
+    "method": "candidate-specific deterministic Monday selection from unused BTC weeks before any v24 execution",
+    "selection_seed": "candidate-01-v24-mss-absorption-reacceleration",
+    "result_dependent_selection": false
+  },
+  "market_representation": {
+    "event_clock": "causal daily equal-notional clock selected from the immediately preceding completed UTC day",
+    "candidate_clock_minutes": [5, 10, 20, 30],
+    "minimum_preceding_day_median_range_bps": 14.0,
+    "directional_change_threshold": "40 bps economically derived in the existing intrinsic-time detector",
+    "context_days": 14
+  },
+  "scenario": {
+    "observation": "same-side confirmed intrinsic liquidity is swept, value re-enters, and cumulative aggressive flow reverses",
+    "mss": "completed close through the nearest opposing confirmed pivot with aligned aggressive-flow sign",
+    "target_hierarchy": "nearest still-unconsumed completed prior-day or prior-week level beyond the deeper of the two latest opposing intrinsic pivots",
+    "absorption": "completed equal-notional event has opposite aggressive-flow sign but non-adverse close-to-close movement",
+    "reacceleration": "later aligned-flow close crosses the absorbed-event extreme while the MSS level remains held",
+    "entry": "market bracket submitted on the first official venue trade strictly after completed reacceleration",
+    "invalidation": "complete failed-sweep-to-reacceleration path extreme plus one 7-bp side-cost buffer",
+    "maximum_hold_hours": 4
+  },
+  "execution": {
+    "authoritative_engine": "NautilusTrader 1.230.0",
+    "market_data": "official Binance Vision USD-M aggregate trades converted one-for-one to TradeTick",
+    "custom_fill_simulator": false,
+    "custom_pnl_or_nav_ledger": false,
+    "risk_fraction_of_current_nav": 0.03,
+    "all_in_cost_bps_per_side": 7.0,
+    "one_global_pending_entry_or_position": true
+  },
+  "strict_week_gate": {
+    "minimum_closed_positions": 7,
+    "minimum_win_rate": 0.45,
+    "minimum_total_return": 0.0,
+    "minimum_geometric_daily_return": 0.01,
+    "minimum_profit_factor": 1.2,
+    "maximum_drawdown_floor": -0.2,
+    "operational_integrity_required": true,
+    "promising_partial_pass_allowed": false
+  },
+  "advancement": {
+    "week_2_runs_only_after_week_1_full_pass": true,
+    "week_3_runs_only_after_week_2_full_pass": true,
+    "long_evaluation_runs_only_after_all_three_full_pass": true
+  }
+}
