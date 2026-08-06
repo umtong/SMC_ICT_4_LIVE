@@ -1,0 +1,160 @@
+name: candidate-08-shared-acceptance-contiguous-stage-c-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-shared-acceptance-contiguous-stage-c-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/shared-acceptance-contiguous-stage-c-v1
+      DATA_CACHE: /tmp/candidate-08-contiguous-stage-c
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for a promoted twelve-week holdout
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=research/candidate-08/evidence/shared-acceptance-holdout-stage-b-v1/route.txt
+          ablation=research/candidate-08/evidence/shared-acceptance-holdout-stage-b-ablation-v1/route.txt
+          for attempt in $(seq 1 1200); do
+            git fetch origin research/candidate-08
+            git reset --hard origin/research/candidate-08
+            if { [[ -f "$ablation" ]] && [[ "$(cat "$ablation")" == PROMOTE_CONTIGUOUS_LONG ]]; } \
+              || { [[ -f "$base" ]] && [[ "$(cat "$base")" == PROMOTE_CONTIGUOUS_LONG ]]; }; then
+              break
+            fi
+            if [[ -f "$base" ]] && [[ "$(cat "$base")" == DISCARD_ACCEPTANCE_FAMILY ]] \
+              && { [[ ! -f "$ablation" ]] || [[ "$(cat "$ablation")" != PROMOTE_CONTIGUOUS_LONG ]]; }; then
+              break
+            fi
+            sleep 15
+          done
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          base = Path("research/candidate-08/evidence/shared-acceptance-holdout-stage-b-v1")
+          ablation = Path("research/candidate-08/evidence/shared-acceptance-holdout-stage-b-ablation-v1")
+          selected = None
+          if (ablation / "route.txt").exists() and (ablation / "route.txt").read_text().strip() == "PROMOTE_CONTIGUOUS_LONG":
+              selected = ablation
+          elif (base / "route.txt").exists() and (base / "route.txt").read_text().strip() == "PROMOTE_CONTIGUOUS_LONG":
+              selected = base
+          run = selected is not None
+          suite = json.loads((selected / "suite_metrics.json").read_text()) if run else {}
+          print(f"run={'true' if run else 'false'}")
+          print(f"runner_kind={suite.get('runner_kind', 'NONE')}")
+          print(f"variant={suite.get('variant', 'NONE')}")
+          print(f"source={selected if selected else ''}")
+          PY
+
+      - uses: actions/cache/restore@v4
+        if: steps.select.outputs.run == 'true'
+        with:
+          path: ${{ env.DATA_CACHE }}
+          key: candidate-08-contiguous-stage-c-${{ github.sha }}
+          restore-keys: |
+            candidate-08-stage-b-
+            candidate-08-stage-a-
+            candidate-08-aggtrade-acceptance-
+
+      - name: Run one continuous 28-day shared account
+        if: steps.select.outputs.run == 'true'
+        shell: bash
+        env:
+          RUNNER_KIND: ${{ steps.select.outputs.runner_kind }}
+          VARIANT: ${{ steps.select.outputs.variant }}
+        run: |
+          set -o pipefail
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          set +e
+          {
+            set -euo pipefail
+            smc4 doctor
+            python - <<'PY'
+            import json, os
+            from pathlib import Path
+            base = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_shared.json").read_text())
+            plan = json.loads(Path("research/candidate-08/shared_acceptance_contiguous_plan_v1.json").read_text())
+            window = plan["stage_c"]
+            base["candidate"] = f"candidate-08-contiguous-stage-c-{os.environ['VARIANT']}"
+            base["suites"]["first"] = [{
+                "name": window["name"],
+                "start": window["start"],
+                "end": window["end"],
+            }]
+            if os.environ["RUNNER_KIND"].endswith("ABLATION"):
+                base["ablation"] = {"removed_variable": "RETEST_ACTIVITY_AND_IMBALANCE_CONTRACTION", "only_ablation": True}
+            Path("research/candidate-08/evidence/shared-acceptance-contiguous-stage-c-v1/config.json").write_text(
+                json.dumps(base, indent=2, sort_keys=True) + "\n"
+            )
+            PY
+            python research/candidate-08/run_selected_shared_acceptance_variant.py \
+              --runner-kind "$RUNNER_KIND" \
+              --config "$OUTPUT_DIR/config.json" \
+              --output "$OUTPUT_DIR/run" \
+              --data-cache "$DATA_CACHE"
+          } 2>&1 | tee "$OUTPUT_DIR/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT_DIR/runner_exit_status.txt"
+          python research/candidate-08/evaluate_contiguous_shared_acceptance.py \
+            --run "$OUTPUT_DIR/run" \
+            --plan research/candidate-08/shared_acceptance_contiguous_plan_v1.json \
+            --stage stage_c \
+            --variant "$VARIANT" \
+            --runner-kind "$RUNNER_KIND" \
+            --output "$OUTPUT_DIR/suite_metrics.json" || true
+
+      - name: Record non-promoted holdout route
+        if: steps.select.outputs.run != 'true'
+        shell: bash
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          printf '{"reason":"No twelve-week variant passed the extended holdout"}\n' > "$OUTPUT_DIR/contiguous_not_run.json"
+          printf 'NOT_RUN\n' > "$OUTPUT_DIR/route.txt"
+          printf '0\n' > "$OUTPUT_DIR/runner_exit_status.txt"
+
+      - name: Commit contiguous Stage C evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin research/candidate-08
+          rm -f research/candidate-08/.run-shared-acceptance-contiguous-stage-c-v1
+          git add "$OUTPUT_DIR" research/candidate-08/.run-shared-acceptance-contiguous-stage-c-v1
+          git commit -m "candidate-08: record continuous 28-day shared-account evaluation" || true
+          git push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-contiguous-stage-c-${{ github.run_id }}
+          path: research/candidate-08/evidence/shared-acceptance-contiguous-stage-c-v1
+          retention-days: 30
+          if-no-files-found: warn
+
+      - uses: actions/cache/save@v4
+        if: steps.select.outputs.run == 'true'
+        with:
+          path: ${{ env.DATA_CACHE }}
+          key: candidate-08-contiguous-stage-c-${{ github.sha }}
