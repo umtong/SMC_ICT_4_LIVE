@@ -8,6 +8,10 @@ on:
       - ".github/workflows/candidate-07-validation.yml"
   workflow_dispatch:
 
+concurrency:
+  group: candidate-07-nautilus-validation
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: read
@@ -15,7 +19,7 @@ permissions:
 jobs:
   btc-week-1-impact-resilience-1s:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -36,8 +40,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .research-data/candidate-07
-          key: candidate-07-impact-resilience-1s-week1-v1
+          key: candidate-07-impact-resilience-1s-week1-v2
           restore-keys: |
+            candidate-07-impact-resilience-1s-week1-v1
             candidate-07-mark-index-overshoot-week1-v1
             candidate-07-cross-market-transfer-week1-v1
             candidate-07-mtf-index-week1-v1
@@ -49,26 +54,35 @@ jobs:
 
       - name: Diagnose frozen BTC Week-1 one-second impact resilience
         run: >-
-          python research/candidate-07/diagnose_impact_resilience_1s.py
+          python research/candidate-07/diagnose_impact_resilience_1s_v2.py
           --config research/candidate-07/config.json
           --stage week-1
           --start 2025-12-22
           --end 2025-12-29
-          --micro-warmup-days 1
-          --output artifacts/candidate-07/week-1/impact_resilience_1s.json
+          --micro-warmup-days 3
+          --output artifacts/candidate-07/week-1/impact_resilience_1s_v2.json
           --data-root .research-data/candidate-07
 
-      - name: Print machine-readable diagnosis
+      - name: Print compact machine-readable diagnosis
         if: always()
         run: |
-          test -f artifacts/candidate-07/week-1/impact_resilience_1s.json
-          cat artifacts/candidate-07/week-1/impact_resilience_1s.json
+          test -f artifacts/candidate-07/week-1/impact_resilience_1s_v2.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('artifacts/candidate-07/week-1/impact_resilience_1s_v2.json').read_text())
+          print(json.dumps({
+              'summary': payload['summary'],
+              'cadence_gaps': payload['cadence_gaps'],
+              'pool_collision_summary': payload['pool_collision_summary'],
+          }, indent=2, sort_keys=True))
+          PY
 
-      - name: Preserve structural evidence
+      - name: Preserve complete structural evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-impact-resilience-1s-week1-${{ github.sha }}
+          name: candidate-07-impact-resilience-1s-v2-week1-${{ github.sha }}
           path: artifacts/candidate-07/week-1
           retention-days: 14
           if-no-files-found: error
