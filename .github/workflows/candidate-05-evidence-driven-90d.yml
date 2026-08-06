@@ -1,0 +1,217 @@
+name: candidate-05-evidence-driven-90d
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/v26_30d_early_sponsored_ablation.json"
+      - ".github/workflows/candidate-05-evidence-driven-90d.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  promote-or-block:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and choose the stronger valid 30-day variant
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("research/candidate-05/evidence/v26_30d_early_sponsored_ablation.json")
+          evidence = json.loads(p.read_text(encoding="utf-8"))
+          candidates = []
+          for key, module, cls in (
+              ("baseline", "strategy_v26", "ScenarioValidEntryStrategy"),
+              ("ablation", "strategy_v26_no_early_sponsored_ablation", "NoEarlySponsoredParticipationStrategy"),
+          ):
+              item = evidence.get(key, {})
+              if item.get("available") and item.get("integrity_pass"):
+                  candidates.append((float(item["geometric_daily_growth"]), key, module, cls))
+          if not candidates:
+              raise SystemExit("no integrity-valid 30-day candidate")
+          candidates.sort(reverse=True)
+          growth, key, module, cls = candidates[0]
+          selected = {
+              "variant": key,
+              "module": module,
+              "class": cls,
+              "geometric_daily_growth_30d": growth,
+              "promotion_eligible": growth >= 0.01,
+          }
+          Path("/tmp/selected.json").write_text(json.dumps(selected, indent=2) + "\n", encoding="utf-8")
+          with Path("/tmp/select.env").open("w", encoding="utf-8") as f:
+              f.write(f"SELECTED_VARIANT={key}\n")
+              f.write(f"SELECTED_MODULE={module}\n")
+              f.write(f"SELECTED_CLASS={cls}\n")
+              f.write(f"SELECTED_GROWTH={growth:.17g}\n")
+              f.write(f"PROMOTE={'true' if growth >= 0.01 else 'false'}\n")
+          print(json.dumps(selected, indent=2, sort_keys=True))
+          PY
+          cat /tmp/select.env >> "$GITHUB_ENV"
+          cat /tmp/select.env >> "$GITHUB_OUTPUT"
+
+      - name: Record blocked promotion below the project growth goal
+        if: env.PROMOTE != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-05/evidence
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          selected = json.loads(Path("/tmp/selected.json").read_text(encoding="utf-8"))
+          result = {
+              "classification": "PROMOTION_BLOCKED_BELOW_1PCT_GEOMETRIC_DAILY_GROWTH",
+              "source_commit": "${{ github.sha }}",
+              "workflow_run_id": "${{ github.run_id }}",
+              "selected_30d_variant": selected,
+              "long_evaluation_started": False,
+              "reason": "The fixed 30-day cost-after NAV result did not reach the project growth goal; continue alpha discovery instead of spending time on long validation.",
+          }
+          Path("research/candidate-05/evidence/v26_90d_promotion.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Configure selected strategy for the fixed 91-day evaluation
+        if: env.PROMOTE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<PY
+          """Runtime entrypoint selected by fixed 30-day cost-after evidence."""
+          from strategy_base import LiquidityResponseConfig
+          from ${SELECTED_MODULE} import ${SELECTED_CLASS} as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+
+      - name: Run fixed continuous 91-day evaluation through NautilusTrader
+        if: env.PROMOTE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-05-evidence-driven-90d
+          mkdir -p "$root"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-05-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-05-30 \
+            --cache .cache/candidate-05-evidence-driven-90d \
+            --output "$root" \
+            | tee "$root/console.json"
+
+      - name: Summarize 91-day evidence
+        if: env.PROMOTE == 'true' && always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-05/evidence
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          selected = json.loads(Path("/tmp/selected.json").read_text(encoding="utf-8"))
+          metrics_path = Path("artifacts/candidate-05-evidence-driven-90d/metrics.json")
+          if not metrics_path.exists():
+              result = {
+                  "classification": "IMPLEMENTATION_OR_EVIDENCE_ERROR_91D",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "selected_30d_variant": selected,
+                  "metrics_available": False,
+              }
+          else:
+              m = json.loads(metrics_path.read_text(encoding="utf-8"))
+              d = m.get("strategy_diagnostics", {})
+              checks = {
+                  "engine_is_nautilus": m.get("engine") == "NautilusTrader BacktestNode",
+                  "positive_nav": m.get("ending_nav", 0.0) > 0.0,
+                  "no_liquidation": m.get("liquidations", 0) == 0,
+                  "no_order_rejections": d.get("order_rejections", 0) == 0,
+                  "single_entry_intent": d.get("max_simultaneous_entry_intents", 0) <= 1,
+                  "single_position": d.get("max_open_positions_observed", 0) <= 1,
+                  "nautilus_orders": m.get("gate_checks", {}).get("nautilus_orders", False),
+                  "nautilus_positions": m.get("gate_checks", {}).get("nautilus_positions", False),
+              }
+              integrity = all(checks.values())
+              growth = float(m.get("geometric_daily_growth", -1.0))
+              result = {
+                  "classification": (
+                      "PROJECT_GROWTH_GOAL_REACHED_ON_91D"
+                      if integrity and growth >= 0.01
+                      else "LOGIC_OR_ROBUSTNESS_FAILURE_ON_91D"
+                      if integrity
+                      else "IMPLEMENTATION_OR_EVIDENCE_ERROR_91D"
+                  ),
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "selected_30d_variant": selected,
+                  "metrics_available": True,
+                  "evaluation_start": m.get("evaluation_start"),
+                  "evaluation_end": m.get("evaluation_end"),
+                  "calendar_days": m.get("calendar_days"),
+                  "starting_nav": m.get("starting_nav"),
+                  "ending_nav": m.get("ending_nav"),
+                  "total_return": m.get("total_return"),
+                  "geometric_daily_growth": growth,
+                  "max_drawdown": m.get("max_drawdown"),
+                  "trades": m.get("trades"),
+                  "wins": m.get("wins"),
+                  "losses": m.get("losses"),
+                  "win_rate": m.get("win_rate"),
+                  "profit_factor": m.get("profit_factor"),
+                  "active_days": m.get("active_days"),
+                  "largest_winner_share": m.get("largest_winner_share"),
+                  "scenario_metrics": m.get("scenario_metrics", {}),
+                  "integrity_checks": checks,
+                  "integrity_pass": integrity,
+              }
+          Path("research/candidate-05/evidence/v26_90d_promotion.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Persist promotion decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s research/candidate-05/evidence/v26_90d_promotion.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-05/evidence/v26_90d_promotion.json
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-05: record evidence-driven 90d decision [skip ci]"
+            git push origin HEAD:research/candidate-05
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always() && env.PROMOTE == 'true'
+        with:
+          name: candidate-05-evidence-driven-90d-${{ github.sha }}
+          path: artifacts/candidate-05-evidence-driven-90d/**
+          if-no-files-found: warn
+          retention-days: 90
