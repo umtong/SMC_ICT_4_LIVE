@@ -122,6 +122,16 @@ jobs:
           --data-root .research-data/candidate-07
           --lookahead-bars 24
 
+      - name: Diagnose 15-minute liquidity with one-minute execution
+        if: always()
+        run: >-
+          python research/candidate-07/diagnose_mtf_liquidity.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --stage week-1
+          --output artifacts/candidate-07
+          --data-root .research-data/candidate-07
+
       - name: Print machine-readable result
         if: always()
         run: |
@@ -135,6 +145,7 @@ jobs:
           cat artifacts/candidate-07/week-1/ny_opening_diagnostic.json
           cat artifacts/candidate-07/week-1/london_opening_diagnostic.json
           cat artifacts/candidate-07/week-1/fvg_diagnostic.json
+          cat artifacts/candidate-07/week-1/mtf_liquidity_diagnostic.json
 
       - name: Preserve complete replay evidence
         if: always()
