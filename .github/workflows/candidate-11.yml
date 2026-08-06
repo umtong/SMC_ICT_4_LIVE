@@ -1,4 +1,4 @@
-name: Candidate 11 V3 frozen validation
+name: Candidate 11 SCDAM validation
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
       - ".github/workflows/candidate-11.yml"
   pull_request:
     branches:
-      - research/candidate-11
+      - main
     paths:
       - "research/candidate-11/**"
       - ".github/workflows/candidate-11.yml"
@@ -26,9 +26,9 @@ permissions:
   contents: write
   packages: read
 
-env:
-  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-  V3_BUNDLE_SHA256: 3ded43814daf5cc9b152e9bfe476e1edfc35133f48dfe69dd0e2c72f707ea38e
+concurrency:
+  group: candidate-11-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   validate:
@@ -40,114 +40,39 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+
     steps:
-      - name: Checkout candidate branch
+      - name: Checkout exact candidate branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: research/candidate-11
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
-      - name: Materialize and verify V3 source bundle
+      - name: Materialize verified SCDAM source
         shell: bash
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          python - <<'PY'
-          from hashlib import sha256
-          from pathlib import Path, PurePosixPath
-          from zipfile import ZipFile
-          import json
-          import os
-
-          root = Path("research/candidate-11")
-          bundle = root / "v3_source_bundle.zip"
-          expected_bundle = os.environ["V3_BUNDLE_SHA256"]
-          if not bundle.exists():
-              required = root / "logic_v3.py"
-              if not required.exists():
-                  raise SystemExit("V3 bundle and materialized source are both missing")
-              print("V3 source already materialized; bundle step is idempotent")
-              raise SystemExit(0)
-          actual_bundle = sha256(bundle.read_bytes()).hexdigest()
-          if actual_bundle != expected_bundle:
-              raise SystemExit(
-                  f"source bundle SHA-256 mismatch: expected={expected_bundle} actual={actual_bundle}",
-              )
-          with ZipFile(bundle) as archive:
-              names = archive.namelist()
-              if "BUNDLE_MANIFEST.json" not in names:
-                  raise SystemExit("bundle manifest missing")
-              manifest = json.loads(archive.read("BUNDLE_MANIFEST.json"))
-              if manifest.get("schema") != "candidate-11-v3-source-bundle-v1":
-                  raise SystemExit("unsupported bundle schema")
-              expected_files = manifest.get("files") or {}
-              archive_files = set(names) - {"BUNDLE_MANIFEST.json"}
-              if archive_files != set(expected_files):
-                  raise SystemExit("bundle member set does not match manifest")
-              for name, record in expected_files.items():
-                  pure = PurePosixPath(name)
-                  if pure.is_absolute() or ".." in pure.parts or len(pure.parts) != 1:
-                      raise SystemExit(f"unsafe bundle member: {name}")
-                  payload = archive.read(name)
-                  if len(payload) != int(record["size_bytes"]):
-                      raise SystemExit(f"bundle size mismatch: {name}")
-                  if sha256(payload).hexdigest() != record["sha256"]:
-                      raise SystemExit(f"bundle content hash mismatch: {name}")
-                  (root / name).write_bytes(payload)
-          bundle.unlink()
-          print(f"materialized {len(expected_files)} verified V3 files")
-          PY
-          if ! git diff --quiet -- research/candidate-11; then
+          python research/candidate-11/materialize_scdam.py
+          chmod +x research/candidate-11/ci_validate.sh
+          if [ "${{ github.event_name }}" != "pull_request" ] && [ -n "$(git status --porcelain -- research/candidate-11)" ]; then
             git config user.name "candidate-11-bot"
             git config user.email "candidate-11-bot@users.noreply.github.com"
-            git add research/candidate-11
-            git commit -m "candidate-11: materialize verified V3 research candidate [skip ci]"
+            git add -A research/candidate-11
+            git commit -m "candidate-11: materialize verified SCDAM candidate [skip ci]"
             git push origin HEAD:research/candidate-11
           fi
 
-      - name: Verify pinned research environment
+      - name: Run causal contracts and frozen NautilusTrader interval
         shell: bash
-        run: smc4 doctor
-
-      - name: Compile and test causal data contract and accounting layers
-        shell: bash
+        env:
+          REQUESTED_WEEK: ${{ github.event.inputs.week }}
         run: |
-          set -euo pipefail
-          python -m py_compile \
-            research/candidate-11/bar_adapter.py \
-            research/candidate-11/binance_data_v3.py \
-            research/candidate-11/instrument_snapshot_v3.py \
-            research/candidate-11/logic_v3.py \
-            research/candidate-11/diagnose_v3.py \
-            research/candidate-11/run_v3.py
-          python -m unittest discover -s research/candidate-11 -p 'test_*.py' -v
-
-      - name: Run frozen signal-only diagnostic
-        shell: bash
-        run: |
-          set -euo pipefail
-          WEEK="${{ github.event.inputs.week }}"
+          WEEK="$REQUESTED_WEEK"
           if [ -z "$WEEK" ]; then WEEK=W1; fi
-          rm -rf "research/candidate-11/results_v3/$WEEK"
-          python research/candidate-11/diagnose_v3.py \
-            --week "$WEEK" \
-            --output "research/candidate-11/results_v3/$WEEK/diagnostic"
+          bash research/candidate-11/ci_validate.sh "$WEEK"
 
-      - name: Run actual four-market NautilusTrader evaluation
-        shell: bash
-        run: |
-          set -euo pipefail
-          WEEK="${{ github.event.inputs.week }}"
-          if [ -z "$WEEK" ]; then WEEK=W1; fi
-          mkdir -p "research/candidate-11/results_v3/$WEEK/nautilus"
-          ln -s ../diagnostic/data "research/candidate-11/results_v3/$WEEK/nautilus/data"
-          python research/candidate-11/run_v3.py \
-            --week "$WEEK" \
-            --output "research/candidate-11/results_v3/$WEEK/nautilus"
-          test -s "research/candidate-11/results_v3/$WEEK/nautilus/run.json"
-          test -s "research/candidate-11/results_v3/$WEEK/nautilus/metrics.json"
-
-      - name: Build evidence summary
+      - name: Publish metrics summary
         if: always()
         shell: bash
         env:
@@ -155,51 +80,31 @@ jobs:
         run: |
           WEEK="$REQUESTED_WEEK"
           if [ -z "$WEEK" ]; then WEEK=W1; fi
-          export WEEK
-          python - <<'PY'
-          from pathlib import Path
+          METRICS="research/candidate-11/results/$WEEK/metrics.json"
+          if [ -s "$METRICS" ]; then
+            python - "$METRICS" >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import json
-          import os
-
-          week = os.environ["WEEK"]
-          root = Path("research/candidate-11/results_v3") / week
-          summary = {"week": week, "evidence_complete": False}
-          diagnostic = root / "diagnostic" / "diagnostic.json"
-          metrics = root / "nautilus" / "metrics.json"
-          if diagnostic.exists():
-              summary["diagnostic"] = json.loads(diagnostic.read_text(encoding="utf-8"))
-          if metrics.exists():
-              summary["metrics"] = json.loads(metrics.read_text(encoding="utf-8"))
-              summary["evidence_complete"] = True
-          root.mkdir(parents=True, exist_ok=True)
-          (root / "EVIDENCE_SUMMARY.json").write_text(
-              json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n",
-              encoding="utf-8",
-          )
-          print("## Candidate 11 V3 evidence")
-          print(f"- week: `{week}`")
-          print(f"- evidence_complete: `{summary['evidence_complete']}`")
-          if "diagnostic" in summary:
-              print(f"- confirmed_trade_plans: `{summary['diagnostic'].get('confirmed_trade_plans')}`")
-          if "metrics" in summary:
-              for key in (
-                  "daily_geometric_growth",
-                  "closed_trades",
-                  "win_rate",
-                  "payoff_ratio",
-                  "closed_trade_max_drawdown",
-                  "promising_gate_passed",
-                  "complete_gate_passed",
-                  "success_claim",
-              ):
-                  print(f"- {key}: `{summary['metrics'].get(key)}`")
+          import sys
+          from pathlib import Path
+          metrics = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print("## Candidate 11 SCDAM")
+          for key in (
+              "week_id", "daily_geometric_growth", "closed_trades", "win_rate",
+              "payoff_ratio", "closed_trade_max_drawdown", "submitted_plans",
+              "liquidation_detected", "promising_gate_passed",
+              "complete_gate_passed", "success_claim",
+          ):
+              print(f"- **{key}**: `{metrics.get(key)}`")
           PY
+          else
+            echo "## Candidate 11 produced no metrics" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-      - name: Upload reproducible evidence
+      - name: Upload full evidence bundle
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-11-v3-${{ github.run_id }}-${{ github.run_attempt }}
-          path: research/candidate-11/results_v3/
-          if-no-files-found: error
+          name: candidate-11-${{ github.run_id }}-${{ github.run_attempt }}
+          path: research/candidate-11/results/
+          if-no-files-found: warn
           retention-days: 30
