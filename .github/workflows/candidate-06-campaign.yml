@@ -1,0 +1,137 @@
+name: Candidate 06 Unified Nautilus Campaign
+
+on:
+  push:
+    branches:
+      - research/candidate-06
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-06-unified-campaign
+  cancel-in-progress: true
+
+jobs:
+  research-campaign:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed research environment
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(actual)
+          PY
+
+      - name: Compile and verify all causal state machines
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-06/*.py
+          python research/candidate-06/test_logic_v2.py
+          python research/candidate-06/test_session_engine.py
+          python research/candidate-06/test_session_displacement_engine.py
+
+      - name: Run unified staged Nautilus campaign
+        id: campaign
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/campaign
+          python research/candidate-06/run_campaign.py \
+            --output artifacts/candidate-06/campaign
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Guarantee an auditable terminal report
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-06/campaign")
+          root.mkdir(parents=True, exist_ok=True)
+          campaign = root / "campaign.json"
+          report = root / "CAMPAIGN.md"
+          if not campaign.exists():
+              payload = {
+                  "campaign_success": False,
+                  "terminal_status": "IMPLEMENTATION_OR_RUNTIME_FAILURE_BEFORE_CAMPAIGN_REPORT",
+              }
+              campaign.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          if not report.exists():
+              report.write_text(
+                  "# Candidate 06 terminal status\n\n"
+                  "The campaign did not produce its normal report. Inspect `workflow_stderr.txt` and the committed subprocess tails.\n",
+                  encoding="utf-8",
+              )
+          PY
+          printf '%s\n' '${{ steps.campaign.outputs.exit_code }}' > artifacts/candidate-06/campaign/workflow_exit_code.txt
+
+      - name: Commit all reproducible evidence
+        if: always() && github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add -f artifacts/candidate-06/campaign
+          for file in \
+            research/candidate-06/config.locked.json \
+            research/candidate-06/config.session.locked.json \
+            research/candidate-06/config.displacement.locked.json; do
+            if [ -f "$file" ]; then git add -f "$file"; fi
+          done
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Record candidate-06 unified campaign evidence [skip ci]"
+          for attempt in 1 2 3 4; do
+            if git pull --rebase origin research/candidate-06 && git push origin HEAD:research/candidate-06; then
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+          echo "failed to persist campaign evidence" >&2
+          exit 1
+
+      - name: Upload complete campaign evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-unified-campaign
+          path: |
+            artifacts/candidate-06/campaign
+            research/candidate-06/config.locked.json
+            research/candidate-06/config.session.locked.json
+            research/candidate-06/config.displacement.locked.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Enforce research result
+        if: always()
+        shell: bash
+        run: |
+          code='${{ steps.campaign.outputs.exit_code }}'
+          if [ -z "$code" ]; then
+            echo "campaign step did not report an exit code" >&2
+            exit 1
+          fi
+          exit "$code"
