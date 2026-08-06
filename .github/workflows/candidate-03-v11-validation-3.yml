@@ -1,0 +1,147 @@
+name: candidate-03-v11-frozen-validation-3
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - "research/candidate-03/V11_FREEZE.json"
+      - ".github/workflows/candidate-03-v11-validation-3.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  PYTHONPATH: /workspace/src:/workspace/research/candidate-03
+  CONFIG: research/candidate-03/nt_lvcfr_v11_config.json
+  PREP_CONFIG: research/candidate-03/nt_lvcfr_v3_config.json
+
+jobs:
+  frozen-validation-3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify frozen V11 source identity and runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A expected=(
+            [research/candidate-03/nt_lvcfr_strategy.py]=e4d00ae0c6fa1d24198c846bccb247baacdc0456
+            [research/candidate-03/nt_lvcfr_v11_config.json]=e406fa38d021fec51b7f56ebf32927c69d0ec6d8
+            [research/candidate-03/derive_nt_lvcfr_v7_signals.py]=b76b4e3cffec4c40eb8c9fdcdaad577881b61ba8
+            [research/candidate-03/run_nt_lvcfr.py]=74bb02f1b69ee31ce32ddfa47497bdd9770ac00b
+            [research/candidate-03/nt_lvcfr_trade_proxy.py]=37f34bf4cb86911e631d43b3aa28df4c7a7aff37
+            [research/candidate-03/nt_lvcfr_data.py]=f096b6dfd3944f559983010c03cd61622ee8c977
+            [research/candidate-03/rebuild_nt_lvcfr_trade_proxy_catalog.py]=68267662f5730238b8115ff1928b5a303e585acb
+          )
+          for path in "${!expected[@]}"; do
+            actual=$(git hash-object "$path")
+            test "$actual" = "${expected[$path]}" || {
+              echo "frozen source mismatch: $path expected=${expected[$path]} actual=$actual" >&2
+              exit 1
+            }
+          done
+          docker pull "$IMAGE"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c '
+              smc4 doctor &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_trade_proxy.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_v11.py
+            '
+
+      - name: Restore immutable third-week execution inputs
+        id: restore-third
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr-v3/validation-3/prepared
+          key: nt-lvcfr-aggtrade-v1-btc-2022-05-16-${{ hashFiles('research/candidate-03/nt_lvcfr_trade_proxy.py', 'research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_v3_config.json') }}
+
+      - name: Prepare third frozen BTC week from official public data
+        if: steps.restore-third.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          prepared=artifacts/candidate-03/nt-lvcfr-v3/validation-3/prepared
+          mkdir -p "$prepared"
+          sudo chmod -R a+rwX artifacts
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr_trade_proxy.py \
+              --week-start 2022-05-16 --output $prepared --config $PREP_CONFIG" \
+            2>&1 | tee artifacts/candidate-03/validation-3-preparation.log
+
+      - name: Save immutable third-week execution inputs
+        if: steps.restore-third.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr-v3/validation-3/prepared
+          key: nt-lvcfr-aggtrade-v1-btc-2022-05-16-${{ hashFiles('research/candidate-03/nt_lvcfr_trade_proxy.py', 'research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_v3_config.json') }}
+
+      - name: Third frozen BTC week — 2022-05-16
+        shell: bash
+        run: |
+          set -euo pipefail
+          prepared=artifacts/candidate-03/nt-lvcfr-v3/validation-3/prepared
+          out=artifacts/candidate-03/nt-lvcfr-v11/validation-3
+          mkdir -p "$out"
+          sudo chmod -R a+rwX artifacts
+          cp "$prepared/signals.json" "$prepared/signals-v1.json"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/derive_nt_lvcfr_v7_signals.py \
+              --prepared-root $prepared --output-manifest $out/v11_signal_manifest.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('artifacts/candidate-03/nt-lvcfr-v11/validation-3/v11_signal_manifest.json').read_text())
+          print(json.dumps({
+              'derived_signal_count': manifest.get('derived_signal_count'),
+              'state_counts': manifest.get('state_counts'),
+              'objective_counts': manifest.get('objective_counts'),
+              'weak_reclaims': manifest.get('weak_reclaims'),
+              'weak_reclaims_reaccepted': manifest.get('weak_reclaims_reaccepted'),
+          }, indent=2, sort_keys=True))
+          PY
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/rebuild_nt_lvcfr_trade_proxy_catalog.py \
+              --prepared-root $prepared --config $CONFIG" \
+            2>&1 | tee "$out/catalog_rebuild.log"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py \
+              --week-start 2022-05-16 --prepared-root $prepared --output $out --config $CONFIG" \
+            2>&1 | tee "$out/backtest.log"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
+              --config "$CONFIG" | tee "$out/gate.json"
+
+      - name: Preserve frozen third-week evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-v11-validation-3-${{ github.sha }}
+          path: |
+            artifacts/candidate-03/nt-lvcfr-v11/validation-3/**/*.json
+            artifacts/candidate-03/nt-lvcfr-v11/validation-3/**/*.jsonl
+            artifacts/candidate-03/nt-lvcfr-v11/validation-3/**/*.csv
+            artifacts/candidate-03/nt-lvcfr-v11/validation-3/**/*.log
+            artifacts/candidate-03/validation-3-preparation.log
+          if-no-files-found: warn
+          retention-days: 30
