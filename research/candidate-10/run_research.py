@@ -1,4 +1,4 @@
-"""Reproducible candidate 10 v4 controlled-execution runner."""
+"""Reproducible candidate 10 v4 official-L1 controlled runner."""
 
 from __future__ import annotations
 
@@ -10,17 +10,22 @@ import subprocess
 import sys
 
 import c10_flow_research as _flow_research_module
+import c10_flow_v4 as _v4_module
 from c10_flow_evidence_fix import EvidenceValidatedParentProtectedStrategy
+from c10_flow_l1_research import run_l1_flow_backtest
 from c10_flow_model import FlowParams
 from c10_flow_precision_fix import reproducible_weeks
-from c10_flow_v4 import run_v4_backtest
 
 VARIANT_NAMES = ("full", "ablation-price-only-acceptance")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=("gate", "three-weeks", "single"), default="gate")
+    parser.add_argument(
+        "--phase",
+        choices=("gate", "three-weeks", "single"),
+        default="gate",
+    )
     parser.add_argument("--week", help="ISO Monday for --phase single or worker")
     parser.add_argument("--output", default="artifacts/candidate-10")
     parser.add_argument("--data-root", default="artifacts/candidate-10-data")
@@ -44,15 +49,19 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
     params, require_flow = variants()[args.variant]
     destination = output_root / args.phase / week.isoformat() / args.variant
 
-    # Controlled implementation rerun: only the Nautilus order lifecycle and
-    # its evidence labels are replaced. The v4 state machine, all parameters,
-    # data, risk, costs, seed and one-variable flow ablation are unchanged.
+    # Controlled implementation rerun:
+    # - v4 state machine, parameters, seed, costs, risk, signal prices and the
+    #   one-variable order-flow ablation are unchanged.
+    # - only the execution data path gains the official latest-known Binance
+    #   best bid/ask before each aggregate trade.
     previous_strategy = _flow_research_module.FlowCandidate10Strategy
+    previous_backtest = _v4_module._run_flow_backtest
     _flow_research_module.FlowCandidate10Strategy = (
         EvidenceValidatedParentProtectedStrategy
     )
+    _v4_module._run_flow_backtest = run_l1_flow_backtest
     try:
-        metrics = run_v4_backtest(
+        metrics = _v4_module.run_v4_backtest(
             require_acceptance_order_flow=require_flow,
             week_start=week,
             variant=args.variant,
@@ -61,11 +70,25 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
             data_root=Path(args.data_root) / week.isoformat(),
         )
     finally:
+        _v4_module._run_flow_backtest = previous_backtest
         _flow_research_module.FlowCandidate10Strategy = previous_strategy
 
     metrics["execution_lifecycle"] = (
-        "PARENT_ONLY_CANCEL_REMAINDER_PER_FILL_REDUCE_ONLY_PROTECTION"
+        "OFFICIAL_CAUSAL_L1_PARENT_ONLY_CANCEL_REMAINDER_"
+        "PER_FILL_REDUCE_ONLY_PROTECTION"
     )
+    metrics["implementation_control"] = {
+        "strategy_logic_changed": False,
+        "parameters_changed": False,
+        "risk_changed": False,
+        "costs_changed": False,
+        "seed_changed": False,
+        "week_changed": False,
+        "execution_data_change": (
+            "TradeTick-only synthetic BBO replaced by latest official bookTicker "
+            "event_time <= aggregate-trade transact_time"
+        ),
+    }
     metrics_path = destination / "metrics.json"
     metrics_path.write_text(
         json.dumps(metrics, indent=2, sort_keys=True) + "\n",
@@ -75,7 +98,12 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
     return 0
 
 
-def _run_isolated(*, args: argparse.Namespace, week: date, variant: str) -> dict[str, object]:
+def _run_isolated(
+    *,
+    args: argparse.Namespace,
+    week: date,
+    variant: str,
+) -> dict[str, object]:
     command = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -97,7 +125,10 @@ def _run_isolated(*, args: argparse.Namespace, week: date, variant: str) -> dict
     if completed.stderr:
         sys.stderr.write(completed.stderr)
     if completed.returncode != 0:
-        raise RuntimeError(f"isolated {variant} worker failed with exit code {completed.returncode}")
+        raise RuntimeError(
+            f"isolated {variant} worker failed with exit code "
+            f"{completed.returncode}",
+        )
     marker = "RESULT_JSON="
     for line in reversed(completed.stdout.splitlines()):
         if line.startswith(marker):
@@ -124,12 +155,15 @@ def main() -> int:
 
     selection = {
         "seed": 20260806,
-        "population": "all Mondays from 2022-01-03 through 2024-12-23 inclusive",
+        "population": (
+            "all Mondays from 2022-01-03 through 2024-12-23 inclusive"
+        ),
         "selected_weeks": [item.isoformat() for item in selected],
         "phase": args.phase,
         "executed_weeks": [item.isoformat() for item in weeks],
         "engine_process_isolation": True,
         "candidate_generation": "v4-efficient-flow-acceptance-continuation",
+        "execution_generation": "official-causal-l1-streaming-control",
         "variants": list(VARIANT_NAMES),
         "ablation_contract": (
             "both variants retain fast-range price acceptance, price efficiency, "
@@ -137,10 +171,10 @@ def main() -> int:
             "only same-side executed aggressor-flow confirmation is removed"
         ),
         "implementation_control": (
-            "parent LIMIT only; cancel remainder after first actual execution; "
-            "each fill quantity receives independent reduce-only LAST_PRICE stop "
-            "and post-only target; already-crossed protection exits at market; "
-            "protection submission is logged as a self-transition"
+            "same BTC week, strategy, signal/entry/stop/target, risk, fees, seed "
+            "and fill model; add only latest official Binance bookTicker quote "
+            "whose event_time is no later than each aggregate-trade transact_time; "
+            "stream bounded daily batches through NautilusTrader"
         ),
     }
     (output_root / "week_selection.json").write_text(
@@ -150,7 +184,9 @@ def main() -> int:
     results: list[dict[str, object]] = []
     for week in weeks:
         for variant in variants():
-            results.append(_run_isolated(args=args, week=week, variant=variant))
+            results.append(
+                _run_isolated(args=args, week=week, variant=variant),
+            )
     full_results = [item for item in results if item["variant"] == "full"]
     summary = {
         "selection": selection,
