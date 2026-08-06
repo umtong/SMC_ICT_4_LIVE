@@ -1,0 +1,244 @@
+name: candidate-04-v27-structural-refinements
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v27-structural-refinements.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - name: low_activity
+            source_name: candidate-04-v27-cross-low_activity-5bea08863f38c2dfa9f83b63e5c614d241a06bb2
+            build_start: "2023-08-02"
+            build_end: "2023-08-10"
+            evaluation_start: "2023-08-04"
+            evaluation_end: "2023-08-10"
+          - name: normal_basis
+            source_name: candidate-04-v27-cross-normal_basis-5bea08863f38c2dfa9f83b63e5c614d241a06bb2
+            build_start: "2023-12-16"
+            build_end: "2023-12-24"
+            evaluation_start: "2023-12-18"
+            evaluation_end: "2023-12-24"
+          - name: stress_a
+            source_name: candidate-04-v27-cross-stress_a-5bea08863f38c2dfa9f83b63e5c614d241a06bb2
+            build_start: "2024-08-05"
+            build_end: "2024-08-13"
+            evaluation_start: "2024-08-07"
+            evaluation_end: "2024-08-13"
+          - name: year_end
+            source_name: candidate-04-v27-cross-year_end-5bea08863f38c2dfa9f83b63e5c614d241a06bb2
+            build_start: "2024-12-25"
+            build_end: "2025-01-02"
+            evaluation_start: "2024-12-27"
+            evaluation_end: "2025-01-02"
+          - name: autumn
+            source_name: candidate-04-v27-cross-autumn-5bea08863f38c2dfa9f83b63e5c614d241a06bb2
+            build_start: "2025-10-18"
+            build_end: "2025-10-26"
+            evaluation_start: "2025-10-20"
+            evaluation_end: "2025-10-26"
+          - name: may_2024
+            source_name: candidate-04-v27-cross-may_2024-5bea08863f38c2dfa9f83b63e5c614d241a06bb2
+            build_start: "2024-05-25"
+            build_end: "2024-06-02"
+            evaluation_start: "2024-05-27"
+            evaluation_end: "2024-06-02"
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      MATRIX_NAME: ${{ matrix.name }}
+      C04_BUILD_START: ${{ matrix.build_start }}
+      C04_BUILD_END: ${{ matrix.build_end }}
+      C04_EVALUATION_START: ${{ matrix.evaluation_start }}
+      C04_EVALUATION_END: ${{ matrix.evaluation_end }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore exact V27 cross-development observations
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.source_name }}
+          path: artifacts/candidate-04-v27-refinements/${{ matrix.name }}/original
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify runtime and past-only refinement contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          root="artifacts/candidate-04-v27-refinements/$MATRIX_NAME"
+          test -s "$root/original/source/rich/data_manifest.json"
+          python -m compileall -q \
+            research/candidate-04/failed_external_break_retest_impact_tail_compiler.py \
+            research/candidate-04/directional_session_vwap_upper_tail_compiler.py \
+            research/candidate-04/rich_signal_compiler_v27_impact_tail.py \
+            research/candidate-04/rich_signal_compiler_v27_directional_upper_tail.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v22_rich_router.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_v27_structural_refinements.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Compile each one-variable refinement independently
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v27-refinements/$MATRIX_NAME"
+          common_args=(
+            --base-config research/candidate-04/inventory_transfer_config.json
+            --impact-config research/candidate-04/impact_exhaustion_config.json
+            --router-config research/candidate-04/auction_activity_router_config.json
+            --rich-dir "$root/original/source/rich"
+            --kline-dir ".cache/candidate-04-v27-refinements/$MATRIX_NAME/raw"
+            --evaluation-start "$C04_EVALUATION_START"
+            --evaluation-end "$C04_EVALUATION_END"
+            --download-klines
+          )
+          python research/candidate-04/rich_signal_compiler_v27_impact_tail.py \
+            "${common_args[@]}" \
+            --output "$root/impact_tail/signals" \
+            | tee "$root/impact_tail_compiler_console.json"
+          python research/candidate-04/rich_signal_compiler_v27_directional_upper_tail.py \
+            "${common_args[@]}" \
+            --output "$root/directional_upper/signals" \
+            | tee "$root/directional_upper_compiler_console.json"
+          test -s "$root/impact_tail/signals/signals.json"
+          test -s "$root/directional_upper/signals/signals.json"
+
+      - name: Execute parent-impact-tail variant through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v27-refinements/$MATRIX_NAME"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$root/impact_tail/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v22_rich_router.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start "$C04_BUILD_START" \
+            --build-end "$C04_BUILD_END" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --cache ".cache/candidate-04-v27-refinements/$MATRIX_NAME/raw" \
+            --output "$root/impact_tail/nautilus" \
+            | tee "$root/impact_tail/nautilus_console.json"
+          test -s "$root/impact_tail/nautilus/metrics.json"
+          test -e "$root/impact_tail/nautilus/positions.csv"
+
+      - name: Execute directional-upper-tail variant through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v27-refinements/$MATRIX_NAME"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$root/directional_upper/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v22_rich_router.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start "$C04_BUILD_START" \
+            --build-end "$C04_BUILD_END" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --cache ".cache/candidate-04-v27-refinements/$MATRIX_NAME/raw" \
+            --output "$root/directional_upper/nautilus" \
+            | tee "$root/directional_upper/nautilus_console.json"
+          test -s "$root/directional_upper/nautilus/metrics.json"
+          test -e "$root/directional_upper/nautilus/positions.csv"
+
+      - name: Verify risk and summarize structural refinements
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+          from pandas.errors import EmptyDataError
+
+          root = Path("artifacts/candidate-04-v27-refinements") / os.environ["MATRIX_NAME"]
+
+          def load_variant(name):
+              base = root / name
+              metrics = json.loads((base / "nautilus/metrics.json").read_text())
+              events = json.loads((base / "nautilus/strategy_events.json").read_text())
+              signals = json.loads((base / "signals/summary.json").read_text())
+              try:
+                  positions = pd.read_csv(base / "nautilus/positions.csv")
+              except EmptyDataError:
+                  positions = pd.DataFrame()
+              entries = [e for e in events if e.get("event_type") == "ENTRY_SUBMITTED"]
+              if len(entries) != len(positions.index):
+                  raise SystemExit(f"{name}: entry/position mismatch")
+              losses = []
+              for position, entry in zip(positions.to_dict("records"), entries):
+                  pnl = float(str(position["realized_pnl"]).split()[0].replace("_", ""))
+                  if pnl < 0.0:
+                      losses.append(abs(pnl) / float(entry["details"]["equity"]))
+              maximum = max(losses, default=0.0)
+              if maximum > 0.0301:
+                  raise SystemExit(f"{name}: realized loss exceeded 3% NAV")
+              return {
+                  "signals": signals.get("written_signals"),
+                  "route_counts": signals.get("route_counts"),
+                  "trades": metrics.get("trades"),
+                  "wins": metrics.get("wins"),
+                  "win_rate": metrics.get("win_rate"),
+                  "total_return": metrics.get("total_return"),
+                  "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                  "active_days": metrics.get("active_days"),
+                  "max_drawdown": metrics.get("max_drawdown"),
+                  "scenario_metrics": metrics.get("scenario_metrics"),
+                  "maximum_realized_loss_fraction": maximum,
+              }
+
+          original = json.loads((root / "original/summary.json").read_text())
+          summary = {
+              "matrix": os.environ["MATRIX_NAME"],
+              "original": {
+                  "trades": original.get("trades"),
+                  "wins": original.get("wins"),
+                  "total_return": original.get("total_return"),
+                  "geometric_daily_growth": original.get("geometric_daily_growth"),
+              },
+              "impact_tail": load_variant("impact_tail"),
+              "directional_upper": load_variant("directional_upper"),
+              "controlled_changes": {
+                  "impact_tail": "one past-only parent-break impact boundary",
+                  "directional_upper": "one past-only parent-session efficiency boundary",
+                  "execution": "NautilusTrader BacktestNode",
+              },
+          }
+          (root / "comparison.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v27-refinements-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-04-v27-refinements/${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 90
