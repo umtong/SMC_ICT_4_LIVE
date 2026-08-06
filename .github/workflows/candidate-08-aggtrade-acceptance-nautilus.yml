@@ -1,0 +1,171 @@
+name: candidate-08-aggtrade-acceptance-nautilus
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-aggtrade-acceptance-nautilus"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-aggtrade-acceptance-nautilus
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      MARKER: research/candidate-08/.run-aggtrade-acceptance-nautilus
+      ROOT: research/candidate-08/evidence/aggtrade-acceptance-nautilus
+      CACHE: /tmp/candidate-08-aggtrade-acceptance-data
+      CONFIG: research/candidate-08/config_aggtrade_acceptance_nautilus.json
+      PATTERN: research/candidate-08/config_range_fvg.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify pinned environment and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-08/aggtrade_acceptance_funding.py \
+            research/candidate-08/aggtrade_acceptance_mark_price.py \
+            research/candidate-08/aggtrade_acceptance_signals.py \
+            research/candidate-08/aggtrade_acceptance_strategy.py \
+            research/candidate-08/aggtrade_acceptance_evaluation.py \
+            research/candidate-08/run_aggtrade_acceptance_nautilus.py
+          python research/candidate-08/test_aggtrade_orderflow.py -v
+          python research/candidate-08/test_aggtrade_acceptance.py -v
+          python research/candidate-08/test_aggtrade_acceptance_pure.py -v
+          python research/candidate-08/test_aggtrade_acceptance_nautilus.py -v
+
+      - name: Read controlled run request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          marker = Path(os.environ["MARKER"])
+          request = json.loads(marker.read_text())
+          suite = request.get("suite")
+          ablation = request.get("ablation", "none")
+          output_name = request.get("output_name")
+          reuse = request.get("reuse_first_dir", "")
+          if suite not in {"first", "screen"}:
+              raise SystemExit(f"invalid suite: {suite}")
+          if ablation not in {"none", "remove_retest_contraction"}:
+              raise SystemExit(f"invalid ablation: {ablation}")
+          if not isinstance(output_name, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", output_name):
+              raise SystemExit(f"invalid output_name: {output_name!r}")
+          output = Path(os.environ["ROOT"]) / output_name
+          if reuse:
+              reuse_path = Path(reuse)
+              expected_root = Path(os.environ["ROOT"])
+              if expected_root not in reuse_path.parents and reuse_path != expected_root:
+                  raise SystemExit("reuse_first_dir must remain under the fixed evidence root")
+          mode = {
+              "suite": suite, "ablation": ablation, "output_name": output_name,
+              "output": str(output), "reuse_first_dir": reuse,
+              "diagnostic_only": ablation != "none",
+          }
+          output.mkdir(parents=True, exist_ok=True)
+          (output / "request.json").write_text(json.dumps(mode, indent=2, sort_keys=True) + "\n")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as stream:
+              for key, value in mode.items():
+                  if isinstance(value, bool): value = "true" if value else "false"
+                  stream.write(f"{key}={value}\n")
+          PY
+
+      - name: Restore checksum-verified official-data cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-aggtrade-acceptance-v5-${{ hashFiles('research/candidate-08/config_aggtrade_acceptance_nautilus.json') }}
+          restore-keys: |
+            candidate-08-aggtrade-acceptance-v5-
+            candidate-08-aggtrade-acceptance-
+
+      - name: Run requested NautilusTrader suite
+        id: run
+        shell: bash
+        env:
+          SUITE: ${{ steps.request.outputs.suite }}
+          ABLATION: ${{ steps.request.outputs.ablation }}
+          OUTPUT: ${{ steps.request.outputs.output }}
+          REUSE: ${{ steps.request.outputs.reuse_first_dir }}
+        run: |
+          set -o pipefail
+          args=(
+            --suite "$SUITE"
+            --ablation "$ABLATION"
+            --config "$CONFIG"
+            --pattern-config "$PATTERN"
+            --output "$OUTPUT"
+            --data-cache "$CACHE"
+          )
+          if [[ -n "$REUSE" && "$SUITE" == "screen" && "$ABLATION" == "none" ]]; then
+            args+=(--reuse-first-dir "$REUSE")
+          fi
+          set +e
+          python research/candidate-08/run_aggtrade_acceptance_nautilus.py "${args[@]}" \
+            2>&1 | tee "$OUTPUT/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT/runner_exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Save official-data cache
+        if: ${{ always() && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-aggtrade-acceptance-v5-${{ hashFiles('research/candidate-08/config_aggtrade_acceptance_nautilus.json') }}
+
+      - name: Commit evidence conflict-safely
+        if: ${{ always() }}
+        shell: bash
+        env:
+          OUTPUT: ${{ steps.request.outputs.output }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- "$OUTPUT" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record controlled Nautilus acceptance evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce runner status
+        if: ${{ always() }}
+        shell: bash
+        env:
+          OUTPUT: ${{ steps.request.outputs.output }}
+        run: |
+          test -f "$OUTPUT/runner_exit_status.txt"
+          status=$(cat "$OUTPUT/runner_exit_status.txt")
+          exit "$status"
