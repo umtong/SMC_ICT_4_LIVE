@@ -291,7 +291,6 @@ def run_week(
     engine = BacktestEngine(
         config=BacktestEngineConfig(
             logging=LoggingConfig(log_level="ERROR"),
-            shutdown_on_error=True,
         ),
     )
     venue = Venue("BINANCE")
@@ -328,9 +327,12 @@ def run_week(
             bar_adaptive_high_low_ordering=bool(config["venue"]["bar_adaptive_high_low_ordering"]),
             use_position_ids=True,
             use_reduce_only=True,
+            reject_stop_orders=False,
         )
         engine.add_instrument(instrument)
-        engine.add_data([*bars, *funding_updates])
+        engine.add_data(bars)
+        if funding_updates:
+            engine.add_data(funding_updates)
         engine.add_strategy(strategy)
         engine.run()
 
