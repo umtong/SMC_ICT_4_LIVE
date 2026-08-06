@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run Candidate 05 exclusively through NautilusTrader BacktestNode.
 
-Data transformation is observational only.  NautilusTrader owns event replay,
+Data transformation is observational only. NautilusTrader owns event replay,
 order matching, fills, contingent orders, fees, positions, margin, liquidation,
 portfolio accounting, and NAV for every weekly and long evaluation.
 """
@@ -28,7 +28,7 @@ from nautilus_trader.backtest.config import ImportableLatencyModelConfig
 from nautilus_trader.backtest.node import BacktestNode
 from nautilus_trader.config import ImportableStrategyConfig
 from nautilus_trader.config import LoggingConfig
-from nautilus_trader.model.currencies import BTC, USDT
+from nautilus_trader.model.currencies import BTC, ETH, SOL, USDT, XRP
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.identifiers import InstrumentId
@@ -43,42 +43,59 @@ from nautilus_trader.persistence.wranglers import BarDataWrangler
 
 from features import load_range
 from features import sha256_file
+from instrument_contracts import InstrumentContract
+from instrument_contracts import instrument_contract
 from smc_ict_4.manifest import build_data_manifest
 from smc_ict_4.manifest import create_run_manifest
 from smc_ict_4.manifest import write_data_manifest
 from smc_ict_4.manifest import write_json_atomic
 
 
-INSTRUMENT_ID = InstrumentId.from_str("BTCUSDT-PERP.BINANCE")
-BAR_TYPE = BarType.from_str("BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL")
+_BASE_CURRENCIES = {
+    "BTC": BTC,
+    "ETH": ETH,
+    "SOL": SOL,
+    "XRP": XRP,
+}
 
 
 class RunnerError(RuntimeError):
     """Raised when a Nautilus result cannot be trusted."""
 
 
-def make_instrument(config: dict[str, Any]) -> CryptoPerpetual:
+def make_instrument(
+    config: dict[str, Any],
+    contract: InstrumentContract,
+    instrument_id: InstrumentId,
+) -> CryptoPerpetual:
     cost_rate = Decimal(str(float(config["all_in_cost_bps_each_side"]) / 10_000.0))
     leverage = Decimal(str(float(config["venue_leverage"])))
     margin_init = Decimal("1") / leverage
     margin_maint = Decimal(str(float(config["maintenance_margin_rate"])))
+    try:
+        base_currency = _BASE_CURRENCIES[contract.base_currency_code]
+    except KeyError as exc:
+        raise RunnerError(
+            f"no Nautilus currency registered for {contract.base_currency_code}",
+        ) from exc
+
     return CryptoPerpetual(
-        instrument_id=INSTRUMENT_ID,
-        raw_symbol=Symbol("BTCUSDT"),
-        base_currency=BTC,
+        instrument_id=instrument_id,
+        raw_symbol=Symbol(contract.symbol),
+        base_currency=base_currency,
         quote_currency=USDT,
         settlement_currency=USDT,
         is_inverse=False,
-        price_precision=1,
-        price_increment=Price.from_str("0.1"),
-        size_precision=3,
-        size_increment=Quantity.from_str("0.001"),
-        max_quantity=Quantity.from_str("1000000.000"),
-        min_quantity=Quantity.from_str("0.001"),
+        price_precision=contract.price_precision,
+        price_increment=Price.from_str(contract.price_increment),
+        size_precision=contract.size_precision,
+        size_increment=Quantity.from_str(contract.size_increment),
+        max_quantity=Quantity.from_str(contract.max_quantity),
+        min_quantity=Quantity.from_str(contract.min_quantity),
         max_notional=None,
-        min_notional=Money(10.00, USDT),
-        max_price=Price.from_str("2000000.0"),
-        min_price=Price.from_str("0.1"),
+        min_notional=Money(contract.min_notional, USDT),
+        max_price=Price.from_str(contract.max_price),
+        min_price=Price.from_str(contract.min_price),
         margin_init=margin_init,
         margin_maint=margin_maint,
         maker_fee=cost_rate,
@@ -97,6 +114,9 @@ def prepare_catalog(
     catalog_path: Path,
     output: Path,
     config: dict[str, Any],
+    contract: InstrumentContract,
+    instrument_id: InstrumentId,
+    bar_type: BarType,
     build_start: date,
     build_end: date,
 ) -> tuple[CryptoPerpetual, Path]:
@@ -104,9 +124,11 @@ def prepare_catalog(
         shutil.rmtree(catalog_path)
     catalog_path.mkdir(parents=True, exist_ok=True)
 
-    instrument = make_instrument(config)
-    frame = klines.set_index("close_time_dt")[["open", "high", "low", "close", "volume"]].astype(float)
-    bars = BarDataWrangler(BAR_TYPE, instrument).process(frame)
+    instrument = make_instrument(config, contract, instrument_id)
+    frame = klines.set_index("close_time_dt")[
+        ["open", "high", "low", "close", "volume"]
+    ].astype(float)
+    bars = BarDataWrangler(bar_type, instrument).process(frame)
     if not bars:
         raise RunnerError("BarDataWrangler produced no bars")
     catalog = ParquetDataCatalog(catalog_path)
@@ -115,18 +137,31 @@ def prepare_catalog(
 
     manifest = build_data_manifest(
         raw_cache,
-        dataset="binance-usdm-btcusdt-1m-aggtrades-bookdepth",
+        dataset=(
+            f"binance-usdm-{contract.symbol.lower()}-"
+            "1m-aggtrades-bookdepth"
+        ),
         include=raw_files,
         metadata_values={
-            "instrument_id": str(INSTRUMENT_ID),
-            "bar_type": str(BAR_TYPE),
+            "symbol": contract.symbol,
+            "instrument_id": str(instrument_id),
+            "bar_type": str(bar_type),
             "build_start": str(build_start),
             "build_end": str(build_end),
             "bars": len(bars),
             "timestamp_semantics": "completed Binance one-minute bar close_time",
             "feature_path": str(feature_path),
             "feature_sha256": sha256_file(feature_path),
-            "feature_observation_contract": "observed_time_ns <= strategy bar ts_event",
+            "feature_observation_contract": (
+                "observed_time_ns <= strategy bar ts_event"
+            ),
+            "instrument_contract_source": contract.metadata_source,
+            "price_precision": contract.price_precision,
+            "price_increment": contract.price_increment,
+            "size_precision": contract.size_precision,
+            "size_increment": contract.size_increment,
+            "min_quantity": contract.min_quantity,
+            "min_notional": contract.min_notional,
         },
     )
     manifest_path = output / "data_manifest.json"
@@ -152,8 +187,14 @@ def as_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def find_numeric_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
-    normalized = {str(column).lower().replace(" ", "_"): column for column in frame.columns}
+def find_numeric_column(
+    frame: pd.DataFrame,
+    candidates: tuple[str, ...],
+) -> str | None:
+    normalized = {
+        str(column).lower().replace(" ", "_"): column
+        for column in frame.columns
+    }
     for candidate in candidates:
         if candidate in normalized:
             return normalized[candidate]
@@ -166,7 +207,10 @@ def find_numeric_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str
 def extract_position_pnls(positions: pd.DataFrame) -> list[float]:
     if positions.empty:
         return []
-    column = find_numeric_column(positions, ("realized_pnl", "realized_return", "pnl"))
+    column = find_numeric_column(
+        positions,
+        ("realized_pnl", "realized_return", "pnl"),
+    )
     if column is None:
         return []
     values = [as_number(value) for value in positions[column].tolist()]
@@ -179,7 +223,10 @@ def read_equity(path: Path) -> pd.DataFrame:
     frame = pd.read_csv(path)
     if not {"ts_event", "equity"}.issubset(frame.columns):
         raise RunnerError(f"invalid equity schema: {list(frame.columns)}")
-    frame["ts_event"] = pd.to_numeric(frame["ts_event"], errors="raise").astype("int64")
+    frame["ts_event"] = pd.to_numeric(
+        frame["ts_event"],
+        errors="raise",
+    ).astype("int64")
     frame["equity"] = pd.to_numeric(frame["equity"], errors="raise")
     frame["time"] = pd.to_datetime(frame["ts_event"], unit="ns", utc=True)
     return frame.sort_values("time").drop_duplicates("time", keep="last")
@@ -193,7 +240,9 @@ def equity_metrics(
 ) -> tuple[dict[str, float], float, float, float, float]:
     start_ts = pd.Timestamp(evaluation_start, tz="UTC")
     end_ts = pd.Timestamp(evaluation_end + timedelta(days=1), tz="UTC")
-    selected = equity[(equity["time"] >= start_ts) & (equity["time"] < end_ts)].copy()
+    selected = equity[
+        (equity["time"] >= start_ts) & (equity["time"] < end_ts)
+    ].copy()
     if selected.empty:
         raise RunnerError("no equity observations in evaluation range")
     selected["day"] = selected["time"].dt.date
@@ -207,12 +256,22 @@ def equity_metrics(
         cursor = close
     ending_nav = float(selected["equity"].iloc[-1])
     days = (evaluation_end - evaluation_start).days + 1
-    geometric_daily = (ending_nav / starting_nav) ** (1.0 / days) - 1.0 if ending_nav > 0.0 else -1.0
+    geometric_daily = (
+        (ending_nav / starting_nav) ** (1.0 / days) - 1.0
+        if ending_nav > 0.0
+        else -1.0
+    )
     values = selected["equity"].astype(float)
     peaks = values.cummax()
     max_drawdown = float((1.0 - values / peaks).max())
     min_equity = float(values.min())
-    return daily_returns, ending_nav, geometric_daily, max_drawdown, min_equity
+    return (
+        daily_returns,
+        ending_nav,
+        geometric_daily,
+        max_drawdown,
+        min_equity,
+    )
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -221,14 +280,20 @@ def load_json(path: Path, default: Any) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def match_scenarios(output: Path, pnls: list[float]) -> dict[str, dict[str, float | int]]:
+def match_scenarios(
+    output: Path,
+    pnls: list[float],
+) -> dict[str, dict[str, float | int]]:
     closed = load_json(output / "closed_scenarios.json", [])
     branches = [str(item.get("branch", "UNKNOWN")) for item in closed]
     if len(branches) != len(pnls):
         branches = ["UNMATCHED"] * len(pnls)
     result: dict[str, dict[str, float | int]] = {}
     for branch, pnl in zip(branches, pnls):
-        bucket = result.setdefault(branch, {"trades": 0, "wins": 0, "net_pnl": 0.0})
+        bucket = result.setdefault(
+            branch,
+            {"trades": 0, "wins": 0, "net_pnl": 0.0},
+        )
         bucket["trades"] = int(bucket["trades"]) + 1
         bucket["wins"] = int(bucket["wins"]) + int(pnl > 0.0)
         bucket["net_pnl"] = float(bucket["net_pnl"]) + pnl
@@ -259,10 +324,17 @@ def build_metrics(
     evaluation_start: date,
     evaluation_end: date,
     config: dict[str, Any],
+    instrument_id: InstrumentId,
     result: Any,
 ) -> dict[str, Any]:
     starting_nav = float(config["starting_nav"])
-    daily_returns, ending_nav, geometric_daily, max_drawdown, min_equity = equity_metrics(
+    (
+        daily_returns,
+        ending_nav,
+        geometric_daily,
+        max_drawdown,
+        min_equity,
+    ) = equity_metrics(
         equity,
         evaluation_start,
         evaluation_end,
@@ -275,37 +347,61 @@ def build_metrics(
     gross_loss = -sum(value for value in pnls if value < 0.0)
     trades = len(pnls)
     win_rate = wins / trades if trades else 0.0
-    profit_factor = gross_profit / gross_loss if gross_loss > 0.0 else (math.inf if gross_profit > 0.0 else 0.0)
+    profit_factor = (
+        gross_profit / gross_loss
+        if gross_loss > 0.0
+        else (math.inf if gross_profit > 0.0 else 0.0)
+    )
     expectancy = sum(pnls) / trades if trades else 0.0
-    largest_winner_share = max((value for value in pnls if value > 0.0), default=0.0) / gross_profit if gross_profit > 0.0 else 1.0
+    largest_winner_share = (
+        max((value for value in pnls if value > 0.0), default=0.0)
+        / gross_profit
+        if gross_profit > 0.0
+        else 1.0
+    )
     active_days = sum(abs(value) > 1e-12 for value in daily_returns.values())
     diagnostics = load_json(output / "strategy_diagnostics.json", {})
-    event_reasons, event_liquidations = count_event_reasons(output / "scenario_events.jsonl")
+    event_reasons, event_liquidations = count_event_reasons(
+        output / "scenario_events.jsonl",
+    )
     closed = load_json(output / "closed_scenarios.json", [])
-    text_liquidations = sum("LIQUIDAT" in json.dumps(item).upper() for item in closed)
+    text_liquidations = sum(
+        "LIQUIDAT" in json.dumps(item).upper()
+        for item in closed
+    )
     liquidations = event_liquidations + text_liquidations
 
     gate = config["gate"]
     checks = {
-        "geometric_daily_growth": geometric_daily >= float(gate["min_geometric_daily_growth"]),
+        "geometric_daily_growth": (
+            geometric_daily >= float(gate["min_geometric_daily_growth"])
+        ),
         "trades": trades >= int(gate["min_trades"]),
         "wins": wins >= int(gate["min_wins"]),
         "win_rate": win_rate >= float(gate["min_win_rate"]),
         "active_days": active_days >= int(gate["min_active_days"]),
         "max_drawdown": max_drawdown <= float(gate["max_drawdown"]),
-        "largest_winner_share": largest_winner_share <= float(gate["max_largest_winner_share"]),
+        "largest_winner_share": (
+            largest_winner_share <= float(gate["max_largest_winner_share"])
+        ),
         "positive_nav": ending_nav > 0.0 and min_equity > 0.0,
         "no_liquidation": liquidations == 0,
-        "no_order_rejections": int(diagnostics.get("order_rejections", 0)) == 0,
-        "single_entry_intent": int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1,
-        "single_position": int(diagnostics.get("max_open_positions_observed", 0)) <= 1,
+        "no_order_rejections": (
+            int(diagnostics.get("order_rejections", 0)) == 0
+        ),
+        "single_entry_intent": (
+            int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1
+        ),
+        "single_position": (
+            int(diagnostics.get("max_open_positions_observed", 0)) <= 1
+        ),
         "nautilus_orders": int(result.total_orders) > 0,
         "nautilus_positions": int(result.total_positions) == trades,
     }
     return {
         "candidate": "candidate-05-liquidity-response-transition",
         "engine": "NautilusTrader BacktestNode",
-        "instrument": str(INSTRUMENT_ID),
+        "instrument": str(instrument_id),
         "evaluation_start": str(evaluation_start),
         "evaluation_end": str(evaluation_end),
         "calendar_days": (evaluation_end - evaluation_start).days + 1,
@@ -321,7 +417,9 @@ def build_metrics(
         "win_rate": win_rate,
         "gross_profit": gross_profit,
         "gross_loss": gross_loss,
-        "profit_factor": None if math.isinf(profit_factor) else profit_factor,
+        "profit_factor": (
+            None if math.isinf(profit_factor) else profit_factor
+        ),
         "expectancy_usdt": expectancy,
         "active_days": active_days,
         "largest_winner_share": largest_winner_share,
@@ -360,13 +458,17 @@ def run_backtest(
     config = json.loads(config_path.read_text(encoding="utf-8"))
     if not build_start <= evaluation_start <= evaluation_end <= build_end:
         raise RunnerError("evaluation must be contained in build range")
-    if config["symbol"] != "BTCUSDT":
-        raise RunnerError("first-stage candidate is intentionally BTCUSDT only")
+    try:
+        contract = instrument_contract(str(config["symbol"]))
+    except (KeyError, ValueError) as exc:
+        raise RunnerError(str(exc)) from exc
     if abs(float(config["risk_fraction"]) - 0.03) > 1e-12:
         raise RunnerError("project risk fraction must remain 3%")
 
+    instrument_id = InstrumentId.from_str(contract.instrument_id)
+    bar_type = BarType.from_str(contract.bar_type)
     klines, feature_path, raw_files, _ = load_range(
-        symbol=config["symbol"],
+        symbol=contract.symbol,
         start=build_start,
         end=build_end,
         cache=cache.resolve(),
@@ -381,25 +483,35 @@ def run_backtest(
         catalog_path=catalog_path,
         output=output,
         config=config,
+        contract=contract,
+        instrument_id=instrument_id,
+        bar_type=bar_type,
         build_start=build_start,
         build_end=build_end,
     )
 
     evaluation_start_ts = pd.Timestamp(evaluation_start, tz="UTC")
-    evaluation_end_ts = pd.Timestamp(evaluation_end + timedelta(days=1), tz="UTC") - pd.Timedelta(nanoseconds=1)
+    evaluation_end_ts = (
+        pd.Timestamp(evaluation_end + timedelta(days=1), tz="UTC")
+        - pd.Timedelta(nanoseconds=1)
+    )
     strategy_values = dict(config["strategy"])
     strategy_values.update(
         {
-            "instrument_id": str(INSTRUMENT_ID),
-            "bar_type": str(BAR_TYPE),
+            "instrument_id": str(instrument_id),
+            "bar_type": str(bar_type),
             "output_dir": str(output),
             "features_path": str(feature_path.resolve()),
             "evaluation_start_ns": int(evaluation_start_ts.value),
             "evaluation_end_ns": int(evaluation_end_ts.value),
             "starting_nav": float(config["starting_nav"]),
             "risk_fraction": float(config["risk_fraction"]),
-            "all_in_cost_bps_each_side": float(config["all_in_cost_bps_each_side"]),
-            "adverse_slippage_bps_each_side": float(config["adverse_slippage_bps_each_side"]),
+            "all_in_cost_bps_each_side": float(
+                config["all_in_cost_bps_each_side"],
+            ),
+            "adverse_slippage_bps_each_side": float(
+                config["adverse_slippage_bps_each_side"],
+            ),
         },
     )
     strategy = ImportableStrategyConfig(
@@ -428,7 +540,9 @@ def run_backtest(
     )
     fee_model = ImportableFeeModelConfig(
         fee_model_path="nautilus_trader.backtest.models:MakerTakerFeeModel",
-        config_path="nautilus_trader.backtest.config:MakerTakerFeeModelConfig",
+        config_path=(
+            "nautilus_trader.backtest.config:MakerTakerFeeModelConfig"
+        ),
         config={},
     )
     venue = BacktestVenueConfig(
@@ -436,7 +550,9 @@ def run_backtest(
         oms_type="NETTING",
         account_type="MARGIN",
         base_currency="USDT",
-        starting_balances=[f"{float(config['starting_nav']):.2f} USDT"],
+        starting_balances=[
+            f"{float(config['starting_nav']):.2f} USDT",
+        ],
         default_leverage=float(config["venue_leverage"]),
         book_type="L1_MBP",
         fill_model=fill_model,
@@ -454,10 +570,13 @@ def run_backtest(
     data = BacktestDataConfig(
         catalog_path=str(catalog_path),
         data_cls=Bar,
-        instrument_id=INSTRUMENT_ID,
+        instrument_id=instrument_id,
         bar_spec="1-MINUTE-LAST",
         start_time=pd.Timestamp(build_start, tz="UTC").isoformat(),
-        end_time=(pd.Timestamp(build_end + timedelta(days=1), tz="UTC") - pd.Timedelta(nanoseconds=1)).isoformat(),
+        end_time=(
+            pd.Timestamp(build_end + timedelta(days=1), tz="UTC")
+            - pd.Timedelta(nanoseconds=1)
+        ).isoformat(),
     )
     engine = BacktestEngineConfig(
         logging=LoggingConfig(log_level="ERROR"),
@@ -471,18 +590,25 @@ def run_backtest(
         raise_exception=True,
         dispose_on_completion=False,
         start=pd.Timestamp(build_start, tz="UTC").isoformat(),
-        end=(pd.Timestamp(build_end + timedelta(days=1), tz="UTC") - pd.Timedelta(nanoseconds=1)).isoformat(),
+        end=(
+            pd.Timestamp(build_end + timedelta(days=1), tz="UTC")
+            - pd.Timedelta(nanoseconds=1)
+        ).isoformat(),
     )
 
     node = BacktestNode(configs=[run_config])
     try:
         results = node.run()
         if len(results) != 1:
-            raise RunnerError(f"expected one Nautilus result, got {len(results)}")
+            raise RunnerError(
+                f"expected one Nautilus result, got {len(results)}",
+            )
         result = results[0]
         engines = node.get_engines()
         if len(engines) != 1:
-            raise RunnerError(f"expected one Nautilus engine, got {len(engines)}")
+            raise RunnerError(
+                f"expected one Nautilus engine, got {len(engines)}",
+            )
         nt_engine = engines[0]
         orders = nt_engine.trader.generate_order_fills_report()
         positions = nt_engine.trader.generate_positions_report()
@@ -499,20 +625,32 @@ def run_backtest(
             evaluation_start=evaluation_start,
             evaluation_end=evaluation_end,
             config=config,
+            instrument_id=instrument_id,
             result=result,
         )
         write_json_atomic(output / "metrics.json", metrics)
         write_json_atomic(
             output / "run.json",
             create_run_manifest(
-                run_id=f"candidate-05-{evaluation_start}-{evaluation_end}",
+                run_id=(
+                    f"candidate-05-{contract.symbol.lower()}-"
+                    f"{evaluation_start}-{evaluation_end}"
+                ),
                 candidate="candidate-05-liquidity-response-transition",
                 config_path=config_path,
                 data_manifest_path=manifest_path,
                 extra={
                     "engine": "NautilusTrader BacktestNode",
-                    "instrument_id": str(INSTRUMENT_ID),
-                    "bar_type": str(BAR_TYPE),
+                    "symbol": contract.symbol,
+                    "instrument_id": str(instrument_id),
+                    "bar_type": str(bar_type),
+                    "instrument_contract_source": contract.metadata_source,
+                    "price_precision": contract.price_precision,
+                    "price_increment": contract.price_increment,
+                    "size_precision": contract.size_precision,
+                    "size_increment": contract.size_increment,
+                    "min_quantity": contract.min_quantity,
+                    "min_notional": contract.min_notional,
                     "build_start": str(build_start),
                     "build_end": str(build_end),
                     "evaluation_start": str(evaluation_start),

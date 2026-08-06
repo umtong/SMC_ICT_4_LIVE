@@ -1,0 +1,164 @@
+name: candidate-05-v26-cross-symbol-week3
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/backtest.py"
+      - "research/candidate-05/instrument_contracts.py"
+      - "research/candidate-05/tests/test_instrument_contracts.py"
+      - "research/candidate-05/config_eth.json"
+      - "research/candidate-05/config_sol.json"
+      - "research/candidate-05/config_xrp.json"
+      - ".github/workflows/candidate-05-v26-cross-symbol-week3.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  btc-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and contracts
+        run: |
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Run frozen BTC week 3 through generalized Nautilus runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-05-cross-symbol/BTCUSDT/week-3
+          mkdir -p "$root"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-09-06 \
+            --build-end 2023-09-14 \
+            --evaluation-start 2023-09-08 \
+            --evaluation-end 2023-09-14 \
+            --cache .cache/candidate-05-cross-symbol/BTCUSDT/week-3 \
+            --output "$root" | tee "$root/console.json"
+
+      - name: Prove exact v26 BTC identity
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          metrics = json.loads(
+              Path(
+                  "artifacts/candidate-05-cross-symbol/BTCUSDT/week-3/metrics.json",
+              ).read_text(),
+          )
+          expected_float = {
+              "ending_nav": 103062.63211171,
+              "total_return": 0.030626321117100064,
+              "geometric_daily_growth": 0.004318827397032932,
+              "max_drawdown": 0.015719239029701626,
+              "win_rate": 1.0,
+          }
+          expected_int = {
+              "trades": 3,
+              "wins": 3,
+              "losses": 0,
+              "active_days": 3,
+              "liquidations": 0,
+          }
+          for key, expected in expected_float.items():
+              actual = float(metrics[key])
+              if abs(actual - expected) > 1e-12:
+                  raise SystemExit(f"BTC control changed {key}: {actual} != {expected}")
+          for key, expected in expected_int.items():
+              actual = int(metrics[key])
+              if actual != expected:
+                  raise SystemExit(f"BTC control changed {key}: {actual} != {expected}")
+          if metrics["instrument"] != "BTCUSDT-PERP.BINANCE":
+              raise SystemExit(f"unexpected BTC instrument {metrics['instrument']}")
+          print("BTC v26 identity preserved")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-cross-symbol-BTC-control-${{ github.sha }}
+          path: artifacts/candidate-05-cross-symbol/BTCUSDT/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  cross-symbol:
+    needs: btc-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - symbol: ETHUSDT
+            config: research/candidate-05/config_eth.json
+          - symbol: SOLUSDT
+            config: research/candidate-05/config_sol.json
+          - symbol: XRPUSDT
+            config: research/candidate-05/config_xrp.json
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed research environment
+        run: |
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+
+      - name: Run unchanged v26 logic on frozen week 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-05-cross-symbol/${{ matrix.symbol }}/week-3
+          mkdir -p "$root"
+          python research/candidate-05/candidate.py stage \
+            --config "${{ matrix.config }}" \
+            --build-start 2023-09-06 \
+            --build-end 2023-09-14 \
+            --evaluation-start 2023-09-08 \
+            --evaluation-end 2023-09-14 \
+            --cache ".cache/candidate-05-cross-symbol/${{ matrix.symbol }}/week-3" \
+            --output "$root" | tee "$root/console.json"
+
+      - name: Verify evidence contract
+        if: always()
+        shell: bash
+        run: |
+          root=artifacts/candidate-05-cross-symbol/${{ matrix.symbol }}/week-3
+          if test -f "$root/metrics.json"; then
+            python -m json.tool "$root/metrics.json"
+            for file in run.json data_manifest.json orders.csv positions.csv account.csv equity.csv scenario_events.jsonl strategy_diagnostics.json; do
+              test -s "$root/$file"
+            done
+          fi
+          if test -f "$root/errors.log"; then cat "$root/errors.log"; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-cross-symbol-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-05-cross-symbol/${{ matrix.symbol }}/**
+          if-no-files-found: warn
+          retention-days: 90
