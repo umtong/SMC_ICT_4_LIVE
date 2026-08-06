@@ -1,7 +1,8 @@
-"""Source-stable contracts for the flow-response auction Nautilus wrapper."""
+"""Source-stable contracts for the flow-response auction V2 Nautilus wrapper."""
 
 from __future__ import annotations
 
+from inspect import signature
 from pathlib import Path
 from types import SimpleNamespace
 import os
@@ -9,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from aggtrade_acceptance_signals import AcceptanceSignalBundle
-from aggtrade_flow_response_auction_signals import (
+from aggtrade_flow_response_auction_signals_v2 import (
     ABSORPTION_FAMILY,
     IMPLEMENTATION_REVISION,
     INITIATIVE_FAMILY,
@@ -36,7 +37,7 @@ class FlowResponseRunnerWiringContracts(unittest.TestCase):
         )
         self.assertIs(
             flow_runner.runner.base_runner.build_acceptance_signals,
-            flow_runner.runner._build_router_signals,
+            flow_runner._build_flow_response_signals,
         )
         self.assertEqual(flow_runner.runner.INITIATIVE_FAMILY, INITIATIVE_FAMILY)
         self.assertEqual(flow_runner.runner.FAILED_AUCTION_FAMILY, ABSORPTION_FAMILY)
@@ -47,6 +48,10 @@ class FlowResponseRunnerWiringContracts(unittest.TestCase):
                 "initiative_only": frozenset((INITIATIVE_FAMILY,)),
                 "absorption_only": frozenset((ABSORPTION_FAMILY,)),
             },
+        )
+        self.assertIn(
+            "require_retest_contraction",
+            signature(build_flow_response_auction_signals).parameters,
         )
 
     def test_execution_window_remains_the_verified_native_base_function(self) -> None:
@@ -109,15 +114,13 @@ class FlowResponseRunnerWiringContracts(unittest.TestCase):
             {"FLOW_RESPONSE_AUCTION_FAMILY_MODE": "absorption_only"},
             clear=False,
         ):
-            filtered = flow_runner.runner._filter_bundle(bundle)
+            filtered = flow_runner._filter_bundle(bundle)
 
         self.assertNotIn(10, filtered.signals_by_time_ns)
         self.assertEqual(filtered.signals_by_time_ns[20], (absorption,))
         self.assertEqual(filtered.diagnostics["FAMILY_MODE_REMOVED_SIGNALS"], 1)
         self.assertEqual(
-            filtered.diagnostics[
-                f"FAMILY_MODE_REMOVED_{INITIATIVE_FAMILY}"
-            ],
+            filtered.diagnostics[f"FAMILY_MODE_REMOVED_{INITIATIVE_FAMILY}"],
             1,
         )
         self.assertEqual(
@@ -129,13 +132,31 @@ class FlowResponseRunnerWiringContracts(unittest.TestCase):
             "absorption_only",
         )
 
-    def test_suite_summary_stamps_exact_detector_revision(self) -> None:
+    def test_both_mode_is_identity_and_does_not_rewrite_evidence(self) -> None:
+        initiative = _signal(
+            scenario_id="initiative-1",
+            family=INITIATIVE_FAMILY,
+            timestamp=10,
+        )
+        bundle = AcceptanceSignalBundle(
+            signals_by_time_ns={10: (initiative,)},
+            diagnostics={"BASE": 1},
+            rejected_scenarios=(),
+        )
+        with patch.dict(
+            os.environ,
+            {"FLOW_RESPONSE_AUCTION_FAMILY_MODE": "both"},
+            clear=False,
+        ):
+            self.assertIs(flow_runner._filter_bundle(bundle), bundle)
+
+    def test_suite_summary_stamps_exact_detector_revision_and_blocks_diagnostic_promotion(self) -> None:
         original = flow_runner._original_suite_summary
         try:
             flow_runner._original_suite_summary = lambda *_args: {
-                "suite_gate_passed": False,
-                "promotable": False,
-                "diagnostic_family_ablation": True,
+                "suite_gate_passed": True,
+                "promotable": True,
+                "suite_gate_checks": {},
             }
             with patch.dict(
                 os.environ,
@@ -152,13 +173,23 @@ class FlowResponseRunnerWiringContracts(unittest.TestCase):
             summary["scenario_contract"],
             "CAUSAL_AGGRESSIVE_FLOW_PRICE_RESPONSE_AT_COMPLETED_EXTERNAL_LIQUIDITY",
         )
+        self.assertTrue(summary["diagnostic_family_ablation"])
         self.assertFalse(summary["suite_gate_passed"])
         self.assertFalse(summary["promotable"])
+        self.assertFalse(
+            summary["suite_gate_checks"][
+                "base_contract_includes_both_flow_response_families"
+            ]
+        )
 
-    def test_base_runner_uses_the_revision_stamped_summary(self) -> None:
+    def test_base_runner_uses_revision_stamped_reporting_functions(self) -> None:
         self.assertIs(
             flow_runner.runner.base_runner._suite_summary,
             flow_runner._flow_response_suite_summary,
+        )
+        self.assertIs(
+            flow_runner.runner.base_runner._global_signal_summary,
+            flow_runner._flow_response_global_signal_summary,
         )
 
 
