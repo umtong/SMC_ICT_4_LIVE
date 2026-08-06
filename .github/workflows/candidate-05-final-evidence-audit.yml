@@ -1,0 +1,67 @@
+name: candidate-05-final-evidence-audit
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/end_to_end_research_v2.json"
+      - "research/candidate-05/final_evidence_audit.py"
+      - "research/candidate-05/tests/test_final_evidence_audit.py"
+      - ".github/workflows/candidate-05-final-evidence-audit.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-final-evidence-audit
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify and independently audit final evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q research/candidate-05
+          PYTHONPATH=research/candidate-05 python -m unittest \
+            research/candidate-05/tests/test_final_evidence_audit.py -v
+          if test -s research/candidate-05/evidence/end_to_end_research_v2.json; then
+            PYTHONPATH=research/candidate-05 python \
+              research/candidate-05/final_evidence_audit.py \
+              --input research/candidate-05/evidence/end_to_end_research_v2.json \
+              --output research/candidate-05/evidence/final_evidence_audit.json
+          else
+            cat > research/candidate-05/evidence/final_evidence_audit.json <<'JSON'
+          {
+            "schema": "candidate-05-final-evidence-audit-v1",
+            "classification": "NOT_RUN_NO_END_TO_END_V2_EVIDENCE",
+            "audited_project_goal_passed": false,
+            "selected_strategy": null,
+            "next_action": "Complete the self-contained end-to-end v2 research."
+          }
+          JSON
+          fi
+          test -s research/candidate-05/evidence/final_evidence_audit.json
+
+      - name: Persist conflict-resistant independent audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-05/evidence/final_evidence_audit.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-05: independently audit final lifecycle evidence"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-05
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            sleep $((attempt * 3))
+          done
+          exit 1
