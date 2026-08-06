@@ -1,0 +1,167 @@
+name: candidate-04-causal-pool-reclaim-no-basis-ablation
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-causal-pool-reclaim-no-basis-ablation.yml"
+      - "research/candidate-04/causal_pool_reclaim_no_basis_ablation_compiler.py"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - name: low_activity
+            build_start: "2023-08-02"
+            build_end: "2023-08-10"
+            evaluation_start: "2023-08-04"
+            evaluation_end: "2023-08-10"
+          - name: year_end
+            build_start: "2024-12-25"
+            build_end: "2025-01-02"
+            evaluation_start: "2024-12-27"
+            evaluation_end: "2025-01-02"
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      C04_BUILD_START: ${{ matrix.build_start }}
+      C04_BUILD_END: ${{ matrix.build_end }}
+      MATRIX_NAME: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore checksummed completed-data observations
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-04-v22-${{ matrix.name }}-a6a57d63d580e5baea6dc6703ac6e2a281817896
+          path: artifacts/candidate-04-pool-reclaim-no-basis/${{ matrix.name }}/source
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31083152629
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify fixed runtime and one-variable ablation
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/causal_pool_reclaim_reversal_compiler.py \
+            research/candidate-04/causal_pool_reclaim_reversal_compiler_v2.py \
+            research/candidate-04/causal_pool_reclaim_no_basis_ablation_compiler.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v22_rich_router.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_causal_pool_reclaim_reversal_compiler_v3.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+          test -s "artifacts/candidate-04-pool-reclaim-no-basis/${{ matrix.name }}/source/rich/data_manifest.json"
+      - name: Compile basis-ablated pool reclaim intents
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-pool-reclaim-no-basis/${{ matrix.name }}"
+          python research/candidate-04/causal_pool_reclaim_no_basis_ablation_compiler.py \
+            --base-config research/candidate-04/inventory_transfer_config.json \
+            --impact-config research/candidate-04/impact_exhaustion_config.json \
+            --router-config research/candidate-04/auction_activity_router_config.json \
+            --rich-dir "$root/source/rich" \
+            --kline-dir ".cache/candidate-04-pool-reclaim-no-basis/${{ matrix.name }}/raw" \
+            --evaluation-start "${{ matrix.evaluation_start }}" \
+            --evaluation-end "${{ matrix.evaluation_end }}" \
+            --output "$root/signals" \
+            --download-klines \
+            | tee "$root/signal_compiler_console.json"
+          test -s "$root/signals/signals.json"
+          test -s "$root/signals/summary.json"
+      - name: Execute basis-ablated intents through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-pool-reclaim-no-basis/${{ matrix.name }}"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$root/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v22_rich_router.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start "${{ matrix.build_start }}" \
+            --build-end "${{ matrix.build_end }}" \
+            --evaluation-start "${{ matrix.evaluation_start }}" \
+            --evaluation-end "${{ matrix.evaluation_end }}" \
+            --cache ".cache/candidate-04-pool-reclaim-no-basis/${{ matrix.name }}/raw" \
+            --output "$root/nautilus" \
+            | tee "$root/nautilus_console.json"
+          test -s "$root/nautilus/metrics.json"
+          test -e "$root/nautilus/positions.csv"
+          test -s "$root/nautilus/strategy_events.json"
+      - name: Verify risk and summarize safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+          from pandas.errors import EmptyDataError
+          root = Path("artifacts/candidate-04-pool-reclaim-no-basis") / os.environ["MATRIX_NAME"]
+          metrics = json.loads((root / "nautilus/metrics.json").read_text())
+          signals = json.loads((root / "signals/summary.json").read_text())
+          events = json.loads((root / "nautilus/strategy_events.json").read_text())
+          try:
+              positions = pd.read_csv(root / "nautilus/positions.csv")
+          except EmptyDataError:
+              positions = pd.DataFrame()
+          entries = [event for event in events if event.get("event_type") == "ENTRY_SUBMITTED"]
+          if len(entries) != len(positions.index):
+              raise SystemExit(f"entry/position mismatch entries={len(entries)} positions={len(positions.index)}")
+          losses = []
+          for position, entry in zip(positions.to_dict("records"), entries):
+              pnl = float(str(position["realized_pnl"]).split()[0].replace("_", ""))
+              if pnl < 0.0:
+                  losses.append(abs(pnl) / float(entry["details"]["equity"]))
+          maximum = max(losses, default=0.0)
+          summary = {
+              "candidate": "candidate-04-causal-pool-reclaim-no-basis-ablation",
+              "matrix": os.environ["MATRIX_NAME"],
+              "ablation": signals.get("ablation"),
+              "signals": signals.get("written_signals"),
+              "route_counts": signals.get("route_counts"),
+              "engine": metrics.get("engine"),
+              "trades": metrics.get("trades"),
+              "wins": metrics.get("wins"),
+              "win_rate": metrics.get("win_rate"),
+              "total_return": metrics.get("total_return"),
+              "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+              "active_days": metrics.get("active_days"),
+              "max_drawdown": metrics.get("max_drawdown"),
+              "scenario_metrics": metrics.get("scenario_metrics"),
+              "gate_pass": metrics.get("gate_pass"),
+              "maximum_realized_loss_fraction": maximum,
+              "risk_pass": maximum <= 0.0301,
+          }
+          (root / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if not summary["risk_pass"]:
+              raise SystemExit("realized loss exceeded 3% NAV contract")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-pool-reclaim-no-basis-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-04-pool-reclaim-no-basis/${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 90
