@@ -9,5 +9,6 @@ def describe() -> str:
         "rapid failure reversal. ParquetDataCatalog, BacktestNode, native orders, fills, "
         "fees, funding, margin, liquidation, positions, and NAV accounting are mandatory "
         "for every weekly and long evaluation. Execution windows retain original-time "
-        "first/last and bid/ask extrema per observed second for fast causal screening."
+        "first/last and bid/ask extrema per observed second; BacktestNode uses its one-shot "
+        "mixed catalog loader so QuoteTick and FundingRateUpdate are both natively replayed."
     )
