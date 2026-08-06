@@ -38,7 +38,13 @@ jobs:
           }
           for source, destination in mapping.items():
               encoded = source.read_text(encoding="utf-8").strip()
-              payload = gzip.decompress(base64.b64decode(encoded))
+              encoded += "=" * (-len(encoded) % 4)
+              try:
+                  payload = gzip.decompress(base64.b64decode(encoded))
+              except Exception as error:
+                  raise RuntimeError(
+                      f"could not decode {source} ({len(encoded)} chars): {error}",
+                  ) from error
               destination.parent.mkdir(parents=True, exist_ok=True)
               destination.write_bytes(payload)
           py_compile.compile(
