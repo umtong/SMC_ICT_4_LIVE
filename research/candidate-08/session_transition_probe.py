@@ -9,7 +9,7 @@ cost-after outcome remain distributed across windows rather than concentrated in
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import timedelta
 import json
 from pathlib import Path
@@ -209,11 +209,11 @@ def _summarize(events: list[dict[str, Any]]) -> dict[str, Any]:
         }
     for multiple in (1.2, 1.5):
         key = f"fixed_{multiple:.1f}r_outcome_180m"
-        outcomes = [str(event[key]) for event in events]
+        outcomes = [str(event[key]) for event in events if key in event]
         result[f"fixed_{multiple:.1f}r_180m"] = {
             "outcomes": {value: outcomes.count(value) for value in sorted(set(outcomes))},
             "median_cost_after_rr": float(
-                np.median([float(event[f"fixed_{multiple:.1f}r_cost_after_rr"]) for event in events])
+                np.median([float(event[f"fixed_{multiple:.1f}r_cost_after_rr"]) for event in events if key in event])
             ),
         }
     return result
@@ -293,7 +293,7 @@ def run(
             "data_quality": loaded.quality,
             "specs": {
                 spec.name: {
-                    "definition": spec.__dict__,
+                    "definition": asdict(spec),
                     "summary": _summarize(events_by_spec[spec.name]),
                     "events": events_by_spec[spec.name],
                 }
