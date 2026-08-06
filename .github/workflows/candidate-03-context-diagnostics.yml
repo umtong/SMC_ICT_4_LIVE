@@ -1,0 +1,74 @@
+name: candidate-03-context-diagnostics
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - "research/candidate-03/diagnose_nt_lvcfr_contexts.py"
+      - ".github/workflows/candidate-03-context-diagnostics.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  PYTHONPATH: /workspace/src:/workspace/research/candidate-03
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore first-week uniform prepared data
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr-v3/validation-1/prepared
+          key: nt-lvcfr-aggtrade-v1-btc-2024-01-08-${{ hashFiles('research/candidate-03/nt_lvcfr_trade_proxy.py', 'research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_v3_config.json') }}
+          fail-on-cache-miss: true
+
+      - name: Restore second-week uniform prepared data
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr-v3/validation-2/prepared
+          key: nt-lvcfr-aggtrade-v1-btc-2025-06-23-${{ hashFiles('research/candidate-03/nt_lvcfr_trade_proxy.py', 'research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_v3_config.json') }}
+          fail-on-cache-miss: true
+
+      - name: Diagnose causal contexts and post-confirmation paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          mkdir -p artifacts/candidate-03/context-diagnostics
+          sudo chmod -R a+rwX artifacts
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c '
+              smc4 doctor &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/diagnose_nt_lvcfr_contexts.py \
+                  --prepared-root artifacts/candidate-03/nt-lvcfr-v3/validation-1/prepared \
+                  --output-json artifacts/candidate-03/context-diagnostics/validation-1.json \
+                  --output-csv artifacts/candidate-03/context-diagnostics/validation-1.csv &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/diagnose_nt_lvcfr_contexts.py \
+                  --prepared-root artifacts/candidate-03/nt-lvcfr-v3/validation-2/prepared \
+                  --output-json artifacts/candidate-03/context-diagnostics/validation-2.json \
+                  --output-csv artifacts/candidate-03/context-diagnostics/validation-2.csv
+            '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-context-diagnostics-${{ github.sha }}
+          path: artifacts/candidate-03/context-diagnostics
+          if-no-files-found: error
+          retention-days: 7
