@@ -1,0 +1,159 @@
+name: Candidate 09 controlled execution
+
+on:
+  push:
+    branches:
+      - research/candidate-09
+    paths:
+      - .github/workflows/candidate-09-execute.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-09-controlled-execution
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact triggering commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Make uv available for the locked repository environment
+        id: setup_uv
+        continue-on-error: true
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Run controlled stages and preserve every status
+        id: pipeline
+        if: always()
+        shell: bash
+        env:
+          SETUP_UV_OUTCOME: ${{ steps.setup_uv.outcome }}
+          SMC4_DATA_ROOT: .cache/candidate-09
+        run: |
+          set +e
+          out="research/candidate-09/evidence/latest"
+          diag="research/candidate-09/diagnostics/latest"
+          rm -rf "$out" "$diag"
+          mkdir -p "$out" "$diag"
+
+          setup_code=0
+          sync_code=99
+          doctor_code=99
+          tests_code=99
+          gate_code=99
+
+          if [[ "$SETUP_UV_OUTCOME" != "success" ]] || ! command -v uv >/dev/null 2>&1; then
+            setup_code=1
+            printf 'setup-uv outcome: %s\n' "$SETUP_UV_OUTCOME" > "$diag/setup.log"
+          else
+            uv --version > "$diag/setup.log" 2>&1
+            setup_code=$?
+          fi
+
+          if [[ "$setup_code" == "0" ]]; then
+            uv sync --frozen --all-groups > "$diag/sync.log" 2>&1
+            sync_code=$?
+          else
+            printf 'not run because setup failed\n' > "$diag/sync.log"
+          fi
+
+          if [[ "$sync_code" == "0" ]]; then
+            uv run smc4 doctor > "$diag/doctor.log" 2>&1
+            doctor_code=$?
+          else
+            printf 'not run because sync failed\n' > "$diag/doctor.log"
+          fi
+
+          if [[ "$doctor_code" == "0" ]]; then
+            uv run python -m unittest discover -s research/candidate-09/tests -p 'test_*.py' -v > "$diag/tests.log" 2>&1
+            tests_code=$?
+          else
+            printf 'not run because doctor failed\n' > "$diag/tests.log"
+          fi
+
+          if [[ "$tests_code" == "0" ]]; then
+            uv run python research/candidate-09/run.py gate \
+              --auto-long \
+              --cache "$SMC4_DATA_ROOT" \
+              --output "$out" > "$diag/gate.log" 2>&1
+            gate_code=$?
+          else
+            printf 'not run because tests failed\n' > "$diag/gate.log"
+          fi
+
+          SETUP_CODE="$setup_code" SYNC_CODE="$sync_code" DOCTOR_CODE="$doctor_code" \
+          TESTS_CODE="$tests_code" GATE_CODE="$gate_code" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          diag = Path('research/candidate-09/diagnostics/latest')
+          evidence = Path('research/candidate-09/evidence/latest')
+          codes = {
+              'setup_uv': int(os.environ['SETUP_CODE']),
+              'sync': int(os.environ['SYNC_CODE']),
+              'doctor': int(os.environ['DOCTOR_CODE']),
+              'tests': int(os.environ['TESTS_CODE']),
+              'gate': int(os.environ['GATE_CODE']),
+          }
+          first_failure = next((name for name, code in codes.items() if code != 0), None)
+          payload = {
+              'codes': codes,
+              'first_failure': first_failure,
+              'evidence_summary_exists': (evidence / 'summary.json').exists(),
+              'trigger_sha': os.environ.get('GITHUB_SHA'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+          }
+          (diag / 'diagnostic.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+          for old in diag.glob('STATUS_*'):
+              old.unlink()
+          marker = 'SUCCESS' if first_failure is None else f'FAIL_{first_failure.upper()}_{codes[first_failure]}'
+          (diag / f'STATUS_{marker}').write_text(marker + '\n')
+          if not (evidence / 'summary.json').exists():
+              fallback = {
+                  'candidate': 'candidate-09',
+                  'status': 'IMPLEMENTATION_ERROR',
+                  'first_failure': first_failure,
+                  'codes': codes,
+                  'diagnostic_path': 'research/candidate-09/diagnostics/latest',
+              }
+              (evidence / 'summary.json').write_text(json.dumps(fallback, indent=2, sort_keys=True) + '\n')
+              (evidence / 'REPORT.md').write_text(
+                  '# Candidate 09 controlled execution\n\n'
+                  f'**IMPLEMENTATION_ERROR** at `{first_failure}`. '
+                  'The frozen weeks and strategy logic were not reinterpreted. '
+                  'Inspect the matching diagnostic log, fix implementation only, and rerun the identical contract.\n'
+              )
+          PY
+
+          for file in "$diag"/*.log; do
+            tail -n 240 "$file" > "$file.tail"
+            mv "$file.tail" "$file"
+          done
+          exit 0
+
+      - name: Commit controlled result to the candidate branch
+        if: always()
+        shell: bash
+        run: |
+          git config user.name "candidate-09-research-bot"
+          git config user.email "candidate-09-research-bot@users.noreply.github.com"
+          git add -f research/candidate-09/evidence/latest research/candidate-09/diagnostics/latest
+          status=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('research/candidate-09/evidence/latest/summary.json').read_text()).get('status', 'UNKNOWN'))
+          PY
+          )
+          git commit -m "candidate-09: controlled result ${status} [candidate-09 evidence]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
