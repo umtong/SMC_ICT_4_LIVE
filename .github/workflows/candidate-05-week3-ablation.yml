@@ -1,0 +1,78 @@
+name: candidate-05-week3-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/strategy_ablation_no_sponsored_choch.py"
+      - "research/candidate-05/strategy.py"
+      - ".github/workflows/candidate-05-week3-ablation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  week3-direct:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed research environment
+        run: |
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Run frozen BTC week 3 directly through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-05-ablation/week-3
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-09-06 \
+            --build-end 2023-09-14 \
+            --evaluation-start 2023-09-08 \
+            --evaluation-end 2023-09-14 \
+            --cache .cache/candidate-05-ablation \
+            --output artifacts/candidate-05-ablation/week-3 \
+            | tee artifacts/candidate-05-ablation/week-3/console.json
+
+      - name: Verify evidence
+        if: always()
+        shell: bash
+        run: |
+          if test -f artifacts/candidate-05-ablation/week-3/metrics.json; then
+            python -m json.tool artifacts/candidate-05-ablation/week-3/metrics.json
+            test -s artifacts/candidate-05-ablation/week-3/run.json
+            test -s artifacts/candidate-05-ablation/week-3/data_manifest.json
+            test -s artifacts/candidate-05-ablation/week-3/orders.csv
+            test -s artifacts/candidate-05-ablation/week-3/positions.csv
+            test -s artifacts/candidate-05-ablation/week-3/account.csv
+            test -s artifacts/candidate-05-ablation/week-3/equity.csv
+            test -s artifacts/candidate-05-ablation/week-3/scenario_events.jsonl
+            test -s artifacts/candidate-05-ablation/week-3/strategy_diagnostics.json
+          fi
+          if test -f artifacts/candidate-05-ablation/week-3/errors.log; then
+            cat artifacts/candidate-05-ablation/week-3/errors.log
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-week3-diagnostic-${{ github.sha }}
+          path: |
+            artifacts/candidate-05-ablation/week-3/**
+          if-no-files-found: warn
+          retention-days: 90
