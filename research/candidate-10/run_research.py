@@ -10,8 +10,8 @@ import subprocess
 import sys
 
 import c10_flow_research as _flow_research_module
+from c10_flow_evidence_fix import EvidenceValidatedParentProtectedStrategy
 from c10_flow_model import FlowParams
-from c10_flow_parent_execution import ParentProtectedFlowCandidate10Strategy
 from c10_flow_precision_fix import reproducible_weeks
 from c10_flow_v4 import run_v4_backtest
 
@@ -44,12 +44,12 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
     params, require_flow = variants()[args.variant]
     destination = output_root / args.phase / week.isoformat() / args.variant
 
-    # Controlled implementation rerun: only the Nautilus order lifecycle is
-    # replaced. The v4 state machine, all parameters, data, risk, costs, seed and
-    # the one-variable flow ablation are unchanged.
+    # Controlled implementation rerun: only the Nautilus order lifecycle and
+    # its evidence labels are replaced. The v4 state machine, all parameters,
+    # data, risk, costs, seed and one-variable flow ablation are unchanged.
     previous_strategy = _flow_research_module.FlowCandidate10Strategy
     _flow_research_module.FlowCandidate10Strategy = (
-        ParentProtectedFlowCandidate10Strategy
+        EvidenceValidatedParentProtectedStrategy
     )
     try:
         metrics = run_v4_backtest(
@@ -139,7 +139,8 @@ def main() -> int:
         "implementation_control": (
             "parent LIMIT only; cancel remainder after first actual execution; "
             "each fill quantity receives independent reduce-only LAST_PRICE stop "
-            "and post-only target; already-crossed protection exits at market"
+            "and post-only target; already-crossed protection exits at market; "
+            "protection submission is logged as a self-transition"
         ),
     }
     (output_root / "week_selection.json").write_text(
