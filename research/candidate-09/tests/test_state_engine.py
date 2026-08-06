@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import sys
 import unittest
 from decimal import Decimal
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from state_engine import EngineConfig, FlowBar, LiquidityStateEngine, risk_based_quantity
 
@@ -72,7 +78,7 @@ def seed_range(engine: LiquidityStateEngine) -> None:
         bar(1, 99.0, 101.0, 98.5, 100.0, buy_fraction=0.60),
         bar(2, 100.0, 100.5, 97.0, 99.0, buy_fraction=0.55),
         bar(3, 99.0, 100.0, 95.0, 98.0, buy_fraction=0.55),
-        bar(4, 98.0, 100.0, 98.2, 99.5, buy_fraction=0.65),
+        bar(4, 98.5, 100.0, 98.2, 99.5, buy_fraction=0.65),
     ]
     for item in observations:
         engine.on_bar(item)
