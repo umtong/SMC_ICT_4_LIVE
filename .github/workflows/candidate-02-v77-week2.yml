@@ -65,52 +65,42 @@ jobs:
           assert selected['risk']['score_risk_multiplier'] is None
           PY
 
-      - name: Prepare generic v75 direct-data tools for locked week
+      - name: Prepare generic v75 direct-data tools for the exact locked week
         if: steps.gate.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/v77-week2-tools
+          rm -rf /tmp/v77-week2-tools inputs/v77-week2
           cp -a .candidate-02-v75 /tmp/v77-week2-tools
           python - <<'PY'
-          from datetime import date, timedelta
+          from datetime import date
           import json, re
           from pathlib import Path
 
           lock=json.loads(Path('research/candidate-02/v77_week2_lock.json').read_text())
           new_start=date.fromisoformat(lock['second_week']['start_utc'][:10])
-          candidates=[]
-          for path in Path('research/candidate-02').glob('v75_*_config.json'):
-              try:
-                  data=json.loads(path.read_text())
-                  token=data.get('validation',{}).get('first_week_start')
-                  if token:
-                      candidates.append(date.fromisoformat(token[:10]))
-              except Exception:
-                  pass
-          if not candidates:
-              for path in Path('/tmp/v77-week2-tools').rglob('*.py'):
-                  for token in re.findall(r'20\d{2}-\d{2}-\d{2}', path.read_text(errors='ignore')):
-                      d=date.fromisoformat(token)
-                      if d.weekday()==0:
-                          candidates.append(d)
-          if not candidates:
-              raise RuntimeError('unable to infer original v75 first week')
-          old_start=min(candidates, key=lambda d: abs((d-new_start).days))
-          delta=new_start-old_start
-          pattern=re.compile(r'20\d{2}-\d{2}-\d{2}')
+          date_ctor=re.compile(r'EVALUATION_START\s*=\s*date\(\s*\d{4}\s*,\s*\d{1,2}\s*,\s*\d{1,2}\s*\)')
+          collector_count=0
           for path in Path('/tmp/v77-week2-tools').rglob('*'):
               if not path.is_file() or path.suffix not in {'.py','.json','.md'}:
                   continue
-              text=path.read_text(encoding='utf-8', errors='ignore')
-              def shift(match):
-                  d=date.fromisoformat(match.group(0))
-                  return (d+delta).isoformat()
-              text=pattern.sub(shift,text)
-              text=text.replace('v75-first-week','v77-week2')
+              text=path.read_text(encoding='utf-8', errors='strict')
+              text=text.replace('inputs/v75-first-week','inputs/v77-week2')
               text=text.replace('candidate-02-v75-first-week','candidate-02-v77-week2')
+              text=text.replace('v75-first-week','v77-week2')
+              if path.name.startswith('collect') and path.suffix=='.py':
+                  replacement=f'EVALUATION_START = date({new_start.year}, {new_start.month}, {new_start.day})'
+                  text,count=date_ctor.subn(replacement,text)
+                  collector_count+=count
               path.write_text(text,encoding='utf-8')
-          print(json.dumps({'old_start':old_start.isoformat(),'new_start':new_start.isoformat(),'delta_days':delta.days}))
+          if collector_count != 1:
+              raise RuntimeError(f'expected one explicit EVALUATION_START constructor, found {collector_count}')
+          collector=next(Path('/tmp/v77-week2-tools').glob('collect*.py'))
+          materialized=collector.read_text(encoding='utf-8')
+          expected=f'EVALUATION_START = date({new_start.year}, {new_start.month}, {new_start.day})'
+          if expected not in materialized or 'inputs/v77-week2' not in materialized:
+              raise RuntimeError('locked week was not materialized into the direct-data collector')
+          print(json.dumps({'locked_week_start':new_start.isoformat(),'collector':str(collector),'date_constructor':expected}))
           PY
 
       - name: Collect locked direct data and build completed-minute features
@@ -125,13 +115,8 @@ jobs:
           python "$collect"
           python "$build"
 
-          mkdir -p inputs/v77-week2/candidate-02-v75-first-week
-          feature=$(find . /tmp -type f -name '*.npz' -newermt '10 minutes ago' | sort | tail -n1)
-          columns=$(find . /tmp -type f -name 'columns.json' -newermt '10 minutes ago' | sort | tail -n1)
-          test -n "$feature"
-          test -n "$columns"
-          cp "$feature" inputs/v77-week2/candidate-02-v75-first-week/
-          cp "$columns" inputs/v77-week2/candidate-02-v75-first-week/columns.json
+          test -f inputs/v77-week2/candidate-02-v48-first-week/v48_features.npz
+          test -f inputs/v77-week2/candidate-02-v48-first-week/columns.json
 
           python - <<'PY'
           from datetime import date,timedelta
@@ -152,6 +137,33 @@ jobs:
                       path.write_bytes(response.read())
               d+=timedelta(days=1)
           print(len(list(root.glob('*.zip'))))
+          PY
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          from v53_nt_core import load_feature_matrix
+
+          lock=json.loads(Path('research/candidate-02/v77_week2_lock.json').read_text())
+          start=pd.Timestamp(lock['second_week']['start_utc'])
+          end=pd.Timestamp(lock['second_week']['end_utc'])
+          features=load_feature_matrix(
+              Path('inputs/v77-week2/candidate-02-v48-first-week/v48_features.npz'),
+              Path('inputs/v77-week2/candidate-02-v48-first-week/columns.json'),
+          )
+          evaluation=features.loc[(features.index>=start)&(features.index<end)]
+          if len(evaluation) < 7*24*60*0.995:
+              raise RuntimeError(f'locked week feature coverage mismatch: {len(evaluation)} rows')
+          if features.index.min() > start-pd.Timedelta(days=2)+pd.Timedelta(minutes=2):
+              raise RuntimeError('missing locked warmup feature history')
+          if features.index.max() < end:
+              raise RuntimeError('locked feature matrix ends before evaluation end')
+          print(json.dumps({
+              'feature_first_utc':features.index.min().isoformat(),
+              'feature_last_utc':features.index.max().isoformat(),
+              'locked_evaluation_rows':len(evaluation),
+          }))
           PY
 
       - name: Materialize unchanged runtime config
@@ -252,6 +264,8 @@ jobs:
                   (root/'v77_week3_lock.json').write_text(json.dumps(third_lock,indent=2,sort_keys=True))
           (root/'v77_week2_decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
           PY
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add research/candidate-02/v77_week2_decision.json
@@ -271,4 +285,4 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-# execution-trigger: locked-week2-2024-01-29
+# execution-trigger: locked-week2-date-materialization-r2
