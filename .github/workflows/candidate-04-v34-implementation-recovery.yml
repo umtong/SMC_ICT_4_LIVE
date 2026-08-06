@@ -1,0 +1,229 @@
+name: candidate-04-v34-implementation-recovery
+
+on:
+  workflow_run:
+    workflows: ["candidate-04-v34-evidence-commit"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Permit recovery only for implementation-classified failure
+        id: route
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          path = Path(
+              "research/candidate-04/evidence-v34-post-event-inventory-resolution.json"
+          )
+          if not path.exists():
+              print("should_run=false")
+              print("reason=no_v34_evidence")
+              raise SystemExit(0)
+          evidence = json.loads(path.read_text())
+          should = (
+              evidence.get("failure_classification") == "implementation_or_workflow"
+              or evidence.get("status") == "implementation_or_workflow_failure_before_decision"
+          )
+          print(f"should_run={str(should).lower()}")
+          print(f"reason={'same_week_implementation_recovery' if should else 'economic_decision_already_available'}")
+          PY
+
+      - name: Restore exact original development observations
+        if: steps.route.outputs.should_run == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v27-cross-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Verify compatibility fix only
+        if: steps.route.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/post_event_inventory_resolution_compiler.py \
+            research/candidate-04/post_event_inventory_resolution_compiler_v2.py \
+            research/candidate-04/summarize_candidate_week.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_post_event_inventory_resolution_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_post_event_inventory_resolution_compatibility.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Rerun identical weeks with one implementation fix
+        if: steps.route.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=(low_activity normal_basis stress_a)
+          build_starts=(2023-08-02 2023-12-16 2024-08-05)
+          build_ends=(2023-08-10 2023-12-24 2024-08-13)
+          eval_starts=(2023-08-04 2023-12-18 2024-08-07)
+          eval_ends=(2023-08-10 2023-12-24 2024-08-13)
+          root="artifacts/candidate-04-v34-implementation-recovery"
+          mkdir -p "$root"
+          failed=""
+          for i in "${!names[@]}"; do
+            name="${names[$i]}"
+            export C04_BUILD_START="${build_starts[$i]}"
+            export C04_BUILD_END="${build_ends[$i]}"
+            export C04_EVALUATION_START="${eval_starts[$i]}"
+            export C04_EVALUATION_END="${eval_ends[$i]}"
+            source="$(find sources -mindepth 1 -maxdepth 1 -type d -name "candidate-04-v27-cross-${name}-*" | head -n1)"
+            week="$root/$name"
+            mkdir -p "$week"
+            python research/candidate-04/post_event_inventory_resolution_compiler_v2.py \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --rich-dir "$source/source/rich" \
+              --kline-dir ".cache/candidate-04-v34-recovery/$name/raw" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --output "$week/signals" \
+              --download-klines \
+              | tee "$week/compiler_console.json"
+            C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$week/signals/signals.json" \
+            python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start "$C04_BUILD_START" \
+              --build-end "$C04_BUILD_END" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --cache ".cache/candidate-04-v34-recovery/$name/raw" \
+              --output "$week/nautilus" \
+              | tee "$week/nautilus_console.json"
+            python research/candidate-04/summarize_candidate_week.py \
+              --root "$week" \
+              --candidate candidate-04-v34-post-event-inventory-resolution \
+              --stage "implementation_recovery_${name}" \
+              --output "$week/summary.json"
+            passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$week/summary.json")"
+            if [[ "$passed" != "true" ]]; then
+              failed="$name"
+              break
+            fi
+          done
+          export V34_RECOVERY_ROOT="$root"
+          export V34_RECOVERY_FAILED="$failed"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["V34_RECOVERY_ROOT"])
+          weeks = {
+              path.parent.name: json.loads(path.read_text())
+              for path in root.glob("*/summary.json")
+          }
+          failed = os.environ["V34_RECOVERY_FAILED"] or None
+          passed = failed is None and len(weeks) == 3 and all(
+              item["candidate_pass"] for item in weeks.values()
+          )
+          evidence = {
+              "candidate": "candidate-04-v34-post-event-inventory-resolution",
+              "stage": "same_week_implementation_recovery",
+              "controlled_change": (
+                  "data-contract compatibility only; economic states, thresholds, "
+                  "stops, targets, risk and Nautilus execution unchanged"
+              ),
+              "weeks": weeks,
+              "failed_week": failed,
+              "three_week_pass": passed,
+              "failure_classification": (
+                  "resolved_implementation_then_economic_result"
+                  if weeks
+                  else "implementation_still_unresolved"
+              ),
+              "decision": (
+                  "freeze_before_unopened_weeks"
+                  if passed
+                  else "economic_gate_failed_after_implementation_fix"
+              ),
+          }
+          (root / "research_decision.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          Path("research/candidate-04/evidence-v34-implementation-recovery.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Record skipped recovery
+        if: steps.route.outputs.should_run != 'true'
+        shell: bash
+        env:
+          REASON: ${{ steps.route.outputs.reason }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          value = {
+              "candidate": "candidate-04-v34-post-event-inventory-resolution",
+              "stage": "same_week_implementation_recovery",
+              "executed": False,
+              "reason": os.environ["REASON"],
+          }
+          Path("research/candidate-04/evidence-v34-implementation-recovery.json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v34-implementation-recovery-${{ github.sha }}
+          path: artifacts/candidate-04-v34-implementation-recovery
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Commit recovery evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/evidence-v34-implementation-recovery.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "record V34 implementation recovery"
+          git push origin HEAD:research/candidate-04
