@@ -13,9 +13,11 @@ from typing import Any
 
 from timestamp_contract import install as install_timestamp_contract
 from wrangler_contract import install as install_wrangler_contract
+from positioning_contract import install as install_positioning_contract
 
 install_timestamp_contract()
 install_wrangler_contract()
+install_positioning_contract()
 
 from backtest import run_backtest
 from smc_ict_4.manifest import write_json_atomic
@@ -70,7 +72,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     cache = args.cache.resolve()
     summary: dict[str, Any] = {
-        "candidate": "candidate-05-liquidity-response-transition",
+        "candidate": "candidate-05-auction-state-transition",
         "engine": "NautilusTrader BacktestNode",
         "process_isolation": "one Nautilus BacktestNode per child process",
         "week_selection": weeks["selection"],
