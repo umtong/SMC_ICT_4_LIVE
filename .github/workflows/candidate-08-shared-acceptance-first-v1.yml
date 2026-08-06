@@ -1,0 +1,141 @@
+name: candidate-08-shared-acceptance-first-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-shared-acceptance-first-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  first-week:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/shared-acceptance-first-v1
+      DATA_CACHE: /tmp/candidate-08-acceptance-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore BTC verified archive cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-BTCUSDT-screen-01-v1
+          restore-keys: candidate-08-aggtrade-acceptance-BTCUSDT-
+
+      - name: Restore ETH verified archive cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-ETHUSDT-screen-01-v1
+          restore-keys: candidate-08-aggtrade-acceptance-ETHUSDT-
+
+      - name: Restore SOL verified archive cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-SOLUSDT-screen-01-v1
+          restore-keys: candidate-08-aggtrade-acceptance-SOLUSDT-
+
+      - name: Restore XRP verified archive cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-XRPUSDT-screen-01-v1
+          restore-keys: candidate-08-aggtrade-acceptance-XRPUSDT-
+
+      - name: Validate contracts and run first fixed week
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          set +e
+          {
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/aggtrade_acceptance_causal_v1.py \
+              research/candidate-08/aggtrade_acceptance_shared_strategy_v1.py \
+              research/candidate-08/run_shared_acceptance_first_v1.py \
+              research/candidate-08/test_shared_acceptance_v1.py
+            python research/candidate-08/test_shared_acceptance_v1.py -v
+            python research/candidate-08/run_shared_acceptance_first_v1.py \
+              --config research/candidate-08/config_aggtrade_acceptance_shared.json \
+              --output "$OUTPUT_DIR" \
+              --data-cache "$DATA_CACHE"
+          } 2>&1 | tee "$OUTPUT_DIR/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT_DIR/runner_exit_status.txt"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          output = Path(os.environ["OUTPUT_DIR"])
+          (output / "workflow.json").write_text(
+              json.dumps({
+                  "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                  "head_sha": os.environ.get("GITHUB_SHA"),
+                  "engine": "NautilusTrader",
+                  "suite": "first",
+                  "shared_account": True,
+                  "global_pending_or_position_limit": 1,
+                  "risk_fraction": 0.03,
+                  "signal_contract_changed": False,
+                  "controlled_implementation_correction": "acceptance invalidation references the observed retest extreme",
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Commit success or failure evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" pull --rebase origin research/candidate-08
+          rm -f research/candidate-08/.run-shared-acceptance-first-v1
+          rm -f research/candidate-08/.connector-write-test
+          git -C "$GITHUB_WORKSPACE" add \
+            research/candidate-08/evidence/shared-acceptance-first-v1 \
+            research/candidate-08/.run-shared-acceptance-first-v1 \
+            research/candidate-08/.connector-write-test
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: record shared acceptance first-week evidence" || true
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-shared-acceptance-first-v1-${{ github.sha }}
+          path: research/candidate-08/evidence/shared-acceptance-first-v1
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Preserve composite verified data cache
+        if: ${{ always() }}
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-shared-acceptance-first-v1-${{ github.sha }}
+
+      - name: Return runner status
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          status=$(cat "$OUTPUT_DIR/runner_exit_status.txt" 2>/dev/null || printf '1')
+          exit "$status"
