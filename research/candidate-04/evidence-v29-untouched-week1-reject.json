@@ -1,0 +1,119 @@
+{
+  "candidate": "candidate-04-v29-auction-state-mosaic",
+  "status": "rejected_after_first_untouched_week",
+  "source_freeze_commit": "6b37d576c1ca054754db5da816e148b4b2e2ec41",
+  "validation_registration": "research/candidate-04/validation-weeks-v29.json",
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "untouched_week": {
+    "build_start": "2025-03-22",
+    "build_end": "2025-03-30",
+    "evaluation_start": "2025-03-24",
+    "evaluation_end": "2025-03-30",
+    "workflow_run_id": 31110828251,
+    "artifact_id": 8971694454,
+    "artifact_digest": "sha256:59a53109c986a72987dfc69a840c0beb8f454b682ac911041c843d411ba7c06a",
+    "signals": 3,
+    "trades": 3,
+    "wins": 0,
+    "win_rate": 0.0,
+    "total_return": -0.05545819523609996,
+    "geometric_daily_growth": -0.008117634287047815,
+    "active_days": 3,
+    "max_drawdown": 0.05545819523609996,
+    "maximum_realized_loss_fraction": 0.025398303940640982,
+    "risk_pass": true,
+    "candidate_pass": false,
+    "stage_2_opened": false,
+    "stage_3_opened": false,
+    "long_evaluation_opened": false
+  },
+  "implementation_error_control": {
+    "first_attempt_run_id": 31110585259,
+    "error": "container Git safe-directory rejection during frozen HEAD verification",
+    "market_data_opened": false,
+    "market_logic_changed": false,
+    "fix": "register GITHUB_WORKSPACE as a Git safe.directory",
+    "controlled_rerun": 31110828251,
+    "result": "all source, data, signal, NautilusTrader and risk stages completed"
+  },
+  "scenario_failures": {
+    "BALANCED_SESSION_FAILED_INVENTORY_BREAKOUT_REVERSAL": {
+      "trades": 1,
+      "wins": 0,
+      "net_pnl_usdt": -1332.03674935,
+      "diagnosis": {
+        "prior_session_efficiency": 0.04796537432582177,
+        "past_only_efficiency_median": 0.0621505769427331,
+        "boundary_penetration_atr": 0.21206409048067734,
+        "attack_to_reclaim_oi_change": 0.0015102830873268136,
+        "past_only_positive_oi_step_median": 0.0005408523858653203,
+        "confirmation_delay_bars": 2,
+        "failure": "material OI expansion and a close back inside were present, but the shallow boundary probe was reaccepted one minute later; first reclaim did not prove trapped breakout inventory"
+      }
+    },
+    "TAIL_CONFIRMED_STRESS_FAILED_AUCTION": {
+      "trades": 1,
+      "wins": 0,
+      "net_pnl_usdt": -1752.28902363,
+      "diagnosis": {
+        "basis_regime_bps": -4.662952664962194,
+        "trade_index_basis_bps": -5.513837811660372,
+        "mesoscale_efficiency": 0.8956132333308371,
+        "terminal_directional_return_bps": 12.476841792274929,
+        "past_only_absolute_return_q80_bps": 7.105175193192981,
+        "state_interval_open_interest_change": -0.004537855040615213,
+        "terminal_directional_basis_change_5m_bps": -1.3268568153457228,
+        "failure": "price acceptance occurred while the leveraged futures-index basis moved against the intended direction; the move was not durable derivatives price acceptance"
+      }
+    },
+    "EXTERNAL_POOL_FAILED_DISCOVERY_REVERSAL": {
+      "trades": 1,
+      "wins": 0,
+      "net_pnl_usdt": -2461.49375063,
+      "diagnosis": {
+        "shock_side": -1,
+        "pre_shock_parent_480m_return_bps": -27.664525916439864,
+        "impact_absolute_return_bps": 14.98389682413559,
+        "external_pool_penetration_atr": 1.5220038267524254,
+        "confirmation_delay_minutes": 3,
+        "failure": "the impact was aligned with a stronger same-direction parent auction; origin reclaim was a pullback inside continuing price discovery, not proof of failed price discovery"
+      }
+    }
+  },
+  "one_key_scenario_ablation": {
+    "workflow_run_id": 31111314916,
+    "artifact_id": 8971820582,
+    "artifact_digest": "sha256:86b169fb9db37ba38f94877679ec1af5504efa1eb62da1e14b59c5ca99ffde63",
+    "removed_scenario": "EXTERNAL_POOL_FAILED_DISCOVERY_REVERSAL",
+    "changed_variables": 1,
+    "remaining_trades": 2,
+    "remaining_wins": 0,
+    "remaining_total_return": -0.0308432577297999,
+    "remaining_geometric_daily_growth": -0.00446556009579957,
+    "structural_path_exists": false
+  },
+  "largest_performance_factors": [
+    "first reclaim or acceptance was treated as final auction resolution without a subsequent retest-and-hold state",
+    "strong parent-auction alignment was ignored by external failed-discovery reversal",
+    "terminal futures-index basis divergence was ignored by stress continuation",
+    "balanced-session boundary penetration could be shallow while still being labeled a meaningful failed breakout"
+  ],
+  "useful_components_to_preserve": [
+    "causal external liquidity pools and first-consumption state",
+    "state-interval raw open-interest measurement",
+    "balanced versus directional completed-session classification",
+    "past-only impact and OI materiality thresholds",
+    "actual-fill causal-bracket guard",
+    "current-NAV 3% planned-loss sizing",
+    "single global NautilusTrader position and pending-entry state"
+  ],
+  "next_system_design": {
+    "name": "two-stage auction resolution router",
+    "principle": "do not trade the first reclaim or acceptance; wait for a completed retest-and-hold, or route the opposite side when that reclaim itself fails",
+    "branches": [
+      "balanced-session boundary reclaim hold versus boundary reacceptance continuation",
+      "stress acceptance with directionally aligned basis versus basis-divergent exhaustion",
+      "counter-parent or weak-parent external failed discovery versus strong parent-aligned continuation"
+    ]
+  }
+}
