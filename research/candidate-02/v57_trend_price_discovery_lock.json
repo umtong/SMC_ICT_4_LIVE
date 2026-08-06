@@ -1,0 +1,66 @@
+{
+  "candidate": "candidate-02-trend-embedded-price-discovery-v57",
+  "status": "LOCKED_BEFORE_NAUTILUSTRADER_PERFORMANCE_RUN",
+  "engine": "NautilusTrader 1.230.0 only",
+  "risk_fraction": 0.03,
+  "development_week": "2024-11-18",
+  "parent_failure": {
+    "candidate": "candidate-02-high-impact-price-discovery-v56",
+    "workflow_run_id": 31067054960,
+    "trades": 7,
+    "trades_per_day": 1.0,
+    "win_rate": 0.42857142857142855,
+    "profit_factor_after_cost": 1.0831153100628568,
+    "geometric_daily_growth_after_cost": 0.0015435795644465067,
+    "classification": "event direction had weak positive expectancy but high-impact flow alone did not distinguish established price discovery from terminal bursts"
+  },
+  "causal_revision": {
+    "new_market_state": "the event direction must already be the direction of a completed 60-minute price move whose absolute size is at or above its prior 30-day 60th percentile",
+    "event_threshold_revision": "use an above-prior-60th-percentile 15-minute flow episode rather than the prior 70th percentile because the established trend state supplies the missing directional selectivity",
+    "unchanged": [
+      "15-minute volume-weighted aggressive-flow episode",
+      "positive price response per unit flow above prior 55th percentile",
+      "next completed five-minute continuation",
+      "depth no more than mildly opposed",
+      "one-hour open-interest increase",
+      "50-percent impulse retracement invalidation plus 0.15 ATR",
+      "two-impulse measured-move target",
+      "120-minute maximum hold",
+      "cost and risk model"
+    ]
+  },
+  "parameters": {
+    "flow_lookback_bars_5m": 3,
+    "prior_quantile_days": 30,
+    "flow_abs_quantile": 0.60,
+    "impact_quantile": 0.55,
+    "trend_abs_return_quantile": 0.60,
+    "minimum_event_response": 0.0,
+    "minimum_confirmation_return": 0.0,
+    "minimum_confirmation_depth": -0.10,
+    "minimum_oi_change_1h": 0.0,
+    "stop_retracement_fraction": 0.50,
+    "stop_buffer_atr": 0.15,
+    "target_impulse_multiple": 2.0,
+    "maximum_holding_minutes": 120,
+    "cooldown_bars": 6,
+    "minimum_cost_after_rr": 1.0,
+    "maximum_cost_after_rr": 3.0
+  },
+  "pre_execution_structural_diagnostics": {
+    "raw_events_before_global_busy": 8,
+    "events_after_fixed_cooldown": 7,
+    "minimum_expected_frequency_per_day": 1.0,
+    "diagnostic_only": true,
+    "performance_source_of_truth": "NautilusTrader account after this lock"
+  },
+  "promotion": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor_after_cost": 1.50,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25,
+    "rule": "Fail this development week and discard. Pass it and prospectively lock a fresh second week before raw data collection."
+  },
+  "custom_backtest_engine": false
+}
