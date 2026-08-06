@@ -85,9 +85,10 @@ def _first_structural_touches(
     stop: float,
     target: float,
 ) -> dict[str, Any]:
+    """Record stop and target first-hit times independently, then classify their order."""
+
     first_stop_time_ns: int | None = None
     first_target_time_ns: int | None = None
-    ambiguous_time_ns: int | None = None
     for timestamp, row in path.iterrows():
         stop_hit = (
             float(row["low"]) <= stop
@@ -104,20 +105,27 @@ def _first_structural_touches(
             first_stop_time_ns = timestamp_ns
         if target_hit and first_target_time_ns is None:
             first_target_time_ns = timestamp_ns
-        if stop_hit and target_hit:
-            ambiguous_time_ns = timestamp_ns
-            break
-        if first_stop_time_ns is not None or first_target_time_ns is not None:
+        if first_stop_time_ns is not None and first_target_time_ns is not None:
             break
 
-    if ambiguous_time_ns is not None:
+    if (
+        first_stop_time_ns is not None
+        and first_target_time_ns is not None
+        and first_stop_time_ns == first_target_time_ns
+    ):
         outcome = "AMBIGUOUS_SAME_BUCKET"
-    elif first_target_time_ns is not None:
+        ambiguous_time_ns = first_stop_time_ns
+    elif first_target_time_ns is not None and (
+        first_stop_time_ns is None or first_target_time_ns < first_stop_time_ns
+    ):
         outcome = "TARGET"
+        ambiguous_time_ns = None
     elif first_stop_time_ns is not None:
         outcome = "STOP"
+        ambiguous_time_ns = None
     else:
         outcome = "NONE_WITHIN_HORIZON"
+        ambiguous_time_ns = None
     return {
         "structural_first_touch": outcome,
         "first_stop_time_ns": first_stop_time_ns,
@@ -268,29 +276,13 @@ def diagnose_trade_path(
     stop_distance = abs(entry - stop)
     target_after_close = after_close_touches["first_target_time_ns"] is not None
     stop_after_close = after_close_touches["first_stop_time_ns"] is not None
+    stop_time_ns = touches["first_stop_time_ns"]
+    target_time_ns = touches["first_target_time_ns"]
     target_after_invalidation = (
-        touches["structural_first_touch"] == "STOP"
-        and touches["first_target_time_ns"] is None
-        and target_after_close
+        stop_time_ns is not None
+        and target_time_ns is not None
+        and int(target_time_ns) > int(stop_time_ns)
     )
-    # A first-touch stop loop exits before a later target can be recorded. Search the path strictly
-    # after that stop to establish the exact structural diagnostic without relabelling the loss.
-    if touches["structural_first_touch"] == "STOP" and touches["first_stop_time_ns"] is not None:
-        after_stop = _path_slice(
-            values,
-            after_time_ns=int(touches["first_stop_time_ns"]),
-            through_time_ns=horizon_time_ns,
-        )
-        after_stop_touch = _first_structural_touches(
-            after_stop,
-            direction=direction,
-            stop=stop,
-            target=target,
-        )
-        target_after_invalidation = after_stop_touch["first_target_time_ns"] is not None
-        target_after_invalidation_time_ns = after_stop_touch["first_target_time_ns"]
-    else:
-        target_after_invalidation_time_ns = None
 
     return {
         "scenario_id": scenario_id,
@@ -317,7 +309,9 @@ def diagnose_trade_path(
             "first_stop_time_ns"
         ],
         "target_reached_after_invalidation": target_after_invalidation,
-        "target_reached_after_invalidation_time_ns": target_after_invalidation_time_ns,
+        "target_reached_after_invalidation_time_ns": (
+            target_time_ns if target_after_invalidation else None
+        ),
         **extremes,
         "actual_holding_maximum_favorable_price_progress": actual_extremes[
             "maximum_favorable_price_progress"
