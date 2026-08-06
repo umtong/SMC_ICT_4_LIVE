@@ -78,6 +78,9 @@ class TradePlan:
     boundary: float
     atr: float
     structural_target: str
+    entry_order_type: str
+    entry_expiry_bars: int
+    invalidation_price: float
     details: dict[str, Any]
 
 
@@ -102,12 +105,18 @@ class MachineParams:
     raid_atr: float = 0.08
     acceptance_atr: float = 0.12
     displacement_atr: float = 0.75
-    stop_buffer_atr: float = 0.12
-    retest_tolerance_atr: float = 0.16
+    # v1: invalidation must sit outside both event noise and one complete
+    # executable round-trip cost floor, not just a few ticks past a 1-minute wick.
+    stop_buffer_atr: float = 1.00
+    cost_floor_multiple: float = 1.00
+    maker_fee: float = 0.000400
+    taker_fee: float = 0.000700
+    execution_reserve_ticks: int = 2
+    rejection_limit_fraction: float = 0.618
     rejection_confirm_bars: int = 10
     retrace_expiry_bars: int = 16
     acceptance_retest_bars: int = 24
     acceptance_target_extension: float = 0.50
-    min_net_rr: float = 1.15
+    min_net_rr: float = 1.35
     enable_rejection: bool = True
     enable_acceptance: bool = True
