@@ -56,6 +56,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from fixed_interval_auction_engine import FixedIntervalAuctionLiquidityRelayEngine
 
         return FixedIntervalAuctionLiquidityRelayEngine(logic_params)
+    if name == "FIXED_INTERVAL_AUCTION_FAILED_TRAP":
+        from failed_auction_trap_engine import FailedAuctionTrapRelayEngine
+
+        return FailedAuctionTrapRelayEngine(logic_params)
     if name == "MULTI_TIMESCALE_LIQUIDITY_RELAY":
         from composite_engine import MultiTimescaleLiquidityRelayEngine
 
