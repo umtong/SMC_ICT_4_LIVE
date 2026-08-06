@@ -22,7 +22,7 @@ import pandas as pd
 
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
-from nautilus_trader.execution import MakerTakerFeeModel, OneTickSlippageFillModel, StaticLatencyModel
+from nautilus_trader.backtest.models import LatencyModel, MakerTakerFeeModel, OneTickSlippageFillModel
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import AccountType, OmsType
 from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
@@ -324,7 +324,7 @@ def _create_engine(config: Mapping[str, Any], instrument: CryptoPerpetual) -> Ba
             random_seed=seed,
         ),
         fee_model=MakerTakerFeeModel(),
-        latency_model=StaticLatencyModel(
+        latency_model=LatencyModel(
             base_latency_nanos=int(latency["base"] * 1_000_000),
             insert_latency_nanos=int(latency["insert"] * 1_000_000),
             update_latency_nanos=int(latency["update"] * 1_000_000),
