@@ -35,6 +35,9 @@ from smc_ict_4.event_log import write_events
 from smc_ict_4.manifest import create_run_manifest, write_json_atomic
 
 
+NS_PER_MINUTE = 60_000_000_000
+
+
 def _optional_float(value) -> float | None:
     return None if pd.isna(value) else float(value)
 
@@ -89,16 +92,19 @@ def run_week(
     flow_events: list[CustomData] = []
     bars: list[Bar] = []
     for row in bundle.frame.itertuples():
-        flow_ts = int(row.Index.value)
+        raw_close_ts = int(row.Index.value)
+        minute_boundary = (
+            (raw_close_ts // NS_PER_MINUTE) + 1
+        ) * NS_PER_MINUTE
         flow_payload = AggressorFlow(
             instrument_id=instrument.id,
             total_volume=float(row.volume),
             taker_buy_volume=float(row.taker_buy_base),
-            ts_event=flow_ts,
-            ts_init=flow_ts,
+            ts_event=minute_boundary,
+            ts_init=minute_boundary,
         )
         flow_events.append(CustomData(flow_type, flow_payload))
-        bar_ts = flow_ts + 1
+        bar_ts = minute_boundary + 1
         bars.append(
             Bar(
                 bar_type=bar_type,
@@ -175,9 +181,9 @@ def run_week(
             reject_stop_orders=False,
         )
         engine.add_instrument(instrument)
-        # Positioning snapshots share a timestamp with the completed minute at
-        # each five-minute boundary. Add them before bars so the strategy sees
-        # the completed snapshot before evaluating that completed signal bar.
+        # Completed flow and positioning snapshots become available at the
+        # exact next-minute boundary. Add them before bars at boundary + 1 ns
+        # so the strategy cannot observe either before the source interval ends.
         engine.add_data(positioning_events, client_id=POSITIONING_CLIENT_ID)
         engine.add_data(flow_events, client_id=FLOW_CLIENT_ID)
         engine.add_data(bars)
@@ -224,8 +230,8 @@ def run_week(
                     "magnitude rank"
                 ),
                 "bar_ordering": (
-                    "positioning snapshot at the five-minute boundary, flow at the "
-                    "completed-minute timestamp, matching bar one nanosecond later"
+                    "completed flow and positioning snapshot at the next minute "
+                    "boundary, matching bar one nanosecond later"
                 ),
             }
         )
