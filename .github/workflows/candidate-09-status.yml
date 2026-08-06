@@ -1,0 +1,37 @@
+name: Candidate 09 publish status marker
+
+on:
+  push:
+    branches:
+      - research/candidate-09
+    paths:
+      - research/candidate-09/evidence/latest/summary.json
+
+permissions:
+  contents: write
+
+jobs:
+  marker:
+    if: contains(github.event.head_commit.message, '[candidate-09 evidence]')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish a machine-readable status filename
+        shell: bash
+        run: |
+          status=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('research/candidate-09/evidence/latest/summary.json').read_text()).get('status', 'UNKNOWN')
+          print(''.join(ch if ch.isalnum() or ch in '-_' else '_' for ch in str(value)))
+          PY
+          )
+          rm -f research/candidate-09/evidence/latest/STATUS_*
+          printf '%s\n' "$status" > "research/candidate-09/evidence/latest/STATUS_${status}"
+          git config user.name "candidate-09-research-bot"
+          git config user.email "candidate-09-research-bot@users.noreply.github.com"
+          git add -f research/candidate-09/evidence/latest/STATUS_*
+          git commit -m "candidate-09: publish ${status} marker [candidate-09 evidence]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
