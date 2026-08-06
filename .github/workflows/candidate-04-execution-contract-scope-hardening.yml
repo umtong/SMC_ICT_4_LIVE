@@ -1,0 +1,98 @@
+name: candidate-04-execution-contract-scope-hardening
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-execution-contract-scope-hardening.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Locate the actual trusted model-construction function
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path(
+              "research/candidate-04/generate_nt_single_execution_contract.py"
+          )
+          text = path.read_text()
+          marker = '''def find_main(tree: ast.Module) -> ast.FunctionDef:
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "main":
+            return node
+    raise RuntimeError("nt_backtest.py has no main()")
+
+
+'''
+          addition = marker + '''def find_model_scope(tree: ast.Module) -> ast.FunctionDef:
+    """Return the function that owns all three trusted model constructors."""
+
+    functions = [
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    ]
+    functions.sort(key=lambda node: (node.name != "main", node.lineno))
+    diagnostics: list[str] = []
+    for function in functions:
+        found = {
+            call_name(node)
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and call_name(node) in TARGET_CLASSES
+        }
+        diagnostics.append(f"{function.name}:{sorted(found)}")
+        if found == set(TARGET_CLASSES):
+            return function
+    raise RuntimeError(
+        "no function owns all trusted execution model constructors; "
+        + "; ".join(diagnostics)
+    )
+
+
+'''
+          if 'def find_model_scope(' not in text:
+              if marker not in text:
+                  raise SystemExit("find_main marker not found")
+              text = text.replace(marker, addition, 1)
+          text = text.replace(
+              '    main = find_main(tree)\n    assignments = all_assignments(main)\n    models = model_assignments(main)\n',
+              '    model_scope = find_model_scope(tree)\n'
+              '    assignments = all_assignments(model_scope)\n'
+              '    models = model_assignments(model_scope)\n',
+          )
+          path.write_text(text)
+          PY
+          python -m py_compile \
+            research/candidate-04/generate_nt_single_execution_contract.py
+
+      - name: Commit scope hardening with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/generate_nt_single_execution_contract.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "locate trusted execution models in actual function scope"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
