@@ -39,12 +39,13 @@ jobs:
           for file in research/candidate-02/v76_*_config.json research/candidate-02/v76_metaorder_wave_family_lock.json; do
             python -m json.tool "$file" >/dev/null
           done
-      - name: Commit readable v76 sources atomically
+      - name: Commit readable non-workflow v76 sources atomically
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/candidate-02-v76-first.yml
           git rm .candidate-02-v76/payload.part.* .github/workflows/candidate-02-v76-materialize.yml
           git add \
             research/candidate-02/v76_metaorder_wave_core.py \
@@ -54,7 +55,6 @@ jobs:
             research/candidate-02/v76_30m_1p25_config.json \
             research/candidate-02/v76_60m_1x_config.json \
             research/candidate-02/v76_metaorder_wave_family_lock.json \
-            .candidate-02-v76/collect_revealed_klines.py \
-            .github/workflows/candidate-02-v76-first.yml
+            .candidate-02-v76/collect_revealed_klines.py
           git commit -m "research(candidate-02): materialize exact v76 metaorder wave"
           git push origin HEAD:research/candidate-02
