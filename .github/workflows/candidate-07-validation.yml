@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 jobs:
-  btc-week-2-no-oi-ablation:
+  btc-week-2-path-diagnostic:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -42,27 +42,37 @@ jobs:
             candidate-07-flow-week1-v1
             candidate-07-btcusdt-2024-through-2026h1-v1
 
-      - name: NautilusTrader frozen Week-2 OI-removal ablation
+      - name: NautilusTrader frozen Week-2 replay
         run: >-
           python research/candidate-07/candidate_cascade.py week
-          --config research/candidate-07/config_positioning_ablation_no_oi.json
-          --stage week-2-ablation-no-oi
+          --config research/candidate-07/config.json
+          --stage week-2
           --start 2025-01-27
           --end 2025-02-03
-          --output artifacts/candidate-07/week-2-ablation-no-oi
+          --output artifacts/candidate-07/week-2
           --data-root .research-data/candidate-07
 
-      - name: Print machine-readable ablation result
+      - name: Diagnose actual trade excursions
+        run: >-
+          python research/candidate-07/diagnose_excursions.py
+          --config research/candidate-07/config.json
+          --output artifacts/candidate-07
+          --data-root .research-data/candidate-07
+
+      - name: Print path diagnosis
         if: always()
         run: |
-          test -f artifacts/candidate-07/week-2-ablation-no-oi/metrics.json
-          cat artifacts/candidate-07/week-2-ablation-no-oi/metrics.json
+          test -f artifacts/candidate-07/week-2/metrics.json
+          test -f artifacts/candidate-07/week-2/excursion_summary.json
+          cat artifacts/candidate-07/week-2/metrics.json
+          cat artifacts/candidate-07/week-2/excursion_summary.json
+          cat artifacts/candidate-07/week-2/trade_excursions.csv
 
-      - name: Preserve complete ablation evidence
+      - name: Preserve diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-week2-no-oi-ablation-${{ github.sha }}
-          path: artifacts/candidate-07/week-2-ablation-no-oi
+          name: candidate-07-week2-path-diagnostic-${{ github.sha }}
+          path: artifacts/candidate-07/week-2
           retention-days: 14
           if-no-files-found: error
