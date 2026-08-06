@@ -1,6 +1,6 @@
-"""Public candidate-09 v9 state-engine API."""
+"""Public candidate-09 v8 state-engine API."""
 
-from state_engine_v9_model import (
+from state_engine_v8_model import (
     DAY_NS,
     MINUTE_NS,
     DiagnosticEvent,
@@ -16,7 +16,7 @@ from state_engine_v9_model import (
     Signal,
     risk_based_quantity,
 )
-from state_engine_v9_logic import LiquidityStateEngine
+from state_engine_v8_logic import LiquidityStateEngine
 
 __all__ = [
     "DAY_NS", "MINUTE_NS", "DiagnosticEvent", "EngineConfig", "EngineResult", "FlowBar",
