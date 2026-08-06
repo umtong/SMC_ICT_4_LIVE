@@ -22,6 +22,12 @@ FAMILY_TO_MODE = {
     INITIATIVE_FAMILY: "initiative_only",
     ABSORPTION_FAMILY: "absorption_only",
 }
+_REQUIRED_BASE_EVIDENCE_CHECKS = (
+    "complete_auction_scenario_attribution",
+    "complete_post_run_trade_path_diagnostics",
+    "base_contract_includes_both_auction_families",
+    "base_contract_includes_both_flow_response_families",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +101,24 @@ def select_single_family_ablation(summary: Mapping[str, Any]) -> AblationDecisio
     if bool(summary.get("suite_gate_passed", False)):
         return _invalid("BASE_GATE_ALREADY_PASSED", suite=suite)
 
+    suite_checks = summary.get("suite_gate_checks", {})
+    if not isinstance(suite_checks, Mapping):
+        return _invalid("BASE_SUITE_GATE_CHECKS_MISSING", suite=suite)
+    if not all(
+        suite_checks.get(name) is True for name in _REQUIRED_BASE_EVIDENCE_CHECKS
+    ):
+        return _invalid("BASE_EVIDENCE_CHECKS_INCOMPLETE", suite=suite)
+
+    closed_trades = int(summary.get("closed_trades", 0))
+    path_summary = summary.get("trade_path_diagnostic_summary", {})
+    if not isinstance(path_summary, Mapping):
+        return _invalid("TRADE_PATH_DIAGNOSTIC_SUMMARY_MISSING", suite=suite)
+    if (
+        int(path_summary.get("records", -1)) != closed_trades
+        or int(path_summary.get("complete_records", -1)) != closed_trades
+    ):
+        return _invalid("TRADE_PATH_DIAGNOSTIC_COUNTS_INCOMPLETE", suite=suite)
+
     raw_families = summary.get("scenario_family_results", {})
     if not isinstance(raw_families, Mapping):
         return _invalid("SCENARIO_FAMILY_RESULTS_MISSING", suite=suite)
@@ -106,9 +130,7 @@ def select_single_family_ablation(summary: Mapping[str, Any]) -> AblationDecisio
         _contribution(family, raw_families[family])
         for family in (INITIATIVE_FAMILY, ABSORPTION_FAMILY)
     )
-    if sum(item.closed_trades for item in contributions) != int(
-        summary.get("closed_trades", 0)
-    ):
+    if sum(item.closed_trades for item in contributions) != closed_trades:
         return _invalid(
             "FAMILY_CLOSED_TRADE_COUNT_MISMATCH",
             suite=suite,
