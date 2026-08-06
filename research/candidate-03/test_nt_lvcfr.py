@@ -26,6 +26,17 @@ class NativeEquityTests(unittest.TestCase):
         self.assertEqual(native_equity_amount(portfolio, "BINANCE", object()), 99_999.25)
 
 
+class PositionEventContractTests(unittest.TestCase):
+    def test_strategy_uses_nautilus_1230_position_closed_fields(self) -> None:
+        source = Path(__file__).with_name("nt_lvcfr_strategy.py").read_text(encoding="utf-8")
+        self.assertIn("event.peak_quantity", source)
+        self.assertIn("event.duration", source)
+        self.assertNotIn("event.peak_qty", source)
+        self.assertNotIn("event.duration_ns", source)
+        self.assertIn("event.ts_closed is not None", source)
+        self.assertIn("event.avg_px_close is not None", source)
+
+
 class ConfigTests(unittest.TestCase):
     def test_backtest_node_uses_funding_compatible_oneshot_loader(self) -> None:
         source = Path(__file__).with_name("run_nt_lvcfr.py").read_text(encoding="utf-8")

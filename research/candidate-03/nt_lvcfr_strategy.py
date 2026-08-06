@@ -265,7 +265,8 @@ class NTLvcfrStrategy(Strategy):
         active = self.active
         if active is None:
             return
-        timestamp_ns = int(event.ts_closed)
+        timestamp_ns = int(event.ts_closed) if event.ts_closed is not None else int(event.ts_event)
+        exit_price = float(event.avg_px_close) if event.avg_px_close is not None else float(event.last_px)
         equity_after = self._equity()
         equity_before = active.equity_before
         pnl = equity_after - equity_before
@@ -276,8 +277,8 @@ class NTLvcfrStrategy(Strategy):
             "entry_time_ns": active.entry_time_ns,
             "exit_time_ns": timestamp_ns,
             "entry_price": active.entry_avg,
-            "exit_price": float(event.avg_px_close),
-            "quantity": float(event.peak_qty),
+            "exit_price": exit_price,
+            "quantity": float(event.peak_quantity),
             "planned_loss": active.planned_loss,
             "native_equity_before": equity_before,
             "native_equity_after": equity_after,
@@ -285,7 +286,7 @@ class NTLvcfrStrategy(Strategy):
             "net_r": pnl / active.planned_loss if active.planned_loss > 0 else 0.0,
             "realized_pnl_event": str(event.realized_pnl),
             "realized_return_event": float(event.realized_return),
-            "duration_ns": int(event.duration_ns),
+            "duration_ns": int(event.duration),
             "exit_reason": self.exit_reason or "UNKNOWN",
             "protection_active": active.protection_active,
             "mfe_net_r": active.mfe_net_r,
@@ -302,7 +303,7 @@ class NTLvcfrStrategy(Strategy):
             previous_state=f"{active.kind}_ACTIVE",
             next_state="RAPID_FAILURE_EVALUATION" if active.kind == "CONTINUATION" else "CLOSED",
             reason_code=self.exit_reason or "UNKNOWN",
-            reference_price=float(event.avg_px_close),
+            reference_price=exit_price,
             details={"native_equity_after": equity_after, "native_account_pnl": pnl, "net_r": leg["net_r"]},
         )
 
