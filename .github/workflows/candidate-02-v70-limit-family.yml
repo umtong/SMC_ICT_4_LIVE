@@ -1,0 +1,161 @@
+name: candidate-02-v70-nautilustrader-limit-family
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v70_*.py"
+      - "research/candidate-02/v70_*.json"
+      - ".candidate-02-v70/**"
+      - ".candidate-02-v67/collect_revealed_klines.py"
+      - ".github/workflows/candidate-02-v70-limit-family.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  passive-limit-family:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - name: Checkout prelocked limit family
+        uses: actions/checkout@v4
+
+      - name: Download immutable direct feature evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v66-first-week-2f9098a37b57de57d314650075c6edc36b969667
+          path: inputs/v70-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31074428818"
+
+      - name: Materialize exact feature matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p inputs/v67-control/candidate-02-v48-first-week
+          find inputs/v70-source -name v48_features.npz -type f -exec cp '{}' inputs/v67-control/candidate-02-v48-first-week/v48_features.npz \;
+          find inputs/v70-source -name columns.json -type f -exec cp '{}' inputs/v67-control/candidate-02-v48-first-week/columns.json \;
+          test -f inputs/v67-control/candidate-02-v48-first-week/v48_features.npz
+          test -f inputs/v67-control/candidate-02-v48-first-week/columns.json
+
+      - name: Verify runtime limit API and family lock
+        run: |
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v70_limit_strategy.py \
+            research/candidate-02/v70_limit_retest_core.py \
+            research/candidate-02/v70_nt_backtest.py \
+            .candidate-02-v70/materialize_configs.py \
+            .candidate-02-v67/collect_revealed_klines.py
+          python -m json.tool research/candidate-02/v70_limit_retest_family_lock.json >/dev/null
+          python - <<'PY'
+          import inspect, json
+          from pathlib import Path
+          from nautilus_trader.common.factories import OrderFactory
+          signature = inspect.signature(OrderFactory.bracket)
+          for name in ("entry_order_type", "entry_price", "entry_post_only", "expire_time"):
+              assert name in signature.parameters, (name, signature)
+          lock = json.loads(Path("research/candidate-02/v70_limit_retest_family_lock.json").read_text())
+          assert lock["status"] == "LOCKED_REVEALED_WEEK_LIMIT_FAMILY_BEFORE_NAUTILUSTRADER_RUN"
+          assert lock["custom_backtest_engine"] is False
+          assert float(lock["risk_fraction"]) == 0.03
+          assert [v["limit_entry_fraction"] for v in lock["prelocked_entry_fractions"]] == [0.4, 0.5, 0.6]
+          PY
+
+      - name: Materialize prelocked configs
+        run: |
+          python .candidate-02-v70/materialize_configs.py \
+            --lock research/candidate-02/v70_limit_retest_family_lock.json \
+            --output generated/v70
+          test "$(find generated/v70 -name '*.json' | wc -l)" -eq 3
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for path in Path("generated/v70").glob("*.json"):
+              cfg = json.loads(path.read_text())
+              assert cfg["validation"]["first_week_start"] == "2024-10-28"
+              assert float(cfg["risk"]["risk_fraction"]) == 0.03
+              assert cfg["risk"]["maximum_notional_cap"] is None
+              assert cfg["risk"]["score_risk_multiplier"] is None
+              assert cfg["scenario"]["limit_entry_expiry_minutes"] == 5
+          PY
+
+      - name: Recollect only revealed one-minute bars
+        run: python .candidate-02-v67/collect_revealed_klines.py
+
+      - name: Run each passive entry in a fresh NautilusTrader process
+        shell: bash
+        run: |
+          set -euo pipefail
+          for label in entry_40 entry_50 entry_60; do
+            output="artifacts/candidate-02-v70-${label}"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v70_nt_backtest.py \
+              --config "generated/v70/${label}.json" \
+              --input-root inputs/v67-control \
+              --output "$output" \
+              | tee "artifacts-v70-${label}.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish family matrix and plateau decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          labels = ["entry_40", "entry_50", "entry_60"]
+          results = {}
+          print("# Candidate-02 v70 passive imbalance-retest family")
+          print("| Variant | Decision | Scheduled | Submitted | Trades/day | Win | PF | Growth/day | MDD |")
+          print("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+          for label in labels:
+              path = Path(f"artifacts/candidate-02-v70-{label}/metrics.json")
+              if not path.exists():
+                  results[label] = {"decision": "IMPLEMENTATION_ERROR"}
+                  print(f"| {label} | implementation error | - | - | - | - | - | - | - |")
+                  continue
+              m = json.loads(path.read_text())
+              results[label] = {key: m[key] for key in ("decision", "scheduled_signals", "submitted_signals", "trades", "trades_per_day", "win_rate", "profit_factor_after_cost", "geometric_daily_growth_after_cost", "maximum_mark_to_market_drawdown")}
+              print(f"| {label} | {m['decision']} | {m['scheduled_signals']} | {m['submitted_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          def passed(label):
+              return results.get(label, {}).get("decision") == "PROMOTE_TO_NEXT_WEEK"
+          plateau = passed("entry_50") and (passed("entry_40") or passed("entry_60"))
+          decision = {"central_entry_50_plateau": plateau, "promote": "entry_50" if plateau else None, "results": results}
+          Path("artifacts-v70-family-decision.json").write_text(json.dumps(decision, indent=2))
+          print("\n```json")
+          print(json.dumps(decision, indent=2))
+          print("```")
+          PY
+
+      - name: Preserve NautilusTrader limit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v70-limit-family-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v70-entry_40
+            artifacts/candidate-02-v70-entry_50
+            artifacts/candidate-02-v70-entry_60
+            artifacts-v70-*.log
+            artifacts-v70-family-decision.json
+            generated/v70
+          if-no-files-found: warn
+          retention-days: 30
