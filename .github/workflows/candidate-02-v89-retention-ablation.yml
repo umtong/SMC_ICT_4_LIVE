@@ -1,0 +1,170 @@
+name: candidate-02-v89-impact-retention-ablation
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v89_impact_retention_ablation_*.py"
+      - "research/candidate-02/v89_ablate_retention_*_config.json"
+      - "research/candidate-02/v89_impact_retention_ablation_lock.json"
+      - ".github/workflows/candidate-02-v89-retention-ablation.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  single-ablation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download immutable v89 first-week feature evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v89-first-week-b5cf8e62f9a6d4cee7c75def3f7532a80fac767e
+          path: inputs/v89-ablation-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31095061352"
+
+      - name: Verify fixed runtime and exact single-variable change
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-02/v89_impact_retention_ablation_core.py research/candidate-02/v89_impact_retention_ablation_backtest.py
+          python -m json.tool research/candidate-02/v89_impact_retention_ablation_lock.json >/dev/null
+          python - <<'PY'
+          import copy,json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v89_impact_retention_ablation_lock.json').read_text())
+          assert lock['status']=='LOCKED_SINGLE_ABLATION_ON_REVEALED_V89_FIRST_WEEK'
+          assert lock['single_ablation']['removed_core_variable']=='minimum_common_impact_retention'
+          assert lock['custom_backtest_engine'] is False
+          assert float(lock['risk_fraction'])==0.03
+          for horizon in (15,30,60):
+              base=json.loads(Path(f'research/candidate-02/v89_portfolio_{horizon}m_config.json').read_text())
+              ablated=json.loads(Path(f'research/candidate-02/v89_ablate_retention_{horizon}m_config.json').read_text())
+              assert float(ablated['scenario']['minimum_common_impact_retention'])==-1000000.0
+              assert float(ablated['risk']['risk_fraction'])==0.03
+              assert ablated['risk']['maximum_notional_cap'] is None
+              assert ablated['risk']['score_risk_multiplier'] is None
+              candidate=ablated['candidate']
+              ablated['candidate']=base['candidate']
+              ablated['scenario']['minimum_common_impact_retention']=base['scenario']['minimum_common_impact_retention']
+              if ablated != base:
+                  raise RuntimeError(f'more than one core variable changed for {horizon}m')
+          PY
+
+      - name: Materialize exact features and futures one-minute bars
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p inputs/v89-retention-ablation/candidate-02-v48-first-week
+          mkdir -p inputs/v89-retention-ablation/.cache/candidate-02/v89-retention-ablation/binance_1m
+          find inputs/v89-ablation-source -name v48_features.npz -type f -exec cp '{}' inputs/v89-retention-ablation/candidate-02-v48-first-week/v48_features.npz \;
+          find inputs/v89-ablation-source -name columns.json -type f -exec cp '{}' inputs/v89-retention-ablation/candidate-02-v48-first-week/columns.json \;
+          test -f inputs/v89-retention-ablation/candidate-02-v48-first-week/v48_features.npz
+          test -f inputs/v89-retention-ablation/candidate-02-v48-first-week/columns.json
+          python - <<'PY'
+          from datetime import date,timedelta
+          from pathlib import Path
+          import urllib.request
+          root=Path('inputs/v89-retention-ablation/.cache/candidate-02/v89-retention-ablation/binance_1m')
+          d=date(2023,4,8)
+          end=date(2023,4,17)
+          while d<=end:
+              name=f'BTCUSDT-1m-{d.isoformat()}.zip'
+              with urllib.request.urlopen(f'https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1m/{name}',timeout=60) as response:
+                  (root/name).write_bytes(response.read())
+              d+=timedelta(days=1)
+          assert len(list(root.glob('*.zip')))==10
+          PY
+
+      - name: Run all three horizons in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for horizon in 15 30 60; do
+            output="artifacts/candidate-02-v89-retention-ablation-${horizon}m"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v89_impact_retention_ablation_backtest.py \
+              --config "research/candidate-02/v89_ablate_retention_${horizon}m_config.json" \
+              --input-root inputs/v89-retention-ablation \
+              --output "$output" \
+              | tee "artifacts-v89-retention-ablation-${horizon}m.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish ablation decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          rows={}
+          print('# Candidate-02 v89 single impact-retention ablation')
+          print('| Horizon | Decision | Signals | Trades/day | Win | PF | Growth/day | MDD |')
+          print('|---|---:|---:|---:|---:|---:|---:|---:|')
+          def passed(m):
+              return (
+                  m.get('trades_per_day',0)>=0.75
+                  and m.get('win_rate',0)>=0.50
+                  and m.get('profit_factor_after_cost',0)>=1.50
+                  and m.get('geometric_daily_growth_after_cost',-1)>=0.01
+                  and abs(m.get('maximum_mark_to_market_drawdown',-1))<=0.25
+                  and m.get('engine','').startswith('NautilusTrader')
+                  and m.get('custom_backtest_engine') is False
+                  and abs(m.get('risk_fraction',0)-0.03)<=1e-12
+              )
+          for horizon in (15,30,60):
+              path=Path(f'artifacts/candidate-02-v89-retention-ablation-{horizon}m/metrics.json')
+              if not path.exists():
+                  rows[str(horizon)]={'status':'IMPLEMENTATION_ERROR'}
+                  print(f'| {horizon}m | implementation error | - | - | - | - | - | - |')
+                  continue
+              m=json.loads(path.read_text())
+              rows[str(horizon)]={'passes_all':passed(m),'metrics':m}
+              print(f"| {horizon}m | {'PASS' if passed(m) else 'REJECT'} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          central=rows.get('30',{}).get('passes_all') is True
+          adjacent=any(rows.get(key,{}).get('passes_all') is True for key in ('15','60'))
+          decision={
+              'status':'STRUCTURAL_PATH_PRESENT_REQUIRES_NEW_BLIND_CANDIDATE' if central and adjacent else 'NO_STRUCTURAL_PATH_DISCARD_V89',
+              'single_ablation':'remove_minimum_common_impact_retention',
+              'diagnostic_only':True,
+              'risk_fraction':0.03,
+              'performance_engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+              'rows':rows,
+          }
+          Path('artifacts-v89-retention-ablation-decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+
+      - name: Preserve NautilusTrader ablation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v89-retention-ablation-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v89-retention-ablation-*
+            artifacts-v89-retention-ablation-*.log
+            artifacts-v89-retention-ablation-decision.json
+          if-no-files-found: warn
+          retention-days: 30
