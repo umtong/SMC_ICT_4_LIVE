@@ -14,7 +14,9 @@ from data_aggtrades_1s import _read_archive_to_seconds
 from diagnose_aggtrade_resilience_v2 import preconsume_before_event_window
 from diagnose_impact_resilience_1s import Pool
 from run_aggtrade_resilience_second_safe import (
+    deduplicate_contact_pools_event_safe,
     first_touch_after_complete_confirmation_second,
+    target_pool_after_complete_confirmation_second,
 )
 
 
@@ -104,6 +106,71 @@ class CausalSecondBoundaryTests(unittest.TestCase):
             lows=lows,
         )
         self.assertEqual(touch, 1)
+
+    def test_target_confirmed_in_entry_second_is_not_eligible(self) -> None:
+        second = 1_766_103_599
+        timestamps = np.array(
+            [
+                second * 1_000_000_000 + 999_999_999,
+                (second + 1) * 1_000_000_000 + 999_999_999,
+            ],
+            dtype=np.int64,
+        )
+        same_second = Pool(
+            "1MH-same-second",
+            "1M",
+            "UPPER",
+            102.0,
+            0,
+            second * 1_000_000_000 + 999_000_000,
+        )
+        selected = target_pool_after_complete_confirmation_second(
+            {"1M": [same_second], "5M": []},
+            direction="LONG",
+            entry=100.0,
+            stop=99.0,
+            entry_index=0,
+            timestamps=timestamps,
+            previous_close=np.array([100.0, 100.0]),
+            highs=np.array([100.5, 100.5]),
+            lows=np.array([99.5, 99.5]),
+            touch_cache={},
+            minimum_rr=1.25,
+        )
+        self.assertIsNone(selected)
+
+
+class EventExclusivityTests(unittest.TestCase):
+    def test_second_pool_inside_first_observation_window_is_consumed(self) -> None:
+        start_second = 1_766_103_600
+        timestamps = np.array(
+            [
+                (start_second + index) * 1_000_000_000 + 999_999_999
+                for index in range(30)
+            ],
+            dtype=np.int64,
+        )
+        highs = np.full(30, 99.5)
+        highs[2] = 100.5
+        highs[5] = 101.5
+        bars = pd.DataFrame(
+            {
+                "timestamp_ns": timestamps,
+                "open": np.full(30, 99.0),
+                "high": highs,
+                "low": np.full(30, 98.0),
+                "close": np.full(30, 99.0),
+            }
+        )
+        confirmation = (start_second - 2) * 1_000_000_000 + 999_000_000
+        first = Pool("5MH-first", "5M", "UPPER", 100.0, 0, confirmation)
+        second = Pool("5MH-second", "5M", "UPPER", 101.0, 0, confirmation)
+        selected, summary = deduplicate_contact_pools_event_safe(
+            bars,
+            [first, second],
+        )
+        self.assertEqual([pool.pool_id for pool in selected], ["5MH-first"])
+        self.assertEqual(summary["pools_consumed_inside_prior_event"], 1)
 
 
 class PreconsumptionTests(unittest.TestCase):
