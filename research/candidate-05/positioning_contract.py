@@ -28,6 +28,12 @@ _METRICS_COLUMNS = (
 )
 
 
+def _as_utc_nanoseconds(values: pd.Series) -> pd.Series:
+    """Normalize a timestamp series to timezone-aware nanosecond resolution."""
+    parsed = pd.to_datetime(values, utc=True, errors="raise")
+    return parsed.astype("datetime64[ns, UTC]")
+
+
 def _download_metrics(symbol: str, day: date, cache: Path):
     stamp = day.isoformat()
     filename = f"{symbol}-metrics-{stamp}.zip"
@@ -60,18 +66,23 @@ def _read_metrics(path: Path) -> pd.DataFrame:
     required = {"create_time", "symbol", *_METRICS_COLUMNS}
     if not required.issubset(raw.columns):
         raise RuntimeError(f"unexpected metrics schema in {path}: {list(raw.columns)}")
-    raw["create_time"] = pd.to_datetime(raw["create_time"], utc=True, errors="raise")
+    raw["create_time"] = _as_utc_nanoseconds(raw["create_time"])
     for column in _METRICS_COLUMNS:
         raw[column] = pd.to_numeric(raw[column], errors="raise")
     raw = raw.sort_values("create_time")
     if raw["create_time"].duplicated().any():
         raise RuntimeError(f"duplicate metrics timestamps in {path}")
-    raw["metrics_observed_time"] = raw["create_time"] + pd.Timedelta(minutes=5)
+    raw["metrics_observed_time"] = _as_utc_nanoseconds(
+        raw["create_time"] + pd.Timedelta(minutes=5),
+    )
     return raw[["metrics_observed_time", *_METRICS_COLUMNS]].copy()
 
 
 def _positioning_features(metrics: pd.DataFrame) -> pd.DataFrame:
     frame = metrics.sort_values("metrics_observed_time").copy()
+    frame["metrics_observed_time"] = _as_utc_nanoseconds(
+        frame["metrics_observed_time"],
+    )
     if frame["metrics_observed_time"].duplicated().any():
         raise RuntimeError("duplicate combined metrics observation timestamps")
     frame["oi_change_5m"] = frame["sum_open_interest"].pct_change(1, fill_method=None)
@@ -85,14 +96,7 @@ def _positioning_features(metrics: pd.DataFrame) -> pd.DataFrame:
         3,
         fill_method=None,
     )
-    # Pandas 3 may retain microsecond resolution for parsed timestamps. Convert
-    # explicitly to UTC nanoseconds before integer serialization so the feature
-    # contract is stable across pandas versions and platforms.
-    frame["metrics_observed_time_ns"] = (
-        frame["metrics_observed_time"]
-        .astype("datetime64[ns, UTC]")
-        .astype("int64")
-    )
+    frame["metrics_observed_time_ns"] = frame["metrics_observed_time"].astype("int64")
     return frame
 
 
@@ -123,11 +127,18 @@ def load_range(
 
     metrics = _positioning_features(pd.concat(metric_frames, ignore_index=True))
     features = pd.read_csv(feature_path, compression="infer")
-    features["feature_observed_time"] = pd.to_datetime(
-        pd.to_numeric(features["observed_time_ns"], errors="raise").astype("int64"),
-        unit="ns",
-        utc=True,
+    features["feature_observed_time"] = _as_utc_nanoseconds(
+        pd.to_datetime(
+            pd.to_numeric(features["observed_time_ns"], errors="raise").astype("int64"),
+            unit="ns",
+            utc=True,
+        ),
     )
+    if features["feature_observed_time"].dtype != metrics["metrics_observed_time"].dtype:
+        raise RuntimeError(
+            "feature and metrics observation timestamps have different resolutions: "
+            f"{features['feature_observed_time'].dtype} != {metrics['metrics_observed_time'].dtype}",
+        )
     joined = pd.merge_asof(
         features.sort_values("feature_observed_time"),
         metrics.sort_values("metrics_observed_time"),
