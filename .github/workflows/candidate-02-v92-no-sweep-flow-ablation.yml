@@ -1,0 +1,203 @@
+name: candidate-02-v92-no-sweep-flow-ablation
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-v92-ablation/**"
+      - ".github/workflows/candidate-02-v92-no-sweep-flow-ablation.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  single-core-variable-ablation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download immutable corrected v92 first-week evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v92-first-week-8467ea55a2eaabbfd75c4a4f140dde202b559310
+          path: inputs/v92-ablation-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31103675170"
+
+      - name: Verify fixed runtime, ablation lock and exact source delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile \
+            .candidate-02-v92-ablation/materialize_no_sweep_flow.py \
+            .candidate-02-v92-ablation/run_ablation.py \
+            research/candidate-02/v92_session_liquidity_sweep_core.py
+          python -m json.tool .candidate-02-v92-ablation/lock.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('.candidate-02-v92-ablation/lock.json').read_text())
+          assert lock['status']=='LOCKED_SINGLE_CORE_VARIABLE_ABLATION_BEFORE_EXECUTION'
+          assert lock['base_evidence']['workflow_run_id']==31103675170
+          assert lock['base_evidence']['artifact_id']==8968618966
+          assert lock['removed_core_variable']['name']=='sweep_aggressive_flow_direction_alignment_gate'
+          assert len(lock['unchanged'])>=15
+          PY
+          python .candidate-02-v92-ablation/materialize_no_sweep_flow.py
+          python -m py_compile /tmp/v92_no_sweep_flow_core.py
+
+      - name: Materialize the exact immutable feature matrix and raw bars
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf inputs/v92-ablation
+          mkdir -p inputs/v92-ablation/candidate-02-v48-first-week
+          mkdir -p inputs/v92-ablation/.cache/candidate-02/v92-ablation/binance_1m
+          feature=$(find inputs/v92-ablation-source -name v48_features.npz -type f | head -n1)
+          columns=$(find inputs/v92-ablation-source -name columns.json -type f | head -n1)
+          test -n "$feature"; test -n "$columns"
+          cp "$feature" inputs/v92-ablation/candidate-02-v48-first-week/v48_features.npz
+          cp "$columns" inputs/v92-ablation/candidate-02-v48-first-week/columns.json
+          find inputs/v92-ablation-source -path '*/binance_1m/BTCUSDT-1m-*.zip' -type f -exec cp '{}' inputs/v92-ablation/.cache/candidate-02/v92-ablation/binance_1m/ \;
+          test "$(find inputs/v92-ablation/.cache/candidate-02/v92-ablation/binance_1m -name '*.zip' | wc -l)" -eq 10
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          from v53_nt_core import load_feature_matrix, load_raw_one_minute
+          features=load_feature_matrix(
+              Path('inputs/v92-ablation/candidate-02-v48-first-week/v48_features.npz'),
+              Path('inputs/v92-ablation/candidate-02-v48-first-week/columns.json'))
+          raw=load_raw_one_minute(Path('inputs/v92-ablation/.cache/candidate-02/v92-ablation/binance_1m'))
+          start=pd.Timestamp('2024-03-11T00:00:00Z'); end=pd.Timestamp('2024-03-18T00:00:00Z')
+          assert len(features.loc[(features.index>=start)&(features.index<end)])>=7*24*60*.995
+          assert len(raw.loc[(raw.index>=start)&(raw.index<end)])>=7*24*60*.995
+          assert features.index.min()<=start-pd.Timedelta(days=2)+pd.Timedelta(minutes=2)
+          assert features.index.max()>=end
+          PY
+
+      - name: Run central, adjacent and cycle ablations in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          labels=(portfolio15 portfolio20 portfolio25 cycle00 cycle08 cycle16)
+          configs=(v92_portfolio_15m_config.json v92_portfolio_20m_config.json v92_portfolio_25m_config.json v92_cycle_00_config.json v92_cycle_08_config.json v92_cycle_16_config.json)
+          for i in "${!labels[@]}"; do
+            label="${labels[$i]}"; config="${configs[$i]}"
+            output="artifacts/candidate-02-v92-no-flow-${label}"
+            mkdir -p "$output"
+            set +e
+            python .candidate-02-v92-ablation/run_ablation.py \
+              --config "research/candidate-02/${config}" \
+              --input-root inputs/v92-ablation \
+              --output "$output" \
+              | tee "artifacts-v92-no-flow-${label}.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish single-ablation decision evidence
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          labels=('portfolio15','portfolio20','portfolio25','cycle00','cycle08','cycle16')
+          rows={}
+          print('# Candidate-02 v92 single ablation: remove sweep-flow alignment gate')
+          print('| Variant | Signals | Trades/day | Win | PF | Growth/day | MDD |')
+          print('|---|---:|---:|---:|---:|---:|---:|')
+          def passed(m):
+              return (
+                  m.get('trades_per_day',0)>=.75
+                  and m.get('win_rate',0)>=.5
+                  and m.get('profit_factor_after_cost',0)>=1.5
+                  and m.get('geometric_daily_growth_after_cost',-1)>=.01
+                  and abs(m.get('maximum_mark_to_market_drawdown',-1))<=.25
+                  and m.get('engine','').startswith('NautilusTrader')
+                  and m.get('custom_backtest_engine') is False
+                  and abs(m.get('risk_fraction',0)-.03)<=1e-12
+              )
+          for label in labels:
+              path=Path(f'artifacts/candidate-02-v92-no-flow-{label}/metrics.json')
+              if not path.exists():
+                  rows[label]={'status':'IMPLEMENTATION_ERROR'}
+                  print(f'| {label} | - | - | - | - | - | - |')
+                  continue
+              m=json.loads(path.read_text()); rows[label]=m
+              print(f"| {label} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          central=rows.get('portfolio20',{})
+          central_pass=passed(central)
+          adjacent_pass=any(passed(rows.get(x,{})) for x in ('portfolio15','portfolio25'))
+          cycles=set()
+          sig=Path('artifacts/candidate-02-v92-no-flow-portfolio20/signals.jsonl')
+          if sig.exists():
+              for line in sig.read_text().splitlines():
+                  if not line.strip(): continue
+                  value=json.loads(line)
+                  if value.get('status')!='OBSERVED': continue
+                  cycle=value.get('details',{}).get('cycle')
+                  if cycle: cycles.add(str(cycle))
+          repeated=int(central.get('trades',0))>=5
+          positive=(
+              central.get('profit_factor_after_cost',0)>=1.0
+              and central.get('geometric_daily_growth_after_cost',-1)>0.0
+          )
+          materially_approaches=(
+              central.get('win_rate',0)>=.4
+              and central.get('profit_factor_after_cost',0)>=1.0
+              and central.get('geometric_daily_growth_after_cost',-1)>=.005
+          )
+          promotion=central_pass and adjacent_pass and len(cycles)>=2
+          structural_path=repeated and positive and len(cycles)>=2 and materially_approaches
+          status=(
+              'ABLATION_PROMOTION_ELIGIBLE' if promotion
+              else 'STRUCTURAL_PATH_REQUIRES_NEW_CANDIDATE' if structural_path
+              else 'NO_STRUCTURAL_PATH_DISCARD_V92'
+          )
+          decision={
+              'status':status,
+              'removed_core_variable':'sweep_aggressive_flow_direction_alignment_gate',
+              'central_pass':central_pass,
+              'adjacent_pass':adjacent_pass,
+              'central_signal_cycles':sorted(cycles),
+              'repeated_trades':repeated,
+              'positive_after_cost':positive,
+              'materially_approaches_original_gates':materially_approaches,
+              'rows':rows,
+              'risk_fraction':.03,
+              'performance_engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+          }
+          Path('artifacts-v92-no-flow-decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+
+      - name: Preserve NautilusTrader ablation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v92-no-sweep-flow-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v92-no-flow-*
+            artifacts-v92-no-flow-*.log
+            artifacts-v92-no-flow-decision.json
+            artifacts-v92-no-sweep-flow-source-manifest.json
+            /tmp/v92_no_sweep_flow_core.py
+          if-no-files-found: warn
+          retention-days: 30
