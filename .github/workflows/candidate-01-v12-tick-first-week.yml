@@ -1,0 +1,122 @@
+name: candidate-01-v12-tick-first-week
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v12-tick-first-week.yml"
+      - "research/candidate-01/nautilus_tick_plan_backtest.py"
+      - "research/candidate-01/intrinsic_tick_portfolio_v12_nautilus_week.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  first-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v12-tick
+          key: candidate-01-v12-tick-BTCUSDT-2023-06-14-27-${{ runner.os }}-v1
+      - name: Run first BTC week only through NautilusTrader TradeTicks
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/nautilus_tick_plan_backtest.py \
+                research/candidate-01/intrinsic_tick_portfolio_v12_nautilus_week.py
+              python research/candidate-01/nautilus_tick_contract_probe.py
+              for RULE in outer-flow-takeover full-measured-composite; do
+                OUT="artifacts/candidate-01-v12-${RULE}-first"
+                rm -rf "$OUT"
+                python research/candidate-01/intrinsic_tick_portfolio_v12_nautilus_week.py \
+                  --week 2023-06-19 \
+                  --rule "$RULE" \
+                  --cache .cache/candidate-01-v12-tick \
+                  --output "$OUT" \
+                  --workers 4
+              done
+            '
+      - name: Verify the two authoritative first-week gates
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          gates = {}
+          for rule in ("outer-flow-takeover", "full-measured-composite"):
+              root = Path(f"artifacts/candidate-01-v12-{rule}-first")
+              summary = json.loads((root / "intrinsic_tick_portfolio_v12_summary.json").read_text())
+              metrics = json.loads((root / "nautilus_metrics.json").read_text())
+              contract = json.loads((root / "execution_contract.json").read_text())
+              assert summary["rule"] == rule
+              assert summary["authoritative_backtest"] is True
+              assert summary["execution_engine"] == "NautilusTrader"
+              assert summary["execution_data_type"] == "TradeTick"
+              assert summary["custom_fill_simulator"] is False
+              assert summary["custom_pnl_or_nav_ledger"] is False
+              assert summary["risk_fraction"] == 0.03
+              assert metrics["execution_engine"] == "NautilusTrader"
+              assert metrics["custom_fill_simulator"] is False
+              assert metrics["custom_pnl_or_nav_ledger"] is False
+              assert metrics["trade_execution"] is True
+              assert "aggregate trades" in metrics["market_data_for_execution"]
+              assert contract["authoritative_performance_engine"] == "NautilusTrader"
+              assert contract["trade_execution"] is True
+              for name in (
+                  "orders.csv", "positions.csv", "account.csv", "daily_nav.csv",
+                  "trade_plans.csv", "rejections.csv", "execution_events.jsonl",
+              ):
+                  assert (root / name).exists(), (rule, name)
+              gates[rule] = {
+                  "plans": summary["submitted_plan_pool"],
+                  "official_execution_trade_ticks": summary["official_execution_trade_ticks"],
+                  "trades": metrics["closed_positions"],
+                  "win_rate": metrics["win_rate"],
+                  "total_return": metrics["total_return"],
+                  "geometric_daily": metrics["geometric_mean_daily_return"],
+                  "profit_factor": metrics["profit_factor"],
+                  "max_drawdown": metrics["max_drawdown"],
+                  "target_met": metrics["target_met"],
+                  "rejection_counts": metrics["rejection_counts"],
+                  "ended_flat": metrics["ended_flat"],
+              }
+              (root / "first_week_gate.json").write_text(
+                  json.dumps(gates[rule], indent=2, sort_keys=True) + "\n",
+              )
+          print(json.dumps(gates, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-v12-tick-first-week-${{ github.sha }}
+          path: |
+            artifacts/candidate-01-v12-outer-flow-takeover-first
+            artifacts/candidate-01-v12-full-measured-composite-first
+          if-no-files-found: error
+          retention-days: 30
