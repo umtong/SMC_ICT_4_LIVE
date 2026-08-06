@@ -1,0 +1,375 @@
+name: candidate-04-v36-staged-development
+
+on:
+  workflow_run:
+    workflows:
+      - "candidate-04-v35-survivor-followup"
+      - "candidate-04-v35-unopened-and-long"
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      three_week_pass: ${{ steps.evaluate.outputs.three_week_pass }}
+      failed_week: ${{ steps.evaluate.outputs.failed_week }}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      UPSTREAM_WORKFLOW: ${{ github.event.workflow_run.name }}
+      UPSTREAM_RUN_ID: ${{ github.event.workflow_run.id }}
+      UPSTREAM_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Restore upstream V35 decisions
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: "candidate-04-v35-*"
+          path: upstream-v35
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Allow V36 only after an economic V35 terminal decision
+        id: route
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          values = []
+          for path in Path("upstream-v35").rglob("*.json"):
+              try:
+                  value = json.loads(path.read_text())
+              except Exception:
+                  continue
+              if isinstance(value, dict):
+                  values.append((path, value))
+          if not values:
+              for name in (
+                  "evidence-v35-survivor-followup.json",
+                  "evidence-v35-unopened.json",
+                  "evidence-v35-long.json",
+              ):
+                  path = Path("research/candidate-04") / name
+                  if path.exists():
+                      try:
+                          values.append((path, json.loads(path.read_text())))
+                      except Exception:
+                          pass
+
+          reached = any(
+              bool(value.get("project_target_reached"))
+              for _, value in values
+          )
+          if reached:
+              print("should_run=false")
+              print("reason=v35_project_target_reached")
+              raise SystemExit(0)
+
+          implementation = any(
+              value.get("route") == "implementation_failure"
+              or value.get("failure_classification") in {
+                  "implementation_or_workflow",
+                  "implementation_still_unresolved",
+              }
+              or value.get("decision") == "implementation_error_requires_same_week_recovery"
+              for _, value in values
+          )
+          if implementation:
+              print("should_run=false")
+              print("reason=v35_implementation_recovery_required")
+              raise SystemExit(0)
+
+          progressed = any(
+              bool(value.get("three_week_pass"))
+              and value.get("decision") in {
+                  "freeze_before_unopened_weeks",
+                  "freeze_full_candidate_before_unopened_weeks",
+              }
+              for _, value in values
+          )
+          unopened_terminal = any(
+              value.get("three_unopened_weeks_pass") is False
+              or value.get("decision") == "reject_after_unopened_week_failure"
+              for _, value in values
+          )
+          long_terminal = any(
+              value.get("final_validation_completed") is True
+              and not bool(value.get("project_target_reached"))
+              for _, value in values
+          )
+          development_terminal = any(
+              value.get("route") in {"none", "both_ablation_passed_but_full_failed"}
+              or value.get("decision") in {
+                  "discard_v35_no_surviving_scenario",
+                  "discard_surviving_mechanism_no_cross_week_path",
+              }
+              for _, value in values
+          )
+          if unopened_terminal or long_terminal or development_terminal:
+              print("should_run=true")
+              print("reason=v35_economic_path_exhausted")
+          elif progressed:
+              print("should_run=false")
+              print("reason=await_v35_unopened_or_long_evaluation")
+          else:
+              print("should_run=false")
+              print("reason=v35_not_terminal")
+          PY
+
+      - name: Restore exact BTC development observations
+        if: steps.route.outputs.should_run == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v27-cross-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Verify runtime and V36 contracts
+        if: steps.route.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/micro_auction_balance_transition_compiler.py \
+            research/candidate-04/summarize_candidate_week.py \
+            research/candidate-04/nt_exact_causal_target_risk_sizing.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+            research/candidate-04/nt_rich_signal_strategy.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_micro_auction_balance_transition_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Run three development weeks sequentially and ablate first failure
+        if: steps.route.outputs.should_run == 'true'
+        id: evaluate
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=(low_activity normal_basis stress_a)
+          build_starts=(2023-08-02 2023-12-16 2024-08-05)
+          build_ends=(2023-08-10 2023-12-24 2024-08-13)
+          eval_starts=(2023-08-04 2023-12-18 2024-08-07)
+          eval_ends=(2023-08-10 2023-12-24 2024-08-13)
+          root="artifacts/candidate-04-v36-development"
+          mkdir -p "$root"
+          failed=""
+
+          for i in "${!names[@]}"; do
+            name="${names[$i]}"
+            export C04_BUILD_START="${build_starts[$i]}"
+            export C04_BUILD_END="${build_ends[$i]}"
+            export C04_EVALUATION_START="${eval_starts[$i]}"
+            export C04_EVALUATION_END="${eval_ends[$i]}"
+            source="$(find sources -mindepth 1 -maxdepth 1 -type d -name "candidate-04-v27-cross-${name}-*" | head -n1)"
+            test -n "$source"
+            test -s "$source/source/rich/data_manifest.json"
+            week="$root/$name"
+            mkdir -p "$week"
+
+            python research/candidate-04/micro_auction_balance_transition_compiler.py \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --rich-dir "$source/source/rich" \
+              --kline-dir ".cache/candidate-04-v36/$name/raw" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --output "$week/signals" \
+              --download-klines \
+              | tee "$week/compiler_console.json"
+            test -s "$week/signals/signals.json"
+            test -s "$week/signals/summary.json"
+
+            C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$week/signals/signals.json" \
+            python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start "$C04_BUILD_START" \
+              --build-end "$C04_BUILD_END" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --cache ".cache/candidate-04-v36/$name/raw" \
+              --output "$week/nautilus" \
+              | tee "$week/nautilus_console.json"
+            python research/candidate-04/summarize_candidate_week.py \
+              --root "$week" \
+              --candidate candidate-04-v36-micro-auction-balance-transition \
+              --stage "development_${name}" \
+              --output "$week/summary.json"
+            passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$week/summary.json")"
+            if [[ "$passed" != "true" ]]; then
+              failed="$name"
+              break
+            fi
+          done
+
+          export V36_ROOT="$root"
+          export V36_FAILED="$failed"
+          if [[ -n "$failed" ]]; then
+            for i in "${!names[@]}"; do
+              if [[ "${names[$i]}" == "$failed" ]]; then
+                export C04_BUILD_START="${build_starts[$i]}"
+                export C04_BUILD_END="${build_ends[$i]}"
+                export C04_EVALUATION_START="${eval_starts[$i]}"
+                export C04_EVALUATION_END="${eval_ends[$i]}"
+              fi
+            done
+            export V36_FAILED_ROOT="$root/$failed"
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["V36_FAILED_ROOT"])
+          rows = json.loads((root / "signals/signals.json").read_text())
+          continuation = {
+              "MICRO_BALANCE_NEW_INVENTORY_RETEST_CONTINUATION",
+              "MICRO_BALANCE_LIQUIDATION_RETEST_CONTINUATION",
+          }
+          reversal = {
+              "MICRO_BALANCE_TRAPPED_BREAKOUT_REVERSAL",
+              "MICRO_BALANCE_LIQUIDATION_EXHAUSTION_REVERSAL",
+          }
+          variants = {
+              "continuation_only": [row for row in rows if row["scenario"] in continuation],
+              "reversal_only": [row for row in rows if row["scenario"] in reversal],
+          }
+          for name, selected in variants.items():
+              path = root / "ablations" / name / "signals"
+              path.mkdir(parents=True, exist_ok=True)
+              (path / "signals.json").write_text(json.dumps(selected, indent=2, sort_keys=True) + "\n")
+              (path / "summary.json").write_text(json.dumps({
+                  "written_signals": len(selected),
+                  "route_counts": {
+                      "controlled_ablation": name,
+                      "removed_signals": len(rows) - len(selected),
+                  },
+              }, indent=2, sort_keys=True) + "\n")
+          PY
+            for variant in continuation_only reversal_only; do
+              variant_root="$root/$failed/ablations/$variant"
+              C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$variant_root/signals/signals.json" \
+              python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+                --config research/candidate-04/nt_liquidity_config.json \
+                --build-start "$C04_BUILD_START" \
+                --build-end "$C04_BUILD_END" \
+                --evaluation-start "$C04_EVALUATION_START" \
+                --evaluation-end "$C04_EVALUATION_END" \
+                --cache ".cache/candidate-04-v36/$failed/raw" \
+                --output "$variant_root/nautilus" \
+                | tee "$variant_root/nautilus_console.json"
+              python research/candidate-04/summarize_candidate_week.py \
+                --root "$variant_root" \
+                --candidate candidate-04-v36-micro-auction-balance-transition \
+                --stage "${failed}_${variant}_ablation" \
+                --output "$variant_root/summary.json"
+            done
+          fi
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["V36_ROOT"])
+          weeks = {path.parent.name: json.loads(path.read_text()) for path in root.glob("*/summary.json")}
+          failed = os.environ["V36_FAILED"] or None
+          passed = failed is None and len(weeks) == 3 and all(item["candidate_pass"] for item in weeks.values())
+          ablations = None
+          if failed:
+              failed_root = root / failed / "ablations"
+              ablations = {
+                  path.parent.name: json.loads(path.read_text())
+                  for path in failed_root.glob("*/summary.json")
+              }
+          evidence = {
+              "candidate": "candidate-04-v36-micro-auction-balance-transition",
+              "stage": "sequential_development",
+              "upstream_v35_workflow": os.environ.get("UPSTREAM_WORKFLOW"),
+              "upstream_v35_run": int(os.environ.get("UPSTREAM_RUN_ID") or 0),
+              "weeks": weeks,
+              "failed_week": failed,
+              "controlled_ablations": ablations,
+              "three_week_pass": passed,
+              "failure_classification": "economic_or_gate_result",
+              "decision": "freeze_full_candidate_before_unopened_weeks" if passed else "follow_only_an_independently_surviving_mechanism_or_discard",
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+          }
+          (root / "research_decision.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          Path("research/candidate-04/evidence-v36-development.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+          echo "three_week_pass=$(python -c 'import json; print(str(json.load(open("artifacts/candidate-04-v36-development/research_decision.json"))["three_week_pass"]).lower())')" >> "$GITHUB_OUTPUT"
+          echo "failed_week=$failed" >> "$GITHUB_OUTPUT"
+
+      - name: Record V36 deferred state
+        if: steps.route.outputs.should_run != 'true'
+        shell: bash
+        env:
+          REASON: ${{ steps.route.outputs.reason }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          value = {
+              "candidate": "candidate-04-v36-micro-auction-balance-transition",
+              "stage": "sequential_development",
+              "executed": False,
+              "reason": os.environ["REASON"],
+          }
+          Path("research/candidate-04/evidence-v36-development.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v36-development-${{ github.sha }}
+          path: artifacts/candidate-04-v36-development
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Commit V36 development evidence with rebase retry
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/evidence-v36-development.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record V36 micro-auction development evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
