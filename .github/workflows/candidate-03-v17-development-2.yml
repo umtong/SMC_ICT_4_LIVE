@@ -1,118 +1,12 @@
-name: candidate-03-v17-dual-inventory-development-2
+name: candidate-03-v17-development-2-superseded
 
+# Superseded by the self-contained fixed-blob workflow. Retained only for
+# manual historical reproduction; no push trigger.
 on:
-  push:
-    branches: ["research/candidate-03"]
-    paths:
-      - ".github/workflows/candidate-03-v17-development-2.yml"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  packages: read
-
-env:
-  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-  PYTHONPATH: /workspace/src:/workspace/research/candidate-03
-  CONFIG: research/candidate-03/nt_lvcfr_v17_config.json
-
 jobs:
-  second-development-week:
+  notice:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Verify unchanged V17 source and pinned NautilusTrader
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse research/candidate-03/derive_nt_lvcfr_v17_signals.py)" = "$(git rev-parse 3a55aa6bfe106eac5323dd0ec71c5d39e2d3a880:research/candidate-03/derive_nt_lvcfr_v17_signals.py)"
-          test "$(git rev-parse research/candidate-03/nt_lvcfr_v17_config.json)" = "$(git rev-parse 3a55aa6bfe106eac5323dd0ec71c5d39e2d3a880:research/candidate-03/nt_lvcfr_v17_config.json)"
-          test "$(git rev-parse research/candidate-03/nt_lvcfr_strategy.py)" = "$(git rev-parse 3a55aa6bfe106eac5323dd0ec71c5d39e2d3a880:research/candidate-03/nt_lvcfr_strategy.py)"
-          docker pull "$IMAGE"
-          docker run --rm \
-            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            bash -c '
-              smc4 doctor &&
-              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
-                python research/candidate-03/test_nt_lvcfr.py &&
-              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
-                python research/candidate-03/test_nt_lvcfr_trade_proxy.py &&
-              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
-                python research/candidate-03/test_nt_lvcfr_v13.py &&
-              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
-                python research/candidate-03/test_nt_lvcfr_v17.py
-            '
-
-      - name: Restore immutable second-week execution inputs
-        uses: actions/cache/restore@v4
-        with:
-          path: artifacts/candidate-03/nt-lvcfr-v3/validation-2/prepared
-          key: nt-lvcfr-aggtrade-v1-btc-2025-06-23-${{ hashFiles('research/candidate-03/nt_lvcfr_trade_proxy.py', 'research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_v3_config.json') }}
-          fail-on-cache-miss: true
-
-      - name: Second development week — 2025-06-23
-        shell: bash
-        run: |
-          set -euo pipefail
-          prepared=artifacts/candidate-03/nt-lvcfr-v3/validation-2/prepared
-          out=artifacts/candidate-03/nt-lvcfr-v17/development-2
-          mkdir -p "$out"
-          sudo chmod -R a+rwX artifacts
-          cp "$prepared/signals.json" "$prepared/signals-v1.json"
-          docker run --rm \
-            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/derive_nt_lvcfr_v17_signals.py \
-              --prepared-root $prepared --output-manifest $out/v17_signal_manifest.json"
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          manifest = json.loads(Path('artifacts/candidate-03/nt-lvcfr-v17/development-2/v17_signal_manifest.json').read_text())
-          expected = {
-              'source_contraction_event_count': 10,
-              'retained_deleveraging_signal_count': 4,
-              'expansion_signal_count': 4,
-              'derived_signal_count': 8,
-              'state_counts': {
-                  'FIRST_BREAK_CHOCH_REVERSAL': 3,
-                  'MEASURED_ACCEPTANCE_CONTINUATION': 1,
-                  'SPOT_LED_OI_EXPANSION_ACCEPTANCE': 4,
-              },
-          }
-          if any(manifest.get(key) != value for key, value in expected.items()):
-              raise SystemExit(f'V17 second-week causal regression: {manifest}')
-          PY
-          docker run --rm \
-            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/rebuild_nt_lvcfr_trade_proxy_catalog.py \
-              --prepared-root $prepared --config $CONFIG" \
-            2>&1 | tee "$out/catalog_rebuild.log"
-          docker run --rm \
-            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py \
-              --week-start 2025-06-23 --prepared-root $prepared --output $out --config $CONFIG" \
-            2>&1 | tee "$out/backtest.log"
-          docker run --rm \
-            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
-            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
-              --config "$CONFIG" | tee "$out/gate.json"
-
-      - name: Preserve V17 second-week evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: candidate-03-v17-development-2-${{ github.sha }}
-          path: |
-            artifacts/candidate-03/nt-lvcfr-v17/development-2/**/*.json
-            artifacts/candidate-03/nt-lvcfr-v17/development-2/**/*.jsonl
-            artifacts/candidate-03/nt-lvcfr-v17/development-2/**/*.csv
-            artifacts/candidate-03/nt-lvcfr-v17/development-2/**/*.log
-          if-no-files-found: warn
-          retention-days: 30
+      - run: echo 'Use candidate-03-v17-development-2-fixed.yml'
