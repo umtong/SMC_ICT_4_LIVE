@@ -58,6 +58,22 @@ jobs:
               if read_line not in s:
                   raise SystemExit("expected Binance CSV read line not found")
               s = s.replace(read_line, read_line + clean_line)
+          old_wrangler = '    wrangle_frame = frame[["open", "high", "low", "close", "volume"]].copy()\n'
+          new_wrangler = '''    wrangle_columns = ["open", "high", "low", "close", "volume"]
+    wrangle_matrix = frame[wrangle_columns].to_numpy(dtype="float64", copy=True)
+    wrangle_matrix.setflags(write=True)
+    wrangle_frame = pd.DataFrame(
+        wrangle_matrix,
+        index=frame.index.copy(),
+        columns=wrangle_columns,
+        copy=False,
+    )
+    wrangle_frame.values.setflags(write=True)
+'''
+          if old_wrangler in s:
+              s = s.replace(old_wrangler, new_wrangler)
+          elif new_wrangler not in s:
+              raise SystemExit("expected Nautilus wrangler frame construction not found")
           s = s.replace("engine.trader.generate_order_fills_report()", "engine.generate_order_fills_report()")
           s = s.replace("engine.trader.generate_positions_report()", "engine.generate_positions_report()")
           s = s.replace("engine.trader.generate_account_report(venue)", "engine.generate_account_report(venue)")
@@ -67,7 +83,7 @@ jobs:
             git config user.name "candidate-11-bot"
             git config user.email "candidate-11-bot@users.noreply.github.com"
             git add research/candidate-11/run.py
-            git commit -m "candidate-11: align data and Nautilus result APIs"
+            git commit -m "candidate-11: normalize Nautilus data and report APIs"
             git push origin HEAD:research/candidate-11
           fi
 
