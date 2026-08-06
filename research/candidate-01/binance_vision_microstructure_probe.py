@@ -2,12 +2,12 @@
 """Probe official Binance Vision microstructure archives without assumptions.
 
 The official public-data README documents trades/aggTrades/klines but does not
-fully enumerate every object present in the backing archive.  This probe uses
-S3-compatible list and HEAD requests, records exact keys, sizes, checksums and
-coverage, and downloads only a bounded small sample when the server-reported
-size is below the declared limit.
+fully enumerate every object present in the backing archive. This probe uses
+S3-compatible list requests, records exact keys and coverage, sends HEAD only
+to representative objects, and downloads only a bounded small sample when the
+server-reported size is below the declared limit.
 
-It is a data-availability probe only.  It does not create signals, fills, PnL or
+It is a data-availability probe only. It does not create signals, fills, PnL or
 NAV and is never part of an authoritative performance run.
 """
 from __future__ import annotations
@@ -39,7 +39,16 @@ PREFIXES = (
     "data/futures/um/daily/metrics/BTCUSDT/",
 )
 BASE_OBJECT_URL = "https://data.binance.vision/"
-USER_AGENT = "SMC-ICT-4-LIVE-candidate-01-data-probe/1.0"
+USER_AGENT = "SMC-ICT-4-LIVE-candidate-01-data-probe/2.0"
+REPRESENTATIVE_DATE_TOKENS = (
+    "2020-09",
+    "2023-01",
+    "2023-05",
+    "2024-03",
+    "2024-04",
+    "2025-01",
+    "2026-04",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +130,35 @@ def list_prefix(prefix: str) -> tuple[str, list[ObjectRecord]]:
         except Exception as exc:  # noqa: BLE001 - evidence records exact failure
             errors.append(f"{endpoint}: {type(exc).__name__}: {exc}")
     raise RuntimeError("; ".join(errors))
+
+
+def representative_records(records: list[ObjectRecord]) -> list[ObjectRecord]:
+    """Bound HEAD requests while preserving coverage and anomaly checks."""
+
+    if not records:
+        return []
+    by_key = {record.key: record for record in records}
+    zip_records = sorted(
+        (record for record in records if record.key.endswith(".zip")),
+        key=lambda row: row.key,
+    )
+    selected: dict[str, ObjectRecord] = {}
+    if zip_records:
+        for record in (
+            zip_records[0],
+            zip_records[-1],
+            min(zip_records, key=lambda row: row.size),
+            max(zip_records, key=lambda row: row.size),
+        ):
+            selected[record.key] = record
+        for record in zip_records:
+            if any(token in record.key for token in REPRESENTATIVE_DATE_TOKENS):
+                selected[record.key] = record
+    for key in list(selected):
+        checksum_key = key + ".CHECKSUM"
+        if checksum_key in by_key:
+            selected[checksum_key] = by_key[checksum_key]
+    return [selected[key] for key in sorted(selected)]
 
 
 def head(url: str) -> HttpRecord:
@@ -238,6 +276,8 @@ def run(args: argparse.Namespace) -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     listings: dict[str, object] = {}
     all_records: list[ObjectRecord] = []
+    head_candidates: dict[str, ObjectRecord] = {}
+    sample_candidates: list[ObjectRecord] = []
     for prefix in PREFIXES:
         try:
             endpoint, records = list_prefix(prefix)
@@ -245,6 +285,7 @@ def run(args: argparse.Namespace) -> int:
             checksum_records = [
                 row for row in records if row.key.endswith(".CHECKSUM")
             ]
+            representatives = representative_records(records)
             listings[prefix] = {
                 "endpoint": endpoint,
                 "object_count": len(records),
@@ -260,41 +301,31 @@ def run(args: argparse.Namespace) -> int:
                     (row.size for row in zip_records),
                     default=None,
                 ),
+                "representative_keys": [row.key for row in representatives],
                 "objects": [asdict(row) for row in records],
             }
             all_records.extend(records)
+            head_candidates.update({row.key: row for row in representatives})
+            if zip_records:
+                sample_candidates.append(min(zip_records, key=lambda row: row.size))
         except Exception as exc:  # noqa: BLE001
             listings[prefix] = {
                 "error": f"{type(exc).__name__}: {exc}",
                 "objects": [],
             }
 
-    unique = {record.key: record for record in all_records}
     http_records = [
         asdict(head(urllib.parse.urljoin(BASE_OBJECT_URL, key)))
-        for key in sorted(unique)
-        if key.endswith((".zip", ".CHECKSUM"))
+        for key in sorted(head_candidates)
     ]
-
-    samples: list[dict[str, object]] = []
-    # Prefer the smallest valid archive for each data-type prefix. This keeps
-    # the probe bounded while still recording real schemas when feasible.
-    for prefix in PREFIXES:
-        records = [
-            row
-            for row in unique.values()
-            if row.key.startswith(prefix) and row.key.endswith(".zip")
-        ]
-        if not records:
-            continue
-        record = min(records, key=lambda row: row.size)
-        samples.append(
-            sample_zip(
-                record,
-                output_dir=args.output,
-                max_download_bytes=args.max_download_bytes,
-            ),
+    samples = [
+        sample_zip(
+            record,
+            output_dir=args.output,
+            max_download_bytes=args.max_download_bytes,
         )
+        for record in sample_candidates
+    ]
 
     payload = {
         "probe": "official Binance Vision microstructure archive availability",
@@ -303,6 +334,8 @@ def run(args: argparse.Namespace) -> int:
         "custom_market_data_source": False,
         "base_object_url": BASE_OBJECT_URL,
         "prefixes": listings,
+        "listed_object_count": len({row.key for row in all_records}),
+        "representative_head_count": len(http_records),
         "head_records": http_records,
         "bounded_samples": samples,
         "max_download_bytes": args.max_download_bytes,
