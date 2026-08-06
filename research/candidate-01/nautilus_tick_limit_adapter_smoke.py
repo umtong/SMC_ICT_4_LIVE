@@ -41,7 +41,10 @@ def main() -> int:
             first_trade_id=index + 1,
             last_trade_id=index + 1,
             ts_event_ns=start_ns + index * 1_000_000_000,
-            is_buyer_maker=False,
+            # The boundary retest at index 4 is seller-aggressive so a resting
+            # buy limit can fill. The later target trade remains buyer-aggressive
+            # so the protective take-profit sell can fill.
+            is_buyer_maker=(index == 4),
         )
         for index, price in enumerate(prices)
     ]
