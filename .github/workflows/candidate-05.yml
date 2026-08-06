@@ -1,0 +1,89 @@
+name: candidate-05-nautilus-stage
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/**"
+      - ".github/workflows/candidate-05.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  week-1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed research environment
+        run: |
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+          python research/candidate-05/select_weeks.py
+
+      - name: Run first frozen BTC week through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-05
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks research/candidate-05/weeks.json \
+            --cache .cache/candidate-05 \
+            --output artifacts/candidate-05 \
+            --max-weeks 1 \
+            | tee artifacts/candidate-05/console.json
+
+      - name: Verify and print evidence
+        if: always()
+        shell: bash
+        run: |
+          if test -f artifacts/candidate-05/week-1/metrics.json; then
+            python -m json.tool artifacts/candidate-05/week-1/metrics.json
+            test -s artifacts/candidate-05/week-1/run.json
+            test -s artifacts/candidate-05/week-1/data_manifest.json
+            test -s artifacts/candidate-05/week-1/orders.csv
+            test -s artifacts/candidate-05/week-1/positions.csv
+            test -s artifacts/candidate-05/week-1/account.csv
+            test -s artifacts/candidate-05/week-1/equity.csv
+            test -s artifacts/candidate-05/week-1/scenario_events.jsonl
+            test -s artifacts/candidate-05/week-1/strategy_diagnostics.json
+          fi
+          if test -f artifacts/candidate-05/week-1/errors.log; then
+            cat artifacts/candidate-05/week-1/errors.log
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-week1-${{ github.sha }}
+          path: |
+            artifacts/candidate-05/pipeline_summary.json
+            artifacts/candidate-05/console.json
+            artifacts/candidate-05/week-1/metrics.json
+            artifacts/candidate-05/week-1/run.json
+            artifacts/candidate-05/week-1/data_manifest.json
+            artifacts/candidate-05/week-1/raw_evidence.json
+            artifacts/candidate-05/week-1/orders.csv
+            artifacts/candidate-05/week-1/positions.csv
+            artifacts/candidate-05/week-1/account.csv
+            artifacts/candidate-05/week-1/equity.csv
+            artifacts/candidate-05/week-1/scenario_events.jsonl
+            artifacts/candidate-05/week-1/strategy_diagnostics.json
+            artifacts/candidate-05/week-1/closed_scenarios.json
+            artifacts/candidate-05/week-1/errors.log
+          if-no-files-found: warn
+          retention-days: 90
