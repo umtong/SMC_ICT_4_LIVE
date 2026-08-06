@@ -23,29 +23,49 @@ jobs:
       FROZEN_SOURCE_COMMIT: 98fde73e34bfc525d52751cfab11633579c953fd
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Verify frozen source and fixed NautilusTrader runtime
+      - name: Verify exact frozen source bytes and fixed NautilusTrader runtime
         shell: bash
         run: |
           set -euo pipefail
           smc4 doctor
-          unset GIT_DIR GIT_WORK_TREE || true
-          git -C "$GITHUB_WORKSPACE" diff --exit-code "$FROZEN_SOURCE_COMMIT" -- \
-            research/candidate-04/nt_liquidity_strategy.py \
-            research/candidate-04/nt_auction_excess_strategy.py \
-            research/candidate-04/nt_auction_failure_strategy.py \
-            research/candidate-04/nt_low_impact_external_strategy.py \
-            research/candidate-04/nt_low_impact_hybrid_target_strategy.py \
-            research/candidate-04/nt_composite_liquidity_strategy.py \
-            research/candidate-04/nt_causal_risk_sizing.py \
-            research/candidate-04/nt_backtest.py \
-            research/candidate-04/nt_backtest_v18.py \
-            research/candidate-04/nt_liquidity_config.json \
-            research/candidate-04/tests/test_nt_liquidity_strategy.py \
-            research/candidate-04/tests/test_nt_composite_liquidity_strategy.py \
-            research/candidate-04/tests/test_nt_causal_risk_sizing.py
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from urllib.parse import quote
+          from urllib.request import urlopen
+
+          commit = os.environ["FROZEN_SOURCE_COMMIT"]
+          paths = [
+              "research/candidate-04/nt_liquidity_strategy.py",
+              "research/candidate-04/nt_auction_excess_strategy.py",
+              "research/candidate-04/nt_auction_failure_strategy.py",
+              "research/candidate-04/nt_low_impact_external_strategy.py",
+              "research/candidate-04/nt_low_impact_hybrid_target_strategy.py",
+              "research/candidate-04/nt_composite_liquidity_strategy.py",
+              "research/candidate-04/nt_causal_risk_sizing.py",
+              "research/candidate-04/nt_backtest.py",
+              "research/candidate-04/nt_backtest_v18.py",
+              "research/candidate-04/nt_liquidity_config.json",
+              "research/candidate-04/tests/test_nt_liquidity_strategy.py",
+              "research/candidate-04/tests/test_nt_composite_liquidity_strategy.py",
+              "research/candidate-04/tests/test_nt_causal_risk_sizing.py",
+          ]
+          mismatches = []
+          for path in paths:
+              url = (
+                  "https://raw.githubusercontent.com/umtong/SMC_ICT_4_LIVE/"
+                  f"{commit}/{quote(path, safe='/')}"
+              )
+              with urlopen(url, timeout=30) as response:
+                  frozen = response.read()
+              current = Path(path).read_bytes()
+              if current != frozen:
+                  mismatches.append(path)
+          if mismatches:
+              raise SystemExit(f"frozen source mismatch: {mismatches}")
+          print(f"verified {len(paths)} frozen files at {commit}")
+          PY
           python -m compileall -q \
             research/candidate-04/nt_liquidity_strategy.py \
             research/candidate-04/nt_auction_excess_strategy.py \
