@@ -76,7 +76,7 @@ checksum-verified Binance Vision data
   |예상 진입 체결가 - 예상 손절 체결가|
   + 진입·손절 수수료
   + 예상 spread·slippage·market impact
-  + 최대 보유 기준 불리한 funding
+  + 최대 보유시간 안에 통과하는 정산 경계별 불리한 funding 전액
 
 수량 = 계획 손실예산 ÷ 1개당 예상 손실
 ```

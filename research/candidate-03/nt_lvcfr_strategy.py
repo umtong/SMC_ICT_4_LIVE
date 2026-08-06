@@ -25,6 +25,33 @@ NS_PER_MINUTE = 60_000_000_000
 NS_PER_DAY = 86_400_000_000_000
 
 
+def expected_funding_debit_per_unit(
+    *,
+    entry_price: float,
+    direction: int,
+    funding_rate: float,
+    entry_time_ns: int,
+    max_holding_minutes: int,
+    next_funding_ns: int | None,
+    funding_interval_minutes: int,
+) -> float:
+    """Return full adverse funding settlements crossed by maximum holding.
+
+    Perpetual funding is discrete at settlement boundaries, not prorated by
+    elapsed holding time. Credits reduce realized cost but are not counted as a
+    risk-budget benefit.
+    """
+    adverse_rate = direction * funding_rate
+    if adverse_rate <= 0.0 or next_funding_ns is None:
+        return 0.0
+    interval_ns = max(1, funding_interval_minutes) * NS_PER_MINUTE
+    holding_end_ns = entry_time_ns + max_holding_minutes * NS_PER_MINUTE
+    if next_funding_ns > holding_end_ns:
+        return 0.0
+    settlements = 1 + max(0, holding_end_ns - next_funding_ns) // interval_ns
+    return entry_price * adverse_rate * float(settlements)
+
+
 def native_equity_amount(portfolio: Any, venue: Any, currency: Any) -> float:
     """Return one currency's native Portfolio equity as a scalar.
 
@@ -111,6 +138,7 @@ class ActiveLeg:
     mfe_net_r: float = -math.inf
     failure_low: float = math.inf
     failure_high: float = -math.inf
+    settled_funding_cost_per_unit: float = 0.0
 
 
 class NTLvcfrStrategy(Strategy):
@@ -129,6 +157,7 @@ class NTLvcfrStrategy(Strategy):
         self.latest_quote: QuoteTick | None = None
         self.latest_funding_rate = 0.0
         self.latest_funding_interval_minutes = 480
+        self.next_funding_ns: int | None = None
         self.current_episode: dict[str, Any] | None = None
         self.episodes: list[dict[str, Any]] = []
         self.legs: list[dict[str, Any]] = []
@@ -183,6 +212,44 @@ class NTLvcfrStrategy(Strategy):
         self.latest_funding_rate = float(update.rate)
         if update.interval:
             self.latest_funding_interval_minutes = int(update.interval)
+        event_ns = int(update.ts_event)
+        explicit_next = update.next_funding_ns
+        self.next_funding_ns = (
+            int(explicit_next)
+            if explicit_next is not None
+            else event_ns + self.latest_funding_interval_minutes * NS_PER_MINUTE
+        )
+        active = self.active
+        if (
+            active is not None
+            and active.entry_time_ns is not None
+            and active.entry_qty > 0.0
+            and active.entry_time_ns < event_ns
+        ):
+            if self.latest_quote is None:
+                reference_price = active.entry_avg
+            else:
+                reference_price = (
+                    float(self.latest_quote.bid_price) + float(self.latest_quote.ask_price)
+                ) / 2.0
+            active.settled_funding_cost_per_unit += (
+                active.direction * reference_price * self.latest_funding_rate
+            )
+            self._emit(
+                scenario_id=active.signal["scenario_id"],
+                event_type="FUNDING_SETTLEMENT_OBSERVED",
+                event_time_ns=event_ns,
+                observed_time_ns=int(update.ts_init),
+                previous_state=f"{active.kind}_ACTIVE",
+                next_state=f"{active.kind}_ACTIVE",
+                reason_code="NAUTILUS_NATIVE_DISCRETE_FUNDING_BOUNDARY",
+                reference_price=reference_price,
+                details={
+                    "rate": self.latest_funding_rate,
+                    "estimated_cost_per_unit": active.direction * reference_price * self.latest_funding_rate,
+                    "cumulative_estimated_cost_per_unit": active.settled_funding_cost_per_unit,
+                },
+            )
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
         self.latest_quote = tick
@@ -290,6 +357,7 @@ class NTLvcfrStrategy(Strategy):
             "exit_reason": self.exit_reason or "UNKNOWN",
             "protection_active": active.protection_active,
             "mfe_net_r": active.mfe_net_r,
+            "settled_funding_cost_per_unit_estimate": active.settled_funding_cost_per_unit,
         }
         self.legs.append(leg)
         if self.current_episode is None:
@@ -481,8 +549,15 @@ class NTLvcfrStrategy(Strategy):
         expected_stop_fill = pending.stop * (1.0 - direction * half_spread_fraction)
         fee = self.config.taker_fee_bps / 10_000.0
         hold = self.config.continuation_max_holding_minutes if pending.kind == "CONTINUATION" else self.config.reversal_max_holding_minutes
-        debit_rate = max(0.0, direction * self.latest_funding_rate)
-        expected_funding = entry * debit_rate * hold / max(1, self.latest_funding_interval_minutes)
+        expected_funding = expected_funding_debit_per_unit(
+            entry_price=entry,
+            direction=direction,
+            funding_rate=self.latest_funding_rate,
+            entry_time_ns=int(tick.ts_init),
+            max_holding_minutes=hold,
+            next_funding_ns=self.next_funding_ns,
+            funding_interval_minutes=self.latest_funding_interval_minutes,
+        )
         loss_per_unit = abs(entry - expected_stop_fill) + entry * fee + expected_stop_fill * fee + expected_funding
         if not math.isfinite(loss_per_unit) or loss_per_unit <= 0:
             raise RuntimeError("invalid expected loss per unit")
@@ -615,10 +690,12 @@ class NTLvcfrStrategy(Strategy):
 
     def _estimated_net_per_unit(self, active: ActiveLeg, exit_price: float, timestamp_ns: int) -> float:
         fee = self.config.taker_fee_bps / 10_000.0
-        holding = max(0.0, (timestamp_ns - (active.entry_time_ns or timestamp_ns)) / NS_PER_MINUTE)
-        debit_rate = max(0.0, active.direction * self.latest_funding_rate)
-        funding = active.entry_avg * debit_rate * holding / max(1, self.latest_funding_interval_minutes)
-        return active.direction * (exit_price - active.entry_avg) - active.entry_avg * fee - exit_price * fee - funding
+        return (
+            active.direction * (exit_price - active.entry_avg)
+            - active.entry_avg * fee
+            - exit_price * fee
+            - active.settled_funding_cost_per_unit
+        )
 
     def _submit_exit(self, reason: str, timestamp_ns: int) -> None:
         if self.active is None or self.exit_order_id is not None:
@@ -780,6 +857,7 @@ class NTLvcfrStrategy(Strategy):
             "equity_curve": self.equity_curve,
             "last_funding_rate": self.latest_funding_rate,
             "last_funding_interval_minutes": self.latest_funding_interval_minutes,
+            "next_funding_ns": self.next_funding_ns,
             "final_state": {
                 "pending": self.pending is not None,
                 "active": self.active is not None,

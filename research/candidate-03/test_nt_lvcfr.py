@@ -6,7 +6,39 @@ import unittest
 from pathlib import Path
 
 from nt_lvcfr_data import CandidateConfig, MinuteFact, NS_PER_MINUTE, detect_signals, merge_windows, select_second_extrema
-from nt_lvcfr_strategy import native_equity_amount
+from nt_lvcfr_strategy import expected_funding_debit_per_unit, native_equity_amount
+
+
+class FundingRiskTests(unittest.TestCase):
+    def test_no_prorated_cost_when_max_hold_ends_before_boundary(self) -> None:
+        self.assertEqual(
+            expected_funding_debit_per_unit(
+                entry_price=40_000.0, direction=1, funding_rate=0.0001,
+                entry_time_ns=2 * 60 * NS_PER_MINUTE, max_holding_minutes=240,
+                next_funding_ns=8 * 60 * NS_PER_MINUTE, funding_interval_minutes=480,
+            ),
+            0.0,
+        )
+
+    def test_full_adverse_rate_when_boundary_is_crossed(self) -> None:
+        self.assertEqual(
+            expected_funding_debit_per_unit(
+                entry_price=40_000.0, direction=1, funding_rate=0.0001,
+                entry_time_ns=5 * 60 * NS_PER_MINUTE, max_holding_minutes=240,
+                next_funding_ns=8 * 60 * NS_PER_MINUTE, funding_interval_minutes=480,
+            ),
+            4.0,
+        )
+
+    def test_favorable_funding_is_not_used_to_increase_risk_quantity(self) -> None:
+        self.assertEqual(
+            expected_funding_debit_per_unit(
+                entry_price=40_000.0, direction=-1, funding_rate=0.0001,
+                entry_time_ns=5 * 60 * NS_PER_MINUTE, max_holding_minutes=240,
+                next_funding_ns=8 * 60 * NS_PER_MINUTE, funding_interval_minutes=480,
+            ),
+            0.0,
+        )
 
 
 class NativeEquityTests(unittest.TestCase):
