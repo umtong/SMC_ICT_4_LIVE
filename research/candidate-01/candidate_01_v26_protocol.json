@@ -1,0 +1,58 @@
+{
+  "candidate": "funding-window edge raid two-sided auction resolver",
+  "version": 26,
+  "frozen_before_execution": true,
+  "primary_rule": "two-sided-resolver",
+  "controls": ["failure-only", "acceptance-only"],
+  "symbol": "BTCUSDT",
+  "weeks": ["2024-02-12", "2022-01-17", "2025-06-16"],
+  "week_selection": {
+    "method": "candidate-specific deterministic Monday selection from previously unused BTC weeks",
+    "selection_seed": "candidate-01-v26-funding-auction-resolver",
+    "result_dependent_selection": false
+  },
+  "market_representation": {
+    "source_range": "immediately completed 8-hour UTC perpetual-funding window",
+    "event_clock": "causal daily equal-notional clock selected from preceding completed UTC day",
+    "candidate_clock_minutes": [5, 10, 20, 30],
+    "minimum_preceding_day_median_range_bps": 14.0,
+    "context_days": 7
+  },
+  "scenario": {
+    "arm": "prior funding-window edge is raided",
+    "response_events": 2,
+    "precedence": "failed auction is evaluated before durable acceptance",
+    "failure": "completed close returns inside with aggressive flow toward opposite edge",
+    "failure_target": "opposite edge of completed funding window",
+    "failure_stop": "full raid-to-resolution path extreme plus one 7-bp side-cost buffer",
+    "acceptance": "two outside closes and positive cumulative aligned flow after the response window",
+    "acceptance_target": "one completed funding-window width projected beyond raided edge",
+    "acceptance_stop": "raided boundary plus one 7-bp inside buffer",
+    "entry": "market bracket on first official venue trade strictly after completed resolution",
+    "maximum_hold_hours": 4
+  },
+  "execution": {
+    "authoritative_engine": "NautilusTrader 1.230.0",
+    "market_data": "official Binance Vision USD-M aggregate trades converted one-for-one to TradeTick",
+    "custom_fill_simulator": false,
+    "custom_pnl_or_nav_ledger": false,
+    "risk_fraction_of_current_nav": 0.03,
+    "all_in_cost_bps_per_side": 7.0,
+    "one_global_pending_entry_or_position": true
+  },
+  "strict_week_gate": {
+    "minimum_closed_positions": 7,
+    "minimum_win_rate": 0.45,
+    "minimum_total_return": 0.0,
+    "minimum_geometric_daily_return": 0.01,
+    "minimum_profit_factor": 1.2,
+    "maximum_drawdown_floor": -0.2,
+    "operational_integrity_required": true,
+    "promising_partial_pass_allowed": false
+  },
+  "advancement": {
+    "week_2_runs_only_after_week_1_full_pass": true,
+    "week_3_runs_only_after_week_2_full_pass": true,
+    "long_evaluation_runs_only_after_all_three_full_pass": true
+  }
+}
