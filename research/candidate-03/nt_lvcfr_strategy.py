@@ -90,6 +90,17 @@ def signal_structural_target(signal: dict[str, Any]) -> float | None:
     return value
 
 
+def signal_structural_protection_trigger(signal: dict[str, Any]) -> float | None:
+    """Return a validated causal first-objective protection level."""
+    raw = signal.get("structural_protection_trigger")
+    if raw is None:
+        return None
+    value = float(raw)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"invalid structural_protection_trigger={raw!r}")
+    return value
+
+
 def native_equity_amount(portfolio: Any, venue: Any, currency: Any) -> float:
     """Return one currency's native Portfolio equity as a scalar.
 
@@ -172,6 +183,8 @@ class ActiveLeg:
     entry_avg: float = 0.0
     target_price: float = 0.0
     lock_price: float = 0.0
+    break_even_price: float = 0.0
+    structural_protection_active: bool = False
     protection_active: bool = False
     mfe_net_r: float = -math.inf
     failure_low: float = math.inf
@@ -207,6 +220,7 @@ class NTLvcfrStrategy(Strategy):
             "invalidated_in_entry_buffer": 0,
             "invalid_entry_price": 0,
             "invalid_structural_target": 0,
+            "structural_protection_activations": 0,
             "entries_submitted": 0,
             "entries_rejected": 0,
             "exits_submitted": 0,
@@ -396,6 +410,9 @@ class NTLvcfrStrategy(Strategy):
             "exit_reason": self.exit_reason or "UNKNOWN",
             "target_price": active.target_price,
             "target_mode": active.signal.get("target_mode", "EXISTING_NET_R_OBJECTIVE"),
+            "structural_protection_trigger": signal_structural_protection_trigger(active.signal),
+            "break_even_price": active.break_even_price,
+            "structural_protection_active": active.structural_protection_active,
             "protection_active": active.protection_active,
             "mfe_net_r": active.mfe_net_r,
             "settled_funding_cost_per_unit_estimate": active.settled_funding_cost_per_unit,
@@ -422,6 +439,8 @@ class NTLvcfrStrategy(Strategy):
             and active.entry_time_ns is not None
             and timestamp_ns - active.entry_time_ns <= self.config.rapid_failure_minutes * NS_PER_MINUTE
             and not active.protection_active
+            and not active.structural_protection_active
+            and not bool(active.signal.get("disable_rapid_failure_reversal", False))
             and not self._evaluation_ending
         )
         failed_direction = active.direction
@@ -685,6 +704,7 @@ class NTLvcfrStrategy(Strategy):
                 "expected_stop_fill": expected_stop_fill,
                 "expected_funding_per_unit": expected_funding,
                 "structural_target": signal_structural_target(self.active.signal),
+                "structural_protection_trigger": signal_structural_protection_trigger(self.active.signal),
                 "target_mode": self.active.signal.get("target_mode", "EXISTING_NET_R_OBJECTIVE"),
             },
         )
@@ -694,12 +714,15 @@ class NTLvcfrStrategy(Strategy):
         reward = active.target_r * active.expected_loss_per_unit + active.maximum_expected_funding_per_unit
         lock_reward = self.config.continuation_protection_lock_r * active.expected_loss_per_unit + active.maximum_expected_funding_per_unit
         structural_target = signal_structural_target(active.signal)
+        funding = active.maximum_expected_funding_per_unit
         if active.direction > 0:
             generic_target = (reward + active.entry_avg * (1.0 + fee)) / (1.0 - fee)
             active.lock_price = (lock_reward + active.entry_avg * (1.0 + fee)) / (1.0 - fee)
+            active.break_even_price = (funding + active.entry_avg * (1.0 + fee)) / (1.0 - fee)
         else:
             generic_target = (active.entry_avg * (1.0 - fee) - reward) / (1.0 + fee)
             active.lock_price = (active.entry_avg * (1.0 - fee) - lock_reward) / (1.0 + fee)
+            active.break_even_price = (active.entry_avg * (1.0 - fee) - funding) / (1.0 + fee)
         active.target_price = structural_target if structural_target is not None else generic_target
 
     def _manage_active(self, tick: QuoteTick, mid: float) -> None:
@@ -713,6 +736,35 @@ class NTLvcfrStrategy(Strategy):
         net_per_unit = self._estimated_net_per_unit(active, executable, timestamp_ns)
         net_r = net_per_unit / active.expected_loss_per_unit
         active.mfe_net_r = max(active.mfe_net_r, net_r)
+
+        structural_trigger = signal_structural_protection_trigger(active.signal)
+        if (
+            structural_trigger is not None
+            and not active.structural_protection_active
+            and active.direction * (executable - structural_trigger) >= 0.0
+        ):
+            active.structural_protection_active = True
+            active.stop = (
+                max(active.stop, active.break_even_price)
+                if active.direction > 0
+                else min(active.stop, active.break_even_price)
+            )
+            self.counters["structural_protection_activations"] += 1
+            self._emit(
+                scenario_id=active.signal["scenario_id"],
+                event_type="STRUCTURAL_PROTECTION_ACTIVATED",
+                event_time_ns=timestamp_ns,
+                observed_time_ns=timestamp_ns,
+                previous_state=f"{active.kind}_ACTIVE",
+                next_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
+                reason_code="FIRST_CAUSAL_LIQUIDITY_OBJECTIVE_REACHED",
+                reference_price=active.stop,
+                details={
+                    "structural_trigger": structural_trigger,
+                    "after_cost_break_even": active.break_even_price,
+                    "mfe_net_r": net_r,
+                },
+            )
 
         if active.kind == "CONTINUATION" and not active.protection_active and net_r >= self.config.continuation_protection_activate_r:
             active.protection_active = True
@@ -739,10 +791,22 @@ class NTLvcfrStrategy(Strategy):
                     active.stop = updated; self.counters["trail_updates"] += 1
 
         if active.direction > 0 and executable <= active.stop:
-            reason = "PROTECTED_TRAIL" if active.protection_active else "INITIAL_STOP"
+            reason = (
+                "PROTECTED_TRAIL"
+                if active.protection_active
+                else "STRUCTURAL_PROTECTION"
+                if active.structural_protection_active
+                else "INITIAL_STOP"
+            )
             self._submit_exit(reason, timestamp_ns)
         elif active.direction < 0 and executable >= active.stop:
-            reason = "PROTECTED_TRAIL" if active.protection_active else "INITIAL_STOP"
+            reason = (
+                "PROTECTED_TRAIL"
+                if active.protection_active
+                else "STRUCTURAL_PROTECTION"
+                if active.structural_protection_active
+                else "INITIAL_STOP"
+            )
             self._submit_exit(reason, timestamp_ns)
         elif active.direction > 0 and executable >= active.target_price:
             reason = "STRUCTURAL_TARGET" if signal_structural_target(active.signal) is not None else "TARGET"
