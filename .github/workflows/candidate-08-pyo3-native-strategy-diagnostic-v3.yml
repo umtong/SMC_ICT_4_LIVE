@@ -1,0 +1,425 @@
+name: candidate-08-pyo3-native-strategy-diagnostic-v3
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-pyo3-native-strategy-diagnostic-v3"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-pyo3-native-strategy-diagnostic-v3
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUT: research/candidate-08/evidence/aggtrade-acceptance-nautilus/pyo3-native-strategy-diagnostic-v3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify list bracket position round trip and direct shared NAV
+        id: diagnostic
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          mkdir -p "$OUT"
+          {
+            set -euo pipefail
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            smc4 doctor | tee "$OUT/doctor.txt"
+            PYTHONPATH=research/candidate-08 python - <<'PY'
+          from __future__ import annotations
+
+          from decimal import Decimal
+          import json
+          from pathlib import Path
+          import traceback
+          from typing import Any, Callable
+
+          import pandas as pd
+          from nautilus_trader.core import nautilus_pyo3 as pyo3
+
+          from run_aggtrade_acceptance_nautilus import _build_instrument
+
+          OUT = Path("research/candidate-08/evidence/aggtrade-acceptance-nautilus/pyo3-native-strategy-diagnostic-v3")
+          CONFIG = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_nautilus.json").read_text())
+          result: dict[str, Any] = {
+              "engine": "NautilusTrader",
+              "version": "1.230.0",
+              "classification": "IMPLEMENTATION_BOUNDARY_DIAGNOSTIC_ONLY",
+              "attempts": [],
+          }
+
+          def typename(value: Any) -> str:
+              cls = value if isinstance(value, type) else type(value)
+              return f"{cls.__module__}.{cls.__qualname__}"
+
+          def attempt(label: str, fn: Callable[[], Any]) -> tuple[bool, Any]:
+              try:
+                  value = fn()
+                  result["attempts"].append({
+                      "label": label,
+                      "ok": True,
+                      "type": typename(value),
+                      "repr": repr(value),
+                  })
+                  return True, value
+              except Exception as exc:
+                  result["attempts"].append({
+                      "label": label,
+                      "ok": False,
+                      "error_type": type(exc).__name__,
+                      "error": str(exc),
+                      "traceback": traceback.format_exc(),
+                  })
+                  return False, None
+
+          class ProbeConfig(pyo3.StrategyConfig):
+              _CUSTOM_FIELDS = ("instrument_id", "bar_type", "quantity")
+
+              def __new__(cls, *args, **kwargs):
+                  base_kwargs = dict(kwargs)
+                  for field in cls._CUSTOM_FIELDS:
+                      base_kwargs.pop(field, None)
+                  base_kwargs["manage_contingent_orders"] = False
+                  return super().__new__(cls, *args, **base_kwargs)
+
+              def __init__(
+                  self,
+                  instrument_id: pyo3.InstrumentId,
+                  bar_type: pyo3.BarType,
+                  quantity: Decimal,
+                  **_kwargs,
+              ) -> None:
+                  self.instrument_id = instrument_id
+                  self.bar_type = bar_type
+                  self.quantity = quantity
+
+          class ProbeStrategy(pyo3.Strategy):
+              def __init__(self, config: ProbeConfig) -> None:
+                  super().__init__(config)
+                  self.events: list[dict[str, Any]] = []
+                  self.submitted = False
+                  self.bracket_meta: dict[str, Any] = {}
+
+              def on_start(self) -> None:
+                  instrument = self.cache.instrument(self.config.instrument_id)
+                  account = self.cache.account_for_venue(self.config.instrument_id.venue)
+                  if instrument is None or account is None:
+                      raise RuntimeError("native cache/account wiring failed")
+                  total = account.balance_total(pyo3.Currency.from_str("USDT"))
+                  if total is None:
+                      raise RuntimeError("shared USDT NAV unavailable")
+                  self.events.append({
+                      "event": "START",
+                      "instrument_type": typename(instrument),
+                      "account_type": typename(account),
+                      "starting_nav": str(total),
+                      "flat": bool(self.portfolio.is_flat(self.config.instrument_id)),
+                  })
+                  self.subscribe_bars(self.config.bar_type)
+
+              def on_bar(self, bar: pyo3.Bar) -> None:
+                  self.events.append({
+                      "event": "BAR",
+                      "ts_event": int(bar.ts_event),
+                      "close": float(bar.close.as_double()),
+                  })
+                  if self.submitted:
+                      return
+                  instrument = self.cache.instrument(self.config.instrument_id)
+                  orders = self.order_factory.bracket(
+                      instrument_id=self.config.instrument_id,
+                      order_side=pyo3.OrderSide.BUY,
+                      quantity=instrument.make_qty(float(self.config.quantity)),
+                      entry_order_type=pyo3.OrderType.MARKET,
+                      time_in_force=pyo3.TimeInForce.GTC,
+                      tp_price=instrument.make_price(102.0),
+                      tp_post_only=False,
+                      sl_trigger_price=instrument.make_price(98.0),
+                      entry_tags=["NATIVE_STRATEGY_DIAGNOSTIC"],
+                      tp_tags=["NATIVE_TARGET"],
+                      sl_tags=["NATIVE_STOP"],
+                  )
+                  if not isinstance(orders, list):
+                      raise TypeError(f"expected list bracket from pinned 1.230.0, got {typename(orders)}")
+                  ids = [str(order.client_order_id) for order in orders]
+                  order_types = [str(order.order_type) for order in orders]
+                  self.bracket_meta = {
+                      "container_type": typename(orders),
+                      "order_types": order_types,
+                      "client_order_ids": ids,
+                      "client_order_ids_count": len(ids),
+                  }
+                  if len(ids) != 3 or len(set(ids)) != 3:
+                      raise RuntimeError(f"invalid bracket IDs: {ids}")
+                  self.events.append({"event": "BRACKET_CREATED", **self.bracket_meta})
+                  self.submit_order_list(orders)
+                  self.submitted = True
+
+              def on_order_filled(self, event: Any) -> None:
+                  self.events.append({
+                      "event": "ORDER_FILLED",
+                      "client_order_id": str(event.client_order_id),
+                      "ts_event": int(event.ts_event),
+                      "last_px": str(event.last_px),
+                  })
+
+              def on_position_opened(self, event: Any) -> None:
+                  self.events.append({
+                      "event": "POSITION_OPENED",
+                      "position_id": str(event.position_id),
+                      "ts_event": int(event.ts_event),
+                  })
+
+              def on_position_closed(self, event: Any) -> None:
+                  self.events.append({
+                      "event": "POSITION_CLOSED",
+                      "position_id": str(event.position_id),
+                      "ts_event": int(event.ts_event),
+                  })
+
+          engine = pyo3.BacktestEngine(
+              pyo3.BacktestEngineConfig(run_analysis=True, bypass_logging=True)
+          )
+          venue = pyo3.Venue.from_str("BINANCE")
+          currency = pyo3.Currency.from_str("USDT")
+          latency = CONFIG["cost_assumptions"]["latency_ms"]
+          venue_ok, _ = attempt(
+              "add native venue",
+              lambda: engine.add_venue(
+                  venue=venue,
+                  oms_type=pyo3.OmsType.HEDGING,
+                  account_type=pyo3.AccountType.MARGIN,
+                  starting_balances=[pyo3.Money.from_str("100000 USDT")],
+                  base_currency=currency,
+                  default_leverage=Decimal(str(CONFIG["venue"]["default_leverage"])),
+                  fill_model=pyo3.OneTickSlippageFillModel(
+                      prob_fill_on_limit=1.0,
+                      prob_slippage=0.0,
+                      random_seed=7,
+                  ),
+                  fee_model=pyo3.MakerTakerFeeModel(),
+                  latency_model=pyo3.StaticLatencyModel(
+                      base_latency_nanos=int(latency["base"] * 1_000_000),
+                      insert_latency_nanos=int(latency["insert"] * 1_000_000),
+                      update_latency_nanos=int(latency["update"] * 1_000_000),
+                      cancel_latency_nanos=int(latency["cancel"] * 1_000_000),
+                  ),
+                  reject_stop_orders=False,
+                  support_contingent_orders=True,
+                  use_position_ids=True,
+                  use_reduce_only=True,
+                  bar_execution=True,
+                  bar_adaptive_high_low_ordering=True,
+                  liquidation_enabled=True,
+                  liquidation_trigger_ratio=float(CONFIG["venue"]["liquidation_trigger_ratio"]),
+                  liquidation_cancel_open_orders=True,
+              ),
+          )
+
+          legacy = _build_instrument(
+              "BTCUSDT",
+              CONFIG["assets"]["BTCUSDT"],
+              float(CONFIG["effective_fee_rate_per_fill"]),
+          )
+          native_instrument = pyo3.CryptoPerpetual.from_dict(legacy.to_dict(legacy))
+          instrument_ok, _ = attempt(
+              "add converted BTC perpetual",
+              lambda: engine.add_instrument(native_instrument),
+          )
+
+          bar_type = pyo3.BarType.from_str("BTCUSDT-PERP.BINANCE-10-SECOND-LAST-EXTERNAL")
+          timestamps = pd.date_range("2024-04-08T00:00:10Z", periods=8, freq="10s")
+          rows = [
+              (100.0, 100.1, 99.9, 100.0),
+              (100.0, 100.5, 99.9, 100.4),
+              (100.4, 101.0, 100.2, 100.8),
+              (100.8, 101.8, 100.7, 101.6),
+              (101.6, 102.5, 101.5, 102.2),
+              (102.2, 102.3, 102.0, 102.1),
+              (102.1, 102.2, 101.9, 102.0),
+              (102.0, 102.1, 101.9, 102.0),
+          ]
+          bars = [
+              pyo3.Bar(
+                  bar_type=bar_type,
+                  open=pyo3.Price(row[0], native_instrument.price_precision),
+                  high=pyo3.Price(row[1], native_instrument.price_precision),
+                  low=pyo3.Price(row[2], native_instrument.price_precision),
+                  close=pyo3.Price(row[3], native_instrument.price_precision),
+                  volume=pyo3.Quantity.from_str("1.000"),
+                  ts_event=int(timestamp.as_unit("ns").value),
+                  ts_init=int(timestamp.as_unit("ns").value),
+              )
+              for timestamp, row in zip(timestamps, rows, strict=True)
+          ]
+          data_ok, _ = attempt("add native bars", lambda: engine.add_data(bars))
+
+          config_ok, probe_config = attempt(
+              "construct native custom StrategyConfig",
+              lambda: ProbeConfig(
+                  instrument_id=native_instrument.id,
+                  bar_type=bar_type,
+                  quantity=Decimal("0.010"),
+              ),
+          )
+          strategy_ok, strategy = attempt(
+              "construct native Python Strategy subclass",
+              lambda: ProbeStrategy(probe_config),
+          ) if config_ok else (False, None)
+          if strategy_ok:
+              strategy_ok, _ = attempt(
+                  "engine.add_strategy native Python Strategy subclass",
+                  lambda: engine.add_strategy(strategy),
+              )
+
+          run_ok = all((venue_ok, instrument_ok, data_ok, strategy_ok))
+          if run_ok:
+              run_ok, _ = attempt("engine.run native list bracket", engine.run)
+
+          report_values: dict[str, Any] = {}
+          reports_ok = run_ok
+          if reports_ok:
+              for label, fn in (
+                  ("orders", engine.generate_orders_report),
+                  ("fills", engine.generate_fills_report),
+                  ("positions", engine.generate_positions_report),
+              ):
+                  ok, value = attempt(f"generate {label} report", fn)
+                  reports_ok = reports_ok and ok
+                  if ok:
+                      report_values[label] = {
+                          "rows": int(len(value)),
+                          "columns": [str(item) for item in value.columns],
+                      }
+
+          account_ok, account = attempt(
+              "read shared native margin account",
+              lambda: engine.cache.account_for_venue(venue),
+          )
+          nav_ok = False
+          final_nav = None
+          if account_ok and account is not None:
+              balance_ok, total = attempt(
+                  "read direct shared USDT NAV",
+                  lambda: account.balance_total(currency),
+              )
+              nav_ok = bool(balance_ok and total is not None)
+              final_nav = None if total is None else str(total)
+
+          event_names = [item["event"] for item in strategy.events] if strategy is not None else []
+          bracket_ids_valid = bool(
+              strategy is not None and strategy.bracket_meta.get("client_order_ids_count") == 3
+          )
+          position_round_trip = "POSITION_OPENED" in event_names and "POSITION_CLOSED" in event_names
+          orders_rows = report_values.get("orders", {}).get("rows", 0)
+          fills_rows = report_values.get("fills", {}).get("rows", 0)
+          positions_rows = report_values.get("positions", {}).get("rows", 0)
+          reports_semantic = bool(
+              reports_ok and orders_rows >= 3 and fills_rows >= 2 and positions_rows >= 1
+          )
+          semantic_ok = bool(
+              run_ok
+              and bracket_ids_valid
+              and position_round_trip
+              and reports_semantic
+              and nav_ok
+              and engine.cache.orders_open_count() == 0
+              and engine.cache.positions_open_count() == 0
+          )
+          attempt("dispose native strategy diagnostic engine", engine.dispose)
+
+          result["strategy"] = {
+              "events": [] if strategy is None else strategy.events,
+              "event_names": event_names,
+              "bracket_meta": {} if strategy is None else strategy.bracket_meta,
+          }
+          result["reports"] = report_values
+          result["account"] = {
+              "type": None if account is None else typename(account),
+              "final_nav": final_nav,
+          }
+          result["chain"] = {
+              "native_venue": venue_ok,
+              "native_instrument": instrument_ok,
+              "native_data": data_ok,
+              "custom_native_config": config_ok,
+              "native_python_strategy_added": strategy_ok,
+              "engine_run_completed": run_ok,
+              "bracket_ids_valid": bracket_ids_valid,
+              "position_round_trip": position_round_trip,
+              "reports_semantic": reports_semantic,
+              "direct_shared_nav": nav_ok,
+              "no_open_orders": bool(engine.cache.orders_open_count() == 0),
+              "no_open_positions": bool(engine.cache.positions_open_count() == 0),
+              "semantic_smoke_passed": semantic_ok,
+          }
+          summary = {
+              "classification": result["classification"],
+              "chain": result["chain"],
+              "reports": result["reports"],
+              "account": result["account"],
+              "failures": [
+                  {key: item.get(key) for key in ("label", "error_type", "error")}
+                  for item in result["attempts"] if not item.get("ok")
+              ],
+          }
+          OUT.mkdir(parents=True, exist_ok=True)
+          (OUT / "diagnostic.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, default=str) + "\n",
+              encoding="utf-8",
+          )
+          (OUT / "summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if not semantic_ok:
+              raise SystemExit(2)
+          PY
+          } 2>&1 | tee "$OUT/runner.log"
+          status=${PIPESTATUS[0]}
+          printf '%s\n' "$status" > "$OUT/runner_exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit diagnostic evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f research/candidate-08/.run-pyo3-native-strategy-diagnostic-v3
+          git add -A -- "$OUT" research/candidate-08/.run-pyo3-native-strategy-diagnostic-v3
+          git commit -m "candidate-08: record final native list-bracket diagnostic [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce semantic smoke
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          test '${{ steps.diagnostic.outputs.status }}' = 0
