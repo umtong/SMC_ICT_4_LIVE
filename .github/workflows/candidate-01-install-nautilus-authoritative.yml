@@ -1,0 +1,115 @@
+name: candidate-01-install-nautilus-authoritative
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-install-nautilus-authoritative.yml"
+      - "research/candidate-01/install_nautilus_authoritative_path.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  install-and-prove:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Materialize the NautilusTrader-only path
+        run: |
+          set -euo pipefail
+          python3 research/candidate-01/install_nautilus_authoritative_path.py
+          python3 -m compileall -q \
+            research/candidate-01/nautilus_plan_backtest.py \
+            research/candidate-01/intrinsic_external_liquidity_v4_nautilus_week.py \
+            research/candidate-01/intrinsic_external_liquidity_v4_nautilus_period.py \
+            tests/test_candidate_01_authoritative_nautilus.py
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-intrinsic-external-v2-daily-first
+          key: candidate-01-intrinsic-external-v2-daily-BTCUSDT-2023-06-14-26-Linux-v1
+      - name: Prove the first weekly gate uses NautilusTrader
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/nautilus_plan_backtest.py \
+                research/candidate-01/intrinsic_external_liquidity_v4_nautilus_week.py \
+                research/candidate-01/intrinsic_external_liquidity_v4_nautilus_period.py
+              python -m unittest discover -s tests -p "test_candidate_01_authoritative_nautilus.py" -v
+              rm -rf artifacts/candidate-01-v4-nautilus-week-1
+              python research/candidate-01/intrinsic_external_liquidity_v4_nautilus_week.py \
+                --week 2023-06-19 \
+                --cache .cache/candidate-01-intrinsic-external-v2-daily-first \
+                --output artifacts/candidate-01-v4-nautilus-week-1 \
+                --workers 4
+            '
+      - name: Reject any non-Nautilus performance artifact
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-01-v4-nautilus-week-1")
+          summary = json.loads((root / "intrinsic_external_liquidity_v4_nautilus_week_summary.json").read_text())
+          contract = json.loads((root / "execution_contract.json").read_text())
+          metrics = json.loads((root / "nautilus_metrics.json").read_text())
+          assert summary["authoritative_backtest"] is True
+          assert summary["execution_engine"] == "NautilusTrader"
+          assert summary["custom_fill_simulator"] is False
+          assert summary["custom_pnl_or_nav_ledger"] is False
+          assert summary["risk_fraction"] == 0.03
+          assert contract["authoritative_performance_engine"] == "NautilusTrader"
+          assert metrics["execution_engine"] == "NautilusTrader"
+          assert metrics["custom_fill_simulator"] is False
+          assert metrics["custom_pnl_or_nav_ledger"] is False
+          for name in ("orders.csv", "positions.csv", "account.csv", "daily_nav.csv"):
+              assert (root / name).exists(), name
+          print(json.dumps(metrics, indent=2, sort_keys=True))
+          PY
+      - name: Persist only the proven execution path
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-01/nautilus_plan_backtest.py \
+            research/candidate-01/nautilus_execution.json \
+            research/candidate-01/intrinsic_external_liquidity_v4_nautilus_week.py \
+            research/candidate-01/intrinsic_external_liquidity_v4_nautilus_period.py \
+            research/candidate-01/AUTHORITATIVE_BACKTEST.md \
+            tests/test_candidate_01_authoritative_nautilus.py \
+            .github/workflows/candidate-01-v4-nautilus-week.yml \
+            .github/workflows/candidate-01-v4-nautilus-long.yml
+          git commit -m "refactor(candidate-01): make NautilusTrader the sole performance engine"
+          git push origin HEAD:research/candidate-01
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-v4-nautilus-week-1-${{ github.sha }}
+          path: artifacts/candidate-01-v4-nautilus-week-1
+          if-no-files-found: error
+          retention-days: 30
