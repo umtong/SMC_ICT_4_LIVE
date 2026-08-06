@@ -1,0 +1,180 @@
+name: candidate-08-pyo3-liquidation-engine-fix-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-pyo3-liquidation-engine-fix-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  patch-and-smoke:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Replace only the Nautilus engine adapter and smoke native liquidation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-08/run_aggtrade_acceptance_nautilus.py")
+          source = path.read_text(encoding="utf-8")
+
+          old_imports = '''from nautilus_trader.backtest.engine import BacktestEngine
+          from nautilus_trader.backtest.models import (
+              LatencyModel,
+              MakerTakerFeeModel,
+              OneTickSlippageFillModel,
+          )
+          from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
+          '''
+          new_imports = '''from nautilus_trader.backtest.models import (
+              LatencyModel,
+              MakerTakerFeeModel,
+              OneTickSlippageFillModel,
+          )
+          from nautilus_trader.core import nautilus_pyo3
+          '''
+          if source.count(old_imports) != 1:
+              raise SystemExit("engine import anchor mismatch")
+          source = source.replace(old_imports, new_imports)
+
+          old_engine = '''    engine = BacktestEngine(
+              config=BacktestEngineConfig(
+                  logging=LoggingConfig(log_level="ERROR", bypass_logging=True),
+                  run_analysis=True,
+              )
+          )
+          '''
+          new_engine = '''    # The pinned package exposes two BacktestEngine surfaces. The legacy Cython
+              # surface cannot configure liquidation, while the bundled Rust/PyO3 surface accepts the
+              # same in-memory instruments, data and Python strategy and provides native liquidation.
+              engine = nautilus_pyo3.BacktestEngine(
+                  nautilus_pyo3.BacktestEngineConfig(run_analysis=True)
+              )
+          '''
+          if source.count(old_engine) != 1:
+              raise SystemExit("engine construction anchor mismatch")
+          source = source.replace(old_engine, new_engine)
+
+          old_reports = '''        cached_orders = engine.cache.orders()
+                  cached_positions = engine.cache.positions()
+                  orders = ReportProvider.generate_orders_report(cached_orders)
+                  fills = ReportProvider.generate_fills_report(cached_orders)
+                  positions = ReportProvider.generate_positions_report(cached_positions)
+                  account_report = ReportProvider.generate_account_report(account)
+          '''
+          new_reports = '''        orders = engine.generate_orders_report()
+                  fills = engine.generate_fills_report()
+                  positions = engine.generate_positions_report()
+                  account_report = engine.generate_account_report(venue=VENUE)
+          '''
+          if source.count(old_reports) != 1:
+              raise SystemExit("report generation anchor mismatch")
+          source = source.replace(old_reports, new_reports)
+
+          source = source.replace(
+              '"mark_price": "latest completed one-minute mark close is available before each funding boundary and liquidation check",',
+              '"mark_price": "latest completed one-minute mark close is available before each funding boundary and the native PyO3 liquidation check",',
+          )
+          path.write_text(source, encoding="utf-8")
+          PY
+          smc4 doctor
+          python -m compileall -q research/candidate-08/run_aggtrade_acceptance_nautilus.py
+          PYTHONPATH=research/candidate-08 python - <<'PY'
+          from decimal import Decimal
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          from aggtrade_acceptance_strategy import (
+              AggTradeAcceptanceStrategy,
+              AggTradeAcceptanceStrategyConfig,
+          )
+          from run_aggtrade_acceptance_nautilus import (
+              _bars_from_ten_second_frame,
+              _build_instrument,
+              _create_engine,
+              _ten_second_bar_type,
+          )
+
+          config = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_nautilus.json").read_text())
+          instruments = {
+              symbol: _build_instrument(symbol, values, config)
+              for symbol, values in config["assets"].items()
+          }
+          bar_types = {symbol: _ten_second_bar_type(instrument) for symbol, instrument in instruments.items()}
+          timestamp = pd.Timestamp("2024-04-08T00:00:10Z")
+          frame = pd.DataFrame(
+              {"open": [100.0], "high": [100.1], "low": [99.9], "close": [100.0], "volume": [1.0]},
+              index=[timestamp],
+          )
+          bars = [
+              bar
+              for symbol, instrument in instruments.items()
+              for bar in _bars_from_ten_second_frame(frame, bar_type=bar_types[symbol], instrument=instrument)
+          ]
+          strategy = AggTradeAcceptanceStrategy(
+              AggTradeAcceptanceStrategyConfig(
+                  trading_start_ns=int(timestamp.as_unit("ns").value),
+                  trading_end_ns=int((timestamp + pd.Timedelta(minutes=1)).as_unit("ns").value),
+                  risk_fraction=Decimal("0.03"),
+                  effective_fee_rate=Decimal("0.0006"),
+                  minimum_net_reward_risk=Decimal("1.2"),
+                  maximum_hold_minutes=240,
+                  funding_avoidance_minutes=5,
+              ),
+              instrument_ids=tuple(item.id for item in instruments.values()),
+              bar_types=tuple(bar_types.values()),
+              signals_by_time_ns={},
+              funding_observations_by_instrument={str(item.id): () for item in instruments.values()},
+          )
+          engine = _create_engine(config, instruments)
+          try:
+              engine.add_data(bars)
+              engine.add_strategy(strategy)
+              engine.run()
+              assert len(engine.list_venues()) == 1
+              assert engine.generate_orders_report().empty
+              assert engine.generate_positions_report().empty
+              account = engine.cache.account_for_venue(next(iter(engine.list_venues())))
+              assert account is not None
+          finally:
+              engine.dispose()
+          print("PYO3_SHARED_ACCOUNT_LIQUIDATION_SMOKE_OK")
+          PY
+          python research/candidate-08/test_aggtrade_orderflow.py -v
+          python research/candidate-08/test_aggtrade_acceptance.py -v
+          python research/candidate-08/test_aggtrade_acceptance_pure.py -v
+          python research/candidate-08/test_aggtrade_acceptance_nautilus.py -v
+      - name: Commit controlled implementation correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f research/candidate-08/.run-pyo3-liquidation-engine-fix-v1
+          git add -A -- \
+            research/candidate-08/run_aggtrade_acceptance_nautilus.py \
+            research/candidate-08/.run-pyo3-liquidation-engine-fix-v1
+          git commit -m "candidate-08: use native PyO3 liquidation engine [skip ci]"
+          for attempt in 1 2 3 4; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
+            git rebase --abort || true
+            sleep $((attempt * 3))
+          done
+          exit 1
