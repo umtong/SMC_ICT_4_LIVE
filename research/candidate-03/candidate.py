@@ -10,5 +10,6 @@ def describe() -> str:
         "fees, funding, margin, liquidation, positions, and NAV accounting are mandatory "
         "for every weekly and long evaluation. Execution windows retain original-time "
         "first/last and bid/ask extrema per observed second; BacktestNode uses its one-shot "
-        "mixed catalog loader so QuoteTick and FundingRateUpdate are both natively replayed."
+        "mixed catalog loader, and risk sizing plus result aggregation read the requested "
+        "currency from NautilusTrader's native Portfolio equity map."
     )
