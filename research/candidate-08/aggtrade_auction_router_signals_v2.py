@@ -37,6 +37,7 @@ from aggtrade_auction_router_signals import (
 
 
 IMPLEMENTATION_REVISION = "FAILED_AUCTION_FULL_OBSERVED_SWEEP_THROUGH_CONFIRMATION_V2"
+_V1_TRADEABLE_DIAGNOSTIC = "TRADEABLE_FAILED_AUCTION_REVERSAL"
 
 
 def _family(signal: AcceptanceSignal) -> str:
@@ -53,6 +54,11 @@ def _observed_sweep_through_confirmation(
         raise RuntimeError(
             f"signal index outside ten-second frame: {signal.scenario_id} index={signal.signal_index}"
         )
+    if "sweep_high" not in signal.details or "sweep_low" not in signal.details:
+        raise RuntimeError(
+            f"failed-auction signal lacks reclaim-time sweep state: {signal.scenario_id}"
+        )
+
     timestamps_ns = data.index.as_unit("ns").asi8
     confirmation_position = int(signal.signal_index)
     confirmation_time_ns = int(timestamps_ns[confirmation_position])
@@ -63,18 +69,26 @@ def _observed_sweep_through_confirmation(
             f"signal_time={signal.signal_time_ns}"
         )
 
-    reclaim_position = int(
-        np.searchsorted(timestamps_ns, int(signal.retest_time_ns), side="left")
-    )
+    reclaim_time_ns = int(signal.retest_time_ns)
+    reclaim_position = int(np.searchsorted(timestamps_ns, reclaim_time_ns, side="left"))
+    if (
+        reclaim_position >= len(timestamps_ns)
+        or int(timestamps_ns[reclaim_position]) != reclaim_time_ns
+    ):
+        raise RuntimeError(
+            "failed-auction reclaim timestamp is not an exact completed ten-second row: "
+            f"{signal.scenario_id} reclaim_time={reclaim_time_ns}"
+        )
     if reclaim_position > confirmation_position:
         raise RuntimeError(
             f"failed-auction reclaim occurs after confirmation: {signal.scenario_id}"
         )
+
     observed = data.iloc[reclaim_position : confirmation_position + 1]
     observed_high = float(pd.to_numeric(observed["high"], errors="coerce").max())
     observed_low = float(pd.to_numeric(observed["low"], errors="coerce").min())
-    initial_high = float(signal.details.get("sweep_high", observed_high))
-    initial_low = float(signal.details.get("sweep_low", observed_low))
+    initial_high = float(signal.details["sweep_high"])
+    initial_low = float(signal.details["sweep_low"])
     sweep_high = max(initial_high, observed_high)
     sweep_low = min(initial_low, observed_low)
     if not all(isfinite(value) for value in (sweep_high, sweep_low)):
@@ -120,8 +134,8 @@ def _refine_failed_auction_signal(
     sweep_high, sweep_low, reclaim_position, confirmation_position = (
         _observed_sweep_through_confirmation(data, signal)
     )
-    old_high = float(signal.details.get("sweep_high", sweep_high))
-    old_low = float(signal.details.get("sweep_low", sweep_low))
+    old_high = float(signal.details["sweep_high"])
+    old_low = float(signal.details["sweep_low"])
     changed = sweep_high > old_high or sweep_low < old_low
 
     stop, stop_reference, stop_reference_source = _failed_auction_stop(
@@ -207,6 +221,16 @@ def _refine_failed_auction_signal(
     )
 
 
+def _remove_v1_tradeable_diagnostic(diagnostics: Counter[str]) -> None:
+    current = int(diagnostics.get(_V1_TRADEABLE_DIAGNOSTIC, 0))
+    if current <= 0:
+        raise RuntimeError(
+            "failed-auction refinement removed a signal without a matching v1 tradeable count"
+        )
+    diagnostics[_V1_TRADEABLE_DIAGNOSTIC] = current - 1
+    diagnostics["FAILED_AUCTION_REVERSAL_REMOVED_BY_SWEEP_REFINEMENT"] += 1
+
+
 def build_auction_router_signals(
     *,
     data: pd.DataFrame,
@@ -259,6 +283,7 @@ def build_auction_router_signals(
             if rejection is not None:
                 reason = str(rejection["reason"])
                 diagnostics[reason] += 1
+                _remove_v1_tradeable_diagnostic(diagnostics)
                 rejected.append(rejection)
                 continue
             assert refined is not None
@@ -271,6 +296,18 @@ def build_auction_router_signals(
                     reverse=True,
                 )
             )
+
+    actual_failed_signals = sum(
+        _family(signal) == FAILED_AUCTION_FAMILY
+        for items in signals.values()
+        for signal in items
+    )
+    reported_failed_signals = int(diagnostics.get(_V1_TRADEABLE_DIAGNOSTIC, 0))
+    if actual_failed_signals != reported_failed_signals:
+        raise RuntimeError(
+            "failed-auction tradeable diagnostic diverged from emitted v2 signals: "
+            f"actual={actual_failed_signals} reported={reported_failed_signals}"
+        )
 
     return AcceptanceSignalBundle(
         signals_by_time_ns=signals,
