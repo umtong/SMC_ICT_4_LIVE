@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
-from aggtrade_flow_response_auction_signals_v2 import (
+from aggtrade_flow_response_auction_signals_v3 import (
     ABSORPTION_FAMILY,
     IMPLEMENTATION_REVISION,
     INITIATIVE_FAMILY,
