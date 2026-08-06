@@ -1,0 +1,97 @@
+name: candidate-02-research-status-report
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-status-report.yml"
+      - "research/candidate-02/v77_*decision.json"
+      - "research/candidate-02/v77_terminal_status.json"
+      - "research/candidate-02/v77_long_lock.json"
+      - "research/candidate-02/v78_*decision.json"
+      - "research/candidate-02/v78_*lock.json"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-02-status-report
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 1}
+      - name: Build exact status report
+        shell: bash
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from datetime import datetime,timezone
+          from pathlib import Path
+
+          root=Path('research/candidate-02')
+          names=[
+              'v77_first_week_decision.json','v77_week2_decision.json','v77_week3_decision.json','v77_terminal_status.json','v77_long_lock.json',
+              'v78_first_week_lock.json','v78_first_week_decision.json','v78_week2_lock.json','v78_week2_decision.json','v78_week3_lock.json','v78_week3_decision.json','v78_long_lock.json',
+          ]
+          docs={}
+          for name in names:
+              path=root/name
+              if path.exists():
+                  try:docs[name]=json.loads(path.read_text())
+                  except Exception as exc:docs[name]={'status':'MALFORMED','error':repr(exc)}
+
+          terminal='NO_COMPLETE_CANDIDATE'
+          for name in ('v78_long_lock.json','v77_long_lock.json'):
+              if name in docs:
+                  terminal='THREE_WEEK_PASS_LONG_EVALUATION_PENDING'
+          for name in ('v78_week3_decision.json','v77_week3_decision.json'):
+              status=str(docs.get(name,{}).get('status',''))
+              if status.startswith('PASSED') and terminal=='NO_COMPLETE_CANDIDATE':terminal='THREE_WEEK_PASS_REQUIRES_LONG_LOCK'
+          # Project success is never inferred from a weekly lock.
+          project_success=False
+
+          def metric_row(label,data):
+              m=data.get('metrics',data)
+              def fmt(key,percent=False):
+                  value=m.get(key)
+                  if value is None:return '—'
+                  try:return f'{float(value):.3%}' if percent else f'{float(value):.3f}'
+                  except Exception:return str(value)
+              return f"| {label} | {data.get('status',data.get('decision','—'))} | {fmt('trades_per_day')} | {fmt('win_rate',True)} | {fmt('profit_factor_after_cost')} | {fmt('geometric_daily_growth_after_cost',True)} | {fmt('maximum_mark_to_market_drawdown',True)} |"
+
+          lines=[
+              '# Candidate-02 exact research status','',
+              f'- Updated UTC: `{datetime.now(timezone.utc).isoformat()}`',
+              '- Performance engine: **NautilusTrader 1.230.0 only**',
+              '- Risk per trade: **3% of current account NAV**',
+              '- Custom backtest engine: **not permitted and not accepted as evidence**',
+              f'- Project success: **{str(project_success).lower()}**',
+              f'- Current terminal classification: **{terminal}**','',
+              '## Sequential gate results','',
+              '| Gate | Status | Trades/day | Win rate | PF after cost | Geometric growth/day | MDD |',
+              '|---|---|---:|---:|---:|---:|---:|',
+          ]
+          for name in ('v77_first_week_decision.json','v77_week2_decision.json','v77_week3_decision.json','v78_first_week_decision.json','v78_week2_decision.json','v78_week3_decision.json'):
+              if name in docs:lines.append(metric_row(name.removesuffix('.json'),docs[name]))
+          if len(lines)==13:lines.append('| none completed | — | — | — | — | — | — |')
+          lines+=['','## Exact machine records','']
+          for name,data in docs.items():
+              lines += [f'### `{name}`','', '```json',json.dumps(data,indent=2,sort_keys=True),'```','']
+          lines += ['## Interpretation','',
+                    'A first-week plateau, a second-week pass, or a third-week lock is not a completed project candidate. The project is successful only after the unchanged rule passes all three random BTC weeks, a prelocked long evaluation, and the final four-symbol global-single-position evaluation at the fixed 3% risk contract.']
+          (root/'CURRENT_RESEARCH_STATUS.md').write_text('\n'.join(lines),encoding='utf-8')
+          PY
+      - name: Commit report when changed
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-02/CURRENT_RESEARCH_STATUS.md
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "docs(candidate-02): update exact research status"
+          git pull --rebase origin research/candidate-02
+          git push origin HEAD:research/candidate-02
