@@ -1,0 +1,101 @@
+name: candidate-02-v77-terminal-router
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v77-terminal-router.yml"
+      - "research/candidate-02/v77_first_week_decision.json"
+      - "research/candidate-02/v77_week2_decision.json"
+      - "research/candidate-02/v77_week3_decision.json"
+      - "research/candidate-02/v77_long_lock.json"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-02-v77-terminal-router
+  cancel-in-progress: true
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Wait only for an actual terminal transition
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import subprocess
+          import time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          root = Path("research/candidate-02")
+          terminal = None
+          snapshots = {}
+
+          def read_json(name):
+              path = root / name
+              if not path.exists():
+                  return None
+              try:
+                  return json.loads(path.read_text(encoding="utf-8"))
+              except Exception as exc:
+                  return {"status": "MALFORMED_DECISION_FILE", "error": repr(exc), "path": str(path)}
+
+          for _ in range(48):
+              subprocess.run(["git", "fetch", "origin", "research/candidate-02"], check=True, stdout=subprocess.DEVNULL)
+              subprocess.run(["git", "reset", "--hard", "origin/research/candidate-02"], check=True, stdout=subprocess.DEVNULL)
+              first = read_json("v77_first_week_decision.json")
+              second = read_json("v77_week2_decision.json")
+              third = read_json("v77_week3_decision.json")
+              long_lock = read_json("v77_long_lock.json")
+              snapshots = {"first_week": first, "second_week": second, "third_week": third, "long_lock": long_lock}
+
+              if long_lock and long_lock.get("status") == "LOCKED_BEFORE_LONG_EVALUATION":
+                  terminal = "THREE_RANDOM_BTC_WEEKS_PASSED_LONG_EVALUATION_LOCKED"
+              elif third and str(third.get("status", "")).startswith(("REJECTED", "IMPLEMENTATION_ERROR")):
+                  terminal = str(third.get("status"))
+              elif second and str(second.get("status", "")).startswith(("REJECTED", "IMPLEMENTATION_ERROR")):
+                  terminal = str(second.get("status"))
+              elif first and str(first.get("status", "")).startswith(("REJECTED", "IMPLEMENTATION_ERROR")):
+                  terminal = str(first.get("status"))
+
+              if terminal:
+                  break
+              time.sleep(15)
+
+          if terminal is None:
+              terminal = "NON_TERMINAL_PIPELINE_TIMEOUT_DO_NOT_CLASSIFY_AS_STRATEGY_FAILURE"
+
+          output = {
+              "candidate_family": "candidate-02-v77-quarter-hour-metaorder-wave",
+              "status": terminal,
+              "recorded_utc": datetime.now(timezone.utc).isoformat(),
+              "performance_engine": "NautilusTrader 1.230.0",
+              "custom_backtest_engine": False,
+              "risk_fraction": 0.03,
+              "snapshots": snapshots,
+          }
+          path = root / "v77_terminal_status.json"
+          path.write_text(json.dumps(output, indent=2, sort_keys=True), encoding="utf-8")
+          print(json.dumps({"status": terminal}, indent=2))
+          PY
+
+      - name: Commit terminal state when changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-02/v77_terminal_status.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research(candidate-02): record v77 terminal state"
+          git push origin HEAD:research/candidate-02
