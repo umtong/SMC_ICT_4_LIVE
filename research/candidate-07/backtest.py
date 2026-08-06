@@ -18,7 +18,7 @@ from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
 from nautilus_trader.model.data import BarType
 try:
     from nautilus_trader.model.data import FundingRateUpdate
-except ImportError:
+except ImportError:  # pragma: no cover - compatibility for older module layout
     from nautilus_trader.model.data.funding import FundingRateUpdate
 from nautilus_trader.model.enums import AccountType, OmsType
 from nautilus_trader.model.identifiers import Venue
@@ -79,9 +79,11 @@ def _max_drawdown(nav_points: Iterable[Mapping[str, Any]]) -> float:
 
 def _one_slot_invariant(trades: list[Mapping[str, Any]]) -> bool:
     intervals = sorted(
-        (int(item["opened_ns"]), int(item["closed_ns"]))
-        for item in trades
-        if item.get("opened_ns") is not None and item.get("closed_ns") is not None
+        (
+            (int(item["opened_ns"]), int(item["closed_ns"]))
+            for item in trades
+            if item.get("opened_ns") is not None and item.get("closed_ns") is not None
+        ),
     )
     return all(current[0] >= previous[1] for previous, current in zip(intervals, intervals[1:]))
 
@@ -100,7 +102,11 @@ def _metrics(
 ) -> dict[str, Any]:
     start_ns = _utc_ns(start)
     end_ns = _utc_ns(end)
-    nav_points = [dict(item) for item in strategy.nav_series if start_ns <= int(item["timestamp_ns"]) <= end_ns]
+    nav_points = [
+        dict(item)
+        for item in strategy.nav_series
+        if start_ns <= int(item["timestamp_ns"]) <= end_ns
+    ]
     initial_nav = float(config["initial_nav"])
     final_nav = float(nav_points[-1]["nav"]) if nav_points else initial_nav
     days = max(1.0, (end_ns - start_ns) / 86_400_000_000_000)
@@ -113,9 +119,12 @@ def _metrics(
     gross_loss = abs(sum(float(item["net_pnl"]) for item in losses))
     close_dates = {
         datetime.fromtimestamp(int(item["closed_ns"]) / 1e9, tz=timezone.utc).date().isoformat()
-        for item in trades if item.get("closed_ns") is not None
+        for item in trades
+        if item.get("closed_ns") is not None
     }
-    single_winner_share = max(float(item["net_pnl"]) for item in wins) / gross_profit if wins and gross_profit > 0.0 else 0.0
+    single_winner_share = (
+        max(float(item["net_pnl"]) for item in wins) / gross_profit if wins and gross_profit > 0.0 else 0.0
+    )
     by_scenario: dict[str, dict[str, Any]] = {}
     for kind in sorted({str(item["kind"]) for item in trades}):
         subset = [item for item in trades if item["kind"] == kind]
@@ -123,7 +132,9 @@ def _metrics(
             "trades": len(subset),
             "wins": sum(float(item["net_pnl"]) > 0.0 for item in subset),
             "net_pnl": sum(float(item["net_pnl"]) for item in subset),
-            "mean_nav_return": sum(float(item["net_return_on_nav"]) for item in subset) / len(subset) if subset else 0.0,
+            "mean_nav_return": (
+                sum(float(item["net_return_on_nav"]) for item in subset) / len(subset) if subset else 0.0
+            ),
         }
     reason_counts: dict[str, int] = defaultdict(int)
     state_counts: dict[str, int] = defaultdict(int)
@@ -132,7 +143,10 @@ def _metrics(
         state_counts[event.next_state] += 1
 
     commission_columns = [column for column in fills.columns if "commission" in str(column).lower()]
-    total_commissions = sum(_money_number(value) for column in commission_columns for value in fills[column].tolist())
+    total_commissions = 0.0
+    for column in commission_columns:
+        total_commissions += sum(_money_number(value) for value in fills[column].tolist())
+
     gate = dict(config["weekly_gate"])
     checks = {
         "daily_growth": daily_geometric_growth >= float(gate["minimum_daily_geometric_growth"]),
@@ -177,7 +191,9 @@ def _metrics(
         "gross_profit": gross_profit,
         "gross_loss": gross_loss,
         "profit_factor": gross_profit / gross_loss if gross_loss > 0.0 else (float("inf") if gross_profit > 0.0 else 0.0),
-        "mean_nav_return_per_trade": sum(float(item["net_return_on_nav"]) for item in trades) / len(trades) if trades else 0.0,
+        "mean_nav_return_per_trade": (
+            sum(float(item["net_return_on_nav"]) for item in trades) / len(trades) if trades else 0.0
+        ),
         "max_drawdown": _max_drawdown(nav_points),
         "active_days": len(close_dates),
         "single_winner_share": single_winner_share,
@@ -195,8 +211,11 @@ def _metrics(
             "risk_fraction": float(config["risk_fraction"]),
             "sizing_nav_basis": "full current NautilusTrader portfolio equity",
             "unit_loss_components": [
-                "entry-to-adverse-stop-fill distance", "entry taker fee", "stop taker fee",
-                "one adverse tick on entry and stop", "configured adverse funding reserve",
+                "entry-to-adverse-stop-fill distance",
+                "entry taker fee",
+                "stop taker fee",
+                "one adverse tick on entry and stop",
+                "configured adverse funding reserve",
             ],
             "arbitrary_notional_cap": False,
             "model_score_risk_multiplier": False,
@@ -216,29 +235,66 @@ def _metrics(
     }
 
 
-def run_week(*, config_path: Path, stage: str, start: date, end: date, output: Path, cache_root: Path) -> dict[str, Any]:
+def run_week(
+    *,
+    config_path: Path,
+    stage: str,
+    start: date,
+    end: date,
+    output: Path,
+    cache_root: Path,
+) -> dict[str, Any]:
     config = json.loads(config_path.read_text(encoding="utf-8"))
     output.mkdir(parents=True, exist_ok=True)
     data_manifest_path = output / "data_manifest.json"
     bundle = load_bundle(
-        symbol=str(config["symbol"]), trade_start=start, trade_end=end,
-        warmup_days=int(config["warmup_days"]), cache_root=cache_root,
+        symbol=str(config["symbol"]),
+        trade_start=start,
+        trade_end=end,
+        warmup_days=int(config["warmup_days"]),
+        cache_root=cache_root,
         manifest_destination=data_manifest_path,
     )
     write_bundle_summary(output / "data_summary.json", bundle)
 
     instrument = TestInstrumentProvider.btcusdt_perp_binance()
     bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-LAST-EXTERNAL")
-    bars = BarDataWrangler(bar_type, instrument).process(bundle.frame)
+    # Pandas copy-on-write exposes read-only NumPy views in recent releases,
+    # while NautilusTrader 1.230.0's Cython wrangler requires writable buffers.
+    # Rebuild an owned contiguous frame without changing any market values.
+    writable_frame = pd.DataFrame(
+        {
+            column: bundle.frame[column].to_numpy(dtype="float64", copy=True)
+            for column in ("open", "high", "low", "close", "volume")
+        },
+        index=pd.DatetimeIndex(
+            bundle.frame.index.to_numpy(dtype="datetime64[ns]", copy=True),
+            tz="UTC",
+            name=bundle.frame.index.name,
+        ),
+    )
+    for column in writable_frame.columns:
+        writable_frame[column].to_numpy(copy=False).setflags(write=True)
+    writable_frame.index.to_numpy(copy=False).setflags(write=True)
+    bars = BarDataWrangler(bar_type, instrument).process(writable_frame)
     funding_updates = [
         FundingRateUpdate(
-            instrument_id=instrument.id, rate=point.rate, interval=point.interval_minutes,
-            next_funding_ns=None, ts_event=point.ts_event_ns, ts_init=point.ts_event_ns,
+            instrument_id=instrument.id,
+            rate=point.rate,
+            interval=point.interval_minutes,
+            next_funding_ns=None,
+            ts_event=point.ts_event_ns,
+            ts_init=point.ts_event_ns,
         )
         for point in bundle.funding
     ]
 
-    engine = BacktestEngine(config=BacktestEngineConfig(logging=LoggingConfig(log_level="ERROR"), shutdown_on_error=True))
+    engine = BacktestEngine(
+        config=BacktestEngineConfig(
+            logging=LoggingConfig(log_level="ERROR"),
+            shutdown_on_error=True,
+        ),
+    )
     venue = Venue("BINANCE")
     usdt = Currency.from_str("USDT")
     fill_model = FillModel(
@@ -257,7 +313,7 @@ def run_week(*, config_path: Path, stage: str, start: date, end: date, output: P
             risk_funding_reserve_bps=Decimal(str(config["risk_funding_reserve_bps"])),
             max_hold_minutes=int(config["max_hold_minutes"]),
             logic_json=json.dumps(config["logic"], sort_keys=True),
-        )
+        ),
     )
 
     try:
@@ -288,10 +344,20 @@ def run_week(*, config_path: Path, stage: str, start: date, end: date, output: P
         pd.DataFrame(strategy.nav_series).to_csv(output / "nav.csv", index=False)
         pd.DataFrame(strategy.trade_diagnostics).to_csv(output / "trades.csv", index=False)
         write_events(output / "events.jsonl", strategy.research_events)
-        write_json_atomic(output / "scenario_diagnostics.json", {"observations": list(strategy.scenario_diagnostics)})
+        write_json_atomic(
+            output / "scenario_diagnostics.json",
+            {"observations": list(strategy.scenario_diagnostics)},
+        )
         metrics = _metrics(
-            config=config, stage=stage, start=start, end=end, strategy=strategy,
-            fills=fills, positions=positions, account=account, funding_points=len(funding_updates),
+            config=config,
+            stage=stage,
+            start=start,
+            end=end,
+            strategy=strategy,
+            fills=fills,
+            positions=positions,
+            account=account,
+            funding_points=len(funding_updates),
         )
         write_json_atomic(output / "metrics.json", _json_safe(metrics))
         run_id = f"candidate-07-{stage}-{start.isoformat()}"
@@ -303,9 +369,13 @@ def run_week(*, config_path: Path, stage: str, start: date, end: date, output: P
                 config_path=config_path,
                 data_manifest_path=data_manifest_path,
                 extra={
-                    "stage": stage, "start": start.isoformat(), "end_exclusive": end.isoformat(),
-                    "instrument_id": str(instrument.id), "bar_type": str(bar_type),
-                    "engine": "NautilusTrader BacktestEngine", "bars": len(bars),
+                    "stage": stage,
+                    "start": start.isoformat(),
+                    "end_exclusive": end.isoformat(),
+                    "instrument_id": str(instrument.id),
+                    "bar_type": str(bar_type),
+                    "engine": "NautilusTrader BacktestEngine",
+                    "bars": len(bars),
                     "funding_updates": len(funding_updates),
                 },
             ),
