@@ -1,0 +1,89 @@
+name: candidate-10-v20-research
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/v20_source.zip
+      - research/candidate-10/V20_HYPOTHESIS.md
+      - .github/workflows/candidate-10-v20-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-10-v20-research-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract immutable v20 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/candidate10-v20
+          mkdir -p /tmp/candidate10-v20 artifacts/candidate-10-v20
+          unzip -q research/candidate-10/v20_source.zip -d /tmp/candidate10-v20
+          chmod -R a+rwx artifacts
+
+      - name: Test and run preselected BTC gate in pinned NautilusTrader image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -v /tmp/candidate10-v20:/tmp/candidate10-v20 \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate10-v20:/workspace/research/candidate-10:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              smc4 doctor
+              python -m py_compile /tmp/candidate10-v20/*.py
+              python -m unittest discover -s /tmp/candidate10-v20 -p "test_*.py" -v
+              python /tmp/candidate10-v20/run_research.py \
+                --phase auto \
+                --output artifacts/candidate-10-v20 \
+                --data-root /tmp/candidate-10-v20-data
+            '
+
+      - name: Upload reproducible v20 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v20-${{ github.sha }}
+          path: artifacts/candidate-10-v20
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Materialize reviewed source on candidate branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-10
+          git reset --hard origin/research/candidate-10
+          rm -rf research/candidate-10/v20
+          mkdir -p research/candidate-10/v20
+          unzip -q research/candidate-10/v20_source.zip -d research/candidate-10/v20
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-10/v20
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-10: materialize v20 liquidation auction source"
+          git push origin HEAD:research/candidate-10
