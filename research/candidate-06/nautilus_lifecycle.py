@@ -11,6 +11,44 @@ from nautilus_strategy_common import money_to_float as _money_to_float, utc_day 
 class NautilusLifecycleMixin:
     """Translate Nautilus events into causal scenario and trade records."""
 
+    def _handle_unfilled_entry_terminal(self, event: Any, code: str) -> None:
+        trade = self._active_trade
+        if trade is None:
+            return
+        expected = trade.get("entry_client_order_id")
+        actual = str(getattr(event, "client_order_id", ""))
+        if expected is None or actual != str(expected):
+            return
+        scenario_id = trade["scenario_id"]
+        state = self._scenario_states.get(scenario_id, "UNKNOWN")
+        if state == "POSITION":
+            return
+        counts = self.diagnostics.setdefault("unfilled_entry_terminal_counts", {})
+        counts[code] = int(counts.get(code, 0)) + 1
+        if state == "ORDER_SUBMITTED":
+            self._record_external_transition(
+                scenario_id=scenario_id,
+                previous_state="ORDER_SUBMITTED",
+                next_state="RESET",
+                reason=code,
+                ts_ns=int(event.ts_event),
+                reference_price=trade.get("expected_entry_price"),
+                details={
+                    "entry_order_type": trade.get("entry_order_type"),
+                    "entry_execution_mode": trade.get("entry_execution_mode"),
+                    "entry_expiry_ts_ns": trade.get("entry_expiry_ts_ns"),
+                },
+            )
+        self._active_trade = None
+        self._entry_inflight = False
+        self._exit_inflight = False
+
+    def on_order_expired(self, event: Any) -> None:
+        self._handle_unfilled_entry_terminal(event, "UNFILLED_ENTRY_EXPIRED")
+
+    def on_order_canceled(self, event: Any) -> None:
+        self._handle_unfilled_entry_terminal(event, "UNFILLED_ENTRY_CANCELED")
+
     def on_position_opened(self, event: Any) -> None:
         if self._active_trade is None:
             self.errors.append(f"position opened without active trade: {event}")
