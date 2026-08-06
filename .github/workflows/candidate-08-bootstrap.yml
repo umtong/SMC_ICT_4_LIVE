@@ -18,14 +18,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Materialize candidate source
+      - name: Materialize candidate source without changing workflows
         shell: bash
         run: |
           set -euo pipefail
           cat research/candidate-08/.bootstrap/part-* | base64 -d > /tmp/candidate08.tar.gz
           tar -xzf /tmp/candidate08.tar.gz -C .
           rm -rf research/candidate-08/.bootstrap
-          rm -f .github/workflows/candidate-08-bootstrap.yml
+          rm -f .github/workflows/candidate-08.yml
           python -m compileall -q research/candidate-08
           python research/candidate-08/test_logic.py -v
           git config user.name "github-actions[bot]"
