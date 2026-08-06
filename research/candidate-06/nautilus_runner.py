@@ -70,6 +70,20 @@ def frame_to_observations(frame: pd.DataFrame) -> dict[int, BarObservation]:
     return observations
 
 
+def _detached_bar_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Create fresh writable column buffers for the Cython BarDataWrangler.
+
+    Pandas may expose read-only views after concatenating checksum-verified daily
+    archives.  Reconstructing from Python lists changes no values or timestamps;
+    it only gives NautilusTrader writable, independently owned arrays.
+    """
+    columns = ("open", "high", "low", "close", "volume")
+    return pd.DataFrame(
+        {column: [float(value) for value in frame[column].tolist()] for column in columns},
+        index=pd.DatetimeIndex(frame.index.tolist()),
+    )
+
+
 def run_nautilus_backtest(
     frame: pd.DataFrame,
     *,
@@ -89,7 +103,7 @@ def run_nautilus_backtest(
     effective_fee = Decimal(str(config["effective_fee_rate_per_fill"]))
     instrument = build_btcusdt_perpetual(effective_fee)
     bar_type = BarType.from_str("BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL")
-    bars_frame = frame[["open", "high", "low", "close", "volume"]].copy()
+    bars_frame = _detached_bar_frame(frame)
     bars = BarDataWrangler(bar_type, instrument).process(bars_frame)
     observations = frame_to_observations(frame)
     if len(bars) != len(observations):
