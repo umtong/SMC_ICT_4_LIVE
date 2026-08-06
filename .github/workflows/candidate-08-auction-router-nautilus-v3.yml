@@ -47,22 +47,28 @@ jobs:
             research/candidate-08/aggtrade_acceptance_mark_price.py \
             research/candidate-08/aggtrade_acceptance_signals.py \
             research/candidate-08/aggtrade_auction_router_signals.py \
+            research/candidate-08/aggtrade_auction_router_signals_v2.py \
             research/candidate-08/aggtrade_acceptance_strategy.py \
             research/candidate-08/aggtrade_acceptance_evaluation.py \
             research/candidate-08/run_aggtrade_acceptance_nautilus.py \
             research/candidate-08/run_aggtrade_auction_router_nautilus.py \
-            research/candidate-08/test_aggtrade_auction_runner.py
+            research/candidate-08/run_aggtrade_auction_router_nautilus_v2.py \
+            research/candidate-08/test_aggtrade_auction_runner.py \
+            research/candidate-08/test_aggtrade_auction_router_v2.py
           python research/candidate-08/test_aggtrade_orderflow.py -v
           python research/candidate-08/test_aggtrade_acceptance.py -v
           python research/candidate-08/test_aggtrade_acceptance_pure.py -v
           python research/candidate-08/test_aggtrade_acceptance_nautilus.py -v
           python research/candidate-08/test_aggtrade_auction_router.py -v
+          python research/candidate-08/test_aggtrade_auction_router_v2.py -v
           python research/candidate-08/test_aggtrade_auction_runner.py -v
           python - <<'PY'
           from pathlib import Path
 
           detector = Path("research/candidate-08/aggtrade_auction_router_signals.py").read_text()
+          refinement = Path("research/candidate-08/aggtrade_auction_router_signals_v2.py").read_text()
           wrapper = Path("research/candidate-08/run_aggtrade_auction_router_nautilus.py").read_text()
+          v2_runner = Path("research/candidate-08/run_aggtrade_auction_router_nautilus_v2.py").read_text()
           workflow = Path(".github/workflows/candidate-08-auction-router-nautilus-v3.yml").read_text()
           config = Path("research/candidate-08/config_auction_router_nautilus_v1.json").read_text()
 
@@ -70,8 +76,12 @@ jobs:
           assert "FAILED_AUCTION_REVERSAL" in detector
           assert "displacement_depth < reserve" in detector
           assert "require_contraction=False" in detector
+          assert "FAILED_AUCTION_FULL_OBSERVED_SWEEP_THROUGH_CONFIRMATION_V2" in refinement
+          assert "_observed_sweep_through_confirmation" in refinement
+          assert "UPDATED_SWEEP_INSUFFICIENT_COST_AFTER_EXTERNAL_TARGET" in refinement
           assert "_normalize_intent_scenario_families" in wrapper
           assert 'summary["by_scenario_family"]' in wrapper
+          assert "runner.build_auction_router_signals = build_auction_router_signals" in v2_runner
           assert 'AUCTION_ROUTER_FAMILY_MODE: both' in workflow
           assert 'runs-on: ubuntu-26.04' in workflow
           assert 'cancel-in-progress: true' in workflow
@@ -105,13 +115,14 @@ jobs:
             "suite": "first",
             "ablation": "none",
             "auction_family_mode": "both",
+            "implementation_revision": "failed-auction-full-observed-sweep-v2",
             "output_name": "first-v2",
             "promotable": true,
             "scenario_contract": "auction-router-v1"
           }
           JSON
           set +e
-          python research/candidate-08/run_aggtrade_auction_router_nautilus.py \
+          python research/candidate-08/run_aggtrade_auction_router_nautilus_v2.py \
             --suite first \
             --ablation none \
             --config "$CONFIG" \
@@ -147,6 +158,7 @@ jobs:
             "suite": "screen",
             "ablation": "none",
             "auction_family_mode": "both",
+            "implementation_revision": "failed-auction-full-observed-sweep-v2",
             "output_name": "screen-v1",
             "promotable": true,
             "scenario_contract": "auction-router-v1",
@@ -154,7 +166,7 @@ jobs:
           }
           JSON
           set +e
-          python research/candidate-08/run_aggtrade_auction_router_nautilus.py \
+          python research/candidate-08/run_aggtrade_auction_router_nautilus_v2.py \
             --suite screen \
             --ablation none \
             --config "$CONFIG" \
@@ -188,6 +200,7 @@ jobs:
           decision = {
               "candidate": "candidate-08-auction-router-nautilus-v1",
               "auction_family_mode": "both",
+              "implementation_revision": "failed-auction-full-observed-sweep-v2",
               "first_runner_status": os.environ.get("FIRST_STATUS", ""),
               "first_gate_passed": os.environ.get("FIRST_PASSED", "false") == "true",
               "screen_runner_status": os.environ.get("SCREEN_STATUS", ""),
