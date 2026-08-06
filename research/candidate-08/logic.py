@@ -233,7 +233,12 @@ class LiquidityBifurcationLogic:
             event_type="SCENARIO_CANCELLED",
             event_time_ns=bar.ts_event_ns,
             observed_time_ns=bar.ts_event_ns,
-            previous_state="ARMED",
+            previous_state=(
+                "RETEST_HELD"
+                if self.pending.family is ScenarioFamily.ACCEPTANCE
+                and self.pending.retest_index is not None
+                else "ARMED"
+            ),
             next_state="CANCELLED",
             reason_code=reason_code,
             reference_price=bar.close,
@@ -677,7 +682,12 @@ class LiquidityBifurcationLogic:
             event_type="SCENARIO_CONFIRMED",
             event_time_ns=bar.ts_event_ns,
             observed_time_ns=bar.ts_event_ns,
-            previous_state="ARMED",
+            previous_state=(
+                "RETEST_HELD"
+                if pending.family is ScenarioFamily.ACCEPTANCE
+                and pending.retest_index is not None
+                else "ARMED"
+            ),
             next_state="CONFIRMED",
             reason_code=setup.reason_code,
             reference_price=entry,
