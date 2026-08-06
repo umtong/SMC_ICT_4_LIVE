@@ -224,6 +224,7 @@ class NTLvcfrStrategy(Strategy):
             "structural_break_even_ratchets": 0,
             "structural_trail_updates": 0,
             "structural_objective_buffer_activations": 0,
+            "waypoint_structure_trail_activations": 0,
             "entries_submitted": 0,
             "entries_rejected": 0,
             "exits_submitted": 0,
@@ -743,40 +744,94 @@ class NTLvcfrStrategy(Strategy):
         active.mfe_net_r = max(active.mfe_net_r, net_r)
 
         structural_trigger = signal_structural_protection_trigger(active.signal)
+        scenario_kind = str(active.signal.get("scenario_kind", ""))
+        boundary_invalidation = scenario_kind == "VALUE_EDGE_CONTINUATION"
         if (
             structural_trigger is not None
             and not active.structural_protection_active
             and active.direction * (executable - structural_trigger) > 0.0
         ):
-            buffer = self.config.continuation_trail_buffer_atr * active.atr
-            buffered_stop = structural_trigger - active.direction * buffer
-            if active.direction * (executable - buffered_stop) <= 0.0:
-                raise RuntimeError("buffered structural stop is not behind executable price")
             active.structural_protection_active = True
-            active.stop = (
-                max(active.stop, buffered_stop)
-                if active.direction > 0
-                else min(active.stop, buffered_stop)
-            )
             self.counters["structural_protection_activations"] += 1
-            self.counters["structural_objective_buffer_activations"] += 1
-            self._emit(
-                scenario_id=active.signal["scenario_id"],
-                event_type="STRUCTURAL_OBJECTIVE_BUFFER_ACTIVATED",
-                event_time_ns=timestamp_ns,
-                observed_time_ns=timestamp_ns,
-                previous_state=f"{active.kind}_ACTIVE",
-                next_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
-                reason_code="FIRST_CAUSAL_LIQUIDITY_OBJECTIVE_HELD_WITH_FROZEN_ATR_BUFFER",
-                reference_price=active.stop,
-                details={
-                    "structural_trigger": structural_trigger,
-                    "structural_buffer": buffer,
-                    "buffered_stop": buffered_stop,
-                    "after_cost_break_even": active.break_even_price,
-                    "mfe_net_r": net_r,
-                },
-            )
+            if boundary_invalidation:
+                buffer = self.config.continuation_trail_buffer_atr * active.atr
+                buffered_stop = structural_trigger - active.direction * buffer
+                if active.direction * (executable - buffered_stop) <= 0.0:
+                    raise RuntimeError("buffered structural stop is not behind executable price")
+                active.stop = (
+                    max(active.stop, buffered_stop)
+                    if active.direction > 0
+                    else min(active.stop, buffered_stop)
+                )
+                self.counters["structural_objective_buffer_activations"] += 1
+                self._emit(
+                    scenario_id=active.signal["scenario_id"],
+                    event_type="VALUE_EDGE_BOUNDARY_PROTECTION_ACTIVATED",
+                    event_time_ns=timestamp_ns,
+                    observed_time_ns=timestamp_ns,
+                    previous_state=f"{active.kind}_ACTIVE",
+                    next_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
+                    reason_code="PRIOR_RANGE_EXTERNAL_BECAME_CAUSAL_INVALIDATION",
+                    reference_price=active.stop,
+                    details={
+                        "scenario_kind": scenario_kind,
+                        "structural_trigger": structural_trigger,
+                        "structural_buffer": buffer,
+                        "buffered_stop": buffered_stop,
+                        "after_cost_break_even": active.break_even_price,
+                        "mfe_net_r": net_r,
+                    },
+                )
+            else:
+                self.counters["waypoint_structure_trail_activations"] += 1
+                self._emit(
+                    scenario_id=active.signal["scenario_id"],
+                    event_type="INTERMEDIATE_LIQUIDITY_WAYPOINT_TRAIL_ARMED",
+                    event_time_ns=timestamp_ns,
+                    observed_time_ns=timestamp_ns,
+                    previous_state=f"{active.kind}_ACTIVE",
+                    next_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
+                    reason_code="FIRST_OBJECTIVE_IS_WAYPOINT_NOT_EXACT_INVALIDATION",
+                    reference_price=structural_trigger,
+                    details={
+                        "scenario_kind": scenario_kind,
+                        "structural_trigger": structural_trigger,
+                        "existing_stop": active.stop,
+                        "after_cost_break_even": active.break_even_price,
+                        "mfe_net_r": net_r,
+                    },
+                )
+
+        if active.structural_protection_active and not boundary_invalidation:
+            structural_stop = self._structural_protection_stop(active)
+            if (
+                structural_stop is not None
+                and active.direction * (executable - structural_stop) > 0.0
+            ):
+                updated = (
+                    max(active.stop, structural_stop)
+                    if active.direction > 0
+                    else min(active.stop, structural_stop)
+                )
+                if updated != active.stop:
+                    active.stop = updated
+                    self.counters["structural_trail_updates"] += 1
+                    self._emit(
+                        scenario_id=active.signal["scenario_id"],
+                        event_type="INTERMEDIATE_WAYPOINT_TRAIL_UPDATED",
+                        event_time_ns=timestamp_ns,
+                        observed_time_ns=timestamp_ns,
+                        previous_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
+                        next_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
+                        reason_code="COMPLETED_TWENTY_MINUTE_STRUCTURE_ADVANCED_AFTER_WAYPOINT",
+                        reference_price=active.stop,
+                        details={
+                            "scenario_kind": scenario_kind,
+                            "structural_trigger": structural_trigger,
+                            "structural_stop": structural_stop,
+                            "mfe_net_r": net_r,
+                        },
+                    )
 
         if (
             active.structural_protection_active
@@ -856,6 +911,15 @@ class NTLvcfrStrategy(Strategy):
             self._submit_exit(reason, timestamp_ns)
         elif timestamp_ns - active.entry_time_ns >= active.max_holding_minutes * NS_PER_MINUTE:
             self._submit_exit("TIME", timestamp_ns)
+
+    def _structural_protection_stop(self, active: ActiveLeg) -> float | None:
+        """Return a stop behind frozen completed structure after a waypoint."""
+        if len(self._completed_minutes) < self.config.continuation_trail_minutes:
+            return None
+        recent = list(self._completed_minutes)[-self.config.continuation_trail_minutes :]
+        if active.direction > 0:
+            return min(item[1] for item in recent) - self.config.continuation_trail_buffer_atr * active.atr
+        return max(item[2] for item in recent) + self.config.continuation_trail_buffer_atr * active.atr
 
     def _structural_stop(self, active: ActiveLeg) -> float | None:
         if len(self._completed_minutes) < self.config.continuation_trail_minutes:
