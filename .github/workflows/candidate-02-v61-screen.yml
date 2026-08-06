@@ -1,0 +1,157 @@
+name: candidate-02-v61-nautilustrader-family-screen
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v61_*.py"
+      - "research/candidate-02/v61_*.json"
+      - ".candidate-02-v61/collect_first_week.py"
+      - ".github/workflows/candidate-02-v61-screen.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  first-week-family-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - name: Checkout prospectively locked family
+        uses: actions/checkout@v4
+
+      - name: Download immutable historical feature matrix
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e
+          path: inputs/v61-first-week
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31036754667"
+
+      - name: Remove unrelated raw bars from source artifact
+        run: rm -rf inputs/v61-first-week/.cache
+
+      - name: Verify fixed runtime and family lock
+        run: |
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v61_family_core.py \
+            research/candidate-02/v61_nt_backtest.py \
+            .candidate-02-v61/collect_first_week.py
+          python -m json.tool research/candidate-02/v61_family_lock.json >/dev/null
+          for file in research/candidate-02/v61_*_config.json; do
+            python -m json.tool "$file" >/dev/null
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock = json.loads(Path("research/candidate-02/v61_family_lock.json").read_text())
+          assert lock["first_week_selection"]["selected_first_week"] == "2025-01-13"
+          assert lock["first_week_selection"]["raw_data_collected_before_lock"] is False
+          assert lock["common_execution"]["custom_backtest_engine"] is False
+          expected = {
+              "TREND_PULLBACK_REACCELERATION",
+              "TREND_TERMINAL_SWEEP_REVERSAL",
+              "LOW_TOXICITY_AUCTION_ROTATION",
+              "COMPRESSION_BREAKOUT_RETEST",
+              "LIQUIDATION_DISTORTION_RECLAIM",
+          }
+          files = sorted(Path("research/candidate-02").glob("v61_*_config.json"))
+          configs = [json.loads(path.read_text()) for path in files]
+          assert {item["scenario"]["mode"] for item in configs} == expected
+          assert {item["validation"]["first_week_start"] for item in configs} == {"2025-01-13"}
+          assert {str(item["risk"]["risk_fraction"]) for item in configs} == {"0.03"}
+          assert len({json.dumps(item["risk"], sort_keys=True) for item in configs}) == 1
+          assert len({json.dumps(item["costs"], sort_keys=True) for item in configs}) == 1
+          assert all(item["risk"]["maximum_notional_cap"] is None for item in configs)
+          assert all(item["risk"]["score_risk_multiplier"] is None for item in configs)
+          PY
+
+      - name: Collect only the locked first BTC week
+        run: python .candidate-02-v61/collect_first_week.py
+
+      - name: Run each causal scenario in a fresh NautilusTrader process
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-02-v61
+          configs=(
+            v61_trend_pullback_config
+            v61_terminal_reversal_config
+            v61_auction_rotation_config
+            v61_compression_breakout_config
+            v61_liquidation_reclaim_config
+          )
+          for name in "${configs[@]}"; do
+            mkdir -p "artifacts/candidate-02-v61/$name"
+            set +e
+            python research/candidate-02/v61_nt_backtest.py \
+              --config "research/candidate-02/$name.json" \
+              --input-root inputs/v61-first-week \
+              --output "artifacts/candidate-02-v61/$name" \
+              | tee "artifacts-v61-$name-console.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "artifacts/candidate-02-v61/$name/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then
+              echo "Runtime failure for $name: $status" >&2
+              exit "$status"
+            fi
+          done
+
+      - name: Publish family decision matrix
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-02-v61")
+          print("# Candidate-02 v61 causal scenario family")
+          print()
+          print("| Scenario | Decision | Trades/day | Win | PF | Growth/day | MDD |")
+          print("|---|---:|---:|---:|---:|---:|---:|")
+          passes = []
+          matrix = []
+          for directory in sorted(path for path in root.iterdir() if path.is_dir()) if root.exists() else []:
+              metrics_path = directory / "metrics.json"
+              if not metrics_path.exists():
+                  print(f"| {directory.name} | NO_METRICS | - | - | - | - | - |")
+                  continue
+              m = json.loads(metrics_path.read_text())
+              passes.append(bool(m["target_met"]))
+              matrix.append(m)
+              print(
+                  f"| {m['candidate']} | {m['decision']} | {m['trades_per_day']:.3f} | "
+                  f"{m['win_rate']:.1%} | {m['profit_factor_after_cost']:.3f} | "
+                  f"{m['geometric_daily_growth_after_cost']:.3%} | "
+                  f"{m['maximum_mark_to_market_drawdown']:.2%} |"
+              )
+          (root / "family_matrix.json").write_text(json.dumps(matrix, indent=2, sort_keys=True))
+          print()
+          print(f"Scenarios passing every criterion: **{sum(passes)}**")
+          PY
+
+      - name: Preserve raw data and NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v61-family-${{ github.sha }}
+          path: |
+            inputs/v61-first-week/.cache/candidate-02/v61-first-week
+            inputs/v61-first-week/artifacts/candidate-02-v61-first-week-data
+            artifacts/candidate-02-v61
+            artifacts-v61-*-console.log
+          if-no-files-found: warn
+          retention-days: 30
