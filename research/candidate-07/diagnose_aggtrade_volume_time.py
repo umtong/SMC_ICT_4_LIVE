@@ -10,8 +10,8 @@ post-confirmation contact with a five-minute pool:
 2. price progress per normalized attack quote must be low despite directional
    aggression;
 3. the recovery leg receives at most the same opposite-side quote budget as the
-   attack leg and must reclaim the pool with terminal opposite flow before that
-   budget is exhausted (maximum thirty seconds);
+   attack leg and must reclaim the pool with a complete terminal opposite-flow
+   window before that budget is exhausted (maximum thirty seconds);
 4. the entire observed event extreme defines invalidation, while targets are
    already-confirmed, unconsumed one-minute then five-minute pools.
 
@@ -378,7 +378,13 @@ def diagnose(
                 reclaimed = float(row["close"]) > (
                     pool.level + logic.reclaim_buffer_atr * atr
                 )
-            terminal_start = max(recovery_start, index - logic.terminal_seconds + 1)
+
+            recovery_observations = index - recovery_start + 1
+            if recovery_observations < logic.terminal_seconds:
+                observation_end = max(observation_end, index)
+                continue
+
+            terminal_start = index - logic.terminal_seconds + 1
             terminal = work.iloc[terminal_start : index + 1]
             terminal_buy = float(terminal["taker_buy_quote"].sum())
             terminal_sell = float(terminal["taker_sell_quote"].sum())
