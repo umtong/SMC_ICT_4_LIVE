@@ -1,0 +1,130 @@
+name: candidate-04-cross-asset-v3-normalization
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/nt_multi_asset_risk_evidence.py"
+      - "research/candidate-04/nt_multi_asset_rich_backtest_v3.py"
+      - ".github/workflows/candidate-04-cross-asset-v3-normalization.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  normalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Switch all official integrated executions to V3
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          paths = [
+              Path(
+                  ".github/workflows/"
+                  "candidate-04-cross-asset-integrated-validation.yml"
+              ),
+              Path(
+                  ".github/workflows/"
+                  "candidate-04-multi-asset-runtime-contract.yml"
+              ),
+              Path(
+                  ".github/workflows/"
+                  "candidate-04-new-infrastructure-contract.yml"
+              ),
+          ]
+          for path in paths:
+              text = path.read_text()
+              text = text.replace(
+                  "research/candidate-04/nt_multi_asset_rich_backtest.py",
+                  "research/candidate-04/nt_multi_asset_rich_backtest_v3.py",
+              )
+              text = text.replace(
+                  "research/candidate-04/nt_multi_asset_rich_backtest_v2.py",
+                  "research/candidate-04/nt_multi_asset_rich_backtest_v3.py",
+              )
+              if path.name == "candidate-04-new-infrastructure-contract.yml":
+                  marker = (
+                      "            research/candidate-04/"
+                      "nt_multi_asset_rich_backtest_v3.py \\\n"
+                  )
+                  additions = (
+                      marker
+                      + "            research/candidate-04/"
+                      "nt_multi_asset_risk_evidence.py \\\n"
+                      + "            research/candidate-04/"
+                      "nt_trusted_execution_factory.py \\\n"
+                  )
+                  if "nt_multi_asset_risk_evidence.py" not in text:
+                      text = text.replace(marker, additions, 1)
+              path.write_text(text)
+          PY
+
+      - name: Verify V3 execution and risk contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/nt_trusted_execution_factory.py \
+            research/candidate-04/nt_multi_asset_risk_evidence.py \
+            research/candidate-04/nt_multi_asset_rich_backtest_v2.py \
+            research/candidate-04/nt_multi_asset_rich_backtest_v3.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_trusted_execution_factory.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_multi_asset_risk_evidence.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_global_rich_signal_strategy.py' -v
+          python - <<'PY'
+          import yaml
+          for name in (
+              "candidate-04-cross-asset-integrated-validation.yml",
+              "candidate-04-multi-asset-runtime-contract.yml",
+              "candidate-04-new-infrastructure-contract.yml",
+          ):
+              path = f".github/workflows/{name}"
+              value = yaml.safe_load(open(path).read())
+              if not isinstance(value, dict) or "jobs" not in value:
+                  raise SystemExit(f"invalid workflow: {path}")
+          PY
+
+      - name: Commit V3 normalization with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            .github/workflows/candidate-04-cross-asset-integrated-validation.yml \
+            .github/workflows/candidate-04-multi-asset-runtime-contract.yml \
+            .github/workflows/candidate-04-new-infrastructure-contract.yml
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "use trusted venue and fail-closed risk evidence in four-asset validation"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
