@@ -1,0 +1,47 @@
+name: candidate-09-v0.2-aggtrade-probe
+
+on:
+  push:
+    branches:
+      - research/candidate-09
+    paths:
+      - "research/candidate-09/v0_2/aggtrade_probe.py"
+      - ".github/workflows/candidate-09-aggprobe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify pinned environment
+        run: smc4 doctor
+      - name: Compile probe
+        run: python -m py_compile research/candidate-09/v0_2/aggtrade_probe.py
+      - name: Download, validate, aggregate, and reconcile
+        run: |
+          python research/candidate-09/v0_2/aggtrade_probe.py \
+            --symbol BTCUSDT \
+            --date 2024-10-14 \
+            --output artifacts/candidate-09-aggprobe
+      - name: Preserve probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-aggprobe-${{ github.sha }}
+          path: artifacts/candidate-09-aggprobe
+          if-no-files-found: error
+          retention-days: 30
