@@ -83,12 +83,12 @@ def load_binance_bars(start: date, end_inclusive: date, data_dir: Path) -> tuple
     index = pd.to_datetime(open_time, unit=unit, utc=True) + pd.Timedelta(minutes=1)
     frame = pd.DataFrame(
         {
-            "open": pd.to_numeric(raw["open"], errors="raise"),
-            "high": pd.to_numeric(raw["high"], errors="raise"),
-            "low": pd.to_numeric(raw["low"], errors="raise"),
-            "close": pd.to_numeric(raw["close"], errors="raise"),
-            "volume": pd.to_numeric(raw["volume"], errors="raise"),
-            "taker_buy_volume": pd.to_numeric(raw["taker_buy_volume"], errors="raise"),
+            "open": pd.to_numeric(raw["open"], errors="raise").to_numpy(),
+            "high": pd.to_numeric(raw["high"], errors="raise").to_numpy(),
+            "low": pd.to_numeric(raw["low"], errors="raise").to_numpy(),
+            "close": pd.to_numeric(raw["close"], errors="raise").to_numpy(),
+            "volume": pd.to_numeric(raw["volume"], errors="raise").to_numpy(),
+            "taker_buy_volume": pd.to_numeric(raw["taker_buy_volume"], errors="raise").to_numpy(),
         },
         index=index,
     )
