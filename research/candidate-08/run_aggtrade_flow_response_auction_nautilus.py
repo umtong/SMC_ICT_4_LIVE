@@ -5,9 +5,9 @@ replaced. The shared-margin account, current-NAV 3% loss-budget sizing, OUO orde
 slippage reserve, official funding and mark prices, liquidation, and the global one-order/position
 constraint remain in the verified candidate-08 base runner.
 
-Post-run path diagnostics capture the same ten-second frame already loaded for Nautilus replay and
-attach structural stop/target path facts only after positions are closed. They cannot affect signal
-selection, order submission, sizing or fills.
+Post-run path diagnostics capture the same exact-cadence ten-second frame already loaded for
+Nautilus replay and attach structural stop/target path facts only after positions are closed. They
+cannot affect signal selection, order submission, sizing or fills.
 """
 
 from __future__ import annotations
@@ -21,14 +21,15 @@ from typing import Any, Mapping
 import run_aggtrade_auction_router_nautilus as runner
 from aggtrade_acceptance_signals import AcceptanceSignalBundle
 from aggtrade_flow_response import FlowResponseConfig
-from aggtrade_flow_response_auction_signals_v2 import (
+from aggtrade_flow_response_auction_signals_v3 import (
     ABSORPTION_FAMILY,
     IMPLEMENTATION_REVISION,
     INITIATIVE_FAMILY,
     FlowResponseAuctionConfig,
     build_flow_response_auction_signals,
 )
-from flow_response_trade_path_diagnostics import (
+from flow_response_trade_path_diagnostics_v2 import (
+    DIAGNOSTIC_REVISION,
     enrich_closed_trade_records,
     summarize_trade_path_diagnostics,
 )
@@ -117,6 +118,7 @@ def _filter_bundle(bundle: AcceptanceSignalBundle) -> AcceptanceSignalBundle:
                         "reason": "DIAGNOSTIC_FAMILY_MODE_REMOVED",
                         "removed_family": family,
                         "auction_family_mode": mode,
+                        "implementation_revision": IMPLEMENTATION_REVISION,
                     }
                 )
         if kept:
@@ -158,7 +160,7 @@ _original_run_window = runner.base_runner.run_window
 
 
 def _capturing_load_ten_second_aggtrades(*args: Any, **kwargs: Any):
-    """Capture the exact replay frame while preserving the official-data loader result."""
+    """Capture the exact official replay frame while preserving the loader result."""
 
     result = _original_load_ten_second_aggtrades(*args, **kwargs)
     symbol = kwargs.get("symbol")
@@ -166,7 +168,13 @@ def _capturing_load_ten_second_aggtrades(*args: Any, **kwargs: Any):
         symbol = args[0]
     if symbol is None:
         raise RuntimeError("ten-second loader call exposed no symbol for path diagnostics")
-    frame, _sources, _quality = result
+    frame, _sources, quality = result
+    if frame.empty:
+        raise RuntimeError(f"official aggregate-trade frame was empty for {symbol}")
+    if int(quality.get("gap_count_over_11_seconds", -1)) != 0:
+        raise RuntimeError(
+            f"official aggregate-trade frame had a ten-second gap for {symbol}: {quality}"
+        )
     _CAPTURED_TEN_SECOND_FRAMES[str(symbol)] = frame
     return result
 
@@ -214,6 +222,7 @@ def _flow_response_global_signal_summary(
     summary = _original_global_signal_summary(signals_by_time_ns)
     summary["flow_response_family_mode"] = runner.FAMILY_MODE
     summary["implementation_revision"] = IMPLEMENTATION_REVISION
+    summary["ten_second_cadence_contract"] = "EXACT_CONSECUTIVE_10_SECONDS"
     return summary
 
 
@@ -231,6 +240,8 @@ def _flow_response_suite_summary(
     summary["scenario_contract"] = (
         "CAUSAL_AGGRESSIVE_FLOW_PRICE_RESPONSE_AT_COMPLETED_EXTERNAL_LIQUIDITY"
     )
+    summary["ten_second_cadence_contract"] = "EXACT_CONSECUTIVE_10_SECONDS"
+    summary["trade_path_diagnostic_revision"] = DIAGNOSTIC_REVISION
     base_mode = mode == "both"
     summary["diagnostic_family_ablation"] = not base_mode
     summary["promotable"] = bool(summary.get("promotable", True) and base_mode)
@@ -240,9 +251,18 @@ def _flow_response_suite_summary(
         for trade in result.get("closed_trade_records", [])
     ]
     path_summary = summarize_trade_path_diagnostics(closed_trades)
-    path_complete = int(path_summary["complete_records"]) == int(
-        summary.get("closed_trades", 0)
+    path_revisions = Counter(
+        str(trade.get("path_diagnostic", {}).get("diagnostic_revision"))
+        for trade in closed_trades
     )
+    closed_count = int(summary.get("closed_trades", 0))
+    path_complete = (
+        int(path_summary["records"]) == closed_count
+        and int(path_summary["complete_records"]) == closed_count
+        and path_revisions == Counter({DIAGNOSTIC_REVISION: closed_count})
+    )
+    path_summary["diagnostic_revision_counts"] = dict(sorted(path_revisions.items()))
+    path_summary["expected_diagnostic_revision"] = DIAGNOSTIC_REVISION
     summary["trade_path_diagnostic_summary"] = path_summary
     checks = summary.setdefault("suite_gate_checks", {})
     checks["base_contract_includes_both_flow_response_families"] = base_mode
