@@ -1,0 +1,248 @@
+name: candidate-05-shared-account-research
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/validated_btc_winner.json"
+      - "research/candidate-05/shared_account_backtest.py"
+      - "research/candidate-05/shared_account_research.py"
+      - "research/candidate-05/global_entry_slot_v4.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v5.py"
+      - "research/candidate-05/shared_account_strategy_variants_v2.py"
+      - "research/candidate-05/tests/test_global_entry_slot.py"
+      - "research/candidate-05/tests/test_global_entry_slot_v3.py"
+      - "research/candidate-05/tests/test_global_entry_slot_v4.py"
+      - "research/candidate-05/tests/test_shared_account_backtest_contract.py"
+      - "research/candidate-05/tests/test_shared_account_research.py"
+      - ".github/workflows/candidate-05-shared-account-research.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-shared-account-research
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  one-account-four-symbols:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-shared-account-research
+      SUMMARY: research/candidate-05/evidence/shared_account_research.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed Nautilus environment and all shared-account contracts
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT" research/candidate-05/evidence
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover \
+              -s research/candidate-05/tests \
+              -p 'test_*.py' -v
+            python - <<'PY'
+          from shared_account_strategy_variants_v2 import WINNER_TO_FAMILY
+          from shared_account_strategy_variants_v2 import final_shared_strategy_class
+          from global_entry_slot_v4 import FINAL_SHARED_ACCOUNT_ENTRY_COORDINATOR
+          assert len(WINNER_TO_FAMILY) == 6
+          for winner in WINNER_TO_FAMILY:
+              classes = {
+                  final_shared_strategy_class(winner, symbol).__name__
+                  for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+              }
+              assert len(classes) == 4
+          FINAL_SHARED_ACCOUNT_ENTRY_COORDINATOR.reset()
+          assert FINAL_SHARED_ACCOUNT_ENTRY_COORDINATOR.audit()["audit_pass"]
+          print("shared-account contracts verified")
+          PY
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/verification_status.txt"
+          echo "valid=$([[ $status -eq 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run staged one-account four-symbol Nautilus research
+        id: research
+        if: steps.verify.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python research/candidate-05/shared_account_research.py \
+            --winner-evidence research/candidate-05/evidence/validated_btc_winner.json \
+            --output "$ROOT/runs" \
+            --cache .cache/candidate-05-shared-account-research \
+            --summary "$SUMMARY" \
+            2>&1 | tee "$ROOT/research_console.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/research_status.txt"
+          exit "$status"
+
+      - name: Build trustworthy implementation fallback or enrich final evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-shared-account-research")
+          summary_path = Path("research/candidate-05/evidence/shared_account_research.json")
+          verification = (
+              (root / "verification_status.txt").read_text(encoding="utf-8").strip()
+              if (root / "verification_status.txt").exists()
+              else "missing"
+          )
+          research_status = (
+              (root / "research_status.txt").read_text(encoding="utf-8").strip()
+              if (root / "research_status.txt").exists()
+              else "not_run"
+          )
+          verification_tail = (
+              (root / "verification.log").read_text(encoding="utf-8", errors="replace").splitlines()[-260:]
+              if (root / "verification.log").exists()
+              else []
+          )
+          research_tail = (
+              (root / "research_console.log").read_text(encoding="utf-8", errors="replace").splitlines()[-320:]
+              if (root / "research_console.log").exists()
+              else []
+          )
+
+          if summary_path.exists():
+              summary = json.loads(summary_path.read_text(encoding="utf-8"))
+              summary["verification_status"] = verification
+              summary["research_process_status"] = research_status
+          elif verification != "exit_code=0":
+              summary = {
+                  "schema": "candidate-05-shared-account-research-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_SHARED_ACCOUNT_STATIC_OR_CONTRACT",
+                  "winner": None,
+                  "one_account": True,
+                  "four_symbols_together_per_stage": True,
+                  "verification_status": verification,
+                  "verification_log_tail": verification_tail,
+                  "research_process_status": research_status,
+                  "next_action": "Fix the shared-account implementation without changing market logic or ranges, then rerun the identical stage.",
+              }
+          else:
+              summary = {
+                  "schema": "candidate-05-shared-account-research-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_SHARED_ACCOUNT_RUNTIME",
+                  "winner": None,
+                  "one_account": True,
+                  "four_symbols_together_per_stage": True,
+                  "verification_status": verification,
+                  "research_process_status": research_status,
+                  "research_log_tail": research_tail,
+                  "next_action": "Repair the runner/runtime under variable control and rerun the identical frozen stage; do not classify strategy logic.",
+              }
+
+          summary_path.write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+
+          lines = [
+              "# Candidate 05 One-Account Four-Symbol Research",
+              "",
+              f"- Source commit: `{summary.get('source_commit')}`",
+              f"- Workflow run: `{summary.get('workflow_run_id')}`",
+              f"- Classification: `{summary.get('classification')}`",
+              f"- Winner: `{summary.get('winner')}`",
+              f"- Verification: `{summary.get('verification_status')}`",
+              f"- Research process: `{summary.get('research_process_status')}`",
+              "",
+              "## Next action",
+              "",
+              str(summary.get("next_action")),
+              "",
+              "## Stage results",
+              "",
+              "| Stage | Integrity | Geo/day | Return | Trades | Wins | Active days | MDD | Largest winner share |",
+              "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+          ]
+          runs = summary.get("runs", {})
+          if isinstance(runs, dict):
+              for name, run in runs.items():
+                  if not isinstance(run, dict):
+                      continue
+                  lines.append(
+                      "| {name} | {integrity} | {geo} | {ret} | {trades} | {wins} | {active} | {mdd} | {share} |".format(
+                          name=name,
+                          integrity=run.get("integrity_pass"),
+                          geo=run.get("geometric_daily_growth"),
+                          ret=run.get("total_return"),
+                          trades=run.get("trades"),
+                          wins=run.get("wins"),
+                          active=run.get("active_days"),
+                          mdd=run.get("max_drawdown"),
+                          share=run.get("largest_winner_share"),
+                      )
+                  )
+          lines.extend([
+              "",
+              "All listed stages replay BTC, ETH, SOL and XRP together in one NautilusTrader account. Independent account results are not added.",
+              "",
+          ])
+          Path("research/candidate-05/evidence/shared_account_research.md").write_text(
+              "\n".join(lines),
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+          test -s "$SUMMARY"
+          test -s research/candidate-05/evidence/shared_account_research.md
+
+      - name: Persist one conflict-resistant shared-account evidence commit
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-05/evidence/shared_account_research.json \
+            research/candidate-05/evidence/shared_account_research.md
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-05: record one-account four-symbol research [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-05
+            if git push origin HEAD:research/candidate-05; then
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "failed to persist shared-account evidence after retries" >&2
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-shared-account-research-${{ github.sha }}
+          path: artifacts/candidate-05-shared-account-research/**
+          if-no-files-found: warn
+          retention-days: 90
