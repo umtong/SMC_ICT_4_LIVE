@@ -68,6 +68,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from accepted_expansion_engine import AcceptedExpansionPullbackEngine
 
         return AcceptedExpansionPullbackEngine(logic_params)
+    if name == "INVENTORY_ABSORPTION_PULLBACK":
+        from inventory_absorption_engine import InventoryAbsorptionPullbackEngine
+
+        return InventoryAbsorptionPullbackEngine(logic_params)
     if name == "MULTI_TIMESCALE_LIQUIDITY_RELAY":
         from composite_engine import MultiTimescaleLiquidityRelayEngine
 
