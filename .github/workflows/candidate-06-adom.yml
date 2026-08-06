@@ -1,0 +1,194 @@
+name: Candidate 06 Accepted-Auction Defense-Origin Mitigation
+
+on:
+  push:
+    branches:
+      - research/candidate-06
+    paths:
+      - ".github/workflows/candidate-06-adom.yml"
+      - "research/candidate-06/defense_origin_limit.py"
+      - "research/candidate-06/register_defense_origin_limit.py"
+      - "research/candidate-06/test_defense_origin_limit.py"
+      - "research/candidate-06/run_defense_origin_mitigation_matrix.py"
+      - "research/candidate-06/ADOM_RESEARCH_LEDGER.md"
+      - "research/candidate-06/nautilus_execution.py"
+      - "research/candidate-06/nautilus_lifecycle.py"
+      - "research/candidate-06/entry_confirmation.py"
+      - "research/candidate-06/fixed_interval_auction_engine.py"
+      - "research/candidate-06/session_engine.py"
+      - "research/candidate-06/nautilus_runner.py"
+      - "research/candidate-06/config.json"
+      - "src/smc_ict_4/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-adom
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  adom-campaign:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify predeclared source and ledger
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          for path in \
+            research/candidate-06/defense_origin_limit.py \
+            research/candidate-06/register_defense_origin_limit.py \
+            research/candidate-06/test_defense_origin_limit.py \
+            research/candidate-06/run_defense_origin_mitigation_matrix.py \
+            research/candidate-06/ADOM_RESEARCH_LEDGER.md; do
+            test -s "$path"
+          done
+
+      - name: Verify fixed NautilusTrader environment
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(f"NAUTILUS_VERSION={actual}")
+          PY
+
+      - name: Register native ADOM limit entry and lifecycle
+        run: |
+          set -euo pipefail
+          python research/candidate-06/register_defense_origin_limit.py
+          grep -q 'resolve_entry_placement' research/candidate-06/nautilus_execution.py
+          grep -q 'entry_order_type.*OrderType.LIMIT' research/candidate-06/nautilus_execution.py
+          grep -q 'on_order_expired' research/candidate-06/nautilus_lifecycle.py
+
+      - name: Verify causality, syntax and unchanged parent contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-06/*.py
+          python research/candidate-06/test_defense_origin_limit.py
+          python research/candidate-06/test_entry_confirmation.py
+          python research/candidate-06/test_fixed_interval_auction_engine.py
+          python research/candidate-06/test_excursion_diagnostics.py
+          python - <<'PY'
+          import inspect
+          from nautilus_execution import NautilusExecutionMixin
+          from nautilus_lifecycle import NautilusLifecycleMixin
+          execution = inspect.getsource(NautilusExecutionMixin._attempt_entry)
+          lifecycle = inspect.getsource(NautilusLifecycleMixin)
+          assert "OrderType.LIMIT" in execution
+          assert "TimeInForce.GTD" in execution
+          assert "DEFENSE_ORIGIN_LIMIT" not in execution  # mode remains data-driven in the pure placement detector
+          assert "on_order_expired" in lifecycle
+          assert "on_order_canceled" in lifecycle
+          print("ADOM native order and lifecycle registration verified")
+          PY
+
+      - name: Run ADOM first-week matrix and conditional sealed weeks through NautilusTrader
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/adom-first-week
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts
+          python research/candidate-06/run_defense_origin_mitigation_matrix.py \
+            --output artifacts/candidate-06/adom-first-week \
+            > artifacts/candidate-06-adom.stdout \
+            2> artifacts/candidate-06-adom.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Guarantee terminal evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-06/adom-first-week
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > artifacts/candidate-06/adom-first-week/workflow_exit_code.txt
+          if [ ! -f artifacts/candidate-06/adom-first-week/summary.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-06/adom-first-week")
+          payload = {
+              "all_three_weeks_passed": False,
+              "long_evaluation_authorized": False,
+              "selected": None,
+              "terminal_status": "IMPLEMENTATION_OR_RUNTIME_FAILURE_BEFORE_SUMMARY",
+          }
+          (root / "summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+          cp artifacts/candidate-06-adom.stdout artifacts/candidate-06/adom-first-week/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-06-adom.stderr artifacts/candidate-06/adom-first-week/workflow_stderr.txt 2>/dev/null || true
+
+      - name: Commit reproducible ADOM implementation and evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          for path in \
+            research/candidate-06/defense_origin_limit.py \
+            research/candidate-06/register_defense_origin_limit.py \
+            research/candidate-06/test_defense_origin_limit.py \
+            research/candidate-06/run_defense_origin_mitigation_matrix.py \
+            research/candidate-06/ADOM_RESEARCH_LEDGER.md \
+            research/candidate-06/nautilus_execution.py \
+            research/candidate-06/nautilus_lifecycle.py; do
+            if [ -e "$path" ]; then git add "$path"; fi
+          done
+          git add -f artifacts/candidate-06/adom-first-week
+          if [ -f research/candidate-06/config.adom.locked.json ]; then
+            git add -f research/candidate-06/config.adom.locked.json
+          fi
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record candidate-06 ADOM evidence [candidate-06 evidence]"
+          git pull --rebase origin research/candidate-06
+          git push origin HEAD:research/candidate-06
+
+      - name: Upload ADOM evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-adom-${{ github.sha }}
+          path: artifacts/candidate-06/adom-first-week
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce staged decision
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          exit "$code"
