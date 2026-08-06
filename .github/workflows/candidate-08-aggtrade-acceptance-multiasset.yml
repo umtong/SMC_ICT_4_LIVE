@@ -1,0 +1,251 @@
+name: candidate-08-aggtrade-acceptance-multiasset
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-aggtrade-acceptance-multiasset"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  contracts:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify unchanged contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-08/aggtrade_acceptance_asset.py \
+            research/candidate-08/aggtrade_acceptance_probe.py \
+            research/candidate-08/test_aggtrade_acceptance.py \
+            research/candidate-08/aggtrade_orderflow_probe.py \
+            research/candidate-08/test_aggtrade_orderflow.py
+          python research/candidate-08/test_aggtrade_orderflow.py -v
+          python research/candidate-08/test_aggtrade_acceptance.py -v
+
+  evaluate:
+    needs: contracts
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {symbol: BTCUSDT, window: screen-01, cache_key: candidate-08-aggtrade-acceptance-BTCUSDT-screen-01-v1}
+          - {symbol: BTCUSDT, window: screen-02, cache_key: candidate-08-aggtrade-acceptance-BTCUSDT-screen-02-v1}
+          - {symbol: BTCUSDT, window: screen-03, cache_key: candidate-08-aggtrade-acceptance-BTCUSDT-screen-03-v1}
+          - {symbol: ETHUSDT, window: screen-01, cache_key: candidate-08-aggtrade-acceptance-ETHUSDT-screen-01-v1}
+          - {symbol: ETHUSDT, window: screen-02, cache_key: candidate-08-aggtrade-acceptance-ETHUSDT-screen-02-v1}
+          - {symbol: ETHUSDT, window: screen-03, cache_key: candidate-08-aggtrade-acceptance-ETHUSDT-screen-03-v1}
+          - {symbol: SOLUSDT, window: screen-01, cache_key: candidate-08-aggtrade-acceptance-SOLUSDT-screen-01-v1}
+          - {symbol: SOLUSDT, window: screen-02, cache_key: candidate-08-aggtrade-acceptance-SOLUSDT-screen-02-v1}
+          - {symbol: SOLUSDT, window: screen-03, cache_key: candidate-08-aggtrade-acceptance-SOLUSDT-screen-03-v1}
+          - {symbol: XRPUSDT, window: screen-01, cache_key: candidate-08-aggtrade-acceptance-XRPUSDT-screen-01-v1}
+          - {symbol: XRPUSDT, window: screen-02, cache_key: candidate-08-aggtrade-acceptance-XRPUSDT-screen-02-v1}
+          - {symbol: XRPUSDT, window: screen-03, cache_key: candidate-08-aggtrade-acceptance-XRPUSDT-screen-03-v1}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore official data cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: ${{ matrix.cache_key }}
+      - name: Run fixed asset-week
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/result/${{ matrix.symbol }}/${{ matrix.window }}
+          python research/candidate-08/aggtrade_acceptance_asset.py \
+            --config research/candidate-08/config_range_fvg.json \
+            --symbol ${{ matrix.symbol }} \
+            --window ${{ matrix.window }} \
+            --output /tmp/result/${{ matrix.symbol }}/${{ matrix.window }}/summary.json \
+            --data-cache /tmp/candidate-08-acceptance-data \
+            2>&1 | tee /tmp/result/${{ matrix.symbol }}/${{ matrix.window }}/runner.log
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: acceptance-${{ matrix.symbol }}-${{ matrix.window }}
+          path: /tmp/result/${{ matrix.symbol }}/${{ matrix.window }}
+          retention-days: 30
+          if-no-files-found: error
+
+  aggregate:
+    needs: evaluate
+    if: ${{ always() && needs.evaluate.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/aggtrade-acceptance-multiasset
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: acceptance-*
+          path: /tmp/acceptance-artifacts
+      - name: Aggregate global one-position evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          cp -R /tmp/acceptance-artifacts/. "$OUTPUT_DIR"/
+          python - <<'PY'
+          import json
+          import os
+          from collections import Counter
+          from datetime import timedelta
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path(os.environ["OUTPUT_DIR"])
+          payloads = []
+          records = []
+          for path in sorted(root.glob("acceptance-*/summary.json")):
+              payload = json.loads(path.read_text(encoding="utf-8"))
+              payloads.append(payload)
+              records.extend(payload["records"])
+
+          def summary(items):
+              values = [float(item["net_r_proxy_240m"]) for item in items]
+              positive = [value for value in values if value > 0]
+              return {
+                  "trades": len(items),
+                  "outcomes": dict(sorted(Counter(item["outcome_240m"] for item in items).items())),
+                  "total_net_r_proxy": sum(values),
+                  "mean_net_r_proxy": sum(values) / len(values) if values else 0.0,
+                  "positive_share": sum(value > 0 for value in values) / len(values) if values else 0.0,
+                  "single_positive_event_share": max(positive) / sum(positive) if positive and sum(positive) > 0 else 0.0,
+              }
+
+          records.sort(
+              key=lambda item: (
+                  pd.Timestamp(item["confirmation_time"]),
+                  -float(item["net_reward_risk"]),
+                  item["symbol"],
+              )
+          )
+          selected = []
+          unavailable_until = None
+          for item in records:
+              start = pd.Timestamp(item["confirmation_time"])
+              if unavailable_until is not None and start < unavailable_until:
+                  continue
+              selected.append(item)
+              unavailable_until = (
+                  pd.Timestamp(item["outcome_time"])
+                  if item.get("outcome_time")
+                  else start + timedelta(minutes=240)
+              )
+
+          by_asset_all = {
+              symbol: summary([item for item in records if item["symbol"] == symbol])
+              for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+          }
+          by_window_global = {
+              window: summary([item for item in selected if item["window"] == window])
+              for window in ("screen-01", "screen-02", "screen-03")
+          }
+          global_summary = summary(selected)
+          positive_by_asset = {}
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              positive_by_asset[symbol] = sum(
+                  max(float(item["net_r_proxy_240m"]), 0.0)
+                  for item in selected
+                  if item["symbol"] == symbol
+              )
+          total_positive = sum(positive_by_asset.values())
+          max_asset_positive_share = (
+              max(positive_by_asset.values()) / total_positive
+              if total_positive > 0
+              else 0.0
+          )
+          gate = {
+              "all_three_global_weeks_positive": all(
+                  float(item["total_net_r_proxy"]) > 0
+                  for item in by_window_global.values()
+              ),
+              "minimum_eight_nonoverlapping_trades": int(global_summary["trades"]) >= 8,
+              "combined_global_proxy_positive": float(global_summary["total_net_r_proxy"]) > 0,
+              "positive_trade_share_at_least_45_percent": float(global_summary["positive_share"]) >= 0.45,
+              "single_positive_event_share_at_most_half": float(global_summary["single_positive_event_share"]) <= 0.50,
+              "opportunity_across_at_least_three_assets": len({item["symbol"] for item in selected}) >= 3,
+              "single_asset_positive_contribution_at_most_70_percent": max_asset_positive_share <= 0.70,
+          }
+          decision = {
+              "candidate": "candidate-08-aggtrade-acceptance-only-multiasset",
+              "engine_evidence": False,
+              "thresholds_changed_by_asset": False,
+              "asset_week_summaries": {
+                  f"{payload['symbol']}:{payload['window']['name']}": payload["summary"]
+                  for payload in payloads
+              },
+              "all_signals": summary(records),
+              "by_asset_all_signals": by_asset_all,
+              "global_one_position": global_summary,
+              "global_by_window": by_window_global,
+              "global_selected_records": selected,
+              "positive_proxy_by_asset": positive_by_asset,
+              "maximum_asset_positive_proxy_share": max_asset_positive_share,
+              "screen_gate": gate,
+              "screen_passed": all(gate.values()),
+              "next_action": (
+                  "IMPLEMENT_SHARED_NAUTILUS_10_SECOND_ACCEPTANCE_SYSTEM"
+                  if all(gate.values())
+                  else "DISCARD_MULTI_ASSET_TRANSFER"
+              ),
+          }
+          (root / "suite_summary.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          (root / "workflow.json").write_text(
+              json.dumps({
+                  "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                  "head_sha": os.environ.get("GITHUB_SHA"),
+                  "global_ordering": "earliest confirmation; exact ties highest net RR then symbol",
+                  "one_position_holding_end": "actual target/stop touch or 240 minute timeout",
+                  "predeclared_gate": gate,
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          rm research/candidate-08/.run-aggtrade-acceptance-multiasset
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" add \
+            research/candidate-08/aggtrade_acceptance_asset.py \
+            research/candidate-08/evidence/aggtrade-acceptance-multiasset \
+            research/candidate-08/.run-aggtrade-acceptance-multiasset
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: record unchanged four-asset acceptance transfer"
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-aggtrade-acceptance-multiasset-summary-${{ github.sha }}
+          path: research/candidate-08/evidence/aggtrade-acceptance-multiasset
+          retention-days: 30
+          if-no-files-found: warn
