@@ -1,0 +1,208 @@
+name: candidate-05-v26-30d-early-sponsored-ablation
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v26-30d-early-sponsored-ablation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed research environment and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+          python - <<'PY'
+          from strategy_v26 import ScenarioValidEntryStrategy
+          from strategy_v26_no_early_sponsored_ablation import NoEarlySponsoredParticipationStrategy
+          assert ScenarioValidEntryStrategy is not NoEarlySponsoredParticipationStrategy
+          print("baseline=strategy_v26:ScenarioValidEntryStrategy")
+          print("ablation=strategy_v26_no_early_sponsored_ablation:NoEarlySponsoredParticipationStrategy")
+          PY
+
+      - name: Run v26 baseline on the fixed continuous 30-day range
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          """Runtime entrypoint for the frozen v26 baseline."""
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v26 import ScenarioValidEntryStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          root=artifacts/candidate-05-v26-30d-early-sponsored-ablation/baseline
+          mkdir -p "$root"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-30 \
+            --cache .cache/candidate-05-v26-30d-early-sponsored-ablation/baseline \
+            --output "$root" \
+            | tee "$root/console.json"
+
+      - name: Run the one-variable no-early-sponsored ablation on the same range
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          """Runtime entrypoint for the early-sponsored-participation ablation."""
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v26_no_early_sponsored_ablation import NoEarlySponsoredParticipationStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          root=artifacts/candidate-05-v26-30d-early-sponsored-ablation/ablation
+          mkdir -p "$root"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-30 \
+            --cache .cache/candidate-05-v26-30d-early-sponsored-ablation/ablation \
+            --output "$root" \
+            | tee "$root/console.json"
+
+      - name: Classify implementation integrity and logical contribution
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-05-v26-30d-early-sponsored-ablation
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          import math
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-v26-30d-early-sponsored-ablation")
+
+          def load_run(name: str) -> dict:
+              path = root / name / "metrics.json"
+              if not path.exists():
+                  return {"available": False, "path": str(path)}
+              metrics = json.loads(path.read_text(encoding="utf-8"))
+              diagnostics = metrics.get("strategy_diagnostics", {})
+              integrity = {
+                  "positive_nav": metrics.get("ending_nav", 0.0) > 0.0,
+                  "no_liquidation": metrics.get("liquidations", 0) == 0,
+                  "no_order_rejections": diagnostics.get("order_rejections", 0) == 0,
+                  "single_entry_intent": diagnostics.get("max_simultaneous_entry_intents", 0) <= 1,
+                  "single_position": diagnostics.get("max_open_positions_observed", 0) <= 1,
+                  "nautilus_orders_consistent": metrics.get("gate_checks", {}).get("nautilus_orders", False),
+                  "nautilus_positions_consistent": metrics.get("gate_checks", {}).get("nautilus_positions", False),
+              }
+              return {
+                  "available": True,
+                  "engine": metrics.get("engine"),
+                  "evaluation_start": metrics.get("evaluation_start"),
+                  "evaluation_end": metrics.get("evaluation_end"),
+                  "starting_nav": metrics.get("starting_nav"),
+                  "ending_nav": metrics.get("ending_nav"),
+                  "total_return": metrics.get("total_return"),
+                  "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                  "max_drawdown": metrics.get("max_drawdown"),
+                  "trades": metrics.get("trades"),
+                  "wins": metrics.get("wins"),
+                  "win_rate": metrics.get("win_rate"),
+                  "profit_factor": metrics.get("profit_factor"),
+                  "active_days": metrics.get("active_days"),
+                  "largest_winner_share": metrics.get("largest_winner_share"),
+                  "scenario_metrics": metrics.get("scenario_metrics", {}),
+                  "integrity_checks": integrity,
+                  "integrity_pass": all(integrity.values()),
+              }
+
+          baseline = load_run("baseline")
+          ablation = load_run("ablation")
+          comparison = {
+              "experiment": "remove only early sponsored CHoCH immediate participation",
+              "fixed_range": "2024-03-01..2024-03-30 UTC",
+              "unchanged_contract": [
+                  "NautilusTrader BacktestNode",
+                  "data and feature causality",
+                  "detector thresholds",
+                  "frozen target and structural stop",
+                  "fees and adverse slippage",
+                  "3% current-NAV planned-loss sizing",
+                  "one executable entry intent or position",
+              ],
+              "baseline": baseline,
+              "ablation": ablation,
+          }
+          if not baseline.get("available") or not baseline.get("integrity_pass"):
+              comparison["classification"] = "BASELINE_IMPLEMENTATION_OR_EVIDENCE_ERROR"
+          elif not ablation.get("available") or not ablation.get("integrity_pass"):
+              comparison["classification"] = "ABLATION_IMPLEMENTATION_OR_EVIDENCE_ERROR"
+          else:
+              bg = float(baseline["geometric_daily_growth"])
+              ag = float(ablation["geometric_daily_growth"])
+              comparison["delta"] = {
+                  "ending_nav": float(ablation["ending_nav"]) - float(baseline["ending_nav"]),
+                  "total_return": float(ablation["total_return"]) - float(baseline["total_return"]),
+                  "geometric_daily_growth": ag - bg,
+                  "max_drawdown": float(ablation["max_drawdown"]) - float(baseline["max_drawdown"]),
+                  "trades": int(ablation["trades"]) - int(baseline["trades"]),
+                  "wins": int(ablation["wins"]) - int(baseline["wins"]),
+              }
+              sponsored = baseline.get("scenario_metrics", {}).get(
+                  "TAIL_FLOW_SPONSORED_CHOCH",
+                  {"trades": 0, "wins": 0, "net_pnl": 0.0},
+              )
+              comparison["removed_branch_baseline_attribution"] = sponsored
+              if ag > bg + 1e-12:
+                  comparison["classification"] = "LOGIC_ABLATION_IMPROVED_EXPECTANCY"
+              elif ag < bg - 1e-12:
+                  comparison["classification"] = "LOGIC_ABLATION_HARMED_EXPECTANCY"
+              else:
+                  comparison["classification"] = "LOGIC_ABLATION_NO_MATERIAL_CHANGE"
+              comparison["baseline_goal_reached"] = bg >= 0.01
+              comparison["ablation_goal_reached"] = ag >= 0.01
+          (root / "comparison.json").write_text(
+              json.dumps(comparison, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(comparison, indent=2, sort_keys=True))
+          PY
+
+          for variant in baseline ablation; do
+            if test -f "$root/$variant/metrics.json"; then
+              for file in metrics.json run.json data_manifest.json orders.csv positions.csv account.csv equity.csv scenario_events.jsonl strategy_diagnostics.json; do
+                test -s "$root/$variant/$file"
+              done
+            fi
+            if test -f "$root/$variant/errors.log"; then
+              cat "$root/$variant/errors.log"
+            fi
+          done
+          test -s "$root/comparison.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v26-30d-early-sponsored-ablation-${{ github.sha }}
+          path: artifacts/candidate-05-v26-30d-early-sponsored-ablation/**
+          if-no-files-found: warn
+          retention-days: 90
