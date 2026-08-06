@@ -157,10 +157,9 @@ def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
 
 
 def _utc_date(ts_ns: int) -> str:
-    return datetime.fromtimestamp(
-        ts_ns / 1_000_000_000,
-        tz=timezone.utc,
-    ).date().isoformat()
+    # Never round a nanosecond timestamp through binary floating point.  Values
+    # such as evaluation_end_ns - 1 can otherwise round to the next UTC day.
+    return pd.Timestamp(int(ts_ns), unit="ns", tz="UTC").date().isoformat()
 
 
 def _money_from_equity_map(equity: Mapping[Any, Any], currency: Any) -> float:
