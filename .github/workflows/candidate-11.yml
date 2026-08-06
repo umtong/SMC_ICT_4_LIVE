@@ -1,0 +1,83 @@
+name: Candidate 11 Nautilus validation
+
+on:
+  push:
+    branches: [research/candidate-11]
+    paths:
+      - "research/candidate-11/**"
+      - ".github/workflows/candidate-11.yml"
+  workflow_dispatch:
+    inputs:
+      week:
+        description: Frozen evaluation week
+        required: true
+        default: W1
+        type: choice
+        options: [W1, W2, W3]
+
+permissions:
+  contents: write
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Normalize raw Binance columns before validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("research/candidate-11/run.py")
+          s = p.read_text(encoding="utf-8")
+          for name in ("open", "high", "low", "close", "volume", "taker_buy_volume"):
+              old = f'pd.to_numeric(raw["{name}"], errors="raise"),'
+              new = f'pd.to_numeric(raw["{name}"], errors="raise").to_numpy(),'
+              s = s.replace(old, new)
+          p.write_text(s, encoding="utf-8")
+          PY
+          if ! git diff --quiet -- research/candidate-11/run.py; then
+            git config user.name "candidate-11-bot"
+            git config user.email "candidate-11-bot@users.noreply.github.com"
+            git add research/candidate-11/run.py
+            git commit -m "candidate-11: preserve raw Binance row alignment"
+            git push origin HEAD:research/candidate-11
+          fi
+
+      - name: Verify prebuilt research environment
+        run: smc4 doctor
+
+      - name: Compile and test candidate logic
+        run: |
+          python -m py_compile research/candidate-11/logic.py research/candidate-11/run.py
+          python -m unittest discover -s research/candidate-11 -p 'test_*.py' -v
+
+      - name: Run frozen week through NautilusTrader
+        shell: bash
+        run: |
+          WEEK="${{ github.event.inputs.week }}"
+          if [ -z "$WEEK" ]; then WEEK=W1; fi
+          rm -rf "research/candidate-11/results/$WEEK"
+          python research/candidate-11/run.py \
+            --week "$WEEK" \
+            --output "research/candidate-11/results/$WEEK"
+
+      - name: Upload reproducible evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-11-${{ github.run_id }}
+          path: research/candidate-11/results/
+          if-no-files-found: warn
+          retention-days: 30
