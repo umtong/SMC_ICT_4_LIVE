@@ -1,0 +1,169 @@
+name: Candidate 09 v3 multi-horizon cascade gate
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths: [.github/workflows/candidate-09-v3-gate.yml]
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v3-gate
+  cancel-in-progress: false
+
+jobs:
+  activate-test-evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-v1
+
+      - name: Archive v2 and activate structurally distinct v3
+        shell: bash
+        env:
+          ENGINE_GZ_B64: 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
+          TEST_GZ_B64: H4sICFyFdGoCA3Rlc3Rfc3RhdGVfZW5naW5lX3YzLnB5AM1YbW/bNhD+7l9B+JNcCIbsxEk8QB/y4nYG0mRLnG79RNAS5XClSJWknKbD/vuO1LvtuF67DBOQuiLvjg/vuTselSiZIoyT3OSKYoxYmkllEBFCGmKYFLrXK8dywYyh2vQSqxPTiKWEVwpXxWuvmNSgSzEVKyYoXh9VQjM3cClFwlY+esvl0wVRPrpmn3MWM/N8b9UKIR8ppj/hJdE0xp9zIgzM93rv5zcPixkK0UmAg6D+6/V6MU3QkigvZSI3oC4zKrCPHtnq0Uewko8iLjVMrCXPUxqOgmAY+GiZP+NEkchuNQyGk8FPPQSPouAPUUH03Jh9jMZCh8Ua6A0q4Pj1tF00bK0c1suHDYSwAFIrlYCKHx8Z8okqbHF1JmC1NlaQUySmOJK5MHYzhb1B6YnI+dh780auqVIsprrc2JrwnGpwYMwi0+yL5M4qfpSKfQXScbFFHXrH/sBHxCicUcVkHI4rDzYDjZUsU5JEjy3ZlHxhaZ5ii3pNMadryrWdxxpQhWeNciXpRDBZ0RrDCfAE/3ezS0XtAgAotPzV2hHPtQGrRnKqiIhoJTIB9FFEM+MGl3mSgNSWekvEsaMtdkU17NT5xbCUytxAPCodTuyUzYTu8HFjrpreAHPkQ9okVMQQ026ZF/FoI7PNydoHtZtpkrCIURE9d7W3BBMbgc5GzBR1VBOOWbok3MIr/LTFBIkheABkuZvSyLgBUgaCsoXCJs82gpjpjJOIplSYciOjRp9+iXKlrX+rqS0DghpY/4moGLyJbU0oTEQSSopmxmYAYLMBlTDON4JCSh7LJ1HwA7vPYTd2G9jlh0pdhQsXKqdt7qAaQS1sh8SWdC1V+uYFe4NWzg3zLIby5jUZ2a407dIIaVuoVNmsKY29opqWaZxIhWDzKWICNVls6x/4Zjq1TI+Ckf2ZngEv6IVqNxn4HeVxLWl/QG966mxMD1E+alZ2JqaTcv0DdI83gMLL2JmbbOmeVLqlK+xT+GYoHdOedYx1XcSJ1uiS5JpwOD0WQJRXHWJD+3YJp0tpxbq5ZDLNOJAaQ1gLKEJMY7nUVK1hhBiIxy+Q7lxGn7AU/NnTlCdbQKC87jrTvLIqDwZNnreYbQ3yZAjQqTIzOPp4KTAsa2gGUa191DYDlSrnBpbtOsL+TSo3VoxOhyXL4y3XngaDPSg4FbuQwPEw3qNVz7jZPPWgvAszdP9i85yBs0LUn/2+mN3dnF/j6/mvD/Or+eIjvp59mF3jy9ubt/O797Orvot5p2aDvthxYUa3gsk+rRNpJ7C5vpHARmlCsxUUQ4iXThiYJ+lOqLg6cSAOhMTu0H0V0n+QucOC4aTWHwVjl2fHTX6X7cZ4vLsx+geu3CUovP75+4v5u4fbh3u8+O0W38+vZlf44m52fvlz30d/bsXFy3z/1cpuCZ2hyF3h/YWYx8OSvD4YW0W+rOQ0ZdDkcSlW/0ea2wlaBOZhPNdVfTQ8+QbT02Av1cWqW1QXjqTxTjin9coWzlHxNi5+pk1HPt0F52w/nGrdLUB7suCsWHnUQhVYHPbtqIFzsgvOyR445sBcKApjR264tH0iXBX6UPAWcKs4X8xvb/oHq9tSBcoXDx9361xTrTdVbIuZKRa5bqY9AymmniEfoPmE3nL3wfQOwgD67Q2bhqgVNGyHWe2mJBTXMgPJkrt0hvsjrADHr2il6Xcl5b5m7S3hUB/+u6x9xWTdE/KvlYE/EvKdmK3q+R10+PfsKxOrwyp5knMO94gMLjVwVsOdStuTGnp8qezZTW2zbx4VddfVCCJqM4Bqp+343tBtXgRZh+VnDq8PHMHTH5TfKWp31QLgyaP+RmNSpIDLjkZwUhlqErKZPJ5O3GTHjLvxKPuFpb72tJcNgtOJtVftAjMRKXcD64qN2nZfrBod5uAuJ0TpZx/V1o7cDg6pExaw5bRLWcvUpLDUJdm5mCzh5oQjklmCFf3DqW+y+cTMY3v5O8LgMu99sNepmVJStWQd+98i/fuIDza8+y8HwGsFQfUFiSUIY0FS+0HQducYp4QJjPuF8+qktKPeoPc3a4eihkQUAAA=
+        run: |
+          set -euo pipefail
+          root=research/candidate-09
+          archive="$root/archive/v2"
+          mkdir -p "$archive/evidence"
+          if [[ ! -f "$archive/README.md" ]]; then
+            cp "$root/state_engine.py" "$archive/state_engine.py"
+            cp "$root/config.json" "$archive/config.json"
+            for name in summary.json REPORT.md outcomes.csv trades.csv fills.csv events.jsonl run.json data_manifest.json; do
+              [[ -f "$root/evidence/latest/$name" ]] && cp "$root/evidence/latest/$name" "$archive/evidence/$name"
+            done
+            cat > "$archive/README.md" <<'EOF'
+          # Candidate 09 v2 — complete candidate failed; continuation mechanism preserved
+
+          Reproducible final v2 result commit: `943c0bc202c36f233e7dbfd1783ff02362586e14`.
+
+          V2 replaced one-minute local pivots with completed four-hour auction ranges and achieved clean Nautilus execution/accounting on the same three frozen BTC weeks. It materially improved v1 but did not meet the project gate:
+
+          - pooled daily geometric return: **-0.173236%**
+          - pooled NAV multiple: **0.964244x**
+          - trades: **5**
+          - maximum segment drawdown: **3.000172%**
+          - week returns: **+1.8637%, -2.4120%, -3.0002%**
+
+          The complete candidate was rejected because opportunity rate was insufficient and results did not transfer across weeks. The single-variable ablations showed:
+
+          - removing acceptance produced **-1.268523% daily** and a **0.764836x** NAV multiple, so outside acceptance is essential;
+          - removing MSS produced 25 trades and **-0.082586% daily**, improving frequency but concentrating 19 trades and +9.35% in week-a while weeks b/c remained negative;
+          - removing flow produced the same sparse baseline outcome in this sample, so flow was not the bottleneck.
+
+          Valid component: the baseline continuation branch earned approximately **+2,013.72 USDT net across two trades**, while baseline reversal trades lost approximately **-5,562.18 USDT net**. V3 therefore preserves strict acceptance/retest continuation, removes reversal, and increases logically distinct opportunities through completed 60m/240m/1440m auction extremes rather than loosening acceptance.
+          EOF
+          fi
+
+          printf '%s' "$ENGINE_GZ_B64" | base64 -d | gzip -dc > "$root/state_engine_v3.py"
+          cp "$root/state_engine_v3.py" "$root/state_engine.py"
+          cp "$root/config_v3.json" "$root/config.json"
+          mkdir -p "$root/tests_v3"
+          printf '%s' "$TEST_GZ_B64" | base64 -d | gzip -dc > "$root/tests_v3/test_state_engine.py"
+          sed -i 's/from state_engine_v3 import/from state_engine import/' "$root/tests_v3/test_state_engine.py"
+          cp "$root/tests_v3/test_state_engine.py" "$root/tests/test_state_engine.py"
+
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('research/candidate-09/run.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''ABLATIONS = (\n    "baseline",\n    "no-flow",\n    "no-mss-confirmation",\n    "no-acceptance-confirmation",\n)\n'''
+          new = '''ABLATIONS = (\n    "baseline",\n    "no-flow",\n    "no-acceptance-confirmation",\n    "no-retest-confirmation",\n)\n'''
+          if new not in text:
+              if old not in text:
+                  raise SystemExit('expected v2 ablation tuple not found')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Run doctor, v3 tests, and unchanged frozen-week gate
+        shell: bash
+        run: |
+          set +e
+          root=research/candidate-09
+          out="$root/evidence/latest"
+          diag="$root/diagnostics/v3-gate"
+          rm -rf "$out" "$diag"
+          mkdir -p "$out" "$diag"
+          smc4 doctor > "$diag/doctor.log" 2>&1; doctor=$?
+          python -m compileall -q "$root" > "$diag/compile.log" 2>&1; compile=$?
+          python -m unittest discover -s "$root/tests" -p 'test_*.py' -v > "$diag/tests.log" 2>&1; tests=$?
+          gate=99
+          if [[ $doctor == 0 && $compile == 0 && $tests == 0 ]]; then
+            python "$root/run.py" gate --config "$root/config.json" --cache "$SMC4_DATA_ROOT" --output "$out" > "$diag/gate.log" 2>&1
+            gate=$?
+          else
+            echo 'gate not run because prerequisite failed' > "$diag/gate.log"
+          fi
+          DOCTOR=$doctor COMPILE=$compile TESTS=$tests GATE=$gate python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path('research/candidate-09'); diag=root/'diagnostics/v3-gate'; out=root/'evidence/latest'
+          codes={k.lower():int(os.environ[k]) for k in ('DOCTOR','COMPILE','TESTS','GATE')}
+          failure=next((k for k,v in codes.items() if v),None)
+          (diag/'diagnostic.json').write_text(json.dumps({
+              'candidate_generation':'v3-multi-horizon-accepted-liquidity-cascade',
+              'classification':'IMPLEMENTATION_ERROR' if failure else 'EXECUTED',
+              'codes':codes,'first_failure':failure,
+              'fixed_weeks_preserved':True,'parameter_search_performed':False,
+              'structural_change':'continuation-only; completed 60m/240m/1440m auction levels; strict acceptance and defended retest',
+              'run_id':os.environ.get('GITHUB_RUN_ID'),'trigger_sha':os.environ.get('GITHUB_SHA')
+          },indent=2,sort_keys=True)+'\n')
+          if not (out/'summary.json').exists():
+              (out/'summary.json').write_text(json.dumps({'candidate':'candidate-09-v3','status':'IMPLEMENTATION_ERROR','first_failure':failure,'codes':codes},indent=2,sort_keys=True)+'\n')
+          for p in diag.glob('*.log'):
+              lines=p.read_text(errors='replace').splitlines(); p.write_text('\n'.join(lines[-1200:])+('\n' if lines else ''))
+          PY
+          exit 0
+
+      - name: Preserve exact v3 output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v3-gate-${{ github.run_id }}
+          path: |
+            research/candidate-09/evidence/latest
+            research/candidate-09/diagnostics/v3-gate
+            research/candidate-09/archive/v2
+            research/candidate-09/config.json
+            research/candidate-09/state_engine.py
+            research/candidate-09/nautilus_strategy.py
+            research/candidate-09/run.py
+            research/candidate-09/tests
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit v3 source, archive, and evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=$(dirname "$(dirname "$(dirname "$(realpath research/candidate-09/run.py)")")")
+          git config --global --add safe.directory "$repo"
+          git -C "$repo" config user.name candidate-09-research-bot
+          git -C "$repo" config user.email candidate-09-research-bot@users.noreply.github.com
+          git -C "$repo" add -A research/candidate-09
+          if git -C "$repo" diff --cached --quiet; then exit 0; fi
+          status=$(python -c "import json;print(json.load(open('research/candidate-09/evidence/latest/summary.json')).get('status','UNKNOWN'))")
+          git -C "$repo" commit -m "candidate-09 v3: frozen gate result ${status}"
+          git -C "$repo" pull --rebase origin "${GITHUB_REF_NAME}"
+          git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
