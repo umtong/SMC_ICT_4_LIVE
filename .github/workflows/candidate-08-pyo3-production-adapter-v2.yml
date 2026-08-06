@@ -27,7 +27,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Materialize the v1 controlled scripts with only overbroad checks narrowed
+      - name: Materialize native production adapter and update its semantic static contract
         shell: bash
         run: |
           set -euo pipefail
@@ -79,10 +79,36 @@ jobs:
           Path("/tmp/candidate08_patch.sh").write_text(patch, encoding="utf-8")
           Path("/tmp/candidate08_verify.sh").write_text(verify, encoding="utf-8")
           PY
+
           bash /tmp/candidate08_patch.sh
+
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-08/test_aggtrade_acceptance_pure.py")
+          source = path.read_text(encoding="utf-8")
+          replacements = {
+              '        self.assertIn("starting_balances=[Money(float(config[\\"starting_nav_usdt\\"]), USDT)]", source)\n':
+                  '        self.assertEqual(source.count("engine.add_venue("), 1)\n'
+                  '        self.assertEqual(source.count("nautilus_pyo3.BacktestEngine("), 1)\n'
+                  '        self.assertIn("nautilus_pyo3.Money.from_str(", source)\n'
+                  '        self.assertIn("config[\'starting_nav_usdt\']", source)\n'
+                  '        self.assertIn("base_currency=NATIVE_USDT", source)\n',
+              '        self.assertIn("engine.add_data(all_mark_price_updates, sort=False)", source)\n':
+                  '        self.assertIn("engine.add_data(native_mark_price_updates, sort=False)", source)\n',
+              '        self.assertIn("engine.add_data(all_funding_updates, sort=False)", source)\n':
+                  '        self.assertIn("engine.add_data(native_funding_updates, sort=False)", source)\n',
+          }
+          for old, new in replacements.items():
+              if source.count(old) != 1:
+                  raise SystemExit(f"native static contract anchor mismatch: {old!r}")
+              source = source.replace(old, new)
+          path.write_text(source, encoding="utf-8")
+          PY
+
           bash /tmp/candidate08_verify.sh
 
-      - name: Commit only verified production files
+      - name: Commit only verified production and contract files
         shell: bash
         run: |
           set -euo pipefail
@@ -93,6 +119,7 @@ jobs:
           git add -A -- \
             research/candidate-08/aggtrade_acceptance_strategy.py \
             research/candidate-08/run_aggtrade_acceptance_nautilus.py \
+            research/candidate-08/test_aggtrade_acceptance_pure.py \
             research/candidate-08/.run-pyo3-production-adapter-v2
           git commit -m "candidate-08: use verified native Nautilus production adapter [skip ci]"
           for attempt in 1 2 3 4 5; do
