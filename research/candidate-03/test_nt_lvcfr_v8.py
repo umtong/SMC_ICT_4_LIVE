@@ -7,13 +7,13 @@ from nt_lvcfr_data import CandidateConfig
 
 
 class StructuralRatchetContractTests(unittest.TestCase):
-    def test_patch_anchors_first_stop_at_structural_level(self) -> None:
-        # The patch workflow applies the V8 edit before running this test.
-        # Inspect the resulting native strategy rather than the idempotent patch
-        # source, which intentionally contains the old block as replacement input.
-        source = Path(__file__).with_name("nt_lvcfr_strategy.py").read_text(
-            encoding="utf-8"
-        )
+    def test_v8_patch_declares_structural_anchor_and_break_even_ratchet(self) -> None:
+        # V8 is a historical controlled patch. Later candidates may advance the
+        # active strategy, so inspect the idempotent V8 patch's positive intent
+        # rather than requiring the current strategy to remain frozen at V8.
+        source = Path(__file__).with_name(
+            "apply_nt_lvcfr_v8_strategy_patch.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("max(active.stop, structural_trigger)", source)
         self.assertIn("min(active.stop, structural_trigger)", source)
         self.assertIn(
