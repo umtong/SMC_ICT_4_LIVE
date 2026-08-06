@@ -15,7 +15,7 @@ from candidate import reproducible_weeks
 from candidate import run_backtest
 
 
-VARIANT_NAMES = ("full", "ablation-no-cluster-activation")
+VARIANT_NAMES = ("full", "ablation-single-bar-displacement")
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,12 +35,13 @@ def parse_args() -> argparse.Namespace:
 
 def variants() -> dict[str, MachineParams]:
     full = MachineParams()
-    # One-variable ablation for v2: nearby confirmed pivots may still merge for
-    # coordinate de-duplication, but source count alone cannot activate a pool.
-    no_cluster_activation = replace(full, enable_pool_clustering=False)
+    # One-variable v2.1 ablation: restore the preceding single-candle
+    # displacement certification while keeping pools, costs, targets, risk,
+    # entry, expiry and every numerical threshold unchanged.
+    single_bar = replace(full, enable_path_displacement=False)
     return {
         "full": full,
-        "ablation-no-cluster-activation": no_cluster_activation,
+        "ablation-single-bar-displacement": single_bar,
     }
 
 
@@ -124,7 +125,7 @@ def main() -> int:
         "phase": args.phase,
         "executed_weeks": [item.isoformat() for item in weeks],
         "engine_process_isolation": True,
-        "candidate_generation": "v2-confirmed-structural-liquidity-pools",
+        "candidate_generation": "v2.1-efficient-event-path-displacement",
         "variants": list(VARIANT_NAMES),
     }
     (output_root / "week_selection.json").write_text(
