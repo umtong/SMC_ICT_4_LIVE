@@ -1,13 +1,16 @@
-"""Candidate 09 v4: post-acceptance resolution state engine.
+"""Candidate 09 v5: accepted-liquidity-trap rotation state engine.
 
-Completed multi-horizon auction extremes are neutral liquidity events.  After an
-approach, breach and outside acceptance, the engine does not assume that the first
-retest will continue.  It waits for one of two causal resolutions:
+Completed nested auctions create neutral external-liquidity levels.  A level is
+tradable only after directional approach, a genuine outside acceptance, and then
+a loss of the accepted level with opposite displacement and order flow.  The
+continuation branch is deliberately removed: v3 and v4 showed that the first
+defended/re-expanded retest was not persistent repricing in the frozen samples.
 
-* continuation: defended retest followed by renewed displacement through the
-  retest swing (re-expansion);
-* reversal: accepted breakout loses the level with opposite displacement/flow,
-  trapping breakout participants and targeting the breached range equilibrium.
+The reversal objective is the opposite edge of the already completed source
+auction, i.e. the next external liquidity in the prior dealing range.  A midpoint
+target remains an explicit ablation.  Five-minute auctions add logically distinct
+intraday opportunities while the strict acceptance/failure sequence prevents a
+return to the discarded one-minute-pivot detector.
 
 All observations are completed one-minute bars.  NautilusTrader remains the only
 execution and accounting engine.
@@ -61,7 +64,7 @@ class FlowBar:
 
 @dataclass(frozen=True, slots=True)
 class EngineConfig:
-    auction_horizons_minutes: tuple[int, ...] = (15, 60, 240, 1440)
+    auction_horizons_minutes: tuple[int, ...] = (5, 15, 60, 1440)
     atr_period: int = 20
     volume_period: int = 60
     approach_period: int = 15
@@ -93,14 +96,15 @@ class EngineConfig:
     use_flow_confirmation: bool = True
     require_acceptance_confirmation: bool = True
     require_reexpansion_confirmation: bool = True
+    use_opposite_edge_target: bool = True
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any], *, ablation: str = "baseline") -> "EngineConfig":
         allowed = {
             "baseline",
-            "no-flow",
-            "no-acceptance-confirmation",
-            "no-reexpansion-confirmation",
+            "no-5m",
+            "with-240m",
+            "midpoint-target",
         }
         if ablation not in allowed:
             raise ValueError(f"unknown ablation: {ablation}")
@@ -110,6 +114,10 @@ class EngineConfig:
         trade = payload["trade"]
         risk = payload["risk"]
         horizons = tuple(int(value) for value in structure["auction_horizons_minutes"])
+        if ablation == "no-5m":
+            horizons = tuple(value for value in horizons if value != 5)
+        elif ablation == "with-240m":
+            horizons = tuple(sorted({*horizons, 240}))
         if tuple(sorted(set(horizons))) != horizons or not horizons or any(value <= 0 for value in horizons):
             raise ValueError("auction horizons must be unique, positive, and ascending")
         return cls(
@@ -142,9 +150,10 @@ class EngineConfig:
             minimum_net_reward_to_risk=float(trade["minimum_net_reward_to_risk"]),
             composite_cost_per_fill=float(risk["composite_taker_cost_per_fill"]),
             cooldown_bars=int(trade["cooldown_bars"]),
-            use_flow_confirmation=ablation != "no-flow",
-            require_acceptance_confirmation=ablation != "no-acceptance-confirmation",
-            require_reexpansion_confirmation=ablation != "no-reexpansion-confirmation",
+            use_flow_confirmation=True,
+            require_acceptance_confirmation=True,
+            require_reexpansion_confirmation=True,
+            use_opposite_edge_target=ablation != "midpoint-target",
         )
 
 
@@ -466,17 +475,14 @@ class LiquidityStateEngine:
                 pending.retest_low = bar.low
                 events.append(self._event(pending, bar, "DEFENDED_RETEST", "ACCEPTED", "RETESTED",
                                           "FIRST_RETEST_CLOSED_OUTSIDE_ACCEPTED_LEVEL"))
-                if not self.config.require_reexpansion_confirmation:
-                    signal = self._build_signal(pending, bar, branch="CONTINUATION")
-                    return self._finish(pending, bar, signal, events)
             elif self._index - pending.acceptance_index > self.config.retest_timeout_bars:
                 self._expire(pending, bar, "ACCEPTED_BREAK_DID_NOT_RETEST_OR_FAIL", events)
                 return None
 
         if pending.state == "RETESTED" and pending.retest_index is not None:
             if self._index > pending.retest_index and self._reexpansion_confirmed(pending, bar):
-                signal = self._build_signal(pending, bar, branch="CONTINUATION")
-                return self._finish(pending, bar, signal, events)
+                self._expire(pending, bar, "GENUINE_REEXPANSION_INVALIDATED_TRAP_REVERSAL", events)
+                return None
             if self._index - pending.retest_index > self.config.post_retest_resolution_bars:
                 self._expire(pending, bar, "RETEST_DID_NOT_REEXPAND_OR_FAIL", events)
         return None
@@ -565,11 +571,11 @@ class LiquidityStateEngine:
         elif pending.direction == "UP":
             side = "SELL"
             stop = max(pending.extreme, bar.high) + self.config.stop_buffer_atr * atr
-            target = level.range_midpoint if level.range_midpoint < entry else level.range_low
+            target = level.range_low if self.config.use_opposite_edge_target else level.range_midpoint
         else:
             side = "BUY"
             stop = min(pending.extreme, bar.low) - self.config.stop_buffer_atr * atr
-            target = level.range_midpoint if level.range_midpoint > entry else level.range_high
+            target = level.range_high if self.config.use_opposite_edge_target else level.range_midpoint
         if target is None:
             return None
         if side == "BUY" and not stop < entry < target:
@@ -590,7 +596,7 @@ class LiquidityStateEngine:
         reason = (
             "DEFENDED_RETEST_REEXPANSION_TO_NEXT_LIQUIDITY"
             if branch == "CONTINUATION"
-            else "ACCEPTED_BREAKOUT_FAILED_AND_TRAPPED_PARTICIPANTS"
+            else "ACCEPTED_LIQUIDITY_TRAP_ROTATION_TO_OPPOSITE_RANGE_EDGE"
         )
         return Signal(
             scenario_id=pending.scenario_id, branch=branch, side=side, observed_time_ns=bar.ts_ns,
@@ -600,7 +606,8 @@ class LiquidityStateEngine:
                      "horizon_minutes": level.horizon_minutes, "range_width": level.range_width,
                      "range_midpoint": level.range_midpoint, "confluence_count": pending.confluence_count,
                      "approach_efficiency": pending.approach_efficiency, "approach_flow": pending.approach_flow,
-                     "post_flow": pending.post_flow_imbalance, "atr": atr},
+                     "post_flow": pending.post_flow_imbalance, "atr": atr,
+                     "target_model": "OPPOSITE_EDGE" if self.config.use_opposite_edge_target else "MIDPOINT"},
         )
 
     def _finish(self, pending: PendingResolution, bar: FlowBar, signal: Signal | None, events: list[DiagnosticEvent]) -> Signal | None:

@@ -2,18 +2,18 @@
 
 - Status: **GATE_FAIL**
 - Gate passed: **False**
-- Baseline pooled daily geometric return: **0.243443%**
-- Baseline pooled NAV multiple across sampled days: **1.052387x**
-- Baseline trades: **10**
-- Maximum sampled-segment drawdown: **5.910882%**
+- Baseline pooled daily geometric return: **-0.600476%**
+- Baseline pooled NAV multiple across sampled days: **0.881192x**
+- Baseline trades: **19**
+- Maximum sampled-segment drawdown: **10.630265%**
 
 ## Fixed-week results
 
 | week | return | daily geo | trades | win rate | PF | max DD | reversal | continuation | implementation |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| week-a | 8.0446% | 1.1115% | 6 | 66.67% | 2.245 | 5.9109% | 6 | 0 | OK |
-| week-b | -3.0008% | -0.4343% | 1 | 0.00% | 0.000 | 3.0008% | 0 | 1 | OK |
-| week-c | 0.4163% | 0.0594% | 3 | 33.33% | 1.066 | 5.9101% | 2 | 1 | OK |
+| week-a | -8.5395% | -1.2671% | 8 | 25.00% | 0.520 | 10.6303% | 8 | 0 | OK |
+| week-b | -2.3534% | -0.3396% | 2 | 50.00% | 0.221 | 2.9998% | 2 | 0 | OK |
+| week-c | -1.3312% | -0.1913% | 9 | 33.33% | 0.927 | 8.7331% | 9 | 0 | OK |
 
 ## Gate checks
 
@@ -25,10 +25,9 @@
 
 ## Failure classification / structural diagnosis
 
-- Classification: **LOGIC_ERROR_NO_STRUCTURAL_PATH**
-- Largest influence: **insufficient cost-after conditional edge or opportunity rate**
-- Required action: Discard candidate-09 as a complete candidate; preserve only the listed mechanisms for later hypotheses.
-- Parts worth preserving: absorption/reclaim branch produced executable events; acceptance/retest branch produced executable events; risk-budgeted loss path remained recoverable in the gate sample
+- Classification: **LOGIC_ERROR_WITH_STRUCTURAL_PATH**
+- Largest influence: **midpoint-target**
+- Required action: The single-variable ablation midpoint-target improved pooled cost-after growth; revise only that confirmation layer, then freeze and retest.
 
 ## Known failure conditions
 
