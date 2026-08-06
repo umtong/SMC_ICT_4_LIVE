@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import re
 from typing import Any
 
 from nt_liquidity_strategy import LiquidityTransitionConfig
@@ -30,6 +31,39 @@ class RichSignalConfig(LiquidityTransitionConfig, frozen=True):
     projection_bars: int = 240
 
 
+def entry_fill_respects_bracket(
+    entry_fill: float,
+    stop: float,
+    target: float,
+    side: int,
+) -> bool:
+    """Return whether the actual entry still lies inside the causal bracket.
+
+    A market order can fill on the next bar after the structural invalidation or
+    target has already been crossed. In that state the original trade no longer
+    exists: leaving the contingent stop on the opposite side of the new entry
+    can create unbounded holding-period loss. The only live-safe response after
+    an unavoidable fill is immediate flattening, never re-anchoring the alpha
+    stop or target to the later price.
+    """
+
+    if side not in (-1, 1):
+        return False
+    if not all(math.isfinite(value) for value in (entry_fill, stop, target)):
+        return False
+    return side * (entry_fill - stop) > 0.0 and side * (target - entry_fill) > 0.0
+
+
+def _position_entry_fill(event: Any) -> float:
+    value = getattr(event, "avg_px_open", None)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        match = re.search(r"avg_px_open=([-+0-9.eE]+)", str(event))
+        number = float(match.group(1)) if match else float("nan")
+    return number
+
+
 class RichSignalStrategy(LowImpactExternalLiquidityStrategy):
     """Route one causal intent at a time into Nautilus contingent orders."""
 
@@ -37,6 +71,7 @@ class RichSignalStrategy(LowImpactExternalLiquidityStrategy):
         super().__init__(config)
         self.signals_by_time: dict[int, list[dict[str, Any]]] = {}
         self.loaded_signal_count = 0
+        self.pending_entry_guard: dict[str, Any] | None = None
 
     def on_start(self) -> None:
         super().on_start()
@@ -66,6 +101,55 @@ class RichSignalStrategy(LowImpactExternalLiquidityStrategy):
             },
             {"signals": self.loaded_signal_count, "path": str(path)},
         )
+
+    def on_position_opened(self, event: Any) -> None:
+        guard = self.pending_entry_guard
+        super().on_position_opened(event)
+        if guard is None:
+            return
+
+        # Clear before any immediate close can synchronously emit lifecycle
+        # callbacks. The guard belongs to this fill only.
+        self.pending_entry_guard = None
+        entry_fill = _position_entry_fill(event)
+        valid = entry_fill_respects_bracket(
+            entry_fill,
+            float(guard["stop"]),
+            float(guard["target"]),
+            int(guard["side"]),
+        )
+        details = {
+            **guard,
+            "actual_entry_fill": entry_fill,
+            "fill_geometry_valid": valid,
+            "event": str(event),
+        }
+        if valid:
+            self._event(
+                "ENTRY_FILL_GEOMETRY_VALID",
+                str(guard["scenario"]),
+                self.bars[-1],
+                details,
+            )
+            return
+
+        self._event(
+            "ENTRY_FILLED_OUTSIDE_CAUSAL_BRACKET",
+            str(guard["scenario"]),
+            self.bars[-1],
+            details,
+        )
+        self.cancel_all_orders(self.config.instrument_id)
+        self.close_all_positions(self.config.instrument_id)
+
+    def on_position_closed(self, event: Any) -> None:
+        self.pending_entry_guard = None
+        super().on_position_closed(event)
+
+    def on_order_rejected(self, event: Any) -> None:
+        super().on_order_rejected(event)
+        if self.portfolio.is_flat(self.config.instrument_id):
+            self.pending_entry_guard = None
 
     def _detect_session_sweep(self, row: dict[str, float | int]) -> bool:
         candidates = self.signals_by_time.get(int(row["ts"]), [])
@@ -193,6 +277,15 @@ class RichSignalStrategy(LowImpactExternalLiquidityStrategy):
             "causal_target_net_r_at_signal": target_net_r,
             "minimum_target_net_r": self.config.minimum_target_net_r,
         }
+        self.pending_entry_guard = {
+            "scenario": scenario,
+            "side": side,
+            "signal_entry": entry,
+            "stop": stop,
+            "target": target_price,
+            "compiled_signal_index": int(signal["signal_index"]),
+            "compiled_observe_time": signal["observe_time"],
+        }
         submitted = LiquidityTransitionStrategy._submit_bracket(
             self,
             setup,
@@ -201,8 +294,13 @@ class RichSignalStrategy(LowImpactExternalLiquidityStrategy):
             details,
         )
         if not submitted:
+            self.pending_entry_guard = None
             self._event("RICH_SIGNAL_EXECUTION_REJECTED", scenario, row, details)
         return submitted
 
 
-__all__ = ["RichSignalConfig", "RichSignalStrategy"]
+__all__ = [
+    "RichSignalConfig",
+    "RichSignalStrategy",
+    "entry_fill_respects_bracket",
+]
