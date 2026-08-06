@@ -4,19 +4,25 @@ from __future__ import annotations
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.events import PositionClosed
 
-from failed_continuation import AcceptanceOutcome, FailedAbsorptionAcceptance
+from failed_continuation import (
+    AcceptanceOutcome,
+    FailedAbsorptionAcceptance,
+    within_signal_shock_window,
+)
 from model import Direction, ScenarioKind, ScenarioState, TradePlan
 from strategy import Candidate07StrategyConfig
 from strategy_cascade import Candidate07Strategy as _CascadeCandidate07Strategy
 
 
 class Candidate07Strategy(_CascadeCandidate07Strategy):
-    """Turn a stopped absorption thesis into conditional opposite acceptance.
+    """Turn an immediate stopped absorption into opposite acceptance.
 
     Generic breakout continuation remains disabled. A continuation can exist
     only after a real NautilusTrader stop child closes an absorption/reclaim
-    position, and only if a completed one-minute bar closes beyond that stop
-    boundary before price reclaims the original liquidity pool.
+    position within the same five-minute signal shock, and only if a completed
+    one-minute bar subsequently closes beyond that stop boundary before price
+    reclaims the original liquidity pool. A later stop belongs to a new market
+    episode and cannot retroactively convert the old sweep into continuation.
     """
 
     ACCEPTANCE_TIMEOUT_BARS = 3
@@ -36,6 +42,7 @@ class Candidate07Strategy(_CascadeCandidate07Strategy):
 
     def on_position_closed(self, event: PositionClosed) -> None:
         plan = self._active_plan
+        opened_ns = self._position_open_ns
         structural_stop = (
             plan is not None
             and plan.kind is ScenarioKind.ABSORPTION_RECLAIM
@@ -43,6 +50,35 @@ class Candidate07Strategy(_CascadeCandidate07Strategy):
         )
         super().on_position_closed(event)
         if plan is None or not structural_stop:
+            return
+
+        closed_ns = int(event.ts_event)
+        child_scenario_id = self._acceptance_scenario_id_from_source(plan.scenario_id)
+        if opened_ns is None or not within_signal_shock_window(
+            opened_ns=int(opened_ns),
+            closed_ns=closed_ns,
+            signal_minutes=self.logic.signal_minutes,
+        ):
+            hold_minutes = (
+                (closed_ns - int(opened_ns)) / 60_000_000_000
+                if opened_ns is not None
+                else None
+            )
+            self._append_manual_event(
+                scenario_id=child_scenario_id,
+                previous_state=ScenarioState.IDLE.value,
+                next_state=ScenarioState.INVALIDATED.value,
+                reason_code="ABSORPTION_FAILURE_OUTSIDE_SIGNAL_SHOCK",
+                event_time_ns=closed_ns,
+                reference_price=plan.stop_price,
+                details={
+                    "source_scenario_id": plan.scenario_id,
+                    "opened_ns": opened_ns,
+                    "closed_ns": closed_ns,
+                    "hold_minutes": hold_minutes,
+                    "maximum_same_shock_minutes": self.logic.signal_minutes,
+                },
+            )
             return
 
         continuation_direction = (
@@ -54,7 +90,7 @@ class Candidate07Strategy(_CascadeCandidate07Strategy):
             liquidity_level=plan.liquidity_level,
             acceptance_level=plan.stop_price,
             atr=float(plan.details["atr"]),
-            armed_at_ns=int(event.ts_event),
+            armed_at_ns=closed_ns,
             timeout_bars=self.ACCEPTANCE_TIMEOUT_BARS,
         )
         self._failed_acceptance = state
@@ -63,10 +99,13 @@ class Candidate07Strategy(_CascadeCandidate07Strategy):
             previous_state=ScenarioState.IDLE.value,
             next_state="FAILED_ACCEPTANCE_ARMED",
             reason_code="ABSORPTION_STOP_ARMS_OPPOSITE_ACCEPTANCE",
-            event_time_ns=int(event.ts_event),
+            event_time_ns=closed_ns,
             reference_price=state.acceptance_level,
             details={
                 "source_scenario_id": plan.scenario_id,
+                "source_opened_ns": int(opened_ns),
+                "source_hold_minutes": (closed_ns - int(opened_ns)) / 60_000_000_000,
+                "maximum_same_shock_minutes": self.logic.signal_minutes,
                 "continuation_direction": continuation_direction.value,
                 "liquidity_level": state.liquidity_level,
                 "acceptance_level": state.acceptance_level,
@@ -175,6 +214,7 @@ class Candidate07Strategy(_CascadeCandidate07Strategy):
                 "source_scenario_id": state.source_scenario_id,
                 "acceptance_level": state.acceptance_level,
                 "failed_absorption_continuation": True,
+                "same_signal_shock": True,
             },
         )
 
@@ -204,7 +244,13 @@ class Candidate07Strategy(_CascadeCandidate07Strategy):
 
     @staticmethod
     def _acceptance_scenario_id(state: FailedAbsorptionAcceptance) -> str:
-        return f"{state.source_scenario_id}-fac"
+        return Candidate07Strategy._acceptance_scenario_id_from_source(
+            state.source_scenario_id,
+        )
+
+    @staticmethod
+    def _acceptance_scenario_id_from_source(source_scenario_id: str) -> str:
+        return f"{source_scenario_id}-fac"
 
 
 __all__ = ["Candidate07Strategy", "Candidate07StrategyConfig"]
