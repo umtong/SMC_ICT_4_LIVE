@@ -16,9 +16,11 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
     """Add causal failed-absorption memory to the base Nautilus strategy.
 
     A stop-loss fill proves that price accepted beyond the swept liquidity
-    instead of being absorbed. The strategy therefore rejects another reversal
-    in the same direction until a completed market bar reaches the opposing
-    internal-liquidity level which the failed scenario had predicted.
+    instead of being absorbed. The strategy therefore rejects another
+    absorption/reclaim reversal in the same direction until a completed market
+    bar reaches the opposing internal-liquidity level which the failed scenario
+    had predicted. A separately confirmed acceptance continuation is not the
+    same reversal thesis and is therefore not blocked by this gate.
     """
 
     def __init__(self, config: Candidate07StrategyConfig):
@@ -45,7 +47,7 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
         super().on_bar(bar)
 
         plan = self._pending_plan
-        if plan is None:
+        if plan is None or plan.kind is not ScenarioKind.ABSORPTION_RECLAIM:
             return
         block = self._failed_absorption_gate.state(plan.direction)
         if block is None:
@@ -62,6 +64,7 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
                 "reset_price": block.reset_price,
                 "source_scenario_id": block.source_scenario_id,
                 "blocked_at_ns": block.blocked_at_ns,
+                "blocked_kind": ScenarioKind.ABSORPTION_RECLAIM.value,
             },
         )
         self._pending_plan = None
