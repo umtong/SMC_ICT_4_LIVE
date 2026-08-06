@@ -221,6 +221,7 @@ class NTLvcfrStrategy(Strategy):
             "invalid_entry_price": 0,
             "invalid_structural_target": 0,
             "structural_protection_activations": 0,
+            "structural_break_even_ratchets": 0,
             "entries_submitted": 0,
             "entries_rejected": 0,
             "exits_submitted": 0,
@@ -413,6 +414,7 @@ class NTLvcfrStrategy(Strategy):
             "structural_protection_trigger": signal_structural_protection_trigger(active.signal),
             "break_even_price": active.break_even_price,
             "structural_protection_active": active.structural_protection_active,
+            "structural_protection_stop": active.stop if active.structural_protection_active else None,
             "protection_active": active.protection_active,
             "mfe_net_r": active.mfe_net_r,
             "settled_funding_cost_per_unit_estimate": active.settled_funding_cost_per_unit,
@@ -741,13 +743,13 @@ class NTLvcfrStrategy(Strategy):
         if (
             structural_trigger is not None
             and not active.structural_protection_active
-            and active.direction * (executable - structural_trigger) >= 0.0
+            and active.direction * (executable - structural_trigger) > 0.0
         ):
             active.structural_protection_active = True
             active.stop = (
-                max(active.stop, active.break_even_price)
+                max(active.stop, structural_trigger)
                 if active.direction > 0
-                else min(active.stop, active.break_even_price)
+                else min(active.stop, structural_trigger)
             )
             self.counters["structural_protection_activations"] += 1
             self._emit(
@@ -757,7 +759,7 @@ class NTLvcfrStrategy(Strategy):
                 observed_time_ns=timestamp_ns,
                 previous_state=f"{active.kind}_ACTIVE",
                 next_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
-                reason_code="FIRST_CAUSAL_LIQUIDITY_OBJECTIVE_REACHED",
+                reason_code="FIRST_CAUSAL_LIQUIDITY_OBJECTIVE_BECAME_INVALIDATION",
                 reference_price=active.stop,
                 details={
                     "structural_trigger": structural_trigger,
@@ -765,6 +767,34 @@ class NTLvcfrStrategy(Strategy):
                     "mfe_net_r": net_r,
                 },
             )
+
+        if (
+            active.structural_protection_active
+            and active.direction * (executable - active.break_even_price) > 0.0
+        ):
+            ratcheted = (
+                max(active.stop, active.break_even_price)
+                if active.direction > 0
+                else min(active.stop, active.break_even_price)
+            )
+            if ratcheted != active.stop:
+                active.stop = ratcheted
+                self.counters["structural_break_even_ratchets"] += 1
+                self._emit(
+                    scenario_id=active.signal["scenario_id"],
+                    event_type="STRUCTURAL_PROTECTION_RATCHETED_TO_AFTER_COST_BREAK_EVEN",
+                    event_time_ns=timestamp_ns,
+                    observed_time_ns=timestamp_ns,
+                    previous_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
+                    next_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
+                    reason_code="AFTER_COST_BREAK_EVEN_TRADED_AFTER_FIRST_OBJECTIVE",
+                    reference_price=active.stop,
+                    details={
+                        "structural_trigger": structural_trigger,
+                        "after_cost_break_even": active.break_even_price,
+                        "mfe_net_r": net_r,
+                    },
+                )
 
         if active.kind == "CONTINUATION" and not active.protection_active and net_r >= self.config.continuation_protection_activate_r:
             active.protection_active = True
