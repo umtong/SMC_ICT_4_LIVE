@@ -1,0 +1,109 @@
+name: candidate-04-contract-result-collector
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-contract-result-collector.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Wait for latest contract runs and capture failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-04/status/contract-logs
+          workflows=(
+            candidate-04-multi-asset-runtime-contract.yml
+            candidate-04-new-infrastructure-contract.yml
+            candidate-04-branch-trigger-normalization.yml
+            candidate-04-v36-test-normalization.yml
+            candidate-04-v36-balance-path-fix.yml
+          )
+          printf '[]\n' > /tmp/contracts.json
+          for workflow in "${workflows[@]}"; do
+            run_id="$(gh api \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?branch=research/candidate-04&per_page=10" \
+              --jq '.workflow_runs[0].id // empty')"
+            if [[ -z "$run_id" ]]; then
+              python - <<PY
+          import json
+          from pathlib import Path
+          path=Path('/tmp/contracts.json')
+          rows=json.loads(path.read_text())
+          rows.append({'workflow':'$workflow','status':'missing','conclusion':None})
+          path.write_text(json.dumps(rows, indent=2, sort_keys=True)+'\n')
+          PY
+              continue
+            fi
+            for attempt in $(seq 1 90); do
+              status="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq .status)"
+              if [[ "$status" == "completed" ]]; then break; fi
+              sleep 60
+            done
+            status="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq .status)"
+            conclusion="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.conclusion // ""')"
+            head_sha="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq .head_sha)"
+            python - <<PY
+          import json
+          from pathlib import Path
+          path=Path('/tmp/contracts.json')
+          rows=json.loads(path.read_text())
+          rows.append({
+              'workflow':'$workflow',
+              'run_id':int('$run_id'),
+              'head_sha':'$head_sha',
+              'status':'$status',
+              'conclusion':'$conclusion' or None,
+              'failure_classification': (
+                  'implementation_or_workflow'
+                  if '$conclusion' not in ('success', '')
+                  else None
+              ),
+          })
+          path.write_text(json.dumps(rows, indent=2, sort_keys=True)+'\n')
+          PY
+            if [[ "$status" == "completed" && "$conclusion" != "success" ]]; then
+              gh run view "$run_id" \
+                --repo "$GITHUB_REPOSITORY" \
+                --log-failed \
+                > "research/candidate-04/status/contract-logs/${workflow%.yml}-${run_id}.log" \
+                2>&1 || true
+            fi
+          done
+          cp /tmp/contracts.json research/candidate-04/status/CONTRACTS.json
+
+      - name: Commit contract evidence with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/status/CONTRACTS.json \
+            research/candidate-04/status/contract-logs
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record candidate-04 infrastructure contract results"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
