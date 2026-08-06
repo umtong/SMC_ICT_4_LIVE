@@ -337,8 +337,6 @@ def _create_engine(config: Mapping[str, Any], instrument: CryptoPerpetual) -> Ba
         bar_adaptive_high_low_ordering=bool(
             config["venue"]["bar_adaptive_high_low_ordering"]
         ),
-        liquidation_enabled=bool(config["venue"]["liquidation_enabled"]),
-        liquidation_trigger_ratio=float(config["venue"]["liquidation_trigger_ratio"]),
     )
     engine.add_instrument(instrument)
     return engine
