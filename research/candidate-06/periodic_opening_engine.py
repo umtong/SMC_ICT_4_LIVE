@@ -69,6 +69,7 @@ class PeriodicOpeningLiquidityRelayEngine(HierarchicalMultiLiquidityEngine):
             return ()
 
         observation = snapshot.observation
+        source = source_bar_datetime(observation.ts_ns)
         volume_baseline = median(self._opening_volumes[-minimum_history:])
         pressure_baseline = median(self._opening_abs_signed[-minimum_history:])
         atr_context = sum(self._quarter_true_ranges[-quarter_atr_bars:]) / quarter_atr_bars
