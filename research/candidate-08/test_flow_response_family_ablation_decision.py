@@ -19,6 +19,7 @@ def _summary(
     initiative_trades: int = 3,
     absorption_trades: int = 2,
 ) -> dict:
+    closed = initiative_trades + absorption_trades
     return {
         "suite": "first",
         "implementation_revision": IMPLEMENTATION_REVISION,
@@ -26,7 +27,17 @@ def _summary(
         "diagnostic_family_ablation": False,
         "scenario_attribution_passed": True,
         "suite_gate_passed": False,
-        "closed_trades": initiative_trades + absorption_trades,
+        "suite_gate_checks": {
+            "complete_auction_scenario_attribution": True,
+            "complete_post_run_trade_path_diagnostics": True,
+            "base_contract_includes_both_auction_families": True,
+            "base_contract_includes_both_flow_response_families": True,
+        },
+        "closed_trades": closed,
+        "trade_path_diagnostic_summary": {
+            "records": closed,
+            "complete_records": closed,
+        },
         "scenario_family_results": {
             INITIATIVE_FAMILY: {
                 "signals": 5,
@@ -100,9 +111,30 @@ class FlowResponseAblationDecisionContracts(unittest.TestCase):
                 self.assertFalse(decision.selected)
                 self.assertEqual(decision.reason, reason)
 
+    def test_incomplete_path_or_attribution_evidence_blocks_selection(self) -> None:
+        summary = _summary()
+        summary["suite_gate_checks"]["complete_post_run_trade_path_diagnostics"] = False
+        decision = select_single_family_ablation(summary)
+        self.assertFalse(decision.selected)
+        self.assertEqual(decision.reason, "BASE_EVIDENCE_CHECKS_INCOMPLETE")
+
+        summary = _summary()
+        summary["trade_path_diagnostic_summary"]["complete_records"] -= 1
+        decision = select_single_family_ablation(summary)
+        self.assertFalse(decision.selected)
+        self.assertEqual(decision.reason, "TRADE_PATH_DIAGNOSTIC_COUNTS_INCOMPLETE")
+
+        summary = _summary()
+        summary["suite_gate_checks"] = None
+        decision = select_single_family_ablation(summary)
+        self.assertFalse(decision.selected)
+        self.assertEqual(decision.reason, "BASE_SUITE_GATE_CHECKS_MISSING")
+
     def test_family_count_mismatch_blocks_selection(self) -> None:
         summary = _summary()
         summary["closed_trades"] += 1
+        summary["trade_path_diagnostic_summary"]["records"] += 1
+        summary["trade_path_diagnostic_summary"]["complete_records"] += 1
         decision = select_single_family_ablation(summary)
         self.assertFalse(decision.selected)
         self.assertEqual(decision.reason, "FAMILY_CLOSED_TRADE_COUNT_MISMATCH")
