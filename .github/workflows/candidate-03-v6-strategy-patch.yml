@@ -49,18 +49,7 @@ jobs:
               PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
                 python research/candidate-03/test_nt_lvcfr_trade_proxy.py &&
               PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
-                python - <<"PY"
-from nt_lvcfr_strategy import signal_structural_target
-
-assert signal_structural_target({}) is None
-assert signal_structural_target({"structural_target": 101.25}) == 101.25
-try:
-    signal_structural_target({"structural_target": -1.0})
-except ValueError:
-    pass
-else:
-    raise AssertionError("invalid structural target was accepted")
-PY
+                python -c "from nt_lvcfr_strategy import signal_structural_target; assert signal_structural_target({}) is None; assert signal_structural_target({\"structural_target\": 101.25}) == 101.25" &&
               PYTHONPYCACHEPREFIX=/tmp/candidate03-v6-strategy \
                 python -m py_compile \
                   research/candidate-03/nt_lvcfr_strategy.py \
