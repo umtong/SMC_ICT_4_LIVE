@@ -75,11 +75,17 @@ def run_backtest(**kwargs: Any) -> dict[str, Any]:
     metrics = _run_backtest(**kwargs)
     destination = Path(kwargs["output_dir"])
     diagnostics = _event_diagnostics(destination / "scenario_events.jsonl")
+    params = kwargs.get("params")
+    confirmation_enabled = bool(
+        getattr(params, "enable_retrace_confirmation", False),
+    )
     metrics["candidate_generation"] = (
-        "v2.2-nearest-right-confirmed-micro-pivot"
+        "v2.3-confirmed-first-retrace-rejection"
     )
     metrics["execution_generation"] = (
-        "v2.2-structural-pool-maker-retrace"
+        "v2.3-confirmed-retrace-maker-entry"
+        if confirmation_enabled
+        else "v2.3-immediate-resting-entry-ablation"
     )
     metrics["state_diagnostics"] = diagnostics
     metrics["causal_gate_pass"] = diagnostics["causality_violation_count"] == 0
@@ -92,6 +98,7 @@ def run_backtest(**kwargs: Any) -> dict[str, Any]:
     if run_path.exists():
         run_manifest = json.loads(run_path.read_text(encoding="utf-8"))
         run_manifest["candidate_generation"] = metrics["candidate_generation"]
+        run_manifest["execution_generation"] = metrics["execution_generation"]
         run_manifest["causal_gate_pass"] = metrics["causal_gate_pass"]
         write_json_atomic(run_path, run_manifest)
     return metrics
