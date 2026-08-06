@@ -489,144 +489,198 @@ class LiquidityStateEngine:
         pending.post_volume += bar.volume
 
     def _acceptance_ready(self, pending: PendingResolution) -> bool:
-        required = self.config.acceptance_closes if self.config.require_acceptance_confirmationr_filCume_us)
+        required = self.config.acceptance_closes if self.config.require_acceptance_confirmation else 1
+        if pending.outside_closes < required:
+            return False
+        excursion = abs(pending.extreme - pending.level.price) / max(self._atr, 1e-12)
+        if not self.config.require_acceptance_confirmation:
+            return excursion >= self.config.minimum_breach_atr
+        flow_ok = True
+        if self.config.use_flow_confirmation:
+            flow_ok = pending.directional_flow_seen and (
+                pending.post_flow_imbalance >= self.config.minimum_approach_flow
+                if pending.direction == "UP" else pending.post_flow_imbalance <= -self.config.minimum_approach_flow
+            )
+        return (pending.displacement_seen and flow_ok and pending.max_volume_ratio >= self.config.minimum_volume_ratio
+                and excursion >= self.config.minimum_excursion_atr)
 
-        if  xonfirmati)Ccg.acm}ti)Ccg.ac_finish(pending, bar, signal, events)
-            if self._index - pending.retestdg.requireing, bar, signal, eve_referenc.accear) -poolsf.max_volume_rlrepD", "ACCEtorelf._bars)[-2]
-        bxpire(pending, bad = on] sK "ACCEtore  bxpire(pending"ACCEtore see      bxpire(pAx - pending.renfig.require_acceptance_confirmationr_filCumding"ACCEtore see rgned_flow PTED", "RETESTED"} and penditance_ready(pending):
-         acceptance_confirmationr_filCu_filCumdin(nce_readyrr) -poolsf.m,(mn:
-   Cu_fi    pendin"rr) -poolsf.e_co rgnedelf._bars)[-2]
-  lCumdin(nce_readyrr[-2]
-  lCumdin(nce_readyrr[, bareadyUcg.ac_finish(pend"ACCEtore  bxpiiiii (n(nce_readyrr[, baMself._finish(pending, r))
-        pence_read{._eventtJ    aEtore  dyrr[-2]
-  lCumdin(nnm,  if pending.statfiMtcratio(:x - pending.:K "AC boself._event(pending, b cratio(:x - pending.:K "AC boself._event(pending, b creenndin"rr)Ent(pending, b craf"f._finish(   oending.directional, r=ctional, r=ct0:RN, b crafh(   o    )zAi)x_volAC boself._eNY_BREt(pending, bar):
-                pending.state = "RETESTED"
-}eadyUcg.ac_finish(pend"ACCEtore  bxpiiiii (n(ncAceptancet
-6 eveccepting.retnc.acce(pending, , bet
-6 evecce be}ti)Ccg.acding, , bet
-6 evecing, eriod)
- .  oending.directional, r=ction(bar, pe:"t
-6 es)[-2]
-  lCumdin(nce_readyrr[-ng.acceptance_index)lie_closes se >= lafh(  kng,Tbe}ti)Ccg.acding, , bet
-6 evecing, eriodU:ESTED"} and pendilder.low) / 2d             g,Tbe}(flow >=  g,Tg, eriodU:ESTED"}  buinch="CONT,l.,x)lie_closes se t  end_ns =ding.e_closes se t  eit) / quantio"]),
-    )se = self._barsate: stAelf._barsate: stAelf._bar+  dyrr[-2]
-  tr, "DEFENDED_RETEST"|tAelf._barsate: stAelf.inimum_displacement_atr)
-        padyTEDiratio(:x - pendinnal, events)
+    def _defended_retest(self, pending: PendingResolution, bar: FlowBar) -> bool:
+        tolerance = self.config.retest_tolerance_atr * self._atr
+        close_buffer = self.config.defended_close_buffer_atr * self._atr
+        if pending.direction == "UP":
+            location = bar.low <= pending.level.price + tolerance
+            defended = bar.close >= pending.level.price + close_buffer
+            candle_ok = bar.close >= bar.open
+            flow_ok = bar.flow_imbalance >= -self.config.maximum_adverse_retest_flow
+        else:
+            location = bar.high >= pending.level.price - tolerance
+            defended = bar.close <= pending.level.price - close_buffer
+            candle_ok = bar.close <= bar.open
+            flow_ok = bar.flow_imbalance <= self.config.maximum_adverse_retest_flow
+        return location and defended and candle_ok and (flow_ok or not self.config.use_flow_confirmation)
 
-        if pending.state ==)e seerNnU:ESTED"}  buinch="CONT,l.,x)lie_closes se t  endHc.end_ns,
-           , events)
+    def _failure_confirmed(self, pending: PendingResolution, bar: FlowBar) -> bool:
+        buffer = self.config.failure_close_buffer_atr * self._atr
+        body = abs(bar.close - bar.open) / max(self._atr, 1e-12)
+        if pending.direction == "UP":
+            lost = bar.close <= pending.level.price - buffer and bar.close < bar.open
+            flow_ok = bar.flow_imbalance <= -self.config.directional_imbalance
+        else:
+            lost = bar.close >= pending.level.price + buffer and bar.close > bar.open
+            flow_ok = bar.flow_imbalance >= self.config.directional_imbalance
+        return lost and body >= self.config.minimum_resolution_displacement_atr and (flow_ok or not self.config.use_flow_confirmation)
 
-     cn[ the onl2{TED"}  bus)
+    def _reexpansion_confirmed(self, pending: PendingResolution, bar: FlowBar) -> bool:
+        assert pending.retest_high is not None and pending.retest_low is not None
+        buffer = self.config.reexpansion_buffer_atr * self._atr
+        body = abs(bar.close - bar.open) / max(self._atr, 1e-12)
+        if pending.direction == "UP":
+            broken = bar.close >= pending.retest_high + buffer and bar.close > bar.open
+            flow_ok = bar.flow_imbalance >= self.config.directional_imbalance
+        else:
+            broken = bar.close <= pending.retest_low - buffer and bar.close < bar.open
+            flow_ok = bar.flow_imbalance <= -self.config.directional_imbalance
+        return broken and body >= self.config.minimum_resolution_displacement_atr and (flow_ok or not self.config.use_flow_confirmation)
 
-  bu = self._barsate: stAelte: stAelte: stAelte: t
-6 eve     ts_c
-     -> Signal | None:
-  N+  dyrpn"rr)(R:   cn[ the onl2{  -> Si["SlCume_us)
+    def _build_signal(self, pending: PendingResolution, bar: FlowBar, *, branch: str) -> Signal | None:
+        entry = bar.close
+        atr = max(self._atr, 1e-12)
+        level = pending.level
+        if branch == "CONTINUATION" and pending.direction == "UP":
+            side = "BUY"
+            anchor_low = pending.retest_low if pending.retest_low is not None else bar.low
+            stop = min(level.price - self.config.stop_buffer_atr * atr, anchor_low - self.config.stop_buffer_atr * atr)
+            observed = [item.price for item in self._levels["HIGH"] if not item.consumed and item.price > entry]
+            extension = level.price + level.range_width
+            targets = [value for value in [*observed, extension] if value > entry]
+            target = min(targets) if targets else None
+        elif branch == "CONTINUATION":
+            side = "SELL"
+            anchor_high = pending.retest_high if pending.retest_high is not None else bar.high
+            stop = max(level.price + self.config.stop_buffer_atr * atr, anchor_high + self.config.stop_buffer_atr * atr)
+            observed = [item.price for item in self._levels["LOW"] if not item.consumed and item.price < entry]
+            extension = level.price - level.range_width
+            targets = [value for value in [*observed, extension] if value < entry]
+            target = max(targets) if targets else None
+        elif pending.direction == "UP":
+            side = "SELL"
+            stop = max(pending.extreme, bar.high) + self.config.stop_buffer_atr * atr
+            target = level.range_midpoint if level.range_midpoint < entry else level.range_low
+        else:
+            side = "BUY"
+            stop = min(pending.extreme, bar.low) - self.config.stop_buffer_atr * atr
+            target = level.range_midpoint if level.range_midpoint > entry else level.range_high
+        if target is None:
+            return None
+        if side == "BUY" and not stop < entry < target:
+            return None
+        if side == "SELL" and not target < entry < stop:
+            return None
+        cost = self.config.composite_cost_per_fill
+        price_risk = abs(entry - stop)
+        if price_risk < 2.0 * cost * entry:
+            return None
+        risk = price_risk + cost * entry + cost * stop
+        reward = abs(target - entry) - cost * entry - cost * target
+        if risk <= 0.0 or reward <= 0.0:
+            return None
+        net_rr = reward / risk
+        if net_rr < self.config.minimum_net_reward_to_risk:
+            return None
+        reason = (
+            "DEFENDED_RETEST_REEXPANSION_TO_NEXT_LIQUIDITY"
+            if branch == "CONTINUATION"
+            else "ACCEPTED_BREAKOUT_FAILED_AND_TRAPPED_PARTICIPANTS"
+        )
+        return Signal(
+            scenario_id=pending.scenario_id, branch=branch, side=side, observed_time_ns=bar.ts_ns,
+            entry_reference=entry, stop_price=stop, target_price=target, net_reward_to_risk=net_rr,
+            reason_code=reason,
+            details={"level_id": level.level_id, "level_price": level.price,
+                     "horizon_minutes": level.horizon_minutes, "range_width": level.range_width,
+                     "range_midpoint": level.range_midpoint, "confluence_count": pending.confluence_count,
+                     "approach_efficiency": pending.approach_efficiency, "approach_flow": pending.approach_flow,
+                     "post_flow": pending.post_flow_imbalance, "atr": atr},
+        )
 
-        iow_seen = pe.sP[kir[-2]
-  tr, "DEFENDstAelnN "RETESTED       padyiow_seen = pe.sP[kBAelte: t
-6 eve    t(pending, bEume_S)Zelf.l, r=ct0:pending, bEu = > Signal | None:
-     iacding, , bet
-6 evecing, eriod)
-reme,
-    =lafh(  kng,Tbe}ti)Db    RETESTED"} andNone
-        self._index = -1
-        self._cooldown = 0
-        self._atr = 0.0
-        self._volume_median = _, eveobse-lf.._index > pendilf._atr = 0.0
-  Re: stAelte: t
-6 eve     ts_c
-BAee t  end_ns =ding.e_closes se t  eit) / -nt)_, e)c=ding.e_closesr_one:s0.0
-    e       and accounting ee     ts_c
-BAee: self._volumfBAee: send accounting ee     tse)c=ding.e_closesd at
-    bar.e_closesr_one:s0.0
-    e       and accountie_closesr:tance_iCg.retesOEounountie_closesr:, eriod)
-  , bet
-6 evecing, eriod)
-rtie_cl accounnl ac None = None
-    cl accounnl ac None te = "e  dinna
-Elf._atrex > pending_E
-Elf._atrex > pmax_Ood + 8, config.ap[-2]
-  f self._index - pending.aevecing, eriod)lTION_EXT     rVR     self.2K_E
-Elfg)lTION_EXT   Re = "e  Rnding_E
-Elf._atrex > pmax_Ood + nl ac None te = "et.t_signed_,
-Elfn2g.aNliPBAee t  end_ns = = "e  R[-2]
-ex > pending.accnding.accndipproach_period=int(structure[     self._atr = 0.      midpoint = tr = 0.  f._atrex > pmax_Ood= 0.  f._atrex > pmax_Ood= 0.  f._02]
-e  f._02]
-e  f._0(9= _, eveobse-lf.._indexfig.minimum_approach_effio,tr"]),
- Eses se t  eit) / -nt)_, O._expire(pendiD-2]
-  f self._index - pending.aevecing, eriod)lTION_EXT     rVR     self.2K_E
-Elfg)lTION_EXT   Re = "e  Rnding_E
-,x > pmax_Ood= 0.  f._atrex > pmax_Ood= 0.  fn-{_end = t/R,     sel> pmax_Ood= 0.  fn-nish_roach_efficiency": efficiency, "approach_  sel_inignal= t/R,    (,(
-     : stAloses se t  end_ns =i2]
-  f self.y0(9= _,_exp8= 0)(  -e: stAelf._barsatet/R,     sa   "DEFENDED_RETEST"|"ND_accumulate(selfFENDED_RETEST"|=_E
-Elfg)sesr:tanc, r)=s  lCumdin(nnm, Fe_closes se t  ctional, r=ctarsatet/R,  , Fe_accndinsesq 0.  fn-{_end g"es: p,    "_RETEST"|"Cumdint  eit) / -niodU:ESTE_,UST"|"Cumdint  eit) / -niodU:ESTE_,UST"fficieniodU:ESTE_,U__a  f._atreconfirmation: boolnoun pending.accnding.acc+= bar.volume
+    def _finish(self, pending: PendingResolution, bar: FlowBar, signal: Signal | None, events: list[DiagnosticEvent]) -> Signal | None:
+        if signal is None:
+            events.append(self._event(pending, bar, "SCENARIO_REJECTED", pending.state, "NO_TRADE",
+                                      "COST_OR_NEXT_LIQUIDITY_MADE_RESOLUTION_UNTRADEABLE"))
+        else:
+            events.append(self._event(pending, bar, "ENTRY_APPROVED", pending.state, "ENTERABLE", signal.reason_code,
+                                      {"branch": signal.branch, "side": signal.side, "stop": signal.stop_price,
+                                       "target": signal.target_price, "net_reward_to_risk": signal.net_reward_to_risk}))
+        self._pending = None
+        self._cooldown = self.config.cooldown_bars
+        return signal
 
-    def _accd_signal(pending, bar,(pendinDs, "range_high": builder.high,
-         f se,  , Fe_accndinsesq 0.  fn-{_Ntore  d-{_N  pending.direction ldint  eit) /eit) nce_indexd= 0./eitng, bag, bar)[}nt  eit)n(nce_re     ,PIn-{t0ymA[I  ,IL"er.high,
-    "e_acce_indexd= 0./eitnFe_accndins>NETEST"|=_E
-Elfg)ses4
-    "e_accegDindins>NETEST"|=_E
-Elfg)ses4
-    "e_accegDindins>e(iodU:ESTE_,Ux_Ood= 0.  f._ency": efP,x)lie_clo: p, Lt  eit) / quantio"]),
-efP,x)lie_clo: p, Lttp, Lt  ieobsegDindins>1}_      self._index = -tg.lf._l ieobsegDindins>1}_      self._index = -tg.lf._l ieobsegDindins>1}_      self._index = -tg.lf9= _,_exiflie_clo: p, Lttp, Lt  ieobsegDindins>1}_    c[s>1}Snimum_ap_,UST"|"CaT"|=,tg.lfogDind}_      send}_ ing, eriod)
-rtie_cl accsend}_ ing, eriod)
-rtie_cl accsend}_ ccsend}_ ccsend}_ ccsendion, "a,Ux_Ood= 0.  f._ency": efP          r_ fn-nish_roachn-nish_roat         self._levelsat       szigh,
-         f sedvance_pending(b     ,PIn-{t0ymAg d ["olnoun pending.axpi  ,PIn-{t0ymAg drR_Faxpi  , fn-nish_roIgnal, et   id:
-@dataclass(frozen=TAelf._barelf._inPcce be}ti)Ccg.at_volume > 0.0l    pending.axpi  ,Pi)Ccg.at_volume >  ,PiaclaniodU:ESTE_,UST"fficieniodU:ESTE_,U__a  f._atrbars: i ,PIn-{t0ymAg d ["olnoun penb-nish_roat         self.)Ccg.at_volumeu    self.)Ccg.d}_ ccsend}_ ccsend,Pi)Ccg.at_vo3}Sn   s: stAlos( p, Lttp, Lt  ieobsegDwf.)C
-o
-6 eve     ts_c
-BAee t  end_dn   s: stAlos( p, Lttp, Lt  ihf.)Cc > pending.acdn  4de_closklf.)Ccg.at_volumeu   t  eieve     ts_c
-BAolume > i:nish(pendi0nsE
-      
-BAolume olumind] = [lself.)CcgEST_DID_NSn   s: gax(self.config.voluCcgEpenb-nish_roe:
-        pendingf.)CcEpenb-nish_roe:
--LED_RETEST"|tAelf.-   di    UrD > selses4
-  L    ,PIn-{t0E4
-  e_closes = 1(e4
-  L    ,PIn-{t0E4
-  e_closes = 1D_BREACH",
-                          _sg, btre = 1(e4
- =one:
-  N+  btre = 4
- =one:
-)n(-> bool:
- _  r_ f 4
- owBadyrpn"rr)(R:sedvancmys(self, timestamp_ns: int) ->( key, start_ney,  "BREAy_ney,  "BREAy_ney,  ney,  "BREAy_ney,  ney,  "BREAy_ney,  ney,  "BR - pendinnancmysO,  =endinnbe}  "Bfone:
-      ,,AkED"}  buinch="Coa}  buinch="Coa}  buinch= pending.axpi  ,Pachn-aclak:          ction": ="eturC_.  fn-{_Nto be f._atrex > pmax_Ood= t0E4
-  e_closiiency, f bar.t0E4
-  e_cs-{t1i.)Ccp_ns: XT     rVR   = sef.)C
-o
-6 eve  . > sePrt_nn)Ccp_ns:_ns: int) ->( key, start_ney,  "BREAy_ney,  "BRsh_r   builder = self._bu pDendin(__a  f._atrbars: i ,PIn-{t0ymAg d ["oskf._at i:nies)
+    def _approach_pressure(self, direction: str) -> tuple[float, float]:
+        window = list(self._bars)[:-1][-self.config.approach_period :]
+        if len(window) < 2:
+            return 0.0, 0.0
+        move = window[-1].close - window[0].close
+        path = sum(abs(right.close - left.close) for left, right in zip(window, window[1:]))
+        efficiency = move / max(path, 1e-12)
+        if direction == "DOWN":
+            efficiency = -efficiency
+        signed_flow = sum(item.signed_flow for item in window)
+        total_volume = sum(item.volume for item in window)
+        return efficiency, signed_flow / max(total_volume, 1e-12)
 
-     cn[ the onl2{TEDes)
+    def _aligned_displacement(self, bar: FlowBar, direction: str, minimum: float) -> bool:
+        body = abs(bar.close - bar.open) / max(self._atr, 1e-12)
+        aligned = bar.close > bar.open if direction == "UP" else bar.close < bar.open
+        return aligned and body >= minimum
 
-     cn[ the otroIgnalo
-6 eve oa}  buinch= pendins_ns,
-  silder.high,
-     Eear  ,PIn-{t0Eo
-6 eve  .   builder.low = min(builder.low, bar.low)
-   iUcg.ac_f 0.   p)
-   iUcg.ac_f 0.   p)U > pmaxtng, bag, bar)[}nt  eit)n(nce_re     ,PIn-{tC,t  e_atrex > pending_E
-Elf._atrex xpiiiii (acc 4de_closklf.)x xpi bt   iUcg.ac_f 0.   pAfg)sesr:tanc   -1er.loc  BEcg.ac_fh._a)n(nce_reesr:tanc   -1er.loc  BEcg.ac_uilder.l{m[iii (acc 4de_closkl][rIPns_ns,
-re   6snding_ainDs, "range_high    ,(acc 4snding_ainDs, "range_high    ,(acc 4snding_ainDo, st)n(ncec(f p)U         g,Tbe}(flow2ignal = seoc  BEcg.ac_uilder.l{mt} and penditder.l{} and pendt)n(nri       g,ri  ll{mt} and penditder.l"qt_stw=float(flow[".ac_f      :ion, "approa*(l"qt_st       , bar)[}n4      sesr
-    outsi, Lt  ieobsegDwf.)-1
-        self.1
-    outsi, Lt  ieobsegDwfnri     NC,t  e_atreobseg   NC,t  e_atreobscg.g   NC,t piAkr.l{m[iii ( = "R-1
-        sZEENT     sZEEy1  ,Pt ase = self._bars[-1].close if self._bars else bar.close
-     eario_id = f"_r   builder = self"):
-        raise ValueEr[-1].be}ti)!TBaise ValueEHar.close
-    -1].close if sektio,> )
-       iUcg.aumdint  eit) / -niodU:ESTE_,UST"fficieniodU:EST-         _nri     NCnd zen=TAelfl{m[illfl{m,bR    NCnd zen=TAelfl{ms>1}_     elfl{m[illfl{m,bR  sesr:tanc   -1er.l: stAelte: t
-6 eve     ts_c
- NCnd zen=TAelfl{m[illfl{m>inc, ncec(f p)U         g,Tbe}(flo       sZEENT tcc 4de_closkENT tc    raise Vadint  ei:_stw=float(flow[".ac_f      :ic "range_hi.low"])  :wei:_stw=float(flow[N, b crafh(   Are     ,PIn-{tc    raise Vadint  ,P.ac_f      :g     sesr
-.ac_f      :g   e  g,T            pendinse )c
-.acch_perioge_hi.lowk  NCnt
-6 ec   ts_c
- NCnd zen=TAelfl keydins<)x NCvup
- b , f bar.t0E4
-  e_cs-{t1i.)Ccp_ns: sZEE*"l | Np_ns: sZ )
-       iUcg.aumvolAC None
-           iUe t  endHcding_EorBAovolAC None
-     ) ->( key, start_ney,  "BREAy_ney,  "BRsh_r      iUe t  endHcding_EorBAovolAC daumvolAC Nney,  "BREAy_ney, fl"._iEAy_eAC daymAg d ["osg.extreme, bar.lise ValueEr[-1].be}ti)!TBaise ValueEHar.cloHar.cloHar.cloHar.cloHar.cloHar.cloHar.cloHar.cloHar.cloHar.cloHar.cloHar.cloHar.cloHar.cloH.cloHar.cloHar.cloHar.          L(ins<)x pViyeri   ts_c
-BAee: seder.l 
+    def _aligned_flow(self, bar: FlowBar, direction: str) -> bool:
+        if not self.config.use_flow_confirmation:
+            return True
+        return bar.flow_imbalance >= self.config.directional_imbalance if direction == "UP" else bar.flow_imbalance <= -self.config.directional_imbalance
+
+    def _outside(self, bar: FlowBar, pending: PendingResolution) -> bool:
+        buffer = self.config.acceptance_buffer_atr * self._atr
+        return bar.close >= pending.level.price + buffer if pending.direction == "UP" else bar.close <= pending.level.price - buffer
+
+    def _volume_ratio(self, bar: FlowBar) -> float:
+        return bar.volume / max(self._volume_median, 1e-12)
+
+    def _level_confluence(self, selected: AuctionLevel) -> int:
+        tolerance = self.config.cluster_tolerance_atr * max(self._atr, 1e-12)
+        return sum(1 for level in self._levels[selected.kind] if not level.consumed and abs(level.price - selected.price) <= tolerance)
+
+    def _consume_level_cluster(self, selected: AuctionLevel) -> None:
+        tolerance = self.config.cluster_tolerance_atr * max(self._atr, 1e-12)
+        for level in self._levels[selected.kind]:
+            if not level.consumed and abs(level.price - selected.price) <= tolerance:
+                level.consumed = True
+
+    def _event(
+        self,
+        pending: PendingResolution,
+        bar: FlowBar,
+        event_type: str,
+        previous_state: str,
+        next_state: str,
+        reason_code: str,
+        extra: Mapping[str, Any] | None = None,
+    ) -> DiagnosticEvent:
+        details: dict[str, Any] = {
+            "direction": pending.direction, "level_price": pending.level.price,
+            "horizon_minutes": pending.level.horizon_minutes, "confluence_count": pending.confluence_count,
+            "approach_efficiency": pending.approach_efficiency, "approach_flow": pending.approach_flow,
+            "outside_closes": pending.outside_closes, "post_flow": pending.post_flow_imbalance,
+            "max_volume_ratio": pending.max_volume_ratio, "open": bar.open, "high": bar.high,
+            "low": bar.low, "close": bar.close, "atr": self._atr,
+        }
+        if extra:
+            details.update(extra)
+        return DiagnosticEvent(
+            pending.scenario_id, event_type, bar.ts_ns, bar.ts_ns, previous_state, next_state,
+            reason_code, bar.close, details,
+        )
+
+    def _expire(self, pending: PendingResolution, bar: FlowBar, reason: str, events: list[DiagnosticEvent]) -> None:
+        events.append(self._event(pending, bar, "SCENARIO_EXPIRED", pending.state, "NO_TRADE", reason))
+        self._pending = None
+        self._cooldown = self.config.cooldown_bars
