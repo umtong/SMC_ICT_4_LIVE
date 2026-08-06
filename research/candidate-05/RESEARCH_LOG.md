@@ -116,3 +116,42 @@ This section intentionally does not infer success from the observational screen.
 - Acceptance continuation remains disabled because its first-week causal
   direction failed. It may not be re-enabled without an independent structural
   hypothesis and a new precommitted experiment.
+
+## v2 authoritative result and rejection
+
+Authoritative first-week workflow: GitHub Actions run `31070088395`, commit
+`cfd255da4dc75c64b455219803c023c05fef4a62`.
+
+| Metric | Cost-after Nautilus result |
+|---|---:|
+| Ending NAV | 93,486.36918722 USDT |
+| Total return | -6.51363081278% |
+| Geometric daily NAV growth | -0.957593370% |
+| Maximum drawdown | 19.694656043% |
+| Trades / wins | 14 / 4 |
+| Win rate | 28.5714% |
+| Profit factor | 0.744210 |
+| Liquidations / rejected orders | 0 / 0 |
+
+The entry-timing repair increased opportunities and wins, but the first-week
+promotion gate still failed. The execution path was internally coherent: all
+14 positions and 58 orders were owned by NautilusTrader, no feature was stale,
+no liquidation occurred, and the one-intent/one-position invariant held.
+
+Trade-path diagnosis found that nine of the ten losing positions never reached
+positive cost-after R. Lowering the target would therefore not repair the
+candidate. The remaining structural defect was liquidity hierarchy: 682
+completed five-minute swing pools and 538 pool accesses were still internal
+noise rather than external liquidity events.
+
+## v3 — 15-minute external liquidity hierarchy
+
+One family changes from v2: completed liquidity-event scale. Fifteen-minute
+confirmed swing extremes replace five-minute swing extremes. Rejection
+classification, CHoCH thresholds, exact 50% resting limit, 20-bar lifetime,
+structural stop, cost-after 2R target, 3% NAV loss budget, funding handling, and
+Nautilus execution remain unchanged.
+
+This is a direct test of the SMC distinction between internal and external
+liquidity. It is not a new score filter and it is not permitted to change the
+frozen Week-1 dates.
