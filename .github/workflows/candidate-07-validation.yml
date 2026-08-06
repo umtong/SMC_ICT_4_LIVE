@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 jobs:
-  btc-week-1-session-handoff-diagnostic:
+  btc-week-1-session-handoff-ablation:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -45,7 +45,7 @@ jobs:
             candidate-07-positioning-week1-v1
             candidate-07-flow-week1-v1
 
-      - name: Diagnose frozen BTC Week-1 session handoffs
+      - name: Reproduce baseline diagnosis
         run: >-
           python research/candidate-07/diagnose_session_handoff.py
           --config research/candidate-07/config.json
@@ -55,17 +55,29 @@ jobs:
           --output artifacts/candidate-07/week-1/session_handoff_diagnostic.json
           --data-root .research-data/candidate-07
 
-      - name: Print machine-readable diagnosis
+      - name: Remove continuation route only
+        run: >-
+          python research/candidate-07/diagnose_session_handoff_ablation.py
+          --config research/candidate-07/config.json
+          --stage week-1-ablation
+          --start 2025-12-22
+          --end 2025-12-29
+          --output artifacts/candidate-07/week-1/session_handoff_ablation.json
+          --data-root .research-data/candidate-07
+
+      - name: Print controlled comparison
         if: always()
         run: |
           test -f artifacts/candidate-07/week-1/session_handoff_diagnostic.json
+          test -f artifacts/candidate-07/week-1/session_handoff_ablation.json
           cat artifacts/candidate-07/week-1/session_handoff_diagnostic.json
+          cat artifacts/candidate-07/week-1/session_handoff_ablation.json
 
-      - name: Preserve structural evidence
+      - name: Preserve controlled evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-session-handoff-week1-${{ github.sha }}
+          name: candidate-07-session-handoff-ablation-${{ github.sha }}
           path: artifacts/candidate-07/week-1
           retention-days: 14
           if-no-files-found: error
