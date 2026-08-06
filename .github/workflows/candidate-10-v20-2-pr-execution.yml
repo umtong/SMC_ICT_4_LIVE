@@ -1,0 +1,94 @@
+# Immutable source SHA256: b481befeb701cedc13536f7924b3207cc46912aeb4ec4d688fee294db514dec7
+# Live-impact patch SHA256: ad93590e75c6c68f0de2daaae1525bc5aa4503afa91795e829e787c58fb1dc6f
+name: candidate-10-v20-2-isolated-pr-execution
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - research/candidate-10-execution/EXECUTE.md
+      - research/candidate-10-execution/v20_source.zip
+      - research/candidate-10-execution/v20_2_patch.zip
+      - .github/workflows/candidate-10-v20-2-pr-execution.yml
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v20-2-isolated-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout isolated execution branch
+        uses: actions/checkout@v4
+
+      - name: Verify immutable inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/candidate10-v20 /tmp/candidate10-v20-patch /tmp/candidate-10-v20-2-data
+          mkdir -p /tmp/candidate10-v20 /tmp/candidate10-v20-patch artifacts/candidate-10-v20-2
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+          import zipfile
+
+          inputs = [
+              (
+                  Path('research/candidate-10-execution/v20_source.zip'),
+                  'b481befeb701cedc13536f7924b3207cc46912aeb4ec4d688fee294db514dec7',
+                  Path('/tmp/candidate10-v20'),
+              ),
+              (
+                  Path('research/candidate-10-execution/v20_2_patch.zip'),
+                  'ad93590e75c6c68f0de2daaae1525bc5aa4503afa91795e829e787c58fb1dc6f',
+                  Path('/tmp/candidate10-v20-patch'),
+              ),
+          ]
+          for source, expected, destination in inputs:
+              actual = sha256(source.read_bytes()).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f'{source}: {actual} != {expected}')
+              with zipfile.ZipFile(source) as archive:
+                  bad = archive.testzip()
+                  if bad is not None:
+                      raise SystemExit(f'corrupt member in {source}: {bad}')
+                  archive.extractall(destination)
+              print(f'VERIFIED={source}:{actual}')
+          PY
+
+      - name: Test and execute preselected BTC gate in pinned NautilusTrader
+        shell: bash
+        env:
+          SMC4_PREBUILT_ENV: "1"
+          PYTHONPATH: /tmp/candidate10-v20-patch:/tmp/candidate10-v20:${{ github.workspace }}/src
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile /tmp/candidate10-v20/*.py /tmp/candidate10-v20-patch/*.py
+          python -m unittest discover -s /tmp/candidate10-v20 -p 'test_*.py' -v
+          python -m unittest discover -s /tmp/candidate10-v20-patch -p 'test_*.py' -v
+          python /tmp/candidate10-v20/run_research.py \
+            --phase auto \
+            --output artifacts/candidate-10-v20-2 \
+            --data-root /tmp/candidate-10-v20-2-data
+
+      - name: Upload reproducible evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v20-2-isolated-${{ github.sha }}
+          path: artifacts/candidate-10-v20-2
+          if-no-files-found: warn
+          retention-days: 14
