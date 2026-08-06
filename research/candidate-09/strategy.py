@@ -181,7 +181,7 @@ class LRAEStrategy(Strategy):
                 "realized_pnl": realized_pnl,
                 "ts_opened": _as_int_ns(event.ts_opened),
                 "ts_closed": _as_int_ns(event.ts_closed) if event.ts_closed is not None else _as_int_ns(event.ts_event),
-                "duration_ns": _as_int_ns(event.duration),
+                "duration_ns": _as_int_ns(event.duration_ns),
             }
         )
 
