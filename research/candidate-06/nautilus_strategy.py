@@ -100,6 +100,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from absorption_structure_engine import AbsorptionConfirmedStructureReversalEngine
 
         return AbsorptionConfirmedStructureReversalEngine(logic_params)
+    if name == "SEQUENTIAL_IMPACT_PERSISTENCE_RELAY":
+        from sequential_impact_persistence_engine import SequentialImpactPersistenceRelayEngine
+
+        return SequentialImpactPersistenceRelayEngine(logic_params)
     if name == "PERIODIC_OPENING_LIQUIDITY_RELAY":
         from periodic_opening_engine import PeriodicOpeningLiquidityRelayEngine
 
