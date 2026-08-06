@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Candidate 05 diagnostic import surface: sweep-tail flow ablation."""
+"""Candidate 05 production import surface: target-liquidity handoff v13."""
 from strategy_base import LiquidityResponseConfig
-from strategy_ablation_no_sweep_tail import NoSweepTailAblationStrategy as LiquidityResponseStrategy
+from strategy_v13 import TargetLiquidityHandoffStrategy as LiquidityResponseStrategy
 
 __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
