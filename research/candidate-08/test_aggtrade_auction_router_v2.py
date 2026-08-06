@@ -164,6 +164,17 @@ class FailedAuctionSweepRefinementContracts(unittest.TestCase):
             bundle.diagnostics.get("FAILED_AUCTION_SWEEP_EXTREME_REFINED"),
             1,
         )
+        self.assertEqual(
+            bundle.diagnostics.get("TRADEABLE_FAILED_AUCTION_REVERSAL"),
+            1,
+        )
+        self.assertEqual(
+            bundle.diagnostics.get(
+                "FAILED_AUCTION_REVERSAL_REMOVED_BY_SWEEP_REFINEMENT",
+                0,
+            ),
+            0,
+        )
 
     def test_intermediate_post_reclaim_extreme_is_not_lost(self) -> None:
         intermediate = _row(
@@ -196,6 +207,16 @@ class FailedAuctionSweepRefinementContracts(unittest.TestCase):
             ),
             1,
         )
+        self.assertEqual(
+            bundle.diagnostics.get("TRADEABLE_FAILED_AUCTION_REVERSAL"),
+            0,
+        )
+        self.assertEqual(
+            bundle.diagnostics.get(
+                "FAILED_AUCTION_REVERSAL_REMOVED_BY_SWEEP_REFINEMENT"
+            ),
+            1,
+        )
         rejection = next(
             item
             for item in bundle.rejected_scenarios
@@ -224,6 +245,22 @@ class FailedAuctionSweepRefinementContracts(unittest.TestCase):
         data, bundle = _build([_row(), _acceptance(), _reclaim(), _confirmation(high=100.8)])
         signal = next(iter(next(iter(bundle.signals_by_time_ns.values()))))
         broken = replace(signal, signal_index=signal.signal_index - 1)
+        with self.assertRaises(RuntimeError):
+            _observed_sweep_through_confirmation(data, broken)
+
+    def test_reclaim_timestamp_must_match_an_exact_completed_row(self) -> None:
+        data, bundle = _build([_row(), _acceptance(), _reclaim(), _confirmation(high=100.8)])
+        signal = next(iter(next(iter(bundle.signals_by_time_ns.values()))))
+        broken = replace(signal, retest_time_ns=signal.retest_time_ns + 1)
+        with self.assertRaises(RuntimeError):
+            _observed_sweep_through_confirmation(data, broken)
+
+    def test_reclaim_time_sweep_state_must_be_present(self) -> None:
+        data, bundle = _build([_row(), _acceptance(), _reclaim(), _confirmation(high=100.8)])
+        signal = next(iter(next(iter(bundle.signals_by_time_ns.values()))))
+        details = dict(signal.details)
+        details.pop("sweep_high")
+        broken = replace(signal, details=details)
         with self.assertRaises(RuntimeError):
             _observed_sweep_through_confirmation(data, broken)
 
