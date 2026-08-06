@@ -40,7 +40,10 @@ class Candidate07FlowStrategy(ExecutionStrategy):
 
     def on_start(self) -> None:
         super().on_start()
-        self.subscribe_data(DataType(AggressorFlow))
+        self.subscribe_data(
+            DataType(AggressorFlow),
+            instrument_id=self.config.instrument_id,
+        )
 
     def on_data(self, data: Any) -> None:
         if isinstance(data, AggressorFlow) and data.instrument_id == self.config.instrument_id:
