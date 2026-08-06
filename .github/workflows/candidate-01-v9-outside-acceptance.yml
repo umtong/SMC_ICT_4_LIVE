@@ -1,0 +1,142 @@
+name: candidate-01-v9-outside-acceptance
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v9-outside-acceptance.yml"
+      - "research/candidate-01/patch_v9_frozen_plan.py"
+      - "research/candidate-01/intrinsic_outside_acceptance_v9_nautilus_week.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Preserve immutable plan semantics
+        run: |
+          set -euo pipefail
+          python3 research/candidate-01/patch_v9_frozen_plan.py
+          python3 -m compileall -q research/candidate-01/intrinsic_outside_acceptance_v9_nautilus_week.py
+      - name: Commit the implementation correction
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-01/intrinsic_outside_acceptance_v9_nautilus_week.py
+          git commit -m "fix(candidate-01): preserve immutable acceptance plans"
+          git push origin HEAD:research/candidate-01
+
+  gate:
+    needs: patch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        rule: [acceptance-only, three-response-composite]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-01
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v9-acceptance
+          key: candidate-01-v9-acceptance-BTCUSDT-2023-06-14-26-${{ runner.os }}-v1
+      - name: Run one outside-value response set through NautilusTrader
+        env:
+          RULE: ${{ matrix.rule }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -e RULE="$RULE" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/nautilus_plan_backtest.py \
+                research/candidate-01/intrinsic_failed_reversal_continuation_v8_nautilus_week.py \
+                research/candidate-01/intrinsic_outside_acceptance_v9_nautilus_week.py
+              python -m unittest discover -s tests -p "test_candidate_01_authoritative_nautilus.py" -v
+              OUT="artifacts/candidate-01-v9-${RULE}-first"
+              rm -rf "$OUT"
+              python research/candidate-01/intrinsic_outside_acceptance_v9_nautilus_week.py \
+                --week 2023-06-19 \
+                --rule "$RULE" \
+                --cache .cache/candidate-01-v9-acceptance \
+                --output "$OUT" \
+                --workers 4
+            '
+      - name: Verify and print the authoritative first-week gate
+        env:
+          RULE: ${{ matrix.rule }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          rule = os.environ["RULE"]
+          root = Path(f"artifacts/candidate-01-v9-{rule}-first")
+          summary = json.loads((root / "intrinsic_outside_acceptance_v9_summary.json").read_text())
+          metrics = json.loads((root / "nautilus_metrics.json").read_text())
+          contract = json.loads((root / "execution_contract.json").read_text())
+          assert summary["rule"] == rule
+          assert summary["authoritative_backtest"] is True
+          assert summary["execution_engine"] == "NautilusTrader"
+          assert summary["custom_fill_simulator"] is False
+          assert summary["custom_pnl_or_nav_ledger"] is False
+          assert summary["risk_fraction"] == 0.03
+          assert metrics["execution_engine"] == "NautilusTrader"
+          assert metrics["custom_fill_simulator"] is False
+          assert metrics["custom_pnl_or_nav_ledger"] is False
+          assert "first strictly later completed one-minute" in metrics["entry_semantics"]
+          assert contract["authoritative_performance_engine"] == "NautilusTrader"
+          gate = {
+              "rule": rule,
+              "acceptance_signals": summary["acceptance_signals"],
+              "acceptance_plans": summary["acceptance_plans"],
+              "reversal_plans": summary["reversal_plans"],
+              "failed_reversal_continuation_plans": summary["failed_reversal_continuation_plans"],
+              "submitted_plan_pool": summary["submitted_plan_pool"],
+              "trades": metrics["closed_positions"],
+              "win_rate": metrics["win_rate"],
+              "total_return": metrics["total_return"],
+              "geometric_daily": metrics["geometric_mean_daily_return"],
+              "profit_factor": metrics["profit_factor"],
+              "max_drawdown": metrics["max_drawdown"],
+              "target_met": metrics["target_met"],
+              "rejection_counts": metrics["rejection_counts"],
+          }
+          (root / "first_week_gate.json").write_text(json.dumps(gate, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(gate, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-v9-${{ matrix.rule }}-first-${{ github.sha }}
+          path: artifacts/candidate-01-v9-${{ matrix.rule }}-first
+          if-no-files-found: error
+          retention-days: 30
