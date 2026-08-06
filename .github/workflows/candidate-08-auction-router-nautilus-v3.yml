@@ -50,12 +50,14 @@ jobs:
             research/candidate-08/aggtrade_auction_router_signals_v2.py \
             research/candidate-08/aggtrade_acceptance_strategy.py \
             research/candidate-08/aggtrade_acceptance_evaluation.py \
+            research/candidate-08/auction_family_ablation_decision.py \
             research/candidate-08/run_aggtrade_acceptance_nautilus.py \
             research/candidate-08/run_aggtrade_auction_router_nautilus.py \
             research/candidate-08/run_aggtrade_auction_router_nautilus_v2.py \
             research/candidate-08/test_aggtrade_auction_runner.py \
             research/candidate-08/test_aggtrade_auction_runner_v2.py \
-            research/candidate-08/test_aggtrade_auction_router_v2.py
+            research/candidate-08/test_aggtrade_auction_router_v2.py \
+            research/candidate-08/test_auction_family_ablation_decision.py
           python research/candidate-08/test_aggtrade_orderflow.py -v
           python research/candidate-08/test_aggtrade_acceptance.py -v
           python research/candidate-08/test_aggtrade_acceptance_pure.py -v
@@ -64,6 +66,7 @@ jobs:
           python research/candidate-08/test_aggtrade_auction_router_v2.py -v
           python research/candidate-08/test_aggtrade_auction_runner.py -v
           python research/candidate-08/test_aggtrade_auction_runner_v2.py -v
+          python research/candidate-08/test_auction_family_ablation_decision.py -v
           python - <<'PY'
           from pathlib import Path
 
@@ -71,6 +74,7 @@ jobs:
           refinement = Path("research/candidate-08/aggtrade_auction_router_signals_v2.py").read_text()
           wrapper = Path("research/candidate-08/run_aggtrade_auction_router_nautilus.py").read_text()
           v2_runner = Path("research/candidate-08/run_aggtrade_auction_router_nautilus_v2.py").read_text()
+          selector = Path("research/candidate-08/auction_family_ablation_decision.py").read_text()
           workflow = Path(".github/workflows/candidate-08-auction-router-nautilus-v3.yml").read_text()
           config = Path("research/candidate-08/config_auction_router_nautilus_v1.json").read_text()
 
@@ -85,6 +89,8 @@ jobs:
           assert 'summary["by_scenario_family"]' in wrapper
           assert "runner.build_auction_router_signals = build_auction_router_signals" in v2_runner
           assert "summary[\"implementation_revision\"] = IMPLEMENTATION_REVISION" in v2_runner
+          assert "ONE_POSITIVE_AND_ONE_NEGATIVE_FAMILY" in selector
+          assert "BOTH_FAMILIES_ECONOMICALLY_NEGATIVE" in selector
           assert 'AUCTION_ROUTER_FAMILY_MODE: both' in workflow
           assert 'runs-on: ubuntu-26.04' in workflow
           assert 'cancel-in-progress: true' in workflow
@@ -183,6 +189,140 @@ jobs:
           printf '%s\n' "$status" > "$SCREEN_OUTPUT/runner_exit_status.txt"
           printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
 
+      - name: Select exactly one diagnostic family ablation
+        id: ablation
+        if: ${{ always() && steps.first.outputs.status == '0' }}
+        shell: bash
+        env:
+          FIRST_PASSED: ${{ steps.first.outputs.passed }}
+          SCREEN_STATUS: ${{ steps.screen.outputs.status }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from dataclasses import asdict
+          import json
+          import os
+          from pathlib import Path
+
+          from auction_family_ablation_decision import select_single_family_ablation
+
+          root = Path(os.environ["ROOT"])
+          first_path = Path(os.environ["FIRST_OUTPUT"]) / "suite_metrics.json"
+          screen_path = Path(os.environ["SCREEN_OUTPUT"]) / "suite_metrics.json"
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
+          record_path = root / "ablation_decision.json"
+
+          summary_path = None
+          if os.environ.get("FIRST_PASSED") != "true" and first_path.exists():
+              summary_path = first_path
+          elif (
+              os.environ.get("FIRST_PASSED") == "true"
+              and os.environ.get("SCREEN_STATUS") == "0"
+              and screen_path.exists()
+          ):
+              screen_summary = json.loads(screen_path.read_text(encoding="utf-8"))
+              if not bool(screen_summary.get("suite_gate_passed")):
+                  summary_path = screen_path
+
+          if summary_path is None:
+              payload = {
+                  "selected": False,
+                  "reason": "NO_VALID_FAILED_BASE_STAGE_FOR_ABLATION",
+                  "suite": "",
+                  "family_mode": None,
+                  "retained_family": None,
+                  "removed_family": None,
+                  "base_summary_path": None,
+              }
+          else:
+              summary = json.loads(summary_path.read_text(encoding="utf-8"))
+              decision = select_single_family_ablation(summary)
+              payload = {
+                  **asdict(decision),
+                  "base_summary_path": str(summary_path),
+              }
+
+          if payload["selected"]:
+              output = root / (
+                  f"{payload['suite']}-ablation-{payload['family_mode']}-v1"
+              )
+          else:
+              output = None
+          payload["output"] = None if output is None else str(output)
+          record_path.write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          with github_output.open("a", encoding="utf-8") as stream:
+              stream.write(f"selected={'true' if payload['selected'] else 'false'}\n")
+              stream.write(f"reason={payload['reason']}\n")
+              stream.write(f"suite={payload['suite']}\n")
+              stream.write(f"family_mode={payload['family_mode'] or ''}\n")
+              stream.write(f"retained_family={payload['retained_family'] or ''}\n")
+              stream.write(f"removed_family={payload['removed_family'] or ''}\n")
+              stream.write(f"output={payload['output'] or ''}\n")
+          PY
+
+      - name: Run the selected diagnostic family ablation once
+        id: ablation_run
+        if: ${{ steps.ablation.outputs.selected == 'true' }}
+        shell: bash
+        env:
+          SUITE: ${{ steps.ablation.outputs.suite }}
+          FAMILY_MODE: ${{ steps.ablation.outputs.family_mode }}
+          RETAINED_FAMILY: ${{ steps.ablation.outputs.retained_family }}
+          REMOVED_FAMILY: ${{ steps.ablation.outputs.removed_family }}
+          OUTPUT: ${{ steps.ablation.outputs.output }}
+        run: |
+          set -o pipefail
+          rm -rf "$OUTPUT"
+          mkdir -p "$OUTPUT"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          payload = {
+              "suite": os.environ["SUITE"],
+              "ablation": "none",
+              "auction_family_mode": os.environ["FAMILY_MODE"],
+              "implementation_revision": "failed-auction-full-observed-sweep-v2",
+              "diagnostic_only": True,
+              "promotable": False,
+              "retained_family": os.environ["RETAINED_FAMILY"],
+              "removed_family": os.environ["REMOVED_FAMILY"],
+          }
+          (Path(os.environ["OUTPUT"]) / "request.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          set +e
+          AUCTION_ROUTER_FAMILY_MODE="$FAMILY_MODE" \
+            python research/candidate-08/run_aggtrade_auction_router_nautilus_v2.py \
+              --suite "$SUITE" \
+              --ablation none \
+              --config "$CONFIG" \
+              --pattern-config "$PATTERN" \
+              --output "$OUTPUT" \
+              --data-cache "$CACHE" \
+              2>&1 | tee "$OUTPUT/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT/runner_exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          if [[ "$status" -ne 0 ]]; then
+            printf 'economic_checks_passed=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          from pathlib import Path
+          summary = json.loads((Path(os.environ["OUTPUT"]) / "suite_metrics.json").read_text())
+          checks = dict(summary.get("suite_gate_checks", {}))
+          excluded = {"base_contract_includes_both_auction_families"}
+          economic = all(bool(value) for key, value in checks.items() if key not in excluded)
+          print(f"economic_checks_passed={'true' if economic else 'false'}")
+          PY
+
       - name: Record staged decision
         if: ${{ always() }}
         shell: bash
@@ -190,6 +330,12 @@ jobs:
           FIRST_STATUS: ${{ steps.first.outputs.status }}
           FIRST_PASSED: ${{ steps.first.outputs.passed }}
           SCREEN_STATUS: ${{ steps.screen.outputs.status }}
+          ABLATION_SELECTED: ${{ steps.ablation.outputs.selected }}
+          ABLATION_REASON: ${{ steps.ablation.outputs.reason }}
+          ABLATION_MODE: ${{ steps.ablation.outputs.family_mode }}
+          ABLATION_OUTPUT: ${{ steps.ablation.outputs.output }}
+          ABLATION_STATUS: ${{ steps.ablation_run.outputs.status }}
+          ABLATION_ECONOMIC: ${{ steps.ablation_run.outputs.economic_checks_passed }}
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
@@ -200,6 +346,12 @@ jobs:
           root = Path(os.environ["ROOT"])
           first = root / "first-v2" / "suite_metrics.json"
           screen = root / "screen-v1" / "suite_metrics.json"
+          ablation_output = os.environ.get("ABLATION_OUTPUT", "")
+          ablation_summary = (
+              Path(ablation_output) / "suite_metrics.json"
+              if ablation_output
+              else None
+          )
           decision = {
               "candidate": "candidate-08-auction-router-nautilus-v1",
               "auction_family_mode": "both",
@@ -209,24 +361,55 @@ jobs:
               "screen_runner_status": os.environ.get("SCREEN_STATUS", ""),
               "screen_executed": screen.exists(),
               "screen_gate_passed": False,
+              "ablation_selected": os.environ.get("ABLATION_SELECTED", "false") == "true",
+              "ablation_selection_reason": os.environ.get("ABLATION_REASON", ""),
+              "ablation_family_mode": os.environ.get("ABLATION_MODE", ""),
+              "ablation_runner_status": os.environ.get("ABLATION_STATUS", ""),
+              "ablation_economic_checks_passed": (
+                  os.environ.get("ABLATION_ECONOMIC", "false") == "true"
+              ),
               "decision": "IMPLEMENTATION_FAILURE",
           }
           if first.exists():
               first_summary = json.loads(first.read_text())
               decision["first_summary"] = first_summary
               if not decision["first_gate_passed"]:
-                  decision["decision"] = "FIRST_WEEK_LOGIC_FAILURE_REQUIRES_ONE_SCENARIO_FAMILY_ABLATION"
+                  if decision["ablation_selected"]:
+                      if decision["ablation_runner_status"] != "0":
+                          decision["decision"] = "DIAGNOSTIC_ABLATION_IMPLEMENTATION_FAILURE"
+                      elif decision["ablation_economic_checks_passed"]:
+                          decision["decision"] = (
+                              "FIRST_WEEK_ABLATION_SUPPORTS_NEW_SINGLE_FAMILY_BASE_REBUILD"
+                          )
+                      else:
+                          decision["decision"] = "FIRST_WEEK_ABLATION_FAILED_DISCARD_ROUTER_V1"
+                  else:
+                      decision["decision"] = (
+                          "FIRST_WEEK_LOGIC_FAILURE_NO_VALID_FAMILY_ABLATION_DISCARD_ROUTER_V1"
+                      )
               elif screen.exists():
                   screen_summary = json.loads(screen.read_text())
                   decision["screen_summary"] = screen_summary
                   decision["screen_gate_passed"] = bool(screen_summary.get("suite_gate_passed"))
-                  decision["decision"] = (
-                      "PROMOTE_TO_PREDECLARED_LONG_EVALUATION"
-                      if decision["screen_gate_passed"]
-                      else "THREE_WEEK_LOGIC_FAILURE_REQUIRES_ONE_SCENARIO_FAMILY_ABLATION"
-                  )
+                  if decision["screen_gate_passed"]:
+                      decision["decision"] = "PROMOTE_TO_PREDECLARED_LONG_EVALUATION"
+                  elif decision["ablation_selected"]:
+                      if decision["ablation_runner_status"] != "0":
+                          decision["decision"] = "DIAGNOSTIC_ABLATION_IMPLEMENTATION_FAILURE"
+                      elif decision["ablation_economic_checks_passed"]:
+                          decision["decision"] = (
+                              "THREE_WEEK_ABLATION_SUPPORTS_NEW_SINGLE_FAMILY_BASE_REBUILD"
+                          )
+                      else:
+                          decision["decision"] = "THREE_WEEK_ABLATION_FAILED_DISCARD_ROUTER_V1"
+                  else:
+                      decision["decision"] = (
+                          "THREE_WEEK_LOGIC_FAILURE_NO_VALID_FAMILY_ABLATION_DISCARD_ROUTER_V1"
+                      )
               else:
                   decision["decision"] = "FIRST_WEEK_PASSED_BUT_SCREEN_IMPLEMENTATION_FAILED"
+          if ablation_summary is not None and ablation_summary.exists():
+              decision["ablation_summary"] = json.loads(ablation_summary.read_text())
           (root / "stage_decision.json").write_text(
               json.dumps(decision, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
@@ -269,10 +452,16 @@ jobs:
           FIRST_STATUS: ${{ steps.first.outputs.status }}
           FIRST_PASSED: ${{ steps.first.outputs.passed }}
           SCREEN_STATUS: ${{ steps.screen.outputs.status }}
+          ABLATION_SELECTED: ${{ steps.ablation.outputs.selected }}
+          ABLATION_STATUS: ${{ steps.ablation_run.outputs.status }}
         run: |
           [[ -n "$FIRST_STATUS" ]]
           [[ "$FIRST_STATUS" == "0" ]]
           if [[ "$FIRST_PASSED" == "true" ]]; then
             [[ -n "$SCREEN_STATUS" ]]
             [[ "$SCREEN_STATUS" == "0" ]]
+          fi
+          if [[ "$ABLATION_SELECTED" == "true" ]]; then
+            [[ -n "$ABLATION_STATUS" ]]
+            [[ "$ABLATION_STATUS" == "0" ]]
           fi
