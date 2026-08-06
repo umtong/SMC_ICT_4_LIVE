@@ -40,11 +40,6 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    defaults:
-      run:
-        shell: bash
-        working-directory: ${{ github.workspace }}
-
     steps:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
@@ -53,6 +48,7 @@ jobs:
           ref: research/candidate-11
 
       - name: Materialize and verify V3 source bundle
+        shell: bash
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -110,9 +106,11 @@ jobs:
           fi
 
       - name: Verify pinned research environment
+        shell: bash
         run: smc4 doctor
 
-      - name: Compile and test causal, data, contract and accounting layers
+      - name: Compile and test causal data contract and accounting layers
+        shell: bash
         run: |
           set -euo pipefail
           python -m py_compile \
@@ -125,6 +123,7 @@ jobs:
           python -m unittest discover -s research/candidate-11 -p 'test_*.py' -v
 
       - name: Run frozen signal-only diagnostic
+        shell: bash
         run: |
           set -euo pipefail
           WEEK="${{ github.event.inputs.week }}"
@@ -135,6 +134,7 @@ jobs:
             --output "research/candidate-11/results_v3/$WEEK/diagnostic"
 
       - name: Run actual four-market NautilusTrader evaluation
+        shell: bash
         run: |
           set -euo pipefail
           WEEK="${{ github.event.inputs.week }}"
@@ -149,6 +149,7 @@ jobs:
 
       - name: Build evidence summary
         if: always()
+        shell: bash
         env:
           REQUESTED_WEEK: ${{ github.event.inputs.week }}
         run: |
