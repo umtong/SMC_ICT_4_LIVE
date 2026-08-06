@@ -48,7 +48,12 @@ jobs:
 
           config_by_candidate = {}
           config_by_path = {}
-          for path in sorted(ROOT.glob("v77_*_config.json")):
+          # v77 contains the unchanged v76 60m/1.0/120 control plus v77 reward-duration variants.
+          # Map every immutable evidence row without changing any trading rule or performance gate.
+          config_paths = [*ROOT.glob("v77_*_config.json"), ROOT / "v76_60m_1x_config.json"]
+          for path in sorted(config_paths):
+              if not path.is_file():
+                  raise RuntimeError(f"missing locked comparison config: {path}")
               data = json.loads(path.read_text(encoding="utf-8"))
               candidate = str(data.get("candidate", ""))
               if candidate:
