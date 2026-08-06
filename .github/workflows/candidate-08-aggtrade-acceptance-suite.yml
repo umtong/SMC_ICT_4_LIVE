@@ -1,0 +1,164 @@
+name: candidate-08-aggtrade-acceptance-suite
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-aggtrade-acceptance-suite"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  screen:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/aggtrade-acceptance-suite
+      CACHE1: /tmp/candidate-08-aggtrade-orderflow-data
+      CACHE3: /tmp/candidate-08-aggtrade-acceptance-screen3-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed scenario contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-08/aggtrade_acceptance_probe.py \
+            research/candidate-08/test_aggtrade_acceptance.py \
+            research/candidate-08/aggtrade_orderflow_probe.py \
+            research/candidate-08/test_aggtrade_orderflow.py
+          python research/candidate-08/test_aggtrade_orderflow.py -v
+          python research/candidate-08/test_aggtrade_acceptance.py -v
+
+      - name: Restore first-window official data
+        uses: actions/cache@v4
+        with:
+          path: /tmp/candidate-08-aggtrade-orderflow-data
+          key: candidate-08-aggtrade-orderflow-btc-202404-v1
+
+      - name: Restore third-window official data
+        uses: actions/cache@v4
+        with:
+          path: /tmp/candidate-08-aggtrade-acceptance-screen3-data
+          key: candidate-08-aggtrade-acceptance-btc-screen3-v1
+
+      - name: Run unchanged first and third BTC weeks
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR/screen-01" "$OUTPUT_DIR/screen-02" "$OUTPUT_DIR/screen-03"
+          python research/candidate-08/aggtrade_acceptance_probe.py \
+            --config research/candidate-08/config_range_fvg.json \
+            --window screen-01 \
+            --output "$OUTPUT_DIR/screen-01/summary.json" \
+            --data-cache "$CACHE1" \
+            2>&1 | tee "$OUTPUT_DIR/screen-01/runner.log"
+          cp research/candidate-08/evidence/aggtrade-acceptance-screen2/summary.json \
+            "$OUTPUT_DIR/screen-02/summary.json"
+          cp research/candidate-08/evidence/aggtrade-acceptance-screen2/runner.log \
+            "$OUTPUT_DIR/screen-02/runner.log"
+          python research/candidate-08/aggtrade_acceptance_probe.py \
+            --config research/candidate-08/config_range_fvg.json \
+            --window screen-03 \
+            --output "$OUTPUT_DIR/screen-03/summary.json" \
+            --data-cache "$CACHE3" \
+            2>&1 | tee "$OUTPUT_DIR/screen-03/runner.log"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["OUTPUT_DIR"])
+          windows = {}
+          all_records = []
+          for name in ("screen-01", "screen-02", "screen-03"):
+              payload = json.loads((root / name / "summary.json").read_text(encoding="utf-8"))
+              summary = payload["summary"]
+              windows[name] = summary
+              all_records.extend(payload["records"])
+          total_proxy = sum(float(item["net_r_proxy_240m"]) for item in all_records)
+          positive = [float(item["net_r_proxy_240m"]) for item in all_records if float(item["net_r_proxy_240m"]) > 0]
+          positive_windows = sum(float(item["total_net_r_proxy"]) > 0 for item in windows.values())
+          all_positive = all(float(item["total_net_r_proxy"]) > 0 for item in windows.values())
+          minimum_opportunity = all(int(item["trades"]) >= 2 for item in windows.values())
+          concentration = max(positive) / sum(positive) if positive and sum(positive) > 0 else 0.0
+          gate = {
+              "all_three_cost_after_proxy_positive": all_positive,
+              "minimum_two_tradeable_events_each_week": minimum_opportunity,
+              "combined_cost_after_proxy_positive": total_proxy > 0,
+              "maximum_single_positive_event_share_at_most_half": concentration <= 0.50,
+          }
+          decision = {
+              "candidate": "candidate-08-aggtrade-acceptance-only",
+              "engine_evidence": False,
+              "diagnostic_scope": "checksum-verified official BTCUSDT aggTrades aggregated causally to 10 seconds",
+              "fixed_windows": windows,
+              "combined": {
+                  "trades": len(all_records),
+                  "outcomes": {
+                      outcome: sum(item["outcome_240m"] == outcome for item in all_records)
+                      for outcome in sorted({item["outcome_240m"] for item in all_records})
+                  },
+                  "total_net_r_proxy": total_proxy,
+                  "mean_net_r_proxy": total_proxy / len(all_records) if all_records else 0.0,
+                  "positive_windows": positive_windows,
+                  "single_positive_event_share": concentration,
+              },
+              "screen_gate": gate,
+              "screen_passed": all(gate.values()),
+              "next_action": (
+                  "UNCHANGED_FOUR_ASSET_TRANSFER_THEN_NAUTILUS"
+                  if all(gate.values())
+                  else "DISCARD_ACCEPTANCE_ONLY_PATH"
+              ),
+          }
+          (root / "suite_summary.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          (root / "workflow.json").write_text(
+              json.dumps({
+                  "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+                  "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+                  "head_sha": os.environ.get("GITHUB_SHA"),
+                  "thresholds_changed_after_screen1": False,
+                  "failed_absorption_family_enabled": False,
+                  "automated_gate": gate,
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit three-week evidence and decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm research/candidate-08/.run-aggtrade-acceptance-suite
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" add \
+            research/candidate-08/evidence/aggtrade-acceptance-suite \
+            research/candidate-08/.run-aggtrade-acceptance-suite
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: record unchanged three-week acceptance suite"
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-aggtrade-acceptance-suite-${{ github.sha }}
+          path: research/candidate-08/evidence/aggtrade-acceptance-suite
+          retention-days: 30
+          if-no-files-found: warn
