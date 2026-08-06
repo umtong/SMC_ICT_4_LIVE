@@ -1,0 +1,47 @@
+{
+  "status": "LOCKED_SINGLE_ABLATION_ON_REVEALED_WEEKS",
+  "candidate_family": "candidate-02-v77-quarter-hour-metaorder-wave",
+  "purpose": "Determine whether the front-side depth-withdrawal requirement is a causal confirmation or only a frequency-reducing noisy filter after the unchanged candidate passed week 1 and failed locked week 2.",
+  "ablation": {
+    "removed_core_variable": "front_side_depth_withdrawal_requirement",
+    "implementation": "Set maximum_front_depth_change to 1000000.0 so no finite completed-minute depth change is rejected; do not alter signal direction, flow persistence, turnover, price-impact, accepted-range, stop, target, holding time, costs, or risk.",
+    "why_this_variable": "It is the least structurally stable element across venues and weeks, while the observed second-week failure combined both inadequate frequency and poor expectancy. Removing it directly tests whether it supplied predictive information or merely suppressed opportunities.",
+    "single_ablation_only": true
+  },
+  "baseline_selected_config": "research/candidate-02/v77_selected_config.json",
+  "unchanged_contract": {
+    "mode": "METAORDER_WAVE",
+    "accepted_range_minutes": 60,
+    "target_range_multiple": 1.25,
+    "stop_range_multiple": 1.0,
+    "maximum_holding_minutes": 180,
+    "risk_fraction": 0.03,
+    "maximum_notional_cap": null,
+    "score_risk_multiplier": null,
+    "performance_engine": "NautilusTrader 1.230.0",
+    "custom_backtest_engine": false,
+    "global_pending_entry_plus_position_limit": 1
+  },
+  "revealed_diagnostic_weeks": [
+    {
+      "label": "week1",
+      "symbol": "BTCUSDT",
+      "start_utc": "2024-09-16T00:00:00Z",
+      "end_utc": "2024-09-23T00:00:00Z"
+    },
+    {
+      "label": "week2",
+      "symbol": "BTCUSDT",
+      "start_utc": "2024-01-29T00:00:00Z",
+      "end_utc": "2024-02-05T00:00:00Z"
+    }
+  ],
+  "weekly_gate": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor_after_cost": 1.50,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25
+  },
+  "decision_rule": "A structural improvement path exists only if the same ablated rule passes every gate in both already revealed weeks. Otherwise discard v77, record the failure and useful components, and move to a new causal hypothesis. This diagnostic cannot itself be promoted as blind evidence."
+}
