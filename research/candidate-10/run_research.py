@@ -1,4 +1,4 @@
-"""Reproducible candidate 10 v3.1 research runner."""
+"""Reproducible candidate 10 v3.2 research runner."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ import sys
 
 from c10_flow_model import FlowParams
 from c10_flow_precision_fix import reproducible_weeks
-from c10_flow_v31 import run_v31_backtest
+from c10_flow_v32 import run_v32_backtest
 
-VARIANT_NAMES = ("full", "ablation-midpoint-entry")
+VARIANT_NAMES = ("full", "ablation-fast-target")
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,12 +36,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def variants() -> dict[str, tuple[FlowParams, bool]]:
-    # Both variants retain the v3 order-flow confirmation. The sole ablated
-    # variable is the passive entry anchor after confirmed opposite repricing.
+    # Both variants retain signed-flow absorption/repricing and source-boundary
+    # entry. The sole variable is the causal target auction scale.
     params = FlowParams()
     return {
         "full": (params, True),
-        "ablation-midpoint-entry": (params, False),
+        "ablation-fast-target": (params, False),
     }
 
 
@@ -49,10 +49,10 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
     if not args.week or not args.variant:
         raise SystemExit("isolated worker requires --week and --variant")
     week = date.fromisoformat(args.week)
-    params, boundary_entry = variants()[args.variant]
+    params, macro_target = variants()[args.variant]
     destination = output_root / args.phase / week.isoformat() / args.variant
-    metrics = run_v31_backtest(
-        entry_at_source_boundary=boundary_entry,
+    metrics = run_v32_backtest(
+        use_macro_target=macro_target,
         week_start=week,
         variant=args.variant,
         params=params,
@@ -124,12 +124,18 @@ def main() -> int:
         "phase": args.phase,
         "executed_weeks": [item.isoformat() for item in weeks],
         "engine_process_isolation": True,
-        "candidate_generation": "v3.1-absorbed-boundary-first-retest",
+        "candidate_generation": (
+            "v3.2-micro-flow-trigger-macro-event-auction-target"
+        ),
         "variants": list(VARIANT_NAMES),
         "ablation_contract": (
-            "both variants retain executed order-flow absorption/repricing; only "
-            "the entry anchor changes from absorbed source boundary to the prior "
-            "50% repricing-body midpoint"
+            "both variants retain signed order-flow absorption/repricing, source-"
+            "boundary entry, stop, costs and risk; only the target changes from "
+            "the prior macro event-notional auction edge to the fast-event edge"
+        ),
+        "macro_scale_definition": (
+            "one rolling median completed-minute executed notional versus the "
+            "fast trigger bar's one-quarter minute notional"
         ),
         "implementation_control": (
             "Binance decimal strings normalized to instrument precision without "
