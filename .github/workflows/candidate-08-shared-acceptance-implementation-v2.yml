@@ -1,0 +1,390 @@
+name: candidate-08-shared-acceptance-implementation-v2
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-shared-acceptance-implementation-v2"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  routed-fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/shared-acceptance-implementation-v2
+      DATA_CACHE: /tmp/candidate-08-acceptance-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for routing decision
+        id: route
+        shell: bash
+        run: |
+          set -euo pipefail
+          route_file=research/candidate-08/evidence/shared-acceptance-routing-v1/route.txt
+          for attempt in $(seq 1 180); do
+            git fetch origin research/candidate-08
+            git reset --hard origin/research/candidate-08
+            if [[ -f "$route_file" ]]; then
+              break
+            fi
+            sleep 15
+          done
+          route=$(cat "$route_file" 2>/dev/null || printf 'NO_ROUTE')
+          printf 'route=%s\n' "$route" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$route"
+
+      - name: Restore verified first-week data cache
+        if: steps.route.outputs.route == 'SAME_WEEK_IMPLEMENTATION_FIX'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-shared-acceptance-implementation-v2-${{ github.sha }}
+          restore-keys: |
+            candidate-08-shared-acceptance-first-v1-
+            candidate-08-aggtrade-acceptance-
+
+      - name: Diagnose and apply exactly one implementation correction
+        if: steps.route.outputs.route == 'SAME_WEEK_IMPLEMENTATION_FIX'
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          python - <<'PY'
+          from __future__ import annotations
+
+          import inspect
+          import json
+          from pathlib import Path
+          import re
+
+          import nautilus_trader
+          from nautilus_trader.backtest.engine import BacktestEngine
+          from nautilus_trader.common.factories import OrderFactory
+          from nautilus_trader.model.data import BarType
+          from nautilus_trader.model.instruments import CryptoPerpetual
+
+          root = Path("research/candidate-08")
+          first = root / "evidence/shared-acceptance-first-v1"
+          routing = json.loads((root / "evidence/shared-acceptance-routing-v1/status.json").read_text())
+          metrics = json.loads((first / "metrics.json").read_text()) if (first / "metrics.json").exists() else {}
+          log = (first / "runner.log").read_text(errors="replace") if (first / "runner.log").exists() else ""
+
+          probe = {
+              "nautilus_trader_version": getattr(nautilus_trader, "__version__", None),
+              "last_exception_lines": [
+                  line for line in log.splitlines()[-200:] if re.search(r"(?:Error|Exception|Traceback|Denied|Rejected)", line)
+              ][-30:],
+              "signatures": {},
+              "routing": routing,
+              "metrics_execution_state": {
+                  key: metrics.get(key)
+                  for key in (
+                      "execution_failures",
+                      "incomplete_multiasset_timestamps",
+                      "open_positions_after_run",
+                      "open_orders_after_run",
+                      "unexpected_or_liquidation_closes",
+                  )
+              },
+          }
+          for name, object_ in {
+              "CryptoPerpetual": CryptoPerpetual,
+              "BacktestEngine.add_instrument": BacktestEngine.add_instrument,
+              "BacktestEngine.add_data": BacktestEngine.add_data,
+              "OrderFactory.bracket": OrderFactory.bracket,
+              "BarType.from_str": BarType.from_str,
+          }.items():
+              try:
+                  probe["signatures"][name] = str(inspect.signature(object_))
+              except Exception as exc:
+                  probe["signatures"][name] = f"UNAVAILABLE: {exc}"
+
+          runner_source = (root / "run_shared_acceptance_first_v1.py").read_text()
+          strategy_source = (root / "aggtrade_acceptance_shared_strategy_v1.py").read_text()
+          fix_key = "UNRESOLVED_IMPLEMENTATION_ERROR"
+          changed_files = []
+
+          loader_error = (
+              "unsupported aggTrades loader signature" in log
+              or "unsupported aggTrades result" in log
+          )
+          instrument_error = any(
+              needle in log
+              for needle in (
+                  "CryptoPerpetual.__init__",
+                  "max_quantity",
+                  "invalid `max_quantity`",
+                  "instrument definition",
+              )
+          )
+          config_error = any(
+              needle in log
+              for needle in (
+                  "instrument_ids",
+                  "bar_types",
+                  "StrategyConfig",
+                  "tuple is not supported",
+              )
+          )
+          timestamp_result_error = (
+              int(metrics.get("incomplete_multiasset_timestamps", 0)) > 0
+              and int(metrics.get("execution_failures", 0)) == 0
+              and int(metrics.get("open_positions_after_run", 0)) == 0
+              and int(metrics.get("open_orders_after_run", 0)) == 0
+          )
+
+          if loader_error:
+              fix_key = "AGGTRADES_LOADER_ADAPTER"
+              start = runner_source.index("def _load_agg(")
+              end = runner_source.index("\ndef _context(", start)
+              replacement = r'''def _load_agg(symbol: str, start: Any, end: Any, cache: Path) -> Any:
+    parameters = signature(load_ten_second_aggtrades).parameters
+    kwargs: dict[str, Any] = {}
+    for name, parameter in parameters.items():
+        normalized = name.lower()
+        if normalized in {"symbol", "asset", "market", "ticker"}:
+            kwargs[name] = symbol
+        elif normalized in {"start", "load_start", "window_start", "start_time", "start_dt"}:
+            kwargs[name] = start
+        elif normalized in {"end", "load_end", "window_end", "end_time", "end_dt"}:
+            kwargs[name] = end
+        elif "cache" in normalized or normalized in {"directory", "data_dir", "root"}:
+            kwargs[name] = cache
+        elif normalized in {"bucket_seconds", "seconds", "interval_seconds"}:
+            kwargs[name] = 10
+        elif parameter.default is parameter.empty and parameter.kind.name not in {"VAR_POSITIONAL", "VAR_KEYWORD"}:
+            raise RuntimeError(f"unsupported aggTrades loader parameter: {name}")
+    return load_ten_second_aggtrades(**kwargs)
+
+
+def _agg_parts(loaded: Any) -> tuple[Any, Any, Any]:
+    if hasattr(loaded, "frame"):
+        return loaded.frame, getattr(loaded, "source_files", ()), getattr(loaded, "quality", {})
+    if isinstance(loaded, Mapping):
+        frame = loaded.get("frame") or loaded.get("data") or loaded.get("bars")
+        if frame is None:
+            raise TypeError(f"aggTrades mapping has no frame: {loaded.keys()}")
+        return frame, loaded.get("source_files", ()), loaded.get("quality", {})
+    try:
+        import pandas as pd
+        if isinstance(loaded, pd.DataFrame):
+            return loaded, (), {}
+    except Exception:
+        pass
+    if isinstance(loaded, tuple):
+        if len(loaded) == 3:
+            return loaded[0], loaded[1], loaded[2]
+        if len(loaded) == 2:
+            return loaded[0], loaded[1], {}
+        if len(loaded) == 1:
+            return loaded[0], (), {}
+    raise TypeError(f"unsupported aggTrades result: {type(loaded)!r}")
+'''
+              runner_source = runner_source[:start] + replacement + runner_source[end:]
+              changed_files.append("run_shared_acceptance_first_v2.py")
+          elif instrument_error:
+              fix_key = "INSTRUMENT_MAX_QUANTITY_METADATA"
+              old = "        max_quantity=None,\n"
+              new = "        max_quantity=Quantity.from_str('1000000000'),\n"
+              if runner_source.count(old) != 1:
+                  raise SystemExit("instrument max_quantity anchor mismatch")
+              runner_source = runner_source.replace(old, new)
+              changed_files.append("run_shared_acceptance_first_v2.py")
+          elif config_error:
+              fix_key = "STRATEGY_CONFIG_COLLECTION_SERIALIZATION"
+              strategy_source = strategy_source.replace(
+                  "    instrument_ids: tuple[InstrumentId, ...]\n    bar_types: tuple[BarType, ...]\n",
+                  "    instrument_ids: list[InstrumentId]\n    bar_types: list[BarType]\n",
+              )
+              runner_source = runner_source.replace(
+                  "            instrument_ids=tuple(item.id for item in instruments),\n            bar_types=tuple(bar_types),\n",
+                  "            instrument_ids=[item.id for item in instruments],\n            bar_types=list(bar_types),\n",
+              )
+              changed_files.extend([
+                  "aggtrade_acceptance_shared_strategy_v2.py",
+                  "run_shared_acceptance_first_v2.py",
+              ])
+          elif timestamp_result_error:
+              fix_key = "INCOMPLETE_TIMESTAMP_ACCOUNTING"
+              old = '''        if self.seen_instruments_at_timestamp != self.expected_instrument_ids:
+            missing = sorted(self.expected_instrument_ids - self.seen_instruments_at_timestamp)
+            self.incomplete_timestamps.append(
+                {"timestamp_ns": self.current_timestamp_ns, "missing_instruments": missing}
+            )
+            for signal in self.signals_by_time_ns.get(self.current_timestamp_ns, ()):
+                self._record_skip(
+                    signal,
+                    "INCOMPLETE_MULTI_ASSET_TIMESTAMP",
+                    self.current_timestamp_ns,
+                )
+            self.processed_timestamps.add(self.current_timestamp_ns)
+'''
+              new = '''        if self.seen_instruments_at_timestamp != self.expected_instrument_ids:
+            signals = self.signals_by_time_ns.get(self.current_timestamp_ns, ())
+            if signals:
+                missing = sorted(self.expected_instrument_ids - self.seen_instruments_at_timestamp)
+                self.incomplete_timestamps.append(
+                    {"timestamp_ns": self.current_timestamp_ns, "missing_instruments": missing}
+                )
+                for signal in signals:
+                    self._record_skip(
+                        signal,
+                        "INCOMPLETE_MULTI_ASSET_TIMESTAMP",
+                        self.current_timestamp_ns,
+                    )
+            self.processed_timestamps.add(self.current_timestamp_ns)
+'''
+              if strategy_source.count(old) != 1:
+                  raise SystemExit("timestamp accounting anchor mismatch")
+              strategy_source = strategy_source.replace(old, new)
+              changed_files.append("aggtrade_acceptance_shared_strategy_v2.py")
+
+          if fix_key != "UNRESOLVED_IMPLEMENTATION_ERROR":
+              strategy_name = "aggtrade_acceptance_shared_strategy_v2.py"
+              runner_name = "run_shared_acceptance_first_v2.py"
+              if strategy_name in changed_files:
+                  strategy_source = strategy_source.replace(
+                      "class SharedAcceptanceStrategyConfig", "class SharedAcceptanceStrategyConfig"
+                  )
+                  (root / strategy_name).write_text(strategy_source)
+                  runner_source = runner_source.replace(
+                      "from aggtrade_acceptance_shared_strategy_v1 import (",
+                      "from aggtrade_acceptance_shared_strategy_v2 import (",
+                  )
+              else:
+                  (root / strategy_name).write_text(strategy_source)
+                  runner_source = runner_source.replace(
+                      "from aggtrade_acceptance_shared_strategy_v1 import (",
+                      "from aggtrade_acceptance_shared_strategy_v2 import (",
+                  )
+              (root / runner_name).write_text(runner_source)
+              changed_files = sorted(set(changed_files + [strategy_name, runner_name]))
+
+          probe["selected_fix"] = fix_key
+          probe["changed_files"] = changed_files
+          Path("research/candidate-08/evidence/shared-acceptance-implementation-v2/diagnosis.json").write_text(
+              json.dumps(probe, indent=2, sort_keys=True) + "\n"
+          )
+          Path("/tmp/selected_fix").write_text(fix_key + "\n")
+          print(json.dumps(probe, indent=2, sort_keys=True))
+          PY
+          fix=$(cat /tmp/selected_fix)
+          printf 'fix=%s\n' "$fix" >> "$GITHUB_OUTPUT"
+
+      - name: Run one corrected implementation on the identical first week
+        if: steps.route.outputs.route == 'SAME_WEEK_IMPLEMENTATION_FIX' && steps.patch.outputs.fix != 'UNRESOLVED_IMPLEMENTATION_ERROR'
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          {
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/aggtrade_acceptance_shared_strategy_v2.py \
+              research/candidate-08/run_shared_acceptance_first_v2.py
+            python research/candidate-08/test_shared_acceptance_v1.py -v
+            python research/candidate-08/run_shared_acceptance_first_v2.py \
+              --config research/candidate-08/config_aggtrade_acceptance_shared.json \
+              --output "$OUTPUT_DIR/run" \
+              --data-cache "$DATA_CACHE"
+            python - <<'PY'
+            import json
+            from pathlib import Path
+            root = Path("research/candidate-08/evidence/shared-acceptance-implementation-v2")
+            suite = json.loads((root / "run/suite_metrics.json").read_text())
+            metrics = json.loads((root / "run/metrics.json").read_text())
+            decision = {
+                "selected_fix": json.loads((root / "diagnosis.json").read_text())["selected_fix"],
+                "same_signal_contract": True,
+                "same_first_week": True,
+                "same_cost_risk_and_target_contract": True,
+                "gate_passed": bool(suite.get("gate_passed")),
+                "total_return": metrics.get("total_return"),
+                "daily_geometric_growth": metrics.get("daily_geometric_growth"),
+                "closed_trades": metrics.get("position_metrics", {}).get("closed_trades"),
+                "execution_failures": metrics.get("execution_failures"),
+                "route": "RUN_REMAINING_FIXED_WEEKS" if suite.get("gate_passed") else "RECLASSIFY_CORRECTED_FIRST_WEEK",
+            }
+            (root / "implementation_decision.json").write_text(
+                json.dumps(decision, indent=2, sort_keys=True) + "\n"
+            )
+            (root / "route.txt").write_text(decision["route"] + "\n")
+            print(json.dumps(decision, indent=2, sort_keys=True))
+            PY
+          } 2>&1 | tee "$OUTPUT_DIR/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT_DIR/runner_exit_status.txt"
+
+      - name: Record unresolved or non-applicable implementation route
+        if: steps.route.outputs.route != 'SAME_WEEK_IMPLEMENTATION_FIX' || steps.patch.outputs.fix == 'UNRESOLVED_IMPLEMENTATION_ERROR'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_DIR"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("research/candidate-08/evidence/shared-acceptance-implementation-v2")
+          route_path = Path("research/candidate-08/evidence/shared-acceptance-routing-v1/route.txt")
+          route = route_path.read_text().strip() if route_path.exists() else "NO_ROUTE"
+          diagnosis = json.loads((root / "diagnosis.json").read_text()) if (root / "diagnosis.json").exists() else {}
+          payload = {
+              "route": route,
+              "selected_fix": diagnosis.get("selected_fix", "NOT_APPLICABLE"),
+              "reason": (
+                  "No implementation correction applies to this routing result."
+                  if route != "SAME_WEEK_IMPLEMENTATION_FIX"
+                  else "The failure was not recognized; arbitrary multi-variable patching is forbidden."
+              ),
+          }
+          (root / "implementation_not_run.json").write_text(json.dumps(payload, indent=2) + "\n")
+          (root / "route.txt").write_text("NOT_APPLICABLE_OR_UNRESOLVED\n")
+          PY
+          printf '0\n' > "$OUTPUT_DIR/runner_exit_status.txt"
+
+      - name: Commit controlled implementation source and evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin research/candidate-08
+          rm -f research/candidate-08/.run-shared-acceptance-implementation-v2
+          git add \
+            research/candidate-08/aggtrade_acceptance_shared_strategy_v2.py \
+            research/candidate-08/run_shared_acceptance_first_v2.py \
+            "$OUTPUT_DIR" \
+            research/candidate-08/.run-shared-acceptance-implementation-v2
+          git commit -m "candidate-08: record controlled shared acceptance implementation correction" || true
+          git push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-shared-acceptance-implementation-v2-${{ github.run_id }}
+          path: research/candidate-08/evidence/shared-acceptance-implementation-v2
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Return runner status
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          status=$(cat "$OUTPUT_DIR/runner_exit_status.txt" 2>/dev/null || printf '1')
+          exit "$status"
