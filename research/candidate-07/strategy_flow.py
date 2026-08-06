@@ -5,10 +5,10 @@ import json
 from typing import Any
 
 from nautilus_trader.config import StrategyConfig
-from nautilus_trader.model.data import Bar, BarType, DataType
+from nautilus_trader.model.data import Bar, BarType, CustomData, DataType
 from nautilus_trader.model.identifiers import InstrumentId
 
-from flow_data import AggressorFlow
+from flow_data import AggressorFlow, FLOW_CLIENT_ID
 from model import Direction, TradePlan
 from model_flow import CausalAggressorFlowRouter, FlowLogicConfig, FlowSignalBar
 from strategy import Candidate07Strategy as ExecutionStrategy
@@ -42,12 +42,14 @@ class Candidate07FlowStrategy(ExecutionStrategy):
         super().on_start()
         self.subscribe_data(
             DataType(AggressorFlow),
+            client_id=FLOW_CLIENT_ID,
             instrument_id=self.config.instrument_id,
         )
 
     def on_data(self, data: Any) -> None:
-        if isinstance(data, AggressorFlow) and data.instrument_id == self.config.instrument_id:
-            self._flow_by_ts[int(data.ts_event)] = data
+        payload = data.data if isinstance(data, CustomData) else data
+        if isinstance(payload, AggressorFlow) and payload.instrument_id == self.config.instrument_id:
+            self._flow_by_ts[int(payload.ts_event)] = payload
 
     def on_bar(self, bar: Bar) -> None:
         now = int(bar.ts_event)

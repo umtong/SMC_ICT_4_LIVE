@@ -11,13 +11,13 @@ import pandas as pd
 import backtest as base
 from data import write_bundle_summary
 from data_flow import load_flow_bundle
-from flow_data import AggressorFlow
+from flow_data import AggressorFlow, FLOW_CLIENT_ID
 from strategy_flow import Candidate07FlowStrategy, Candidate07FlowStrategyConfig
 
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.backtest.models import FillModel, MakerTakerFeeModel
 from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
-from nautilus_trader.model.data import Bar, BarType
+from nautilus_trader.model.data import Bar, BarType, CustomData, DataType
 try:
     from nautilus_trader.model.data import FundingRateUpdate
 except ImportError:  # pragma: no cover
@@ -55,23 +55,21 @@ def run_week(
 
     instrument = TestInstrumentProvider.btcusdt_perp_binance()
     bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-LAST-EXTERNAL")
-    stream = []
-    bars_count = 0
-    flow_count = 0
+    flow_data_type = DataType(AggressorFlow)
+    flow_events: list[CustomData] = []
+    bars: list[Bar] = []
     for row in bundle.frame.itertuples():
         flow_ts = int(row.Index.value)
-        stream.append(
-            AggressorFlow(
-                instrument_id=instrument.id,
-                total_volume=float(row.volume),
-                taker_buy_volume=float(row.taker_buy_base),
-                ts_event=flow_ts,
-                ts_init=flow_ts,
-            )
+        payload = AggressorFlow(
+            instrument_id=instrument.id,
+            total_volume=float(row.volume),
+            taker_buy_volume=float(row.taker_buy_base),
+            ts_event=flow_ts,
+            ts_init=flow_ts,
         )
-        flow_count += 1
+        flow_events.append(CustomData(flow_data_type, payload))
         bar_ts = flow_ts + 1
-        stream.append(
+        bars.append(
             Bar(
                 bar_type=bar_type,
                 open=instrument.make_price(row.open),
@@ -83,11 +81,10 @@ def run_week(
                 ts_init=bar_ts,
             )
         )
-        bars_count += 1
 
-    funding_count = 0
+    funding_updates: list[FundingRateUpdate] = []
     for point in bundle.funding:
-        stream.append(
+        funding_updates.append(
             FundingRateUpdate(
                 instrument_id=instrument.id,
                 rate=point.rate,
@@ -97,13 +94,6 @@ def run_week(
                 ts_init=point.ts_event_ns,
             )
         )
-        funding_count += 1
-    stream.sort(
-        key=lambda item: (
-            int(item.ts_event),
-            0 if isinstance(item, AggressorFlow) else 1,
-        )
-    )
 
     engine = BacktestEngine(
         config=BacktestEngineConfig(
@@ -148,7 +138,10 @@ def run_week(
             reject_stop_orders=False,
         )
         engine.add_instrument(instrument)
-        engine.add_data(stream)
+        engine.add_data(flow_events, client_id=FLOW_CLIENT_ID)
+        engine.add_data(bars)
+        if funding_updates:
+            engine.add_data(funding_updates)
         engine.add_strategy(strategy)
         engine.run()
 
@@ -174,17 +167,17 @@ def run_week(
             fills=fills,
             positions=positions,
             account=account,
-            funding_points=funding_count,
+            funding_points=len(funding_updates),
         )
         metrics["execution_contract"].update(
             {
-                "signal_state": "completed OHLCV plus Binance taker-buy base volume carried as NautilusTrader custom Data",
+                "signal_state": "completed OHLCV plus Binance taker-buy base volume carried in NautilusTrader CustomData",
                 "pool_identity": "external level formation timestamp; one causal contact per formed pool",
-                "bar_ordering": "aggressor-flow event at completed-minute timestamp, matching bar one nanosecond later",
+                "bar_ordering": "custom flow at completed-minute timestamp, matching bar one nanosecond later",
             }
         )
         metrics["flow_contract"] = {
-            "total_flow_events": flow_count,
+            "total_flow_events": len(flow_events),
             "consumed_pools": strategy.router.consumed_pool_count,
             "generic_breakout_continuation": False,
             "global_direction_lock": False,
@@ -204,9 +197,9 @@ def run_week(
                     "instrument_id": str(instrument.id),
                     "bar_type": str(bar_type),
                     "engine": "NautilusTrader BacktestEngine",
-                    "bars": bars_count,
-                    "aggressor_flow_events": flow_count,
-                    "funding_updates": funding_count,
+                    "bars": len(bars),
+                    "aggressor_flow_events": len(flow_events),
+                    "funding_updates": len(funding_updates),
                     "signal_model": "consumed-pool aggressor-flow absorption",
                 },
             ),
