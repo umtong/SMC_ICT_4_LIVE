@@ -1,0 +1,144 @@
+name: candidate-03-v17-validation-3-fixed
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - "research/candidate-03/results/v17-development-2/gate.json"
+      - "research/candidate-03/results/v17-development-2/metrics.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  PYTHONPATH: /workspace/src:/workspace/research/candidate-03
+  CONFIG: research/candidate-03/nt_lvcfr_v17_config.json
+
+jobs:
+  third-validation-week:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    steps:
+      - name: Clone branch and authenticate registry
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch research/candidate-03 \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          gate = json.loads(Path('research/candidate-03/results/v17-development-2/gate.json').read_text())
+          if not gate.get('passed', False):
+              raise SystemExit('V17 week two failed; third-week data remains unopened')
+          PY
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker pull "$IMAGE"
+
+      - name: Verify frozen V17 blobs and pinned NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          test "$(git rev-parse HEAD:research/candidate-03/derive_nt_lvcfr_v17_signals.py)" = "fcc05dd19bbfc621226250743979d341a7194bf7"
+          test "$(git rev-parse HEAD:research/candidate-03/nt_lvcfr_v17_config.json)" = "64c7ef99cc076582ffff59c961208bc09d22cae7"
+          test "$(git rev-parse HEAD:research/candidate-03/nt_lvcfr_strategy.py)" = "e4d00ae0c6fa1d24198c846bccb247baacdc0456"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c '
+              smc4 doctor &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_trade_proxy.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_v13.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_v17.py
+            '
+
+      - name: Prepare official data and run third BTC week
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          prepared=artifacts/candidate-03/nt-lvcfr-v17-fixed/validation-3/prepared
+          out=artifacts/candidate-03/nt-lvcfr-v17-fixed/validation-3/output
+          mkdir -p "$prepared" "$out"
+          sudo chmod -R a+rwX artifacts
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/prepare_nt_lvcfr_trade_proxy.py \
+              --week-start 2022-05-16 --output $prepared --config $CONFIG" \
+            2>&1 | tee "$out/preparation.log"
+          cp "$prepared/signals.json" "$prepared/signals-v1.json"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/derive_nt_lvcfr_v17_signals.py \
+              --prepared-root $prepared --output-manifest $out/v17_signal_manifest.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('artifacts/candidate-03/nt-lvcfr-v17-fixed/validation-3/output/v17_signal_manifest.json').read_text())
+          expected = {
+              'source_contraction_event_count': 19,
+              'retained_deleveraging_signal_count': 12,
+              'expansion_signal_count': 10,
+              'derived_signal_count': 22,
+              'state_counts': {
+                  'FIRST_BREAK_CHOCH_REVERSAL': 7,
+                  'MEASURED_ACCEPTANCE_CONTINUATION': 5,
+                  'SPOT_LED_OI_EXPANSION_ACCEPTANCE': 10,
+              },
+          }
+          if any(manifest.get(key) != value for key, value in expected.items()):
+              raise SystemExit(f'V17 third-week causal regression: {manifest}')
+          PY
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/rebuild_nt_lvcfr_trade_proxy_catalog.py \
+              --prepared-root $prepared --config $CONFIG" \
+            2>&1 | tee "$out/catalog_rebuild.log"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py \
+              --week-start 2022-05-16 --prepared-root $prepared --output $out --config $CONFIG" \
+            2>&1 | tee "$out/backtest.log"
+          set +e
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
+              --config "$CONFIG" | tee "$out/gate.json"
+          gate_status=${PIPESTATUS[0]}
+          set -e
+          echo "$gate_status" > "$out/gate_status.txt"
+
+      - name: Commit reproducible third-week evidence
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd repo
+          src=artifacts/candidate-03/nt-lvcfr-v17-fixed/validation-3/output
+          dst=research/candidate-03/results/v17-validation-3
+          rm -rf "$dst"
+          mkdir -p "$dst"
+          cp "$src"/*.json "$dst"/
+          cp "$src"/*.jsonl "$dst"/ 2>/dev/null || true
+          cp "$src"/*.csv "$dst"/ 2>/dev/null || true
+          cp "$src"/*.log "$dst"/
+          cp "$src/gate_status.txt" "$dst"/
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add "$dst"
+          git commit -m "candidate-03: record V17 third-week native evidence"
+          git pull --rebase origin research/candidate-03
+          git push origin HEAD:research/candidate-03
+          exit "$(cat "$dst/gate_status.txt")"
