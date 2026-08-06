@@ -44,6 +44,10 @@ def evaluate_diagnostic_summary(
     )
     retained_stats = dict(families.get(retained, {})) if isinstance(families, Mapping) else {}
     removed_stats = dict(families.get(removed, {})) if isinstance(families, Mapping) else {}
+    exact_family_set = (
+        isinstance(families, Mapping)
+        and set(families) == {INITIATIVE_FAMILY, FAILED_AUCTION_FAMILY}
+    )
 
     contract_checks = {
         "implementation_revision_exact": (
@@ -60,11 +64,20 @@ def evaluate_diagnostic_summary(
             checks.get("base_contract_includes_both_auction_families") is False
         ),
         "economic_check_set_nonempty": len(economic_checks) >= 5,
+        "scenario_family_set_exact": exact_family_set,
         "removed_family_has_no_signals": int(removed_stats.get("signals", 0)) == 0,
         "removed_family_has_no_closed_trades": (
             int(removed_stats.get("closed_trades", 0)) == 0
         ),
         "retained_family_name_present": retained in families,
+        "retained_family_has_signals": int(retained_stats.get("signals", 0)) >= 1,
+        "retained_family_has_closed_trades": (
+            int(retained_stats.get("closed_trades", 0)) >= 1
+        ),
+        "reported_closed_trades_match_retained_family": (
+            int(summary.get("closed_trades", 0))
+            == int(retained_stats.get("closed_trades", 0))
+        ),
     }
     evidence_contract_passed = all(contract_checks.values())
     economic_checks_passed = bool(economic_checks) and all(economic_checks.values())
