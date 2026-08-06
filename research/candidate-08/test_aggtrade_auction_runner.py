@@ -55,6 +55,59 @@ class AuctionRunnerAttributionContracts(unittest.TestCase):
                 "INITIATIVE_ACCEPTANCE_CONTINUATION": 1,
             },
         )
+        self.assertEqual(summary["auction_family_mode"], "both")
+
+    def test_family_filter_removes_only_the_selected_economic_family(self) -> None:
+        initiative = SimpleNamespace(
+            scenario_id="initiative-1",
+            symbol="BTCUSDT",
+            signal_time_ns=10,
+            details={"scenario_family": "INITIATIVE_ACCEPTANCE_CONTINUATION"},
+        )
+        failed = SimpleNamespace(
+            scenario_id="failed-1",
+            symbol="ETHUSDT",
+            signal_time_ns=10,
+            details={"scenario_family": "FAILED_AUCTION_REVERSAL"},
+        )
+        bundle = runner.AcceptanceSignalBundle(
+            signals_by_time_ns={10: (initiative, failed)},
+            diagnostics={"RAW": 2},
+            rejected_scenarios=(),
+        )
+
+        unchanged = runner._filter_bundle_for_family_mode(bundle, mode="both")
+        initiative_only = runner._filter_bundle_for_family_mode(
+            bundle,
+            mode="initiative_only",
+        )
+        failed_only = runner._filter_bundle_for_family_mode(
+            bundle,
+            mode="failed_auction_only",
+        )
+
+        self.assertIs(unchanged, bundle)
+        self.assertEqual(initiative_only.signals_by_time_ns[10], (initiative,))
+        self.assertEqual(failed_only.signals_by_time_ns[10], (failed,))
+        self.assertEqual(
+            initiative_only.diagnostics[
+                "DIAGNOSTIC_FAMILY_ABLATION_REMOVED_SIGNALS"
+            ],
+            1,
+        )
+        self.assertEqual(
+            initiative_only.rejected_scenarios[-1]["removed_family"],
+            "FAILED_AUCTION_REVERSAL",
+        )
+        self.assertEqual(
+            failed_only.rejected_scenarios[-1]["removed_family"],
+            "INITIATIVE_ACCEPTANCE_CONTINUATION",
+        )
+
+    def test_unknown_family_filter_mode_is_rejected(self) -> None:
+        bundle = runner.AcceptanceSignalBundle({}, {}, ())
+        with self.assertRaises(ValueError):
+            runner._filter_bundle_for_family_mode(bundle, mode="fit_the_week")
 
     def test_closed_records_receive_family_without_changing_execution_fields(self) -> None:
         original = runner._original_closed_trade_records
@@ -133,6 +186,7 @@ class AuctionRunnerAttributionContracts(unittest.TestCase):
         try:
             runner._original_suite_summary = lambda *_args: {
                 "closed_trades": 1,
+                "promotable": True,
                 "suite_gate_checks": {},
                 "suite_gate_passed": True,
             }
@@ -174,6 +228,12 @@ class AuctionRunnerAttributionContracts(unittest.TestCase):
         self.assertTrue(
             result["suite_gate_checks"]["complete_auction_scenario_attribution"]
         )
+        self.assertTrue(
+            result["suite_gate_checks"][
+                "base_contract_includes_both_auction_families"
+            ]
+        )
+        self.assertTrue(result["promotable"])
         self.assertTrue(result["suite_gate_passed"])
 
     def test_unclassified_signal_blocks_an_otherwise_passing_suite(self) -> None:
@@ -181,6 +241,7 @@ class AuctionRunnerAttributionContracts(unittest.TestCase):
         try:
             runner._original_suite_summary = lambda *_args: {
                 "closed_trades": 0,
+                "promotable": True,
                 "suite_gate_checks": {},
                 "suite_gate_passed": True,
             }
@@ -205,8 +266,46 @@ class AuctionRunnerAttributionContracts(unittest.TestCase):
         self.assertFalse(result["scenario_attribution_passed"])
         self.assertFalse(result["suite_gate_passed"])
 
+    def test_single_family_mode_is_diagnostic_and_never_promotable(self) -> None:
+        original_summary = runner._original_suite_summary
+        original_mode = runner.FAMILY_MODE
+        try:
+            runner._original_suite_summary = lambda *_args: {
+                "closed_trades": 0,
+                "promotable": True,
+                "suite_gate_checks": {},
+                "suite_gate_passed": True,
+            }
+            runner.FAMILY_MODE = "initiative_only"
+            result = runner._auction_suite_summary(
+                {},
+                "first",
+                [
+                    {
+                        "detector": {
+                            "signals": 0,
+                            "by_scenario_family": {},
+                        },
+                        "closed_trade_records": [],
+                    }
+                ],
+            )
+        finally:
+            runner._original_suite_summary = original_summary
+            runner.FAMILY_MODE = original_mode
+
+        self.assertEqual(result["auction_family_mode"], "initiative_only")
+        self.assertTrue(result["diagnostic_family_ablation"])
+        self.assertFalse(result["promotable"])
+        self.assertFalse(
+            result["suite_gate_checks"][
+                "base_contract_includes_both_auction_families"
+            ]
+        )
+        self.assertFalse(result["suite_gate_passed"])
+
     def test_wrapper_patches_reporting_but_reuses_base_execution_entrypoint(self) -> None:
-        self.assertIs(runner.base_runner.build_acceptance_signals, runner.build_auction_router_signals)
+        self.assertIs(runner.base_runner.build_acceptance_signals, runner._build_router_signals)
         self.assertIs(runner.base_runner._position_metrics, runner._auction_position_metrics)
         self.assertIs(runner.base_runner._closed_trade_records, runner._auction_closed_trade_records)
         self.assertIs(runner.base_runner._global_signal_summary, runner._auction_global_signal_summary)
