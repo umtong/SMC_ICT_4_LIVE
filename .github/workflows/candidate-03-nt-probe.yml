@@ -3,8 +3,7 @@ name: candidate-03-nt-probe
 on:
   push:
     branches: ["research/candidate-03"]
-    paths:
-      - ".github/workflows/candidate-03-nt-probe.yml"
+    paths: [".github/workflows/candidate-03-nt-probe.yml"]
   workflow_dispatch:
 
 permissions:
@@ -19,141 +18,97 @@ jobs:
       IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
     steps:
       - uses: actions/checkout@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Prepare API probe
+      - name: Prepare probe
         shell: bash
         run: |
-          set -euo pipefail
           mkdir -p artifacts/nt-probe
           chmod 0777 artifacts/nt-probe
           cat > artifacts/nt-probe/probe.py <<'PY'
           import importlib
           import inspect
-          import pkgutil
           import traceback
-
           import nautilus_trader
 
-          print("nautilus_version", getattr(nautilus_trader, "__version__", "unknown"))
+          def sig(obj):
+              try: return str(inspect.signature(obj))
+              except Exception as exc: return f"<{type(exc).__name__}: {exc}>"
 
-          def signature(obj):
-              try:
-                  return str(inspect.signature(obj))
-              except Exception as exc:
-                  return f"<{type(exc).__name__}: {exc}>"
-
-          targets = [
-              ("nautilus_trader.backtest.node", ["BacktestDataConfig", "BacktestEngineConfig", "BacktestNode", "BacktestRunConfig", "BacktestVenueConfig"]),
-              ("nautilus_trader.config", ["ImportableStrategyConfig", "StrategyConfig"]),
-              ("nautilus_trader.persistence.catalog", ["ParquetDataCatalog"]),
-              ("nautilus_trader.model.data", ["TradeTick", "QuoteTick", "Bar", "CustomData", "DataType", "FundingRateUpdate"]),
-              ("nautilus_trader.model.instruments", ["CryptoPerpetual", "CurrencyPair"]),
-              ("nautilus_trader.model.events", ["OrderFilled", "OrderRejected", "PositionOpened", "PositionClosed"]),
-              ("nautilus_trader.trading.strategy", ["Strategy"]),
-              ("nautilus_trader.execution", ["DefaultFillModel", "OneTickSlippageFillModel", "ProbabilisticFillModel"]),
-          ]
-          for module_name, names in targets:
-              try:
-                  module = importlib.import_module(module_name)
-              except Exception:
-                  print("\nMODULE_IMPORT_ERROR", module_name)
-                  traceback.print_exc()
-                  continue
+          print("version", getattr(nautilus_trader, "__version__", "unknown"))
+          requests = {
+              "nautilus_trader.backtest.node": ["BacktestDataConfig", "BacktestEngineConfig", "BacktestNode", "BacktestRunConfig", "BacktestVenueConfig"],
+              "nautilus_trader.config": ["ImportableStrategyConfig", "StrategyConfig"],
+              "nautilus_trader.persistence.catalog": ["ParquetDataCatalog"],
+              "nautilus_trader.model.data": ["TradeTick", "QuoteTick", "Bar", "CustomData", "DataType", "FundingRateUpdate"],
+              "nautilus_trader.model.instruments": ["CryptoPerpetual"],
+              "nautilus_trader.model.events": ["OrderFilled", "OrderRejected", "PositionOpened", "PositionClosed"],
+              "nautilus_trader.trading.strategy": ["Strategy"],
+              "nautilus_trader.execution": ["DefaultFillModel", "OneTickSlippageFillModel"],
+          }
+          for module_name, names in requests.items():
               print("\nMODULE", module_name)
-              print("discover", [n for n in dir(module) if any(k in n.lower() for k in ("custom", "register", "data_type", "datatype", "funding"))])
+              try: module = importlib.import_module(module_name)
+              except Exception:
+                  traceback.print_exc(); continue
+              print("discover", [n for n in dir(module) if any(k in n.lower() for k in ("custom", "register", "funding", "datatype", "data_type"))])
               for name in names:
                   obj = getattr(module, name, None)
-                  print("\nOBJECT", name, repr(obj))
-                  if obj is None:
-                      continue
-                  print("signature", signature(obj))
-                  doc = inspect.getdoc(obj)
-                  if doc:
-                      print("doc", doc[:6000])
+                  print("OBJECT", name, repr(obj), sig(obj) if obj is not None else "")
+                  doc = inspect.getdoc(obj) if obj is not None else None
+                  if doc: print(doc[:5000])
 
-          for module_name in [
-              "nautilus_trader.model",
-              "nautilus_trader.model.data",
-              "nautilus_trader.serialization",
-              "nautilus_trader.persistence",
-              "nautilus_trader.persistence.catalog",
-              "nautilus_trader.core.data",
-              "nautilus_trader.common.factories",
-              "nautilus_trader.model.events",
-              "nautilus_trader.model.accounts",
-              "nautilus_trader.portfolio",
-          ]:
+          for module_name in ["nautilus_trader.model", "nautilus_trader.serialization", "nautilus_trader.persistence", "nautilus_trader.core.data", "nautilus_trader.common.factories", "nautilus_trader.portfolio"]:
+              print("\nDISCOVER", module_name)
               try:
                   module = importlib.import_module(module_name)
-              except Exception as exc:
-                  print("\nDISCOVER_ERROR", module_name, type(exc).__name__, exc)
-                  continue
-              print("\nDISCOVER", module_name)
-              print([n for n in dir(module) if any(k in n.lower() for k in ("custom", "register", "data_type", "datatype", "funding", "account", "transaction"))])
-
-          print("\nPACKAGE_CANDIDATES")
-          try:
-              candidates = []
-              for _, name, _ in pkgutil.walk_packages(nautilus_trader.__path__, nautilus_trader.__name__ + "."):
-                  if any(k in name.lower() for k in ("serialization", "custom", "persistence", "funding")):
-                      candidates.append(name)
-              print("\n".join(candidates[:300]))
-          except Exception:
-              traceback.print_exc()
+                  print([n for n in dir(module) if any(k in n.lower() for k in ("custom", "register", "funding", "account", "transaction"))])
+              except Exception: traceback.print_exc()
 
           from nautilus_trader.persistence.catalog import ParquetDataCatalog
-          print("\nCATALOG_METHODS")
+          print("\nCATALOG")
           for name in dir(ParquetDataCatalog):
               if any(k in name.lower() for k in ("write", "query", "custom", "instrument", "trade", "quote", "bar")):
-                  print(name, signature(getattr(ParquetDataCatalog, name)))
+                  print(name, sig(getattr(ParquetDataCatalog, name)))
 
           from nautilus_trader.trading.strategy import Strategy
-          print("\nSTRATEGY_METHODS")
+          print("\nSTRATEGY")
           for name in dir(Strategy):
-              if any(k in name.lower() for k in ("subscribe", "submit", "close", "cancel", "portfolio", "account", "data", "order", "position")):
-                  print(name, signature(getattr(Strategy, name)))
+              if any(k in name.lower() for k in ("subscribe", "submit", "close", "cancel", "order", "position")):
+                  print(name, sig(getattr(Strategy, name)))
 
-          for module_name, object_name in [
-              ("nautilus_trader.common.factories", "OrderFactory"),
-              ("nautilus_trader.portfolio", "Portfolio"),
-          ]:
-              try:
-                  obj = getattr(importlib.import_module(module_name), object_name)
-                  print(f"\n{object_name.upper()}_METHODS")
-                  for name in dir(obj):
-                      if not name.startswith("_"):
-                          print(name, signature(getattr(obj, name)))
-              except Exception:
-                  traceback.print_exc()
+          try:
+              from nautilus_trader.common.factories import OrderFactory
+              print("\nORDER_FACTORY")
+              for name in dir(OrderFactory):
+                  if not name.startswith("_"): print(name, sig(getattr(OrderFactory, name)))
+          except Exception: traceback.print_exc()
+
+          try:
+              from nautilus_trader.portfolio import Portfolio
+              print("\nPORTFOLIO")
+              for name in dir(Portfolio):
+                  if any(k in name.lower() for k in ("account", "balance", "equity", "pnl", "position", "margin", "exposure", "net")):
+                      print(name, sig(getattr(Portfolio, name)))
+          except Exception: traceback.print_exc()
           PY
-
-      - name: Verify prebuilt runtime and inspect NautilusTrader 1.230.0 APIs
+      - name: Run probe in pinned image
         shell: bash
         run: |
-          set -uo pipefail
+          set +e
           docker pull "$IMAGE" > artifacts/nt-probe/docker-pull.txt 2>&1
           pull_status=$?
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            "$IMAGE" \
-            bash -lc 'smc4 doctor; python artifacts/nt-probe/probe.py' \
+          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c 'smc4 doctor; python artifacts/nt-probe/probe.py' \
             > artifacts/nt-probe/api.txt 2>&1
           probe_status=$?
           printf 'pull_status=%s\nprobe_status=%s\n' "$pull_status" "$probe_status" > artifacts/nt-probe/status.txt
-          cat artifacts/nt-probe/docker-pull.txt
           cat artifacts/nt-probe/api.txt
-          cat artifacts/nt-probe/status.txt
           exit 0
-
-      - name: Preserve API probe
+      - name: Preserve probe
         if: always()
         uses: actions/upload-artifact@v4
         with:
