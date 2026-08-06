@@ -2,18 +2,18 @@
 
 - Status: **GATE_FAIL**
 - Gate passed: **False**
-- Baseline pooled daily geometric return: **-0.600476%**
-- Baseline pooled NAV multiple across sampled days: **0.881192x**
-- Baseline trades: **19**
-- Maximum sampled-segment drawdown: **10.630265%**
+- Baseline pooled daily geometric return: **0.000000%**
+- Baseline pooled NAV multiple across sampled days: **1.000000x**
+- Baseline trades: **0**
+- Maximum sampled-segment drawdown: **0.000000%**
 
 ## Fixed-week results
 
 | week | return | daily geo | trades | win rate | PF | max DD | reversal | continuation | implementation |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| week-a | -8.5395% | -1.2671% | 8 | 25.00% | 0.520 | 10.6303% | 8 | 0 | OK |
-| week-b | -2.3534% | -0.3396% | 2 | 50.00% | 0.221 | 2.9998% | 2 | 0 | OK |
-| week-c | -1.3312% | -0.1913% | 9 | 33.33% | 0.927 | 8.7331% | 9 | 0 | OK |
+| week-a | 0.0000% | 0.0000% | 0 | n/a | n/a | 0.0000% | 0 | 0 | OK |
+| week-b | 0.0000% | 0.0000% | 0 | n/a | n/a | 0.0000% | 0 | 0 | OK |
+| week-c | 0.0000% | 0.0000% | 0 | n/a | n/a | 0.0000% | 0 | 0 | OK |
 
 ## Gate checks
 
@@ -21,13 +21,14 @@
 - FAIL — `pooled_daily_geometric_return`
 - FAIL — `minimum_trades_each_week`
 - FAIL — `all_weeks_positive`
-- FAIL — `profit_not_single_trade_dominated`
+- PASS — `profit_not_single_trade_dominated`
 
 ## Failure classification / structural diagnosis
 
-- Classification: **LOGIC_ERROR_WITH_STRUCTURAL_PATH**
-- Largest influence: **midpoint-target**
-- Required action: The single-variable ablation midpoint-target improved pooled cost-after growth; revise only that confirmation layer, then freeze and retest.
+- Classification: **LOGIC_ERROR_NO_STRUCTURAL_PATH**
+- Largest influence: **insufficient cost-after conditional edge or opportunity rate**
+- Required action: Discard candidate-09 as a complete candidate; preserve only the listed mechanisms for later hypotheses.
+- Parts worth preserving: risk-budgeted loss path remained recoverable in the gate sample
 
 ## Known failure conditions
 

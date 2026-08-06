@@ -5,128 +5,108 @@ import unittest
 from decimal import Decimal
 from pathlib import Path
 
-from state_engine import EngineConfig, FlowBar, LiquidityStateEngine, risk_based_quantity
+from state_engine import (
+    AuctionLevel,
+    CompletedRegimeRange,
+    EngineConfig,
+    FlowBar,
+    LiquidityStateEngine,
+    PendingResolution,
+    risk_based_quantity,
+)
 
-MINUTE = 60_000_000_000
-
-
-def bar(minute, open_, high, low, close, volume=100.0, buy_fraction=0.5):
-    return FlowBar(minute * MINUTE, open_, high, low, close, volume, volume * buy_fraction, 100)
-
-
-def config(**overrides):
-    values = dict(
-        auction_horizons_minutes=(4,), atr_period=2, volume_period=2,
-        approach_period=2, maximum_active_levels_per_side=8,
-        maximum_level_age_minutes=60, minimum_breach_atr=0.0,
-        cluster_tolerance_atr=0.05, acceptance_buffer_atr=0.0,
-        acceptance_closes=2, acceptance_timeout_bars=5, retest_timeout_bars=4,
-        post_retest_resolution_bars=4, retest_tolerance_atr=0.3,
-        defended_close_buffer_atr=0.0, failure_close_buffer_atr=0.0,
-        reexpansion_buffer_atr=0.0, stop_buffer_atr=0.0,
-        minimum_approach_efficiency=0.0, minimum_approach_flow=0.0,
-        directional_imbalance=0.05, maximum_adverse_retest_flow=0.2,
-        minimum_volume_ratio=0.5, minimum_displacement_atr=0.1,
-        minimum_excursion_atr=0.1, minimum_resolution_displacement_atr=0.1,
-        minimum_net_reward_to_risk=0.1, composite_cost_per_fill=0.0,
-        cooldown_bars=0, use_flow_confirmation=True,
-        require_acceptance_confirmation=True, require_reexpansion_confirmation=True,
-        use_opposite_edge_target=True,
-    )
-    values.update(overrides)
-    return EngineConfig(**values)
+CONFIG_V6 = json.loads((Path(__file__).resolve().parents[1] / 'config_v6.json').read_text())
 
 
-def seed(engine):
-    for item in (
-        bar(1, 99.0, 101.0, 98.5, 100.0, buy_fraction=0.55),
-        bar(2, 100.0, 100.5, 97.0, 99.0, buy_fraction=0.55),
-        bar(3, 99.0, 100.0, 95.0, 98.0, buy_fraction=0.55),
-        bar(4, 98.5, 100.0, 98.2, 99.5, buy_fraction=0.65),
-    ):
-        engine.on_bar(item)
-    engine.on_bar(bar(5, 99.5, 100.5, 99.2, 100.2, buy_fraction=0.70))
+def bar(ts: int, o: float, h: float, l: float, c: float, *, volume: float = 100.0, buy_fraction: float = 0.5) -> FlowBar:
+    return FlowBar(ts, o, h, l, c, volume, volume * buy_fraction, 100)
 
 
-def accept_up(engine):
-    engine.on_bar(bar(6, 100.2, 102.0, 100.0, 101.6, 220.0, 0.90))
-    return engine.on_bar(bar(7, 101.6, 102.3, 101.2, 101.9, 190.0, 0.80))
+def level(kind: str = 'LOW') -> AuctionLevel:
+    if kind == 'LOW':
+        return AuctionLevel('x', kind, 100.0, 60, 0, 60, 120.0, 100.0, 110.0, 20.0, 0)
+    return AuctionLevel('x', kind, 100.0, 60, 0, 60, 100.0, 80.0, 90.0, 20.0, 0)
 
 
-class CausalPathsTest(unittest.TestCase):
-    def test_range_is_not_available_before_completion(self):
-        engine = LiquidityStateEngine(config())
-        for minute in range(1, 5):
-            engine.on_bar(bar(minute, 100, 101, 99, 100))
-        self.assertEqual(engine.active_pools, ())
-        engine.on_bar(bar(5, 100, 100.5, 99.5, 100))
-        self.assertEqual(len(engine.active_pools), 2)
-
-    def test_accepted_breakout_failure_targets_opposite_edge(self):
-        engine = LiquidityStateEngine(config())
-        seed(engine)
-        accept_up(engine)
-        result = engine.on_bar(bar(8, 101.7, 101.8, 100.4, 100.6, 200.0, 0.15))
-        self.assertIsNotNone(result.signal)
-        self.assertEqual(result.signal.branch, "REVERSAL")
-        self.assertEqual(result.signal.side, "SELL")
-        self.assertAlmostEqual(result.signal.target_price, 95.0)
-        self.assertEqual(result.signal.details["target_model"], "OPPOSITE_EDGE")
-
-    def test_midpoint_is_explicit_ablation(self):
-        engine = LiquidityStateEngine(config(use_opposite_edge_target=False))
-        seed(engine)
-        accept_up(engine)
-        result = engine.on_bar(bar(8, 101.7, 101.8, 100.4, 100.6, 200.0, 0.15))
-        self.assertIsNotNone(result.signal)
-        self.assertAlmostEqual(result.signal.target_price, 98.0)
-        self.assertEqual(result.signal.details["target_model"], "MIDPOINT")
-
-    def test_genuine_reexpansion_invalidates_trap_without_continuation_entry(self):
-        engine = LiquidityStateEngine(config())
-        seed(engine)
-        accept_up(engine)
-        retest = engine.on_bar(bar(8, 101.1, 101.6, 100.9, 101.3, 160.0, 0.60))
-        self.assertIsNone(retest.signal)
-        result = engine.on_bar(bar(9, 101.3, 102.2, 101.2, 102.0, 180.0, 0.75))
-        self.assertIsNone(result.signal)
-        self.assertIn(
-            "GENUINE_REEXPANSION_INVALIDATED_TRAP_REVERSAL",
-            {event.reason_code for event in result.events},
-        )
+class ConfigContractTest(unittest.TestCase):
+    def test_single_variable_ablations(self):
+        base = EngineConfig.from_mapping(CONFIG_V6, ablation='baseline')
+        no_regime = EngineConfig.from_mapping(CONFIG_V6, ablation='no-regime')
+        no_retest = EngineConfig.from_mapping(CONFIG_V6, ablation='no-failure-retest')
+        far_target = EngineConfig.from_mapping(CONFIG_V6, ablation='opposite-edge-target')
+        self.assertTrue(base.require_regime_alignment)
+        self.assertTrue(base.require_failure_retest)
+        self.assertFalse(base.use_opposite_edge_target)
+        self.assertFalse(no_regime.require_regime_alignment)
+        self.assertTrue(no_regime.require_failure_retest)
+        self.assertFalse(no_retest.require_failure_retest)
+        self.assertTrue(far_target.use_opposite_edge_target)
+        self.assertEqual(base.auction_horizons_minutes, (5, 15, 60, 1440))
+        self.assertEqual(base.regime_horizon_minutes, 240)
 
 
-class VariantContractTest(unittest.TestCase):
-    def test_structural_variants_change_one_component(self):
-        payload = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
-        baseline = EngineConfig.from_mapping(payload, ablation="baseline")
-        no_5m = EngineConfig.from_mapping(payload, ablation="no-5m")
-        with_240 = EngineConfig.from_mapping(payload, ablation="with-240m")
-        midpoint = EngineConfig.from_mapping(payload, ablation="midpoint-target")
-        self.assertEqual(baseline.auction_horizons_minutes, (5, 15, 60, 1440))
-        self.assertEqual(no_5m.auction_horizons_minutes, (15, 60, 1440))
-        self.assertEqual(with_240.auction_horizons_minutes, (5, 15, 60, 240, 1440))
-        self.assertTrue(baseline.use_opposite_edge_target)
-        self.assertFalse(midpoint.use_opposite_edge_target)
+class RegimeContractTest(unittest.TestCase):
+    def test_completed_ranges_only_drive_regime(self):
+        engine = LiquidityStateEngine(EngineConfig())
+        self.assertEqual(engine.regime, 'NEUTRAL')
+        engine._regime_ranges.append(CompletedRegimeRange(0, 1, 105, 95, 101, 100))
+        self.assertEqual(engine.regime, 'NEUTRAL')
+        engine._regime_ranges.append(CompletedRegimeRange(1, 2, 108, 96, 107, 102))
+        self.assertEqual(engine.regime, 'BULLISH')
+        engine._regime_ranges.append(CompletedRegimeRange(2, 3, 103, 91, 92, 97))
+        self.assertEqual(engine.regime, 'BEARISH')
 
 
-class RiskTest(unittest.TestCase):
-    def test_three_percent_loss_budget(self):
+class FailureRetestTest(unittest.TestCase):
+    def _engine(self, config: EngineConfig) -> LiquidityStateEngine:
+        engine = LiquidityStateEngine(config)
+        engine._atr = 2.0
+        engine._volume_median = 100.0
+        engine._regime_ranges.append(CompletedRegimeRange(0, 1, 105, 95, 101, 100))
+        engine._regime_ranges.append(CompletedRegimeRange(1, 2, 108, 96, 107, 102))
+        return engine
+
+    def test_downside_failure_requires_retest_then_builds_midpoint_buy(self):
+        cfg = EngineConfig(minimum_net_reward_to_risk=0.2, composite_cost_per_fill=0.0)
+        engine = self._engine(cfg)
+        pending = PendingResolution('s', level('LOW'), 'DOWN', 'FAILED', 1, 0.3, -0.2, 1, 88.0,
+                                    acceptance_index=2, failure_index=3, failure_high=101.0, failure_low=98.0)
+        rejection = bar(10, 99.8, 101.0, 99.6, 100.8, buy_fraction=0.70)
+        self.assertTrue(engine._failure_retest_rejected(pending, rejection))
+        signal = engine._build_signal(pending, rejection, entry_model='FAILURE_RETEST')
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(signal.side, 'BUY')
+        self.assertEqual(signal.target_price, 110.0)
+        self.assertLess(signal.stop_price, signal.entry_reference)
+
+    def test_regime_mismatch_blocks_sell_but_ablation_allows_it(self):
+        pending = PendingResolution('s', level('HIGH'), 'UP', 'FAILED', 1, 0.3, 0.2, 1, 112.0,
+                                    acceptance_index=2, failure_index=3, failure_high=102.0, failure_low=99.0)
+        rejection = bar(10, 100.8, 101.0, 99.0, 99.2, buy_fraction=0.30)
+        strict = self._engine(EngineConfig(minimum_net_reward_to_risk=0.2, composite_cost_per_fill=0.0))
+        self.assertIsNone(strict._build_signal(pending, rejection, entry_model='FAILURE_RETEST'))
+        relaxed = self._engine(EngineConfig(require_regime_alignment=False, minimum_net_reward_to_risk=0.2, composite_cost_per_fill=0.0))
+        self.assertIsNotNone(relaxed._build_signal(pending, rejection, entry_model='FAILURE_RETEST'))
+
+
+class RiskSizingTest(unittest.TestCase):
+    def test_full_cost_floor_respects_three_percent(self):
         result = risk_based_quantity(
-            nav=Decimal("100000"), risk_fraction=Decimal("0.03"),
-            entry_price=Decimal("50000"), stop_price=Decimal("49500"),
-            cost_rate_per_fill=Decimal("0.00075"), quantity_increment=Decimal("0.001"),
+            nav=Decimal('100000'), risk_fraction=Decimal('0.03'),
+            entry_price=Decimal('50000'), stop_price=Decimal('49500'),
+            cost_rate_per_fill=Decimal('0.00075'), quantity_increment=Decimal('0.001'),
         )
-        self.assertLessEqual(result.planned_loss, Decimal("3000"))
+        self.assertLessEqual(result.planned_loss, Decimal('3000'))
 
-    def test_over_cap_rejected(self):
+    def test_above_three_percent_rejected(self):
         with self.assertRaises(ValueError):
             risk_based_quantity(
-                nav=Decimal("100000"), risk_fraction=Decimal("0.030001"),
-                entry_price=Decimal("50000"), stop_price=Decimal("49500"),
-                cost_rate_per_fill=Decimal("0.00075"), quantity_increment=Decimal("0.001"),
+                nav=Decimal('100000'), risk_fraction=Decimal('0.030001'),
+                entry_price=Decimal('50000'), stop_price=Decimal('49500'),
+                cost_rate_per_fill=Decimal('0.00075'), quantity_increment=Decimal('0.001'),
             )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
