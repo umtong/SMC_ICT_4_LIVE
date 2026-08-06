@@ -42,6 +42,11 @@ jobs:
             candidate-07-btcusdt-three-weeks-v3
             candidate-07-btcusdt-week1-v1
 
+      - name: Probe official positioning and basis archives
+        run: >-
+          python research/candidate-07/probe_positioning_data.py
+          --output artifacts/candidate-07/positioning_archive_probe.json
+
       - name: NautilusTrader frozen BTC week-1 replay
         run: >-
           python research/candidate-07/staged_cascade.py
@@ -146,6 +151,7 @@ jobs:
         if: always()
         run: |
           test -f artifacts/candidate-07/pipeline_summary.json
+          cat artifacts/candidate-07/positioning_archive_probe.json
           cat artifacts/candidate-07/pipeline_summary.json
           cat artifacts/candidate-07/week-1/metrics.json
           cat artifacts/candidate-07/week-1/failed_flow_diagnostic.json
