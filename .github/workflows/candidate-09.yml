@@ -1,13 +1,6 @@
-name: candidate-09-lrae-research
+name: candidate-09-v0.1-lrae-archived
 
 on:
-  push:
-    branches:
-      - research/candidate-09
-    paths:
-      - "research/candidate-09/**"
-      - ".github/workflows/candidate-09.yml"
-      - "src/smc_ict_4/**"
   workflow_dispatch:
 
 permissions:
@@ -28,41 +21,18 @@ jobs:
       PYTHONUNBUFFERED: "1"
 
     steps:
-      - name: Checkout candidate branch
-        uses: actions/checkout@v4
-
-      - name: Verify pinned NautilusTrader environment
-        run: smc4 doctor
-
-      - name: Compile candidate
-        run: python -m compileall -q research/candidate-09
-
-      - name: Candidate causal and risk tests
-        run: python -m unittest discover -s research/candidate-09/tests -p 'test_*.py' -v
-
-      - name: Verify adapter contracts
-        run: |
-          grep -F '"duration_ns": _as_int_ns(event.duration_ns),' research/candidate-09/strategy.py
-          ! grep -F '"duration_ns": _as_int_ns(event.duration),' research/candidate-09/strategy.py
-          grep -F 'logging=LoggingConfig(bypass_logging=True),' research/candidate-09/backtest.py
-
-      - name: Run frozen three-week protocol and one-variable ablation
-        run: |
+      - uses: actions/checkout@v4
+      - run: smc4 doctor
+      - run: python -m compileall -q research/candidate-09
+      - run: python -m unittest discover -s research/candidate-09/tests -p 'test_*.py' -v
+      - run: |
           python research/candidate-09/run_research.py \
             --config research/candidate-09/config.json \
             --output artifacts/candidate-09
-
-      - name: Show decision
-        if: always()
-        run: |
-          test -f artifacts/candidate-09/SUMMARY.md && cat artifacts/candidate-09/SUMMARY.md || true
-          test -f artifacts/candidate-09/decision.json && cat artifacts/candidate-09/decision.json || true
-
-      - name: Preserve complete reproducible evidence
-        if: always()
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-09-evidence-${{ github.sha }}
+          name: candidate-09-v0.1-evidence-${{ github.sha }}
           path: artifacts/candidate-09
           if-no-files-found: error
           retention-days: 30
