@@ -25,6 +25,11 @@ class TargetLiquidityHandoffStrategy(
     the existing rejection horizon of observation. Only a sponsored raid,
     delayed reclaim, sweep-tail turn and reversal-supporting depth can enter the
     unchanged CHoCH, path, cost, target, stop and 3% NAV execution chain.
+
+    A target watch is an observation, not an entry intent. It therefore runs in
+    parallel with the ordinary detector and may be promoted only while the
+    standard setup/entry path is otherwise idle. This preserves every v12 path
+    while recovering the event which was hidden during the prior position.
     """
 
     def __init__(self, config: LiquidityResponseConfig) -> None:
@@ -42,6 +47,7 @@ class TargetLiquidityHandoffStrategy(
                 "target_handoff_setups": 0,
                 "target_handoff_expired": 0,
                 "target_handoff_non_target_closes": 0,
+                "target_handoff_parallel_observation_bars": 0,
             },
         )
 
@@ -86,15 +92,20 @@ class TargetLiquidityHandoffStrategy(
         if not self._features_ready(int(row["ts"])) or len(self.bars) < self.config.atr_period + 2:
             return
 
+        # A target reaction watch is observational only. It must not suppress
+        # ordinary v12 sweep detection, pending CHoCH processing, or an already
+        # armed entry path. Promotion is allowed only when that standard state
+        # slot is free, preserving the global one-entry-intent constraint.
         if self.target_sweep_watch is not None:
             watch = self.target_sweep_watch
             if self.bar_index > watch.expires_index:
                 self._expire_target_watch(row, "TARGET_REACTION_WINDOW_EXPIRED")
             else:
                 self._observe_target_watch(row)
-                if self._promote_target_watch(row):
+                if self.pending is not None or self.armed_entry_path is not None:
+                    self.diagnostics["target_handoff_parallel_observation_bars"] += 1
+                elif self._promote_target_watch(row):
                     return
-                return
 
         if self.armed_entry_path is not None:
             self._resolve_entry_path(row)
