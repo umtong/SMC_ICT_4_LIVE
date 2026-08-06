@@ -142,12 +142,17 @@ def _family_execution_summary(
         }
 
     attributed = sum(trade_counts.values())
-    unclassified = int(trade_counts[UNCLASSIFIED_FAMILY])
+    unclassified_trades = int(trade_counts[UNCLASSIFIED_FAMILY])
+    unclassified_signals = int(signal_counts[UNCLASSIFIED_FAMILY])
     return {
         "by_family": by_family,
+        "signals_attributed": int(sum(signal_counts.values())),
         "closed_trades_attributed": int(attributed),
-        "unclassified_closed_trades": unclassified,
-        "attribution_complete": unclassified == 0,
+        "unclassified_signals": unclassified_signals,
+        "unclassified_closed_trades": unclassified_trades,
+        "attribution_complete": (
+            unclassified_signals == 0 and unclassified_trades == 0
+        ),
     }
 
 
@@ -158,18 +163,45 @@ def _auction_suite_summary(
 ) -> dict[str, Any]:
     summary = _original_suite_summary(config, suite, results)
     family_summary = _family_execution_summary(results)
-    summary["scenario_family_results"] = family_summary["by_family"]
-    summary["scenario_attribution_checks"] = {
-        "closed_trades_attributed": family_summary["closed_trades_attributed"],
-        "reported_closed_trades": int(summary.get("closed_trades", 0)),
-        "all_closed_trades_attributed": (
-            family_summary["closed_trades_attributed"]
-            == int(summary.get("closed_trades", 0))
+    reported_signals = sum(
+        int(result.get("detector", {}).get("signals", 0))
+        for result in results
+    )
+    reported_closed_trades = int(summary.get("closed_trades", 0))
+    checks = {
+        "signals_attributed": family_summary["signals_attributed"],
+        "reported_signals": reported_signals,
+        "all_signals_attributed": (
+            family_summary["signals_attributed"] == reported_signals
         ),
+        "closed_trades_attributed": family_summary["closed_trades_attributed"],
+        "reported_closed_trades": reported_closed_trades,
+        "all_closed_trades_attributed": (
+            family_summary["closed_trades_attributed"] == reported_closed_trades
+        ),
+        "no_unclassified_signals": family_summary["unclassified_signals"] == 0,
         "no_unclassified_closed_trades": (
             family_summary["unclassified_closed_trades"] == 0
         ),
     }
+    attribution_passed = all(
+        checks[name]
+        for name in (
+            "all_signals_attributed",
+            "all_closed_trades_attributed",
+            "no_unclassified_signals",
+            "no_unclassified_closed_trades",
+        )
+    )
+
+    summary["scenario_family_results"] = family_summary["by_family"]
+    summary["scenario_attribution_checks"] = checks
+    summary["scenario_attribution_passed"] = attribution_passed
+    suite_checks = summary.setdefault("suite_gate_checks", {})
+    suite_checks["complete_auction_scenario_attribution"] = attribution_passed
+    summary["suite_gate_passed"] = bool(
+        summary.get("suite_gate_passed", False) and attribution_passed
+    )
     return summary
 
 
