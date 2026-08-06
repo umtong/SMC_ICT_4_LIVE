@@ -1,0 +1,145 @@
+name: candidate-04-branch-trigger-normalization
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-branch-trigger-normalization.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  normalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Add branch-safe push triggers and controlled syntax fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def add_push(path: Path, paths: list[str]) -> None:
+              text = path.read_text()
+              if "\n  push:\n" in text.split("\npermissions:", 1)[0]:
+                  return
+              marker = "on:\n"
+              if marker not in text:
+                  raise SystemExit(f"missing on block: {path}")
+              block = "  push:\n    branches: [\"research/candidate-04\"]\n    paths:\n"
+              block += "".join(f"      - \"{item}\"\n" for item in paths)
+              path.write_text(text.replace(marker, marker + block, 1))
+
+          add_push(
+              Path(".github/workflows/candidate-04-v33-unopened-and-long.yml"),
+              [
+                  "research/candidate-04/evidence-v33-exact-causal-target.json",
+                  ".github/workflows/candidate-04-v33-unopened-and-long.yml",
+              ],
+          )
+          add_push(
+              Path(".github/workflows/candidate-04-v34-implementation-recovery.yml"),
+              [
+                  "research/candidate-04/evidence-v34-post-event-inventory-resolution.json",
+                  ".github/workflows/candidate-04-v34-implementation-recovery.yml",
+              ],
+          )
+          add_push(
+              Path(".github/workflows/candidate-04-v34-survivor-long.yml"),
+              [
+                  "research/candidate-04/evidence-v34-survivor-unopened.json",
+                  ".github/workflows/candidate-04-v34-survivor-long.yml",
+              ],
+          )
+          cross = Path(
+              ".github/workflows/candidate-04-cross-asset-integrated-validation.yml"
+          )
+          add_push(
+              cross,
+              [
+                  "research/candidate-04/evidence-v33-long.json",
+                  "research/candidate-04/evidence-v34-long.json",
+                  "research/candidate-04/evidence-v34-survivor-long.json",
+                  "research/candidate-04/evidence-v35-long.json",
+                  "research/candidate-04/evidence-v36-long.json",
+                  ".github/workflows/candidate-04-cross-asset-integrated-validation.yml",
+              ],
+          )
+          text = cross.read_text()
+          text = text.replace(
+              "if: github.event_name == 'workflow_dispatch'",
+              "if: github.event_name != 'workflow_run'",
+          )
+          cross.write_text(text)
+
+          survivor = Path(
+              ".github/workflows/candidate-04-branch-survivor-validation.yml"
+          )
+          text = survivor.read_text()
+          old = '''            long_build="$(python -c 'import json; print(json.load(open(\\"'$task_root'/selection.json\\"))[\\"long_evaluation\\"][\\"build_start\\"])')"
+            long_start="$(python -c 'import json; print(json.load(open(\\"'$task_root'/selection.json\\"))[\\"long_evaluation\\"][\\"evaluation_start\\"])')"
+            long_end="$(python -c 'import json; print(json.load(open(\\"'$task_root'/selection.json\\"))[\\"long_evaluation\\"][\\"evaluation_end\\"])')"
+'''
+          new = '''            long_build="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["long_evaluation"]["build_start"])' "$task_root/selection.json")"
+            long_start="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["long_evaluation"]["evaluation_start"])' "$task_root/selection.json")"
+            long_end="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["long_evaluation"]["evaluation_end"])' "$task_root/selection.json")"
+'''
+          if old in text:
+              text = text.replace(old, new)
+          text = text.replace("timeout-minutes: 420", "timeout-minutes: 360")
+          survivor.write_text(text)
+
+          for path in Path(".github/workflows").glob("candidate-04-*.yml"):
+              text = path.read_text()
+              if "timeout-minutes: 420" in text:
+                  path.write_text(
+                      text.replace("timeout-minutes: 420", "timeout-minutes: 360")
+                  )
+          PY
+
+      - name: Parse modified workflows as YAML
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          paths = [
+              Path(".github/workflows/candidate-04-v33-unopened-and-long.yml"),
+              Path(".github/workflows/candidate-04-v34-implementation-recovery.yml"),
+              Path(".github/workflows/candidate-04-v34-survivor-long.yml"),
+              Path(".github/workflows/candidate-04-cross-asset-integrated-validation.yml"),
+              Path(".github/workflows/candidate-04-branch-survivor-validation.yml"),
+          ]
+          for path in paths:
+              value = yaml.safe_load(path.read_text())
+              if not isinstance(value, dict) or "jobs" not in value:
+                  raise SystemExit(f"invalid workflow: {path}")
+          PY
+
+      - name: Commit normalization with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add .github/workflows/candidate-04-*.yml
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "normalize candidate-04 research-branch orchestration"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
