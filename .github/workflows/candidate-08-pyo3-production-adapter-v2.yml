@@ -27,7 +27,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Materialize native production adapter and update its semantic static contract
+      - name: Materialize native production adapter and update its semantic contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -85,6 +85,33 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
+          path = Path("research/candidate-08/aggtrade_acceptance_strategy.py")
+          source = path.read_text(encoding="utf-8")
+          anchor = '''class AggTradeAcceptanceStrategy(Strategy):
+              def __init__(
+          '''
+          replacement = '''class AggTradeAcceptanceStrategy(Strategy):
+              def __new__(
+                  cls,
+                  config: AggTradeAcceptanceStrategyConfig,
+                  *_args: Any,
+                  **_kwargs: Any,
+              ) -> Any:
+                  # The pinned PyO3 base accepts only StrategyConfig at allocation time.
+                  # Candidate-specific immutable schedules remain Python-side __init__ inputs.
+                  return super().__new__(cls, config)
+
+              def __init__(
+          '''
+          if source.count(anchor) != 1:
+              raise SystemExit("native Strategy allocation bridge anchor mismatch")
+          source = source.replace(anchor, replacement)
+          path.write_text(source, encoding="utf-8")
+          PY
+
+          python - <<'PY'
+          from pathlib import Path
+
           path = Path("research/candidate-08/test_aggtrade_acceptance_pure.py")
           source = path.read_text(encoding="utf-8")
           replacements = {
@@ -103,6 +130,16 @@ jobs:
               if source.count(old) != 1:
                   raise SystemExit(f"native static contract anchor mismatch: {old!r}")
               source = source.replace(old, new)
+          strategy_contract_anchor = '        self.assertEqual(source.count("self.submit_order_list(orders)"), 1)\n'
+          strategy_contract_new = (
+              strategy_contract_anchor
+              + '        self.assertIn("return super().__new__(cls, config)", source)\n'
+              + '        self.assertIn("entry_order, stop_order, target_order = orders", source)\n'
+              + '        self.assertNotIn("orders.orders", source)\n'
+          )
+          if source.count(strategy_contract_anchor) != 1:
+              raise SystemExit("native strategy construction contract anchor mismatch")
+          source = source.replace(strategy_contract_anchor, strategy_contract_new)
           path.write_text(source, encoding="utf-8")
           PY
 
