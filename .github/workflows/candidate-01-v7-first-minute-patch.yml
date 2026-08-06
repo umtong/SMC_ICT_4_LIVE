@@ -1,0 +1,61 @@
+name: candidate-01-v7-first-minute-patch
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v7-first-minute-patch.yml"
+      - "research/candidate-01/patch_nautilus_first_execution_bar.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply and verify the causal timing fix
+        run: |
+          set -euo pipefail
+          python3 research/candidate-01/patch_nautilus_first_execution_bar.py
+          python3 -m compileall -q research/candidate-01/nautilus_plan_backtest.py
+          grep -q 'bisect_right' research/candidate-01/nautilus_plan_backtest.py
+          grep -q 'first strictly later completed one-minute' research/candidate-01/nautilus_plan_backtest.py
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify the patched adapter in the fixed image
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q research/candidate-01/nautilus_plan_backtest.py
+              python -m unittest discover -s tests -p "test_candidate_01_authoritative_nautilus.py" -v
+            '
+      - name: Commit the timing fix
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-01/nautilus_plan_backtest.py
+          git commit -m "fix(candidate-01): submit on first completed execution minute"
+          git push origin HEAD:research/candidate-01
