@@ -1,0 +1,128 @@
+name: candidate-04-v21-directional-internal
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v21-directional-internal.yml"
+      - "research/candidate-04/nt_directional_internal_strategy.py"
+      - "research/candidate-04/nt_backtest_v21_directional_internal.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed NautilusTrader runtime and directional state machine
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/nt_directional_internal_strategy.py \
+            research/candidate-04/nt_backtest_v21_directional_internal.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_liquidity_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Run two BTC development weeks exclusively through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variant in parent_1h parent_1h_fvg parent_4h composite; do
+            for week in week1 week2; do
+              if [ "$week" = week1 ]; then
+                build_start=2023-10-01
+                build_end=2023-10-09
+                eval_start=2023-10-03
+                eval_end=2023-10-09
+              else
+                build_start=2023-06-24
+                build_end=2023-07-02
+                eval_start=2023-06-26
+                eval_end=2023-07-02
+              fi
+              out="artifacts/candidate-04-v21-directional-internal/$variant/$week"
+              mkdir -p "$out"
+              C04_NT_VARIANT="$variant" \
+              python research/candidate-04/nt_backtest_v21_directional_internal.py \
+                --config research/candidate-04/nt_liquidity_config.json \
+                --build-start "$build_start" \
+                --build-end "$build_end" \
+                --evaluation-start "$eval_start" \
+                --evaluation-end "$eval_end" \
+                --cache ".cache/candidate-04-v21-directional-internal/$week" \
+                --output "$out" \
+                | tee "$out/console.json"
+              test -s "$out/metrics.json"
+              test -s "$out/strategy_events.json"
+              test -s "$out/orders.csv"
+              test -s "$out/positions.csv"
+            done
+          done
+
+      - name: Build comparison and state-transition counts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-04-v21-directional-internal")
+          rows = []
+          for path in sorted(root.glob("*/*/metrics.json")):
+              metrics = json.loads(path.read_text())
+              events = json.loads((path.parent / "strategy_events.json").read_text())
+              counts = Counter(event["event_type"] for event in events)
+              rows.append({
+                  "variant": path.parents[1].name,
+                  "week": path.parent.name,
+                  "trades": metrics["trades"],
+                  "wins": metrics["wins"],
+                  "win_rate": metrics["win_rate"],
+                  "total_return": metrics["total_return"],
+                  "geometric_daily_growth": metrics["geometric_daily_growth"],
+                  "active_days": metrics["active_days"],
+                  "max_drawdown": metrics["max_drawdown"],
+                  "sweeps": counts["DIRECTIONAL_INTERNAL_SWEEP_DETECTED"],
+                  "invalidated": counts["DIRECTIONAL_SWEEP_INVALIDATED"],
+                  "weak_break": counts["DIRECTIONAL_WEAK_FIRST_BREAK"],
+                  "no_target": counts["DIRECTIONAL_NO_CAUSAL_TARGET"],
+                  "entries": counts["ENTRY_SUBMITTED"],
+                  "expired": counts["SETUP_EXPIRED"],
+              })
+          with (root / "comparison.csv").open("w", newline="", encoding="utf-8") as stream:
+              writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+              writer.writeheader()
+              writer.writerows(rows)
+          (root / "comparison.json").write_text(
+              json.dumps(rows, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(rows, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v21-directional-internal-${{ github.sha }}
+          path: artifacts/candidate-04-v21-directional-internal
+          if-no-files-found: error
+          retention-days: 90
