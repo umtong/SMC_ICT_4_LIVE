@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import io
+from itertools import chain
 from pathlib import Path
 from typing import Iterable
 import zipfile
@@ -122,7 +123,7 @@ def _read_archive_to_seconds(
             except StopIteration:
                 return [], diagnostics
             indices, header = _column_indices(first)
-            rows: Iterable[list[str]] = reader if header else iter([first, *reader])
+            rows: Iterable[list[str]] = reader if header else chain((first,), reader)
             for row in rows:
                 if not row:
                     continue
