@@ -26,6 +26,10 @@ import failed_external_break_retest_no_impact_cap_ablation_compiler as base
 Intent = v22.Intent
 LIQUIDATION_SCENARIO = base.LIQUIDATION_SCENARIO
 FRESH_SCENARIO = base.FRESH_SCENARIO
+# Capture the unrefined parent function before any V27 wrapper temporarily
+# replaces the module attribute. Calling base.collect_signals after that
+# replacement would recurse into this function.
+_ORIGINAL_BASE_COLLECT_SIGNALS = base.collect_signals
 
 
 def past_only_impact_cutoff(data: pd.DataFrame, config: Any) -> pd.Series:
@@ -70,7 +74,7 @@ def collect_signals(
     impact_parameters: Any,
     router: Any,
 ):
-    intents, parent_summary = base.collect_signals(
+    intents, parent_summary = _ORIGINAL_BASE_COLLECT_SIGNALS(
         data,
         evaluation_start,
         evaluation_end,
