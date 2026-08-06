@@ -5,6 +5,7 @@ on:
     branches:
       - research/candidate-10
     paths:
+      - research/candidate-10/v20_source.zip
       - research/candidate-10/v20_1_patch/**
       - research/candidate-10/V20_1_COST_CONTROL.md
       - .github/workflows/candidate-10-v20-1-slim-container.yml
@@ -31,17 +32,28 @@ jobs:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
 
-      - name: Extract immutable v20 signal source
+      - name: Verify and extract immutable v20 signal source
         shell: bash
         run: |
           set -euo pipefail
           rm -rf /tmp/candidate10-v20 /tmp/candidate-10-v20-1-data
           mkdir -p /tmp/candidate10-v20 artifacts/candidate-10-v20-1
           python - <<'PY'
+          from hashlib import sha256
           from pathlib import Path
           import zipfile
-          with zipfile.ZipFile(Path('research/candidate-10/v20_source.zip')) as archive:
+
+          source = Path('research/candidate-10/v20_source.zip')
+          expected = 'b481befeb701cedc13536f7924b3207cc46912aeb4ec4d688fee294db514dec7'
+          actual = sha256(source.read_bytes()).hexdigest()
+          if actual != expected:
+              raise SystemExit(f'v20 source SHA256 mismatch: {actual} != {expected}')
+          with zipfile.ZipFile(source) as archive:
+              bad = archive.testzip()
+              if bad is not None:
+                  raise SystemExit(f'corrupt v20 member: {bad}')
               archive.extractall(Path('/tmp/candidate10-v20'))
+          print(f'VERIFIED_V20_SOURCE_SHA256={actual}')
           PY
 
       - name: Test and run v20.1 cost control in pinned NautilusTrader image
