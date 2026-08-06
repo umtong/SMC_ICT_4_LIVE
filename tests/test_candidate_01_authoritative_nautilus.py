@@ -52,6 +52,18 @@ class AuthoritativeNautilusContractTests(unittest.TestCase):
         self.assertEqual(payload["risk_fraction"], 0.03)
         self.assertEqual(payload["all_in_cost_bps_per_side"], 7.0)
 
+    def test_execution_uses_official_time_based_bars(self) -> None:
+        adapter = (CANDIDATE / "nautilus_plan_backtest.py").read_text(
+            encoding="utf-8",
+        )
+        self.assertNotIn("1-MILLISECOND-LAST-EXTERNAL", adapter)
+        self.assertIn("1-MINUTE-LAST-EXTERNAL", adapter)
+        self.assertIn("execution_frame", adapter)
+        for path in OFFICIAL:
+            source = path.read_text(encoding="utf-8")
+            self.assertIn("load_interval", source)
+            self.assertIn("execution_frame=execution_frame", source)
+
 
 if __name__ == "__main__":
     unittest.main()

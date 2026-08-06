@@ -12,6 +12,7 @@ bar execution model then owns the fill and all contingent-order processing.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -295,10 +296,13 @@ def _build_metrics(
         "nautilus_trader_version": package_version("nautilus_trader"),
         "custom_fill_simulator": False,
         "custom_pnl_or_nav_ledger": False,
-        "market_data_for_execution": "causal completed equal-notional event bars",
+        "market_data_for_execution": (
+            "official Binance Vision USD-M one-minute external bars"
+        ),
         "entry_semantics": (
-            "signal on completed event; market bracket submitted on next "
-            "completed event; NautilusTrader owns fill and contingent orders"
+            "equal-notional signal mapped to first completed one-minute bar; "
+            "market bracket evaluated on the following completed one-minute "
+            "bar; NautilusTrader owns fills and contingent orders"
         ),
         "bar_adaptive_high_low_ordering": True,
     }
@@ -308,6 +312,7 @@ def run_nautilus_plan_backtest(
     *,
     label: str,
     features: Sequence[EventFeature],
+    execution_frame: pd.DataFrame,
     plans: Sequence[ScenarioPlan],
     evaluation_start: datetime,
     evaluation_end: datetime,
@@ -323,6 +328,18 @@ def run_nautilus_plan_backtest(
         raise ValueError("maximum_hold_ns must be positive")
     if not features:
         raise ValueError("features cannot be empty")
+    required_execution_columns = {
+        "close_dt", "open", "high", "low", "close", "base_volume"
+    }
+    missing_execution_columns = sorted(
+        required_execution_columns - set(execution_frame.columns)
+    )
+    if missing_execution_columns:
+        raise ValueError(
+            f"execution_frame missing columns: {missing_execution_columns}"
+        )
+    if execution_frame.empty:
+        raise ValueError("execution_frame cannot be empty")
 
     from nautilus_trader.backtest.engine import BacktestEngine
     from nautilus_trader.config import (
@@ -345,13 +362,21 @@ def run_nautilus_plan_backtest(
 
     start_ns = int(pd.Timestamp(evaluation_start).as_unit("ns").value)
     end_ns = int(pd.Timestamp(evaluation_end).as_unit("ns").value)
+    ordered_execution = (
+        execution_frame.copy()
+        .sort_values("close_dt", kind="stable")
+        .drop_duplicates("close_dt", keep="last")
+        .reset_index(drop=True)
+    )
+    execution_bar_times = [
+        int(pd.Timestamp(value).as_unit("ns").value)
+        for value in ordered_execution["close_dt"]
+    ]
     evaluation_bar_times = [
-        int(item.bar.end_time_ns)
-        for item in features
-        if start_ns <= item.bar.end_time_ns < end_ns
+        value for value in execution_bar_times if start_ns <= value < end_ns
     ]
     if not evaluation_bar_times:
-        raise ValueError("no completed event bars in evaluation interval")
+        raise ValueError("no completed one-minute execution bars in interval")
     force_exit_ts_ns = max(evaluation_bar_times)
 
     plans_by_signal_time: dict[int, list[ScenarioPlan]] = {}
@@ -361,7 +386,16 @@ def run_nautilus_plan_backtest(
     ):
         if not start_ns <= plan.signal_time_ns < end_ns:
             continue
-        plans_by_signal_time.setdefault(plan.signal_time_ns, []).append(plan)
+        activation_index = bisect_left(
+            execution_bar_times,
+            int(plan.signal_time_ns),
+        )
+        if activation_index >= len(execution_bar_times):
+            continue
+        activation_time_ns = execution_bar_times[activation_index]
+        if not start_ns <= activation_time_ns < end_ns:
+            continue
+        plans_by_signal_time.setdefault(activation_time_ns, []).append(plan)
 
     class PlanStrategyConfig(StrategyConfig, frozen=True):
         instrument_id: InstrumentId
@@ -856,26 +890,29 @@ def run_nautilus_plan_backtest(
             ),
         },
     )
+    # NautilusTrader's OHLC matching path requires a time-based BarType.
+    # Equal-notional bars are therefore never registered as execution bars.
+    # Official Binance Vision one-minute bars carry all matching events.
     bar_type = BarType.from_str(
-        "BTCUSDT-PERP.BINANCE-1-MILLISECOND-LAST-EXTERNAL",
+        "BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL",
     )
 
     bars: list[Bar] = []
-    for feature in features:
-        source = feature.bar
+    for row in ordered_execution.itertuples(index=False):
+        ts_event = int(pd.Timestamp(row.close_dt).as_unit("ns").value)
         bars.append(
             Bar(
                 bar_type=bar_type,
-                open=Price(float(source.open), instrument.price_precision),
-                high=Price(float(source.high), instrument.price_precision),
-                low=Price(float(source.low), instrument.price_precision),
-                close=Price(float(source.close), instrument.price_precision),
+                open=Price(float(row.open), instrument.price_precision),
+                high=Price(float(row.high), instrument.price_precision),
+                low=Price(float(row.low), instrument.price_precision),
+                close=Price(float(row.close), instrument.price_precision),
                 volume=Quantity(
-                    float(source.base_quantity),
+                    float(row.base_volume),
                     instrument.size_precision,
                 ),
-                ts_event=int(source.end_time_ns),
-                ts_init=int(source.end_time_ns),
+                ts_event=ts_event,
+                ts_init=ts_event,
             ),
         )
 
@@ -971,7 +1008,13 @@ def run_nautilus_plan_backtest(
                 "order_matching_commission_margin_positions_accounting": (
                     "NautilusTrader"
                 ),
-                "entry_delay": "one completed equal-notional event",
+                "entry_delay": (
+                    "signal observation mapped to one-minute execution clock; "
+                    "submission on following completed one-minute bar"
+                ),
+                "execution_market_data": (
+                    "official Binance Vision USD-M one-minute klines"
+                ),
                 "risk_budget": (
                     "current NautilusTrader portfolio equity * fixed 3%"
                 ),

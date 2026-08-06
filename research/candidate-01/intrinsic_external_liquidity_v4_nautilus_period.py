@@ -30,7 +30,7 @@ for item in (HERE, SRC):
 
 from adaptive_aggtrade_clock import build_daily_cost_resolved_bars  # noqa: E402
 from aggtrade_data import download_aggtrade_days  # noqa: E402
-from data import parse_utc_date  # noqa: E402
+from data import load_interval, parse_utc_date  # noqa: E402
 from directional_change_failed_sweep_week import MAXIMUM_HOLD_NS  # noqa: E402
 from impact_regime_probe import ImpactRegimeDetector, ScenarioPlan  # noqa: E402
 from intrinsic_external_liquidity_v2_daily_week import (  # noqa: E402
@@ -109,6 +109,13 @@ def run(args: argparse.Namespace) -> int:
         minimum_range_bps=ROUND_TRIP_COST_BPS,
         candidate_minutes=DAILY_CANDIDATE_MINUTES,
     )
+    execution_frame, execution_records = load_interval(
+        symbol="BTCUSDT",
+        start=evaluation_start,
+        end=evaluation_end,
+        cache_dir=args.cache / "execution-klines",
+        warmup_minutes=2,
+    )
 
     feature_detector = ImpactRegimeDetector()
     detector = TargetFreeSweepRetestDetector()
@@ -158,6 +165,7 @@ def run(args: argparse.Namespace) -> int:
             f"{evaluation_end.date().isoformat()}"
         ),
         features=features,
+        execution_frame=execution_frame,
         plans=plans,
         evaluation_start=evaluation_start,
         evaluation_end=evaluation_end,
@@ -202,6 +210,9 @@ def run(args: argparse.Namespace) -> int:
         "execution_engine": "NautilusTrader",
         "custom_fill_simulator": False,
         "custom_pnl_or_nav_ledger": False,
+        "execution_market_data": (
+            "official Binance Vision USD-M one-minute klines"
+        ),
         "continuous_single_engine_run": True,
         "evaluation_start_utc": evaluation_start.isoformat(),
         "evaluation_end_utc": evaluation_end.isoformat(),
@@ -246,7 +257,10 @@ def run(args: argparse.Namespace) -> int:
         "all_in_cost_bps_per_side": execution.all_in_cost_bps_per_side,
         "maximum_hold_hours": MAXIMUM_HOLD_NS / NS_PER_HOUR,
         "metrics": evidence.metrics,
-        "downloads": [record.to_dict() for record in records],
+        "signal_downloads": [record.to_dict() for record in records],
+        "execution_downloads": [
+            asdict(record) for record in execution_records
+        ],
         "long_evaluation_run": True,
         "segment_boundary_policy": (
             "no segmentation; one continuous NautilusTrader engine, portfolio, "
