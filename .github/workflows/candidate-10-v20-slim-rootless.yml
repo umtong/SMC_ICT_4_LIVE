@@ -1,0 +1,110 @@
+name: candidate-10-v20-slim-rootless
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - .github/workflows/candidate-10-v20-slim-rootless.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v20-slim-rootless-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  gate:
+    runs-on: ubuntu-slim
+    timeout-minutes: 120
+    steps:
+      - name: Clone exact candidate branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch research/candidate-10 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+
+      - name: Start rootless Docker daemon supplied by runner image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/docker-runtime /tmp/docker-data
+          chmod 700 /tmp/docker-runtime
+          export XDG_RUNTIME_DIR=/tmp/docker-runtime
+          export DOCKER_HOST=unix:///tmp/docker-runtime/docker.sock
+          if command -v dockerd-rootless.sh >/dev/null 2>&1; then
+            dockerd-rootless.sh --storage-driver=vfs --data-root=/tmp/docker-data \
+              > /tmp/dockerd.log 2>&1 &
+          elif command -v dockerd >/dev/null 2>&1; then
+            dockerd --rootless --storage-driver=vfs --data-root=/tmp/docker-data \
+              --host="$DOCKER_HOST" > /tmp/dockerd.log 2>&1 &
+          else
+            echo 'No rootless Docker daemon executable is available' >&2
+            exit 91
+          fi
+          echo $! > /tmp/dockerd.pid
+          for _ in $(seq 1 90); do
+            if docker info >/tmp/docker-info.txt 2>/tmp/docker-info.err; then
+              cat /tmp/docker-info.txt
+              exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/dockerd.pid)" 2>/dev/null; then
+              cat /tmp/dockerd.log >&2 || true
+              cat /tmp/docker-info.err >&2 || true
+              exit 92
+            fi
+            sleep 1
+          done
+          cat /tmp/dockerd.log >&2 || true
+          cat /tmp/docker-info.err >&2 || true
+          exit 93
+
+      - name: Run identical v20 gate in pinned image
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          export XDG_RUNTIME_DIR=/tmp/docker-runtime
+          export DOCKER_HOST=unix:///tmp/docker-runtime/docker.sock
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker pull "$RESEARCH_IMAGE"
+          mkdir -p repo/artifacts/candidate-10-v20-slim-rootless
+          chmod -R a+rwx repo/artifacts
+          docker run --rm \
+            -v "${PWD}/repo:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate10-v20:/workspace/research/candidate-10:/workspace/src \
+            "$RESEARCH_IMAGE" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate10-v20 /tmp/candidate-10-v20-data
+              mkdir -p /tmp/candidate10-v20
+              python -m zipfile -e research/candidate-10/v20_source.zip /tmp/candidate10-v20
+              smc4 doctor
+              python -m py_compile /tmp/candidate10-v20/*.py
+              python -m unittest discover -s /tmp/candidate10-v20 -p "test_*.py" -v
+              python /tmp/candidate10-v20/run_research.py \
+                --phase auto \
+                --output artifacts/candidate-10-v20-slim-rootless \
+                --data-root /tmp/candidate-10-v20-data
+            '
+
+      - name: Upload reproducible v20 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v20-slim-rootless-${{ github.sha }}
+          path: repo/artifacts/candidate-10-v20-slim-rootless
+          if-no-files-found: warn
+          retention-days: 14
