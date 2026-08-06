@@ -22,6 +22,11 @@ def _summary(*, mode: str = "initiative_only") -> dict:
         "promotable": False,
         "suite_gate_passed": False,
         "scenario_attribution_passed": True,
+        "closed_trades": 3,
+        "trade_path_diagnostic_summary": {
+            "records": 3,
+            "complete_records": 3,
+        },
         "suite_gate_checks": {
             "all_signal_times_processed": True,
             "all_submitted_entries_observed": True,
@@ -37,6 +42,7 @@ def _summary(*, mode: str = "initiative_only") -> dict:
             "position_exit_causality": True,
             "realized_loss_budget_respected": True,
             "complete_auction_scenario_attribution": True,
+            "complete_post_run_trade_path_diagnostics": True,
             "base_contract_includes_both_auction_families": False,
             "base_contract_includes_both_flow_response_families": False,
         },
@@ -67,6 +73,10 @@ class FlowResponseDiagnosticEvaluationContracts(unittest.TestCase):
         self.assertTrue(evaluation["economic_checks_passed"])
         self.assertTrue(evaluation["new_base_rebuild_supported"])
         self.assertFalse(evaluation["promotion_permitted"])
+        self.assertNotIn(
+            "complete_post_run_trade_path_diagnostics",
+            evaluation["economic_checks"],
+        )
 
     def test_wrong_mode_or_revision_blocks_rebuild(self) -> None:
         evaluation = evaluate_diagnostic_summary(
@@ -104,6 +114,24 @@ class FlowResponseDiagnosticEvaluationContracts(unittest.TestCase):
         )
         self.assertTrue(evaluation["evidence_contract_passed"])
         self.assertFalse(evaluation["economic_checks_passed"])
+        self.assertFalse(evaluation["new_base_rebuild_supported"])
+
+    def test_missing_path_evidence_is_contract_failure_not_economic_failure(self) -> None:
+        value = _summary()
+        value["suite_gate_checks"]["complete_post_run_trade_path_diagnostics"] = False
+        value["trade_path_diagnostic_summary"]["complete_records"] = 2
+        evaluation = evaluate_diagnostic_summary(
+            value,
+            expected_mode="initiative_only",
+        )
+        self.assertFalse(evaluation["evidence_contract_passed"])
+        self.assertTrue(evaluation["economic_checks_passed"])
+        self.assertFalse(
+            evaluation["evidence_contract_checks"]["required_evidence_checks_true"]
+        )
+        self.assertFalse(
+            evaluation["evidence_contract_checks"]["trade_path_complete_count_exact"]
+        )
         self.assertFalse(evaluation["new_base_rebuild_supported"])
 
     def test_open_gate_or_promotable_flag_invalidates_diagnostic_evidence(self) -> None:
