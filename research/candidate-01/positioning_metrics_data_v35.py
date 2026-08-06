@@ -64,10 +64,10 @@ class PositionMetric:
     symbol: str
     sum_open_interest: float
     sum_open_interest_value: float
-    count_toptrader_long_short_ratio: float
-    sum_toptrader_long_short_ratio: float
-    count_long_short_ratio: float
-    sum_taker_long_short_vol_ratio: float
+    count_toptrader_long_short_ratio: float | None
+    sum_toptrader_long_short_ratio: float | None
+    count_long_short_ratio: float | None
+    sum_taker_long_short_vol_ratio: float | None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -192,6 +192,29 @@ def _timestamp_to_ns(raw: str) -> int:
     return int(instant.timestamp() * 1_000_000_000)
 
 
+def _required_float(
+    raw: str | None,
+    *,
+    field: str,
+    path: Path,
+    row_number: int,
+) -> float:
+    text = "" if raw is None else raw.strip()
+    if not text:
+        raise ValueError(f"{path}:{row_number}: required metric {field} is blank")
+    try:
+        return float(text)
+    except ValueError as exc:
+        raise ValueError(
+            f"{path}:{row_number}: invalid metric {field}={text!r}",
+        ) from exc
+
+
+def _optional_float(raw: str | None) -> float | None:
+    text = "" if raw is None else raw.strip()
+    return float(text) if text else None
+
+
 def iter_download(record: PositionMetricDownload) -> Iterator[PositionMetric]:
     path = Path(record.path)
     with ZipFile(path) as archive:
@@ -229,16 +252,28 @@ def iter_download(record: PositionMetricDownload) -> Iterator[PositionMetric]:
                     observation_time_ns=observation,
                     available_time_ns=observation + METRIC_INTERVAL_NS,
                     symbol=record.symbol,
-                    sum_open_interest=float(row["sum_open_interest"]),
-                    sum_open_interest_value=float(row["sum_open_interest_value"]),
-                    count_toptrader_long_short_ratio=float(
+                    sum_open_interest=_required_float(
+                        row["sum_open_interest"],
+                        field="sum_open_interest",
+                        path=path,
+                        row_number=row_number,
+                    ),
+                    sum_open_interest_value=_required_float(
+                        row["sum_open_interest_value"],
+                        field="sum_open_interest_value",
+                        path=path,
+                        row_number=row_number,
+                    ),
+                    count_toptrader_long_short_ratio=_optional_float(
                         row["count_toptrader_long_short_ratio"],
                     ),
-                    sum_toptrader_long_short_ratio=float(
+                    sum_toptrader_long_short_ratio=_optional_float(
                         row["sum_toptrader_long_short_ratio"],
                     ),
-                    count_long_short_ratio=float(row["count_long_short_ratio"]),
-                    sum_taker_long_short_vol_ratio=float(
+                    count_long_short_ratio=_optional_float(
+                        row["count_long_short_ratio"],
+                    ),
+                    sum_taker_long_short_vol_ratio=_optional_float(
                         row["sum_taker_long_short_vol_ratio"],
                     ),
                 )
