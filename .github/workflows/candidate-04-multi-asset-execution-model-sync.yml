@@ -1,0 +1,137 @@
+name: candidate-04-multi-asset-execution-model-sync
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/generate_nt_single_execution_contract.py"
+      - "research/candidate-04/nt_backtest.py"
+      - ".github/workflows/candidate-04-multi-asset-execution-model-sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Generate exact execution-model factory from trusted runner AST
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python research/candidate-04/generate_nt_single_execution_contract.py \
+            --source research/candidate-04/nt_backtest.py \
+            --output research/candidate-04/nt_single_execution_contract.py \
+            --multi-runner research/candidate-04/nt_multi_asset_rich_backtest.py
+          python -m compileall -q \
+            research/candidate-04/nt_single_execution_contract.py \
+            research/candidate-04/nt_multi_asset_rich_backtest.py
+
+      - name: Verify generated factory instantiates all three trusted models
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast
+          import json
+          from pathlib import Path
+
+          import nt_single_execution_contract as generated
+
+          config = json.loads(Path(
+              "research/candidate-04/nt_liquidity_config.json"
+          ).read_text())
+          models = generated.make_execution_model_configs(config)
+          expected = {"fee_model", "fill_model", "latency_model"}
+          if set(models) != expected:
+              raise SystemExit(f"execution model keys differ: {set(models)}")
+          if any(models[name] is None for name in expected):
+              raise SystemExit("trusted execution model factory returned None")
+
+          trusted = ast.parse(Path(
+              "research/candidate-04/nt_backtest.py"
+          ).read_text())
+          generated_tree = ast.parse(Path(
+              "research/candidate-04/nt_single_execution_contract.py"
+          ).read_text())
+          trusted_calls = sorted(
+              ast.dump(node, include_attributes=False)
+              for node in ast.walk(trusted)
+              if isinstance(node, ast.Call)
+              and (
+                  isinstance(node.func, ast.Name)
+                  and node.func.id in {
+                      "ImportableFeeModelConfig",
+                      "ImportableFillModelConfig",
+                      "ImportableLatencyModelConfig",
+                  }
+              )
+          )
+          generated_calls = sorted(
+              ast.dump(node, include_attributes=False)
+              for node in ast.walk(generated_tree)
+              if isinstance(node, ast.Call)
+              and (
+                  isinstance(node.func, ast.Name)
+                  and node.func.id in {
+                      "ImportableFeeModelConfig",
+                      "ImportableFillModelConfig",
+                      "ImportableLatencyModelConfig",
+                  }
+              )
+          )
+          for call in generated_calls:
+              if call not in trusted_calls:
+                  raise SystemExit("generated model expression differs from trusted source")
+          if len(generated_calls) != 3:
+              raise SystemExit(f"expected 3 generated model calls, got {len(generated_calls)}")
+          PY
+
+      - name: Run multi-asset runtime contract after exact-model sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_multi_asset_runtime_contract.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_multi_asset_rich_backtest.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_global_rich_signal_strategy.py' -v
+
+      - name: Commit generated execution contract with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-04/nt_single_execution_contract.py \
+            research/candidate-04/nt_multi_asset_rich_backtest.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "reuse exact single-asset execution models in four-asset runner"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
