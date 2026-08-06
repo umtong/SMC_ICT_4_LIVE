@@ -2,10 +2,10 @@
 """Isolate causal expected-fill sizing while preserving the old target cap.
 
 This adapter changes exactly one implementation relation from the validated V31
-core: q95 same-direction bar excursions are replaced by arithmetic expected
-entry-direction and stop-direction excursions. The original target-selection
-contract, including the 2.4R cap, is deliberately retained for controlled
-attribution. It is not the final preferred target contract.
+core: the q95 whole-bar reserve is replaced by the observed bar-execution
+contract's expected adverse close transition plus one entry tick and one stop
+tick. The original target-selection contract, including the 2.4R cap, is
+retained deliberately for controlled attribution.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from nautilus_trader.model.enums import TimeInForce
 
 from nt_causal_risk_sizing import GAP_WINDOW_BARS
 from nt_causal_risk_sizing import _tick_size
+from nt_expected_fill_risk_sizing import FILL_EXPECTATION_CONTRACT
 from nt_expected_fill_risk_sizing import causal_expected_entry_deterioration
 from nt_liquidity_strategy import PendingSetup
 from nt_liquidity_strategy import cost_aware_target
@@ -83,7 +84,7 @@ def expected_fill_only_submit_bracket(
     target_net_r: float,
     details: dict[str, Any],
 ) -> bool:
-    """Submit the old capped target with direction-specific expected fills."""
+    """Submit the old capped target with causal expected fill prices."""
 
     side = int(setup.side)
     atr = float(self._atr())
@@ -114,22 +115,17 @@ def expected_fill_only_submit_bracket(
         return False
     target, reference_r_signal, signal_planned_loss = selected
 
-    completed = list(self.bars)
     entry_deterioration, entry_observations = (
-        causal_expected_entry_deterioration(completed, side)
+        causal_expected_entry_deterioration(list(self.bars), side)
     )
-    stop_deterioration, stop_observations = (
-        causal_expected_entry_deterioration(completed, -side)
-    )
-    if not (
-        math.isfinite(entry_deterioration)
-        and math.isfinite(stop_deterioration)
-    ):
+    if not math.isfinite(entry_deterioration):
         return False
 
     tick = _tick_size(self.instrument)
-    expected_entry_fill = signal_entry + side * entry_deterioration
-    expected_stop_fill = stop_trigger - side * (stop_deterioration + tick)
+    expected_entry_fill = signal_entry + side * (
+        entry_deterioration + tick
+    )
+    expected_stop_fill = stop_trigger - side * tick
     execution_price_loss = side * (
         expected_entry_fill - expected_stop_fill
     )
@@ -181,12 +177,13 @@ def expected_fill_only_submit_bracket(
             "quantity": quantity_value,
             "equity": equity,
             "risk_budget": risk_budget,
-            "entry_expected_adverse_excursion": entry_deterioration,
-            "stop_expected_adverse_excursion": stop_deterioration,
-            "fill_expectation": "arithmetic_mean_completed_directional_excursion",
+            "entry_expected_adverse_close_transition": entry_deterioration,
+            "entry_adverse_tick": tick,
+            "stop_expected_adverse_excursion": 0.0,
+            "stop_adverse_tick": tick,
+            "fill_expectation": FILL_EXPECTATION_CONTRACT,
             "fill_expectation_window_bars": GAP_WINDOW_BARS,
             "entry_expectation_observations": entry_observations,
-            "stop_expectation_observations": stop_observations,
             "stop_slippage_ticks": 1,
         },
     )
