@@ -35,6 +35,13 @@ def main() -> int:
     ts_ns = (16 * 60 + 6) * MINUTE
     assert _next_interval_boundary_ns(ts_ns, 30) == (16 * 60 + 30) * MINUTE
 
+    # A completed bar observed exactly at 16:30 belongs to the source
+    # interval beginning 16:29 and therefore has no causal order lifetime
+    # beyond the 16:30 auction boundary.
+    boundary_ts_ns = (16 * 60 + 30) * MINUTE
+    assert _next_interval_boundary_ns(boundary_ts_ns, 30) == boundary_ts_ns
+    assert _next_interval_boundary_ns(boundary_ts_ns + MINUTE, 30) == (17 * 60) * MINUTE
+
     original = _signal("LONG", 120.0)
     snapshot = _snapshot(ts_ns, 100.0, 106.0, 99.0, 105.0)
     placement = resolve_entry_placement(
@@ -49,7 +56,24 @@ def main() -> int:
     assert placement.order_type == "LIMIT"
     assert placement.expected_entry == 100.0
     assert placement.expiry_ts_ns == (16 * 60 + 30) * MINUTE
+    assert placement.details["source_interval_ts_ns"] == (16 * 60 + 5) * MINUTE
     assert placement.details["remaining_seconds"] == 24 * 60
+
+    boundary_snapshot = _snapshot(boundary_ts_ns, 100.0, 106.0, 99.0, 105.0)
+    boundary_placement = resolve_entry_placement(
+        original,
+        original,
+        boundary_snapshot,
+        {"sac_entry_execution": "DEFENSE_ORIGIN_LIMIT", "auction_period_minutes": 30},
+        confirmation_passed=True,
+        trap_armed=False,
+    )
+    assert boundary_placement.expiry_ts_ns == boundary_ts_ns
+    assert boundary_placement.details["remaining_seconds"] == 0.0
+    assert (
+        boundary_placement.reason
+        == "DEFENSE_ORIGIN_ENTRY_HAS_NO_CAUSAL_LIFETIME"
+    )
 
     short = _signal("SHORT", 80.0)
     snapshot = _snapshot(ts_ns, 100.0, 101.0, 94.0, 95.0)

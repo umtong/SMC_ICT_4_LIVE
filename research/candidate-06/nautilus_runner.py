@@ -108,7 +108,7 @@ def run_nautilus_backtest(
     from nautilus_trader.backtest.models import FillModel
     from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
     from nautilus_trader.model.data import BarType
-    from nautilus_trader.model.enums import AccountType, OmsType
+    from nautilus_trader.model.enums import AccountType, OmsType, OtoTriggerMode
     from nautilus_trader.model.identifiers import Venue
     from nautilus_trader.model.objects import Currency, Money
 
@@ -157,6 +157,7 @@ def run_nautilus_backtest(
             default_leverage=Decimal(str(config["venue_default_leverage"])),
             fill_model=fill_model,
             support_contingent_orders=True,
+            oto_trigger_mode=OtoTriggerMode.PARTIAL,
             use_reduce_only=True,
             bar_execution=True,
             bar_adaptive_high_low_ordering=True,

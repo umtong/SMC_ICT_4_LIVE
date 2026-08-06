@@ -9,8 +9,12 @@ on:
       - "research/candidate-06/defense_origin_limit.py"
       - "research/candidate-06/register_defense_origin_limit.py"
       - "research/candidate-06/test_defense_origin_limit.py"
+      - "research/candidate-06/test_adom_native_order_contract.py"
+      - "research/candidate-06/test_adom_lifecycle_contract.py"
       - "research/candidate-06/run_defense_origin_mitigation_matrix.py"
       - "research/candidate-06/ADOM_RESEARCH_LEDGER.md"
+      - "research/candidate-06/ADOM_IMPLEMENTATION_AUDIT.md"
+      - "research/candidate-06/causal_clock.py"
       - "research/candidate-06/nautilus_execution.py"
       - "research/candidate-06/nautilus_lifecycle.py"
       - "research/candidate-06/entry_confirmation.py"
@@ -54,7 +58,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify predeclared source and ledger
+      - name: Verify predeclared source, tests and audit
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -62,8 +66,11 @@ jobs:
             research/candidate-06/defense_origin_limit.py \
             research/candidate-06/register_defense_origin_limit.py \
             research/candidate-06/test_defense_origin_limit.py \
+            research/candidate-06/test_adom_native_order_contract.py \
+            research/candidate-06/test_adom_lifecycle_contract.py \
             research/candidate-06/run_defense_origin_mitigation_matrix.py \
-            research/candidate-06/ADOM_RESEARCH_LEDGER.md; do
+            research/candidate-06/ADOM_RESEARCH_LEDGER.md \
+            research/candidate-06/ADOM_IMPLEMENTATION_AUDIT.md; do
             test -s "$path"
           done
 
@@ -85,12 +92,17 @@ jobs:
           grep -q 'resolve_entry_placement' research/candidate-06/nautilus_execution.py
           grep -q 'entry_order_type.*OrderType.LIMIT' research/candidate-06/nautilus_execution.py
           grep -q 'on_order_expired' research/candidate-06/nautilus_lifecycle.py
+          grep -q '_abort_partial_entry_if_needed' research/candidate-06/nautilus_lifecycle.py
+          grep -q 'on_order_cancel_rejected' research/candidate-06/nautilus_lifecycle.py
+          grep -q 'OtoTriggerMode.PARTIAL' research/candidate-06/nautilus_runner.py
 
-      - name: Verify causality, syntax and unchanged parent contracts
+      - name: Verify causality, native order contract and lifecycle
         run: |
           set -euo pipefail
           python -m py_compile research/candidate-06/*.py
           python research/candidate-06/test_defense_origin_limit.py
+          python research/candidate-06/test_adom_native_order_contract.py
+          python research/candidate-06/test_adom_lifecycle_contract.py
           python research/candidate-06/test_entry_confirmation.py
           python research/candidate-06/test_fixed_interval_auction_engine.py
           python research/candidate-06/test_excursion_diagnostics.py
@@ -98,13 +110,19 @@ jobs:
           import inspect
           from nautilus_execution import NautilusExecutionMixin
           from nautilus_lifecycle import NautilusLifecycleMixin
+          from nautilus_runner import run_nautilus_backtest
           execution = inspect.getsource(NautilusExecutionMixin._attempt_entry)
           lifecycle = inspect.getsource(NautilusLifecycleMixin)
+          runner = inspect.getsource(run_nautilus_backtest)
           assert "OrderType.LIMIT" in execution
           assert "TimeInForce.GTD" in execution
-          assert "DEFENSE_ORIGIN_LIMIT" not in execution  # mode remains data-driven in the pure placement detector
+          assert "resolve_entry_placement" in execution
+          assert '"sac_entry_execution"' not in execution
           assert "on_order_expired" in lifecycle
           assert "on_order_canceled" in lifecycle
+          assert "_abort_partial_entry_if_needed" in lifecycle
+          assert "on_order_cancel_rejected" in lifecycle
+          assert "OtoTriggerMode.PARTIAL" in runner
           print("ADOM native order and lifecycle registration verified")
           PY
 
@@ -161,10 +179,13 @@ jobs:
             research/candidate-06/defense_origin_limit.py \
             research/candidate-06/register_defense_origin_limit.py \
             research/candidate-06/test_defense_origin_limit.py \
-            research/candidate-06/run_defense_origin_mitigation_matrix.py \
+            research/candidate-06/test_adom_native_order_contract.py \
+            research/candidate-06/test_adom_lifecycle_contract.py \
             research/candidate-06/ADOM_RESEARCH_LEDGER.md \
+            research/candidate-06/ADOM_IMPLEMENTATION_AUDIT.md \
             research/candidate-06/nautilus_execution.py \
-            research/candidate-06/nautilus_lifecycle.py; do
+            research/candidate-06/nautilus_lifecycle.py \
+            research/candidate-06/nautilus_runner.py; do
             if [ -e "$path" ]; then git add "$path"; fi
           done
           git add -f artifacts/candidate-06/adom-first-week
