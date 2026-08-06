@@ -11,6 +11,7 @@ import pandas as pd
 from aggtrade_flow_response import (
     FlowResponseConfig,
     FlowResponseState,
+    _causal_window_impact_response,
     _classify_frame_states,
     causal_flow_response_frame,
     classify_flow_response,
@@ -120,6 +121,71 @@ class FlowResponseCausalityContracts(unittest.TestCase):
         ):
             self.assertEqual(first[field], second[field], field)
 
+    def test_window_impact_response_sums_each_causal_bucket_in_matching_units(self) -> None:
+        index = pd.RangeIndex(3)
+        realized, expected, surprise = _causal_window_impact_response(
+            signed_activity=pd.Series([1.0, 2.0, 3.0], index=index),
+            normalized_price_change=pd.Series([0.2, 0.4, 0.5], index=index),
+            impact_beta=pd.Series([0.1, 0.2, 0.3], index=index),
+            flow_direction=pd.Series([1.0, 1.0, 1.0], index=index),
+            window=3,
+        )
+        self.assertAlmostEqual(realized.iloc[-1], 1.1)
+        self.assertAlmostEqual(expected.iloc[-1], 1.4)
+        self.assertAlmostEqual(surprise.iloc[-1], -0.3)
+
+        realized_short, expected_short, surprise_short = _causal_window_impact_response(
+            signed_activity=pd.Series([-1.0, -2.0, -3.0], index=index),
+            normalized_price_change=pd.Series([-0.2, -0.4, -0.5], index=index),
+            impact_beta=pd.Series([0.1, 0.2, 0.3], index=index),
+            flow_direction=pd.Series([-1.0, -1.0, -1.0], index=index),
+            window=3,
+        )
+        self.assertAlmostEqual(realized_short.iloc[-1], 1.1)
+        self.assertAlmostEqual(expected_short.iloc[-1], 1.4)
+        self.assertAlmostEqual(surprise_short.iloc[-1], -0.3)
+
+    def test_endpoint_beta_reprices_only_its_own_completed_bucket(self) -> None:
+        index = pd.RangeIndex(3)
+        common = {
+            "signed_activity": pd.Series([1.0, 2.0, 3.0], index=index),
+            "normalized_price_change": pd.Series([0.2, 0.4, 0.5], index=index),
+            "flow_direction": pd.Series([1.0, 1.0, 1.0], index=index),
+            "window": 3,
+        }
+        _, first_expected, _ = _causal_window_impact_response(
+            impact_beta=pd.Series([0.1, 0.2, 0.3], index=index),
+            **common,
+        )
+        _, second_expected, _ = _causal_window_impact_response(
+            impact_beta=pd.Series([0.1, 0.2, 0.5], index=index),
+            **common,
+        )
+        self.assertAlmostEqual(
+            second_expected.iloc[-1] - first_expected.iloc[-1],
+            (0.5 - 0.3) * 3.0,
+        )
+
+    def test_future_impact_rows_do_not_change_completed_window_response(self) -> None:
+        initial_index = pd.RangeIndex(3)
+        first = _causal_window_impact_response(
+            signed_activity=pd.Series([1.0, 2.0, 3.0], index=initial_index),
+            normalized_price_change=pd.Series([0.2, 0.4, 0.5], index=initial_index),
+            impact_beta=pd.Series([0.1, 0.2, 0.3], index=initial_index),
+            flow_direction=pd.Series([1.0, 1.0, 1.0], index=initial_index),
+            window=3,
+        )
+        extended_index = pd.RangeIndex(5)
+        second = _causal_window_impact_response(
+            signed_activity=pd.Series([1.0, 2.0, 3.0, -1e9, 1e9], index=extended_index),
+            normalized_price_change=pd.Series([0.2, 0.4, 0.5, -1e6, 1e6], index=extended_index),
+            impact_beta=pd.Series([0.1, 0.2, 0.3, 100.0, 100.0], index=extended_index),
+            flow_direction=pd.Series([1.0, 1.0, 1.0, -1.0, 1.0], index=extended_index),
+            window=3,
+        )
+        for first_series, second_series in zip(first, second):
+            self.assertEqual(first_series.iloc[2], second_series.iloc[2])
+
     def test_flow_direction_and_window_response_use_only_completed_current_and_past(self) -> None:
         data = _history(130)
         for position in range(127, 130):
@@ -140,6 +206,12 @@ class FlowResponseCausalityContracts(unittest.TestCase):
         self.assertGreater(last["window_pressure_ratio"], 1.0)
         self.assertGreater(last["directional_progress"], 1.0)
         self.assertGreaterEqual(last["retention"], 0.5)
+        self.assertTrue(np.isfinite(last["directional_normalized_progress"]))
+        self.assertTrue(np.isfinite(last["expected_response"]))
+        self.assertAlmostEqual(
+            last["response_surprise"],
+            last["directional_normalized_progress"] - last["expected_response"],
+        )
 
     def test_vectorized_and_scalar_states_match_every_completed_feature_row(self) -> None:
         data = _history(170)
