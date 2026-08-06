@@ -1,0 +1,240 @@
+name: candidate-08-shared-acceptance-screen-v1
+
+on:
+  workflow_run:
+    workflows: ["candidate-08-shared-acceptance-first-v1"]
+    types: [completed]
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-shared-acceptance-screen-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  remaining-weeks:
+    if: ${{ github.actor != 'github-actions[bot]' || github.event_name == 'workflow_run' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/shared-acceptance-screen-v1
+      DATA_CACHE: /tmp/candidate-08-acceptance-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-08
+          fetch-depth: 0
+
+      - name: Check first-week promotion gate
+        id: gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          source = Path("research/candidate-08/evidence/shared-acceptance-first-v1/suite_metrics.json")
+          promoted = False
+          reason = "FIRST_EVIDENCE_MISSING"
+          if source.exists():
+              payload = json.loads(source.read_text())
+              promoted = bool(payload.get("gate_passed"))
+              reason = "FIRST_GATE_PASSED" if promoted else "FIRST_GATE_FAILED"
+          Path("/tmp/screen_gate.json").write_text(json.dumps({"promoted": promoted, "reason": reason}))
+          with Path("/tmp/screen_gate.env").open("w") as stream:
+              stream.write(f"PROMOTED={'true' if promoted else 'false'}\n")
+          PY
+          cat /tmp/screen_gate.env >> "$GITHUB_OUTPUT"
+
+      - name: Restore BTC screen-02 cache
+        if: steps.gate.outputs.PROMOTED == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-BTCUSDT-screen-02-v1
+      - name: Restore ETH screen-02 cache
+        if: steps.gate.outputs.PROMOTED == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-ETHUSDT-screen-02-v1
+      - name: Restore SOL screen-02 cache
+        if: steps.gate.outputs.PROMOTED == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-SOLUSDT-screen-02-v1
+      - name: Restore XRP screen-02 cache
+        if: steps.gate.outputs.PROMOTED == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-XRPUSDT-screen-02-v1
+      - name: Restore BTC screen-03 cache
+        if: steps.gate.outputs.PROMOTED == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-BTCUSDT-screen-03-v1
+      - name: Restore ETH screen-03 cache
+        if: steps.gate.outputs.PROMOTED == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-ETHUSDT-screen-03-v1
+      - name: Restore SOL screen-03 cache
+        if: steps.gate.outputs.PROMOTED == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-SOLUSDT-screen-03-v1
+      - name: Restore XRP screen-03 cache
+        if: steps.gate.outputs.PROMOTED == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-aggtrade-acceptance-XRPUSDT-screen-03-v1
+
+      - name: Run unchanged second and third weeks
+        if: steps.gate.outputs.PROMOTED == 'true'
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          set +e
+          {
+            set -euo pipefail
+            smc4 doctor
+            python - <<'PY'
+            import json
+            from pathlib import Path
+            base = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_shared.json").read_text())
+            windows = base["suites"]["screen"]
+            for window in windows[1:]:
+                config = json.loads(json.dumps(base))
+                config["suites"]["first"] = [window]
+                destination = Path("research/candidate-08/evidence/shared-acceptance-screen-v1") / f"config-{window['name']}.json"
+                destination.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+            PY
+            cp -R research/candidate-08/evidence/shared-acceptance-first-v1 "$OUTPUT_DIR/screen-01"
+            python research/candidate-08/run_shared_acceptance_first_v1.py \
+              --config "$OUTPUT_DIR/config-screen-02.json" \
+              --output "$OUTPUT_DIR/screen-02" \
+              --data-cache "$DATA_CACHE"
+            python research/candidate-08/run_shared_acceptance_first_v1.py \
+              --config "$OUTPUT_DIR/config-screen-03.json" \
+              --output "$OUTPUT_DIR/screen-03" \
+              --data-cache "$DATA_CACHE"
+            python - <<'PY'
+            import json
+            from math import exp, log
+            from pathlib import Path
+            root = Path("research/candidate-08/evidence/shared-acceptance-screen-v1")
+            names = ["screen-01", "screen-02", "screen-03"]
+            metrics = [json.loads((root / name / "metrics.json").read_text()) for name in names]
+            days = sum(float(item["calendar_days"]) for item in metrics)
+            combined = exp(sum(log(float(item["nav_multiple"])) for item in metrics) / days) - 1.0
+            closed = [int(item["position_metrics"]["closed_trades"]) for item in metrics]
+            wins = sum(int(item["position_metrics"]["wins"]) for item in metrics)
+            total_closed = sum(closed)
+            positive_share = wins / total_closed if total_closed else 0.0
+            positive_pnls = []
+            for name in names:
+                import pandas as pd
+                path = root / name / "positions.csv"
+                if not path.exists():
+                    continue
+                frame = pd.read_csv(path)
+                if "realized_pnl" not in frame.columns:
+                    continue
+                for raw in frame["realized_pnl"].tolist():
+                    try:
+                        value = float(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if value > 0:
+                        positive_pnls.append(value)
+            positive_total = sum(positive_pnls)
+            max_share = max(positive_pnls) / positive_total if positive_total else 0.0
+            checks = {
+                "minimum_closed_trades_each_week": all(value >= 3 for value in closed),
+                "all_windows_cost_after_positive": all(float(item["total_return"]) > 0 for item in metrics),
+                "minimum_positive_trade_share": positive_share >= 0.45,
+                "maximum_single_positive_pnl_share": max_share <= 0.50,
+                "combined_daily_geometric_growth": combined >= 0.01,
+                "no_execution_failures": all(int(item["execution_failures"]) == 0 for item in metrics),
+                "no_residual_exposure": all(int(item["open_positions_after_run"]) == 0 and int(item["open_orders_after_run"]) == 0 for item in metrics),
+                "complete_multiasset_timestamps": all(int(item["incomplete_multiasset_timestamps"]) == 0 for item in metrics),
+            }
+            summary = {
+                "candidate": "candidate-08-aggtrade-acceptance-nautilus",
+                "suite": "screen",
+                "combined_calendar_days": days,
+                "combined_daily_geometric_growth": combined,
+                "goal_daily_geometric_growth": 0.01,
+                "goal_met": combined >= 0.01,
+                "closed_trades_by_window": closed,
+                "positive_trade_share": positive_share,
+                "maximum_single_positive_pnl_share": max_share,
+                "gate_checks": checks,
+                "gate_passed": all(checks.values()),
+                "window_results": [{
+                    "name": item["window"]["name"],
+                    "closed_trades": item["position_metrics"]["closed_trades"],
+                    "wins": item["position_metrics"]["wins"],
+                    "win_rate": item["position_metrics"]["win_rate"],
+                    "final_nav_usdt": item["final_nav_usdt"],
+                    "total_return": item["total_return"],
+                    "daily_geometric_growth": item["daily_geometric_growth"],
+                    "maximum_realized_equity_drawdown": item["maximum_realized_equity_drawdown"],
+                } for item in metrics],
+            }
+            (root / "suite_metrics.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+            print(json.dumps(summary, indent=2, sort_keys=True))
+            PY
+          } 2>&1 | tee "$OUTPUT_DIR/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT_DIR/runner_exit_status.txt"
+
+      - name: Record skipped screen when first gate did not pass
+        if: steps.gate.outputs.PROMOTED != 'true'
+        shell: bash
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          cp /tmp/screen_gate.json "$OUTPUT_DIR/screen_not_run.json"
+          printf '0\n' > "$OUTPUT_DIR/runner_exit_status.txt"
+
+      - name: Commit screen evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+          git -C "$GITHUB_WORKSPACE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$GITHUB_WORKSPACE" pull --rebase origin research/candidate-08
+          rm -f research/candidate-08/.run-shared-acceptance-screen-v1
+          git -C "$GITHUB_WORKSPACE" add "$OUTPUT_DIR" research/candidate-08/.run-shared-acceptance-screen-v1
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-08: record gated shared acceptance screen" || true
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-shared-acceptance-screen-v1-${{ github.run_id }}
+          path: research/candidate-08/evidence/shared-acceptance-screen-v1
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Return runner status
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          status=$(cat "$OUTPUT_DIR/runner_exit_status.txt" 2>/dev/null || printf '1')
+          exit "$status"
