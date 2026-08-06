@@ -1,0 +1,190 @@
+name: candidate-05-v29b-implementation-control
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/strategy_v29b_external_displacement_fvg.py"
+      - ".github/workflows/candidate-05-v29b-implementation-control.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  same-week-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v29b-implementation-control
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and implementation contracts
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT"
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+            python - <<'PY'
+          from dataclasses import fields
+          from strategy_v9 import ArmedEntryPath
+          names = {field.name for field in fields(ArmedEntryPath)}
+          assert "expires_index" in names
+          assert "created_ts" not in names
+          from strategy_v29b_external_displacement_fvg import ExternalDisplacementFvgStrategyV2
+          assert ExternalDisplacementFvgStrategyV2.__name__ == "ExternalDisplacementFvgStrategyV2"
+          print(sorted(names))
+          PY
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "verification_exit_code=$status" > "$ROOT/verification_status.txt"
+          exit "$status"
+
+      - name: Run unchanged v26 control on fixed Week 1
+        if: steps.verify.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v26 import ScenarioValidEntryStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          out="$ROOT/baseline"; mkdir -p "$out"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-07-07 --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-05-v29b/baseline \
+            --output "$out" | tee "$out/console.json"
+
+      - name: Run contract-repaired v29b on the same fixed Week 1
+        if: steps.verify.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v29b_external_displacement_fvg import ExternalDisplacementFvgStrategyV2 as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          out="$ROOT/v29b"; mkdir -p "$out"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-07-07 --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-05-v29b/v29b \
+            --output "$out" | tee "$out/console.json"
+
+      - name: Persist implementation-versus-logic decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-05/evidence
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-05-v29b-implementation-control")
+
+          def compact(name):
+              p = root / name / "metrics.json"
+              if not p.exists():
+                  return {"available": False}
+              m = json.loads(p.read_text(encoding="utf-8"))
+              d = m.get("strategy_diagnostics", {})
+              checks = {
+                  "engine_is_nautilus": m.get("engine") == "NautilusTrader BacktestNode",
+                  "positive_nav": m.get("ending_nav", 0.0) > 0.0,
+                  "no_liquidation": m.get("liquidations", 0) == 0,
+                  "no_order_rejections": d.get("order_rejections", 0) == 0,
+                  "single_entry_intent": d.get("max_simultaneous_entry_intents", 0) <= 1,
+                  "single_position": d.get("max_open_positions_observed", 0) <= 1,
+              }
+              return {
+                  "available": True,
+                  "total_return": m.get("total_return"),
+                  "geometric_daily_growth": m.get("geometric_daily_growth"),
+                  "max_drawdown": m.get("max_drawdown"),
+                  "trades": m.get("trades"),
+                  "wins": m.get("wins"),
+                  "win_rate": m.get("win_rate"),
+                  "profit_factor": m.get("profit_factor"),
+                  "active_days": m.get("active_days"),
+                  "scenario_metrics": m.get("scenario_metrics", {}),
+                  "external_diagnostics": {k: v for k, v in d.items() if k.startswith("external_fvg_")},
+                  "integrity_checks": checks,
+                  "integrity_pass": all(checks.values()),
+              }
+
+          baseline = compact("baseline")
+          candidate = compact("v29b")
+          status = (root / "verification_status.txt").read_text(encoding="utf-8").strip() if (root / "verification_status.txt").exists() else "missing"
+          tail = (root / "verification.log").read_text(encoding="utf-8", errors="replace").splitlines()[-160:] if (root / "verification.log").exists() else []
+          branch = candidate.get("scenario_metrics", {}).get(
+              "EXTERNAL_DISPLACEMENT_FVG_RETEST",
+              {"trades": 0, "wins": 0, "net_pnl": 0.0},
+          )
+          promote = False
+          if status != "verification_exit_code=0":
+              classification = "IMPLEMENTATION_ERROR_STATIC_OR_CONTRACT"
+          elif not baseline.get("available") or not baseline.get("integrity_pass"):
+              classification = "IMPLEMENTATION_ERROR_BASELINE_CONTROL"
+          elif not candidate.get("available") or not candidate.get("integrity_pass"):
+              classification = "IMPLEMENTATION_ERROR_V29B_RUNTIME_OR_EVIDENCE"
+          elif int(branch.get("trades", 0)) == 0:
+              classification = "LOGIC_FAILURE_NO_INCREMENTAL_EXECUTABLE_OPPORTUNITY"
+          elif float(branch.get("net_pnl", 0.0)) <= 0.0:
+              classification = "LOGIC_FAILURE_NONPOSITIVE_INCREMENTAL_EXPECTANCY"
+          elif float(candidate["geometric_daily_growth"]) <= float(baseline["geometric_daily_growth"]):
+              classification = "LOGIC_FAILURE_DID_NOT_IMPROVE_CONTROL"
+          else:
+              classification = "LOGIC_SCREEN_PASSED_WEEK_1"
+              promote = True
+          result = {
+              "schema": "candidate-05-v29b-implementation-control-v1",
+              "source_commit": "${{ github.sha }}",
+              "workflow_run_id": "${{ github.run_id }}",
+              "fixed_week": "2023-07-09..2023-07-15 UTC",
+              "implementation_change": "ArmedEntryPath created_ts removed; existing expires_index contract supplied",
+              "signal_logic_changed_from_v29": False,
+              "verification_status": status,
+              "verification_log_tail": tail,
+              "classification": classification,
+              "promote_to_weeks_2_3": promote,
+              "baseline": baseline,
+              "v29b": candidate,
+              "new_branch": branch,
+              "ablation_contract": "v26 is the same-week control with the entire external-FVG branch removed",
+          }
+          path = Path("research/candidate-05/evidence/v29b_implementation_control.json")
+          path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-05/evidence/v29b_implementation_control.json
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-05: record v29b same-week control [skip ci]"
+            git push origin HEAD:research/candidate-05
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v29b-implementation-control-${{ github.sha }}
+          path: artifacts/candidate-05-v29b-implementation-control/**
+          if-no-files-found: warn
+          retention-days: 90
