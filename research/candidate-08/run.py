@@ -20,6 +20,7 @@ from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
+from nautilus_trader.analysis.reporter import ReportProvider
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
 from nautilus_trader.backtest.models import LatencyModel, MakerTakerFeeModel, OneTickSlippageFillModel
@@ -397,18 +398,20 @@ def run_window(
         engine.add_strategy(strategy)
         engine.run()
 
-        orders = engine.generate_orders_report()
-        fills = engine.generate_fills_report()
-        positions = engine.generate_positions_report()
-        account_report = engine.generate_account_report(venue=Venue("BINANCE"))
+        account = engine.cache.account_for_venue(Venue("BINANCE"))
+        if account is None:
+            raise RuntimeError("NautilusTrader did not retain the Binance margin account")
+        cached_orders = engine.cache.orders()
+        cached_positions = engine.cache.positions()
+        orders = ReportProvider.generate_orders_report(cached_orders)
+        fills = ReportProvider.generate_fills_report(cached_orders)
+        positions = ReportProvider.generate_positions_report(cached_positions)
+        account_report = ReportProvider.generate_account_report(account)
         orders.to_csv(output_dir / "orders.csv", index=True)
         fills.to_csv(output_dir / "fills.csv", index=True)
         positions.to_csv(output_dir / "positions.csv", index=True)
         account_report.to_csv(output_dir / "account.csv", index=True)
 
-        account = engine.cache.account_for_venue(Venue("BINANCE"))
-        if account is None:
-            raise RuntimeError("NautilusTrader did not retain the Binance margin account")
         final_money = account.balance_total(Currency.from_str("USDT"))
         if final_money is None:
             raise RuntimeError("NautilusTrader account had no total USDT balance")
