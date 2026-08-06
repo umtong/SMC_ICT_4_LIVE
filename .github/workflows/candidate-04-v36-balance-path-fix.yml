@@ -1,0 +1,72 @@
+name: candidate-04-v36-balance-path-fix
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v36-balance-path-fix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Correct 30-bar path to 29 completed close changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-04/micro_auction_balance_transition_compiler.py")
+          text = path.read_text()
+          old = '''    path = close.diff().abs().rolling(BALANCE_BARS, min_periods=BALANCE_BARS).sum()
+    path_to_width = path / width.replace(0.0, float("nan"))
+    net = (close - close.shift(BALANCE_BARS - 1)).abs()
+    net_efficiency = net / path.replace(0.0, float("nan"))
+'''
+          new = '''    # A completed N-bar auction contains exactly N-1 close-to-close changes.
+    path = close.diff().abs().rolling(
+        BALANCE_BARS - 1,
+        min_periods=BALANCE_BARS - 1,
+    ).sum()
+    path_to_width = path / width.replace(0.0, float("nan"))
+    net = (close - close.shift(BALANCE_BARS - 1)).abs()
+    net_efficiency = (net / path.replace(0.0, float("nan"))).where(
+        path > 0.0,
+        0.0,
+    )
+'''
+          if old not in text:
+              if new in text:
+                  raise SystemExit(0)
+              raise SystemExit("expected balance path block not found")
+          path.write_text(text.replace(old, new))
+          PY
+          python -m py_compile \
+            research/candidate-04/micro_auction_balance_transition_compiler.py \
+            research/candidate-04/tests/test_micro_auction_balance_transition_compiler.py
+
+      - name: Commit implementation-only correction with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/micro_auction_balance_transition_compiler.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "fix V36 completed-balance path off-by-one"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
