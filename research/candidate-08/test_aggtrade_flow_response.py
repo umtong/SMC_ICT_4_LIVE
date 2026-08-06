@@ -11,6 +11,7 @@ import pandas as pd
 from aggtrade_flow_response import (
     FlowResponseConfig,
     FlowResponseState,
+    _classify_frame_states,
     causal_flow_response_frame,
     classify_flow_response,
 )
@@ -140,6 +141,39 @@ class FlowResponseCausalityContracts(unittest.TestCase):
         self.assertGreater(last["directional_progress"], 1.0)
         self.assertGreaterEqual(last["retention"], 0.5)
 
+    def test_vectorized_and_scalar_states_match_every_completed_feature_row(self) -> None:
+        data = _history(170)
+        for position in range(150, 170):
+            direction = 1.0 if position % 7 < 4 else -1.0
+            previous = float(data.iloc[position - 1]["close"])
+            close = previous + direction * (0.15 + 0.04 * (position % 3))
+            data.iloc[position, data.columns.get_loc("open")] = previous
+            data.iloc[position, data.columns.get_loc("close")] = close
+            data.iloc[position, data.columns.get_loc("high")] = max(previous, close) + 0.08
+            data.iloc[position, data.columns.get_loc("low")] = min(previous, close) - 0.08
+            data.iloc[position, data.columns.get_loc("signed_volume")] = direction * (
+                40.0 + 10.0 * (position % 5)
+            )
+
+        features = causal_flow_response_frame(
+            data,
+            tick=0.01,
+            config=self.config,
+        )
+        scalar = pd.Series(
+            [
+                classify_flow_response(row, config=self.config).value
+                for _, row in features.iterrows()
+            ],
+            index=features.index,
+            dtype="string",
+        )
+        pd.testing.assert_series_equal(
+            features["flow_response_state"],
+            scalar,
+            check_names=False,
+        )
+
     def test_input_contract_rejects_missing_or_noncausal_index(self) -> None:
         data = _history(50)
         with self.assertRaises(KeyError):
@@ -207,6 +241,26 @@ class FlowResponseStateContracts(unittest.TestCase):
             classify_flow_response({**row, "response_surprise": 0.0}),
             FlowResponseState.BALANCED_OR_UNRESOLVED,
         )
+
+    def test_vectorized_boundaries_exactly_match_scalar_boundaries(self) -> None:
+        rows = pd.DataFrame(
+            [
+                _feature_row(),
+                _feature_row(progress_noise=0.1, excursion_noise=0.8, retention=0.2, response_surprise=-0.7),
+                _feature_row(window_pressure_ratio=0.99),
+                _feature_row(causal_impact_beta=float("nan")),
+                _feature_row(progress_noise=1.0, retention=0.5, response_surprise=0.0),
+                _feature_row(progress_noise=0.5, excursion_noise=0.5, retention=0.5, response_surprise=-0.1),
+            ],
+            index=pd.RangeIndex(6),
+        )
+        vectorized = _classify_frame_states(rows, config=FlowResponseConfig())
+        scalar = pd.Series(
+            [classify_flow_response(row).value for _, row in rows.iterrows()],
+            index=rows.index,
+            dtype="string",
+        )
+        pd.testing.assert_series_equal(vectorized, scalar, check_names=False)
 
     def test_ordinary_pressure_is_unresolved_not_forced_into_a_trade_state(self) -> None:
         self.assertEqual(
