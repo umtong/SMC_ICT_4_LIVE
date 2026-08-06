@@ -1,9 +1,13 @@
 """Route flow-response auction signals through the verified native Nautilus runner.
 
-Only detector selection, family filtering, and reporting vocabulary are replaced. The shared-margin
-account, current-NAV 3% loss-budget sizing, OUO orders, fees, causal slippage reserve, official
-funding and mark prices, liquidation, and the global one-order/position constraint remain in the
-verified candidate-08 base runner.
+Only detector selection, family filtering, reporting vocabulary, and post-run diagnostics are
+replaced. The shared-margin account, current-NAV 3% loss-budget sizing, OUO orders, fees, causal
+slippage reserve, official funding and mark prices, liquidation, and the global one-order/position
+constraint remain in the verified candidate-08 base runner.
+
+Post-run path diagnostics capture the same ten-second frame already loaded for Nautilus replay and
+attach structural stop/target path facts only after positions are closed. They cannot affect signal
+selection, order submission, sizing or fills.
 """
 
 from __future__ import annotations
@@ -24,6 +28,10 @@ from aggtrade_flow_response_auction_signals_v2 import (
     FlowResponseAuctionConfig,
     build_flow_response_auction_signals,
 )
+from flow_response_trade_path_diagnostics import (
+    enrich_closed_trade_records,
+    summarize_trade_path_diagnostics,
+)
 
 
 UNCLASSIFIED_FAMILY = "UNCLASSIFIED_FLOW_RESPONSE_SCENARIO"
@@ -35,6 +43,9 @@ FAMILY_MODES = {
 DEFAULT_CONTRACT_CONFIG = (
     Path(__file__).resolve().parent / "config_flow_response_auction_btc_v1.json"
 )
+
+_CAPTURED_TEN_SECOND_FRAMES: dict[str, Any] = {}
+_CURRENT_MAXIMUM_HOLD_MINUTES: int | None = None
 
 
 def _active_family_mode() -> str:
@@ -141,6 +152,59 @@ runner._filter_bundle = _filter_bundle
 
 _original_global_signal_summary = runner._auction_global_signal_summary
 _original_suite_summary = runner._auction_suite_summary
+_original_closed_trade_records = runner._auction_closed_trade_records
+_original_load_ten_second_aggtrades = runner.base_runner.load_ten_second_aggtrades
+_original_run_window = runner.base_runner.run_window
+
+
+def _capturing_load_ten_second_aggtrades(*args: Any, **kwargs: Any):
+    """Capture the exact replay frame while preserving the official-data loader result."""
+
+    result = _original_load_ten_second_aggtrades(*args, **kwargs)
+    symbol = kwargs.get("symbol")
+    if symbol is None and args:
+        symbol = args[0]
+    if symbol is None:
+        raise RuntimeError("ten-second loader call exposed no symbol for path diagnostics")
+    frame, _sources, _quality = result
+    _CAPTURED_TEN_SECOND_FRAMES[str(symbol)] = frame
+    return result
+
+
+def _flow_response_closed_trade_records(
+    enriched_positions: list[dict[str, Any]],
+    intents: list[dict[str, Any]],
+    position_outcomes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    records = _original_closed_trade_records(
+        enriched_positions,
+        intents,
+        position_outcomes,
+    )
+    if _CURRENT_MAXIMUM_HOLD_MINUTES is None:
+        raise RuntimeError("path diagnostics had no active maximum-hold contract")
+    return enrich_closed_trade_records(
+        records=records,
+        intents=intents,
+        frames_by_symbol=_CAPTURED_TEN_SECOND_FRAMES,
+        maximum_hold_minutes=_CURRENT_MAXIMUM_HOLD_MINUTES,
+    )
+
+
+def _flow_response_run_window(*args: Any, **kwargs: Any):
+    """Scope captured replay frames to exactly one native run-window call."""
+
+    global _CURRENT_MAXIMUM_HOLD_MINUTES
+    config = kwargs.get("config")
+    if config is None:
+        raise RuntimeError("flow-response run window requires keyword config")
+    _CAPTURED_TEN_SECOND_FRAMES.clear()
+    _CURRENT_MAXIMUM_HOLD_MINUTES = int(config["maximum_hold_minutes"])
+    try:
+        return _original_run_window(*args, **kwargs)
+    finally:
+        _CAPTURED_TEN_SECOND_FRAMES.clear()
+        _CURRENT_MAXIMUM_HOLD_MINUTES = None
 
 
 def _flow_response_global_signal_summary(
@@ -170,15 +234,31 @@ def _flow_response_suite_summary(
     base_mode = mode == "both"
     summary["diagnostic_family_ablation"] = not base_mode
     summary["promotable"] = bool(summary.get("promotable", True) and base_mode)
+    closed_trades = [
+        trade
+        for result in results
+        for trade in result.get("closed_trade_records", [])
+    ]
+    path_summary = summarize_trade_path_diagnostics(closed_trades)
+    path_complete = int(path_summary["complete_records"]) == int(
+        summary.get("closed_trades", 0)
+    )
+    summary["trade_path_diagnostic_summary"] = path_summary
     checks = summary.setdefault("suite_gate_checks", {})
     checks["base_contract_includes_both_flow_response_families"] = base_mode
+    checks["complete_post_run_trade_path_diagnostics"] = path_complete
     summary["suite_gate_passed"] = bool(
-        summary.get("suite_gate_passed", False) and base_mode
+        summary.get("suite_gate_passed", False)
+        and base_mode
+        and path_complete
     )
     return summary
 
 
 runner.base_runner.build_acceptance_signals = _build_flow_response_signals
+runner.base_runner.load_ten_second_aggtrades = _capturing_load_ten_second_aggtrades
+runner.base_runner._closed_trade_records = _flow_response_closed_trade_records
+runner.base_runner.run_window = _flow_response_run_window
 runner.base_runner._global_signal_summary = _flow_response_global_signal_summary
 runner.base_runner._suite_summary = _flow_response_suite_summary
 
