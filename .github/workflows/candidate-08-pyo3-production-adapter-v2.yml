@@ -27,7 +27,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Materialize the v1 controlled scripts with only the overbroad checks narrowed
+      - name: Materialize the v1 controlled scripts with only overbroad checks narrowed
         shell: bash
         run: |
           set -euo pipefail
@@ -52,14 +52,30 @@ jobs:
 
           patch = extract("Apply only the verified Cython to PyO3 adapter correction")
           verify = extract("Verify contracts and native production smoke")
-          old_patch = 'if ".orders" in strategy:'
-          new_patch = 'if "orders.orders" in strategy:'
+
+          replacements = (
+              (
+                  'if ".orders" in strategy:',
+                  'if "orders.orders" in strategy:',
+                  "patch bracket validation",
+              ),
+              (
+                  'if "ReportProvider" in runner or "BacktestEngineConfig" in runner:',
+                  'if "ReportProvider" in runner or "from nautilus_trader.config import BacktestEngineConfig" in runner:',
+                  "patch legacy engine validation",
+              ),
+          )
+          for old, new, label in replacements:
+              if patch.count(old) != 1:
+                  raise SystemExit(f"{label} anchor was not unique")
+              patch = patch.replace(old, new)
+
           old_verify = 'assert ".orders" not in strategy_source'
           new_verify = 'assert "orders.orders" not in strategy_source'
-          if patch.count(old_patch) != 1 or verify.count(old_verify) != 1:
-              raise SystemExit("narrow validation anchors were not unique")
-          patch = patch.replace(old_patch, new_patch)
+          if verify.count(old_verify) != 1:
+              raise SystemExit("verify bracket validation anchor was not unique")
           verify = verify.replace(old_verify, new_verify)
+
           Path("/tmp/candidate08_patch.sh").write_text(patch, encoding="utf-8")
           Path("/tmp/candidate08_verify.sh").write_text(verify, encoding="utf-8")
           PY
