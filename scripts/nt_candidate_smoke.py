@@ -123,7 +123,7 @@ def main() -> int:
     engine = node.get_engine(run_config.id)
     if engine is None:
         raise RuntimeError("BacktestNode did not retain its engine")
-    account = engine.trader.portfolio.account(inst.venue)
+    account = engine.kernel.portfolio.account(inst.venue)
     payload = {
         "engine": "NautilusTrader BacktestNode",
         "total_events": result.total_events,
