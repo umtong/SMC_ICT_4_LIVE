@@ -11,6 +11,7 @@ The position therefore continues to occupy the portfolio's single entry slot.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any
 
@@ -22,11 +23,36 @@ from nautilus_trader.model.events import (
     PositionOpened,
 )
 
-from model import Direction, TradePlan
+from model import Direction, ScenarioKind, TradePlan
 
 
 PROTECTION_TRIGGER_R = Decimal("3")
 _BPS_DENOMINATOR = Decimal("10000")
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressDeliveryBlock:
+    """Prevent a protected exit from becoming a duplicate liquidity episode."""
+
+    direction: Direction
+    reset_price: float
+    source_scenario_id: str
+    blocked_at_ns: int
+
+    def __post_init__(self) -> None:
+        if self.reset_price <= 0.0:
+            raise ValueError("reset_price must be positive")
+        if not self.source_scenario_id:
+            raise ValueError("source_scenario_id must not be empty")
+        if self.blocked_at_ns < 0:
+            raise ValueError("blocked_at_ns must be non-negative")
+
+    def reset_reached(self, close: float) -> bool:
+        if close <= 0.0:
+            raise ValueError("close must be positive")
+        if self.direction is Direction.LONG:
+            return close >= self.reset_price
+        return close <= self.reset_price
 
 
 def favorable_progress_r(
@@ -103,6 +129,7 @@ class ThreeRProgressProtectionMixin:
         self._progress_stop_order_id: Any | None = None
         self._progress_requested_trigger: Decimal | None = None
         self._progress_position_id: str | None = None
+        self._progress_delivery_blocks: dict[Direction, ProgressDeliveryBlock] = {}
 
     def on_position_opened(self, event: PositionOpened) -> None:
         super().on_position_opened(event)
@@ -163,7 +190,14 @@ class ThreeRProgressProtectionMixin:
         )
 
     def on_bar(self, bar: Bar) -> None:
+        close_value = bar.close.as_double()
+        event_time_ns = int(bar.ts_event)
+        self._release_progress_delivery_blocks(
+            close=close_value,
+            event_time_ns=event_time_ns,
+        )
         super().on_bar(bar)
+        self._invalidate_progress_locked_pending(event_time_ns)
         if self._progress_state != "ARMED":
             return
         plan: TradePlan | None = self._active_plan
@@ -176,7 +210,7 @@ class ThreeRProgressProtectionMixin:
         ):
             return
 
-        close = Decimal(str(bar.close.as_double()))
+        close = Decimal(str(close_value))
         try:
             progress_r = favorable_progress_r(
                 direction=plan.direction,
@@ -193,7 +227,7 @@ class ThreeRProgressProtectionMixin:
             plan=plan,
             close=close,
             progress_r=progress_r,
-            event_time_ns=int(bar.ts_event),
+            event_time_ns=event_time_ns,
         )
 
     def on_order_updated(self, event: OrderUpdated) -> None:
@@ -258,7 +292,43 @@ class ThreeRProgressProtectionMixin:
             )
 
     def on_position_closed(self, event: PositionClosed) -> None:
+        plan: TradePlan | None = self._active_plan
+        protected_exit = (
+            event.instrument_id == self.config.instrument_id
+            and plan is not None
+            and plan.kind is ScenarioKind.ABSORPTION_RECLAIM
+            and self._closed_by_active_cost_floor(event)
+        )
         super().on_position_closed(event)
+        if protected_exit and plan is not None:
+            reset_price = self._structural_reset_price(plan)
+            block = ProgressDeliveryBlock(
+                direction=plan.direction,
+                reset_price=reset_price,
+                source_scenario_id=plan.scenario_id,
+                blocked_at_ns=int(event.ts_event),
+            )
+            self._progress_delivery_blocks[plan.direction] = block
+            self._append_manual_event(
+                scenario_id=plan.scenario_id,
+                previous_state="TERMINAL",
+                next_state="PROGRESS_TARGET_LOCKED",
+                reason_code="THREE_R_PROTECTED_EXIT_TARGET_UNDELIVERED",
+                event_time_ns=int(event.ts_event),
+                reference_price=block.reset_price,
+                details={
+                    "direction": block.direction.value,
+                    "cost_floor_trigger": (
+                        float(self._progress_requested_trigger)
+                        if self._progress_requested_trigger is not None
+                        else None
+                    ),
+                    "execution_target": plan.target_price,
+                    "reset_price": block.reset_price,
+                    "reset_basis": "opposing internal liquidity known at entry",
+                    "position_id": self._progress_position_id,
+                },
+            )
         if event.instrument_id == self.config.instrument_id:
             self._reset_progress_state()
 
@@ -270,6 +340,54 @@ class ThreeRProgressProtectionMixin:
         if self._closed_by_active_cost_floor(event):
             return False
         return super()._is_structural_stop(event, plan)
+
+    def _release_progress_delivery_blocks(
+        self,
+        *,
+        close: float,
+        event_time_ns: int,
+    ) -> None:
+        for direction, block in tuple(self._progress_delivery_blocks.items()):
+            if not block.reset_reached(close):
+                continue
+            del self._progress_delivery_blocks[direction]
+            self._append_manual_event(
+                scenario_id=block.source_scenario_id,
+                previous_state="PROGRESS_TARGET_LOCKED",
+                next_state="IDLE",
+                reason_code="PROGRESS_TARGET_DELIVERED",
+                event_time_ns=event_time_ns,
+                reference_price=block.reset_price,
+                details={
+                    "direction": block.direction.value,
+                    "completed_close": close,
+                    "blocked_at_ns": block.blocked_at_ns,
+                },
+            )
+
+    def _invalidate_progress_locked_pending(self, event_time_ns: int) -> None:
+        plan: TradePlan | None = self._pending_plan
+        if plan is None or plan.kind is not ScenarioKind.ABSORPTION_RECLAIM:
+            return
+        block = self._progress_delivery_blocks.get(plan.direction)
+        if block is None:
+            return
+        self._append_manual_event(
+            scenario_id=plan.scenario_id,
+            previous_state="ENTRY_READY",
+            next_state="INVALIDATED",
+            reason_code="PROGRESS_TARGET_DELIVERY_PENDING",
+            event_time_ns=event_time_ns,
+            reference_price=plan.entry_reference,
+            details={
+                "direction": plan.direction.value,
+                "source_scenario_id": block.source_scenario_id,
+                "reset_price": block.reset_price,
+                "blocked_at_ns": block.blocked_at_ns,
+            },
+        )
+        self._pending_plan = None
+        self._pending_created_ns = None
 
     def _request_cost_floor(
         self,
@@ -436,6 +554,7 @@ class ThreeRProgressProtectionMixin:
 
 __all__ = [
     "PROTECTION_TRIGGER_R",
+    "ProgressDeliveryBlock",
     "ThreeRProgressProtectionMixin",
     "cost_floor_trigger_price",
     "favorable_progress_r",
