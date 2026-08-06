@@ -1,0 +1,277 @@
+name: candidate-04-v34-survivor-unopened
+
+on:
+  workflow_run:
+    workflows: ["candidate-04-v34-survivor-followup"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  unopened:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      FOLLOWUP_RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Restore survivor followup decision
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: candidate-04-v34-survivor-followup-*
+          path: followup
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Freeze survivor and preselect unseen weeks before data access
+        id: freeze
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-04-v34-survivor-unopened
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import json
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          paths = list(Path("followup").rglob("research_decision.json"))
+          if not paths:
+              print("should_run=false")
+              print("reason=no_followup_decision")
+              raise SystemExit(0)
+          decision = json.loads(paths[0].read_text())
+          if not decision.get("three_week_pass"):
+              print("should_run=false")
+              print("reason=survivor_failed_cross_development")
+              raise SystemExit(0)
+          survivor = decision["surviving_mechanism"]
+          source_commit = decision["source_commit"]
+
+          corpus = ""
+          for path in Path(".").rglob("*"):
+              if not path.is_file() or ".git" in path.parts:
+                  continue
+              try:
+                  corpus += path.read_text(errors="ignore")
+              except OSError:
+                  pass
+          seed = f"{source_commit}:v34:{survivor}:unopened"
+          candidates = []
+          cursor = date(2023, 1, 2)
+          last = date(2025, 12, 1)
+          while cursor <= last:
+              week_end = cursor + timedelta(days=6)
+              if str(cursor) not in corpus and str(week_end) not in corpus:
+                  candidates.append((
+                      hashlib.sha256(f"{seed}:{cursor}".encode()).hexdigest(),
+                      cursor - timedelta(days=2),
+                      cursor,
+                      week_end,
+                  ))
+              cursor += timedelta(days=7)
+          candidates.sort()
+          if len(candidates) < 3:
+              raise SystemExit("insufficient repository-unseen weeks")
+          selection = {
+              "candidate": f"candidate-04-v34-{survivor}-only",
+              "survivor": survivor,
+              "source_commit": source_commit,
+              "selection_time": "before_market_data_access",
+              "selection_method": "sha256 rank over repository-unseen Monday weeks",
+              "weeks": [
+                  {
+                      "build_start": str(item[1]),
+                      "evaluation_start": str(item[2]),
+                      "evaluation_end": str(item[3]),
+                  }
+                  for item in candidates[:3]
+              ],
+          }
+          Path("artifacts/candidate-04-v34-survivor-unopened/selection.json").write_text(
+              json.dumps(selection, indent=2, sort_keys=True) + "\n"
+          )
+          print("should_run=true")
+          print(f"survivor={survivor}")
+          print(f"source_commit={source_commit}")
+          PY
+
+      - name: Evaluate frozen survivor on selected weeks sequentially
+        if: steps.freeze.outputs.should_run == 'true'
+        id: evaluate
+        shell: bash
+        env:
+          SURVIVOR: ${{ steps.freeze.outputs.survivor }}
+          SOURCE_COMMIT: ${{ steps.freeze.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v34-survivor-unopened"
+          failed=""
+          for index in 0 1 2; do
+            export C04_BUILD_START="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["build_start"])' "$root/selection.json" "$index")"
+            export C04_EVALUATION_START="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["evaluation_start"])' "$root/selection.json" "$index")"
+            export C04_EVALUATION_END="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["evaluation_end"])' "$root/selection.json" "$index")"
+            export C04_BUILD_END="$C04_EVALUATION_END"
+            week="$root/week_$((index + 1))"
+            mkdir -p "$week"
+
+            python research/candidate-04/rich_features_v2.py \
+              --start "$C04_BUILD_START" \
+              --end "$C04_BUILD_END" \
+              --cache ".cache/candidate-04-v34-survivor-unopened/$index/rich" \
+              --output "$week/rich"
+            python research/candidate-04/post_event_inventory_resolution_compiler.py \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --rich-dir "$week/rich" \
+              --kline-dir ".cache/candidate-04-v34-survivor-unopened/$index/raw" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --output "$week/all_signals" \
+              --download-klines \
+              > "$week/compiler_console.json"
+            export SURVIVOR_WEEK="$week"
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["SURVIVOR_WEEK"])
+          rows = json.loads((root / "all_signals/signals.json").read_text())
+          if os.environ["SURVIVOR"] == "reversal":
+              scenarios = {
+                  "POST_ATTACK_LIQUIDATION_ABSORPTION_REVERSAL",
+                  "POST_ATTACK_TRAPPED_INVENTORY_REVERSAL",
+              }
+          else:
+              scenarios = {"INFORMED_INVENTORY_PULLBACK_CONTINUATION"}
+          selected = [row for row in rows if row["scenario"] in scenarios]
+          path = root / "signals"
+          path.mkdir(parents=True, exist_ok=True)
+          (path / "signals.json").write_text(
+              json.dumps(selected, indent=2, sort_keys=True) + "\n"
+          )
+          (path / "summary.json").write_text(
+              json.dumps({
+                  "written_signals": len(selected),
+                  "route_counts": {"frozen_survivor": os.environ["SURVIVOR"]},
+              }, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+            C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$week/signals/signals.json" \
+            python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start "$C04_BUILD_START" \
+              --build-end "$C04_BUILD_END" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --cache ".cache/candidate-04-v34-survivor-unopened/$index/raw" \
+              --output "$week/nautilus" \
+              > "$week/nautilus_console.json"
+            python research/candidate-04/summarize_candidate_week.py \
+              --root "$week" \
+              --candidate "candidate-04-v34-${SURVIVOR}-only" \
+              --stage "unopened_week_$((index + 1))" \
+              --output "$week/summary.json"
+            passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$week/summary.json")"
+            if [[ "$passed" != "true" ]]; then
+              failed="week_$((index + 1))"
+              break
+            fi
+          done
+
+          export SURVIVOR_UNOPENED_FAILED="$failed"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path("artifacts/candidate-04-v34-survivor-unopened")
+          selection = json.loads((root / "selection.json").read_text())
+          weeks = {
+              path.parent.name: json.loads(path.read_text())
+              for path in root.glob("week_*/summary.json")
+          }
+          passed = len(weeks) == 3 and all(
+              item["candidate_pass"] for item in weeks.values()
+          )
+          evidence = {
+              "candidate": selection["candidate"],
+              "survivor": selection["survivor"],
+              "source_commit": selection["source_commit"],
+              "selection": selection,
+              "weeks": weeks,
+              "three_unopened_weeks_pass": passed,
+              "failed_week": os.environ["SURVIVOR_UNOPENED_FAILED"] or None,
+              "candidate_modified_after_selection": False,
+              "decision": (
+                  "progress_to_long_evaluation"
+                  if passed
+                  else "reject_frozen_survivor_after_unopened_failure"
+              ),
+          }
+          (root / "research_decision.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          Path("research/candidate-04/evidence-v34-survivor-unopened.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Record skipped unopened stage
+        if: steps.freeze.outputs.should_run != 'true'
+        shell: bash
+        env:
+          REASON: ${{ steps.freeze.outputs.reason }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          value = {
+              "candidate": "candidate-04-v34-survivor",
+              "stage": "unopened",
+              "executed": False,
+              "reason": os.environ.get("REASON"),
+          }
+          Path("research/candidate-04/evidence-v34-survivor-unopened.json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v34-survivor-unopened-${{ github.sha }}
+          path: artifacts/candidate-04-v34-survivor-unopened
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Commit unopened decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/evidence-v34-survivor-unopened.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "record V34 survivor unopened-week decision"
+          git push origin HEAD:research/candidate-04
