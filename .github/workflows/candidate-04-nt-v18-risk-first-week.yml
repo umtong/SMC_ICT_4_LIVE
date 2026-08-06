@@ -1,0 +1,126 @@
+name: candidate-04-nt-v18-risk-first-week
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-nt-v18-risk-first-week.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify NautilusTrader runtime, strategy and risk math
+        run: |
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/nt_liquidity_strategy.py \
+            research/candidate-04/nt_auction_excess_strategy.py \
+            research/candidate-04/nt_auction_failure_strategy.py \
+            research/candidate-04/nt_low_impact_external_strategy.py \
+            research/candidate-04/nt_low_impact_hybrid_target_strategy.py \
+            research/candidate-04/nt_composite_liquidity_strategy.py \
+            research/candidate-04/nt_causal_risk_sizing.py \
+            research/candidate-04/nt_backtest.py \
+            research/candidate-04/nt_backtest_v18.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_liquidity_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_composite_liquidity_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Revalidate first random BTC week exclusively through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="artifacts/candidate-04-nt-v18/week1"
+          mkdir -p "$out"
+          python research/candidate-04/nt_backtest_v18.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start 2023-10-01 \
+            --build-end 2023-10-09 \
+            --evaluation-start 2023-10-03 \
+            --evaluation-end 2023-10-09 \
+            --cache .cache/candidate-04-nt-v18/raw \
+            --output "$out" \
+            | tee "$out/console.json"
+          test -s "$out/metrics.json"
+          test -s "$out/run.json"
+          test -s "$out/data_manifest.json"
+          test -s "$out/orders.csv"
+          test -s "$out/positions.csv"
+          test -s "$out/account.csv"
+          test -s "$out/equity.csv"
+          test -s "$out/strategy_events.json"
+
+      - name: Verify realized stop losses against prior NAV
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import pandas as pd
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-04-nt-v18/week1")
+          positions = pd.read_csv(root / "positions.csv")
+          events = json.loads((root / "strategy_events.json").read_text())
+          entries = [e for e in events if e.get("event_type") == "ENTRY_SUBMITTED"]
+          losses = []
+          for row, entry in zip(positions.to_dict("records"), entries):
+              pnl = float(str(row["realized_pnl"]).split()[0].replace("_", ""))
+              if pnl >= 0:
+                  continue
+              equity = float(entry["details"]["equity"])
+              losses.append(abs(pnl) / equity)
+          maximum = max(losses, default=0.0)
+          payload = {
+              "maximum_realized_loss_fraction": maximum,
+              "loss_fractions": losses,
+              "limit": 0.03,
+              "pass": maximum <= 0.0301,
+          }
+          (root / "risk_verification.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          if not payload["pass"]:
+              raise SystemExit("realized stop loss exceeded 3% planning limit")
+          PY
+
+      - name: Print first-week result
+        if: always()
+        run: |
+          for path in \
+            artifacts/candidate-04-nt-v18/week1/metrics.json \
+            artifacts/candidate-04-nt-v18/week1/risk_verification.json; do
+            if test -f "$path"; then
+              echo "=== $path ==="
+              python -m json.tool "$path"
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-nt-v18-risk-${{ github.sha }}
+          path: artifacts/candidate-04-nt-v18/week1
+          if-no-files-found: warn
+          retention-days: 90
