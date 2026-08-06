@@ -222,6 +222,7 @@ class NTLvcfrStrategy(Strategy):
             "invalid_structural_target": 0,
             "structural_protection_activations": 0,
             "structural_break_even_ratchets": 0,
+            "structural_trail_updates": 0,
             "entries_submitted": 0,
             "entries_rejected": 0,
             "exits_submitted": 0,
@@ -415,6 +416,7 @@ class NTLvcfrStrategy(Strategy):
             "break_even_price": active.break_even_price,
             "structural_protection_active": active.structural_protection_active,
             "structural_protection_stop": active.stop if active.structural_protection_active else None,
+            "structural_trail_updates": self.counters["structural_trail_updates"],
             "protection_active": active.protection_active,
             "mfe_net_r": active.mfe_net_r,
             "settled_funding_cost_per_unit_estimate": active.settled_funding_cost_per_unit,
@@ -746,27 +748,53 @@ class NTLvcfrStrategy(Strategy):
             and active.direction * (executable - structural_trigger) > 0.0
         ):
             active.structural_protection_active = True
-            active.stop = (
-                max(active.stop, structural_trigger)
-                if active.direction > 0
-                else min(active.stop, structural_trigger)
-            )
             self.counters["structural_protection_activations"] += 1
             self._emit(
                 scenario_id=active.signal["scenario_id"],
-                event_type="STRUCTURAL_PROTECTION_ACTIVATED",
+                event_type="STRUCTURAL_TRAIL_ARMED",
                 event_time_ns=timestamp_ns,
                 observed_time_ns=timestamp_ns,
                 previous_state=f"{active.kind}_ACTIVE",
                 next_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
-                reason_code="FIRST_CAUSAL_LIQUIDITY_OBJECTIVE_BECAME_INVALIDATION",
-                reference_price=active.stop,
+                reason_code="FIRST_CAUSAL_LIQUIDITY_OBJECTIVE_ARMED_COMPLETED_STRUCTURE_TRAIL",
+                reference_price=structural_trigger,
                 details={
                     "structural_trigger": structural_trigger,
+                    "existing_stop": active.stop,
                     "after_cost_break_even": active.break_even_price,
                     "mfe_net_r": net_r,
                 },
             )
+
+        if active.structural_protection_active:
+            structural_stop = self._structural_protection_stop(active)
+            if (
+                structural_stop is not None
+                and active.direction * (executable - structural_stop) > 0.0
+            ):
+                updated = (
+                    max(active.stop, structural_stop)
+                    if active.direction > 0
+                    else min(active.stop, structural_stop)
+                )
+                if updated != active.stop:
+                    active.stop = updated
+                    self.counters["structural_trail_updates"] += 1
+                    self._emit(
+                        scenario_id=active.signal["scenario_id"],
+                        event_type="STRUCTURAL_TRAIL_UPDATED",
+                        event_time_ns=timestamp_ns,
+                        observed_time_ns=timestamp_ns,
+                        previous_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
+                        next_state=f"{active.kind}_STRUCTURALLY_PROTECTED",
+                        reason_code="COMPLETED_TWENTY_MINUTE_STRUCTURE_ADVANCED",
+                        reference_price=active.stop,
+                        details={
+                            "structural_trigger": structural_trigger,
+                            "structural_stop": structural_stop,
+                            "mfe_net_r": net_r,
+                        },
+                    )
 
         if (
             active.structural_protection_active
@@ -846,6 +874,15 @@ class NTLvcfrStrategy(Strategy):
             self._submit_exit(reason, timestamp_ns)
         elif timestamp_ns - active.entry_time_ns >= active.max_holding_minutes * NS_PER_MINUTE:
             self._submit_exit("TIME", timestamp_ns)
+
+    def _structural_protection_stop(self, active: ActiveLeg) -> float | None:
+        """Return a stop behind frozen completed structure, without R anchoring."""
+        if len(self._completed_minutes) < self.config.continuation_trail_minutes:
+            return None
+        recent = list(self._completed_minutes)[-self.config.continuation_trail_minutes :]
+        if active.direction > 0:
+            return min(item[1] for item in recent) - self.config.continuation_trail_buffer_atr * active.atr
+        return max(item[2] for item in recent) + self.config.continuation_trail_buffer_atr * active.atr
 
     def _structural_stop(self, active: ActiveLeg) -> float | None:
         if len(self._completed_minutes) < self.config.continuation_trail_minutes:
