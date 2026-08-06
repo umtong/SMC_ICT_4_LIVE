@@ -150,6 +150,7 @@ class ValuationDislocationRouter(GapSafePositioningAuctionRouter):
         self._rearm_after_index = -1
         self._needs_normalization = True
         self._episode_count = 0
+        self._geometry_diagnostic: dict[str, Any] = {}
 
     @property
     def active_scenario_id(self) -> str | None:
@@ -538,6 +539,7 @@ class ValuationDislocationRouter(GapSafePositioningAuctionRouter):
                         "contraction_fraction": contraction,
                         "valuation_price": anchor,
                         "median_basis": median_basis,
+                        **self._geometry_diagnostic,
                     },
                 )
             )
@@ -589,11 +591,47 @@ class ValuationDislocationRouter(GapSafePositioningAuctionRouter):
             stop = bar.low - buffer
             risk = entry - stop
             reward = fair_value - entry
-        if risk <= 0.0 or reward <= 0.0:
+        common = {
+            "entry": entry,
+            "confirmation_high": bar.high,
+            "confirmation_low": bar.low,
+            "stop": stop,
+            "risk": risk,
+            "reward_to_fair_value": reward,
+            "atr": atr,
+            "valuation_price": anchor,
+            "median_basis": median_basis,
+            "fair_value_target": fair_value,
+            "minimum_rr": self.config.minimum_rr,
+            "direction": episode.direction.value,
+            "current_basis": (bar.close - anchor) / anchor,
+            "current_basis_bps": (bar.close - anchor) / anchor * 10_000.0,
+        }
+        if risk <= 0.0:
+            self._geometry_diagnostic = {
+                **common,
+                "geometry_reason": "NONPOSITIVE_RISK",
+            }
+            return None
+        if reward <= 0.0:
+            self._geometry_diagnostic = {
+                **common,
+                "geometry_reason": "FAIR_VALUE_ALREADY_PASSED",
+            }
             return None
         uncapped_rr = reward / risk
         if uncapped_rr < self.config.minimum_rr:
+            self._geometry_diagnostic = {
+                **common,
+                "geometry_reason": "REMAINING_RR_BELOW_MINIMUM",
+                "uncapped_target_rr": uncapped_rr,
+            }
             return None
+        self._geometry_diagnostic = {
+            **common,
+            "geometry_reason": "ACCEPTED",
+            "uncapped_target_rr": uncapped_rr,
+        }
         target_rr = min(uncapped_rr, self.config.maximum_target_rr)
         target = (
             entry - risk * target_rr
