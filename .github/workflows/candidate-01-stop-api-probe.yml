@@ -5,6 +5,7 @@ on:
     branches: ["research/candidate-01"]
     paths:
       - ".github/workflows/candidate-01-stop-api-probe.yml"
+      - "research/candidate-01/nautilus_stop_api_probe.py"
   workflow_dispatch:
 
 permissions:
@@ -28,11 +29,15 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm \
+            --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
             "$RESEARCH_IMAGE" \
             bash -lc '
               set -euo pipefail
               export PATH=/opt/smc4/.venv/bin:$PATH
               smc4 doctor
-              python -c "import inspect; from nautilus_trader.model.orders import OrderFactory; from nautilus_trader.model.enums import OrderType, TriggerType; print(\"ORDER_TYPES\", OrderType.STOP_MARKET, OrderType.STOP_LIMIT); print(\"TRIGGER\", TriggerType.LAST_PRICE); print(\"BRACKET_SIGNATURE\", inspect.signature(OrderFactory.bracket)); print(\"STOP_MARKET_SIGNATURE\", inspect.signature(OrderFactory.stop_market)); print(\"BRACKET_DOC\", OrderFactory.bracket.__doc__)"
+              python research/candidate-01/nautilus_stop_api_probe.py
             '
