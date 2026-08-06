@@ -74,6 +74,9 @@ class Setup:
     atr: float
     raid_extreme: float
     approach_level: float
+    path_last_close: float
+    path_travel: float
+    path_bars: int
     confirmation_index: int | None = None
     zone_low: float | None = None
     zone_high: float | None = None
@@ -130,8 +133,14 @@ class MachineParams:
     approach_lookback: int = 8
     raid_atr: float = 0.08
     acceptance_atr: float = 0.12
+
+    # Displacement is an efficient event-time path, not one candle. The path
+    # must move away from the raid extreme, break approach structure, and avoid
+    # spending most of its travel oscillating in both directions.
     displacement_atr: float = 0.75
-    rejection_confirm_bars: int = 10
+    displacement_max_bars: int = 10
+    displacement_min_efficiency: float = 0.55
+    displacement_speed_atr: float = 0.32
 
     # Executable entry/invalidation grammar retained from v1.
     stop_buffer_atr: float = 1.00
