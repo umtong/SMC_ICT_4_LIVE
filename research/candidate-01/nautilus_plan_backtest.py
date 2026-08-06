@@ -12,7 +12,7 @@ bar execution model then owns the fill and all contingent-order processing.
 
 from __future__ import annotations
 
-from bisect import bisect_left
+from bisect import bisect_right
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -300,9 +300,9 @@ def _build_metrics(
             "official Binance Vision USD-M one-minute external bars"
         ),
         "entry_semantics": (
-            "equal-notional signal mapped to first completed one-minute bar; "
-            "market bracket evaluated on the following completed one-minute "
-            "bar; NautilusTrader owns fills and contingent orders"
+            "equal-notional signal mapped to the first strictly later "
+            "completed one-minute bar; market bracket submitted there; "
+            "NautilusTrader owns fills and contingent orders"
         ),
         "bar_adaptive_high_low_ordering": True,
     }
@@ -386,7 +386,7 @@ def run_nautilus_plan_backtest(
     ):
         if not start_ns <= plan.signal_time_ns < end_ns:
             continue
-        activation_index = bisect_left(
+        activation_index = bisect_right(
             execution_bar_times,
             int(plan.signal_time_ns),
         )
@@ -760,7 +760,6 @@ def run_nautilus_plan_backtest(
                 return
 
             self._time_exit_if_needed(ts_ns)
-            self._submit_pending(bar)
 
             new_plans = list(self.schedule.get(ts_ns, ()))
             if new_plans:
@@ -776,6 +775,10 @@ def run_nautilus_plan_backtest(
                             ts_ns=ts_ns,
                             reason="SIGNAL_WHILE_GLOBAL_POSITION_OCCUPIED",
                         )
+            # The activation bar is strictly later than the signal timestamp.
+            # It is now complete, so submission here is causal and avoids an
+            # unintended second full minute of latency.
+            self._submit_pending(bar)
 
         def on_position_opened(self, event: PositionOpened) -> None:
             self.position_opened_ns = int(event.ts_event)
@@ -1009,8 +1012,8 @@ def run_nautilus_plan_backtest(
                     "NautilusTrader"
                 ),
                 "entry_delay": (
-                    "signal observation mapped to one-minute execution clock; "
-                    "submission on following completed one-minute bar"
+                    "submission on first strictly later completed one-minute "
+                    "execution bar"
                 ),
                 "execution_market_data": (
                     "official Binance Vision USD-M one-minute klines"
