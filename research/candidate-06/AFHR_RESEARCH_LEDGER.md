@@ -62,3 +62,8 @@ The campaign records distinct accepted bias contexts, trades per context, the la
 ## DLVR closure
 
 DLVR was evaluated after two implementation errors were corrected under variable control: Binance depth timestamp parsing and payload transport/checksum. With 20,138/20,138 depth records accepted, full DLVR produced **-3.116% geometric NAV growth per day**, 11 trades, 18.18% win rate, profit factor 0.179 and 22.12% maximum drawdown. Removing depth confirmation worsened the result to **-8.326% per day** with 22 trades and 45.58% drawdown. Thus passive-depth confirmation reduced false price signals, but did not supply standalone directional alpha; DLVR was discarded as an independent scenario and retained only as a diagnostic primitive.
+
+
+## Implementation-control note: quality diagnostic state chain
+
+The first remote AFHR matrix reached NautilusTrader but stopped before any adaptive-quality performance result because a newly created diagnostic scenario declared `BASELINE_HTF_ACCEPTANCE` as its previous state. The repository recorder correctly requires every new scenario id to begin at `IDLE`. This was an event-serialization contract error, not a change in the AFHR market hypothesis. The fix changes only the diagnostic transition to `IDLE -> RESET` and retains `BASELINE_HTF_ACCEPTANCE` as evidence metadata. The same frozen first week and all strategy variables must therefore be rerun unchanged.

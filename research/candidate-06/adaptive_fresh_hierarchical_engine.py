@@ -132,11 +132,15 @@ class AdaptiveFreshHierarchicalEngine(HierarchicalMultiLiquidityEngine):
         return ScenarioTransition(
             scenario_id=f"AFHR-QUALITY-{bar.end_ts_ns}",
             event_type="AFHR_QUALITY_TRANSITION",
-            previous_state="BASELINE_HTF_ACCEPTANCE",
+            previous_state="IDLE",
             next_state="RESET",
             reason_code=reason,
             reference_price=bar.close,
-            details={"direction": direction, **assessment.details()},
+            details={
+                "direction": direction,
+                "baseline_precondition": "BASELINE_HTF_ACCEPTANCE",
+                **assessment.details(),
+            },
         )
 
     def _evaluate_completed_bias(

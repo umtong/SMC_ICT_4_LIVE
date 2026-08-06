@@ -88,6 +88,9 @@ class AdaptiveFreshHierarchicalTests(unittest.TestCase):
         transitions = engine._evaluate_completed_bias(weak, snap(10, 5, 103.0, 111.0, 103.0, 109.0))
         self.assertEqual(len(transitions), 1)
         self.assertEqual(transitions[0].reason_code, "HTF_ACCEPTANCE_NOT_EXCEPTIONAL_TO_PRIOR_DISTRIBUTION")
+        self.assertEqual(transitions[0].previous_state, "IDLE")
+        self.assertEqual(transitions[0].next_state, "RESET")
+        self.assertEqual(transitions[0].details["baseline_precondition"], "BASELINE_HTF_ACCEPTANCE")
         self.assertIsNone(engine._bias)
 
     def test_exceptional_break_creates_bias_and_seals_quality_evidence(self) -> None:
