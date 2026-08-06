@@ -83,20 +83,25 @@ jobs:
           if source.count(declaration) != 1:
               raise SystemExit("native Strategy class declaration mismatch")
           insert_at = source.index("\n", source.index(declaration)) + 1
-          bridge = '''    def __new__(
-              cls,
-              config: AggTradeAcceptanceStrategyConfig,
-              *_args: Any,
-              **_kwargs: Any,
-          ) -> Any:
-              # The pinned PyO3 base accepts only StrategyConfig at allocation time.
-              # Candidate-specific immutable schedules remain Python-side __init__ inputs.
-              return super().__new__(cls, config)
-
-          '''
+          bridge = (
+              "    def __new__(\n"
+              "        cls,\n"
+              "        config: AggTradeAcceptanceStrategyConfig,\n"
+              "        *_args: Any,\n"
+              "        **_kwargs: Any,\n"
+              "    ) -> Any:\n"
+              "        # The pinned PyO3 base accepts only StrategyConfig at allocation time.\n"
+              "        # Candidate-specific immutable schedules remain Python-side __init__ inputs.\n"
+              "        return super().__new__(cls, config)\n"
+              "\n"
+          )
           if "return super().__new__(cls, config)" in source:
               raise SystemExit("native Strategy allocation bridge already exists unexpectedly")
           source = source[:insert_at] + bridge + source[insert_at:]
+          old_init = "        super().__init__(config=config)\n"
+          if source.count(old_init) != 1:
+              raise SystemExit("native Strategy base initialization anchor mismatch")
+          source = source.replace(old_init, "        super().__init__(config)\n")
           path.write_text(source, encoding="utf-8")
           PY
 
@@ -128,6 +133,7 @@ jobs:
               anchor,
               anchor
               + '        self.assertIn("return super().__new__(cls, config)", source)\n'
+              + '        self.assertIn("super().__init__(config)", source)\n'
               + '        self.assertIn("entry_order, stop_order, target_order = orders", source)\n'
               + '        self.assertNotIn("orders.orders", source)\n',
           )
