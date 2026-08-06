@@ -1,3 +1,3 @@
-# Candidate 09 oracle evaluation
+# Candidate 09 controlled rerun
 
-**IMPLEMENTATION_ERROR** at `tests`. Fixed weeks and strategy thresholds were unchanged.
+**IMPLEMENTATION_ERROR** at `gate`. No strategy parameter or frozen week was changed.

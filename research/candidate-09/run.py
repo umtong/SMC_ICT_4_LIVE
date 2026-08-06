@@ -31,7 +31,7 @@ import nautilus_trader
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
 from nautilus_trader.model.currencies import USDT
-from nautilus_trader.model.data import BarType
+from nautilus_trader.model.data import Bar, BarType
 from nautilus_trader.model.enums import AccountType, OmsType
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Money
@@ -185,10 +185,22 @@ def run_nautilus_segment(
     starting_nav = float(config["risk"]["starting_nav_usdt"])
     instrument = TestInstrumentProvider.btcusdt_perp_binance()
     bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-LAST-EXTERNAL")
-    wrangler = BarDataWrangler(bar_type=bar_type, instrument=instrument)
-    nautilus_bars = wrangler.process(bars_to_frame(bars))
-    if len(nautilus_bars) != len(bars):
-        raise RuntimeError(f"wrangler changed row count: {len(bars)} -> {len(nautilus_bars)}")
+    # Construct native Nautilus bars directly.  This avoids a pandas copy-on-write
+    # incompatibility in BarDataWrangler while preserving the same close-time
+    # ts_event/ts_init contract and all Nautilus execution/accounting semantics.
+    nautilus_bars = [
+        Bar(
+            bar_type=bar_type,
+            open=instrument.make_price(item.open),
+            high=instrument.make_price(item.high),
+            low=instrument.make_price(item.low),
+            close=instrument.make_price(item.close),
+            volume=instrument.make_qty(item.volume),
+            ts_event=item.ts_ns,
+            ts_init=item.ts_ns,
+        )
+        for item in bars
+    ]
     flow_map = {int(nautilus_bar.ts_init): flow_bar for nautilus_bar, flow_bar in zip(nautilus_bars, bars)}
     events: list[dict[str, Any]] = []
     trades: list[dict[str, Any]] = []
