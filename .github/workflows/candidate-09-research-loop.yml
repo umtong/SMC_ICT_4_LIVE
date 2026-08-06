@@ -1,4 +1,4 @@
-name: Candidate 09 controlled research loop v3
+name: Candidate 09 controlled research loop v4
 
 on:
   push:
@@ -62,6 +62,13 @@ jobs:
               if old_block not in run_text:
                   raise SystemExit('expected wrangler block not found')
               run_text = run_text.replace(old_block, new_block, 1)
+
+          old_logging = 'logging=LoggingConfig(log_level="ERROR"),'
+          new_logging = 'logging=LoggingConfig(bypass_logging=True),'
+          if new_logging not in run_text:
+              if old_logging not in run_text:
+                  raise SystemExit('expected per-engine logging configuration not found')
+              run_text = run_text.replace(old_logging, new_logging, 1)
           run_path.write_text(run_text, encoding='utf-8')
 
           strategy_path = Path('research/candidate-09/nautilus_strategy.py')
