@@ -7,6 +7,8 @@ on:
       - ".github/workflows/candidate-01-stop-api-probe.yml"
       - "research/candidate-01/nautilus_stop_api_probe.py"
       - "research/candidate-01/nautilus_stop_bracket_smoke.py"
+      - "research/candidate-01/nautilus_tick_stop_limit_adapter_smoke.py"
+      - "research/candidate-01/nautilus_tick_stop_plan_backtest.py"
   workflow_dispatch:
 
 permissions:
@@ -26,7 +28,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Inspect and execute fixed Nautilus stop bracket
+      - name: Inspect and execute fixed Nautilus stop-limit paths
         run: |
           set -euo pipefail
           docker run --rm \
@@ -42,7 +44,10 @@ jobs:
               smc4 doctor
               python -m compileall -q \
                 research/candidate-01/nautilus_stop_api_probe.py \
-                research/candidate-01/nautilus_stop_bracket_smoke.py
+                research/candidate-01/nautilus_stop_bracket_smoke.py \
+                research/candidate-01/nautilus_tick_stop_plan_backtest.py \
+                research/candidate-01/nautilus_tick_stop_limit_adapter_smoke.py
               python research/candidate-01/nautilus_stop_api_probe.py
               python research/candidate-01/nautilus_stop_bracket_smoke.py
+              python research/candidate-01/nautilus_tick_stop_limit_adapter_smoke.py
             '
