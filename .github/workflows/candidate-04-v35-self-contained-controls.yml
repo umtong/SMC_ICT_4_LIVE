@@ -1,0 +1,300 @@
+name: candidate-04-v35-self-contained-controls
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v35-self-contained-controls.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Bootstrap exact source without marketplace actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin https://github.com/umtong/SMC_ICT_4_LIVE.git
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          smc4 doctor
+
+      - name: Restore all validated V31 core artifacts directly
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=(low_activity normal_basis stress_a year_end autumn may_2024 failed_untouched_2025_03)
+          ids=(8973026625 8973026320 8973022801 8973022682 8973033157 8973024256 8973036804)
+          mkdir -p sources
+          for i in "${!names[@]}"; do
+            name="${names[$i]}"
+            id="${ids[$i]}"
+            mkdir -p "sources/$name"
+            curl --fail --location --silent --show-error \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/umtong/SMC_ICT_4_LIVE/actions/artifacts/$id/zip" \
+              -o "sources/$name.zip"
+            unzip -q "sources/$name.zip" -d "sources/$name"
+            test -s "sources/$name/ablated/signals/signals.json"
+            test -s "sources/$name/comparison.json"
+          done
+
+      - name: Verify three controlled execution contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q \
+            research/candidate-04/nt_exact_causal_target_risk_sizing.py \
+            research/candidate-04/nt_expected_fill_risk_sizing.py \
+            research/candidate-04/nt_expected_fill_only_risk_sizing.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+            research/candidate-04/nt_backtest_v34_expected_fill_only.py \
+            research/candidate-04/nt_backtest_v34_expected_fill.py \
+            research/candidate-04/nt_rich_signal_strategy.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_exact_causal_target_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_expected_fill_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_expected_fill_only_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Execute exact-target, expected-fill, and combined controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=(low_activity normal_basis stress_a year_end autumn may_2024 failed_untouched_2025_03)
+          build_starts=(2023-08-02 2023-12-16 2024-08-05 2024-12-25 2025-10-18 2024-05-25 2025-03-22)
+          build_ends=(2023-08-10 2023-12-24 2024-08-13 2025-01-02 2025-10-26 2024-06-02 2025-03-30)
+          eval_starts=(2023-08-04 2023-12-18 2024-08-07 2024-12-27 2025-10-20 2024-05-27 2025-03-24)
+          eval_ends=(2023-08-10 2023-12-24 2024-08-13 2025-01-02 2025-10-26 2024-06-02 2025-03-30)
+          variants=(exact_target expected_fill_only combined)
+          runners=(
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py
+            research/candidate-04/nt_backtest_v34_expected_fill_only.py
+            research/candidate-04/nt_backtest_v34_expected_fill.py
+          )
+
+          for i in "${!names[@]}"; do
+            name="${names[$i]}"
+            signals="$GITHUB_WORKSPACE/sources/$name/ablated/signals/signals.json"
+            for j in "${!variants[@]}"; do
+              variant="${variants[$j]}"
+              runner="${runners[$j]}"
+              output="artifacts/candidate-04-v35/$variant/$name/nautilus"
+              mkdir -p "$output"
+              C04_SIGNALS_PATH="$signals" \
+              python "$runner" \
+                --config research/candidate-04/nt_liquidity_config.json \
+                --build-start "${build_starts[$i]}" \
+                --build-end "${build_ends[$i]}" \
+                --evaluation-start "${eval_starts[$i]}" \
+                --evaluation-end "${eval_ends[$i]}" \
+                --cache ".cache/candidate-04-v35/$name/raw" \
+                --output "$output" \
+                > "artifacts/candidate-04-v35/$variant/$name/console.json"
+              test -s "$output/metrics.json"
+              test -e "$output/positions.csv"
+              test -s "$output/strategy_events.json"
+            done
+          done
+
+      - name: Verify attribution, risk, and aggregate all controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          from pathlib import Path
+          import pandas as pd
+          from pandas.errors import EmptyDataError
+
+          root = Path("artifacts/candidate-04-v35")
+          source_root = Path("sources")
+          names = [
+              "low_activity",
+              "normal_basis",
+              "stress_a",
+              "year_end",
+              "autumn",
+              "may_2024",
+              "failed_untouched_2025_03",
+          ]
+          variants = {
+              "exact_target": {
+                  "target_contract": "exact_pre_signal_causal_reference",
+                  "fill_contract": None,
+                  "changed_variables": 1,
+              },
+              "expected_fill_only": {
+                  "target_contract": "validated_v31_capped_reference",
+                  "fill_contract": "arithmetic_mean_completed_directional_excursion",
+                  "changed_variables": 1,
+              },
+              "combined": {
+                  "target_contract": "exact_pre_signal_causal_reference",
+                  "fill_contract": "arithmetic_mean_completed_directional_excursion",
+                  "changed_variables": 2,
+              },
+          }
+          result = {
+              "source_commit": __import__("os").environ["GITHUB_SHA"],
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "baseline": {},
+              "variants": {},
+          }
+
+          for name in names:
+              comparison = json.loads((source_root / name / "comparison.json").read_text())
+              result["baseline"][name] = comparison["ablated"]
+
+          for variant, contract in variants.items():
+              weeks = []
+              for name in names:
+                  base = root / variant / name / "nautilus"
+                  metrics = json.loads((base / "metrics.json").read_text())
+                  events = json.loads((base / "strategy_events.json").read_text())
+                  try:
+                      positions = pd.read_csv(base / "positions.csv")
+                  except EmptyDataError:
+                      positions = pd.DataFrame()
+                  entries = [
+                      event for event in events
+                      if event.get("event_type") == "ENTRY_SUBMITTED"
+                  ]
+                  if len(entries) != len(positions.index):
+                      raise SystemExit(
+                          f"{variant}/{name}: entry-position mismatch "
+                          f"{len(entries)} != {len(positions.index)}"
+                      )
+
+                  losses = []
+                  planned_ratios = []
+                  quantities = []
+                  exact_identity_checked = 0
+                  for position, entry in zip(positions.to_dict("records"), entries):
+                      details = entry["details"]
+                      if details.get("target_contract") != contract["target_contract"]:
+                          raise SystemExit(
+                              f"{variant}/{name}: target contract drifted"
+                          )
+                      if contract["fill_contract"] is None:
+                          if details.get("fill_expectation") is not None:
+                              raise SystemExit(
+                                  f"{variant}/{name}: fill contract unexpectedly changed"
+                              )
+                      elif details.get("fill_expectation") != contract["fill_contract"]:
+                          raise SystemExit(
+                              f"{variant}/{name}: fill contract drifted"
+                          )
+                      if contract["target_contract"] == "exact_pre_signal_causal_reference":
+                          causal = details.get("causal_target")
+                          if causal is not None:
+                              exact_identity_checked += 1
+                              if abs(float(details["target"]) - float(causal)) > 0.11:
+                                  raise SystemExit(
+                                      f"{variant}/{name}: target differs from causal reference"
+                                  )
+                      pnl = float(
+                          str(position["realized_pnl"])
+                          .split()[0].replace("_", "")
+                      )
+                      equity = float(details["equity"])
+                      if pnl < 0.0:
+                          losses.append(abs(pnl) / equity)
+                      execution_loss = float(
+                          details["execution_planned_loss_per_unit"]
+                      )
+                      signal_loss = float(
+                          details["signal_planned_loss_per_unit"]
+                      )
+                      planned_ratios.append(execution_loss / signal_loss)
+                      quantities.append(float(details["quantity"]))
+
+                  maximum_loss = max(losses, default=0.0)
+                  week = {
+                      "matrix": name,
+                      "trades": metrics.get("trades"),
+                      "wins": metrics.get("wins"),
+                      "win_rate": metrics.get("win_rate"),
+                      "total_return": metrics.get("total_return"),
+                      "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                      "active_days": metrics.get("active_days"),
+                      "max_drawdown": metrics.get("max_drawdown"),
+                      "largest_winner_share": metrics.get("largest_winner_share"),
+                      "scenario_metrics": metrics.get("scenario_metrics"),
+                      "maximum_realized_loss_fraction": maximum_loss,
+                      "risk_pass": maximum_loss <= 0.0301,
+                      "mean_execution_to_signal_planned_loss": (
+                          sum(planned_ratios) / len(planned_ratios)
+                          if planned_ratios else None
+                      ),
+                      "mean_quantity": (
+                          sum(quantities) / len(quantities)
+                          if quantities else None
+                      ),
+                      "exact_target_identity_checks": exact_identity_checked,
+                      "baseline": result["baseline"][name],
+                  }
+                  weeks.append(week)
+
+              returns = [float(week["total_return"]) for week in weeks]
+              compounded = math.prod(1.0 + value for value in returns) - 1.0
+              daily = (1.0 + compounded) ** (1.0 / 49.0) - 1.0
+              trades = sum(int(week["trades"]) for week in weeks)
+              wins = sum(int(week["wins"]) for week in weeks)
+              aggregate = {
+                  "changed_variables": contract["changed_variables"],
+                  "weeks": weeks,
+                  "calendar_days": 49,
+                  "all_weeks_positive": all(value > 0.0 for value in returns),
+                  "all_weeks_risk_pass": all(week["risk_pass"] for week in weeks),
+                  "compounded_return": compounded,
+                  "geometric_daily_growth": daily,
+                  "trades": trades,
+                  "wins": wins,
+                  "win_rate": wins / trades if trades else 0.0,
+                  "maximum_realized_loss_fraction": max(
+                      week["maximum_realized_loss_fraction"] for week in weeks
+                  ),
+                  "development_target_reached": (
+                      all(value > 0.0 for value in returns)
+                      and all(week["risk_pass"] for week in weeks)
+                      and daily >= 0.01
+                  ),
+                  "final_validation_completed": False,
+              }
+              result["variants"][variant] = aggregate
+
+          output = root / "control_comparison.json"
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print("CONTROL_RESULTS_JSON_BEGIN")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          print("CONTROL_RESULTS_JSON_END")
+          PY
