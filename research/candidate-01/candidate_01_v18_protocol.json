@@ -1,0 +1,68 @@
+{
+  "candidate": "resolved impact with external-liquidity target extension",
+  "candidate_version": "v18",
+  "research_question": "Does treating measured travel as a minimum and routing the final objective to the nearest farther, causally open 40-bps intrinsic pool convert resolved-impact opportunities into sufficient cost-net trades without changing the entry state?",
+  "selection": {
+    "method": "Deterministic SHA-256 ordering of Monday BTC weeks from 2021-01-04 through 2026-07-20, excluding candidate-01 weeks already opened.",
+    "seed_material": "candidate-01-v18-external-impact-target",
+    "frozen_order": [
+      "2026-06-01",
+      "2023-08-14",
+      "2023-07-17"
+    ]
+  },
+  "rules": {
+    "primary": "external-extended",
+    "ablation_control": "base-measured",
+    "fixed_state_machine": "candidate v17 causal three-notional resolved impact",
+    "primary_target": "nearest already-confirmed and still-unconsumed same-direction 40-bps intrinsic pivot at least as far as the measured target; otherwise measured target",
+    "control_target": "unchanged measured structure target",
+    "selection_after_first_week": "Use external-extended whenever it advances. Use base-measured only when the primary stops and the control advances. Freeze the selected rule before opening week two."
+  },
+  "execution": {
+    "authoritative_engine": "NautilusTrader 1.230.0",
+    "data": "Official Binance Vision USD-M BTCUSDT aggTrades represented one-for-one as NautilusTrader TradeTick",
+    "context_days": 3,
+    "daily_clock_minutes": 20,
+    "risk_fraction": 0.03,
+    "all_in_cost_bps_per_side": 7.0,
+    "maximum_hold_hours": 4,
+    "global_pending_or_open_positions": 1,
+    "custom_fill_simulator": false,
+    "custom_pnl_or_nav_ledger": false
+  },
+  "week_gate": {
+    "operational_requirements": {
+      "ended_flat": true,
+      "one_global_entry_gate_violations": 0,
+      "protective_order_failures": 0,
+      "liquidation_marker_rows": 0
+    },
+    "full_pass": {
+      "minimum_closed_positions": 7,
+      "minimum_win_rate": 0.45,
+      "minimum_total_return": 0.0,
+      "minimum_geometric_mean_daily_return": 0.01,
+      "minimum_profit_factor": 1.2,
+      "maximum_drawdown_strictly_greater_than": -0.2
+    },
+    "promising_but_not_complete": {
+      "minimum_closed_positions": 7,
+      "minimum_win_rate": 0.45,
+      "minimum_total_return": 0.0,
+      "minimum_geometric_mean_daily_return": 0.0075,
+      "minimum_profit_factor": 1.1,
+      "maximum_drawdown_strictly_greater_than": -0.15
+    }
+  },
+  "long_evaluation_gate": {
+    "prerequisite": "All three frozen weeks advance, at least two are full_pass, and pooled three-week NAV geometric daily return is at least 1% before adding a continuous long runner.",
+    "long_run_must_be": "One continuous NautilusTrader engine/account/strategy state, never stitched weekly NAV."
+  },
+  "invalidation": [
+    "Do not change the resolved-impact detector, context, clock, target rule, cost, risk, weeks or gates after opening a frozen week.",
+    "Do not open week two if both first-week target rules stop.",
+    "Do not open week three if the selected rule stops on week two.",
+    "Do not use another instrument or long period to rescue a weekly failure."
+  ]
+}
