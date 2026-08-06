@@ -6,10 +6,11 @@ from dataclasses import replace
 from datetime import date
 import unittest
 
-from candidate import AuctionRange
 from candidate import AuctionStateMachine
 from candidate import BarView
+from candidate import LiquidityPool
 from candidate import MachineParams
+from candidate import StructuralBar
 from candidate import reproducible_weeks
 
 
@@ -20,119 +21,173 @@ class Candidate10Tests(unittest.TestCase):
             [date(2023, 10, 16), date(2023, 5, 15), date(2024, 1, 15)],
         )
 
-    def test_rejection_requires_raid_then_displacement_and_arms_limit(self) -> None:
+    def test_pivot_is_not_known_until_right_structure_bar_closes(self) -> None:
         params = replace(
             MachineParams(),
-            atr_lookback=20,
-            block_minutes=20,
-            raid_atr=0.05,
-            displacement_atr=0.5,
-            stop_buffer_atr=0.25,
-            maker_fee=0.0,
-            taker_fee=0.0,
-            min_net_rr=0.1,
-            enable_acceptance=False,
+            structure_minutes=5,
+            pivot_left=1,
+            pivot_right=1,
+            structural_atr_lookback=10,
         )
         machine = AuctionStateMachine(params, tick_size=0.1, instrument_id="TEST")
-        block_ns = params.block_minutes * 60_000_000_000
-        ts = (1_700_000_000_000_000_000 // block_ns) * block_ns + 60_000_000_000
-        for i in range(40):
-            block_position = i % 20
-            base = 100.0 + block_position * 0.5
-            machine.on_bar(
-                BarView(
-                    ts + i * 60_000_000_000,
-                    base,
-                    base + 0.4,
-                    base - 0.4,
-                    base + 0.1,
-                    1.0,
-                ),
-            )
-        pool = machine.previous_range
-        self.assertIsNotNone(pool)
-        assert pool is not None
+        machine.structural_true_ranges.extend([5.0] * 10)
+        bars = [
+            StructuralBar(1, 0, 300, 100.0, 102.0, 98.0, 100.0, 1.0, 5),
+            StructuralBar(2, 300, 600, 100.0, 110.0, 99.0, 101.0, 1.0, 5),
+            StructuralBar(3, 600, 900, 101.0, 103.0, 97.0, 99.0, 1.0, 5),
+        ]
+        first = machine._finalize_structural(bars[0], observed_time_ns=300)
+        second = machine._finalize_structural(bars[1], observed_time_ns=600)
+        third = machine._finalize_structural(bars[2], observed_time_ns=900)
+        self.assertEqual(first, [])
+        self.assertEqual(second, [])
+        self.assertEqual(len(third), 1)
+        event = third[0]
+        self.assertEqual(event.event_type, "POOL_CONFIRMED")
+        self.assertEqual(event.event_time_ns, 600)
+        self.assertEqual(event.observed_time_ns, 900)
+        self.assertGreater(event.observed_time_ns, event.event_time_ns)
 
-        raid = BarView(
-            ts + 40 * 60_000_000_000,
-            pool.high - 0.2,
-            pool.high + 1.0,
-            pool.high - 1.0,
-            pool.high - 0.5,
-            1.0,
+    def test_equal_level_cluster_activates_without_prominent_single(self) -> None:
+        params = replace(
+            MachineParams(),
+            single_swing_prominence_atr=2.0,
+            cluster_min_sources=2,
+            enable_pool_clustering=True,
         )
-        displacement = BarView(
-            ts + 41 * 60_000_000_000,
-            pool.high - 0.5,
-            pool.high - 0.2,
-            pool.high - 4.5,
-            pool.high - 4.2,
-            1.0,
-        )
-        first_events, first_plan = machine.on_bar(raid)
-        second_events, plan = machine.on_bar(displacement)
-        self.assertIsNone(first_plan)
-        self.assertEqual(first_events[0].event_type, "LIQUIDITY_EVENT")
-        self.assertIn(
-            "DISPLACEMENT_CONFIRMED",
-            [item.event_type for item in second_events],
-        )
-        self.assertIsNotNone(plan)
-        assert plan is not None
-        self.assertEqual(plan.entry_order_type, "LIMIT")
-        self.assertGreater(plan.entry_estimate, displacement.close)
-        self.assertGreater(plan.stop_price, pool.high)
-        self.assertGreater(plan.entry_expiry_bars, 0)
-
-    def test_ablation_disables_acceptance_creation(self) -> None:
-        params = replace(MachineParams(), enable_acceptance=False)
         machine = AuctionStateMachine(params, tick_size=0.1, instrument_id="TEST")
-        machine.previous_range = AuctionRange(1, 0, 1, 100.0, 110.0, 90.0, 100.0, 240)
-        machine.current_range = AuctionRange(2, 2, 2, 100.0, 100.0, 100.0, 100.0, 1)
-        for i in range(100):
-            machine.true_ranges.append(1.0)
-            machine.history.append(BarView(i, 100.0, 100.5, 99.5, 100.0, 1.0))
-        machine.bar_index = 100
-        events = machine._detect_setup(
-            BarView(101, 110.0, 112.0, 109.8, 111.5, 1.0),
+        first = machine._upsert_pool(
+            side="HIGH",
+            price=100.0,
+            prominence_atr=0.5,
+            event_time_ns=1,
+            observed_time_ns=2,
+            structural_atr=10.0,
+        )
+        second = machine._upsert_pool(
+            side="HIGH",
+            price=100.5,
+            prominence_atr=0.6,
+            event_time_ns=3,
+            observed_time_ns=4,
+            structural_atr=10.0,
+        )
+        self.assertEqual(first.next_state, "LATENT")
+        self.assertEqual(second.event_type, "POOL_CLUSTERED")
+        self.assertEqual(second.next_state, "ACTIVE")
+        self.assertEqual(machine.pools[0].source_count, 2)
+
+        ablated = AuctionStateMachine(
+            replace(params, enable_pool_clustering=False),
+            tick_size=0.1,
+            instrument_id="TEST-ABLATION",
+        )
+        ablated._upsert_pool(
+            side="HIGH",
+            price=100.0,
+            prominence_atr=0.5,
+            event_time_ns=1,
+            observed_time_ns=2,
+            structural_atr=10.0,
+        )
+        event = ablated._upsert_pool(
+            side="HIGH",
+            price=100.5,
+            prominence_atr=0.6,
+            event_time_ns=3,
+            observed_time_ns=4,
+            structural_atr=10.0,
+        )
+        self.assertEqual(event.next_state, "LATENT")
+
+    def test_pool_cannot_be_swept_on_its_observation_bar(self) -> None:
+        machine = AuctionStateMachine(MachineParams(), tick_size=0.1, instrument_id="TEST")
+        machine.previous_close = 99.0
+        machine.true_ranges.extend([1.0] * 60)
+        machine.history.extend(
+            BarView(i, 99.0, 99.5, 98.5, 99.0, 1.0) for i in range(8)
+        )
+        machine.pools.append(
+            LiquidityPool(
+                pool_id="P1",
+                side="HIGH",
+                center=100.0,
+                lower=99.8,
+                upper=100.2,
+                event_time_ns=50,
+                observed_time_ns=100,
+                last_source_time_ns=50,
+                source_count=2,
+                max_prominence_atr=1.0,
+                status="ACTIVE",
+            ),
+        )
+        events = machine._detect_sweep(
+            BarView(100, 99.0, 101.0, 98.8, 99.5, 1.0),
             1.0,
         )
         self.assertEqual(events, [])
         self.assertIsNone(machine.active)
 
-    def test_acceptance_needs_two_distinct_closes_then_arms_boundary_limit(self) -> None:
+    def test_confirmed_pool_sweep_displacement_arms_pool_to_pool_limit(self) -> None:
         params = replace(
             MachineParams(),
-            enable_rejection=False,
             maker_fee=0.0,
             taker_fee=0.0,
+            min_net_rr=0.5,
             stop_buffer_atr=0.5,
-            min_net_rr=0.1,
         )
         machine = AuctionStateMachine(params, tick_size=0.1, instrument_id="TEST")
-        machine.previous_range = AuctionRange(1, 0, 1, 100.0, 110.0, 90.0, 100.0, 240)
-        machine.current_range = AuctionRange(2, 2, 2, 100.0, 100.0, 100.0, 100.0, 1)
-        machine.past_ranges.append(machine.previous_range)
-        for i in range(100):
-            machine.true_ranges.append(1.0)
-            machine.history.append(BarView(i, 100.0, 100.5, 99.5, 100.0, 1.0))
         machine.bar_index = 100
-        first = BarView(101, 110.0, 112.0, 109.8, 111.5, 1.0)
-        events = machine._detect_setup(first, 1.0)
-        self.assertEqual([item.event_type for item in events], ["LIQUIDITY_EVENT"])
-        assert machine.active is not None
-        more, plan = machine._process_acceptance(first, 1.0)
-        self.assertEqual(more, [])
-        self.assertIsNone(plan)
-        self.assertEqual(machine.active.consecutive_closes, 1)
+        machine.previous_close = 100.0
+        machine.true_ranges.extend([1.0] * 60)
+        machine.history.extend(
+            BarView(i, 100.0, 100.5, 99.5, 100.0, 1.0) for i in range(8)
+        )
+        source = LiquidityPool(
+            pool_id="LOW-SOURCE",
+            side="LOW",
+            center=95.0,
+            lower=94.8,
+            upper=95.2,
+            event_time_ns=1,
+            observed_time_ns=2,
+            last_source_time_ns=1,
+            source_count=2,
+            max_prominence_atr=1.2,
+            status="ACTIVE",
+        )
+        target = LiquidityPool(
+            pool_id="HIGH-TARGET",
+            side="HIGH",
+            center=105.0,
+            lower=104.8,
+            upper=105.2,
+            event_time_ns=1,
+            observed_time_ns=2,
+            last_source_time_ns=1,
+            source_count=2,
+            max_prominence_atr=1.1,
+            status="ACTIVE",
+        )
+        machine.pools.extend([source, target])
 
-        second = BarView(102, 111.5, 113.0, 111.0, 112.2, 1.0)
-        more, plan = machine._process_acceptance(second, 1.0)
-        self.assertIn("ACCEPTANCE_CONFIRMED", [item.event_type for item in more])
+        raid = BarView(200, 96.0, 96.2, 94.5, 95.5, 1.0)
+        events = machine._detect_sweep(raid, 1.0)
+        self.assertIn("LIQUIDITY_EVENT", [item.event_type for item in events])
+        self.assertEqual(source.status, "CONSUMED")
+        self.assertIsNotNone(machine.active)
+
+        machine.bar_index += 1
+        displacement = BarView(201, 95.5, 102.0, 95.4, 101.8, 1.0)
+        events, plan = machine._process_rejection(displacement, 1.0)
+        self.assertIn("DISPLACEMENT_CONFIRMED", [item.event_type for item in events])
         self.assertIsNotNone(plan)
         assert plan is not None
         self.assertEqual(plan.entry_order_type, "LIMIT")
-        self.assertEqual(plan.entry_estimate, 110.0)
+        self.assertEqual(plan.details["source_pool_id"], "LOW-SOURCE")
+        self.assertEqual(plan.details["target_pool_id"], "HIGH-TARGET")
+        self.assertGreater(plan.target_price, plan.entry_estimate)
         self.assertLess(plan.stop_price, plan.entry_estimate)
 
     def test_execution_buffer_covers_noise_and_round_trip_cost_floor(self) -> None:
