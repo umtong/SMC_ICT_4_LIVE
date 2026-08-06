@@ -1,0 +1,106 @@
+{
+  "candidate": "candidate-04-v32-order-flow-impact-regime",
+  "decision": "rejected",
+  "decision_class": "logical_failure_after_controlled_single-scenario_ablations",
+  "source_commit": "decf6ce8a14e71c90fff7b1a565812c1b3b1a52b",
+  "implementation_fixture_fix_commit": "c14875bc7288978faa57b5219b3009c1655cf1bc",
+  "controlled_rerun_commit": "206947b501df60dd3058cf54715f04050ba1a6c1",
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "evaluation": {
+    "symbol": "BTCUSDT",
+    "build_start": "2023-08-02",
+    "build_end": "2023-08-10",
+    "evaluation_start": "2023-08-04",
+    "evaluation_end": "2023-08-10",
+    "all_in_cost_bps_each_side": 7.5,
+    "risk_fraction_current_nav": 0.03,
+    "workflow_run": 31116650293,
+    "artifact_id": 8973931991,
+    "artifact_digest": "sha256:76af5e141cbd5d3247cb8873ad14d1e1870f7ac6dff560ab3ba1601afedd3008"
+  },
+  "result": {
+    "signals": 6,
+    "trades": 4,
+    "wins": 1,
+    "win_rate": 0.25,
+    "total_return": -0.05398720382440003,
+    "geometric_daily_growth": -0.007897107475098752,
+    "max_drawdown": 0.0702756138833266,
+    "maximum_realized_loss_fraction": 0.020567133998751576,
+    "scenario_metrics": {
+      "INFORMED_FLOW_REGIME_PULLBACK_RESUMPTION": {
+        "trades": 2,
+        "wins": 1,
+        "net_pnl": -1712.20872661
+      },
+      "EXTERNAL_LIQUIDITY_ABSORBED_FLOW_REVERSAL": {
+        "trades": 2,
+        "wins": 0,
+        "net_pnl": -3686.5116558299997
+      }
+    }
+  },
+  "implementation_error_separation": {
+    "first_failure": "unit-test fixtures did not place the strict 15-minute OI comparison at the intended timestamp",
+    "controlled_change": "fixture timestamps only; candidate implementation, week, data and execution remained unchanged",
+    "second_failure": "GitHub Actions temporarily could not download action metadata",
+    "controlled_change_2": "exact same job rerun; no source or data change",
+    "conclusion": "official negative result is not an implementation or infrastructure failure"
+  },
+  "ablations": {
+    "workflow_run": 31117500208,
+    "without_continuation": {
+      "removed_scenario": "INFORMED_FLOW_REGIME_PULLBACK_RESUMPTION",
+      "trades": 2,
+      "wins": 0,
+      "total_return": -0.03676461749659998,
+      "geometric_daily_growth": -0.005336775796167537,
+      "max_drawdown": 0.04837583784584587,
+      "maximum_realized_loss_fraction": 0.019617721262864568,
+      "artifact_id": 8974010442,
+      "artifact_digest": "sha256:7bfc48338ab1ba3aaf93b4cecda360195ac2914cb733b0eada8ee5e06cad81bd"
+    },
+    "without_reversal": {
+      "removed_scenario": "EXTERNAL_LIQUIDITY_ABSORBED_FLOW_REVERSAL",
+      "trades": 2,
+      "wins": 1,
+      "total_return": -0.017882074239600088,
+      "geometric_daily_growth": -0.00257437923121151,
+      "max_drawdown": 0.03479214095928773,
+      "maximum_realized_loss_fraction": 0.02056890631818814,
+      "artifact_id": 8973969688,
+      "artifact_digest": "sha256:07e1eb7af472266b557663b51b90e91038a87c81a84a9a9118212e8860003a19"
+    },
+    "conclusion": "each independent economic scenario remained negative; removing either scenario did not reveal a profitable structural core"
+  },
+  "primary_failure_causes": [
+    "the continuation terminal condition reused high absorption, low efficiency and non-positive flow acceleration, which contradicts renewed informed price discovery",
+    "the OI materiality boundary compared a rolling positive one-minute OI-step median with a fifteen-minute OI change, mixing horizons",
+    "the reversal treated same-bar displayed-depth replenishment as reactive absorption even though visible replenishment can be anticipatory or already resting",
+    "exact-pool reclaim plus one completed alignment bar did not prove that attack-side inventory had failed before entry",
+    "tight structural invalidations combined with 15 bps round-trip expected costs left insufficient post-fill excursion"
+  ],
+  "largest_performance_drivers": {
+    "negative": "both absorbed-flow reversals stopped; together they produced the largest loss contribution",
+    "partially_valid": "one informed-flow continuation moved in the intended direction but funding flatten and costs left only a small gain",
+    "frequency": "six compiled signals and four executed trades were more active than late V31, but activity came from weakly resolved states rather than repeatable alpha"
+  },
+  "useful_parts_to_preserve": [
+    "mutually exclusive classification of efficient inventory creation versus low-impact absorption",
+    "shifted past-only distribution boundaries",
+    "causal confirmed external pools and first-penetration semantics",
+    "pullback-before-resumption state order",
+    "exact-boundary reclaim rather than generic candle reversal",
+    "raw exchange OI, futures-index basis and completed executed-flow alignment",
+    "NautilusTrader-only orders, fills, costs, positions and NAV"
+  ],
+  "next_design_implications": [
+    "measure post-attack response over later completed bars rather than same-bar depth changes",
+    "use OI boundaries with the same horizon as the state transition",
+    "for continuation, require renewed efficient impact rather than absorption",
+    "for reversal, require observable failure of attack-side inventory after the pool take before reclaim entry",
+    "preserve the scenario-selected causal target through execution instead of replacing it with an arbitrary R cap"
+  ],
+  "final_validation_completed": false,
+  "project_target_reached": false
+}
