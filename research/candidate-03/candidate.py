@@ -7,5 +7,6 @@ def describe() -> str:
         "price continuation and weak residual futures aggression, then let a native "
         "NautilusTrader Strategy trade either the liquidity-vacuum continuation or one "
         "rapid failure reversal. ParquetDataCatalog, BacktestNode, native orders, fills, "
-        "fees, funding, margin, liquidation, positions, and NAV accounting are mandatory."
+        "fees, funding, margin, liquidation, positions, and NAV accounting are mandatory "
+        "for every weekly and long evaluation."
     )
