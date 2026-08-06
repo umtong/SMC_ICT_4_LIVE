@@ -1,0 +1,79 @@
+name: candidate-03-native-equity-map-patch
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths: [".github/workflows/candidate-03-equity-patch.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Read single-currency NAV from Portfolio equity map
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          strategy_path = Path('research/candidate-03/nt_lvcfr_strategy.py')
+          strategy = strategy_path.read_text(encoding='utf-8')
+
+          marker = '''NS_PER_MINUTE = 60_000_000_000\nNS_PER_DAY = 86_400_000_000_000\n\n\nclass NTLvcfrConfig'''
+          insertion = '''NS_PER_MINUTE = 60_000_000_000\nNS_PER_DAY = 86_400_000_000_000\n\n\ndef native_equity_amount(portfolio: Any, venue: Any, currency: Any) -> float:\n    \"\"\"Return one currency's native Portfolio equity as a scalar.\n\n    NautilusTrader 1.230 exposes ``Portfolio.equity`` as a\n    ``dict[Currency, Money]`` even for a single-currency account. The explicit\n    currency lookup keeps risk sizing, episode accounting, drawdown, and final\n    NAV on the same native portfolio value without reconstructing PnL.\n    \"\"\"\n    values = portfolio.equity(venue)\n    if not isinstance(values, dict):\n        return float(values)\n    money = values.get(currency)\n    if money is None:\n        currency_code = str(currency)\n        for key, value in values.items():\n            if str(key) == currency_code:\n                money = value\n                break\n    if money is None:\n        if len(values) == 1:\n            money = next(iter(values.values()))\n        else:\n            raise RuntimeError(\n                f\"native equity missing currency {currency}: available={list(values)}\"\n            )\n    return float(money)\n\n\nclass NTLvcfrConfig'''
+          if strategy.count(marker) != 1:
+              raise SystemExit(f'strategy helper marker count={strategy.count(marker)}')
+          strategy = strategy.replace(marker, insertion)
+
+          old = '''    def _equity(self) -> float:\n        value = self.portfolio.equity(self.instrument.venue)\n        if value is None:\n            account = self.portfolio.account(self.instrument.venue)\n            if account is None:\n                raise RuntimeError(\"native account unavailable\")\n            balance = account.balance_total(self.instrument.quote_currency)\n            return float(balance)\n        return float(value)\n'''
+          new = '''    def _equity(self) -> float:\n        return native_equity_amount(\n            self.portfolio,\n            self.instrument.venue,\n            self.instrument.quote_currency,\n        )\n'''
+          if strategy.count(old) != 1:
+              raise SystemExit(f'strategy equity target count={strategy.count(old)}')
+          strategy_path.write_text(strategy.replace(old, new), encoding='utf-8')
+
+          runner_path = Path('research/candidate-03/run_nt_lvcfr.py')
+          runner = runner_path.read_text(encoding='utf-8')
+          old = '''from nt_lvcfr_data import CandidateConfig, NS_PER_DAY, NS_PER_MINUTE, date_to_ns, prepare_week\nfrom smc_ict_4.manifest import create_run_manifest, write_json_atomic\n'''
+          new = '''from nt_lvcfr_data import CandidateConfig, NS_PER_DAY, NS_PER_MINUTE, date_to_ns, prepare_week\nfrom nt_lvcfr_strategy import native_equity_amount\nfrom smc_ict_4.manifest import create_run_manifest, write_json_atomic\n'''
+          if runner.count(old) != 1:
+              raise SystemExit(f'runner import target count={runner.count(old)}')
+          runner = runner.replace(old, new)
+          old = '''    equity = portfolio.equity(Venue(\"BINANCE\"))\n    if equity is None:\n        equity = account.balance_total(account.base_currency)\n    final_equity = float(equity)\n'''
+          new = '''    final_equity = native_equity_amount(\n        portfolio,\n        Venue(\"BINANCE\"),\n        account.base_currency,\n    )\n'''
+          if runner.count(old) != 1:
+              raise SystemExit(f'runner equity target count={runner.count(old)}')
+          runner_path.write_text(runner.replace(old, new), encoding='utf-8')
+
+          test_path = Path('research/candidate-03/test_nt_lvcfr.py')
+          tests = test_path.read_text(encoding='utf-8')
+          old = '''from nt_lvcfr_data import CandidateConfig, MinuteFact, NS_PER_MINUTE, detect_signals, merge_windows, select_second_extrema\n'''
+          new = '''from nt_lvcfr_data import CandidateConfig, MinuteFact, NS_PER_MINUTE, detect_signals, merge_windows, select_second_extrema\nfrom nt_lvcfr_strategy import native_equity_amount\n'''
+          if tests.count(old) != 1:
+              raise SystemExit(f'test import target count={tests.count(old)}')
+          tests = tests.replace(old, new)
+          marker = '''class ConfigTests(unittest.TestCase):\n'''
+          replacement = '''class NativeEquityTests(unittest.TestCase):\n    class Portfolio:\n        def __init__(self, values):\n            self.values = values\n\n        def equity(self, venue):\n            return self.values\n\n    def test_reads_requested_currency_from_native_map(self) -> None:\n        portfolio = self.Portfolio({\"BTC\": 1.0, \"USDT\": 100_123.5})\n        self.assertEqual(native_equity_amount(portfolio, \"BINANCE\", \"USDT\"), 100_123.5)\n\n    def test_single_currency_native_map_is_unambiguous(self) -> None:\n        portfolio = self.Portfolio({\"USDT\": 99_999.25})\n        self.assertEqual(native_equity_amount(portfolio, \"BINANCE\", object()), 99_999.25)\n\n\nclass ConfigTests(unittest.TestCase):\n'''
+          if tests.count(marker) != 1:
+              raise SystemExit(f'test class marker count={tests.count(marker)}')
+          test_path.write_text(tests.replace(marker, replacement), encoding='utf-8')
+          PY
+
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:research/candidate-03 \
+            python research/candidate-03/test_nt_lvcfr.py
+          PYTHONPYCACHEPREFIX=/tmp/candidate-03-pycache \
+            python -m compileall -q research/candidate-03 src/smc_ict_4
+
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add research/candidate-03/nt_lvcfr_strategy.py research/candidate-03/run_nt_lvcfr.py research/candidate-03/test_nt_lvcfr.py
+          git commit -m "candidate-03: read native account equity by currency"
+          git push origin HEAD:research/candidate-03
