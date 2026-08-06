@@ -1,0 +1,299 @@
+name: candidate-04-v34-survivor-long
+
+on:
+  workflow_run:
+    workflows: ["candidate-04-v34-survivor-unopened"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  long:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Restore V34 survivor unopened evidence
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: candidate-04-v34-survivor-unopened-*
+          path: unopened
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Freeze candidate and select a repository-unseen long block
+        id: freeze
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-04-v34-survivor-long
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import json
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          paths = list(Path("unopened").rglob("research_decision.json"))
+          if not paths:
+              fallback = Path(
+                  "research/candidate-04/evidence-v34-survivor-unopened.json"
+              )
+              if fallback.exists():
+                  paths = [fallback]
+          if not paths:
+              print("should_run=false")
+              print("survivor=none")
+              print("source_commit=")
+              raise SystemExit(0)
+          decision = json.loads(paths[0].read_text())
+          if not decision.get("three_unopened_weeks_pass"):
+              print("should_run=false")
+              print(f"survivor={decision.get('survivor') or 'none'}")
+              print(f"source_commit={decision.get('source_commit') or ''}")
+              raise SystemExit(0)
+          survivor = decision["survivor"]
+          source_commit = decision["source_commit"]
+          selected_weeks = (
+              (decision.get("selection") or {}).get("weeks")
+              or []
+          )
+
+          corpus = ""
+          for path in Path(".").rglob("*"):
+              if not path.is_file() or ".git" in path.parts:
+                  continue
+              try:
+                  corpus += path.read_text(errors="ignore")
+              except OSError:
+                  pass
+          seed = f"{source_commit}:v34:{survivor}:long"
+          candidates = []
+          cursor = date(2023, 2, 1)
+          while cursor <= date(2025, 8, 1):
+              block_end = cursor + timedelta(days=90)
+              overlaps = any(
+                  date.fromisoformat(week["evaluation_start"]) <= block_end
+                  and date.fromisoformat(week["evaluation_end"]) >= cursor
+                  for week in selected_weeks
+                  if isinstance(week, dict)
+              )
+              unseen = all(
+                  str(cursor + timedelta(days=offset)) not in corpus
+                  for offset in range(91)
+              )
+              if not overlaps and unseen:
+                  candidates.append((
+                      hashlib.sha256(
+                          f"{seed}:{cursor}".encode()
+                      ).hexdigest(),
+                      cursor - timedelta(days=2),
+                      cursor,
+                      block_end,
+                  ))
+              cursor += timedelta(days=7)
+          candidates.sort()
+          if not candidates:
+              raise SystemExit("no repository-unseen V34 91-day block")
+          compiler = (
+              "post_event_inventory_resolution_compiler_v2.py"
+              if (
+                  Path(
+                      "research/candidate-04/"
+                      "post_event_inventory_resolution_compiler_v2.py"
+                  ).exists()
+              )
+              else "post_event_inventory_resolution_compiler.py"
+          )
+          selection = {
+              "candidate": f"candidate-04-v34-{survivor}-only",
+              "family": "v34",
+              "route": survivor,
+              "compiler": compiler,
+              "source_commit": source_commit,
+              "selection_time": "before_long_market_data_access",
+              "selection_method": (
+                  "sha256 rank over 91-day blocks whose every evaluation date "
+                  "was absent from repository text"
+              ),
+              "build_start": str(candidates[0][1]),
+              "evaluation_start": str(candidates[0][2]),
+              "evaluation_end": str(candidates[0][3]),
+          }
+          Path(
+              "artifacts/candidate-04-v34-survivor-long/selection.json"
+          ).write_text(json.dumps(selection, indent=2, sort_keys=True) + "\n")
+          print("should_run=true")
+          print(f"survivor={survivor}")
+          print(f"source_commit={source_commit}")
+          print(f"compiler={compiler}")
+          PY
+
+      - name: Verify frozen candidate source and runtime
+        if: steps.freeze.outputs.should_run == 'true'
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.freeze.outputs.source_commit }}
+          COMPILER: ${{ steps.freeze.outputs.compiler }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "$SOURCE_COMMIT^{commit}"
+          git diff --exit-code "$SOURCE_COMMIT" -- \
+            "research/candidate-04/$COMPILER" \
+            research/candidate-04/nt_exact_causal_target_risk_sizing.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/inventory_transfer_config.json \
+            research/candidate-04/impact_exhaustion_config.json \
+            research/candidate-04/auction_activity_router_config.json \
+            research/candidate-04/nt_liquidity_config.json
+          smc4 doctor
+          python -m compileall -q \
+            "research/candidate-04/$COMPILER" \
+            research/candidate-04/filter_candidate_signals.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py
+
+      - name: Execute frozen V34 survivor on the selected 91-day block
+        if: steps.freeze.outputs.should_run == 'true'
+        shell: bash
+        env:
+          SURVIVOR: ${{ steps.freeze.outputs.survivor }}
+          COMPILER: ${{ steps.freeze.outputs.compiler }}
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v34-survivor-long"
+          export C04_BUILD_START="$(python -c 'import json; print(json.load(open("artifacts/candidate-04-v34-survivor-long/selection.json"))["build_start"])')"
+          export C04_EVALUATION_START="$(python -c 'import json; print(json.load(open("artifacts/candidate-04-v34-survivor-long/selection.json"))["evaluation_start"])')"
+          export C04_EVALUATION_END="$(python -c 'import json; print(json.load(open("artifacts/candidate-04-v34-survivor-long/selection.json"))["evaluation_end"])')"
+          export C04_BUILD_END="$C04_EVALUATION_END"
+
+          python research/candidate-04/rich_features_v2.py \
+            --start "$C04_BUILD_START" \
+            --end "$C04_BUILD_END" \
+            --cache ".cache/candidate-04-v34-survivor-long/rich" \
+            --output "$root/rich"
+          python "research/candidate-04/$COMPILER" \
+            --base-config research/candidate-04/inventory_transfer_config.json \
+            --impact-config research/candidate-04/impact_exhaustion_config.json \
+            --router-config research/candidate-04/auction_activity_router_config.json \
+            --rich-dir "$root/rich" \
+            --kline-dir ".cache/candidate-04-v34-survivor-long/raw" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --output "$root/all_signals" \
+            --download-klines \
+            > "$root/compiler_console.json"
+          python research/candidate-04/filter_candidate_signals.py \
+            --input "$root/all_signals/signals.json" \
+            --output-dir "$root/signals" \
+            --family v34 \
+            --route "$SURVIVOR"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$root/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start "$C04_BUILD_START" \
+            --build-end "$C04_BUILD_END" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --cache ".cache/candidate-04-v34-survivor-long/raw" \
+            --output "$root/nautilus" \
+            > "$root/nautilus_console.json"
+          python research/candidate-04/summarize_candidate_week.py \
+            --root "$root" \
+            --candidate "candidate-04-v34-${SURVIVOR}-only" \
+            --stage long_91_day_evaluation \
+            --min-trades 90 \
+            --min-active-days 45 \
+            --min-win-rate 0.55 \
+            --min-geometric-daily 0.01 \
+            --output "$root/summary.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-04-v34-survivor-long")
+          selection = json.loads((root / "selection.json").read_text())
+          summary = json.loads((root / "summary.json").read_text())
+          evidence = {
+              **selection,
+              "summary": summary,
+              "final_validation_completed": True,
+              "project_target_reached": summary["candidate_pass"],
+              "candidate_modified_after_unopened_weeks": False,
+              "decision": (
+                  "project_target_reached_on_btc_long_evaluation"
+                  if summary["candidate_pass"]
+                  else "reject_v34_survivor_after_long_evaluation"
+              ),
+          }
+          (root / "final_decision.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          Path(
+              "research/candidate-04/evidence-v34-survivor-long.json"
+          ).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Record skipped long stage
+        if: steps.freeze.outputs.should_run != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = {
+              "candidate": "candidate-04-v34-survivor",
+              "stage": "long_91_day_evaluation",
+              "executed": False,
+              "reason": "three unopened weeks did not pass",
+          }
+          Path(
+              "research/candidate-04/evidence-v34-survivor-long.json"
+          ).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v34-survivor-long-${{ github.sha }}
+          path: artifacts/candidate-04-v34-survivor-long
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Commit V34 survivor long evidence with rebase retry
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/evidence-v34-survivor-long.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record V34 survivor long BTC evaluation"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
