@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
+from defense_origin_limit import resolve_entry_placement
 from entry_confirmation import DefenseCheck, continuation_defense_passes
 from failed_acceptance_trap import build_failed_acceptance_trap
 from synchronous_depth_gate import evaluate_failed_acceptance_depth
 from logic import PrimitiveSnapshot, ScenarioSignal
-from nautilus_trader.model.enums import OrderSide, TimeInForce
+from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
 from nautilus_strategy_common import utc_day as _utc_day, utc_hour as _utc_hour
 
 
@@ -129,7 +131,21 @@ class NautilusExecutionMixin:
                         },
                     )
 
-        entry = float(snapshot.observation.close)
+        confirmation_passed = bool(confirmation_details.get("passed", True))
+        placement = resolve_entry_placement(
+            original_signal,
+            signal,
+            snapshot,
+            self._logic_params,
+            confirmation_passed=confirmation_passed,
+            trap_armed=trap_armed,
+        )
+        if reason is None and placement.reason is not None:
+            reason = placement.reason
+        confirmation_details["entry_placement"] = dict(placement.details)
+        confirmation_details["entry_execution_mode"] = placement.mode
+
+        entry = float(placement.expected_entry)
         stop = float(signal.stop_price)
         target = float(signal.target_price)
         direction = signal.direction
@@ -174,6 +190,9 @@ class NautilusExecutionMixin:
                     "entry": entry,
                     "favorable_drift_atr": favorable_drift / signal.atr if signal.atr > 0.0 else None,
                     "favorable_drift_guard_enabled": enforce_drift_guard,
+                    "entry_execution_mode": placement.mode,
+                    "entry_order_type": placement.order_type,
+                    "entry_expiry_ts_ns": placement.expiry_ts_ns,
                     **confirmation_details,
                 },
             )
@@ -220,19 +239,42 @@ class NautilusExecutionMixin:
             order_previous_state = "FAILED_ACCEPTANCE_TRAP_ARMED"
 
         try:
-            order_list = self.order_factory.bracket(
-                instrument_id=self.config.instrument_id,
-                order_side=side,
-                quantity=quantity,
-                time_in_force=TimeInForce.GTC,
-                entry_post_only=False,
-                entry_tags=tags,
-                tp_price=target_price,
-                tp_post_only=True,
-                tp_tags=tags,
-                sl_trigger_price=stop_price,
-                sl_tags=tags,
-            )
+            bracket_kwargs: dict[str, Any] = {
+                "instrument_id": self.config.instrument_id,
+                "order_side": side,
+                "quantity": quantity,
+                "entry_tags": tags,
+                "tp_price": target_price,
+                "tp_post_only": True,
+                "tp_tags": tags,
+                "sl_trigger_price": stop_price,
+                "sl_tags": tags,
+            }
+            if placement.order_type == "LIMIT":
+                if placement.expiry_ts_ns is None:
+                    raise RuntimeError("limit placement missing causal expiry")
+                entry_price = self._instrument.make_price(Decimal(str(entry)))
+                bracket_kwargs.update(
+                    {
+                        "entry_order_type": OrderType.LIMIT,
+                        "entry_price": entry_price,
+                        "time_in_force": TimeInForce.GTD,
+                        "expire_time": datetime.fromtimestamp(
+                            placement.expiry_ts_ns / 1_000_000_000,
+                            tz=timezone.utc,
+                        ),
+                        "entry_post_only": True,
+                    },
+                )
+            else:
+                bracket_kwargs.update(
+                    {
+                        "time_in_force": TimeInForce.GTC,
+                        "entry_post_only": False,
+                    },
+                )
+            order_list = self.order_factory.bracket(**bracket_kwargs)
+            entry_order = order_list.orders[0]
             self._active_trade = {
                 "scenario_id": signal.scenario_id,
                 "family": signal.family,
@@ -245,6 +287,10 @@ class NautilusExecutionMixin:
                 "submission_ts_ns": snapshot.observation.ts_ns,
                 "reference_entry_price": signal.reference_entry,
                 "expected_entry_price": entry,
+                "entry_execution_mode": placement.mode,
+                "entry_order_type": placement.order_type,
+                "entry_expiry_ts_ns": placement.expiry_ts_ns,
+                "entry_client_order_id": str(entry_order.client_order_id),
                 "stop_price": float(stop_price),
                 "target_price": float(target_price),
                 "target_reason": signal.target_reason,
@@ -269,7 +315,11 @@ class NautilusExecutionMixin:
                 reason=(
                     "FAILED_ACCEPTANCE_TRAP_MARKET_ENTRY_WITH_STRUCTURAL_BRACKET"
                     if trap_armed
-                    else "DELAYED_MARKET_ENTRY_WITH_STRUCTURAL_BRACKET"
+                    else (
+                        "CONFIRMED_DEFENSE_ORIGIN_LIMIT_WITH_STRUCTURAL_BRACKET"
+                        if placement.order_type == "LIMIT"
+                        else "DELAYED_MARKET_ENTRY_WITH_STRUCTURAL_BRACKET"
+                    )
                 ),
                 ts_ns=snapshot.observation.ts_ns,
                 reference_price=entry,
@@ -322,6 +372,8 @@ class NautilusExecutionMixin:
             self._abstain_signal(signal, snapshot, "EVALUATION_BOUNDARY", {})
         aborted = self._scenario_engine.abort_active(snapshot, "EVALUATION_BOUNDARY")
         self._record_transitions(aborted.transitions, snapshot.observation.ts_ns)
+        if self._entry_inflight and self.portfolio.is_flat(self.config.instrument_id):
+            self.cancel_all_orders(self.config.instrument_id)
         if not self.portfolio.is_flat(self.config.instrument_id) and not self._exit_inflight:
             if self._active_trade is not None:
                 self._active_trade["forced_exit_reason"] = "BOUNDARY_EXIT"
