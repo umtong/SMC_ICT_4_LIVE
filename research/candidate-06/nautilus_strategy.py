@@ -18,6 +18,43 @@ from nautilus_records import NautilusRecordMixin
 from smc_ict_4.contracts import ResearchEvent
 
 
+def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
+    """Instantiate the explicitly requested causal state machine.
+
+    This selector contains no performance logic.  Configured experiments choose
+    one named market hypothesis, while execution, fills and accounting remain in
+    NautilusTrader.
+    """
+    name = str(logic_params.get("engine", "LIQUIDITY_RESPONSE_BIFURCATION"))
+    if name in {"LIQUIDITY_RESPONSE_BIFURCATION", "LRB_POST_SWEEP_RESPONSE"}:
+        return LiquidityResponseScenarioEngine(logic_params)
+    if name == "SESSION_LIQUIDITY_TRANSFER":
+        from session_engine import SessionLiquidityTransferEngine
+
+        return SessionLiquidityTransferEngine(logic_params)
+    if name == "SESSION_DISPLACEMENT_RETEST":
+        from session_displacement_engine import SessionDisplacementRetestEngine
+
+        return SessionDisplacementRetestEngine(logic_params)
+    if name == "SESSION_EQUILIBRIUM_RETEST":
+        from session_equilibrium_engine import SessionEquilibriumRetestEngine
+
+        return SessionEquilibriumRetestEngine(logic_params)
+    if name == "SESSION_LIQUIDITY_RELAY":
+        from session_relay_engine import SessionLiquidityRelayEngine
+
+        return SessionLiquidityRelayEngine(logic_params)
+    if name == "ROLLING_AUCTION_LIQUIDITY_RELAY":
+        from auction_relay_engine import RollingAuctionLiquidityRelayEngine
+
+        return RollingAuctionLiquidityRelayEngine(logic_params)
+    if name == "MULTI_TIMESCALE_LIQUIDITY_RELAY":
+        from composite_engine import CompositeLiquidityRelayEngine
+
+        return CompositeLiquidityRelayEngine(logic_params)
+    raise ValueError(f"unsupported candidate-06 causal engine: {name}")
+
+
 def make_strategy_class():
     """Create the strategy lazily so pure logic tests need no Nautilus import."""
     from nautilus_trader.config import StrategyConfig
@@ -49,7 +86,7 @@ def make_strategy_class():
             super().__init__(config)
             self._observations = dict(observations)
             self._primitive_detector = CausalPrimitiveDetector(logic_params)
-            self._scenario_engine = LiquidityResponseScenarioEngine(logic_params)
+            self._scenario_engine = _make_scenario_engine(logic_params)
             self._logic_params = dict(logic_params)
             self._instrument = None
             self._usdt = Currency.from_str("USDT")
@@ -81,6 +118,13 @@ def make_strategy_class():
                 raise RuntimeError(f"instrument not found: {self.config.instrument_id}")
             self.subscribe_bars(self.config.bar_type)
 
+        def _observe_scenario_without_new_entry(self, snapshot: PrimitiveSnapshot, ts_ns: int) -> None:
+            """Advance clocks/ranges while the single global trade slot is occupied."""
+            step = self._scenario_engine.observe(snapshot, allow_new=False)
+            self._record_transitions(step.transitions, ts_ns)
+            # A signal generated while entry is unavailable is intentionally
+            # discarded; it cannot be an independent executable opportunity.
+
         def on_bar(self, bar: Bar) -> None:
             self.diagnostics["bars_seen"] += 1
             ts_ns = int(bar.ts_event)
@@ -98,13 +142,16 @@ def make_strategy_class():
                 return
 
             if not self.portfolio.is_flat(self.config.instrument_id):
+                self._observe_scenario_without_new_entry(snapshot, ts_ns)
                 self._manage_open_position(snapshot)
                 return
 
             if self._entry_inflight or self._exit_inflight:
+                self._observe_scenario_without_new_entry(snapshot, ts_ns)
                 return
 
             if self._pending_signal is not None:
+                self._observe_scenario_without_new_entry(snapshot, ts_ns)
                 if self._pending_created_index is None or snapshot.index <= self._pending_created_index:
                     return
                 signal = self._pending_signal
@@ -119,6 +166,5 @@ def make_strategy_class():
                 self._pending_signal = step.signal
                 self._pending_created_index = snapshot.index
                 self.diagnostics["signals_armed"] += 1
-
 
     return LRBStrategyConfig, LRBStrategy
