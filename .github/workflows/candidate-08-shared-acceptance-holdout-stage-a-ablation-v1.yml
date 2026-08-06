@@ -1,0 +1,200 @@
+name: candidate-08-shared-acceptance-holdout-stage-a-ablation-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-shared-acceptance-holdout-stage-a-ablation-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    outputs:
+      run: ${{ steps.select.outputs.run }}
+      runner_kind: ${{ steps.select.outputs.runner_kind }}
+      variant: ${{ steps.select.outputs.variant }}
+      matrix: ${{ steps.select.outputs.matrix }}
+      upstream_route: ${{ steps.select.outputs.upstream_route }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=research/candidate-08/evidence/shared-acceptance-holdout-stage-a-v2/route.txt
+          for attempt in $(seq 1 720); do
+            git fetch origin research/candidate-08
+            git reset --hard origin/research/candidate-08
+            [[ -f "$file" ]] && break
+            sleep 15
+          done
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          root = Path("research/candidate-08/evidence/shared-acceptance-holdout-stage-a-v2")
+          route = (root / "route.txt").read_text().strip() if (root / "route.txt").exists() else "NO_ROUTE"
+          suite = json.loads((root / "suite_metrics.json").read_text()) if (root / "suite_metrics.json").exists() else {}
+          run = route == "STAGE_A_LOGIC_FAILURE_UNABLATED"
+          original = suite.get("runner_kind", "NONE")
+          kind = {"BASE": "BASE_ABLATION", "IMPLEMENTATION": "IMPLEMENTATION_ABLATION"}.get(original, "NONE")
+          variant = str(suite.get("variant", "NONE")) + "_NO_CONTRACTION_STAGE_A_ABLATION"
+          plan = json.loads(Path("research/candidate-08/shared_acceptance_extended_holdout_v1.json").read_text())
+          print(f"run={'true' if run and kind != 'NONE' else 'false'}")
+          print(f"runner_kind={kind}")
+          print(f"variant={variant}")
+          print(f"upstream_route={route}")
+          print("matrix=" + json.dumps({"include": plan["stage_a"]}, separators=(",", ":")))
+          PY
+
+  evaluate:
+    needs: prepare
+    if: needs.prepare.outputs.run == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      DATA_CACHE: /tmp/candidate-08-stage-a-ablation-${{ matrix.name }}
+      WINDOW_OUTPUT: /tmp/candidate-08-stage-a-ablation/${{ matrix.name }}
+      RUNNER_KIND: ${{ needs.prepare.outputs.runner_kind }}
+      VARIANT: ${{ needs.prepare.outputs.variant }}
+      WINDOW_NAME: ${{ matrix.name }}
+      WINDOW_START: ${{ matrix.start }}
+      WINDOW_END: ${{ matrix.end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-08
+          fetch-depth: 0
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.DATA_CACHE }}
+          key: candidate-08-stage-a-ablation-${{ matrix.name }}-${{ github.sha }}
+          restore-keys: |
+            candidate-08-stage-a-v2-${{ matrix.name }}-
+            candidate-08-holdout-stage-a-${{ matrix.name }}-
+            candidate-08-aggtrade-acceptance-
+      - name: Rerun identical holdout week with only contraction removed
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -rf "$WINDOW_OUTPUT"
+          mkdir -p "$WINDOW_OUTPUT"
+          set +e
+          {
+            set -euo pipefail
+            smc4 doctor
+            python - <<'PY'
+            import json, os
+            from pathlib import Path
+            config = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_shared.json").read_text())
+            config["candidate"] = f"candidate-08-{os.environ['VARIANT']}"
+            config["suites"]["first"] = [{
+                "name": os.environ["WINDOW_NAME"],
+                "start": os.environ["WINDOW_START"],
+                "end": os.environ["WINDOW_END"],
+            }]
+            config["ablation"] = {
+                "removed_variable": "RETEST_ACTIVITY_AND_IMBALANCE_CONTRACTION",
+                "only_ablation": True,
+                "same_stage_a_windows": True,
+            }
+            Path(os.environ["WINDOW_OUTPUT"], "config.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+            PY
+            python research/candidate-08/run_selected_shared_acceptance_variant.py \
+              --runner-kind "$RUNNER_KIND" \
+              --config "$WINDOW_OUTPUT/config.json" \
+              --output "$WINDOW_OUTPUT/run" \
+              --data-cache "$DATA_CACHE"
+          } 2>&1 | tee "$WINDOW_OUTPUT/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$WINDOW_OUTPUT/runner_exit_status.txt"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-stage-a-ablation-${{ matrix.name }}
+          path: ${{ env.WINDOW_OUTPUT }}
+          retention-days: 30
+          if-no-files-found: error
+      - uses: actions/cache/save@v4
+        if: ${{ always() }}
+        with:
+          path: ${{ env.DATA_CACHE }}
+          key: candidate-08-stage-a-ablation-${{ matrix.name }}-${{ github.sha }}
+
+  aggregate:
+    needs: [prepare, evaluate]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-08
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.run == 'true'
+        with:
+          pattern: candidate-08-stage-a-ablation-*
+          path: /tmp/stage-a-ablation-artifacts
+          merge-multiple: false
+      - name: Aggregate the single allowed Stage A ablation
+        shell: bash
+        env:
+          SHOULD_RUN: ${{ needs.prepare.outputs.run }}
+          RUNNER_KIND: ${{ needs.prepare.outputs.runner_kind }}
+          VARIANT: ${{ needs.prepare.outputs.variant }}
+          UPSTREAM_ROUTE: ${{ needs.prepare.outputs.upstream_route }}
+        run: |
+          set -euo pipefail
+          root=research/candidate-08/evidence/shared-acceptance-holdout-stage-a-ablation-v1
+          rm -rf "$root"
+          mkdir -p "$root/windows"
+          if [[ "$SHOULD_RUN" != true ]]; then
+            printf '{"reason":"Stage A was not an unabated logical failure","route":"%s"}\n' "$UPSTREAM_ROUTE" > "$root/ablation_not_run.json"
+            printf 'NOT_RUN\n' > "$root/route.txt"
+          else
+            for artifact in /tmp/stage-a-ablation-artifacts/candidate-08-stage-a-ablation-*; do
+              name=${artifact##*candidate-08-stage-a-ablation-}
+              mkdir -p "$root/windows/$name"
+              cp -a "$artifact"/. "$root/windows/$name/"
+            done
+            python research/candidate-08/aggregate_shared_acceptance_holdout.py \
+              --root "$root/windows" \
+              --plan research/candidate-08/shared_acceptance_extended_holdout_v1.json \
+              --stage STAGE_A \
+              --variant "$VARIANT" \
+              --runner-kind "$RUNNER_KIND" \
+              --output "$root/suite_metrics.json"
+          fi
+      - name: Commit evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin research/candidate-08
+          rm -f research/candidate-08/.run-shared-acceptance-holdout-stage-a-ablation-v1
+          git add research/candidate-08/evidence/shared-acceptance-holdout-stage-a-ablation-v1 research/candidate-08/.run-shared-acceptance-holdout-stage-a-ablation-v1
+          git commit -m "candidate-08: record Stage A contraction ablation" || true
+          git push origin HEAD:research/candidate-08
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-stage-a-ablation-aggregate-${{ github.run_id }}
+          path: research/candidate-08/evidence/shared-acceptance-holdout-stage-a-ablation-v1
+          retention-days: 30
