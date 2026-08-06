@@ -1,0 +1,196 @@
+name: Candidate 09 v5 accepted-liquidity-trap rotation gate
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths: [.github/workflows/candidate-09-v5-gate.yml]
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v5-gate
+  cancel-in-progress: false
+
+jobs:
+  activate-test-evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-v1
+
+      - name: Archive v4 and activate frozen v5 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09
+          archive="$root/archive/v4"
+          mkdir -p "$archive/evidence"
+          if [[ ! -f "$archive/README.md" ]]; then
+            cp "$root/state_engine.py" "$archive/state_engine.py"
+            cp "$root/config.json" "$archive/config.json"
+            for name in summary.json REPORT.md outcomes.csv trades.csv fills.csv events.jsonl run.json data_manifest.json; do
+              [[ -f "$root/evidence/latest/$name" ]] && cp "$root/evidence/latest/$name" "$archive/evidence/$name"
+            done
+            cat > "$archive/README.md" <<'EOF'
+          # Candidate 09 v4 — positive structural path, not a complete pass
+
+          Reproducible Nautilus run: GitHub Actions run `31105658703`; engine SHA-256 `5b7c5873efae27b0c395f57b541449247f6b6596725daff28a43fb0588923171`.
+
+          V4 resolved an accepted liquidity breach in two ways: trapped-breakout reversal after loss of the accepted level, or continuation only after defended retest and re-expansion. On the unchanged three BTC weeks it was the first candidate with positive pooled performance:
+
+          - pooled daily geometric return: **+0.243439%**
+          - pooled NAV multiple: **1.052422x**
+          - trades: **10**, wins: **5**, losses: **5**
+          - week returns: **+8.0446%, -3.0008%, +0.4163%**
+          - maximum segment drawdown: **6.1646%**
+
+          The gate still failed: fewer than five trades per week, one negative week, daily growth below 1%, and winner concentration. Component accounting was decisive:
+
+          - both continuation trades lost approximately **-6,106.20 USDT** in total;
+          - trapped-breakout reversals were net positive; removing continuation from the recorded path implies approximately **1.1185x** pooled NAV and **+0.535% daily geometric growth** before an exact controlled rerun;
+          - all three observed 240-minute reversal trades lost, while 15m/60m/1440m reversal trades were positive in this small sample.
+
+          V4 is not labeled a success. V5 preserves the accepted-breakout-failure mechanism, removes the repeatedly failed continuation branch, excludes 240m from baseline, adds causal completed 5m auctions for opportunity, and targets the opposite edge of the already completed source range. Each new component is tested by a one-variable ablation.
+          EOF
+          fi
+
+          [[ $(wc -c < "$root/bootstrap/v5-engine.gz.b64") == 10260 ]]
+          echo "ca0cc58f027762702507d2f7b5beb6e4b86330cb2ad8bd876849d11fa5334978  $root/bootstrap/v5-engine.gz.b64" | sha256sum -c -
+          base64 -d "$root/bootstrap/v5-engine.gz.b64" | gzip -dc > "$root/state_engine_v5.py"
+          echo "1e26e4dd60088319a121aa1dadb8ef1c1d67f9587a2a14210b04623fb85e98ea  $root/state_engine_v5.py" | sha256sum -c -
+
+          [[ $(wc -c < "$root/bootstrap/v5-test.gz.b64") == 2384 ]]
+          echo "e23c1da45770bd59797882139c83382d5bb330ab905d978763cc25c1e42ae316  $root/bootstrap/v5-test.gz.b64" | sha256sum -c -
+          base64 -d "$root/bootstrap/v5-test.gz.b64" | gzip -dc > /tmp/test_state_engine_v5.py
+          echo "f34c405465d3aaee91e46e5b5fe76f1aea94101ed163b5680a15ed93b4bf1efe  /tmp/test_state_engine_v5.py" | sha256sum -c -
+
+          cp "$root/state_engine_v5.py" "$root/state_engine.py"
+          cp "$root/config_v5.json" "$root/config.json"
+          mkdir -p "$root/tests_v5" "$root/tests"
+          cp /tmp/test_state_engine_v5.py "$root/tests_v5/test_state_engine.py"
+
+          python - <<'PY'
+          from pathlib import Path
+          for relative in ('tests_v5/test_state_engine.py', 'tests/test_state_engine.py'):
+              path = Path('research/candidate-09') / relative
+              if relative.startswith('tests/'):
+                  path.write_text((Path('research/candidate-09/tests_v5/test_state_engine.py')).read_text())
+              text = path.read_text()
+              text = text.replace('from state_engine_v5 import', 'from state_engine import')
+              text = text.replace(
+                  'payload = json.loads((Path(__file__).with_name("config_v5.json")).read_text())',
+                  'payload = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())',
+              )
+              path.write_text(text)
+
+          run_path = Path('research/candidate-09/run.py')
+          text = run_path.read_text(encoding='utf-8')
+          old = '''ABLATIONS = (\n    "baseline",\n    "no-flow",\n    "no-acceptance-confirmation",\n    "no-reexpansion-confirmation",\n)\n'''
+          new = '''ABLATIONS = (\n    "baseline",\n    "no-5m",\n    "with-240m",\n    "midpoint-target",\n)\n'''
+          if new not in text:
+              if old not in text:
+                  raise SystemExit('expected v4 ablation tuple not found')
+              text = text.replace(old, new, 1)
+          text = text.replace(
+              'The structurally frozen v4 baseline and three',
+              'The structurally frozen v5 baseline and three',
+          )
+          run_path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Run doctor, v5 tests, and the unchanged frozen BTC weeks
+        shell: bash
+        run: |
+          set +e
+          root=research/candidate-09
+          out="$root/evidence/latest"
+          diag="$root/diagnostics/v5-gate"
+          rm -rf "$out" "$diag"
+          mkdir -p "$out" "$diag"
+          smc4 doctor > "$diag/doctor.log" 2>&1; doctor=$?
+          python -m compileall -q "$root" > "$diag/compile.log" 2>&1; compile=$?
+          python -m unittest discover -s "$root/tests" -p 'test_*.py' -v > "$diag/tests.log" 2>&1; tests=$?
+          gate=99
+          if [[ $doctor == 0 && $compile == 0 && $tests == 0 ]]; then
+            python "$root/run.py" gate \
+              --config "$root/config.json" \
+              --cache "$SMC4_DATA_ROOT" \
+              --output "$out" > "$diag/gate.log" 2>&1
+            gate=$?
+          else
+            echo 'gate not run because prerequisite failed' > "$diag/gate.log"
+          fi
+          DOCTOR=$doctor COMPILE=$compile TESTS=$tests GATE=$gate python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path('research/candidate-09'); diag=root/'diagnostics/v5-gate'; out=root/'evidence/latest'
+          codes={key.lower():int(os.environ[key]) for key in ('DOCTOR','COMPILE','TESTS','GATE')}
+          failure=next((name for name,value in codes.items() if value != 0),None)
+          (diag/'diagnostic.json').write_text(json.dumps({
+              'candidate_generation':'v5-accepted-liquidity-trap-rotation',
+              'classification':'IMPLEMENTATION_ERROR' if failure else 'EXECUTED',
+              'codes':codes,'first_failure':failure,
+              'fixed_weeks_preserved':True,'parameter_search_performed':False,
+              'structural_change':'reversal-only; 5m/15m/60m/1440m completed auctions; opposite-edge objective',
+              'engine_sha256':'1e26e4dd60088319a121aa1dadb8ef1c1d67f9587a2a14210b04623fb85e98ea',
+              'run_id':os.environ.get('GITHUB_RUN_ID'),'trigger_sha':os.environ.get('GITHUB_SHA')
+          },indent=2,sort_keys=True)+'\n')
+          if not (out/'summary.json').exists():
+              (out/'summary.json').write_text(json.dumps({'candidate':'candidate-09-v5','status':'IMPLEMENTATION_ERROR','first_failure':failure,'codes':codes},indent=2,sort_keys=True)+'\n')
+          for path in diag.glob('*.log'):
+              lines=path.read_text(errors='replace').splitlines(); path.write_text('\n'.join(lines[-1600:])+('\n' if lines else ''))
+          PY
+          exit 0
+
+      - name: Preserve exact v5 output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v5-gate-${{ github.run_id }}
+          path: |
+            research/candidate-09/evidence/latest
+            research/candidate-09/diagnostics/v5-gate
+            research/candidate-09/archive/v4
+            research/candidate-09/config.json
+            research/candidate-09/state_engine.py
+            research/candidate-09/state_engine_v5.py
+            research/candidate-09/nautilus_strategy.py
+            research/candidate-09/run.py
+            research/candidate-09/tests
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit v5 source, archive, and evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=$(dirname "$(dirname "$(dirname "$(realpath research/candidate-09/run.py)")")")
+          git config --global --add safe.directory "$repo"
+          git -C "$repo" config user.name candidate-09-research-bot
+          git -C "$repo" config user.email candidate-09-research-bot@users.noreply.github.com
+          git -C "$repo" add -A research/candidate-09
+          if git -C "$repo" diff --cached --quiet; then exit 0; fi
+          status=$(python -c "import json;print(json.load(open('research/candidate-09/evidence/latest/summary.json')).get('status','UNKNOWN'))")
+          git -C "$repo" commit -m "candidate-09 v5: frozen gate result ${status}"
+          git -C "$repo" pull --rebase origin "${GITHUB_REF_NAME}"
+          git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
