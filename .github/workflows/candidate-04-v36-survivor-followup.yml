@@ -1,0 +1,286 @@
+name: candidate-04-v36-survivor-followup
+
+on:
+  workflow_run:
+    workflows: ["candidate-04-v36-staged-development"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  followup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Restore V36 development evidence
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: candidate-04-v36-development-*
+          path: development
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Identify routes requiring cross-development
+        id: route
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          paths = list(Path("development").rglob("research_decision.json"))
+          if not paths:
+              fallback = Path("research/candidate-04/evidence-v36-development.json")
+              if fallback.exists():
+                  paths = [fallback]
+          if not paths:
+              value = {
+                  "implementation_failure": True,
+                  "full_pass": False,
+                  "routes": [],
+                  "reason": "no development decision",
+              }
+          else:
+              decision = json.loads(paths[0].read_text())
+              if decision.get("executed") is False:
+                  value = {
+                      "implementation_failure": False,
+                      "full_pass": False,
+                      "routes": [],
+                      "reason": decision.get("reason"),
+                  }
+              elif decision.get("three_week_pass"):
+                  value = {
+                      "implementation_failure": False,
+                      "full_pass": True,
+                      "routes": ["full"],
+                      "reason": "full candidate passed three weeks",
+                  }
+              else:
+                  ablations = decision.get("controlled_ablations") or {}
+                  routes = []
+                  if bool((ablations.get("continuation_only") or {}).get("candidate_pass")):
+                      routes.append("continuation")
+                  if bool((ablations.get("reversal_only") or {}).get("candidate_pass")):
+                      routes.append("reversal")
+                  value = {
+                      "implementation_failure": False,
+                      "full_pass": False,
+                      "routes": routes,
+                      "reason": "controlled first-failure ablation",
+                  }
+          Path("route.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(value, indent=2, sort_keys=True))
+          PY
+          echo "full_pass=$(python -c 'import json; print(str(json.load(open("route.json"))["full_pass"]).lower())')" >> "$GITHUB_OUTPUT"
+          echo "route_count=$(python -c 'import json; print(len(json.load(open("route.json"))["routes"]))')" >> "$GITHUB_OUTPUT"
+          echo "implementation_failure=$(python -c 'import json; print(str(json.load(open("route.json"))["implementation_failure"]).lower())')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore exact BTC development observations
+        if: steps.route.outputs.route_count != '0' && steps.route.outputs.full_pass != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v27-cross-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Cross-develop every candidate mechanism unchanged
+        if: steps.route.outputs.route_count != '0' && steps.route.outputs.full_pass != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          names=(low_activity normal_basis stress_a)
+          build_starts=(2023-08-02 2023-12-16 2024-08-05)
+          build_ends=(2023-08-10 2023-12-24 2024-08-13)
+          eval_starts=(2023-08-04 2023-12-18 2024-08-07)
+          eval_ends=(2023-08-10 2023-12-24 2024-08-13)
+          root="artifacts/candidate-04-v36-survivor"
+          mkdir -p "$root"
+          routes="$(python -c 'import json; print(" ".join(json.load(open("route.json"))["routes"]))')"
+
+          for route in $routes; do
+            failed=""
+            for i in "${!names[@]}"; do
+              name="${names[$i]}"
+              export C04_BUILD_START="${build_starts[$i]}"
+              export C04_BUILD_END="${build_ends[$i]}"
+              export C04_EVALUATION_START="${eval_starts[$i]}"
+              export C04_EVALUATION_END="${eval_ends[$i]}"
+              source="$(find sources -mindepth 1 -maxdepth 1 -type d -name "candidate-04-v27-cross-${name}-*" | head -n1)"
+              week="$root/$route/$name"
+              mkdir -p "$week"
+              python research/candidate-04/micro_auction_balance_transition_compiler.py \
+                --base-config research/candidate-04/inventory_transfer_config.json \
+                --impact-config research/candidate-04/impact_exhaustion_config.json \
+                --router-config research/candidate-04/auction_activity_router_config.json \
+                --rich-dir "$source/source/rich" \
+                --kline-dir ".cache/candidate-04-v36-survivor/$route/$name/raw" \
+                --evaluation-start "$C04_EVALUATION_START" \
+                --evaluation-end "$C04_EVALUATION_END" \
+                --output "$week/all_signals" \
+                --download-klines \
+                > "$week/compiler_console.json"
+              export V36_SURVIVOR_WEEK="$week"
+              export V36_SURVIVOR_ROUTE="$route"
+              python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["V36_SURVIVOR_WEEK"])
+          rows = json.loads((root / "all_signals/signals.json").read_text())
+          route = os.environ["V36_SURVIVOR_ROUTE"]
+          continuation = {
+              "MICRO_BALANCE_NEW_INVENTORY_RETEST_CONTINUATION",
+              "MICRO_BALANCE_LIQUIDATION_RETEST_CONTINUATION",
+          }
+          reversal = {
+              "MICRO_BALANCE_TRAPPED_BREAKOUT_REVERSAL",
+              "MICRO_BALANCE_LIQUIDATION_EXHAUSTION_REVERSAL",
+          }
+          keep = continuation if route == "continuation" else reversal
+          selected = [row for row in rows if row["scenario"] in keep]
+          path = root / "signals"
+          path.mkdir(parents=True, exist_ok=True)
+          (path / "signals.json").write_text(json.dumps(selected, indent=2, sort_keys=True) + "\n")
+          (path / "summary.json").write_text(json.dumps({
+              "written_signals": len(selected),
+              "route_counts": {
+                  "frozen_mechanism": route,
+                  "removed_companion_signals": len(rows) - len(selected),
+              },
+          }, indent=2, sort_keys=True) + "\n")
+          PY
+              C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$week/signals/signals.json" \
+              python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+                --config research/candidate-04/nt_liquidity_config.json \
+                --build-start "$C04_BUILD_START" \
+                --build-end "$C04_BUILD_END" \
+                --evaluation-start "$C04_EVALUATION_START" \
+                --evaluation-end "$C04_EVALUATION_END" \
+                --cache ".cache/candidate-04-v36-survivor/$route/$name/raw" \
+                --output "$week/nautilus" \
+                > "$week/nautilus_console.json"
+              python research/candidate-04/summarize_candidate_week.py \
+                --root "$week" \
+                --candidate "candidate-04-v36-${route}-only" \
+                --stage "survivor_cross_${name}" \
+                --output "$week/summary.json"
+              passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$week/summary.json")"
+              if [[ "$passed" != "true" ]]; then
+                failed="$name"
+                break
+              fi
+            done
+            export V36_ROUTE_ROOT="$root/$route"
+            export V36_ROUTE_FAILED="$failed"
+            export V36_ROUTE="$route"
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["V36_ROUTE_ROOT"])
+          weeks = {path.parent.name: json.loads(path.read_text()) for path in root.glob("*/summary.json")}
+          passed = len(weeks) == 3 and all(item["candidate_pass"] for item in weeks.values())
+          value = {
+              "route": os.environ["V36_ROUTE"],
+              "weeks": weeks,
+              "three_week_pass": passed,
+              "failed_week": os.environ["V36_ROUTE_FAILED"] or None,
+          }
+          (root / "route_decision.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          PY
+          done
+
+      - name: Build final survivor set
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v36-survivor"
+          mkdir -p "$root"
+          export V36_FULL_PASS="${{ steps.route.outputs.full_pass }}"
+          export V36_IMPLEMENTATION_FAILURE="${{ steps.route.outputs.implementation_failure }}"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path("artifacts/candidate-04-v36-survivor")
+          if os.environ.get("V36_FULL_PASS") == "true":
+              survivors = ["full"]
+              routes = {"full": {"three_week_pass": True}}
+              decision = "freeze_before_unopened_weeks"
+          else:
+              routes = {}
+              for path in root.glob("*/route_decision.json"):
+                  value = json.loads(path.read_text())
+                  routes[value["route"]] = value
+              survivors = [name for name, value in routes.items() if value.get("three_week_pass")]
+              if os.environ.get("V36_IMPLEMENTATION_FAILURE") == "true":
+                  decision = "implementation_error_requires_same_week_recovery"
+              elif survivors:
+                  decision = "freeze_surviving_mechanisms_before_unopened_weeks"
+              else:
+                  decision = "discard_v36_no_cross_week_survivor"
+          evidence = {
+              "candidate": "candidate-04-v36-micro-auction-balance-transition",
+              "source_run": int(os.environ.get("SOURCE_RUN_ID") or 0),
+              "source_commit": os.environ.get("SOURCE_SHA"),
+              "routes": routes,
+              "survivors": survivors,
+              "three_week_pass": bool(survivors),
+              "decision": decision,
+              "candidate_modified_during_followup": False,
+          }
+          (root / "research_decision.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          Path("research/candidate-04/evidence-v36-survivor-followup.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v36-survivor-followup-${{ github.sha }}
+          path: artifacts/candidate-04-v36-survivor
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Commit V36 survivor evidence with rebase retry
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/evidence-v36-survivor-followup.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record V36 surviving mechanism cross-development"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
