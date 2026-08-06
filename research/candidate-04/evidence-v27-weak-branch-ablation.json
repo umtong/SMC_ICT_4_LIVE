@@ -1,0 +1,81 @@
+{
+  "candidate": "candidate-04-v27-weak-branch-ablation",
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "workflow_run_id": 31106175116,
+  "source_commit": "d37e45287a95b5c079a53109c5503807806da8b1",
+  "controlled_changes": [
+    {
+      "name": "no_failed_break",
+      "removed_scenario": "FAILED_EXTERNAL_BREAK_RETEST_LIQUIDATION_REVERSAL_NO_IMPACT_CAP_ABLATION",
+      "changed_variables": 1,
+      "aggregate": {
+        "calendar_days": 42,
+        "compounded_return": 0.4322664806016929,
+        "geometric_daily_growth": 0.008590453244928575,
+        "trades": 24,
+        "wins": 18,
+        "win_rate": 0.75,
+        "all_weeks_positive": true
+      },
+      "comparison_to_v27": {
+        "geometric_daily_change": -0.000011687297752028,
+        "interpretation": "complete removal was approximately neutral and slightly worse; the route contains both valid and invalid states"
+      }
+    },
+    {
+      "name": "no_directional_session",
+      "removed_scenario": "DIRECTIONAL_SESSION_VWAP_LIQUIDATION_RECLAIM",
+      "changed_variables": 1,
+      "aggregate": {
+        "calendar_days": 42,
+        "compounded_return": 0.44720329719505436,
+        "geometric_daily_growth": 0.00883962488920842,
+        "trades": 23,
+        "wins": 17,
+        "win_rate": 0.7391304347826086,
+        "all_weeks_positive": true
+      },
+      "comparison_to_v27": {
+        "geometric_daily_change": 0.000237484346527817,
+        "interpretation": "complete removal improved aggregate performance but also deleted strong-session winners; refine the directional-state boundary rather than discard the mechanism"
+      }
+    }
+  ],
+  "week_controls": {
+    "low_activity": {
+      "original_return": 0.07035245097219998,
+      "no_failed_break_return": 0.092241,
+      "no_directional_return": 0.07035245097219998
+    },
+    "normal_basis": {
+      "original_return": 0.046107132785900014,
+      "no_failed_break_return": 0.046107132785900014,
+      "no_directional_return": 0.062137
+    },
+    "stress_a": {
+      "original_return": 0.017086822621100062,
+      "no_failed_break_return": 0.017086822621100062,
+      "no_directional_return": 0.03711
+    },
+    "year_end": {
+      "original_return": 0.06237203625400012,
+      "no_failed_break_return": 0.06237203625400012,
+      "no_directional_return": 0.06237203625400012
+    },
+    "autumn": {
+      "original_return": 0.05163242372700005,
+      "no_failed_break_return": 0.066764,
+      "no_directional_return": 0.041054
+    },
+    "may_2024": {
+      "original_return": 0.12624683617639998,
+      "no_failed_break_return": 0.087492,
+      "no_directional_return": 0.109807
+    }
+  },
+  "logic_conclusion": {
+    "failed_break_route": "do not discard globally; separate high-impact parent breaks from low-impact local breaks",
+    "directional_session_route": "marginally above-median efficiency is not sufficient directional value migration; require a past-only upper-tail state",
+    "target_reached": false
+  }
+}
