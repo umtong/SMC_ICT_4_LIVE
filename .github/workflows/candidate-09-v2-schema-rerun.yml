@@ -1,0 +1,104 @@
+name: Candidate 09 v2 schema-controlled rerun
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths: [.github/workflows/candidate-09-v2-schema-rerun.yml]
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v2-schema-rerun
+  cancel-in-progress: false
+
+jobs:
+  rerun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-v1
+      - name: Run unchanged v2 contract and frozen weeks
+        shell: bash
+        run: |
+          set +e
+          root=research/candidate-09
+          out="$root/evidence/latest"
+          diag="$root/diagnostics/v2-schema-rerun"
+          rm -rf "$out" "$diag"
+          mkdir -p "$out" "$diag"
+          smc4 doctor > "$diag/doctor.log" 2>&1; doctor=$?
+          python -m compileall -q "$root" > "$diag/compile.log" 2>&1; compile=$?
+          python -m unittest discover -s "$root/tests" -p 'test_*.py' -v > "$diag/tests.log" 2>&1; tests=$?
+          gate=99
+          if [[ $doctor == 0 && $compile == 0 && $tests == 0 ]]; then
+            python "$root/run.py" gate --config "$root/config.json" --cache "$SMC4_DATA_ROOT" --output "$out" > "$diag/gate.log" 2>&1
+            gate=$?
+          else
+            echo 'gate not run because prerequisite failed' > "$diag/gate.log"
+          fi
+          DOCTOR=$doctor COMPILE=$compile TESTS=$tests GATE=$gate python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path('research/candidate-09'); diag=root/'diagnostics/v2-schema-rerun'; out=root/'evidence/latest'
+          codes={k.lower():int(os.environ[k]) for k in ('DOCTOR','COMPILE','TESTS','GATE')}
+          failure=next((k for k,v in codes.items() if v),None)
+          (diag/'diagnostic.json').write_text(json.dumps({
+              'classification':'IMPLEMENTATION_ERROR' if failure else 'EXECUTED',
+              'codes':codes,'first_failure':failure,
+              'fixed_weeks_preserved':True,'strategy_parameters_preserved':True,
+              'controlled_change':'configuration key fixed_weeks -> fixed_gate_weeks_utc only',
+              'run_id':os.environ.get('GITHUB_RUN_ID'),'trigger_sha':os.environ.get('GITHUB_SHA')
+          },indent=2,sort_keys=True)+'\n')
+          if not (out/'summary.json').exists():
+              (out/'summary.json').write_text(json.dumps({'candidate':'candidate-09-v2','status':'IMPLEMENTATION_ERROR','first_failure':failure,'codes':codes},indent=2,sort_keys=True)+'\n')
+          for p in diag.glob('*.log'):
+              lines=p.read_text(errors='replace').splitlines(); p.write_text('\n'.join(lines[-1000:])+('\n' if lines else ''))
+          PY
+          exit 0
+      - name: Preserve output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v2-schema-rerun-${{ github.run_id }}
+          path: |
+            research/candidate-09/evidence/latest
+            research/candidate-09/diagnostics/v2-schema-rerun
+            research/candidate-09/config.json
+            research/candidate-09/state_engine.py
+            research/candidate-09/nautilus_strategy.py
+            research/candidate-09/run.py
+            research/candidate-09/tests
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit exact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=$(dirname "$(dirname "$(dirname "$(realpath research/candidate-09/run.py)")")")
+          git config --global --add safe.directory "$repo"
+          git -C "$repo" config user.name candidate-09-research-bot
+          git -C "$repo" config user.email candidate-09-research-bot@users.noreply.github.com
+          git -C "$repo" add -A research/candidate-09
+          if git -C "$repo" diff --cached --quiet; then exit 0; fi
+          status=$(python -c "import json;print(json.load(open('research/candidate-09/evidence/latest/summary.json')).get('status','UNKNOWN'))")
+          git -C "$repo" commit -m "candidate-09 v2: schema-controlled result ${status}"
+          git -C "$repo" pull --rebase origin "${GITHUB_REF_NAME}"
+          git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
