@@ -15,7 +15,7 @@ from candidate import reproducible_weeks
 from candidate import run_backtest
 
 
-VARIANT_NAMES = ("full", "ablation-single-bar-displacement")
+VARIANT_NAMES = ("full", "ablation-range-extreme-approach")
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,13 +35,14 @@ def parse_args() -> argparse.Namespace:
 
 def variants() -> dict[str, MachineParams]:
     full = MachineParams()
-    # One-variable v2.1 ablation: restore the preceding single-candle
-    # displacement certification while keeping pools, costs, targets, risk,
-    # entry, expiry and every numerical threshold unchanged.
-    single_bar = replace(full, enable_path_displacement=False)
+    # One-variable v2.2 ablation: displacement breaks the preceding eight-bar
+    # range extreme rather than the nearest already right-confirmed micro pivot.
+    # Pools, cost gate, target, order type, risk, seed and every threshold stay
+    # identical.
+    range_extreme = replace(full, enable_nearest_micro_pivot=False)
     return {
         "full": full,
-        "ablation-single-bar-displacement": single_bar,
+        "ablation-range-extreme-approach": range_extreme,
     }
 
 
@@ -125,7 +126,7 @@ def main() -> int:
         "phase": args.phase,
         "executed_weeks": [item.isoformat() for item in weeks],
         "engine_process_isolation": True,
-        "candidate_generation": "v2.1-efficient-event-path-displacement",
+        "candidate_generation": "v2.2-nearest-right-confirmed-micro-pivot",
         "variants": list(VARIANT_NAMES),
     }
     (output_root / "week_selection.json").write_text(
