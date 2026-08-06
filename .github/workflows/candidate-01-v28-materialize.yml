@@ -1,0 +1,72 @@
+name: candidate-01-v28-materialize
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v28-materialize.yml"
+      - ".candidate01-bootstrap/v28/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-01
+          fetch-depth: 0
+      - name: Decode and validate frozen v28 files
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64
+          import gzip
+          import json
+          import py_compile
+
+          root = Path(".candidate01-bootstrap/v28")
+          mapping = {
+              root / "candidate.py.gz.b64": Path("research/candidate-01/impact_elasticity_resumption_v28_nautilus_week.py"),
+              root / "gate.py.gz.b64": Path("research/candidate-01/candidate_01_v28_gate.py"),
+              root / "protocol.json.gz.b64": Path("research/candidate-01/candidate_01_v28_protocol.json"),
+              root / "workflow.yml.gz.b64": Path(".github/workflows/candidate-01-v28-impact-elasticity-weeks.yml"),
+          }
+          for source, destination in mapping.items():
+              encoded = source.read_text(encoding="utf-8").strip()
+              payload = gzip.decompress(base64.b64decode(encoded))
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              destination.write_bytes(payload)
+          py_compile.compile(
+              "research/candidate-01/impact_elasticity_resumption_v28_nautilus_week.py",
+              doraise=True,
+          )
+          py_compile.compile(
+              "research/candidate-01/candidate_01_v28_gate.py",
+              doraise=True,
+          )
+          json.loads(
+              Path("research/candidate-01/candidate_01_v28_protocol.json").read_text(
+                  encoding="utf-8",
+              ),
+          )
+          PY
+      - name: Commit generated candidate and workflow
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-01/impact_elasticity_resumption_v28_nautilus_week.py \
+            research/candidate-01/candidate_01_v28_gate.py \
+            research/candidate-01/candidate_01_v28_protocol.json \
+            .github/workflows/candidate-01-v28-impact-elasticity-weeks.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "research(candidate-01): add v28 impact elasticity candidate"
+          git push origin HEAD:research/candidate-01
