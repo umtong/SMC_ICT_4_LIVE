@@ -1,0 +1,57 @@
+name: candidate-04-v38-contract
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/volume_clock_imbalance_gap_compiler.py"
+      - "research/candidate-04/tests/test_volume_clock_imbalance_gap_compiler.py"
+      - ".github/workflows/candidate-04-v38-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify pinned runtime and compile V38
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/volume_clock_impact_residual_compiler.py \
+            research/candidate-04/volume_clock_imbalance_gap_compiler.py \
+            research/candidate-04/filter_candidate_signals.py \
+            research/candidate-04/run_frozen_btc_route.py
+
+      - name: Run V37 clock, V38 gap and Nautilus execution contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_volume_clock_impact_residual_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_volume_clock_imbalance_gap_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_filter_candidate_signals.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
