@@ -1,0 +1,144 @@
+name: candidate-01-v15-daily-markers-first-week
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v15-daily-markers-first-week.yml"
+      - "research/candidate-01/build_v15_daily_markers.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch the shared date conversion and generate v15
+        run: |
+          set -euo pipefail
+          python3 research/candidate-01/build_v15_daily_markers.py
+          python3 -m compileall -q \
+            research/candidate-01/nautilus_plan_backtest.py \
+            research/candidate-01/nautilus_tick_plan_backtest.py \
+            research/candidate-01/intrinsic_tick_daily_markers_v15_nautilus_week.py
+          grep -q 'pd.Timestamp(int(ts_ns), unit="ns", tz="UTC")' \
+            research/candidate-01/nautilus_plan_backtest.py
+      - name: Commit the implementation correction
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-01/nautilus_plan_backtest.py \
+            research/candidate-01/intrinsic_tick_daily_markers_v15_nautilus_week.py
+          git commit -m "fix(candidate-01): mark Nautilus NAV on integer-safe UTC days"
+          git push origin HEAD:research/candidate-01
+
+  first-week:
+    needs: materialize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-01
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v15-daily-markers
+          key: candidate-01-v15-daily-markers-BTCUSDT-2023-06-14-27-${{ runner.os }}-v1
+      - name: Re-run the frozen full candidate through NautilusTrader
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/nautilus_plan_backtest.py \
+                research/candidate-01/nautilus_tick_plan_backtest.py \
+                research/candidate-01/intrinsic_tick_daily_markers_v15_nautilus_week.py
+              python research/candidate-01/nautilus_tick_adapter_smoke.py
+              rm -rf artifacts/candidate-01-v15-full-first
+              python research/candidate-01/intrinsic_tick_daily_markers_v15_nautilus_week.py \
+                --week 2023-06-19 \
+                --rule full-measured-composite \
+                --cache .cache/candidate-01-v15-daily-markers \
+                --output artifacts/candidate-01-v15-full-first \
+                --workers 4
+            '
+      - name: Verify the corrected first-week gate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("artifacts/candidate-01-v15-full-first")
+          summary = json.loads((root / "intrinsic_tick_daily_markers_v15_summary.json").read_text())
+          metrics = json.loads((root / "nautilus_metrics.json").read_text())
+          contract = json.loads((root / "execution_contract.json").read_text())
+          daily = pd.read_csv(root / "daily_nav.csv")
+          assert summary["execution_engine"] == "NautilusTrader"
+          assert summary["custom_fill_simulator"] is False
+          assert summary["custom_pnl_or_nav_ledger"] is False
+          assert summary["risk_fraction"] == 0.03
+          assert "first official trade of each evaluation UTC day" in summary["tick_selection"]
+          assert metrics["execution_engine"] == "NautilusTrader"
+          assert metrics["trade_execution"] is True
+          assert contract["authoritative_performance_engine"] == "NautilusTrader"
+          assert daily["date"].tolist() == [
+              "2023-06-19", "2023-06-20", "2023-06-21", "2023-06-22",
+              "2023-06-23", "2023-06-24", "2023-06-25",
+          ]
+          gate = {
+              "plans": summary["submitted_plan_pool"],
+              "selected_trade_ticks": summary["official_execution_trade_ticks"],
+              "windows": len(summary["execution_tick_windows"]),
+              "daily_nav_rows": len(daily),
+              "daily_nav_dates": daily["date"].tolist(),
+              "trades": metrics["closed_positions"],
+              "win_rate": metrics["win_rate"],
+              "total_return": metrics["total_return"],
+              "geometric_daily": metrics["geometric_mean_daily_return"],
+              "profit_factor": metrics["profit_factor"],
+              "max_drawdown": metrics["max_drawdown"],
+              "target_met": metrics["target_met"],
+              "rejection_counts": metrics["rejection_counts"],
+              "ended_flat": metrics["ended_flat"],
+          }
+          (root / "first_week_gate.json").write_text(
+              json.dumps(gate, indent=2, sort_keys=True) + "\n",
+          )
+          print(json.dumps(gate, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-01-v15-full-first-${{ github.sha }}
+          path: artifacts/candidate-01-v15-full-first
+          if-no-files-found: error
+          retention-days: 30
