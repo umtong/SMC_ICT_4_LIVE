@@ -12,16 +12,16 @@ from nt_causal_risk_sizing import risk_sized_submit_bracket
 
 VARIANTS = {
     "parent_1h": (
-        "nt_directional_internal_strategy:OneHourDirectionalInternalStrategy"
+        "nt_directional_internal_strategy_v2:OneHourDirectionalInternalStrategyV2"
     ),
     "parent_1h_fvg": (
-        "nt_directional_internal_strategy:OneHourFvgDirectionalInternalStrategy"
+        "nt_directional_internal_strategy_v2:OneHourFvgDirectionalInternalStrategyV2"
     ),
     "parent_4h": (
-        "nt_directional_internal_strategy:FourHourDirectionalInternalStrategy"
+        "nt_directional_internal_strategy_v2:FourHourDirectionalInternalStrategyV2"
     ),
     "composite": (
-        "nt_directional_internal_strategy:CompositeDirectionalInternalStrategy"
+        "nt_directional_internal_strategy_v2:CompositeDirectionalInternalStrategyV2"
     ),
 }
 
