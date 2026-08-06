@@ -1,0 +1,69 @@
+{
+  "candidate": "position-build then release confirmed failed-sweep MSS",
+  "candidate_version": 35,
+  "repository": "umtong/SMC_ICT_4_LIVE",
+  "branch": "research/candidate-01",
+  "frozen_before_execution": true,
+  "selection_protocol": {
+    "seed_text": "candidate-01-v35-positioning-cycle-2026-08-06",
+    "candidate_pool": "every UTC Monday from 2020-09-14 through 2026-06-22",
+    "exclusion": "reject prior development/evaluation weeks and any candidate whose nine-day clock/context source interval overlaps a prior seven-day evaluation",
+    "method": "rank remaining Mondays by SHA-256(seed:date), then retain the first three mutually non-overlapping weeks before execution",
+    "primary_weeks": [
+      {
+        "week": "2022-11-28",
+        "sha256": "014ee9a0e1b98f994d5904cea97c1d1ebb253f5570e9f65db07b1c81be33cdcb"
+      },
+      {
+        "week": "2021-06-28",
+        "sha256": "016ab988da0f71c7d01bff8a9abe9f9a946553d5c0d4521af910cb0ef5c674ce"
+      },
+      {
+        "week": "2023-11-20",
+        "sha256": "01f1ce1f1e3b65fe319f9bbdffe4544197260c5a9a7217171046b4b57b608f85"
+      }
+    ],
+    "opening_rule": "week 2 opens only after week 1 full_pass or promising_but_not_complete; week 3 opens only after week 2 also advances",
+    "ablation_rule": "if week 1 primary stops, run the frozen v23 MSS control on the identical week and union-plan TradeTick stream; remove only official OI build-release confirmation",
+    "long_evaluation_rule": "no long evaluation until all three frozen primary weeks advance without logic or parameter changes"
+  },
+  "frozen_source_scenario": {
+    "representation": "daily causal equal-notional event bars calibrated only from the immediately preceding completed UTC day",
+    "failed_sweep": "40-bp intrinsic same-side pivot sweep, confirmation back inside, initiative/reversal aggressive-flow sign change",
+    "mss": "completed event close through the nearer opposing pivot with aggressive flow aligned to the reversal",
+    "entry": "NautilusTrader market bracket on the first official venue TradeTick strictly after completed MSS",
+    "invalidation": "adverse extreme of every completed failed-sweep-to-MSS event plus one 7-bp side-cost buffer",
+    "target": "nearest active unconsumed completed UTC-day or completed Monday-Sunday week high/low strictly beyond the farther local opposing pivot"
+  },
+  "new_positioning_variable": {
+    "data": "official Binance Vision USD-M BTCUSDT metrics sum_open_interest",
+    "observed_frequency": "five minutes",
+    "causal_availability": "each timestamped row is unavailable until five further wall-clock minutes have completed",
+    "build": "the latest causally available OI observation at failed-sweep arming is strictly above its immediately preceding observation",
+    "release": "a strictly later causally available OI observation by MSS is strictly below the sweep observation",
+    "direction": "the frozen failed-sweep aggressive-flow sequence determines direction; OI is used only to distinguish position creation and later release",
+    "threshold_policy": "strict sign and event order only; no fitted OI magnitude, percentile, ratio, session or volatility threshold"
+  },
+  "execution_contract": {
+    "market": "BTCUSDT Binance USD-M perpetual",
+    "performance_engine": "NautilusTrader 1.230.0",
+    "execution_data": "official Binance Vision aggregate trades converted one-for-one to TradeTick",
+    "risk_fraction_of_current_nav": 0.03,
+    "all_in_cost_bps_per_side": 7.0,
+    "maximum_hold_hours": 4,
+    "one_global_pending_entry_plus_position": true,
+    "custom_fill_simulator": false,
+    "custom_pnl_or_nav_ledger": false
+  },
+  "weekly_gate": {
+    "minimum_trades": 7,
+    "minimum_win_rate": 0.45,
+    "minimum_full_geometric_daily": 0.01,
+    "minimum_promising_geometric_daily": 0.0075,
+    "minimum_full_profit_factor": 1.2,
+    "minimum_promising_profit_factor": 1.1,
+    "maximum_full_drawdown": 0.2,
+    "maximum_promising_drawdown": 0.15,
+    "operational_integrity_required": true
+  }
+}
