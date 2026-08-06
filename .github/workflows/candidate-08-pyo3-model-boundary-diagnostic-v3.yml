@@ -1,0 +1,332 @@
+name: candidate-08-pyo3-model-boundary-diagnostic-v3
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-pyo3-model-boundary-diagnostic-v3"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-pyo3-model-boundary-diagnostic-v3
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUT: research/candidate-08/evidence/aggtrade-acceptance-nautilus/pyo3-model-boundary-diagnostic-v3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Exercise the complete boundary with native cost models
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$OUT"
+          smc4 doctor | tee "$OUT/doctor.txt"
+          PYTHONPATH=research/candidate-08 python - <<'PY' | tee "$OUT/diagnostic.log"
+          from __future__ import annotations
+
+          from decimal import Decimal
+          import json
+          from pathlib import Path
+          import traceback
+          from typing import Any, Callable
+
+          import pandas as pd
+
+          from nautilus_trader.core import nautilus_pyo3 as pyo3
+
+          from aggtrade_acceptance_strategy import (
+              AggTradeAcceptanceStrategy,
+              AggTradeAcceptanceStrategyConfig,
+          )
+          from run_aggtrade_acceptance_nautilus import (
+              _bars_from_ten_second_frame,
+              _build_instrument,
+              _funding_updates_from_frame,
+              _mark_price_updates_from_frame,
+              _ten_second_bar_type,
+          )
+
+          OUT = Path("research/candidate-08/evidence/aggtrade-acceptance-nautilus/pyo3-model-boundary-diagnostic-v3")
+          CONFIG = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_nautilus.json").read_text())
+          result: dict[str, Any] = {
+              "engine": "NautilusTrader",
+              "version": "1.230.0",
+              "classification": "IMPLEMENTATION_BOUNDARY_DIAGNOSTIC_ONLY",
+              "attempts": [],
+          }
+
+          def typename(value: Any) -> str:
+              return f"{type(value).__module__}.{type(value).__qualname__}"
+
+          def attempt(label: str, fn: Callable[[], Any]) -> tuple[bool, Any]:
+              record: dict[str, Any] = {"label": label}
+              try:
+                  value = fn()
+                  record.update(ok=True, type=typename(value), repr=repr(value))
+                  result["attempts"].append(record)
+                  return True, value
+              except Exception as exc:
+                  record.update(
+                      ok=False,
+                      error_type=type(exc).__name__,
+                      error=str(exc),
+                      traceback=traceback.format_exc(),
+                  )
+                  result["attempts"].append(record)
+                  return False, None
+
+          latency = CONFIG["cost_assumptions"]["latency_ms"]
+          native_models = {
+              "fill_model": pyo3.OneTickSlippageFillModel(
+                  prob_fill_on_limit=1.0,
+                  prob_slippage=float(CONFIG["cost_assumptions"]["one_tick_slippage_probability"]),
+                  random_seed=int(CONFIG["random_seed"]),
+              ),
+              "fee_model": pyo3.MakerTakerFeeModel(),
+              "latency_model": pyo3.StaticLatencyModel(
+                  base_latency_nanos=int(latency["base"] * 1_000_000),
+                  insert_latency_nanos=int(latency["insert"] * 1_000_000),
+                  update_latency_nanos=int(latency["update"] * 1_000_000),
+                  cancel_latency_nanos=int(latency["cancel"] * 1_000_000),
+              ),
+          }
+          result["native_model_types"] = {
+              key: typename(value) for key, value in native_models.items()
+          }
+
+          engine = pyo3.BacktestEngine(
+              pyo3.BacktestEngineConfig(run_analysis=True, bypass_logging=True)
+          )
+          p_venue = pyo3.Venue.from_str("BINANCE")
+          venue_ok, _ = attempt(
+              "add native PyO3 venue with native costs latency and liquidation",
+              lambda: engine.add_venue(
+                  venue=p_venue,
+                  oms_type=pyo3.OmsType.HEDGING,
+                  account_type=pyo3.AccountType.MARGIN,
+                  starting_balances=[
+                      pyo3.Money.from_str(f"{CONFIG['starting_nav_usdt']} USDT")
+                  ],
+                  base_currency=pyo3.Currency.from_str("USDT"),
+                  default_leverage=Decimal(str(CONFIG["venue"]["default_leverage"])),
+                  liquidation_enabled=bool(CONFIG["venue"]["liquidation_enabled"]),
+                  liquidation_trigger_ratio=float(CONFIG["venue"]["liquidation_trigger_ratio"]),
+                  liquidation_cancel_open_orders=bool(
+                      CONFIG["venue"]["liquidation_cancel_open_orders"]
+                  ),
+                  reject_stop_orders=False,
+                  support_contingent_orders=True,
+                  use_position_ids=True,
+                  use_reduce_only=True,
+                  bar_execution=True,
+                  bar_adaptive_high_low_ordering=bool(
+                      CONFIG["venue"]["bar_adaptive_high_low_ordering"]
+                  ),
+                  **native_models,
+              ),
+          )
+
+          fee_rate = float(CONFIG["effective_fee_rate_per_fill"])
+          legacy_instruments = {
+              symbol: _build_instrument(symbol, values, fee_rate)
+              for symbol, values in CONFIG["assets"].items()
+          }
+          pyo3_instruments = {}
+          instrument_ok = venue_ok
+          for symbol, instrument in legacy_instruments.items():
+              ok, converted = attempt(
+                  f"convert and add {symbol} CryptoPerpetual",
+                  lambda instrument=instrument: pyo3.CryptoPerpetual.from_dict(
+                      instrument.to_dict(instrument)
+                  ),
+              )
+              instrument_ok = instrument_ok and ok
+              if ok:
+                  pyo3_instruments[symbol] = converted
+                  added, _ = attempt(
+                      f"engine.add_instrument {symbol}",
+                      lambda converted=converted: engine.add_instrument(converted),
+                  )
+                  instrument_ok = instrument_ok and added
+
+          def to_pyo3_data(item: Any, target_name: str) -> Any:
+              target = getattr(pyo3, target_name)
+              if isinstance(item, target):
+                  return item
+              if hasattr(item, "to_pyo3"):
+                  return item.to_pyo3()
+              if hasattr(type(item), "to_dict") and hasattr(target, "from_dict"):
+                  return target.from_dict(type(item).to_dict(item))
+              raise TypeError(f"no official conversion path for {typename(item)} -> pyo3.{target_name}")
+
+          timestamp = pd.Timestamp("2024-04-08T00:00:10Z")
+          centers = {"BTCUSDT": 70000.0, "ETHUSDT": 3500.0, "SOLUSDT": 175.0, "XRPUSDT": 0.6}
+          data_items = []
+          data_conversion_ok = instrument_ok
+          for symbol, instrument in legacy_instruments.items():
+              precision = int(CONFIG["assets"][symbol]["price_precision"])
+              center = centers[symbol]
+              step = 10 ** (-precision)
+              frame = pd.DataFrame(
+                  {
+                      "open": [center],
+                      "high": [center + step],
+                      "low": [center - step],
+                      "close": [center],
+                      "volume": [1.0],
+                  },
+                  index=[timestamp],
+              )
+              legacy_bar = _bars_from_ten_second_frame(
+                  frame,
+                  bar_type=_ten_second_bar_type(instrument),
+                  instrument=instrument,
+              )[0]
+              ok, value = attempt(
+                  f"convert {symbol} Bar",
+                  lambda legacy_bar=legacy_bar: to_pyo3_data(legacy_bar, "Bar"),
+              )
+              data_conversion_ok = data_conversion_ok and ok
+              if ok:
+                  data_items.append(value)
+
+              funding = _funding_updates_from_frame(
+                  pd.DataFrame(
+                      {"funding_rate": [0.0001], "funding_interval_minutes": [480]},
+                      index=[pd.Timestamp("2024-04-08T00:00:00Z")],
+                  ),
+                  instrument=instrument,
+              )[0]
+              ok, value = attempt(
+                  f"convert {symbol} FundingRateUpdate",
+                  lambda funding=funding: to_pyo3_data(funding, "FundingRateUpdate"),
+              )
+              data_conversion_ok = data_conversion_ok and ok
+              if ok:
+                  data_items.append(value)
+
+              mark = _mark_price_updates_from_frame(
+                  pd.DataFrame(
+                      {"mark_price": [center]},
+                      index=[pd.Timestamp("2024-04-07T23:59:59.999Z")],
+                  ),
+                  instrument=instrument,
+              )[0]
+              ok, value = attempt(
+                  f"convert {symbol} MarkPriceUpdate",
+                  lambda mark=mark: to_pyo3_data(mark, "MarkPriceUpdate"),
+              )
+              data_conversion_ok = data_conversion_ok and ok
+              if ok:
+                  data_items.append(value)
+
+          data_added_ok = data_conversion_ok
+          if data_added_ok:
+              data_added_ok, _ = attempt(
+                  "engine.add_data all converted bars funding and mark updates",
+                  lambda: engine.add_data(data_items),
+              )
+
+          strategy = AggTradeAcceptanceStrategy(
+              AggTradeAcceptanceStrategyConfig(
+                  trading_start_ns=int(timestamp.as_unit("ns").value),
+                  trading_end_ns=int((timestamp + pd.Timedelta(minutes=1)).as_unit("ns").value),
+                  risk_fraction=Decimal("0.03"),
+                  effective_fee_rate=Decimal(str(CONFIG["effective_fee_rate_per_fill"])),
+                  minimum_net_reward_risk=Decimal(str(CONFIG["minimum_net_reward_risk"])),
+                  maximum_hold_minutes=int(CONFIG["maximum_hold_minutes"]),
+                  funding_avoidance_minutes=int(CONFIG["funding_avoidance_minutes"]),
+              ),
+              instrument_ids=tuple(item.id for item in legacy_instruments.values()),
+              bar_types=tuple(_ten_second_bar_type(item) for item in legacy_instruments.values()),
+              signals_by_time_ns={},
+              funding_observations_by_instrument={
+                  str(item.id): () for item in legacy_instruments.values()
+              },
+          )
+          strategy_ok = data_added_ok
+          if strategy_ok:
+              strategy_ok, _ = attempt(
+                  "engine.add_strategy existing Python strategy",
+                  lambda: engine.add_strategy(strategy),
+              )
+
+          run_ok = strategy_ok
+          if run_ok:
+              run_ok, _ = attempt("engine.run full converted chain", engine.run)
+
+          reports_ok = run_ok
+          if reports_ok:
+              for label, fn in (
+                  ("orders", engine.generate_orders_report),
+                  ("fills", engine.generate_fills_report),
+                  ("positions", engine.generate_positions_report),
+                  ("account", lambda: engine.generate_account_report(venue=p_venue)),
+                  ("venues", engine.list_venues),
+              ):
+                  ok, _ = attempt(f"generate {label} report", fn)
+                  reports_ok = reports_ok and ok
+
+          attempt("dispose native full-chain engine", engine.dispose)
+          result["chain"] = {
+              "native_venue_costs_liquidation": venue_ok,
+              "all_instruments_converted_and_added": instrument_ok,
+              "all_data_converted_and_added": data_added_ok,
+              "existing_python_strategy_added": strategy_ok,
+              "engine_run_completed": run_ok,
+              "reports_generated": reports_ok,
+          }
+          summary = {
+              "classification": result["classification"],
+              "chain": result["chain"],
+              "failures": [
+                  {key: item.get(key) for key in ("label", "error_type", "error")}
+                  for item in result["attempts"] if not item.get("ok")
+              ],
+          }
+          OUT.mkdir(parents=True, exist_ok=True)
+          (OUT / "diagnostic.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, default=str) + "\n",
+              encoding="utf-8",
+          )
+          (OUT / "summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit diagnostic evidence only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f research/candidate-08/.run-pyo3-model-boundary-diagnostic-v3
+          git add -A -- "$OUT" research/candidate-08/.run-pyo3-model-boundary-diagnostic-v3
+          git commit -m "candidate-08: record native-cost PyO3 full-chain diagnostic [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
