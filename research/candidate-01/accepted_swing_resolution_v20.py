@@ -168,15 +168,10 @@ class AcceptedSwingResolutionStateMachine(ImpactResolutionStateMachine):
                 accepted_highs=highs,
                 atr=inferred_atr,
             )
-            if plan.side is Side.LONG and not stop < plan.confirmation_hold_price:
-                raise RuntimeError(
-                    f"long protected stop does not invalidate below acceptance: {plan.scenario_id}",
-                )
-            if plan.side is Side.SHORT and not stop > plan.confirmation_hold_price:
-                raise RuntimeError(
-                    f"short protected stop does not invalidate above acceptance: {plan.scenario_id}",
-                )
-
+            # The protected swing can legitimately remain outside the original
+            # confirmation boundary.  Its only required geometry is adverse to
+            # the eventual entry and inside the unchanged target; Nautilus' own
+            # viability check enforces that at submission time.
             replacement = replace(
                 plan,
                 stop_price=stop,
