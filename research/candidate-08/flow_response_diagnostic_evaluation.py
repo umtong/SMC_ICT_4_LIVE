@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from aggtrade_flow_response_auction_signals_v2 import (
+from aggtrade_flow_response_auction_signals_v3 import (
     ABSORPTION_FAMILY,
     IMPLEMENTATION_REVISION,
     INITIATIVE_FAMILY,
 )
+from flow_response_trade_path_diagnostics_v2 import DIAGNOSTIC_REVISION
 
 
 MODE_TO_RETAINED = {
@@ -61,10 +62,18 @@ def evaluate_diagnostic_summary(
     path_summary = summary.get("trade_path_diagnostic_summary", {})
     path_summary_is_mapping = isinstance(path_summary, Mapping)
     closed_trades = int(summary.get("closed_trades", 0))
+    expected_revision_counts = {DIAGNOSTIC_REVISION: closed_trades}
 
     evidence_checks = {
         "implementation_revision_exact": (
             str(summary.get("implementation_revision")) == IMPLEMENTATION_REVISION
+        ),
+        "ten_second_cadence_exact": (
+            str(summary.get("ten_second_cadence_contract"))
+            == "EXACT_CONSECUTIVE_10_SECONDS"
+        ),
+        "path_diagnostic_revision_exact": (
+            str(summary.get("trade_path_diagnostic_revision")) == DIAGNOSTIC_REVISION
         ),
         "family_mode_exact": reported_mode == expected_mode,
         "diagnostic_flag_true": bool(summary.get("diagnostic_family_ablation", False)),
@@ -89,6 +98,16 @@ def evaluate_diagnostic_summary(
             path_summary_is_mapping
             and int(path_summary.get("complete_records", -1)) == closed_trades
         ),
+        "trade_path_revision_counts_exact": (
+            path_summary_is_mapping
+            and dict(path_summary.get("diagnostic_revision_counts", {}))
+            == expected_revision_counts
+        ),
+        "trade_path_expected_revision_exact": (
+            path_summary_is_mapping
+            and str(path_summary.get("expected_diagnostic_revision"))
+            == DIAGNOSTIC_REVISION
+        ),
         "economic_check_set_nonempty": len(economic_checks) >= 5,
         "removed_family_has_no_signals": int(removed_stats.get("signals", 0)) == 0,
         "removed_family_has_no_closed_trades": int(
@@ -100,6 +119,7 @@ def evaluate_diagnostic_summary(
     economic_checks_passed = bool(economic_checks) and all(economic_checks.values())
     return {
         "implementation_revision": IMPLEMENTATION_REVISION,
+        "trade_path_diagnostic_revision": DIAGNOSTIC_REVISION,
         "expected_mode": expected_mode,
         "retained_family": retained,
         "removed_family": removed,
