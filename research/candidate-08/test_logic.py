@@ -175,8 +175,16 @@ class LogicContractTests(unittest.TestCase):
         self.assertLess(setup.structural_stop, setup.estimated_entry)
         self.assertGreater(setup.liquidity_target, setup.estimated_entry)
 
-    def test_acceptance_requires_retest_hold_before_trade(self) -> None:
-        cfg = logic.LogicConfig(retest_outer_atr=0.22, retest_inner_atr=0.38, retest_close_atr=0.01)
+    def test_acceptance_requires_contracted_retest_then_independent_follow_through(self) -> None:
+        cfg = logic.LogicConfig(
+            retest_outer_atr=0.22,
+            retest_inner_atr=0.38,
+            retest_close_atr=0.01,
+            acceptance_retest_volume_fraction=0.75,
+            acceptance_follow_through_bars=3,
+            acceptance_follow_through_atr=0.05,
+            acceptance_follow_through_body_atr=0.25,
+        )
         engine = logic.LiquidityBifurcationLogic(cfg)
         engine.pending = logic.PendingScenario(
             scenario_id="lsb-test-a",
@@ -191,6 +199,8 @@ class LogicContractTests(unittest.TestCase):
             confirmation_level=100.0,
             reference_range=4.0,
             interaction_time_ns=5_000,
+            interaction_volume_ratio=2.0,
+            pool_age_bars=60,
         )
         engine.pools.append(
             logic.LiquidityPool(
@@ -209,8 +219,16 @@ class LogicContractTests(unittest.TestCase):
             trading_available=True,
         )
         self.assertIsNone(no_retest)
-        setup = engine._advance_pending(
+        held_only = engine._advance_pending(
             logic.BarPoint(7, 7_000, 100.5, 100.8, 100.1, 100.6, 100.0),
+            atr=1.0,
+            volume_median=100.0,
+            trading_available=True,
+        )
+        self.assertIsNone(held_only)
+        self.assertEqual(engine.pending.retest_index, 7)
+        setup = engine._advance_pending(
+            logic.BarPoint(8, 8_000, 100.6, 101.5, 100.5, 101.3, 120.0),
             atr=1.0,
             volume_median=100.0,
             trading_available=True,
@@ -218,6 +236,66 @@ class LogicContractTests(unittest.TestCase):
         self.assertIsNotNone(setup)
         self.assertEqual(setup.family, logic.ScenarioFamily.ACCEPTANCE)
         self.assertEqual(setup.direction, logic.Direction.LONG)
+
+    def test_acceptance_cancels_noncontracted_retest(self) -> None:
+        engine = logic.LiquidityBifurcationLogic(
+            logic.LogicConfig(acceptance_retest_volume_fraction=0.75)
+        )
+        engine.pending = logic.PendingScenario(
+            scenario_id="lsb-test-hot-retest",
+            family=logic.ScenarioFamily.ACCEPTANCE,
+            direction=logic.Direction.LONG,
+            pool_id="pool-break",
+            pool_level=100.0,
+            armed_index=5,
+            expiry_index=15,
+            atr=1.0,
+            extreme=99.5,
+            confirmation_level=100.0,
+            reference_range=4.0,
+            interaction_time_ns=5_000,
+            interaction_volume_ratio=1.0,
+            pool_age_bars=60,
+        )
+        result = engine._advance_pending(
+            logic.BarPoint(6, 6_000, 100.5, 100.8, 100.1, 100.6, 100.0),
+            atr=1.0,
+            volume_median=100.0,
+            trading_available=True,
+        )
+        self.assertIsNone(result)
+        self.assertIsNone(engine.pending)
+        self.assertEqual(engine.events[-1].reason_code, "ACCEPTANCE_RETEST_NOT_CONTRACTED")
+
+    def test_fresh_single_touch_pool_is_not_external_liquidity(self) -> None:
+        cfg = logic.LogicConfig(
+            minimum_pool_visibility_bars=30,
+            acceptance_close_atr=0.1,
+            acceptance_body_atr=0.5,
+            acceptance_close_location=0.65,
+            acceptance_volume_ratio=0.8,
+        )
+        engine = logic.LiquidityBifurcationLogic(cfg)
+        pool = logic.LiquidityPool(
+            pool_id="pool-fresh",
+            kind=logic.PoolKind.HIGH,
+            level=100.0,
+            pivot_index=9,
+            event_time_ns=9_000,
+            observed_time_ns=10_000,
+        )
+        engine.pools.append(pool)
+        bar = logic.BarPoint(10, 10_000, 99.8, 101.0, 99.7, 100.8, 100.0)
+        engine._detect_new_interaction(bar, 99.8, 1.0, 100.0)
+        self.assertIsNone(engine.pending)
+        pool.touches = 2
+        engine._detect_new_interaction(
+            logic.BarPoint(11, 11_000, 99.8, 101.0, 99.7, 100.8, 100.0),
+            99.8,
+            1.0,
+            100.0,
+        )
+        self.assertIsNotNone(engine.pending)
 
 
 if __name__ == "__main__":

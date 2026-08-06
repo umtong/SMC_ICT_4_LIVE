@@ -91,6 +91,13 @@ class PendingScenario:
     confirmation_level: float
     reference_range: float
     interaction_time_ns: int
+    interaction_volume_ratio: float = 1.0
+    pool_age_bars: int = 0
+    pool_touches: int = 1
+    retest_index: int | None = None
+    retest_high: float | None = None
+    retest_low: float | None = None
+    retest_volume_ratio: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +153,12 @@ class LogicConfig:
     acceptance_close_location: float = 0.68
     acceptance_volume_ratio: float = 0.95
     acceptance_retest_bars: int = 10
+    minimum_pool_visibility_bars: int = 30
+    acceptance_retest_volume_fraction: float = 0.75
+    acceptance_follow_through_bars: int = 3
+    acceptance_follow_through_atr: float = 0.05
+    acceptance_follow_through_body_atr: float = 0.25
+    acceptance_follow_through_close_location: float = 0.65
     retest_outer_atr: float = 0.22
     retest_inner_atr: float = 0.38
     retest_close_atr: float = 0.01
@@ -351,7 +364,12 @@ class LiquidityBifurcationLogic:
         active = [
             pool
             for pool in self.pools
-            if not pool.consumed and pool.touches >= self.config.minimum_pool_touches
+            if not pool.consumed
+            and pool.touches >= self.config.minimum_pool_touches
+            and (
+                bar.index - pool.pivot_index >= self.config.minimum_pool_visibility_bars
+                or pool.touches >= 2
+            )
         ]
         high_crossed = [
             pool
@@ -464,6 +482,9 @@ class LiquidityBifurcationLogic:
             confirmation_level=confirmation_level,
             reference_range=self._reference_range(pool, bar, atr),
             interaction_time_ns=bar.ts_event_ns,
+            interaction_volume_ratio=volume_ratio,
+            pool_age_bars=bar.index - pool.pivot_index,
+            pool_touches=pool.touches,
         )
         self._emit(
             scenario_id=pool.pool_id,
@@ -489,6 +510,9 @@ class LiquidityBifurcationLogic:
                 "penetration_atr": penetration_atr,
                 "volume_ratio": volume_ratio,
                 "range_atr": range_atr,
+                "interaction_volume_ratio": volume_ratio,
+                "pool_age_bars": bar.index - pool.pivot_index,
+                "pool_touches": pool.touches,
                 "expiry_index": expiry,
             },
         )
@@ -528,16 +552,87 @@ class LiquidityBifurcationLogic:
         else:
             if pending.direction is Direction.LONG:
                 invalid = bar.close < pending.pool_level - self.config.retest_inner_atr * atr
-                touched = bar.low <= pending.pool_level + self.config.retest_outer_atr * atr
-                held = bar.close >= pending.pool_level + self.config.retest_close_atr * atr
-                confirmed = touched and held and bar.close_location >= 0.55
-                pending.extreme = min(pending.extreme, bar.low)
             else:
                 invalid = bar.close > pending.pool_level + self.config.retest_inner_atr * atr
-                touched = bar.high >= pending.pool_level - self.config.retest_outer_atr * atr
-                held = bar.close <= pending.pool_level - self.config.retest_close_atr * atr
-                confirmed = touched and held and bar.close_location <= 0.45
-                pending.extreme = max(pending.extreme, bar.high)
+
+            if invalid:
+                confirmed = False
+            elif pending.retest_index is None:
+                if pending.direction is Direction.LONG:
+                    touched = bar.low <= pending.pool_level + self.config.retest_outer_atr * atr
+                    held = (
+                        bar.close >= pending.pool_level + self.config.retest_close_atr * atr
+                        and bar.close_location >= 0.55
+                    )
+                    if touched:
+                        pending.extreme = min(pending.extreme, bar.low)
+                else:
+                    touched = bar.high >= pending.pool_level - self.config.retest_outer_atr * atr
+                    held = (
+                        bar.close <= pending.pool_level - self.config.retest_close_atr * atr
+                        and bar.close_location <= 0.45
+                    )
+                    if touched:
+                        pending.extreme = max(pending.extreme, bar.high)
+                confirmed = False
+                if touched and held:
+                    contraction_limit = (
+                        pending.interaction_volume_ratio
+                        * self.config.acceptance_retest_volume_fraction
+                    )
+                    if volume_ratio > contraction_limit:
+                        self.clear_pending("ACCEPTANCE_RETEST_NOT_CONTRACTED", bar)
+                        return None
+                    pending.retest_index = bar.index
+                    pending.retest_high = bar.high
+                    pending.retest_low = bar.low
+                    pending.retest_volume_ratio = volume_ratio
+                    pending.expiry_index = (
+                        bar.index + self.config.acceptance_follow_through_bars
+                    )
+                    self._emit(
+                        scenario_id=pending.scenario_id,
+                        event_type="ACCEPTANCE_RETEST_HELD",
+                        event_time_ns=bar.ts_event_ns,
+                        observed_time_ns=bar.ts_event_ns,
+                        previous_state="ARMED",
+                        next_state="RETEST_HELD",
+                        reason_code=f"LOW_ENERGY_RETEST_{pending.direction.value}",
+                        reference_price=bar.close,
+                        details={
+                            "interaction_volume_ratio": pending.interaction_volume_ratio,
+                            "retest_volume_ratio": volume_ratio,
+                            "contraction_fraction": (
+                                volume_ratio / max(pending.interaction_volume_ratio, 1e-12)
+                            ),
+                            "follow_through_expiry_index": pending.expiry_index,
+                        },
+                    )
+                    return None
+            elif pending.direction is Direction.LONG:
+                assert pending.retest_high is not None
+                assert pending.retest_volume_ratio is not None
+                confirmed = (
+                    bar.close
+                    >= pending.retest_high + self.config.acceptance_follow_through_atr * atr
+                    and bar.close > bar.open
+                    and bar.body >= self.config.acceptance_follow_through_body_atr * atr
+                    and bar.close_location
+                    >= self.config.acceptance_follow_through_close_location
+                    and volume_ratio >= pending.retest_volume_ratio
+                )
+            else:
+                assert pending.retest_low is not None
+                assert pending.retest_volume_ratio is not None
+                confirmed = (
+                    bar.close
+                    <= pending.retest_low - self.config.acceptance_follow_through_atr * atr
+                    and bar.close < bar.open
+                    and bar.body >= self.config.acceptance_follow_through_body_atr * atr
+                    and bar.close_location
+                    <= 1.0 - self.config.acceptance_follow_through_close_location
+                    and volume_ratio >= pending.retest_volume_ratio
+                )
 
         if invalid:
             self.clear_pending("STRUCTURE_INVALIDATED_BEFORE_ENTRY", bar)
@@ -570,6 +665,11 @@ class LiquidityBifurcationLogic:
                 "armed_index": pending.armed_index,
                 "confirmation_index": bar.index,
                 "reference_range": pending.reference_range,
+                "interaction_volume_ratio": pending.interaction_volume_ratio,
+                "retest_volume_ratio": pending.retest_volume_ratio,
+                "pool_age_bars": pending.pool_age_bars,
+                "pool_touches": pending.pool_touches,
+                "retest_index": pending.retest_index,
             },
         )
         self._emit(

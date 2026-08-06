@@ -307,7 +307,7 @@ def _create_engine(config: Mapping[str, Any], instrument: CryptoPerpetual) -> Ba
     latency = cost["latency_ms"]
     engine = BacktestEngine(
         config=BacktestEngineConfig(
-            logging=LoggingConfig(log_level="ERROR"),
+            logging=LoggingConfig(log_level="ERROR", bypass_logging=True),
             run_analysis=True,
         )
     )
@@ -514,7 +514,10 @@ def run_window(
                     "bar_adaptive_high_low_ordering": config["venue"][
                         "bar_adaptive_high_low_ordering"
                     ],
-                    "liquidation_enabled": config["venue"]["liquidation_enabled"],
+                    "liquidation_switch_supported_by_runtime": False,
+                    "liquidation_requested_in_research_config": config["venue"][
+                        "liquidation_enabled"
+                    ],
                 },
                 "result_summary": {
                     "final_nav_usdt": final_nav,
