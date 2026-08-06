@@ -1,0 +1,62 @@
+{
+  "candidate_family": "candidate-02-v94-multilevel-common-spot-perpetual-accepted-breakout",
+  "status": "LOCKED_BEFORE_FIRST_WEEK_COLLECTION",
+  "performance_engine": "NautilusTrader 1.230.0",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "first_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2025-11-03T00:00:00Z",
+    "end_utc": "2025-11-10T00:00:00Z",
+    "selection_seed": 2026080694,
+    "eligible_universe": "all Mondays from 2024-01-01 through 2025-11-24 excluding previously used candidate-02 weeks",
+    "selection_method": "Python random.Random(seed).choice over chronologically sorted eligible Mondays",
+    "raw_data_status_at_lock": "NOT_COLLECTED_FOR_V94"
+  },
+  "locked_hypothesis": {
+    "level_registry": [
+      "each completed four-hour high and low, valid for 24 hours",
+      "each completed eight-hour high and low, valid for 48 hours",
+      "each previous completed UTC-day high and low, valid for 72 hours"
+    ],
+    "one_use_rule": "an underlying structural level is consumed at its first qualifying breach and cannot create a second event",
+    "near_duplicate_rule": "levels breached in the same minute within 0.10 prior ATR are treated as one liquidity cluster",
+    "acceptance": "at least two closes remain beyond the level in the three-minute classification window, basis-adjusted spot also crosses, spot acceptance is at least 25% of perpetual acceptance, and basis expansion contributes at most 75%",
+    "delivery_confirmation": "same-direction displacement closes beyond the level, leaves a causal three-candle FVG, and a later completed-minute retest touches the gap while closing beyond both its midpoint and the old level",
+    "invalidation": "a retest that trades 0.10 prior ATR back inside the old level invalidates acceptance",
+    "objective": "nearest intact pre-event five-minute external pivot with cost-after reward/risk at least 1.10",
+    "ambiguous_state": "no trade when price, spot participation, basis, displacement, retest or target state is incomplete"
+  },
+  "variant_matrix": {
+    "central": {"level_mode": "ALL", "retrace_minutes": 20},
+    "adjacent": [
+      {"level_mode": "ALL", "retrace_minutes": 15},
+      {"level_mode": "ALL", "retrace_minutes": 25}
+    ],
+    "level_components": [
+      {"level_mode": "FOUR_HOUR", "retrace_minutes": 20},
+      {"level_mode": "EIGHT_HOUR", "retrace_minutes": 20},
+      {"level_mode": "PREVIOUS_DAY", "retrace_minutes": 20}
+    ]
+  },
+  "promotion_rule": "The central all-level portfolio and at least one adjacent horizon must pass every original weekly gate, central signals must involve at least two structural source categories, and no active source component may have negative after-cost expectancy. Otherwise run one core-variable ablation on the revealed week before discarding.",
+  "research_basis": [
+    {
+      "reference": "Osler, Stop-Loss Orders and Price Cascades in Currency Markets",
+      "implication": "prior structural highs and lows are plausible stop-liquidity clocks but a breach alone is not directional evidence"
+    },
+    {
+      "reference": "Cont, Kukanov and Stoikov, The Price Impact of Order Book Events",
+      "implication": "turnover-qualified order-flow events must be interpreted relative to available liquidity"
+    },
+    {
+      "reference": "Xu et al., Limit-order book resiliency after effective market orders",
+      "implication": "post-shock price acceptance and replenishment distinguish resilience from continuation"
+    },
+    {
+      "reference": "Hansen, Kim and Kimbrough, Periodicity in Cryptocurrency Volatility and Liquidity",
+      "implication": "fixed completed four-hour, eight-hour and UTC-day ranges provide prospective recurring market clocks"
+    }
+  ]
+}
