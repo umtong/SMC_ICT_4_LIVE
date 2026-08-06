@@ -1,0 +1,131 @@
+name: candidate-04-v34-evidence-commit
+
+on:
+  workflow_run:
+    workflows: ["candidate-04-v34-staged-research"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  persist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Restore staged V34 evidence
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: candidate-04-v34-*
+          path: restored-v34
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Build durable research record
+        shell: bash
+        env:
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path("restored-v34")
+          decisions = []
+          summaries = []
+          for path in root.rglob("*.json") if root.exists() else []:
+              try:
+                  value = json.loads(path.read_text())
+              except Exception:
+                  continue
+              if not isinstance(value, dict):
+                  continue
+              if path.name in {"research_decision.json", "final_decision.json"}:
+                  decisions.append({"path": str(path), "value": value})
+              elif path.name == "summary.json" and "trades" in value:
+                  summaries.append({"path": str(path), "value": value})
+
+          final = next(
+              (item for item in decisions if item["path"].endswith("final_decision.json")),
+              None,
+          )
+          unopened = next(
+              (
+                  item for item in decisions
+                  if "unopened" in item["path"]
+                  and item["path"].endswith("research_decision.json")
+              ),
+              None,
+          )
+          development = next(
+              (
+                  item for item in decisions
+                  if "development" in item["path"]
+                  and item["path"].endswith("research_decision.json")
+              ),
+              None,
+          )
+          if final is not None:
+              status = "long_evaluation_completed"
+              project_target_reached = bool(
+                  final["value"].get("project_target_reached")
+              )
+          elif unopened is not None:
+              status = "unopened_evaluation_completed"
+              project_target_reached = False
+          elif development is not None:
+              status = "development_completed"
+              project_target_reached = False
+          else:
+              status = "implementation_or_workflow_failure_before_decision"
+              project_target_reached = False
+
+          evidence = {
+              "candidate": "candidate-04-v34-post-event-inventory-resolution",
+              "workflow_run_id": int(os.environ["WORKFLOW_RUN_ID"]),
+              "workflow_conclusion": os.environ["WORKFLOW_CONCLUSION"],
+              "source_commit": os.environ["WORKFLOW_HEAD_SHA"],
+              "status": status,
+              "project_target_reached": project_target_reached,
+              "development_decision": development,
+              "unopened_decision": unopened,
+              "final_decision": final,
+              "week_summaries": summaries,
+              "engine_contract": "NautilusTrader 1.230.0 BacktestNode",
+              "failure_classification": (
+                  "implementation_or_workflow"
+                  if not decisions
+                  else "economic_logic_or_gate"
+              ),
+          }
+          target = Path(
+              "research/candidate-04/evidence-v34-post-event-inventory-resolution.json"
+          )
+          target.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/evidence-v34-post-event-inventory-resolution.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "record V34 staged research evidence"
+          git push origin HEAD:research/candidate-04
