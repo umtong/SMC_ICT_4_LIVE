@@ -1,0 +1,351 @@
+name: candidate-01-v16-hierarchical-auction-gates
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v16-hierarchical-auction-gates.yml"
+      - "research/candidate-01/intrinsic_hierarchical_auction_v16_nautilus_week.py"
+      - "research/candidate-01/candidate_01_v16_gate.py"
+      - "research/candidate-01/candidate_01_v16_protocol.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  RUNNER: research/candidate-01/intrinsic_hierarchical_auction_v16_nautilus_week.py
+  GATE: research/candidate-01/candidate_01_v16_gate.py
+
+jobs:
+  first_primary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      advance: ${{ steps.outputs.outputs.advance }}
+      classification: ${{ steps.outputs.outputs.classification }}
+      rule: ${{ steps.outputs.outputs.rule }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v16-first-primary
+          key: candidate-01-v16-first-primary-BTCUSDT-2024-07-31-2024-08-13-${{ runner.os }}-v1
+      - name: Run the first frozen BTC week through NautilusTrader
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/nautilus_plan_backtest.py \
+                research/candidate-01/nautilus_tick_plan_backtest.py \
+                research/candidate-01/candidate_01_v16_gate.py \
+                research/candidate-01/intrinsic_hierarchical_auction_v16_nautilus_week.py
+              python research/candidate-01/nautilus_tick_adapter_smoke.py
+              rm -rf artifacts/candidate-01-v16-first-primary
+              python research/candidate-01/intrinsic_hierarchical_auction_v16_nautilus_week.py \
+                --week 2024-08-05 \
+                --rule hierarchical-full-composite \
+                --cache .cache/candidate-01-v16-first-primary \
+                --output artifacts/candidate-01-v16-first-primary \
+                --workers 4
+            '
+      - name: Verify and classify the first primary gate
+        run: |
+          set -euo pipefail
+          python3 "$GATE" classify \
+            --root artifacts/candidate-01-v16-first-primary \
+            --week 2024-08-05
+      - name: Export first primary outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          gate = json.loads(Path("artifacts/candidate-01-v16-first-primary/week_gate.json").read_text())
+          print(f"advance={'true' if gate['advance'] else 'false'}")
+          print(f"classification={gate['classification']}")
+          print(f"rule={gate['rule']}")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v16-first-primary-${{ github.sha }}
+          path: artifacts/candidate-01-v16-first-primary
+          if-no-files-found: error
+          retention-days: 30
+
+  first_control:
+    needs: first_primary
+    if: needs.first_primary.outputs.advance != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      advance: ${{ steps.outputs.outputs.advance }}
+      classification: ${{ steps.outputs.outputs.classification }}
+      rule: ${{ steps.outputs.outputs.rule }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v16-first-control
+          key: candidate-01-v16-first-control-BTCUSDT-2024-07-31-2024-08-13-${{ runner.os }}-v1
+      - name: Run the first-week reversal ablation through NautilusTrader
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              rm -rf artifacts/candidate-01-v16-first-control
+              python research/candidate-01/intrinsic_hierarchical_auction_v16_nautilus_week.py \
+                --week 2024-08-05 \
+                --rule hierarchical-reversal-only \
+                --cache .cache/candidate-01-v16-first-control \
+                --output artifacts/candidate-01-v16-first-control \
+                --workers 4
+            '
+      - name: Verify and classify the first control gate
+        run: |
+          set -euo pipefail
+          python3 "$GATE" classify \
+            --root artifacts/candidate-01-v16-first-control \
+            --week 2024-08-05
+      - name: Export first control outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          gate = json.loads(Path("artifacts/candidate-01-v16-first-control/week_gate.json").read_text())
+          print(f"advance={'true' if gate['advance'] else 'false'}")
+          print(f"classification={gate['classification']}")
+          print(f"rule={gate['rule']}")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v16-first-control-${{ github.sha }}
+          path: artifacts/candidate-01-v16-first-control
+          if-no-files-found: error
+          retention-days: 30
+
+  select_first:
+    needs: [first_primary, first_control]
+    if: always() && needs.first_primary.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      advance: ${{ steps.select.outputs.advance }}
+      classification: ${{ steps.select.outputs.classification }}
+      selected_rule: ${{ steps.select.outputs.selected_rule }}
+    steps:
+      - name: Freeze the rule before week two
+        id: select
+        env:
+          PRIMARY_ADVANCE: ${{ needs.first_primary.outputs.advance }}
+          PRIMARY_CLASSIFICATION: ${{ needs.first_primary.outputs.classification }}
+          PRIMARY_RULE: ${{ needs.first_primary.outputs.rule }}
+          CONTROL_ADVANCE: ${{ needs.first_control.outputs.advance }}
+          CONTROL_CLASSIFICATION: ${{ needs.first_control.outputs.classification }}
+          CONTROL_RULE: ${{ needs.first_control.outputs.rule }}
+        run: |
+          set -euo pipefail
+          if [ "$PRIMARY_ADVANCE" = "true" ]; then
+            selected_rule="$PRIMARY_RULE"
+            classification="$PRIMARY_CLASSIFICATION"
+            reason="PRIMARY_ADVANCED"
+            advance=true
+          elif [ "$CONTROL_ADVANCE" = "true" ]; then
+            selected_rule="$CONTROL_RULE"
+            classification="$CONTROL_CLASSIFICATION"
+            reason="PRIMARY_STOPPED_CONTROL_ADVANCED"
+            advance=true
+          else
+            selected_rule=none
+            classification=stop
+            reason="BOTH_RULES_STOPPED"
+            advance=false
+          fi
+          {
+            echo "advance=$advance"
+            echo "classification=$classification"
+            echo "selected_rule=$selected_rule"
+          } >> "$GITHUB_OUTPUT"
+          printf '{\n  "advance": %s,\n  "classification": "%s",\n  "selected_rule": "%s",\n  "reason": "%s"\n}\n' \
+            "$advance" "$classification" "$selected_rule" "$reason"
+
+  week_two:
+    needs: select_first
+    if: needs.select_first.outputs.advance == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      advance: ${{ steps.outputs.outputs.advance }}
+      classification: ${{ steps.outputs.outputs.classification }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v16-week-two
+          key: candidate-01-v16-week-two-BTCUSDT-2024-03-20-2024-04-02-${{ runner.os }}-v1
+      - name: Run the frozen second BTC week through NautilusTrader
+        env:
+          SELECTED_RULE: ${{ needs.select_first.outputs.selected_rule }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -e SELECTED_RULE="$SELECTED_RULE" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              rm -rf artifacts/candidate-01-v16-week-two
+              python research/candidate-01/intrinsic_hierarchical_auction_v16_nautilus_week.py \
+                --week 2024-03-25 \
+                --rule "$SELECTED_RULE" \
+                --cache .cache/candidate-01-v16-week-two \
+                --output artifacts/candidate-01-v16-week-two \
+                --workers 4
+            '
+      - name: Verify and classify the second-week gate
+        run: |
+          set -euo pipefail
+          python3 "$GATE" classify \
+            --root artifacts/candidate-01-v16-week-two \
+            --week 2024-03-25
+      - name: Export second-week outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          gate = json.loads(Path("artifacts/candidate-01-v16-week-two/week_gate.json").read_text())
+          print(f"advance={'true' if gate['advance'] else 'false'}")
+          print(f"classification={gate['classification']}")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v16-week-two-${{ github.sha }}
+          path: artifacts/candidate-01-v16-week-two
+          if-no-files-found: error
+          retention-days: 30
+
+  week_three:
+    needs: [select_first, week_two]
+    if: needs.week_two.outputs.advance == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      advance: ${{ steps.outputs.outputs.advance }}
+      classification: ${{ steps.outputs.outputs.classification }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v16-week-three
+          key: candidate-01-v16-week-three-BTCUSDT-2022-01-26-2022-02-08-${{ runner.os }}-v1
+      - name: Run the frozen third BTC week through NautilusTrader
+        env:
+          SELECTED_RULE: ${{ needs.select_first.outputs.selected_rule }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -e SELECTED_RULE="$SELECTED_RULE" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              rm -rf artifacts/candidate-01-v16-week-three
+              python research/candidate-01/intrinsic_hierarchical_auction_v16_nautilus_week.py \
+                --week 2022-01-31 \
+                --rule "$SELECTED_RULE" \
+                --cache .cache/candidate-01-v16-week-three \
+                --output artifacts/candidate-01-v16-week-three \
+                --workers 4
+            '
+      - name: Verify and classify the third-week gate
+        run: |
+          set -euo pipefail
+          python3 "$GATE" classify \
+            --root artifacts/candidate-01-v16-week-three \
+            --week 2022-01-31
+      - name: Export third-week outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          gate = json.loads(Path("artifacts/candidate-01-v16-week-three/week_gate.json").read_text())
+          print(f"advance={'true' if gate['advance'] else 'false'}")
+          print(f"classification={gate['classification']}")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v16-week-three-${{ github.sha }}
+          path: artifacts/candidate-01-v16-week-three
+          if-no-files-found: error
+          retention-days: 30
