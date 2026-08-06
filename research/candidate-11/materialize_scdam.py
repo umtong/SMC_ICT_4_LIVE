@@ -9,6 +9,7 @@ from zipfile import ZipFile
 
 BUNDLE_SHA256 = "0fdc3a0421635b8beea41dca5c68f6ff9f910cfe003eb295fb924f6c97cebc66"
 BUNDLE_SCHEMA = "candidate-11-scdam-source-bundle-v1"
+VALIDATION_PROTOCOL = "frozen-W1-first; implementation errors rerun the same interval"
 
 
 def main() -> None:
