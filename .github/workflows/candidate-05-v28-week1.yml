@@ -1,0 +1,73 @@
+name: candidate-05-v28-week1
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/external_session_logic.py"
+      - "research/candidate-05/strategy_v28.py"
+      - "research/candidate-05/tests/test_external_session_logic.py"
+      - "research/candidate-05/strategy.py"
+      - ".github/workflows/candidate-05-v28-week1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  week-1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed research environment
+        run: |
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Run frozen BTC week 1 directly through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-05-v28/week-1
+          mkdir -p "$root"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-07-07 \
+            --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 \
+            --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-05-v28/week-1 \
+            --output "$root" | tee "$root/console.json"
+
+      - name: Verify evidence
+        if: always()
+        shell: bash
+        run: |
+          root=artifacts/candidate-05-v28/week-1
+          if test -f "$root/metrics.json"; then
+            python -m json.tool "$root/metrics.json"
+            for file in run.json data_manifest.json orders.csv positions.csv account.csv equity.csv scenario_events.jsonl strategy_diagnostics.json; do
+              test -s "$root/$file"
+            done
+          fi
+          if test -f "$root/errors.log"; then cat "$root/errors.log"; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v28-week1-${{ github.sha }}
+          path: artifacts/candidate-05-v28/**
+          if-no-files-found: warn
+          retention-days: 90
