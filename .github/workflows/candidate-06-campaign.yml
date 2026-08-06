@@ -1,4 +1,4 @@
-name: Candidate 06 Inventory Absorption First BTC Week
+name: Candidate 06 Hierarchical Sweep First BTC Week
 
 on:
   push:
@@ -54,23 +54,23 @@ jobs:
           print(f"NAUTILUS_VERSION={actual}")
           PY
 
-      - name: Verify inventory-absorption causality
+      - name: Verify hierarchical-sweep causality
         run: |
           set -euo pipefail
           python -m py_compile research/candidate-06/*.py
-          python research/candidate-06/test_inventory_absorption_engine.py
+          python research/candidate-06/test_hierarchical_sweep_engine.py
           python research/candidate-06/test_excursion_diagnostics.py
 
-      - name: Run controlled IAPC matrix through NautilusTrader
+      - name: Run controlled HSC matrix through NautilusTrader
         id: lab
         continue-on-error: true
         run: |
           set +e
-          rm -rf artifacts/candidate-06/iapc-first-week
+          rm -rf artifacts/candidate-06/hsc-first-week
           mkdir -p "$SMC4_RESEARCH_DATA" artifacts
-          python research/candidate-06/run_inventory_absorption_matrix.py \
-            --output artifacts/candidate-06/iapc-first-week \
-            > artifacts/candidate-06-iapc.stdout 2> artifacts/candidate-06-iapc.stderr
+          python research/candidate-06/run_hierarchical_sweep_matrix.py \
+            --output artifacts/candidate-06/hsc-first-week \
+            > artifacts/candidate-06-hsc.stdout 2> artifacts/candidate-06-hsc.stderr
           code=$?
           echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
           exit 0
@@ -79,13 +79,13 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p artifacts/candidate-06/iapc-first-week
-          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/iapc-first-week/workflow_exit_code.txt
-          if [ ! -f artifacts/candidate-06/iapc-first-week/summary.json ]; then
+          mkdir -p artifacts/candidate-06/hsc-first-week
+          printf '%s\n' '${{ steps.lab.outputs.exit_code }}' > artifacts/candidate-06/hsc-first-week/workflow_exit_code.txt
+          if [ ! -f artifacts/candidate-06/hsc-first-week/summary.json ]; then
             python - <<'PY'
           import json
           from pathlib import Path
-          root = Path("artifacts/candidate-06/iapc-first-week")
+          root = Path("artifacts/candidate-06/hsc-first-week")
           payload = {
               "all_three_weeks_passed": False,
               "long_evaluation_authorized": False,
@@ -95,8 +95,8 @@ jobs:
           (root / "summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
           fi
-          cp artifacts/candidate-06-iapc.stdout artifacts/candidate-06/iapc-first-week/workflow_stdout.txt 2>/dev/null || true
-          cp artifacts/candidate-06-iapc.stderr artifacts/candidate-06/iapc-first-week/workflow_stderr.txt 2>/dev/null || true
+          cp artifacts/candidate-06-hsc.stdout artifacts/candidate-06/hsc-first-week/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-06-hsc.stderr artifacts/candidate-06/hsc-first-week/workflow_stderr.txt 2>/dev/null || true
 
       - name: Commit reproducible staged evidence
         if: always() && github.event_name == 'push'
@@ -104,22 +104,22 @@ jobs:
           set -euo pipefail
           git config user.name "candidate-06-research-bot"
           git config user.email "candidate-06-research-bot@users.noreply.github.com"
-          git add -f artifacts/candidate-06/iapc-first-week
-          if [ -f research/candidate-06/config.iapc.locked.json ]; then
-            git add -f research/candidate-06/config.iapc.locked.json
+          git add -f artifacts/candidate-06/hsc-first-week
+          if [ -f research/candidate-06/config.hsc.locked.json ]; then
+            git add -f research/candidate-06/config.hsc.locked.json
           fi
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "Record candidate-06 IAPC evidence [candidate-06 evidence]"
+          git commit -m "Record candidate-06 HSC evidence [candidate-06 evidence]"
           git push origin HEAD:research/candidate-06
 
       - name: Upload staged evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-06-iapc-${{ github.sha }}
-          path: artifacts/candidate-06/iapc-first-week
+          name: candidate-06-hsc-${{ github.sha }}
+          path: artifacts/candidate-06/hsc-first-week
           include-hidden-files: true
           retention-days: 30
           if-no-files-found: error
@@ -129,7 +129,7 @@ jobs:
         run: |
           code='${{ steps.lab.outputs.exit_code }}'
           if [ -z "$code" ]; then
-            echo "IAPC lab did not report an exit code" >&2
+            echo "HSC lab did not report an exit code" >&2
             exit 1
           fi
           exit "$code"
