@@ -1,0 +1,270 @@
+name: candidate-02-v92-nautilustrader-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v92_*.py"
+      - "research/candidate-02/v92_*.json"
+      - "research/candidate-02/v92_design.md"
+      - ".github/workflows/candidate-02-v92-first.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  first-week-session-liquidity-sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed runtime and prospective v92 lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v92_session_liquidity_sweep_core.py \
+            research/candidate-02/v92_nt_backtest.py
+          python -m json.tool research/candidate-02/v92_session_liquidity_sweep_lock.json >/dev/null
+          for file in research/candidate-02/v92_*_config.json; do python -m json.tool "$file" >/dev/null; done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v92_session_liquidity_sweep_lock.json').read_text())
+          assert lock['status']=='LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['selection']['selected_week_start_utc']=='2024-03-11T00:00:00Z'
+          assert lock['selection']['selected_week_end_utc']=='2024-03-18T00:00:00Z'
+          assert lock['selection']['raw_data_status_at_lock']=='NOT_COLLECTED_FOR_V92'
+          assert lock['performance_engine']=='NautilusTrader 1.230.0'
+          assert lock['custom_backtest_engine'] is False
+          assert float(lock['risk_fraction'])==0.03
+          assert int(lock['global_pending_entry_plus_position_limit'])==1
+          configs=sorted(Path('research/candidate-02').glob('v92_*_config.json'))
+          assert len(configs)==6
+          seen={}
+          for path in configs:
+              cfg=json.loads(path.read_text())
+              assert cfg['validation']['first_week_start']=='2024-03-11'
+              assert int(cfg['validation']['selection_seed'])==2026080692
+              assert float(cfg['risk']['risk_fraction'])==0.03
+              assert cfg['risk']['maximum_notional_cap'] is None
+              assert cfg['risk']['score_risk_multiplier'] is None
+              assert int(cfg['scenario']['dealing_range_hours'])==8
+              assert int(cfg['scenario']['active_window_minutes'])==240
+              assert cfg['scenario']['mode'] in {'STATE_PORTFOLIO','CYCLE_00','CYCLE_08','CYCLE_16'}
+              assert int(cfg['scenario']['retrace_minutes']) in {15,20,25}
+              seen[path.name]=(cfg['scenario']['mode'],cfg['scenario']['retrace_minutes'])
+          assert seen['v92_portfolio_15m_config.json']==('STATE_PORTFOLIO',15)
+          assert seen['v92_portfolio_20m_config.json']==('STATE_PORTFOLIO',20)
+          assert seen['v92_portfolio_25m_config.json']==('STATE_PORTFOLIO',25)
+          PY
+
+      - name: Materialize exact direct-data tools for the locked week
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v92-futures-tools inputs/v92-first-week
+          cp -a .candidate-02-v75 /tmp/v92-futures-tools
+          python - <<'PY'
+          from datetime import date
+          import json,re
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v92_session_liquidity_sweep_lock.json').read_text())
+          start=date.fromisoformat(lock['selection']['selected_week_start_utc'][:10])
+          constructor=re.compile(r'EVALUATION_START\s*=\s*date\(\s*\d{4}\s*,\s*\d{1,2}\s*,\s*\d{1,2}\s*\)')
+          count=0
+          for path in Path('/tmp/v92-futures-tools').rglob('*'):
+              if not path.is_file() or path.suffix not in {'.py','.json','.md'}:
+                  continue
+              text=path.read_text(encoding='utf-8',errors='strict')
+              text=text.replace('inputs/v75-first-week','inputs/v92-first-week')
+              text=text.replace('candidate-02-v75-first-week','candidate-02-v92-first-week')
+              text=text.replace('v75-first-week','v92-first-week')
+              text=text.replace('candidate-02-v75-quarter-hour-algorithmic-opening-auction','candidate-02-v92-session-liquidity-sweep-displacement-fvg-retrace')
+              if path.name.startswith('collect') and path.suffix=='.py':
+                  text,n=constructor.subn(f'EVALUATION_START = date({start.year}, {start.month}, {start.day})',text)
+                  count+=n
+              path.write_text(text,encoding='utf-8')
+          if count!=1:
+              raise RuntimeError(f'expected one evaluation-date constructor, found {count}')
+          collector=next(Path('/tmp/v92-futures-tools').glob('collect*.py'))
+          materialized=collector.read_text(encoding='utf-8')
+          expected=f'EVALUATION_START = date({start.year}, {start.month}, {start.day})'
+          if expected not in materialized or 'inputs/v92-first-week' not in materialized:
+              raise RuntimeError('locked v92 week was not materialized')
+          PY
+          python -m py_compile /tmp/v92-futures-tools/collect_first_week.py /tmp/v92-futures-tools/build_features.py
+
+      - name: Collect locked direct data and build completed-minute features
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/v92-futures-tools/collect_first_week.py
+          python /tmp/v92-futures-tools/build_features.py
+          test -f inputs/v92-first-week/candidate-02-v48-first-week/v48_features.npz
+          test -f inputs/v92-first-week/candidate-02-v48-first-week/columns.json
+          test "$(find inputs/v92-first-week/direct/aggTrades -name '*.zip' | wc -l)" -eq 10
+          test "$(find inputs/v92-first-week/direct/bookDepth -name '*.zip' | wc -l)" -eq 10
+          test "$(find inputs/v92-first-week/.cache/candidate-02/v92-first-week/binance_1m -name '*.zip' | wc -l)" -eq 10
+
+      - name: Verify causal coverage before strategy execution
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          from v53_nt_core import load_feature_matrix, load_raw_one_minute
+          lock=json.loads(Path('research/candidate-02/v92_session_liquidity_sweep_lock.json').read_text())
+          start=pd.Timestamp(lock['selection']['selected_week_start_utc'])
+          end=pd.Timestamp(lock['selection']['selected_week_end_utc'])
+          features=load_feature_matrix(
+              Path('inputs/v92-first-week/candidate-02-v48-first-week/v48_features.npz'),
+              Path('inputs/v92-first-week/candidate-02-v48-first-week/columns.json'))
+          raw=load_raw_one_minute(Path('inputs/v92-first-week/.cache/candidate-02/v92-first-week/binance_1m'))
+          required={
+              'close','aggressive_total_quote_1m','aggressive_signed_quote_1m',
+              'signed_flow_ratio_1m','qh_opening_10s_total_quote',
+          }
+          missing=sorted(required-set(features.columns))
+          if missing: raise RuntimeError(missing)
+          evaluation=features.loc[(features.index>=start)&(features.index<end)]
+          if len(evaluation)<7*24*60*0.995: raise RuntimeError(f'feature coverage {len(evaluation)}')
+          if features.index.min()>start-pd.Timedelta(days=2)+pd.Timedelta(minutes=2): raise RuntimeError('missing warmup')
+          if features.index.max()<end: raise RuntimeError('features end early')
+          raw_eval=raw.loc[(raw.index>=start)&(raw.index<end)]
+          if len(raw_eval)<7*24*60*0.995: raise RuntimeError(f'raw coverage {len(raw_eval)}')
+          print(json.dumps({
+              'feature_first_utc':features.index.min().isoformat(),
+              'feature_last_utc':features.index.max().isoformat(),
+              'evaluation_rows':len(evaluation),
+              'raw_evaluation_rows':len(raw_eval),
+              'forward_feature_columns_used':False,
+          }))
+          PY
+
+      - name: Run every prelocked variant in a fresh NautilusTrader process
+        shell: bash
+        run: |
+          set -euo pipefail
+          labels=(portfolio15 portfolio20 portfolio25 cycle00 cycle08 cycle16)
+          configs=(v92_portfolio_15m_config.json v92_portfolio_20m_config.json v92_portfolio_25m_config.json v92_cycle_00_config.json v92_cycle_08_config.json v92_cycle_16_config.json)
+          for i in "${!labels[@]}"; do
+            label="${labels[$i]}"; config="${configs[$i]}"
+            output="artifacts/candidate-02-v92-${label}"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v92_nt_backtest.py \
+              --config "research/candidate-02/${config}" \
+              --input-root inputs/v92-first-week \
+              --output "$output" \
+              | tee "artifacts-v92-${label}.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish prospective first-week decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          labels=('portfolio15','portfolio20','portfolio25','cycle00','cycle08','cycle16')
+          rows={}
+          print('# Candidate-02 v92 session liquidity sweep')
+          print('| Variant | Decision | Signals | Trades/day | Win | PF | Growth/day | MDD |')
+          print('|---|---:|---:|---:|---:|---:|---:|---:|')
+          def passed(m):
+              return (
+                  m.get('trades_per_day',0)>=0.75
+                  and m.get('win_rate',0)>=0.50
+                  and m.get('profit_factor_after_cost',0)>=1.50
+                  and m.get('geometric_daily_growth_after_cost',-1)>=0.01
+                  and abs(m.get('maximum_mark_to_market_drawdown',-1))<=0.25
+                  and m.get('engine','').startswith('NautilusTrader')
+                  and m.get('custom_backtest_engine') is False
+                  and abs(m.get('risk_fraction',0)-0.03)<=1e-12
+              )
+          for label in labels:
+              path=Path(f'artifacts/candidate-02-v92-{label}/metrics.json')
+              if not path.exists():
+                  rows[label]={'status':'IMPLEMENTATION_ERROR'}
+                  print(f'| {label} | implementation error | - | - | - | - | - | - |')
+                  continue
+              m=json.loads(path.read_text())
+              rows[label]={'passes_all':passed(m),'metrics':m}
+              print(f"| {label} | {'PASS' if passed(m) else 'REJECT'} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          central=rows.get('portfolio20',{}).get('passes_all') is True
+          adjacent=any(rows.get(key,{}).get('passes_all') is True for key in ('portfolio15','portfolio25'))
+          cycles=set()
+          signals_path=Path('artifacts/candidate-02-v92-portfolio20/signals.jsonl')
+          if signals_path.exists():
+              for line in signals_path.read_text().splitlines():
+                  if not line.strip(): continue
+                  signal=json.loads(line)
+                  cycle=signal.get('details',{}).get('cycle')
+                  if cycle: cycles.add(str(cycle))
+          cycle_diversity=len(cycles)>=2
+          component_checks={}
+          for label in ('cycle00','cycle08','cycle16'):
+              item=rows.get(label,{})
+              m=item.get('metrics',{}) if isinstance(item,dict) else {}
+              trades=int(m.get('trades',0))
+              component_checks[label]={
+                  'trades':trades,
+                  'nonnegative_if_active':trades<2 or (
+                      m.get('profit_factor_after_cost',0)>=1.0
+                      and m.get('geometric_daily_growth_after_cost',-1)>=0.0
+                  ),
+              }
+          component_sane=all(value['nonnegative_if_active'] for value in component_checks.values())
+          promotion=central and adjacent and cycle_diversity and component_sane
+          decision={
+              'status':'FIRST_WEEK_PROMOTION_ELIGIBLE' if promotion else 'FIRST_WEEK_REJECT_OR_SINGLE_ABLATION',
+              'portfolio_plateau':central and adjacent,
+              'central_pass':central,
+              'adjacent_pass':adjacent,
+              'central_signal_cycles':sorted(cycles),
+              'cycle_diversity':cycle_diversity,
+              'component_sane':component_sane,
+              'component_checks':component_checks,
+              'rows':rows,
+              'risk_fraction':0.03,
+              'performance_engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+          }
+          Path('artifacts-v92-first-week-decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+
+      - name: Preserve direct data, manifests and NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v92-first-week-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v92-*
+            artifacts-v92-*.log
+            artifacts-v92-first-week-decision.json
+            inputs/v92-first-week/artifacts
+            inputs/v92-first-week/candidate-02-v48-first-week
+            inputs/v92-first-week/.cache/candidate-02/v92-first-week/binance_1m
+            inputs/v92-first-week/direct
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
