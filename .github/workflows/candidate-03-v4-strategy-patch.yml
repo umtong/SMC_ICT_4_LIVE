@@ -1,0 +1,155 @@
+name: candidate-03-v4-strategy-patch
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths: [".github/workflows/candidate-03-v4-strategy-patch.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-03
+          fetch-depth: 0
+
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add explicit causal entry modes without changing execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-03/nt_lvcfr_strategy.py")
+          source = path.read_text(encoding="utf-8")
+          helper = '''VALID_ENTRY_KINDS = frozenset({"CONTINUATION", "REVERSAL"})
+
+
+def signal_entry_kind(signal: dict[str, Any]) -> str:
+    """Return a validated explicit entry mode, defaulting legacy signals."""
+    kind = str(signal.get("entry_kind", "CONTINUATION")).upper()
+    if kind not in VALID_ENTRY_KINDS:
+        raise ValueError(f"unsupported entry_kind={kind!r}")
+    return kind
+
+
+'''
+          marker = "def native_equity_amount(portfolio: Any, venue: Any, currency: Any) -> float:\n"
+          if helper not in source:
+              if marker not in source:
+                  raise SystemExit("native_equity_amount marker not found")
+              source = source.replace(marker, helper + marker, 1)
+
+          old = '''            self.current_episode = {
+                "scenario_id": signal["scenario_id"],
+                "signal_time_ns": int(signal["confirm_time_ns"]),
+                "native_equity_before": self._equity(),
+                "legs": [],
+            }
+            self.pending = PendingEntry(
+                signal=signal,
+                kind="CONTINUATION",
+                direction=int(signal["direction"]),
+                eligible_time_ns=int(signal["eligible_time_ns"]),
+                stop=float(signal["initial_stop"]),
+                atr=float(signal["atr"]),
+            )
+            self._emit(
+                scenario_id=signal["scenario_id"],
+                event_type="LIQUIDITY_VACUUM_CONFIRMED",
+                event_time_ns=int(signal["confirm_time_ns"]),
+                observed_time_ns=timestamp_ns,
+                previous_state="LIQUIDATION_IMPULSE",
+                next_state="ENTRY_BUFFER",
+                reason_code="TWO_STAGE_OI_CONTRACTION_WITH_LOW_RESIDUAL_FUTURES_FLOW",
+                reference_price=None,
+                details=dict(signal["details"]),
+            )
+'''
+          new = '''            kind = signal_entry_kind(signal)
+            scenario_kind = str(signal.get("scenario_kind", "LIQUIDITY_VACUUM"))
+            self.current_episode = {
+                "scenario_id": signal["scenario_id"],
+                "scenario_kind": scenario_kind,
+                "entry_kind": kind,
+                "signal_time_ns": int(signal["confirm_time_ns"]),
+                "native_equity_before": self._equity(),
+                "legs": [],
+            }
+            self.pending = PendingEntry(
+                signal=signal,
+                kind=kind,
+                direction=int(signal["direction"]),
+                eligible_time_ns=int(signal["eligible_time_ns"]),
+                stop=float(signal["initial_stop"]),
+                atr=float(signal["atr"]),
+            )
+            self._emit(
+                scenario_id=signal["scenario_id"],
+                event_type="AUCTION_STATE_CONFIRMED",
+                event_time_ns=int(signal["confirm_time_ns"]),
+                observed_time_ns=timestamp_ns,
+                previous_state="CAUSAL_EVENT_CONFIRMED",
+                next_state="ENTRY_BUFFER" if kind == "CONTINUATION" else "REVERSAL_BUFFER",
+                reason_code=scenario_kind,
+                reference_price=None,
+                details=dict(signal["details"]),
+            )
+'''
+          if old in source:
+              source = source.replace(old, new, 1)
+          elif new not in source:
+              raise SystemExit("signal observation block not found")
+          path.write_text(source, encoding="utf-8")
+          PY
+
+      - name: Verify patched strategy in pinned runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c '
+              smc4 doctor &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_trade_proxy.py &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr_v4.py &&
+              PYTHONPYCACHEPREFIX=/tmp/candidate03-v4-strategy \
+                python -m py_compile \
+                  research/candidate-03/nt_lvcfr_strategy.py \
+                  research/candidate-03/derive_nt_lvcfr_v4_signals.py
+            '
+
+      - name: Commit patched strategy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- research/candidate-03/nt_lvcfr_strategy.py; then
+            echo "strategy already patched"
+            exit 0
+          fi
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add research/candidate-03/nt_lvcfr_strategy.py
+          git commit -m "candidate-03: support explicit V4 continuation and reversal states"
+          git push origin HEAD:research/candidate-03
