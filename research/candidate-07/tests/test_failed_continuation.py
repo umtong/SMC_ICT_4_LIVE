@@ -7,7 +7,12 @@ import unittest
 CANDIDATE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CANDIDATE_DIR))
 
-from failed_continuation import AcceptanceOutcome, FailedAbsorptionAcceptance  # noqa: E402
+from failed_continuation import (  # noqa: E402
+    AcceptanceOutcome,
+    FailedAbsorptionAcceptance,
+    NS_PER_MINUTE,
+    within_signal_shock_window,
+)
 from model import Direction  # noqa: E402
 
 
@@ -75,6 +80,34 @@ class FailedAbsorptionAcceptanceTests(unittest.TestCase):
                 acceptance_level=99.0,
                 atr=2.0,
                 armed_at_ns=10,
+            )
+
+    def test_stop_at_one_signal_interval_is_same_shock(self) -> None:
+        opened = 100 * NS_PER_MINUTE
+        self.assertTrue(
+            within_signal_shock_window(
+                opened_ns=opened,
+                closed_ns=opened + 5 * NS_PER_MINUTE,
+                signal_minutes=5,
+            )
+        )
+
+    def test_stop_after_one_signal_interval_is_new_episode(self) -> None:
+        opened = 100 * NS_PER_MINUTE
+        self.assertFalse(
+            within_signal_shock_window(
+                opened_ns=opened,
+                closed_ns=opened + 5 * NS_PER_MINUTE + 1,
+                signal_minutes=5,
+            )
+        )
+
+    def test_shock_window_rejects_reversed_timestamps(self) -> None:
+        with self.assertRaises(ValueError):
+            within_signal_shock_window(
+                opened_ns=10,
+                closed_ns=9,
+                signal_minutes=5,
             )
 
 
