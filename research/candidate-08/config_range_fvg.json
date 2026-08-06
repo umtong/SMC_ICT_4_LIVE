@@ -1,0 +1,103 @@
+{
+  "candidate": "candidate-08-range-fvg",
+  "description": "Completed 4-hour/day/week external liquidity with causal five-minute acceptance or sweep-rejection, FVG limit repricing, structural invalidation, and genuine external targets",
+  "random_seed": 8085,
+  "instrument_id": "BTCUSDT-PERP.BINANCE",
+  "bar_type": "BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL",
+  "starting_nav_usdt": 100000.0,
+  "risk_fraction": 0.03,
+  "effective_fee_rate_per_fill": 0.0006,
+  "minimum_net_reward_risk": 1.2,
+  "funding_avoidance_minutes": 5,
+  "cost_assumptions": {
+    "base_taker_fee_rate": 0.0005,
+    "execution_and_funding_reserve_rate": 0.0001,
+    "one_tick_slippage_probability": 1.0,
+    "limit_fill_probability": 1.0,
+    "latency_ms": {
+      "base": 0,
+      "insert": 0,
+      "update": 0,
+      "cancel": 0
+    },
+    "latency_rationale": "Sub-minute latency is not identifiable in one-minute OHLC. Limit entries are submitted only after the causal five-minute confirmation close; all fills are still charged the full conservative 6 bp rate and one adverse tick reserve."
+  },
+  "venue": {
+    "default_leverage": 125,
+    "liquidation_enabled": true,
+    "liquidation_trigger_ratio": 1.0,
+    "bar_adaptive_high_low_ordering": true
+  },
+  "pattern": {
+    "five_minute_atr_period": 20,
+    "activity_lookback": 48,
+    "external_level_max_age_bars": 2016,
+    "level_merge_atr": 0.04,
+    "minimum_fvg_atr": 0.05,
+    "fvg_entry_fraction": 0.5,
+    "acceptance_close_beyond_atr": 0.1,
+    "acceptance_body_atr": 0.55,
+    "acceptance_volume_ratio": 1.2,
+    "acceptance_trade_ratio": 1.1,
+    "acceptance_imbalance": 0.1,
+    "acceptance_close_location": 0.68,
+    "acceptance_opposite_efficiency_block": 0.35,
+    "rejection_sweep_atr": 0.05,
+    "rejection_reclaim_atr": 0.02,
+    "rejection_wick_body": 0.5,
+    "rejection_displacement_body_atr": 0.4,
+    "rejection_imbalance": 0.08,
+    "rejection_close_location": 0.34,
+    "rejection_countertrend_efficiency_block": 0.25,
+    "rejection_structure_break_atr": 0.03,
+    "stop_buffer_atr": 0.05,
+    "entry_expiry_minutes": 20,
+    "maximum_hold_minutes": 240,
+    "enable_acceptance": true,
+    "enable_rejection": true
+  },
+  "suites": {
+    "first": [
+      {
+        "name": "screen-01",
+        "start": "2024-04-08T00:00:00Z",
+        "end": "2024-04-15T00:00:00Z"
+      }
+    ],
+    "screen": [
+      {
+        "name": "screen-01",
+        "start": "2024-04-08T00:00:00Z",
+        "end": "2024-04-15T00:00:00Z"
+      },
+      {
+        "name": "screen-02",
+        "start": "2025-06-09T00:00:00Z",
+        "end": "2025-06-16T00:00:00Z"
+      },
+      {
+        "name": "screen-03",
+        "start": "2025-09-29T00:00:00Z",
+        "end": "2025-10-06T00:00:00Z"
+      }
+    ],
+    "long": [
+      {
+        "name": "long-2024-2026h1",
+        "start": "2024-01-01T00:00:00Z",
+        "end": "2026-07-01T00:00:00Z"
+      }
+    ]
+  },
+  "screen_gate": {
+    "minimum_closed_trades_per_week": 8,
+    "minimum_positive_weeks": 2,
+    "maximum_single_trade_positive_pnl_share": 0.5
+  },
+  "validation_protocol": {
+    "first_window_role": "Rapid logic and opportunity screen only. It cannot promote the candidate by itself.",
+    "screen_windows": "Reuse the three BTC weeks fixed before candidate-08 outcomes were observed.",
+    "promotion_rule": "All three BTC weeks must be cost-after positive with sufficient opportunity, no execution failures, and no residual exposure before long evaluation.",
+    "no_target_fallback": "Every order target must be an unconsumed completed 4-hour/day/week external level; no fitted R projection is permitted."
+  }
+}
