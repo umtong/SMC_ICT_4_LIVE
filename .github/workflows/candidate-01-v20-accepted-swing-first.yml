@@ -1,0 +1,139 @@
+name: candidate-01-v20-accepted-swing-first
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v20-accepted-swing-first.yml"
+      - "research/candidate-01/accepted_swing_resolution_v20.py"
+      - "research/candidate-01/accepted_swing_resolved_impact_v20_nautilus_week.py"
+      - "research/candidate-01/candidate_01_v20_gate.py"
+      - "research/candidate-01/candidate_01_v20_protocol.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  primary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      advance: ${{ steps.outputs.outputs.advance }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v20-first-primary
+          key: candidate-01-v20-first-primary-BTCUSDT-2025-07-31-2025-08-12-${{ runner.os }}-v1
+      - name: Run first frozen protected-swing week through NautilusTrader
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/accepted_swing_resolution_v20.py \
+                research/candidate-01/accepted_swing_resolved_impact_v20_nautilus_week.py \
+                research/candidate-01/candidate_01_v20_gate.py
+              rm -rf artifacts/candidate-01-v20-first-primary
+              python research/candidate-01/accepted_swing_resolved_impact_v20_nautilus_week.py \
+                --week 2025-08-04 \
+                --rule protected-full \
+                --cache .cache/candidate-01-v20-first-primary \
+                --output artifacts/candidate-01-v20-first-primary \
+                --workers 4
+            '
+      - name: Verify and classify primary
+        run: |
+          python3 research/candidate-01/candidate_01_v20_gate.py \
+            --root artifacts/candidate-01-v20-first-primary \
+            --week 2025-08-04
+      - name: Export primary gate
+        id: outputs
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          gate = json.loads(Path("artifacts/candidate-01-v20-first-primary/week_gate.json").read_text())
+          print(f"advance={'true' if gate['advance'] else 'false'}")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v20-first-primary-${{ github.sha }}
+          path: artifacts/candidate-01-v20-first-primary
+          if-no-files-found: error
+          retention-days: 30
+
+  control:
+    needs: primary
+    if: needs.primary.outputs.advance != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v20-first-control
+          key: candidate-01-v20-first-control-BTCUSDT-2025-07-31-2025-08-12-${{ runner.os }}-v1
+      - name: Run continuation-only protected-swing control
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              rm -rf artifacts/candidate-01-v20-first-control
+              python research/candidate-01/accepted_swing_resolved_impact_v20_nautilus_week.py \
+                --week 2025-08-04 \
+                --rule protected-continuation-only \
+                --cache .cache/candidate-01-v20-first-control \
+                --output artifacts/candidate-01-v20-first-control \
+                --workers 4
+            '
+      - name: Verify and classify control
+        run: |
+          python3 research/candidate-01/candidate_01_v20_gate.py \
+            --root artifacts/candidate-01-v20-first-control \
+            --week 2025-08-04
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v20-first-control-${{ github.sha }}
+          path: artifacts/candidate-01-v20-first-control
+          if-no-files-found: error
+          retention-days: 30
