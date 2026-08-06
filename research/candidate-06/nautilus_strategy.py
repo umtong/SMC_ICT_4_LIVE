@@ -84,6 +84,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from hierarchical_flow_factor_engine import HierarchicalFlowFactorizedEngine
 
         return HierarchicalFlowFactorizedEngine(logic_params)
+    if name == "HIERARCHICAL_MULTI_LIQUIDITY":
+        from hierarchical_multi_liquidity_engine import HierarchicalMultiLiquidityEngine
+
+        return HierarchicalMultiLiquidityEngine(logic_params)
     if name == "MULTI_TIMESCALE_LIQUIDITY_RELAY":
         from composite_engine import MultiTimescaleLiquidityRelayEngine
 
