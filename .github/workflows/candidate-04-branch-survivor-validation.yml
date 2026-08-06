@@ -1,0 +1,420 @@
+name: candidate-04-branch-survivor-validation
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/evidence-v34-survivor-followup.json"
+      - "research/candidate-04/evidence-v35-survivor-followup.json"
+      - "research/candidate-04/evidence-v36-survivor-followup.json"
+      - ".github/workflows/candidate-04-branch-survivor-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Discover pending frozen survivor routes
+        id: tasks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          tasks = []
+          for family in ("v34", "v35", "v36"):
+              source = Path(
+                  f"research/candidate-04/evidence-{family}-survivor-followup.json"
+              )
+              if not source.exists():
+                  continue
+              try:
+                  value = json.loads(source.read_text())
+              except Exception:
+                  continue
+              if not value.get("validation_pending"):
+                  continue
+              survivors = value.get("survivors") or []
+              if not isinstance(survivors, list) or not survivors:
+                  continue
+              source_commit = value.get("source_commit")
+              compiler = value.get("compiler")
+              if not isinstance(source_commit, str) or len(source_commit) != 40:
+                  continue
+              if not isinstance(compiler, str) or not compiler.endswith(".py"):
+                  continue
+              completed = Path(
+                  f"research/candidate-04/evidence-{family}-branch-validation.json"
+              )
+              if completed.exists():
+                  try:
+                      previous = json.loads(completed.read_text())
+                  except Exception:
+                      previous = {}
+                  if (
+                      previous.get("source_commit") == source_commit
+                      and sorted(previous.get("requested_routes") or [])
+                      == sorted(survivors)
+                      and previous.get("validation_completed") is True
+                  ):
+                      continue
+              tasks.append({
+                  "family": family,
+                  "candidate": value.get("candidate") or f"candidate-04-{family}",
+                  "compiler": compiler,
+                  "source_commit": source_commit,
+                  "routes": sorted(set(str(item) for item in survivors)),
+                  "source_evidence": str(source),
+              })
+          Path("pending-survivor-tasks.json").write_text(
+              json.dumps({"tasks": tasks}, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps({"tasks": tasks}, indent=2, sort_keys=True))
+          PY
+          echo "count=$(python -c 'import json; print(len(json.load(open("pending-survivor-tasks.json"))["tasks"]))')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore exact completed-data BTC development observations
+        if: steps.tasks.outputs.count != '0'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v27-cross-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Verify pinned runtime and orchestration contract
+        if: steps.tasks.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/run_frozen_btc_route.py \
+            research/candidate-04/select_sequential_btc_windows.py \
+            research/candidate-04/filter_candidate_signals.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py
+
+      - name: Cross-develop, open three unseen weeks, then run 91 days
+        if: steps.tasks.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=(low_activity normal_basis stress_a)
+          build_starts=(2023-08-02 2023-12-16 2024-08-05)
+          build_ends=(2023-08-10 2023-12-24 2024-08-13)
+          eval_starts=(2023-08-04 2023-12-18 2024-08-07)
+          eval_ends=(2023-08-10 2023-12-24 2024-08-13)
+          task_count="$(python -c 'import json; print(len(json.load(open("pending-survivor-tasks.json"))["tasks"]))')"
+
+          for task_index in $(seq 0 $((task_count - 1))); do
+            export TASK_JSON="$(python -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["tasks"][int(sys.argv[2])]))' pending-survivor-tasks.json "$task_index")"
+            family="$(python -c 'import json,os; print(json.loads(os.environ["TASK_JSON"])["family"])')"
+            candidate="$(python -c 'import json,os; print(json.loads(os.environ["TASK_JSON"])["candidate"])')"
+            compiler="$(python -c 'import json,os; print(json.loads(os.environ["TASK_JSON"])["compiler"])')"
+            source_commit="$(python -c 'import json,os; print(json.loads(os.environ["TASK_JSON"])["source_commit"])')"
+            routes="$(python -c 'import json,os; print(" ".join(json.loads(os.environ["TASK_JSON"])["routes"]))')"
+            task_root="artifacts/candidate-04-branch-survivor/$family"
+            mkdir -p "$task_root"
+
+            git cat-file -e "$source_commit^{commit}"
+            git diff --exit-code "$source_commit" -- \
+              "research/candidate-04/$compiler" \
+              research/candidate-04/nt_exact_causal_target_risk_sizing.py \
+              research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+              research/candidate-04/nt_rich_signal_strategy.py \
+              research/candidate-04/inventory_transfer_config.json \
+              research/candidate-04/impact_exhaustion_config.json \
+              research/candidate-04/auction_activity_router_config.json \
+              research/candidate-04/nt_liquidity_config.json
+
+            declare -A alive
+            for route in $routes; do alive[$route]=1; done
+
+            for i in "${!names[@]}"; do
+              name="${names[$i]}"
+              rich_dir="$(find sources -type f -path "*candidate-04-v27-cross-${name}-*/source/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+              test -n "$rich_dir"
+              for route in $routes; do
+                if [[ "${alive[$route]}" != "1" ]]; then continue; fi
+                output="$task_root/routes/$route/development/$name"
+                python research/candidate-04/run_frozen_btc_route.py \
+                  --family "$family" \
+                  --route "$route" \
+                  --candidate "${candidate}-${route}" \
+                  --stage "development_${name}" \
+                  --compiler "research/candidate-04/$compiler" \
+                  --base-config research/candidate-04/inventory_transfer_config.json \
+                  --impact-config research/candidate-04/impact_exhaustion_config.json \
+                  --router-config research/candidate-04/auction_activity_router_config.json \
+                  --execution-config research/candidate-04/nt_liquidity_config.json \
+                  --rich-dir "$rich_dir" \
+                  --build-start "${build_starts[$i]}" \
+                  --build-end "${build_ends[$i]}" \
+                  --evaluation-start "${eval_starts[$i]}" \
+                  --evaluation-end "${eval_ends[$i]}" \
+                  --cache ".cache/candidate-04-branch-survivor/$family/$route/development/$name" \
+                  --output "$output" \
+                  --min-trades 4 \
+                  --min-active-days 3 \
+                  --min-win-rate 0.55 \
+                  --min-geometric-daily 0.01
+                passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$output/summary.json")"
+                if [[ "$passed" != "true" ]]; then alive[$route]=0; fi
+              done
+            done
+
+            cross_survivors=""
+            for route in $routes; do
+              if [[ "${alive[$route]}" == "1" ]]; then
+                cross_survivors="$cross_survivors $route"
+              fi
+            done
+            cross_survivors="$(echo "$cross_survivors" | xargs)"
+            export FAMILY="$family" CANDIDATE="$candidate" COMPILER="$compiler" SOURCE_COMMIT="$source_commit" REQUESTED_ROUTES="$routes" CROSS_SURVIVORS="$cross_survivors" TASK_ROOT="$task_root"
+            if [[ -z "$cross_survivors" ]]; then
+              python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["TASK_ROOT"])
+          value = {
+              "candidate": os.environ["CANDIDATE"],
+              "family": os.environ["FAMILY"],
+              "compiler": os.environ["COMPILER"],
+              "source_commit": os.environ["SOURCE_COMMIT"],
+              "requested_routes": os.environ["REQUESTED_ROUTES"].split(),
+              "cross_development_survivors": [],
+              "validation_completed": True,
+              "project_target_reached": False,
+              "decision": "discard_no_route_passed_all_three_development_weeks",
+          }
+          (root / "final_decision.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          Path(f"research/candidate-04/evidence-{os.environ['FAMILY']}-branch-validation.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          PY
+              continue
+            fi
+
+            first_route="$(echo "$cross_survivors" | awk '{print $1}')"
+            python research/candidate-04/select_sequential_btc_windows.py \
+              --repository-root . \
+              --evidence-root research/candidate-04 \
+              --candidate "$candidate" \
+              --family "$family" \
+              --route "$first_route" \
+              --source-commit "$source_commit" \
+              --output "$task_root/selection.json"
+
+            declare -A unseen_alive
+            for route in $cross_survivors; do unseen_alive[$route]=1; done
+            for week_index in 0 1 2; do
+              build_start="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["build_start"])' "$task_root/selection.json" "$week_index")"
+              eval_start="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["evaluation_start"])' "$task_root/selection.json" "$week_index")"
+              eval_end="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["evaluation_end"])' "$task_root/selection.json" "$week_index")"
+              rich="$task_root/unopened/week_$((week_index + 1))/rich"
+              python research/candidate-04/rich_features_v2.py \
+                --start "$build_start" \
+                --end "$eval_end" \
+                --cache ".cache/candidate-04-branch-survivor/$family/unopened/week_$((week_index + 1))/rich" \
+                --output "$rich"
+              for route in $cross_survivors; do
+                if [[ "${unseen_alive[$route]}" != "1" ]]; then continue; fi
+                output="$task_root/routes/$route/unopened/week_$((week_index + 1))"
+                python research/candidate-04/run_frozen_btc_route.py \
+                  --family "$family" \
+                  --route "$route" \
+                  --candidate "${candidate}-${route}" \
+                  --stage "unopened_week_$((week_index + 1))" \
+                  --compiler "research/candidate-04/$compiler" \
+                  --base-config research/candidate-04/inventory_transfer_config.json \
+                  --impact-config research/candidate-04/impact_exhaustion_config.json \
+                  --router-config research/candidate-04/auction_activity_router_config.json \
+                  --execution-config research/candidate-04/nt_liquidity_config.json \
+                  --rich-dir "$rich" \
+                  --build-start "$build_start" \
+                  --build-end "$eval_end" \
+                  --evaluation-start "$eval_start" \
+                  --evaluation-end "$eval_end" \
+                  --cache ".cache/candidate-04-branch-survivor/$family/$route/unopened/week_$((week_index + 1))" \
+                  --output "$output" \
+                  --min-trades 4 \
+                  --min-active-days 3 \
+                  --min-win-rate 0.55 \
+                  --min-geometric-daily 0.01
+                passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$output/summary.json")"
+                if [[ "$passed" != "true" ]]; then unseen_alive[$route]=0; fi
+              done
+            done
+
+            unseen_survivors=""
+            for route in $cross_survivors; do
+              if [[ "${unseen_alive[$route]}" == "1" ]]; then
+                unseen_survivors="$unseen_survivors $route"
+              fi
+            done
+            unseen_survivors="$(echo "$unseen_survivors" | xargs)"
+            export UNSEEN_SURVIVORS="$unseen_survivors"
+            if [[ -z "$unseen_survivors" ]]; then
+              python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["TASK_ROOT"])
+          value = {
+              "candidate": os.environ["CANDIDATE"],
+              "family": os.environ["FAMILY"],
+              "compiler": os.environ["COMPILER"],
+              "source_commit": os.environ["SOURCE_COMMIT"],
+              "requested_routes": os.environ["REQUESTED_ROUTES"].split(),
+              "cross_development_survivors": os.environ["CROSS_SURVIVORS"].split(),
+              "unopened_survivors": [],
+              "selection": json.loads((root / "selection.json").read_text()),
+              "validation_completed": True,
+              "project_target_reached": False,
+              "decision": "discard_no_route_passed_all_three_unopened_weeks",
+          }
+          (root / "final_decision.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          Path(f"research/candidate-04/evidence-{os.environ['FAMILY']}-branch-validation.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          PY
+              continue
+            fi
+
+            long_build="$(python -c 'import json; print(json.load(open("'$task_root'/selection.json"))["long_evaluation"]["build_start"])')"
+            long_start="$(python -c 'import json; print(json.load(open("'$task_root'/selection.json"))["long_evaluation"]["evaluation_start"])')"
+            long_end="$(python -c 'import json; print(json.load(open("'$task_root'/selection.json"))["long_evaluation"]["evaluation_end"])')"
+            long_rich="$task_root/long/rich"
+            python research/candidate-04/rich_features_v2.py \
+              --start "$long_build" \
+              --end "$long_end" \
+              --cache ".cache/candidate-04-branch-survivor/$family/long/rich" \
+              --output "$long_rich"
+            long_survivors=""
+            for route in $unseen_survivors; do
+              output="$task_root/routes/$route/long"
+              python research/candidate-04/run_frozen_btc_route.py \
+                --family "$family" \
+                --route "$route" \
+                --candidate "${candidate}-${route}" \
+                --stage long_91_day_evaluation \
+                --compiler "research/candidate-04/$compiler" \
+                --base-config research/candidate-04/inventory_transfer_config.json \
+                --impact-config research/candidate-04/impact_exhaustion_config.json \
+                --router-config research/candidate-04/auction_activity_router_config.json \
+                --execution-config research/candidate-04/nt_liquidity_config.json \
+                --rich-dir "$long_rich" \
+                --build-start "$long_build" \
+                --build-end "$long_end" \
+                --evaluation-start "$long_start" \
+                --evaluation-end "$long_end" \
+                --cache ".cache/candidate-04-branch-survivor/$family/$route/long" \
+                --output "$output" \
+                --min-trades 90 \
+                --min-active-days 45 \
+                --min-win-rate 0.55 \
+                --min-geometric-daily 0.01
+              passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$output/summary.json")"
+              if [[ "$passed" == "true" ]]; then
+                long_survivors="$long_survivors $route"
+              fi
+            done
+            long_survivors="$(echo "$long_survivors" | xargs)"
+            export LONG_SURVIVORS="$long_survivors"
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["TASK_ROOT"])
+          routes = {}
+          for route in os.environ["UNSEEN_SURVIVORS"].split():
+              path = root / "routes" / route / "long" / "summary.json"
+              if path.exists():
+                  routes[route] = json.loads(path.read_text())
+          successful = os.environ["LONG_SURVIVORS"].split()
+          value = {
+              "candidate": os.environ["CANDIDATE"],
+              "family": os.environ["FAMILY"],
+              "compiler": os.environ["COMPILER"],
+              "source_commit": os.environ["SOURCE_COMMIT"],
+              "requested_routes": os.environ["REQUESTED_ROUTES"].split(),
+              "cross_development_survivors": os.environ["CROSS_SURVIVORS"].split(),
+              "unopened_survivors": os.environ["UNSEEN_SURVIVORS"].split(),
+              "successful_routes": successful,
+              "long_results": routes,
+              "selection": json.loads((root / "selection.json").read_text()),
+              "validation_completed": True,
+              "final_validation_completed": True,
+              "project_target_reached": bool(successful),
+              "candidate_modified_after_selection": False,
+              "decision": "project_target_reached_on_btc_long_evaluation" if successful else "discard_after_long_evaluation",
+          }
+          (root / "final_decision.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          target = Path(f"research/candidate-04/evidence-{os.environ['FAMILY']}-branch-validation.json")
+          target.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          if successful:
+              Path(f"research/candidate-04/evidence-{os.environ['FAMILY']}-long.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(value, indent=2, sort_keys=True))
+          PY
+          done
+
+      - name: Record no pending task
+        if: steps.tasks.outputs.count == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-04-branch-survivor
+          cp pending-survivor-tasks.json \
+            artifacts/candidate-04-branch-survivor/no_pending_tasks.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-branch-survivor-validation-${{ github.run_id }}
+          path: artifacts/candidate-04-branch-survivor
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Commit all branch validation evidence with rebase retry
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-04/evidence-v34-branch-validation.json \
+            research/candidate-04/evidence-v35-branch-validation.json \
+            research/candidate-04/evidence-v36-branch-validation.json \
+            research/candidate-04/evidence-v34-long.json \
+            research/candidate-04/evidence-v35-long.json \
+            research/candidate-04/evidence-v36-long.json \
+            2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record branch-safe survivor validation evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
