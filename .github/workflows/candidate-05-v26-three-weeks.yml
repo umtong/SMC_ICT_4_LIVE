@@ -1,0 +1,103 @@
+name: candidate-05-v26-three-weeks
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/entry_scenario_validity_logic.py"
+      - "research/candidate-05/strategy_v26.py"
+      - "research/candidate-05/tests/test_entry_scenario_validity_logic.py"
+      - "research/candidate-05/strategy.py"
+      - ".github/workflows/candidate-05-v26-three-weeks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  frozen-btc-weeks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed research environment
+        run: |
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Run three frozen BTC weeks directly through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-05-v26
+          mkdir -p "$root/week-1" "$root/week-2" "$root/week-3"
+
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-07-07 \
+            --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 \
+            --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-05-v26/week-1 \
+            --output "$root/week-1" \
+            | tee "$root/week-1/console.json"
+
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-01-13 \
+            --build-end 2024-01-21 \
+            --evaluation-start 2024-01-15 \
+            --evaluation-end 2024-01-21 \
+            --cache .cache/candidate-05-v26/week-2 \
+            --output "$root/week-2" \
+            | tee "$root/week-2/console.json"
+
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-09-06 \
+            --build-end 2023-09-14 \
+            --evaluation-start 2023-09-08 \
+            --evaluation-end 2023-09-14 \
+            --cache .cache/candidate-05-v26/week-3 \
+            --output "$root/week-3" \
+            | tee "$root/week-3/console.json"
+
+      - name: Verify and print evidence
+        if: always()
+        shell: bash
+        run: |
+          for stage in artifacts/candidate-05-v26/week-1 artifacts/candidate-05-v26/week-2 artifacts/candidate-05-v26/week-3; do
+            if test -f "$stage/metrics.json"; then
+              python -m json.tool "$stage/metrics.json"
+              test -s "$stage/run.json"
+              test -s "$stage/data_manifest.json"
+              test -s "$stage/orders.csv"
+              test -s "$stage/positions.csv"
+              test -s "$stage/account.csv"
+              test -s "$stage/equity.csv"
+              test -s "$stage/scenario_events.jsonl"
+              test -s "$stage/strategy_diagnostics.json"
+            fi
+            if test -f "$stage/errors.log"; then
+              cat "$stage/errors.log"
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v26-three-weeks-${{ github.sha }}
+          path: artifacts/candidate-05-v26/**
+          if-no-files-found: warn
+          retention-days: 90
