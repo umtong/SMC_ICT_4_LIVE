@@ -43,6 +43,14 @@ jobs:
               "from dataclasses import asdict, dataclass\n",
           )
           source = source.replace('"definition": spec.__dict__,', '"definition": asdict(spec),')
+          source = source.replace(
+              "outcomes = [str(event[key]) for event in events]\n",
+              "outcomes = [str(event[key]) for event in events if key in event]\n",
+          )
+          source = source.replace(
+              '[float(event[f"fixed_{multiple:.1f}r_cost_after_rr"]) for event in events]',
+              '[float(event[f"fixed_{multiple:.1f}r_cost_after_rr"]) for event in events if key in event]',
+          )
           path.write_text(source, encoding="utf-8")
           PY
           python -m compileall -q research/candidate-08/session_transition_probe.py
