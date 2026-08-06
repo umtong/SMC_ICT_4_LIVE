@@ -20,6 +20,10 @@ concurrency:
   group: candidate-06-first-btc-week
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   first-week-lab:
     if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
@@ -30,8 +34,8 @@ jobs:
       options: --user 0
     env:
       SMC4_PREBUILT_ENV: "1"
-      PYTHONPATH: ${{ github.workspace }}/src:${{ github.workspace }}/research/candidate-06
-      SMC4_RESEARCH_DATA: ${{ github.workspace }}/.research-data/candidate-06
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
     steps:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
@@ -59,11 +63,10 @@ jobs:
       - name: Run controlled first-week matrix through NautilusTrader
         id: lab
         continue-on-error: true
-        shell: bash
         run: |
           set +e
           rm -rf artifacts/candidate-06/first-week-lab
-          mkdir -p "$SMC4_RESEARCH_DATA"
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts
           python research/candidate-06/run_matrix.py \
             --output artifacts/candidate-06/first-week-lab \
             > artifacts/candidate-06-first-week.stdout 2> artifacts/candidate-06-first-week.stderr
