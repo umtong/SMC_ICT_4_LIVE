@@ -2,7 +2,8 @@ name: Candidate 11 Nautilus validation
 
 on:
   push:
-    branches: [research/candidate-11]
+    branches:
+      - research/candidate-11
     paths:
       - "research/candidate-11/**"
       - ".github/workflows/candidate-11.yml"
@@ -13,78 +14,65 @@ on:
         required: true
         default: W1
         type: choice
-        options: [W1, W2, W3]
+        options:
+          - W1
+          - W2
+          - W3
 
 permissions:
   contents: write
+  packages: read
 
 concurrency:
   group: candidate-11-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    defaults:
-      run:
-        shell: bash
-        working-directory: ${{ github.workspace }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Persist the tested Nautilus bar adapter in the runner branch
+      - name: Persist tested Nautilus bar adapter wiring
+        shell: bash
         run: |
+          set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           python - <<'PY'
           from pathlib import Path
 
           path = Path("research/candidate-11/run.py")
           source = path.read_text(encoding="utf-8")
-
           logic_import = "from logic import BarObs, CausalAuctionEngine, Direction, LogicConfig, RiskSizer\n"
           adapter_import = "from bar_adapter import build_bars\n"
           if adapter_import not in source:
               if logic_import not in source:
                   raise SystemExit("candidate logic import anchor not found")
-              source = source.replace(logic_import, logic_import + adapter_import)
+              source = source.replace(logic_import, logic_import + adapter_import, 1)
 
           source = source.replace(
               "    from nautilus_trader.persistence.wranglers import BarDataWrangler\n",
               "",
+              1,
           )
-
-          old_block = """    wrangle_columns = [\"open\", \"high\", \"low\", \"close\", \"volume\"]
-    wrangle_matrix = frame[wrangle_columns].to_numpy(dtype=\"float64\", copy=True)
-    wrangle_matrix.setflags(write=True)
-    wrangle_frame = pd.DataFrame(
-        wrangle_matrix,
-        index=frame.index.copy(),
-        columns=wrangle_columns,
-        copy=False,
-    )
-    wrangle_frame.values.setflags(write=True)
-    bars = BarDataWrangler(bar_type, instrument).process(wrangle_frame)
-"""
-          legacy_block = """    wrangle_frame = frame[[\"open\", \"high\", \"low\", \"close\", \"volume\"]].copy()
-    bars = BarDataWrangler(bar_type, instrument).process(wrangle_frame)
-"""
-          direct_block = "    bars = build_bars(frame, bar_type, instrument)\n"
-          if old_block in source:
-              source = source.replace(old_block, direct_block)
-          elif legacy_block in source:
-              source = source.replace(legacy_block, direct_block)
-          elif direct_block not in source:
+          start = '    wrangle_columns = ["open", "high", "low", "close", "volume"]\n'
+          end = '    flows = frame["taker_buy_volume"].astype(float).tolist()\n'
+          if start in source:
+              start_index = source.index(start)
+              end_index = source.index(end, start_index)
+              source = source[:start_index] + "    bars = build_bars(frame, bar_type, instrument)\n" + source[end_index:]
+          elif "    bars = build_bars(frame, bar_type, instrument)\n" not in source:
               raise SystemExit("Nautilus bar construction anchor not found")
 
           path.write_text(source, encoding="utf-8")
@@ -93,15 +81,18 @@ jobs:
             git config user.name "candidate-11-bot"
             git config user.email "candidate-11-bot@users.noreply.github.com"
             git add research/candidate-11/run.py
-            git commit -m "candidate-11: use tested direct Nautilus bar adapter"
+            git commit -m "candidate-11: wire tested Nautilus bar adapter"
             git push origin HEAD:research/candidate-11
           fi
 
       - name: Verify prebuilt research environment
+        shell: bash
         run: smc4 doctor
 
-      - name: Compile and test candidate logic
+      - name: Compile and test candidate invariants
+        shell: bash
         run: |
+          set -euo pipefail
           python -m py_compile \
             research/candidate-11/bar_adapter.py \
             research/candidate-11/logic.py \
@@ -109,13 +100,49 @@ jobs:
           python -m unittest discover -s research/candidate-11 -p 'test_*.py' -v
 
       - name: Run frozen week through NautilusTrader
+        shell: bash
         run: |
+          set -euo pipefail
           WEEK="${{ github.event.inputs.week }}"
           if [ -z "$WEEK" ]; then WEEK=W1; fi
           rm -rf "research/candidate-11/results/$WEEK"
           python research/candidate-11/run.py \
             --week "$WEEK" \
             --output "research/candidate-11/results/$WEEK"
+          test -s "research/candidate-11/results/$WEEK/run.json"
+          test -s "research/candidate-11/results/$WEEK/metrics.json"
+
+      - name: Publish run summary
+        if: always()
+        shell: bash
+        run: |
+          WEEK="${{ github.event.inputs.week }}"
+          if [ -z "$WEEK" ]; then WEEK=W1; fi
+          METRICS="research/candidate-11/results/$WEEK/metrics.json"
+          if [ -s "$METRICS" ]; then
+            python - "$METRICS" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          metrics = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print("## Candidate 11 frozen-week result")
+          for key in (
+              "week_id",
+              "daily_geometric_growth",
+              "closed_trades",
+              "win_rate",
+              "payoff_ratio",
+              "closed_trade_max_drawdown",
+              "promising_gate_passed",
+              "complete_gate_passed",
+              "success_claim",
+          ):
+              print(f"- **{key}**: `{metrics.get(key)}`")
+          PY
+          else
+            echo "## Candidate 11 run produced no metrics" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload reproducible evidence
         if: always()
