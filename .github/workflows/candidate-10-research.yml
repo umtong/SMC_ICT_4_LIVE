@@ -20,14 +20,21 @@ env:
   RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
 
 jobs:
-  probe:
+  gate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify pinned environment and API
+      - name: Prepare artifact directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-10
+          chmod -R a+rwx artifacts
+
+      - name: Test and run first random BTC week in pinned NautilusTrader image
         shell: bash
         run: |
           set -euo pipefail
@@ -36,5 +43,23 @@ jobs:
             -v "${PWD}:/workspace" \
             -w /workspace \
             -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/workspace/src:/workspace/research/candidate-10 \
             "${RESEARCH_IMAGE}" \
-            bash -c 'smc4 doctor && python research/candidate-10/introspect.py'
+            bash -c '
+              set -euo pipefail
+              smc4 doctor
+              python -m unittest discover -s research/candidate-10 -p "test_*.py" -v
+              python research/candidate-10/run_research.py \
+                --phase gate \
+                --output artifacts/candidate-10 \
+                --data-root /tmp/candidate-10-data
+            '
+
+      - name: Upload reproducible research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-gate-${{ github.sha }}
+          path: artifacts/candidate-10
+          if-no-files-found: warn
+          retention-days: 14
