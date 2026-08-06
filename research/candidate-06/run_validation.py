@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 import math
 import os
@@ -29,14 +29,6 @@ from smc_ict_4.manifest import (  # noqa: E402
     write_data_manifest,
     write_json_atomic,
 )
-
-
-def _float(value: Any) -> float:
-    if value is None:
-        return 0.0
-    if hasattr(value, "as_decimal"):
-        return float(value.as_decimal())
-    return float(value)
 
 
 def _safe_div(numerator: float, denominator: float) -> float:
@@ -109,7 +101,7 @@ def calculate_metrics(
     geometric_daily = (ending / starting) ** (1.0 / evaluation_days) - 1.0 if ending > 0.0 else -1.0
     wins = [value for value in pnls if value > 0.0]
     losses = [value for value in pnls if value < 0.0]
-    profit_factor = sum(wins) / abs(sum(losses)) if losses else (math.inf if wins else 0.0)
+    profit_factor = sum(wins) / abs(sum(losses)) if losses else None
     nav_values = [starting] + [float(sample["nav"]) for sample in strategy.equity_samples]
     daily_rows, daily_returns = _daily_nav(strategy.equity_samples, starting)
     positive_total = sum(wins)
@@ -130,7 +122,7 @@ def calculate_metrics(
         "candidate": config["candidate"],
         "candidate_version": config["version"],
         "week_start_utc": week_start.isoformat(),
-        "week_end_utc_exclusive": (week_start + pd.Timedelta(days=7)).date().isoformat(),
+        "week_end_utc_exclusive": (week_start + timedelta(days=7)).isoformat(),
         "instrument_id": "BTCUSDT-PERP.BINANCE",
         "bar_interval": "1m",
         "bars": rows,
@@ -146,6 +138,7 @@ def calculate_metrics(
         "losses": len(losses),
         "win_rate": _safe_div(len(wins), len(trades)),
         "profit_factor": profit_factor,
+        "profit_factor_unbounded": bool(wins and not losses),
         "mean_r_after_cost": _safe_div(sum(r_multiples), len(r_multiples)),
         "median_r_after_cost": float(pd.Series(r_multiples).median()) if r_multiples else 0.0,
         "mean_holding_minutes": _safe_div(
