@@ -1,9 +1,10 @@
 """Public facade for candidate 10 tests and research runner."""
 
-from c10_model import AuctionRange
 from c10_model import BarView
+from c10_model import LiquidityPool
 from c10_model import MachineParams
 from c10_model import Setup
+from c10_model import StructuralBar
 from c10_model import TradePlan
 from c10_model import Transition
 from c10_research import reproducible_weeks
@@ -14,13 +15,14 @@ from c10_strategy import Candidate10Strategy
 from c10_strategy import make_cost_loaded_btc_perpetual
 
 __all__ = [
-    "AuctionRange",
     "AuctionStateMachine",
     "BarView",
     "Candidate10Config",
     "Candidate10Strategy",
+    "LiquidityPool",
     "MachineParams",
     "Setup",
+    "StructuralBar",
     "TradePlan",
     "Transition",
     "make_cost_loaded_btc_perpetual",
