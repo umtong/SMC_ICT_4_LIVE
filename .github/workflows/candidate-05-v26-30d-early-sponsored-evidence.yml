@@ -1,0 +1,213 @@
+name: candidate-05-v26-30d-early-sponsored-evidence
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v26-30d-early-sponsored-evidence.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  compare-and-persist:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Run fixed v26 baseline and one-variable ablation
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-05-v26-30d-early-sponsored-evidence
+          mkdir -p "$root/baseline" "$root/ablation"
+
+          cat > research/candidate-05/strategy.py <<'PY'
+          """Runtime entrypoint for the frozen v26 baseline."""
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v26 import ScenarioValidEntryStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-30 \
+            --cache .cache/candidate-05-v26-30d-early-sponsored-evidence/baseline \
+            --output "$root/baseline" \
+            | tee "$root/baseline/console.json"
+
+          cat > research/candidate-05/strategy.py <<'PY'
+          """Runtime entrypoint for the no-early-sponsored ablation."""
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v26_no_early_sponsored_ablation import NoEarlySponsoredParticipationStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-30 \
+            --cache .cache/candidate-05-v26-30d-early-sponsored-evidence/ablation \
+            --output "$root/ablation" \
+            | tee "$root/ablation/console.json"
+
+      - name: Build causal comparison
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-v26-30d-early-sponsored-evidence")
+          evidence = Path("research/candidate-05/evidence")
+          evidence.mkdir(parents=True, exist_ok=True)
+
+          def summarize(name: str) -> dict:
+              path = root / name / "metrics.json"
+              if not path.exists():
+                  return {"available": False, "metrics_path": str(path)}
+              m = json.loads(path.read_text(encoding="utf-8"))
+              d = m.get("strategy_diagnostics", {})
+              checks = {
+                  "engine_is_nautilus": m.get("engine") == "NautilusTrader BacktestNode",
+                  "positive_nav": m.get("ending_nav", 0.0) > 0.0,
+                  "no_liquidation": m.get("liquidations", 0) == 0,
+                  "no_order_rejections": d.get("order_rejections", 0) == 0,
+                  "single_entry_intent": d.get("max_simultaneous_entry_intents", 0) <= 1,
+                  "single_position": d.get("max_open_positions_observed", 0) <= 1,
+                  "nautilus_orders": m.get("gate_checks", {}).get("nautilus_orders", False),
+                  "nautilus_positions": m.get("gate_checks", {}).get("nautilus_positions", False),
+              }
+              return {
+                  "available": True,
+                  "engine": m.get("engine"),
+                  "instrument": m.get("instrument"),
+                  "evaluation_start": m.get("evaluation_start"),
+                  "evaluation_end": m.get("evaluation_end"),
+                  "calendar_days": m.get("calendar_days"),
+                  "starting_nav": m.get("starting_nav"),
+                  "ending_nav": m.get("ending_nav"),
+                  "total_return": m.get("total_return"),
+                  "geometric_daily_growth": m.get("geometric_daily_growth"),
+                  "max_drawdown": m.get("max_drawdown"),
+                  "trades": m.get("trades"),
+                  "wins": m.get("wins"),
+                  "losses": m.get("losses"),
+                  "win_rate": m.get("win_rate"),
+                  "profit_factor": m.get("profit_factor"),
+                  "expectancy_usdt": m.get("expectancy_usdt"),
+                  "active_days": m.get("active_days"),
+                  "largest_winner_share": m.get("largest_winner_share"),
+                  "scenario_metrics": m.get("scenario_metrics", {}),
+                  "event_reason_counts": m.get("event_reason_counts", {}),
+                  "integrity_checks": checks,
+                  "integrity_pass": all(checks.values()),
+              }
+
+          baseline = summarize("baseline")
+          ablation = summarize("ablation")
+          result = {
+              "schema": "candidate-05-controlled-ablation-v1",
+              "source_commit": "${{ github.sha }}",
+              "workflow_run_id": "${{ github.run_id }}",
+              "experiment": "remove only early sponsored CHoCH immediate participation",
+              "fixed_evaluation": "2024-03-01..2024-03-30 UTC",
+              "baseline_strategy": "strategy_v26:ScenarioValidEntryStrategy",
+              "ablation_strategy": "strategy_v26_no_early_sponsored_ablation:NoEarlySponsoredParticipationStrategy",
+              "unchanged": [
+                  "market observations and causal timestamps",
+                  "liquidity and response thresholds",
+                  "entry price protection",
+                  "frozen target and structural stop",
+                  "fees, adverse slippage, latency and fill model",
+                  "3% full-current-NAV planned-loss sizing",
+                  "NautilusTrader accounting, margin and liquidation",
+              ],
+              "baseline": baseline,
+              "ablation": ablation,
+          }
+          if not baseline.get("available") or not baseline.get("integrity_pass"):
+              result["classification"] = "IMPLEMENTATION_ERROR_BASELINE"
+          elif not ablation.get("available") or not ablation.get("integrity_pass"):
+              result["classification"] = "IMPLEMENTATION_ERROR_ABLATION"
+          else:
+              delta = {
+                  "ending_nav": ablation["ending_nav"] - baseline["ending_nav"],
+                  "total_return": ablation["total_return"] - baseline["total_return"],
+                  "geometric_daily_growth": ablation["geometric_daily_growth"] - baseline["geometric_daily_growth"],
+                  "max_drawdown": ablation["max_drawdown"] - baseline["max_drawdown"],
+                  "trades": ablation["trades"] - baseline["trades"],
+                  "wins": ablation["wins"] - baseline["wins"],
+              }
+              result["delta_ablation_minus_baseline"] = delta
+              result["removed_branch_baseline_attribution"] = baseline.get("scenario_metrics", {}).get(
+                  "TAIL_FLOW_SPONSORED_CHOCH",
+                  {"trades": 0, "wins": 0, "net_pnl": 0.0},
+              )
+              if delta["geometric_daily_growth"] > 1e-12:
+                  result["classification"] = "LOGIC_ABLATION_IMPROVED"
+              elif delta["geometric_daily_growth"] < -1e-12:
+                  result["classification"] = "LOGIC_ABLATION_HARMED"
+              else:
+                  result["classification"] = "LOGIC_ABLATION_NEUTRAL"
+              result["baseline_goal_reached"] = baseline["geometric_daily_growth"] >= 0.01
+              result["ablation_goal_reached"] = ablation["geometric_daily_growth"] >= 0.01
+          output = evidence / "v26_30d_early_sponsored_ablation.json"
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+          test -s research/candidate-05/evidence/v26_30d_early_sponsored_ablation.json
+          for variant in baseline ablation; do
+            if test -f "artifacts/candidate-05-v26-30d-early-sponsored-evidence/$variant/metrics.json"; then
+              for file in metrics.json run.json data_manifest.json orders.csv positions.csv account.csv equity.csv scenario_events.jsonl strategy_diagnostics.json; do
+                test -s "artifacts/candidate-05-v26-30d-early-sponsored-evidence/$variant/$file"
+              done
+            fi
+          done
+
+      - name: Persist compact evidence without runtime strategy changes
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-05/evidence/v26_30d_early_sponsored_ablation.json
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-05: record 30d early-sponsored ablation evidence [skip ci]"
+            git push origin HEAD:research/candidate-05
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v26-30d-early-sponsored-evidence-${{ github.sha }}
+          path: artifacts/candidate-05-v26-30d-early-sponsored-evidence/**
+          if-no-files-found: warn
+          retention-days: 90
