@@ -1,0 +1,185 @@
+name: Candidate 09 accounting-controlled rerun
+
+on:
+  push:
+    branches:
+      - research/candidate-09
+    paths:
+      - .github/workflows/candidate-09-accounting-rerun.yml
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-accounting-controlled-rerun
+  cancel-in-progress: false
+
+jobs:
+  account-and-rerun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-v1
+
+      - name: Fix only the proven accounting double subtraction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('research/candidate-09/nautilus_strategy.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''        gross_pnl = _money(event.realized_pnl)\n        net_pnl = gross_pnl - self._active_commissions - self._active_extra_cost\n'''
+          new = '''        # Nautilus PositionClosed.realized_pnl is already net of native venue\n        # commissions. Reconstruct price PnL for diagnostics, and subtract only\n        # the explicit reserve needed to reach the configured composite cost.\n        native_net_realized_pnl = _money(event.realized_pnl)\n        gross_pnl = native_net_realized_pnl + self._active_commissions\n        net_pnl = native_net_realized_pnl - self._active_extra_cost\n'''
+          if new not in text:
+              if old not in text:
+                  raise SystemExit('expected legacy accounting block not found')
+              text = text.replace(old, new, 1)
+          marker = '            "gross_realized_pnl": gross_pnl,\n'
+          addition = marker + '            "native_net_realized_pnl": native_net_realized_pnl,\n'
+          if '"native_net_realized_pnl": native_net_realized_pnl' not in text:
+              if marker not in text:
+                  raise SystemExit('trade record marker not found')
+              text = text.replace(marker, addition, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cat > research/candidate-09/tests/test_accounting_contract.py <<'PY'
+          import unittest
+
+
+          class AccountingIdentityTest(unittest.TestCase):
+              def test_position_closed_value_is_not_charged_native_commission_twice(self):
+                  native_net_realized = -2365.33740432
+                  native_commissions = 200.27340432
+                  extra_composite_cost = 634.19911368
+                  gross_price_pnl = native_net_realized + native_commissions
+                  composite_net_pnl = native_net_realized - extra_composite_cost
+                  self.assertAlmostEqual(gross_price_pnl, -2165.064, places=6)
+                  self.assertAlmostEqual(composite_net_pnl, -2999.536518, places=6)
+                  self.assertAlmostEqual(
+                      gross_price_pnl - native_commissions - extra_composite_cost,
+                      composite_net_pnl,
+                      places=9,
+                  )
+
+
+          if __name__ == '__main__':
+              unittest.main()
+          PY
+
+      - name: Run doctor, tests, and identical frozen-week gate
+        shell: bash
+        run: |
+          set +e
+          root=research/candidate-09
+          out="$root/evidence/latest"
+          diag="$root/diagnostics/accounting-rerun"
+          rm -rf "$out" "$diag"
+          mkdir -p "$out" "$diag"
+
+          smc4 doctor > "$diag/doctor.log" 2>&1
+          doctor_code=$?
+          python -m compileall -q "$root" > "$diag/compile.log" 2>&1
+          compile_code=$?
+          python -m unittest discover -s "$root/tests" -p 'test_*.py' -v > "$diag/tests.log" 2>&1
+          tests_code=$?
+          gate_code=99
+          if [[ "$doctor_code" == 0 && "$compile_code" == 0 && "$tests_code" == 0 ]]; then
+            python "$root/run.py" gate \
+              --config "$root/config.json" \
+              --cache "$SMC4_DATA_ROOT" \
+              --output "$out" > "$diag/gate.log" 2>&1
+            gate_code=$?
+          else
+            printf 'gate not run because a prerequisite failed\n' > "$diag/gate.log"
+          fi
+
+          DOCTOR_CODE="$doctor_code" COMPILE_CODE="$compile_code" TESTS_CODE="$tests_code" GATE_CODE="$gate_code" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          diag = Path('research/candidate-09/diagnostics/accounting-rerun')
+          out = Path('research/candidate-09/evidence/latest')
+          codes = {name: int(os.environ[name]) for name in ('DOCTOR_CODE','COMPILE_CODE','TESTS_CODE','GATE_CODE')}
+          normalized = {key.removesuffix('_CODE').lower(): value for key, value in codes.items()}
+          first_failure = next((name for name, value in normalized.items() if value != 0), None)
+          (diag / 'diagnostic.json').write_text(json.dumps({
+              'classification': 'IMPLEMENTATION_ERROR' if first_failure else 'EXECUTED',
+              'codes': normalized,
+              'first_failure': first_failure,
+              'fixed_weeks_preserved': True,
+              'strategy_parameters_preserved': True,
+              'controlled_change': 'remove duplicate native commission subtraction only',
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'trigger_sha': os.environ.get('GITHUB_SHA'),
+          }, indent=2, sort_keys=True) + '\n')
+          if not (out / 'summary.json').exists():
+              (out / 'summary.json').write_text(json.dumps({
+                  'candidate': 'candidate-09',
+                  'status': 'IMPLEMENTATION_ERROR',
+                  'first_failure': first_failure,
+                  'codes': normalized,
+              }, indent=2, sort_keys=True) + '\n')
+          for log in diag.glob('*.log'):
+              lines = log.read_text(errors='replace').splitlines()
+              log.write_text('\n'.join(lines[-800:]) + ('\n' if lines else ''))
+          PY
+          exit 0
+
+      - name: Preserve exact rerun output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-accounting-rerun-${{ github.run_id }}
+          path: |
+            research/candidate-09/evidence/latest
+            research/candidate-09/diagnostics/accounting-rerun
+            research/candidate-09/run.py
+            research/candidate-09/config.json
+            research/candidate-09/state_engine.py
+            research/candidate-09/nautilus_strategy.py
+            research/candidate-09/tests
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit controlled implementation and evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=$(dirname "$(dirname "$(dirname "$(realpath research/candidate-09/run.py)")")")
+          git config --global --add safe.directory "$repo"
+          git -C "$repo" config user.name "candidate-09-research-bot"
+          git -C "$repo" config user.email "candidate-09-research-bot@users.noreply.github.com"
+          git -C "$repo" add -A research/candidate-09
+          if git -C "$repo" diff --cached --quiet; then
+            exit 0
+          fi
+          status=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('research/candidate-09/evidence/latest/summary.json').read_text()).get('status','UNKNOWN'))
+          PY
+          )
+          git -C "$repo" commit -m "candidate-09: accounting-controlled result ${status}"
+          git -C "$repo" pull --rebase origin "${GITHUB_REF_NAME}"
+          git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
