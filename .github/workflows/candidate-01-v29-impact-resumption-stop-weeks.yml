@@ -1,0 +1,261 @@
+name: candidate-01-v29-impact-resumption-stop-weeks
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v29-impact-resumption-stop-weeks.yml"
+      - "research/candidate-01/impact_resumption_stop_state_v29.py"
+      - "research/candidate-01/impact_resumption_stop_v29_nautilus_week.py"
+      - "research/candidate-01/candidate_01_v29_gate.py"
+      - "research/candidate-01/candidate_01_v29_protocol.json"
+      - "research/candidate-01/nautilus_tick_stop_plan_backtest.py"
+      - "research/candidate-01/nautilus_tick_stop_limit_adapter_smoke.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  week1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      advance: ${{ steps.outputs.outputs.advance }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v29-week1
+          key: candidate-01-v29-week1-BTCUSDT-2023-08-23-2023-09-05-${{ runner.os }}-v1
+      - name: Run first frozen stop-entry week through NautilusTrader
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/nautilus_tick_stop_plan_backtest.py \
+                research/candidate-01/nautilus_tick_stop_limit_adapter_smoke.py \
+                research/candidate-01/impact_resumption_stop_state_v29.py \
+                research/candidate-01/impact_resumption_stop_v29_nautilus_week.py \
+                research/candidate-01/candidate_01_v29_gate.py
+              python research/candidate-01/nautilus_tick_stop_limit_adapter_smoke.py
+              rm -rf artifacts/candidate-01-v29-week1
+              python research/candidate-01/impact_resumption_stop_v29_nautilus_week.py \
+                --week 2023-08-28 \
+                --rule stop-limit-resumption \
+                --cache .cache/candidate-01-v29-week1 \
+                --output artifacts/candidate-01-v29-week1 \
+                --workers 4
+            '
+      - name: Verify and classify week 1
+        run: |
+          python3 research/candidate-01/candidate_01_v29_gate.py \
+            --root artifacts/candidate-01-v29-week1 \
+            --week 2023-08-28
+      - name: Export week 1 gate
+        id: outputs
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          gate = json.loads(Path("artifacts/candidate-01-v29-week1/week_gate.json").read_text())
+          print(f"advance={'true' if gate['advance'] else 'false'}")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v29-week1-${{ github.sha }}
+          path: artifacts/candidate-01-v29-week1
+          if-no-files-found: error
+          retention-days: 30
+
+  week1-control:
+    needs: week1
+    if: needs.week1.outputs.advance != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v29-week1-control
+          key: candidate-01-v29-week1-control-BTCUSDT-2023-08-23-2023-09-05-${{ runner.os }}-v1
+      - name: Run immediate-pullback market ablation on identical week
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              rm -rf artifacts/candidate-01-v29-week1-control
+              python research/candidate-01/impact_resumption_stop_v29_nautilus_week.py \
+                --week 2023-08-28 \
+                --rule pullback-market-control \
+                --cache .cache/candidate-01-v29-week1-control \
+                --output artifacts/candidate-01-v29-week1-control \
+                --workers 4
+            '
+      - name: Verify and classify week 1 control
+        run: |
+          python3 research/candidate-01/candidate_01_v29_gate.py \
+            --root artifacts/candidate-01-v29-week1-control \
+            --week 2023-08-28
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v29-week1-control-${{ github.sha }}
+          path: artifacts/candidate-01-v29-week1-control
+          if-no-files-found: error
+          retention-days: 30
+
+  week2:
+    needs: week1
+    if: needs.week1.outputs.advance == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      advance: ${{ steps.outputs.outputs.advance }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v29-week2
+          key: candidate-01-v29-week2-BTCUSDT-2023-06-07-2023-06-20-${{ runner.os }}-v1
+      - name: Run second frozen stop-entry week without rule changes
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              rm -rf artifacts/candidate-01-v29-week2
+              python research/candidate-01/impact_resumption_stop_v29_nautilus_week.py \
+                --week 2023-06-12 \
+                --rule stop-limit-resumption \
+                --cache .cache/candidate-01-v29-week2 \
+                --output artifacts/candidate-01-v29-week2 \
+                --workers 4
+            '
+      - name: Verify and classify week 2
+        run: |
+          python3 research/candidate-01/candidate_01_v29_gate.py \
+            --root artifacts/candidate-01-v29-week2 \
+            --week 2023-06-12
+      - name: Export week 2 gate
+        id: outputs
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          gate = json.loads(Path("artifacts/candidate-01-v29-week2/week_gate.json").read_text())
+          print(f"advance={'true' if gate['advance'] else 'false'}")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v29-week2-${{ github.sha }}
+          path: artifacts/candidate-01-v29-week2
+          if-no-files-found: error
+          retention-days: 30
+
+  week3:
+    needs: week2
+    if: needs.week2.outputs.advance == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v29-week3
+          key: candidate-01-v29-week3-BTCUSDT-2025-08-27-2025-09-09-${{ runner.os }}-v1
+      - name: Run third frozen stop-entry week without rule changes
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              rm -rf artifacts/candidate-01-v29-week3
+              python research/candidate-01/impact_resumption_stop_v29_nautilus_week.py \
+                --week 2025-09-01 \
+                --rule stop-limit-resumption \
+                --cache .cache/candidate-01-v29-week3 \
+                --output artifacts/candidate-01-v29-week3 \
+                --workers 4
+            '
+      - name: Verify and classify week 3
+        run: |
+          python3 research/candidate-01/candidate_01_v29_gate.py \
+            --root artifacts/candidate-01-v29-week3 \
+            --week 2025-09-01
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v29-week3-${{ github.sha }}
+          path: artifacts/candidate-01-v29-week3
+          if-no-files-found: error
+          retention-days: 30
