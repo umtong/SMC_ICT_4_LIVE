@@ -11,11 +11,15 @@ This ledger records immutable GitHub Actions run IDs and the reason for every re
 | 31076904149 | 3c54c673db3be4b89ece67e7c8a1287cf285cfdf | superseded duplicate | the patch trigger itself started validation before the write-enabled patch job committed the fix, so it exercised the same pre-fix source and is not performance evidence |
 | 31076976101 | 0bb0d58454a8545c82c26887e42ad6ffd04be5a3 | venue-config failure | engine construction reached `add_venue`; the pinned legacy runtime rejected liquidation keywords exposed by the type stub but absent from the loaded Cython method |
 | 31077172125 | bc197c73c8e2088fcf079688de803e79a7078274 | post-replay reporting failure | `smc4 doctor`, seven tests, checksum-verified data, engine/venue setup, and the complete first-window Nautilus replay all succeeded; only obsolete direct-engine report methods failed after `engine.run()` returned |
+| 31077410620 | 54de04b6f158e3481d67dd546e429ed370fe63cd | invalid timestamp-scale run | cache reports were generated, but artifact inspection proved pandas retained a millisecond-resolution index and raw `.asi8` values were passed to Nautilus as nanoseconds. Bars appeared in 1970, the 2024 evaluation gate blocked all entries, and the zero-trade output is invalid performance evidence |
+| 31077616228 | 85cd5654e215aea9ddfeac1fece60621a2afa205 | patch-infrastructure failure | the timestamp patch was first tested outside the pinned image where pandas was absent; source was not committed |
+| 31077694294 | e7fb2081afe40a65a18fcbc76b364168136cf565 | validated patch, commit failure | the pinned image passed `smc4 doctor` and all eight causal/risk/timestamp tests; only Git safe-directory configuration prevented the already validated workspace changes from being committed |
+| 31077856942 | b75dc3f7854631f16630cdb494d0ed31acb55171 | patch success | the same pinned-image checks and eight tests passed and the explicit epoch-nanosecond conversion plus optional result-statistics handling were committed as `474ff3ae5f9203ee0c021cb4ef6cae6243bedacc` |
 
-The execution models now use the pinned official `nautilus_trader.backtest.models` API. The data
-adapter constructs the official Nautilus `Bar` type directly from an owned float64 array, retaining
-source close time as both event and observation time. The runner uses only fields accepted by the
-loaded pinned runtime, and `ReportProvider` now generates orders, fills, positions, and account
-reports from the engine cache after replay. Liquidation equivalence must be diagnosed from every
-realized position path before this candidate can be promoted; the unsupported direct-engine switch
-is not silently claimed as active. Subsequent rows are added only after their exact result is known.
+The execution models use the pinned official `nautilus_trader.backtest.models` API. The data adapter
+constructs the official Nautilus `Bar` type directly from an owned float64 array, converts any pandas
+datetime resolution explicitly to epoch nanoseconds, and retains source close time as both event and
+observation time. Reports are generated with `ReportProvider` from the engine cache. The loaded
+legacy runtime does not expose the direct liquidation switch present in its type stub, so liquidation
+is not silently claimed as active; realized loss and margin paths remain promotion diagnostics.
+Subsequent rows are added only after their exact result is known.
