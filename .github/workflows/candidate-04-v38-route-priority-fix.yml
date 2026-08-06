@@ -1,0 +1,193 @@
+name: candidate-04-v38-route-priority-fix
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v38-route-priority-fix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Make external-liquidity cause mutually exclusive and prior
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path(
+              "research/candidate-04/volume_clock_imbalance_gap_compiler.py"
+          )
+          text = path.read_text()
+          marker = '''def bucket_touches_gap(bucket: v37.VolumeBucket, gap: ImbalanceGap) -> bool:
+'''
+          helper = '''def choose_gap_state(
+    gap: ImbalanceGap,
+    buckets: list[v37.VolumeBucket],
+    thresholds: v37.BucketThresholds,
+) -> GapState | None:
+    """Route exact external-pool failure before generic displacement.
+
+    A reclaimed external pool is an observed failed auction cause, whereas total
+    OI creation alone cannot turn the same event into informed continuation.
+    """
+
+    inverse = inverse_gap_state(gap, buckets, thresholds)
+    if inverse is not None:
+        return inverse
+    return informed_gap_state(gap, buckets, thresholds)
+
+
+'''
+          if 'def choose_gap_state(' not in text:
+              if marker not in text:
+                  raise SystemExit("V38 state helper marker not found")
+              text = text.replace(marker, helper + marker, 1)
+          old = '''        state = informed_gap_state(gap, buckets, thresholds)
+        if state is not None:
+            counts["informed_gap_states"] += 1
+        else:
+            state = inverse_gap_state(gap, buckets, thresholds)
+            if state is not None:
+                counts["inverse_gap_states"] += 1
+'''
+          new = '''        state = choose_gap_state(gap, buckets, thresholds)
+        if state is not None and state.state == "INFORMED_GAP":
+            counts["informed_gap_states"] += 1
+        elif state is not None:
+            counts["inverse_gap_states"] += 1
+'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit("V38 collection route marker not found")
+          path.write_text(text)
+          PY
+
+      - name: Add priority regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path(
+              "research/candidate-04/tests/"
+              "test_volume_clock_imbalance_gap_compiler.py"
+          )
+          text = path.read_text()
+          marker = '''
+
+class ResolutionTests(GapFixture):
+'''
+          test = '''
+
+class RoutePriorityTests(GapFixture):
+    def test_reclaimed_external_pool_precedes_generic_informed_gap(self) -> None:
+        take = candidate.v24.PoolTake(
+            shock_index=7,
+            pool_id=11,
+            pool_side=1,
+            trade_side=-1,
+            level=101.0,
+            extreme=101.6,
+            penetration_atr=0.2,
+            age_bars=40,
+            prominence_atr=0.4,
+            touches=2,
+        )
+        buckets = [
+            self.bucket(
+                0,
+                side=-1,
+                imbalance=-0.4,
+                high=102.0,
+                low=101.2,
+                close=101.5,
+                oi_before=1000.0,
+                oi_end=1002.0,
+            ),
+            self.bucket(
+                1,
+                side=-1,
+                imbalance=-0.7,
+                high=101.6,
+                low=100.5,
+                close=100.8,
+                oi_before=1002.0,
+                oi_end=1010.0,
+                oi_change=0.008,
+                external_takes=(take,),
+            ),
+            self.bucket(
+                2,
+                side=-1,
+                imbalance=-0.5,
+                high=101.0,
+                low=99.5,
+                close=100.0,
+                return_bps=-100.0,
+                directional_return_bps=100.0,
+                oi_before=1010.0,
+                oi_end=1012.0,
+                oi_change=0.002,
+                basis_before=0.5,
+                basis_end=0.0,
+                directional_basis_change_bps=0.5,
+            ),
+        ]
+        gap = candidate.form_gap(buckets, 2, self.data())
+        assert gap is not None
+        # The total three-bucket OI creation can also satisfy informed-gap
+        # conditions, but the exact reclaimed pool supplies the stronger cause.
+        state = candidate.choose_gap_state(
+            gap,
+            buckets,
+            self.thresholds(),
+        )
+        self.assertIsNotNone(state)
+        assert state is not None
+        self.assertEqual(state.state, "INVERSE_GAP_AFTER_EXTERNAL_TAKE")
+        self.assertEqual(state.external_take, take)
+
+'''
+          if 'class RoutePriorityTests' not in text:
+              if marker not in text:
+                  raise SystemExit("V38 test insertion marker not found")
+              text = text.replace(marker, test + marker, 1)
+          path.write_text(text)
+          PY
+          python -m py_compile \
+            research/candidate-04/volume_clock_imbalance_gap_compiler.py \
+            research/candidate-04/tests/test_volume_clock_imbalance_gap_compiler.py
+
+      - name: Commit controlled V38 route fix with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-04/volume_clock_imbalance_gap_compiler.py \
+            research/candidate-04/tests/test_volume_clock_imbalance_gap_compiler.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "prioritize V38 external-pool inverse gap cause"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
