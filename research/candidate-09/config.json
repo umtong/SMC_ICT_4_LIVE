@@ -1,85 +1,63 @@
 {
-  "candidate": "candidate-09-lrae",
-  "candidate_version": "0.1.0",
-  "hypothesis": "A liquidity breach is neutral until aggressive-flow absorption plus reclaim, or directional depletion plus acceptance and held retest, resolves the auction.",
-  "selection": {
-    "seed": 20260806,
-    "population_start_monday": "2023-01-02",
-    "population_end_monday": "2025-12-22",
-    "algorithm": "random.Random(seed).sample(all_Mondays_inclusive, 3)",
-    "selected_before_results": true
-  },
-  "weeks": [
-    {
-      "name": "w1-discovery",
-      "start": "2024-10-14",
-      "days": 7
-    },
-    {
-      "name": "w2-replication",
-      "start": "2024-05-13",
-      "days": 7
-    },
-    {
-      "name": "w3-replication",
-      "start": "2025-01-13",
-      "days": 7
-    }
+  "candidate": "candidate-09",
+  "version": "0.1.0",
+  "hypothesis": "A liquidity breach has no directional meaning until post-breach absorption/reclaim or depletion/acceptance is observed.",
+  "instrument": "BTCUSDT",
+  "venue": "BINANCE_UM_FUTURES",
+  "bar_interval": "1m",
+  "fixed_gate_weeks_utc": [
+    {"name": "week-a", "start": "2022-02-07", "days": 7},
+    {"name": "week-b", "start": "2023-06-12", "days": 7},
+    {"name": "week-c", "start": "2024-10-14", "days": 7}
   ],
-  "symbol": "BTCUSDT",
-  "interval": "1m",
-  "initial_nav": 100000.0,
-  "risk_fraction": 0.03,
-  "default_leverage": 20,
-  "size_increment": 0.001,
-  "effective_fee_rate_per_side": 0.00065,
-  "fee_assumption": {
-    "exchange_taker_fee": 0.0005,
-    "spread_slippage_impact_allowance": 0.00015,
-    "maker_rebate_assumed": false
+  "risk": {
+    "risk_fraction": 0.03,
+    "starting_nav_usdt": 100000.0,
+    "composite_taker_cost_per_fill": 0.00075,
+    "description": "5 bp taker fee plus 2 bp slippage/impact and 0.5 bp funding reserve per fill-equivalent"
   },
-  "week_calendar_days": 7,
-  "nautilus_log_level": "ERROR",
-  "internal_window": 20,
-  "external_window": 360,
-  "level_memory_bars": 2880,
-  "atr_window": 20,
-  "volume_window": 30,
-  "flow_window": 3,
-  "min_history": 120,
-  "pivot_left": 2,
-  "pivot_right": 2,
-  "breach_atr": 0.02,
-  "reclaim_atr": 0.01,
-  "acceptance_atr": 0.1,
-  "min_volume_ratio": 0.85,
-  "flow_threshold": 0.04,
-  "reclaim_opposite_flow_ceiling": 0.2,
-  "min_wick_fraction": 0.26,
-  "displacement_atr": 0.55,
-  "continuation_close_location": 0.66,
-  "classification_bars": 3,
-  "retest_bars": 4,
-  "retest_tolerance_atr": 0.18,
-  "retest_touch_atr": 0.16,
-  "retest_hold_atr": 0.02,
-  "retest_counterflow_tolerance": 0.15,
-  "stop_buffer_atr": 0.1,
-  "min_stop_atr": 0.18,
-  "max_stop_atr": 1.4,
-  "target_separation_atr": 0.2,
-  "min_expected_net_rr": 0.75,
-  "max_hold_bars": 90,
-  "cooldown_bars": 8,
-  "variants": [
-    "base",
-    "no_flow"
-  ],
-  "success_gate": {
-    "minimum_pooled_geometric_daily_growth": 0.01,
-    "minimum_each_week_geometric_daily_growth": 0.01,
+  "structure": {
+    "pivot_left_bars": 5,
+    "pivot_right_bars": 5,
+    "atr_period": 20,
+    "volume_period": 60,
+    "minimum_pivot_prominence_atr": 0.45,
+    "maximum_active_pools_per_side": 24
+  },
+  "breach": {
+    "minimum_breach_atr": 0.06,
+    "reclaim_buffer_atr": 0.02,
+    "acceptance_buffer_atr": 0.10,
+    "acceptance_closes": 2,
+    "timeout_bars": 9,
+    "retest_timeout_bars": 6,
+    "retest_tolerance_atr": 0.12,
+    "stop_buffer_atr": 0.10
+  },
+  "flow": {
+    "directional_imbalance": 0.12,
+    "opposite_confirmation": -0.02,
+    "minimum_volume_ratio": 0.85,
+    "minimum_displacement_atr": 0.30,
+    "absorption_max_progress_atr": 0.12,
+    "absorption_min_wick_atr": 0.20
+  },
+  "trade": {
+    "minimum_net_reward_to_risk": 1.10,
+    "maximum_holding_minutes": 240,
+    "flat_before_utc_midnight_minutes": 5,
+    "cooldown_bars": 5
+  },
+  "gate": {
     "minimum_trades_per_week": 5,
-    "maximum_top3_positive_pnl_concentration": 0.5,
-    "maximum_drawdown": 0.25
+    "minimum_pooled_daily_geometric_return": 0.01,
+    "maximum_single_trade_profit_share": 0.35,
+    "require_all_weeks_positive": true
+  },
+  "long_evaluation": {
+    "run_only_after_gate": true,
+    "start": "2022-01-01",
+    "end_exclusive": "2025-01-01",
+    "success_daily_geometric_return": 0.01
   }
 }

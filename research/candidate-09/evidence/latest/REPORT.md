@@ -1,3 +1,3 @@
-# Candidate 09 controlled execution
+# Candidate 09 repaired identical-contract rerun
 
-**IMPLEMENTATION_ERROR** at `tests`. The frozen weeks and strategy logic were not reinterpreted. Inspect the matching diagnostic log, fix implementation only, and rerun the identical contract.
+**IMPLEMENTATION_ERROR** at `tests`. Strategy thresholds and weeks were unchanged.
