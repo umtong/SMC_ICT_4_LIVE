@@ -29,15 +29,20 @@ jobs:
       - name: Run native NautilusTrader smoke
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
           mkdir -p artifacts/candidate-03/nt-smoke
           chmod -R 0777 artifacts
-          docker pull "$IMAGE"
+          docker pull "$IMAGE" > artifacts/candidate-03/nt-smoke/docker-pull.log 2>&1
           docker run --rm \
             -v "$PWD:/workspace" \
             -w /workspace \
             "$IMAGE" \
-            bash -c 'smc4 doctor && PYTHONPATH=/workspace python scripts/nt_candidate_smoke.py'
+            bash -c 'smc4 doctor && PYTHONPATH=/workspace python scripts/nt_candidate_smoke.py' \
+            > artifacts/candidate-03/nt-smoke/run.log 2>&1
+          status=$?
+          cat artifacts/candidate-03/nt-smoke/run.log
+          printf '%s\n' "$status" > artifacts/candidate-03/nt-smoke/status.txt
+          exit "$status"
       - name: Preserve native evidence
         if: always()
         uses: actions/upload-artifact@v4
