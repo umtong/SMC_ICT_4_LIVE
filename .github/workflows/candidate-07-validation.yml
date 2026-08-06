@@ -67,6 +67,14 @@ jobs:
           --output artifacts/candidate-07
           --data-root .research-data/candidate-07
 
+      - name: Diagnose target-path protection state
+        if: always()
+        run: >-
+          python research/candidate-07/diagnose_progress_lock.py
+          --config research/candidate-07/config.json
+          --output artifacts/candidate-07
+          --data-root .research-data/candidate-07
+
       - name: Print machine-readable results
         if: always()
         run: |
@@ -74,6 +82,7 @@ jobs:
           cat artifacts/candidate-07/pipeline_summary.json
           find artifacts/candidate-07 -name metrics.json -print -exec cat {} \;
           find artifacts/candidate-07 -name excursion_summary.json -print -exec cat {} \;
+          find artifacts/candidate-07 -name progress_lock_summary.json -print -exec cat {} \;
 
       - name: Preserve complete replay evidence
         if: always()
