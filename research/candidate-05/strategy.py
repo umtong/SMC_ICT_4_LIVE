@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Candidate 05 import surface: execute the v12 software protection path."""
+"""Candidate 05 diagnostic import surface: CHoCH flow-filter ablation."""
 from strategy_base import LiquidityResponseConfig
-from strategy_v12 import SoftwareLiquidityProtectionStrategy as LiquidityResponseStrategy
+from strategy_ablation_no_choch_flow import NoChochFlowAblationStrategy as LiquidityResponseStrategy
 
 __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
