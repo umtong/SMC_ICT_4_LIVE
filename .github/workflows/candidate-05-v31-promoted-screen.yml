@@ -1,0 +1,370 @@
+name: candidate-05-v31-promoted-screen
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/v31_impact_resiliency_control.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  promoted-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v31-promoted-screen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and read Week 1 evidence
+        id: week1
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" research/candidate-05/evidence
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v | tee "$ROOT/tests.log"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("research/candidate-05/evidence/v31_impact_resiliency_control.json")
+          state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {
+              "classification": "MISSING_V31_WEEK1_EVIDENCE",
+              "promote_to_weeks_2_3": False,
+          }
+          promote = bool(state.get("promote_to_weeks_2_3", False))
+          Path("/tmp/v31_week1.json").write_text(
+              json.dumps(state, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          with Path("/tmp/v31_week1_outputs.txt").open("w", encoding="utf-8") as f:
+              f.write(f"promote={'true' if promote else 'false'}\n")
+          print(json.dumps({"classification": state.get("classification"), "promote": promote}, indent=2))
+          PY
+          cat /tmp/v31_week1_outputs.txt >> "$GITHUB_OUTPUT"
+
+      - name: Run frozen Weeks 2 and 3 v26 controls
+        if: steps.week1.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v26 import ScenarioValidEntryStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          for spec in \
+            "week-2-baseline 2024-01-13 2024-01-21 2024-01-15 2024-01-21" \
+            "week-3-baseline 2023-09-06 2023-09-14 2023-09-08 2023-09-14"; do
+            set -- $spec
+            name=$1; build_start=$2; build_end=$3; eval_start=$4; eval_end=$5
+            out="$ROOT/$name"; mkdir -p "$out"
+            python research/candidate-05/candidate.py stage \
+              --config research/candidate-05/config.json \
+              --build-start "$build_start" --build-end "$build_end" \
+              --evaluation-start "$eval_start" --evaluation-end "$eval_end" \
+              --cache ".cache/candidate-05-v31-promoted/$name" \
+              --output "$out" | tee "$out/console.json"
+          done
+
+      - name: Run frozen Weeks 2 and 3 v31
+        if: steps.week1.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v31_impact_resiliency_reversal import ImpactResiliencyReversalStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          for spec in \
+            "week-2-v31 2024-01-13 2024-01-21 2024-01-15 2024-01-21" \
+            "week-3-v31 2023-09-06 2023-09-14 2023-09-08 2023-09-14"; do
+            set -- $spec
+            name=$1; build_start=$2; build_end=$3; eval_start=$4; eval_end=$5
+            out="$ROOT/$name"; mkdir -p "$out"
+            python research/candidate-05/candidate.py stage \
+              --config research/candidate-05/config.json \
+              --build-start "$build_start" --build-end "$build_end" \
+              --evaluation-start "$eval_start" --evaluation-end "$eval_end" \
+              --cache ".cache/candidate-05-v31-promoted/$name" \
+              --output "$out" | tee "$out/console.json"
+          done
+
+      - name: Compare all three frozen weeks
+        id: three
+        if: steps.week1.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-v31-promoted-screen")
+          week1 = json.loads(Path("/tmp/v31_week1.json").read_text(encoding="utf-8"))
+
+          def load(name):
+              return json.loads((root / name / "metrics.json").read_text(encoding="utf-8"))
+
+          def valid(m):
+              d = m.get("strategy_diagnostics", {})
+              return (
+                  m.get("engine") == "NautilusTrader BacktestNode"
+                  and m.get("ending_nav", 0.0) > 0.0
+                  and m.get("liquidations", 0) == 0
+                  and d.get("order_rejections", 0) == 0
+                  and d.get("max_simultaneous_entry_intents", 0) <= 1
+                  and d.get("max_open_positions_observed", 0) <= 1
+              )
+
+          baseline = [week1["baseline"], load("week-2-baseline"), load("week-3-baseline")]
+          candidate = [week1["v31"], load("week-2-v31"), load("week-3-v31")]
+          integrity = all(valid(m) for m in baseline[1:] + candidate[1:])
+          baseline_multiple = math.prod(1.0 + float(m["total_return"]) for m in baseline)
+          candidate_multiple = math.prod(1.0 + float(m["total_return"]) for m in candidate)
+          baseline_growth = baseline_multiple ** (1.0 / 21.0) - 1.0
+          candidate_growth = candidate_multiple ** (1.0 / 21.0) - 1.0
+          branch = {"trades": 0, "wins": 0, "net_pnl": 0.0}
+          for key in branch:
+              branch[key] += week1.get("new_branch", {}).get(key, 0)
+          for m in candidate[1:]:
+              item = m.get("scenario_metrics", {}).get("EXTERNAL_IMPACT_RESILIENCY_REVERSAL", {})
+              for key in branch:
+                  branch[key] += item.get(key, 0)
+          promote = (
+              integrity
+              and int(branch["trades"]) > 0
+              and float(branch["net_pnl"]) > 0.0
+              and candidate_growth > baseline_growth
+          )
+          result = {
+              "integrity_pass": integrity,
+              "baseline_multiple": baseline_multiple,
+              "v31_multiple": candidate_multiple,
+              "baseline_geometric_daily_growth": baseline_growth,
+              "v31_geometric_daily_growth": candidate_growth,
+              "new_branch_aggregate": branch,
+              "promote_to_30d": promote,
+          }
+          Path("/tmp/v31_three.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          with Path("/tmp/v31_three_outputs.txt").open("w", encoding="utf-8") as f:
+              f.write(f"promote={'true' if promote else 'false'}\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          cat /tmp/v31_three_outputs.txt >> "$GITHUB_OUTPUT"
+
+      - name: Run continuous 30-day v31
+        if: steps.three.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v31_impact_resiliency_reversal import ImpactResiliencyReversalStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          out="$ROOT/continuous-30d"; mkdir -p "$out"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 --evaluation-end 2024-03-30 \
+            --cache .cache/candidate-05-v31-promoted/continuous-30d \
+            --output "$out" | tee "$out/console.json"
+
+      - name: Decide 91-day eligibility in a separate step
+        id: thirty
+        if: steps.three.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          m = json.loads(
+              Path("artifacts/candidate-05-v31-promoted-screen/continuous-30d/metrics.json").read_text(encoding="utf-8")
+          )
+          d = m.get("strategy_diagnostics", {})
+          checks = {
+              "engine_is_nautilus": m.get("engine") == "NautilusTrader BacktestNode",
+              "positive_nav": m.get("ending_nav", 0.0) > 0.0,
+              "no_liquidation": m.get("liquidations", 0) == 0,
+              "no_order_rejections": d.get("order_rejections", 0) == 0,
+              "single_entry_intent": d.get("max_simultaneous_entry_intents", 0) <= 1,
+              "single_position": d.get("max_open_positions_observed", 0) <= 1,
+              "nautilus_orders": m.get("gate_checks", {}).get("nautilus_orders", False),
+              "nautilus_positions": m.get("gate_checks", {}).get("nautilus_positions", False),
+          }
+          integrity = all(checks.values())
+          growth = float(m.get("geometric_daily_growth", -1.0))
+          promote = integrity and growth >= 0.01
+          result = {
+              "integrity_checks": checks,
+              "integrity_pass": integrity,
+              "geometric_daily_growth": growth,
+              "promote_to_91d": promote,
+          }
+          Path("/tmp/v31_30d.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          with Path("/tmp/v31_30d_outputs.txt").open("w", encoding="utf-8") as f:
+              f.write(f"promote={'true' if promote else 'false'}\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          cat /tmp/v31_30d_outputs.txt >> "$GITHUB_OUTPUT"
+
+      - name: Run continuous 91-day v31
+        if: steps.thirty.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$ROOT/continuous-91d"; mkdir -p "$out"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 --build-end 2024-05-30 \
+            --evaluation-start 2024-03-01 --evaluation-end 2024-05-30 \
+            --cache .cache/candidate-05-v31-promoted/continuous-91d \
+            --output "$out" | tee "$out/console.json"
+
+      - name: Persist the complete promotion decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-v31-promoted-screen")
+          week1 = json.loads(Path("/tmp/v31_week1.json").read_text(encoding="utf-8"))
+          three = json.loads(Path("/tmp/v31_three.json").read_text(encoding="utf-8")) if Path("/tmp/v31_three.json").exists() else None
+          thirty_decision = json.loads(Path("/tmp/v31_30d.json").read_text(encoding="utf-8")) if Path("/tmp/v31_30d.json").exists() else None
+
+          def compact(name):
+              path = root / name / "metrics.json"
+              if not path.exists():
+                  return {"available": False}
+              m = json.loads(path.read_text(encoding="utf-8"))
+              d = m.get("strategy_diagnostics", {})
+              checks = {
+                  "engine_is_nautilus": m.get("engine") == "NautilusTrader BacktestNode",
+                  "positive_nav": m.get("ending_nav", 0.0) > 0.0,
+                  "no_liquidation": m.get("liquidations", 0) == 0,
+                  "no_order_rejections": d.get("order_rejections", 0) == 0,
+                  "single_entry_intent": d.get("max_simultaneous_entry_intents", 0) <= 1,
+                  "single_position": d.get("max_open_positions_observed", 0) <= 1,
+                  "nautilus_orders": m.get("gate_checks", {}).get("nautilus_orders", False),
+                  "nautilus_positions": m.get("gate_checks", {}).get("nautilus_positions", False),
+              }
+              return {
+                  "available": True,
+                  "evaluation_start": m.get("evaluation_start"),
+                  "evaluation_end": m.get("evaluation_end"),
+                  "calendar_days": m.get("calendar_days"),
+                  "starting_nav": m.get("starting_nav"),
+                  "ending_nav": m.get("ending_nav"),
+                  "total_return": m.get("total_return"),
+                  "geometric_daily_growth": m.get("geometric_daily_growth"),
+                  "max_drawdown": m.get("max_drawdown"),
+                  "trades": m.get("trades"),
+                  "wins": m.get("wins"),
+                  "losses": m.get("losses"),
+                  "win_rate": m.get("win_rate"),
+                  "profit_factor": m.get("profit_factor"),
+                  "active_days": m.get("active_days"),
+                  "largest_winner_share": m.get("largest_winner_share"),
+                  "scenario_metrics": m.get("scenario_metrics", {}),
+                  "impact_resiliency_diagnostics": {
+                      key: value for key, value in d.items()
+                      if key.startswith("impact_resiliency_") or key.startswith("external_fvg_")
+                  },
+                  "integrity_checks": checks,
+                  "integrity_pass": all(checks.values()),
+              }
+
+          runs = {
+              name: compact(name)
+              for name in (
+                  "week-2-baseline", "week-3-baseline",
+                  "week-2-v31", "week-3-v31",
+                  "continuous-30d", "continuous-91d",
+              )
+          }
+          long = runs["continuous-91d"]
+          if not week1.get("promote_to_weeks_2_3", False):
+              classification = "STOPPED_AT_WEEK1_" + str(week1.get("classification"))
+          elif not (three or {}).get("promote_to_30d", False):
+              classification = "LOGIC_FAILURE_NOT_REPEATED_ACROSS_THREE_WEEKS"
+          elif not runs["continuous-30d"].get("available") or not runs["continuous-30d"].get("integrity_pass"):
+              classification = "IMPLEMENTATION_OR_EVIDENCE_ERROR_30D"
+          elif float(runs["continuous-30d"]["geometric_daily_growth"]) < 0.01:
+              classification = "LOGIC_FAILURE_BELOW_GOAL_ON_CONTINUOUS_30D"
+          elif not long.get("available") or not long.get("integrity_pass"):
+              classification = "IMPLEMENTATION_OR_EVIDENCE_ERROR_91D"
+          elif float(long["geometric_daily_growth"]) < 0.01:
+              classification = "LOGIC_OR_ROBUSTNESS_FAILURE_ON_91D"
+          elif int(long.get("trades", 0)) < 45:
+              classification = "BTC_91D_GROWTH_PASSED_BUT_TRADES_INSUFFICIENT"
+          elif int(long.get("active_days", 0)) < 30:
+              classification = "BTC_91D_GROWTH_PASSED_BUT_ACTIVE_DAYS_INSUFFICIENT"
+          elif float(long.get("largest_winner_share", 1.0)) > 0.25:
+              classification = "BTC_91D_GROWTH_PASSED_BUT_WIN_CONCENTRATION_TOO_HIGH"
+          else:
+              classification = "BTC_91D_ALPHA_GATE_PASSED"
+
+          result = {
+              "schema": "candidate-05-v31-promoted-screen-v1",
+              "source_commit": "${{ github.sha }}",
+              "workflow_run_id": "${{ github.run_id }}",
+              "classification": classification,
+              "week1_control": week1,
+              "three_week_comparison": three,
+              "continuous_30d_decision": thirty_decision,
+              "runs": runs,
+              "final_btc_alpha_gate": {
+                  "min_geometric_daily_growth": 0.01,
+                  "min_trades": 45,
+                  "min_active_days": 30,
+                  "max_largest_winner_share": 0.25,
+                  "requires_integrity_pass": True,
+              },
+              "next_stage_if_passed": "real one-account four-symbol NautilusTrader competition with one global executable intent or position",
+          }
+          output = Path("research/candidate-05/evidence/v31_promoted_screen.json")
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          git checkout -- research/candidate-05/strategy.py || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-05/evidence/v31_promoted_screen.json
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-05: record v31 promoted screen [skip ci]"
+            git push origin HEAD:research/candidate-05
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v31-promoted-screen-${{ github.sha }}
+          path: artifacts/candidate-05-v31-promoted-screen/**
+          if-no-files-found: warn
+          retention-days: 90
