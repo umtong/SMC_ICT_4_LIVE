@@ -1,0 +1,144 @@
+name: candidate-04-v33-evidence-commit
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v33-evidence-commit.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  persist:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Restore all V33 exact-target evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v33-*
+          path: restored-v33
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31118674955
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Aggregate and classify exact-target correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          from pathlib import Path
+
+          root = Path("restored-v33")
+          records = []
+          aggregate_candidates = []
+          for path in root.rglob("*.json"):
+              try:
+                  item = json.loads(path.read_text())
+              except Exception:
+                  continue
+              if not isinstance(item, dict):
+                  continue
+              if isinstance(item.get("weeks"), dict) and "geometric_daily_growth" in item:
+                  aggregate_candidates.append((path, item))
+              if all(key in item for key in ("trades", "total_return")):
+                  name = (
+                      item.get("week")
+                      or item.get("matrix")
+                      or item.get("stage")
+                      or path.parent.name
+                  )
+                  records.append((str(name), path, item))
+
+          if aggregate_candidates:
+              _, chosen = max(
+                  aggregate_candidates,
+                  key=lambda pair: len(pair[1].get("weeks", {})),
+              )
+              weeks = chosen.get("weeks", {})
+              result = dict(chosen)
+          else:
+              by_name = {}
+              for name, path, item in records:
+                  if "exact" not in str(path).lower() and "v33" not in str(path).lower():
+                      continue
+                  by_name[name] = item
+              if len(by_name) < 7:
+                  # Fall back to the most specific seven unique summaries.
+                  by_name = {}
+                  for name, path, item in sorted(records, key=lambda row: len(str(row[1]))):
+                      by_name.setdefault(name, item)
+              if len(by_name) < 7:
+                  raise SystemExit(f"only {len(by_name)} V33 week summaries found")
+              weeks = dict(list(sorted(by_name.items()))[:7])
+              returns = [float(item["total_return"]) for item in weeks.values()]
+              compounded = math.prod(1.0 + value for value in returns) - 1.0
+              result = {
+                  "candidate": "candidate-04-v33-exact-causal-target",
+                  "engine": "NautilusTrader 1.230.0 BacktestNode",
+                  "calendar_days": 49,
+                  "weeks": weeks,
+                  "all_weeks_positive": all(value > 0.0 for value in returns),
+                  "compounded_return": compounded,
+                  "geometric_daily_growth": (1.0 + compounded) ** (1.0 / 49.0) - 1.0,
+                  "trades": sum(int(item.get("trades") or 0) for item in weeks.values()),
+                  "wins": sum(int(item.get("wins") or 0) for item in weeks.values()),
+              }
+
+          trades = int(result.get("trades") or sum(
+              int(item.get("trades") or 0) for item in weeks.values()
+          ))
+          wins = int(result.get("wins") or sum(
+              int(item.get("wins") or 0) for item in weeks.values()
+          ))
+          daily = float(result.get("geometric_daily_growth") or 0.0)
+          all_positive = bool(result.get("all_weeks_positive"))
+          frequency_sufficient = trades >= 21
+          target_reached = all_positive and daily >= 0.01 and frequency_sufficient
+          evidence = {
+              **result,
+              "candidate": "candidate-04-v33-exact-causal-target",
+              "source_run": 31118674955,
+              "controlled_change": (
+                  "preserve the exact pre-signal causal external-liquidity target; "
+                  "signals, stops, costs, current-NAV 3% sizing and Nautilus execution unchanged"
+              ),
+              "frequency_sufficient": frequency_sufficient,
+              "minimum_aggregate_trades_for_progression": 21,
+              "win_rate": wins / trades if trades else 0.0,
+              "project_development_target_reached": target_reached,
+              "decision": (
+                  "freeze_and_open_unseen_weeks"
+                  if target_reached
+                  else "execution_consistency_correction_only_not_complete_candidate"
+              ),
+              "final_validation_completed": False,
+          }
+          target = Path("research/candidate-04/evidence-v33-exact-causal-target.json")
+          target.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit reproducible V33 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add research/candidate-04/evidence-v33-exact-causal-target.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "record V33 exact causal target evidence"
+          git push origin HEAD:research/candidate-04
