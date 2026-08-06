@@ -28,8 +28,8 @@ jobs:
           mkdir -p artifacts/candidate-05-metrics-probe/raw
           cd artifacts/candidate-05-metrics-probe/raw
           : > checksum_results.txt
-          for day in 07 08 09 10 11 12 13 14 15; do
-            file="BTCUSDT-metrics-2023-07-${day}.zip"
+          for day in 13 14 15 16 17 18 19 20 21; do
+            file="BTCUSDT-metrics-2024-01-${day}.zip"
             base="https://data.binance.vision/data/futures/um/daily/metrics/BTCUSDT/${file}"
             curl --fail --location --silent --show-error "$base" --output "$file"
             curl --fail --location --silent --show-error "$base.CHECKSUM" --output "$file.CHECKSUM"
@@ -43,7 +43,7 @@ jobs:
           import pandas as pd
 
           frames = []
-          source_files = sorted(glob.glob("raw/BTCUSDT-metrics-2023-07-*.zip"))
+          source_files = sorted(glob.glob("raw/BTCUSDT-metrics-2024-01-*.zip"))
           for path in source_files:
               with zipfile.ZipFile(path) as archive:
                   names = archive.namelist()
@@ -65,7 +65,7 @@ jobs:
           expected_rows = 9 * 288
           if len(full) != expected_rows:
               raise RuntimeError(f"expected {expected_rows} rows, got {len(full)}")
-          full.to_csv("metrics-2023-07-07-through-15.csv.gz", index=False, compression="gzip")
+          full.to_csv("metrics-2024-01-13-through-21.csv.gz", index=False, compression="gzip")
           report = {
               "rows": len(full),
               "source_files": source_files,
