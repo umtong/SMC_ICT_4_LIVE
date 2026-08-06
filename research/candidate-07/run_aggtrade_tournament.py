@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Run the frozen Week-1 aggregate-trade structural tournament once.
 
-The checksum-verified data bundle is loaded and reduced a single time.  Candidate
-families are then evaluated in the mandated order:
+The checksum-verified data bundle is loaded and reduced a single time. Candidate
+families are evaluated in the mandated order:
 
 1. fixed fifteen-second impact-resilience baseline;
-2. remove only the OI-release requirement if the baseline is implementation-
-   clean but structurally fails;
-3. only when both fixed-time variants fail, evaluate the independent
-   aggressor-volume-time baseline;
-4. remove only its OI-release requirement after a clean structural failure.
+2. remove only the OI-release requirement after a clean logic failure;
+3. aggressor-volume-time impact-asymmetry baseline;
+4. remove only its OI-release requirement after a clean logic failure;
+5. only if all direct-impact variants fail, require impact -> one-minute MSS,
+   ranked displacement, causal FVG and first episode-bounded FVG retest;
+6. remove only the FVG-retest requirement after a clean logic failure.
 
-No family here creates orders, fills, PnL, cash or NAV.  A structural pass only
+No family here creates orders, fills, PnL, cash or NAV. A structural pass only
 selects a route for immediate NautilusTrader implementation on the same Week-1.
 """
 from __future__ import annotations
@@ -28,12 +29,14 @@ import run_aggtrade_resilience_second_safe as safety  # noqa: F401
 
 import diagnose_aggtrade_resilience as fixed
 import diagnose_aggtrade_volume_time as volume_time
+import diagnose_impact_mss_fvg_paths as mss_fvg_paths
 import diagnose_impact_resilience_1s as impact
 from data_aggtrades_1s import load_aggtrade_1s_bundle
 from diagnose_aggtrade_resilience_v2 import preconsume_before_event_window
 from diagnose_failed_flow import aggregate_flow
 from diagnose_impact_resilience_1s_v2 import attach_causal_context_gap_safe
 from diagnose_session_handoff import _align_positioning
+from model_impact_mss_fvg import ImpactMSSFVGLogic
 from run_aggtrade_resilience_second_safe import (
     deduplicate_contact_pools_event_safe,
 )
@@ -81,12 +84,19 @@ def _write_variant(
     return payload
 
 
+def _logic_payload(logic: object) -> dict[str, Any]:
+    fields = getattr(logic, "__dataclass_fields__")
+    return {name: getattr(logic, name) for name in fields}
+
+
 def run(args: argparse.Namespace) -> int:
     config = json.loads(args.config.read_text(encoding="utf-8"))
     fixed_logic = impact.ImpactLogic()
     fixed_logic.validate()
     volume_logic = volume_time.VolumeTimeLogic()
     volume_logic.validate()
+    mss_fvg_logic = ImpactMSSFVGLogic()
+    mss_fvg_logic.validate()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -178,7 +188,7 @@ def run(args: argparse.Namespace) -> int:
         family="fixed_time_impact_resilience",
         variant="baseline_oi_release",
         period=period,
-        logic={name: getattr(fixed_logic, name) for name in fixed_logic.__dataclass_fields__},
+        logic=_logic_payload(fixed_logic),
         loader_diagnostics=bundle.diagnostics,
         preconsumption=preconsumption,
         result=fixed_baseline_result,
@@ -204,7 +214,7 @@ def run(args: argparse.Namespace) -> int:
             family="fixed_time_impact_resilience",
             variant="ablation_remove_oi_release_only",
             period=period,
-            logic={name: getattr(fixed_logic, name) for name in fixed_logic.__dataclass_fields__},
+            logic=_logic_payload(fixed_logic),
             loader_diagnostics=bundle.diagnostics,
             preconsumption=preconsumption,
             result=fixed_ablation_result,
@@ -214,7 +224,6 @@ def run(args: argparse.Namespace) -> int:
             selected = "fixed_time_ablation_no_oi"
 
     volume_baseline: dict[str, Any] | None = None
-    volume_ablation: dict[str, Any] | None = None
     if selected is None and implementation_clean:
         volume_baseline_result = volume_time.diagnose(
             bars,
@@ -231,7 +240,7 @@ def run(args: argparse.Namespace) -> int:
             family="volume_time_impact_resilience",
             variant="baseline_oi_release",
             period=period,
-            logic={name: getattr(volume_logic, name) for name in volume_logic.__dataclass_fields__},
+            logic=_logic_payload(volume_logic),
             loader_diagnostics=bundle.diagnostics,
             preconsumption={"one_minute": one_pre, "five_minute": five_pre},
             result=volume_baseline_result,
@@ -240,11 +249,7 @@ def run(args: argparse.Namespace) -> int:
         if _gate_passed(volume_baseline):
             selected = "volume_time_baseline"
 
-    if (
-        selected is None
-        and implementation_clean
-        and volume_baseline is not None
-    ):
+    if selected is None and implementation_clean and volume_baseline is not None:
         volume_ablation_result = volume_time.diagnose(
             bars,
             source_pools=five_pools,
@@ -260,7 +265,7 @@ def run(args: argparse.Namespace) -> int:
             family="volume_time_impact_resilience",
             variant="ablation_remove_oi_release_only",
             period=period,
-            logic={name: getattr(volume_logic, name) for name in volume_logic.__dataclass_fields__},
+            logic=_logic_payload(volume_logic),
             loader_diagnostics=bundle.diagnostics,
             preconsumption={"one_minute": one_pre, "five_minute": five_pre},
             result=volume_ablation_result,
@@ -268,6 +273,64 @@ def run(args: argparse.Namespace) -> int:
         records.append(volume_ablation)
         if _gate_passed(volume_ablation):
             selected = "volume_time_ablation_no_oi"
+
+    # Independent successor: preserve the OI-qualified impact event, but wait
+    # for the ICT-style MSS/displacement/FVG sequence and first valid retest.
+    mss_fvg_baseline: dict[str, Any] | None = None
+    if selected is None and implementation_clean:
+        mss_fvg_baseline_result = mss_fvg_paths.evaluate(
+            minute,
+            bars,
+            upstream_scenarios=fixed_baseline_result["scenarios"],
+            target_pools=targets,
+            source_stop_buffer_atr=fixed_logic.stop_buffer_atr,
+            maximum_hold_seconds=int(config["max_hold_minutes"]) * 60,
+            logic=mss_fvg_logic,
+            minimum_rr=fixed_logic.minimum_rr,
+            require_fvg_retest=True,
+        )
+        mss_fvg_baseline = _write_variant(
+            output_dir / "impact_mss_fvg_baseline.json",
+            family="impact_mss_fvg_retest",
+            variant="baseline_first_fvg_retest",
+            period=period,
+            logic=_logic_payload(mss_fvg_logic),
+            loader_diagnostics=bundle.diagnostics,
+            preconsumption=preconsumption,
+            result=mss_fvg_baseline_result,
+        )
+        records.append(mss_fvg_baseline)
+        if _gate_passed(mss_fvg_baseline):
+            selected = "impact_mss_fvg_baseline"
+
+    # One controlled ablation only: keep impact, OI, MSS, ranked displacement,
+    # FVG, stop and target contracts; remove only the requirement to wait for
+    # the FVG first-retest and measure entry at the completed MSS close.
+    if selected is None and implementation_clean and mss_fvg_baseline is not None:
+        mss_fvg_ablation_result = mss_fvg_paths.evaluate(
+            minute,
+            bars,
+            upstream_scenarios=fixed_baseline_result["scenarios"],
+            target_pools=targets,
+            source_stop_buffer_atr=fixed_logic.stop_buffer_atr,
+            maximum_hold_seconds=int(config["max_hold_minutes"]) * 60,
+            logic=mss_fvg_logic,
+            minimum_rr=fixed_logic.minimum_rr,
+            require_fvg_retest=False,
+        )
+        mss_fvg_ablation = _write_variant(
+            output_dir / "impact_mss_fvg_ablation_no_retest.json",
+            family="impact_mss_fvg_retest",
+            variant="ablation_remove_fvg_retest_only",
+            period=period,
+            logic=_logic_payload(mss_fvg_logic),
+            loader_diagnostics=bundle.diagnostics,
+            preconsumption=preconsumption,
+            result=mss_fvg_ablation_result,
+        )
+        records.append(mss_fvg_ablation)
+        if _gate_passed(mss_fvg_ablation):
+            selected = "impact_mss_fvg_ablation_no_retest"
 
     compact = [
         {
@@ -309,7 +372,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", type=date.fromisoformat, required=True)
     parser.add_argument("--end", type=date.fromisoformat, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--data-root", type=Path, default=Path(".research-data/candidate-07"))
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=Path(".research-data/candidate-07"),
+    )
     parser.add_argument("--event-warmup-days", type=int, default=1)
     parser.add_argument("--source-commit", default=None)
     return parser
