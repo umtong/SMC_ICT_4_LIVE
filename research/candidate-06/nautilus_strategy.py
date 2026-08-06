@@ -64,6 +64,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from displacement_rebalance_engine import FiveMinuteDisplacementRebalanceEngine
 
         return FiveMinuteDisplacementRebalanceEngine(logic_params)
+    if name == "ACCEPTED_EXPANSION_PULLBACK":
+        from accepted_expansion_engine import AcceptedExpansionPullbackEngine
+
+        return AcceptedExpansionPullbackEngine(logic_params)
     if name == "MULTI_TIMESCALE_LIQUIDITY_RELAY":
         from composite_engine import MultiTimescaleLiquidityRelayEngine
 
