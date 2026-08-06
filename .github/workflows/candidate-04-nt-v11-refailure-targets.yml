@@ -1,0 +1,81 @@
+name: candidate-04-nt-v11-refailure-targets
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-nt-v11-refailure-targets.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify NautilusTrader runtime and frozen dual-risk state logic
+        run: |
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/nt_liquidity_strategy.py \
+            research/candidate-04/nt_auction_excess_strategy.py \
+            research/candidate-04/nt_auction_failure_strategy.py \
+            research/candidate-04/nt_dual_risk_auction_strategy.py \
+            research/candidate-04/nt_backtest.py \
+            research/candidate-04/nt_backtest_v11_refailure_targets.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_liquidity_strategy.py' -v
+
+      - name: Control only second-order refailure exits on the first BTC week
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in measured fixed08 fixed10 fixed12; do
+            out="artifacts/candidate-04-nt-v11-refailure/${mode}"
+            mkdir -p "$out"
+            C04_REFAILURE_TARGET_MODE="$mode" \
+            python research/candidate-04/nt_backtest_v11_refailure_targets.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start 2023-10-01 \
+              --build-end 2023-10-09 \
+              --evaluation-start 2023-10-03 \
+              --evaluation-end 2023-10-09 \
+              --cache .cache/candidate-04-nt-v11-refailure/raw \
+              --output "$out" \
+              | tee "$out/console.json"
+            test -s "$out/metrics.json"
+            test -s "$out/run.json"
+            test -s "$out/orders.csv"
+            test -s "$out/positions.csv"
+            test -s "$out/account.csv"
+            test -s "$out/equity.csv"
+          done
+
+      - name: Print refailure target-control results
+        if: always()
+        run: |
+          for path in artifacts/candidate-04-nt-v11-refailure/*/metrics.json; do
+            if test -f "$path"; then
+              echo "=== $path ==="
+              python -m json.tool "$path"
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-nt-v11-refailure-${{ github.sha }}
+          path: artifacts/candidate-04-nt-v11-refailure
+          if-no-files-found: warn
+          retention-days: 90
