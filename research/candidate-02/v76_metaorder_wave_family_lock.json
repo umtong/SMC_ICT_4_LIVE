@@ -1,0 +1,78 @@
+{
+  "candidate_family": "candidate-02-v76-quarter-hour-metaorder-wave",
+  "status": "LOCKED_CONTROL_ON_REVEALED_V75_FIRST_WEEK_BEFORE_NAUTILUSTRADER_RUN",
+  "locked_utc": "2026-08-06T07:25:00Z",
+  "performance_engine": "NautilusTrader 1.230.0 only via existing candidate-02 run_window architecture",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "development_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2024-09-16T00:00:00Z",
+    "end_utc": "2024-09-23T00:00:00Z",
+    "status": "REVEALED_BY_V75_AND_USED_ONLY_FOR_CONTROLLED_REDESIGN"
+  },
+  "failure_diagnosis": {
+    "v75": "requiring the opening shock to have already broken the immediately prior 15-minute boundary selected only one or two overextended events per mode and every executed event lost",
+    "event_funnel": "43 strong opening shocks existed; 10 had aligned remaining-50-second flow and front-side depth withdrawal; their directional completed-close return remained positive across 30-240 minutes",
+    "controlled_change": "remove the already-broken-boundary requirement and trade the continuing child-order wave only when the rest of the opening minute remains aligned and front-side depth is withdrawn"
+  },
+  "market_logic": {
+    "state": "a synchronized quarter-hour aggressive opening shock with continuing rest-of-minute flow and withdrawal of liquidity in front of the shock",
+    "scenario": "the shock is a continuing execution wave, not a terminal sweep; the previous accepted close range measures the auction scale",
+    "confirmation": "the containing opening minute completes with price and flow still aligned",
+    "entry": "market at completed opening-minute observation",
+    "invalidation": "one previous accepted close-range adverse traversal from entry",
+    "target": "one or 1.25 previous accepted close-range continuation from entry"
+  },
+  "structural_variants": [
+    {
+      "label": "15m_1x",
+      "accepted_range_minutes": 15,
+      "target_range_multiple": 1.0,
+      "stop_range_multiple": 1.0
+    },
+    {
+      "label": "30m_1x",
+      "accepted_range_minutes": 30,
+      "target_range_multiple": 1.0,
+      "stop_range_multiple": 1.0
+    },
+    {
+      "label": "30m_1p25",
+      "accepted_range_minutes": 30,
+      "target_range_multiple": 1.25,
+      "stop_range_multiple": 1.0
+    },
+    {
+      "label": "60m_1x",
+      "accepted_range_minutes": 60,
+      "target_range_multiple": 1.0,
+      "stop_range_multiple": 1.0
+    }
+  ],
+  "fixed_risk": {
+    "starting_nav_usdt": "100000",
+    "risk_fraction": "0.03",
+    "quantity_rule": "current NautilusTrader account NAV times 3% divided by expected per-unit loss including entry and stop fees, slippage, impact and funding",
+    "maximum_notional_cap": null,
+    "score_risk_multiplier": null
+  },
+  "fixed_costs": {
+    "entry_fee_rate": "0.00050",
+    "target_fee_rate": "0.00020",
+    "stop_fee_rate": "0.00050",
+    "entry_slippage_rate": "0.00015",
+    "stop_slippage_rate": "0.00025",
+    "market_impact_rate": "0.00005",
+    "funding_rate_allowance": "0.00010"
+  },
+  "first_week_gate": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.5,
+    "minimum_profit_factor": 1.5,
+    "minimum_geometric_daily_growth": 0.01,
+    "maximum_drawdown": 0.25
+  },
+  "promotion_rule": "Only a variant satisfying every gate can be frozen unchanged before a new second BTC week is selected. No result from this revealed development week is a holdout result."
+}
