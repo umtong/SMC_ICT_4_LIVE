@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 jobs:
-  btc-week-1-mark-index-overshoot:
+  btc-week-1-mark-index-overshoot-ablation:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -47,27 +47,69 @@ jobs:
             candidate-07-positioning-week1-v1
             candidate-07-flow-week1-v1
 
-      - name: Re-run identical BTC Week-1 with int64-safe pivot times
+      - name: Reproduce int64-safe baseline
         run: >-
           python research/candidate-07/diagnose_mark_index_overshoot_5m_int64.py
           --config research/candidate-07/config.json
           --stage week-1
           --start 2025-12-22
           --end 2025-12-29
-          --output artifacts/candidate-07/week-1/mark_index_overshoot_5m.json
+          --output artifacts/candidate-07/week-1/mark_index_overshoot_baseline.json
           --data-root .research-data/candidate-07
 
-      - name: Print machine-readable diagnosis
+      - name: Remove contact mark-penetration condition only
+        run: >-
+          python research/candidate-07/diagnose_mark_index_overshoot_5m_ablation.py
+          --config research/candidate-07/config.json
+          --stage week-1-ablation
+          --start 2025-12-22
+          --end 2025-12-29
+          --output artifacts/candidate-07/week-1/mark_index_overshoot_ablation.json
+          --data-root .research-data/candidate-07
+
+      - name: Build controlled comparison
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('artifacts/candidate-07/week-1')
+          baseline = json.loads((root / 'mark_index_overshoot_baseline.json').read_text())
+          ablation = json.loads((root / 'mark_index_overshoot_ablation.json').read_text())
+          comparison = {
+              'candidate': 'candidate-07',
+              'stage': 'week-1-ablation',
+              'ablation': 'REMOVE_MARK_PENETRATION_AT_CONTACT',
+              'controlled_variables': {
+                  'period': baseline['period'],
+                  'data_contract': baseline['data_contract'],
+                  'logic': baseline['logic'],
+                  'changed_variable': 'contact mark-price penetration ratio only',
+                  'mark_reclaim_confirmation_retained': True,
+                  'orders_or_pnl': False,
+              },
+              'baseline_summary': baseline['summary'],
+              'ablation_summary': ablation['summary'],
+          }
+          (root / 'mark_index_overshoot_ablation_comparison.json').write_text(
+              json.dumps(comparison, indent=2, sort_keys=True) + '\n'
+          )
+          PY
+
+      - name: Print controlled comparison
         if: always()
         run: |
-          test -f artifacts/candidate-07/week-1/mark_index_overshoot_5m.json
-          cat artifacts/candidate-07/week-1/mark_index_overshoot_5m.json
+          test -f artifacts/candidate-07/week-1/mark_index_overshoot_baseline.json
+          test -f artifacts/candidate-07/week-1/mark_index_overshoot_ablation.json
+          test -f artifacts/candidate-07/week-1/mark_index_overshoot_ablation_comparison.json
+          cat artifacts/candidate-07/week-1/mark_index_overshoot_baseline.json
+          cat artifacts/candidate-07/week-1/mark_index_overshoot_ablation.json
+          cat artifacts/candidate-07/week-1/mark_index_overshoot_ablation_comparison.json
 
       - name: Preserve controlled evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-mark-index-overshoot-week1-${{ github.sha }}
+          name: candidate-07-mark-index-overshoot-ablation-${{ github.sha }}
           path: artifacts/candidate-07/week-1
           retention-days: 14
           if-no-files-found: error
