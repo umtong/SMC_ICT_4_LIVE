@@ -8,13 +8,27 @@ from nt_lvcfr_data import CandidateConfig
 
 class StructuralRatchetContractTests(unittest.TestCase):
     def test_patch_anchors_first_stop_at_structural_level(self) -> None:
-        source = Path(__file__).with_name("apply_nt_lvcfr_v8_strategy_patch.py").read_text(
+        # The patch workflow applies the V8 edit before running this test.
+        # Inspect the resulting native strategy rather than the idempotent patch
+        # source, which intentionally contains the old block as replacement input.
+        source = Path(__file__).with_name("nt_lvcfr_strategy.py").read_text(
             encoding="utf-8"
         )
         self.assertIn("max(active.stop, structural_trigger)", source)
         self.assertIn("min(active.stop, structural_trigger)", source)
-        self.assertIn("AFTER_COST_BREAK_EVEN_TRADED_AFTER_FIRST_OBJECTIVE", source)
-        self.assertNotIn("active.stop = (\n                max(active.stop, active.break_even_price)", source)
+        self.assertIn(
+            "FIRST_CAUSAL_LIQUIDITY_OBJECTIVE_BECAME_INVALIDATION",
+            source,
+        )
+        self.assertIn(
+            "AFTER_COST_BREAK_EVEN_TRADED_AFTER_FIRST_OBJECTIVE",
+            source,
+        )
+        self.assertIn("structural_break_even_ratchets", source)
+        self.assertIn(
+            "active.direction * (executable - structural_trigger) > 0.0",
+            source,
+        )
 
     def test_v8_changes_no_detector_or_risk_configuration(self) -> None:
         config = CandidateConfig.load(Path(__file__).with_name("nt_lvcfr_v8_config.json"))
