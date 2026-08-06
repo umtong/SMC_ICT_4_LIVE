@@ -1,4 +1,4 @@
-name: candidate-03-oneshot-funding-query-probe
+name: candidate-03-install-oneshot-mixed-loader
 
 on:
   push:
@@ -7,83 +7,48 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  packages: read
+  contents: write
 
 jobs:
-  probe:
+  patch:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compare legacy catalog query modes for funding
+          fetch-depth: 0
+      - name: Use BacktestNode one-shot mixed catalog loader
         shell: bash
         run: |
           set -euo pipefail
-          IMAGE=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-          out=artifacts/candidate-03/query-probe
-          mkdir -p "$out" && chmod -R 0777 artifacts
-          docker pull "$IMAGE"
-          docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" bash -c '
-            python - <<"PY"
-          import inspect
-          import pathlib
-          import tempfile
-          import traceback
-          from decimal import Decimal
-          from nautilus_trader.model.data import FundingRateUpdate
-          from nautilus_trader.model.identifiers import InstrumentId
-          from nautilus_trader.persistence.catalog import ParquetDataCatalog
+          python - <<'PY'
+          from pathlib import Path
 
-          out = pathlib.Path("/workspace/artifacts/candidate-03/query-probe")
-          lines = []
-          def emit(value=""):
-              text = str(value)
-              lines.append(text)
-              print(text)
+          path = Path('research/candidate-03/run_nt_lvcfr.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''        chunk_size=1_000_000,\n'''
+          new = '''        # NT 1.230 streaming uses a Rust-only DataBackendSession which\n        # misclassifies legacy FundingRateUpdate as custom data. One-shot\n        # BacktestNode instead dispatches QuoteTick to the Rust query and\n        # FundingRateUpdate to its registered PyArrow codec, sorts the mixed\n        # stream, and still executes the same native BacktestEngine.\n        chunk_size=None,\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one chunk_size target, found {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
 
-          temp = tempfile.mkdtemp(prefix="nt-query-probe-")
-          catalog = ParquetDataCatalog(temp)
-          instrument_id = InstrumentId.from_str("BTCUSDT-PERP.BINANCE")
-          item = FundingRateUpdate(instrument_id, Decimal("0.0001"), 1, 1, interval=480, next_funding_ns=2)
-          catalog.write_data([item])
-
-          for flag in (False, True):
-              try:
-                  result = catalog.query(
-                      data_cls=FundingRateUpdate,
-                      identifiers=[instrument_id],
-                      optimize_file_loading=flag,
-                  )
-                  emit("query optimize_file_loading=" + str(flag) + " SUCCESS " + repr(result))
-              except Exception as exc:
-                  emit("query optimize_file_loading=" + str(flag) + " FAILED " + type(exc).__name__ + ": " + str(exc))
-                  emit(traceback.format_exc())
-
-          for name in ("query", "query_rust", "_query_subclasses"):
-              target = getattr(ParquetDataCatalog, name, None)
-              emit("--- SOURCE " + name + " ---")
-              try:
-                  emit(inspect.getsource(target))
-              except Exception as exc:
-                  emit("SOURCE_ERROR " + type(exc).__name__ + ": " + str(exc))
-
-          parquet_path = pathlib.Path(inspect.getfile(ParquetDataCatalog))
-          emit("PARQUET_PATH " + str(parquet_path))
-          if parquet_path.exists():
-              (out / "parquet.py").write_text(parquet_path.read_text(encoding="utf-8"), encoding="utf-8")
-          (out / "probe.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          test_path = Path('research/candidate-03/test_nt_lvcfr.py')
+          tests = test_path.read_text(encoding='utf-8')
+          marker = '''class ConfigTests(unittest.TestCase):\n'''
+          replacement = '''class ConfigTests(unittest.TestCase):\n    def test_backtest_node_uses_funding_compatible_oneshot_loader(self) -> None:\n        source = Path(__file__).with_name("run_nt_lvcfr.py").read_text(encoding="utf-8")\n        self.assertIn("chunk_size=None", source)\n        self.assertNotIn("chunk_size=1_000_000", source)\n\n'''
+          if tests.count(marker) != 1:
+              raise SystemExit(f'expected one ConfigTests marker, found {tests.count(marker)}')
+          test_path.write_text(tests.replace(marker, replacement), encoding='utf-8')
           PY
-          '
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: candidate-03-query-probe-${{ github.sha }}
-          path: artifacts/candidate-03/query-probe
-          if-no-files-found: error
-          retention-days: 3
+
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:research/candidate-03 \
+            python research/candidate-03/test_nt_lvcfr.py
+          PYTHONPYCACHEPREFIX=/tmp/candidate-03-pycache \
+            python -m compileall -q research/candidate-03 src/smc_ict_4
+
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add research/candidate-03/run_nt_lvcfr.py research/candidate-03/test_nt_lvcfr.py
+          git commit -m "candidate-03: use funding-compatible BacktestNode loader"
+          git push origin HEAD:research/candidate-03
