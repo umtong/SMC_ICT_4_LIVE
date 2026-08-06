@@ -69,6 +69,7 @@ def load_binance_bars(start: date, end_inclusive: date, data_dir: Path) -> tuple
                 raise RuntimeError(f"unexpected members in {name}: {members}")
             with archive.open(members[0]) as stream:
                 frame = pd.read_csv(stream, header=None, names=COLUMNS)
+        frame = frame[pd.to_numeric(frame["open_time"], errors="coerce").notna()].reset_index(drop=True)
         if len(frame) not in (1439, 1440, 1441):
             raise RuntimeError(f"unexpected row count {len(frame)} for {name}")
         frames.append(frame)
