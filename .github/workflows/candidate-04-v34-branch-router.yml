@@ -1,0 +1,146 @@
+name: candidate-04-v34-branch-router
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/evidence-v34-post-event-inventory-resolution.json"
+      - "research/candidate-04/evidence-v34-implementation-recovery.json"
+      - ".github/workflows/candidate-04-v34-branch-router.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Select newest meaningful V34 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          paths = [
+              Path("research/candidate-04/evidence-v34-post-event-inventory-resolution.json"),
+              Path("research/candidate-04/evidence-v34-implementation-recovery.json"),
+          ]
+          values = []
+          for path in paths:
+              if not path.exists():
+                  continue
+              try:
+                  value = json.loads(path.read_text())
+              except Exception:
+                  continue
+              if not isinstance(value, dict):
+                  continue
+              score = (
+                  int(value.get("executed", True)),
+                  int("weeks" in value or "final_validation_completed" in value),
+                  path.stat().st_mtime_ns,
+              )
+              values.append((score, path, value))
+          if not values:
+              raise SystemExit("no V34 evidence available")
+          _, path, value = max(values, key=lambda item: item[0])
+          Path("selected-v34-evidence.json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n"
+          )
+          Path("selected-v34-path.txt").write_text(str(path) + "\n")
+          PY
+
+      - name: Build branch-safe V34 route decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          fallback="$(git rev-parse HEAD)"
+          python research/candidate-04/route_candidate_evidence.py \
+            --evidence selected-v34-evidence.json \
+            --fallback-source "$fallback" \
+            --output v34-route.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          route = json.loads(Path("v34-route.json").read_text())
+          selected = json.loads(Path("selected-v34-evidence.json").read_text())
+          action = route["action"]
+          source_commit = route["source_commit"]
+          survivors = route["survivors"]
+          if action == "project_target_reached":
+              pending = False
+              terminal = False
+          elif action == "same_week_implementation_recovery":
+              pending = False
+              terminal = False
+          elif action in {
+              "cross_develop_single_survivor",
+              "cross_develop_all_survivors",
+              "full_candidate_progression_pending_or_completed",
+          }:
+              pending = True
+              terminal = False
+          else:
+              pending = False
+              terminal = True
+          compiler = (
+              "post_event_inventory_resolution_compiler_v2.py"
+              if "implementation" in str(selected.get("stage", "")).lower()
+              or "recovery" in str(selected.get("stage", "")).lower()
+              else "post_event_inventory_resolution_compiler.py"
+          )
+          evidence = {
+              "candidate": "candidate-04-v34-post-event-inventory-resolution",
+              "family": "v34",
+              "compiler": compiler,
+              "source_commit": source_commit,
+              "action": action,
+              "survivors": survivors,
+              "validation_pending": pending,
+              "economic_path_terminal": terminal,
+              "project_target_reached": route["project_target_reached"],
+              "implementation_failure": route["implementation_failure"],
+              "selected_source_evidence": Path("selected-v34-path.txt").read_text().strip(),
+              "route_details": route,
+          }
+          Path(
+              "research/candidate-04/evidence-v34-survivor-followup.json"
+          ).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          if route["project_target_reached"]:
+              Path("research/candidate-04/evidence-v34-long.json").write_text(
+                  json.dumps(selected, indent=2, sort_keys=True) + "\n"
+              )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit V34 route evidence with rebase retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-04/evidence-v34-survivor-followup.json \
+            research/candidate-04/evidence-v34-long.json \
+            2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "route V34 evidence into controlled next stage"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
