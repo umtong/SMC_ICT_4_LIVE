@@ -1,0 +1,217 @@
+name: candidate-05-master-winner-control-audit
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/evidence/master_research_continuation.json"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-master-winner-control-audit
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-master-winner-control-audit
+      SUMMARY: research/candidate-05/evidence/master_winner_control_audit.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve whether the master winner needs an exact long-period control
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT" research/candidate-05/evidence
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("research/candidate-05/evidence/master_research_continuation.json")
+          master = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {
+              "classification": "MISSING_MASTER_EVIDENCE",
+              "winner": None,
+          }
+          winner = master.get("winner")
+          specs = {
+              "strategy_v29b_external_displacement_fvg:ExternalDisplacementFvgStrategyV2": {
+                  "name": "v29b_external_displacement_fvg",
+                  "module": "strategy_v29b_external_displacement_fvg",
+                  "class": "ExternalDisplacementFvgStrategyV2",
+                  "branch": "EXTERNAL_DISPLACEMENT_FVG_RETEST",
+              },
+              "strategy_v30_external_acceptance_retest:ExternalAcceptanceFirstRetestStrategy": {
+                  "name": "v30_external_acceptance_retest",
+                  "module": "strategy_v30_external_acceptance_retest",
+                  "class": "ExternalAcceptanceFirstRetestStrategy",
+                  "branch": "EXTERNAL_ACCEPTANCE_FIRST_RETEST",
+              },
+              "strategy_v31_impact_resiliency_reversal:ImpactResiliencyReversalStrategy": {
+                  "name": "v31_impact_resiliency_reversal",
+                  "module": "strategy_v31_impact_resiliency_reversal",
+                  "class": "ImpactResiliencyReversalStrategy",
+                  "branch": "EXTERNAL_IMPACT_RESILIENCY_REVERSAL",
+              },
+          }
+          spec = specs.get(winner)
+          required = spec is not None
+          decision = {
+              "master_classification": master.get("classification"),
+              "master_winner": winner,
+              "audit_required": required,
+              "audit_spec": spec,
+          }
+          Path("/tmp/winner_audit_selection.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          with Path("/tmp/winner_audit_outputs.txt").open("w", encoding="utf-8") as f:
+              f.write(f"required={'true' if required else 'false'}\n")
+              if spec:
+                  for key, value in spec.items():
+                      f.write(f"{key}={value}\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          cat /tmp/winner_audit_outputs.txt >> "$GITHUB_OUTPUT"
+
+      - name: Verify fixed environment and contracts
+        id: verify
+        if: steps.select.outputs.required == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/verification_status.txt"
+          echo "valid=$([[ $status -eq 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Rerun the selected winner against v26 at every frozen stage
+        id: audit
+        if: steps.select.outputs.required == 'true' && steps.verify.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          python research/candidate-05/controlled_candidate_research.py \
+            --name "${{ steps.select.outputs.name }}" \
+            --strategy-module "${{ steps.select.outputs.module }}" \
+            --strategy-class "${{ steps.select.outputs.class }}" \
+            --branch "${{ steps.select.outputs.branch }}" \
+            --output "$ROOT/runs" \
+            --cache .cache/candidate-05-master-winner-control-audit \
+            --summary "$SUMMARY" \
+            2>&1 | tee "$ROOT/audit_console.log"
+          status=${PIPESTATUS[0]}
+          echo "exit_code=$status" > "$ROOT/audit_status.txt"
+          exit "$status"
+
+      - name: Persist explicit audit outcome
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-master-winner-control-audit")
+          summary_path = Path("research/candidate-05/evidence/master_winner_control_audit.json")
+          selection = json.loads(Path("/tmp/winner_audit_selection.json").read_text(encoding="utf-8"))
+          verification = (root / "verification_status.txt").read_text(encoding="utf-8").strip() if (root / "verification_status.txt").exists() else "not_run"
+          audit_status = (root / "audit_status.txt").read_text(encoding="utf-8").strip() if (root / "audit_status.txt").exists() else "not_run"
+          verification_tail = (root / "verification.log").read_text(encoding="utf-8", errors="replace").splitlines()[-220:] if (root / "verification.log").exists() else []
+          audit_tail = (root / "audit_console.log").read_text(encoding="utf-8", errors="replace").splitlines()[-260:] if (root / "audit_console.log").exists() else []
+
+          if summary_path.exists():
+              result = json.loads(summary_path.read_text(encoding="utf-8"))
+              result["selection"] = selection
+              result["verification_status"] = verification
+              result["audit_process_status"] = audit_status
+              result["master_winner_validated"] = result.get("classification") == "BTC_91D_ALPHA_GATE_PASSED"
+              if not result["master_winner_validated"]:
+                  result["master_winner_invalidated"] = selection.get("master_winner")
+          elif not selection.get("audit_required", False):
+              result = {
+                  "schema": "candidate-05-master-winner-control-audit-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "AUDIT_NOT_REQUIRED_NO_INCREMENTAL_MASTER_WINNER",
+                  "selection": selection,
+                  "master_winner_validated": False,
+                  "verification_status": verification,
+                  "audit_process_status": audit_status,
+              }
+          elif verification != "exit_code=0":
+              result = {
+                  "schema": "candidate-05-master-winner-control-audit-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_STATIC_OR_CONTRACT",
+                  "selection": selection,
+                  "master_winner_validated": False,
+                  "verification_status": verification,
+                  "verification_log_tail": verification_tail,
+                  "audit_process_status": audit_status,
+              }
+          else:
+              result = {
+                  "schema": "candidate-05-master-winner-control-audit-v1",
+                  "source_commit": "${{ github.sha }}",
+                  "workflow_run_id": "${{ github.run_id }}",
+                  "classification": "IMPLEMENTATION_ERROR_WINNER_CONTROL_AUDIT_RUNTIME",
+                  "selection": selection,
+                  "master_winner_validated": False,
+                  "verification_status": verification,
+                  "audit_process_status": audit_status,
+                  "audit_log_tail": audit_tail,
+              }
+          summary_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          git checkout -- research/candidate-05/strategy.py || true
+          test -s "$SUMMARY"
+
+      - name: Commit conflict-resistant audit evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$SUMMARY"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-05: audit master winner against long controls [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-05
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            sleep $((attempt * 5))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.select.outputs.required == 'true'
+        with:
+          name: candidate-05-master-winner-control-audit-${{ github.sha }}
+          path: artifacts/candidate-05-master-winner-control-audit/**
+          if-no-files-found: warn
+          retention-days: 90
