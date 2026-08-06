@@ -1,0 +1,92 @@
+name: candidate-04-v18c-probe-audit
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v18c-probe-audit.yml"
+      - "research/candidate-04/nt_v18c_event_outcome_audit.py"
+      - "research/candidate-04/nt_v18c_event_outcome_audit_v2.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify runtime and audit code
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/nt_backtest_v18c_regime_diagnostic.py \
+            research/candidate-04/nt_v18c_event_outcome_audit.py \
+            research/candidate-04/nt_v18c_event_outcome_audit_v2.py
+
+      - name: Replay frozen V18c and audit all rejection probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for week in week1 week2; do
+            out="artifacts/candidate-04-v18c-probe-audit/$week"
+            mkdir -p "$out"
+            if [ "$week" = week1 ]; then
+              build_start=2023-10-01
+              build_end=2023-10-09
+              eval_start=2023-10-03
+              eval_end=2023-10-09
+            else
+              build_start=2023-06-24
+              build_end=2023-07-02
+              eval_start=2023-06-26
+              eval_end=2023-07-02
+            fi
+            python research/candidate-04/nt_backtest_v18c_regime_diagnostic.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start "$build_start" \
+              --build-end "$build_end" \
+              --evaluation-start "$eval_start" \
+              --evaluation-end "$eval_end" \
+              --cache ".cache/candidate-04-v18c-probe-audit/$week" \
+              --output "$out/replay" \
+              > "$out/replay_console.json"
+            python research/candidate-04/nt_v18c_event_outcome_audit_v2.py \
+              --events "$out/replay/strategy_events.json" \
+              --cache ".cache/candidate-04-v18c-probe-audit/$week" \
+              --build-start "$build_start" \
+              --build-end "$build_end" \
+              --output "$out/probe_audit" \
+              | tee "$out/probe_audit_console.json"
+            test -s "$out/probe_audit/probe_outcomes.csv"
+            test -s "$out/probe_audit/summary.json"
+          done
+
+      - name: Print summaries
+        if: always()
+        shell: bash
+        run: |
+          for path in artifacts/candidate-04-v18c-probe-audit/*/probe_audit/summary.json; do
+            test -f "$path" || continue
+            echo "=== $path ==="
+            python -m json.tool "$path"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v18c-probe-audit-${{ github.sha }}
+          path: artifacts/candidate-04-v18c-probe-audit
+          if-no-files-found: error
+          retention-days: 90
