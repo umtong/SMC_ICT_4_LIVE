@@ -7,8 +7,9 @@ The protocol is fixed before performance evidence:
 3. after a clean base logic failure, permit at most one predeclared family diagnostic;
 4. never promote a diagnostic result directly; it may only support rebuilding a new base.
 
-Implementation failures return nonzero. Clean economic failures and discard decisions return zero
-after evidence is written, so CI status does not mislabel a valid negative experiment as broken code.
+Implementation and evidence-contract failures return nonzero. Clean economic failures and discard
+decisions return zero after evidence is written, so CI status does not mislabel a valid negative
+experiment as broken code or broken code as an economic result.
 """
 
 from __future__ import annotations
@@ -37,6 +38,12 @@ PROTOCOL_REVISION = "FLOW_RESPONSE_STAGED_VALIDATION_V1"
 FIRST_NAME = "first-v1"
 SCREEN_NAME = "screen-v1"
 BASE_MODE = "both"
+_BASE_EVIDENCE_SUITE_CHECKS = (
+    "complete_auction_scenario_attribution",
+    "complete_post_run_trade_path_diagnostics",
+    "base_contract_includes_both_auction_families",
+    "base_contract_includes_both_flow_response_families",
+)
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -73,6 +80,9 @@ def _summary_ref(path: Path) -> dict[str, Any] | None:
             summary.get("combined_daily_geometric_growth", 0.0)
         ),
         "scenario_family_results": summary.get("scenario_family_results", {}),
+        "trade_path_diagnostic_summary": summary.get(
+            "trade_path_diagnostic_summary", {}
+        ),
     }
 
 
@@ -99,6 +109,8 @@ def validate_base_summary(
     *,
     expected_suite: str,
 ) -> tuple[str, ...]:
+    """Return only implementation/evidence errors, never economic gate failures."""
+
     errors: list[str] = []
     if str(summary.get("suite")) != expected_suite:
         errors.append("SUITE_NOT_EXACT")
@@ -119,8 +131,8 @@ def validate_base_summary(
     if not bool(summary.get("scenario_attribution_passed", False)):
         errors.append("SCENARIO_ATTRIBUTION_INCOMPLETE")
 
-    checks = summary.get("scenario_attribution_checks", {})
-    if not isinstance(checks, Mapping):
+    attribution_checks = summary.get("scenario_attribution_checks", {})
+    if not isinstance(attribution_checks, Mapping):
         errors.append("SCENARIO_ATTRIBUTION_CHECKS_MISSING")
     else:
         for key in (
@@ -129,8 +141,16 @@ def validate_base_summary(
             "no_unclassified_signals",
             "no_unclassified_closed_trades",
         ):
-            if checks.get(key) is not True:
+            if attribution_checks.get(key) is not True:
                 errors.append(f"ATTRIBUTION_{key.upper()}_FAILED")
+
+    suite_checks = summary.get("suite_gate_checks", {})
+    if not isinstance(suite_checks, Mapping):
+        errors.append("SUITE_GATE_CHECKS_MISSING")
+    else:
+        for key in _BASE_EVIDENCE_SUITE_CHECKS:
+            if suite_checks.get(key) is not True:
+                errors.append(f"EVIDENCE_{key.upper()}_FAILED")
 
     families = summary.get("scenario_family_results", {})
     if not isinstance(families, Mapping) or set(families) != {
@@ -138,6 +158,16 @@ def validate_base_summary(
         ABSORPTION_FAMILY,
     }:
         errors.append("SCENARIO_FAMILY_SET_NOT_EXACT")
+
+    path_summary = summary.get("trade_path_diagnostic_summary", {})
+    if not isinstance(path_summary, Mapping):
+        errors.append("TRADE_PATH_DIAGNOSTIC_SUMMARY_MISSING")
+    else:
+        closed_trades = int(summary.get("closed_trades", 0))
+        if int(path_summary.get("records", -1)) != closed_trades:
+            errors.append("TRADE_PATH_RECORD_COUNT_MISMATCH")
+        if int(path_summary.get("complete_records", -1)) != closed_trades:
+            errors.append("TRADE_PATH_COMPLETE_COUNT_MISMATCH")
     return tuple(errors)
 
 
@@ -368,6 +398,10 @@ def execute_staged_validation(
         supported = bool(evaluation["new_base_rebuild_supported"])
         decision["ablation_new_base_rebuild_supported"] = supported
         decision["promotion_permitted_from_ablation"] = False
+        if not bool(evaluation["evidence_contract_passed"]):
+            decision["decision"] = "DIAGNOSTIC_ABLATION_EVIDENCE_CONTRACT_FAILURE"
+            _write_json(decision_path, decision)
+            return 1, decision
         if supported:
             decision["decision"] = (
                 "FIRST_WEEK_ABLATION_SUPPORTS_NEW_SINGLE_FAMILY_BASE_REBUILD"
