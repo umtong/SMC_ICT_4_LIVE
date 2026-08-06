@@ -416,14 +416,22 @@ class ImpactElasticityStateMachine:
 
             assert setup.pullback_high is not None
             assert setup.pullback_low is not None
-            setup.pullback_high = max(setup.pullback_high, float(feature.bar.high))
-            setup.pullback_low = min(setup.pullback_low, float(feature.bar.low))
+            # Compare the completed resumption close with the pullback extreme
+            # known before this event. Updating the pullback extreme first
+            # would require a close above its own high (or below its own low).
+            prior_pullback_high = float(setup.pullback_high)
+            prior_pullback_low = float(setup.pullback_low)
+            resumption_break = (
+                float(feature.bar.close) > prior_pullback_high
+                if setup.side is Side.LONG
+                else float(feature.bar.close) < prior_pullback_low
+            )
             adverse = setup.adverse_elasticity
             resumed = (
                 aligned_z is not None
                 and aligned_z > 0.0
                 and aligned_change > 0.0
-                and self._resumption_break(setup, feature)
+                and resumption_break
                 and event_elasticity is not None
             )
             elasticity_ok = (
@@ -440,6 +448,10 @@ class ImpactElasticityStateMachine:
                 continue
             if resumed and not elasticity_ok:
                 self.counts["resumption_impact_not_recovered"] += 1
+            # Events which did not complete resumption remain part of the
+            # evolving pullback path for a later causal break.
+            setup.pullback_high = max(prior_pullback_high, float(feature.bar.high))
+            setup.pullback_low = min(prior_pullback_low, float(feature.bar.low))
             remaining.append(setup)
         self.active = remaining
 
