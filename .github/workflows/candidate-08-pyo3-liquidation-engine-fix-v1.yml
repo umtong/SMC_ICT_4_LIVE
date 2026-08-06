@@ -32,24 +32,18 @@ jobs:
           path = Path("research/candidate-08/run_aggtrade_acceptance_nautilus.py")
           source = path.read_text(encoding="utf-8")
 
-          old_imports = '''from nautilus_trader.backtest.engine import BacktestEngine
-          from nautilus_trader.backtest.models import (
-              LatencyModel,
-              MakerTakerFeeModel,
-              OneTickSlippageFillModel,
+          replacements = (
+              ("from nautilus_trader.analysis.reporter import ReportProvider\n", ""),
+              ("from nautilus_trader.backtest.engine import BacktestEngine\n", ""),
+              (
+                  "from nautilus_trader.config import BacktestEngineConfig, LoggingConfig\n",
+                  "from nautilus_trader.core import nautilus_pyo3\n",
+              ),
           )
-          from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
-          '''
-          new_imports = '''from nautilus_trader.backtest.models import (
-              LatencyModel,
-              MakerTakerFeeModel,
-              OneTickSlippageFillModel,
-          )
-          from nautilus_trader.core import nautilus_pyo3
-          '''
-          if source.count(old_imports) != 1:
-              raise SystemExit("engine import anchor mismatch")
-          source = source.replace(old_imports, new_imports)
+          for old, new in replacements:
+              if source.count(old) != 1:
+                  raise SystemExit(f"engine import anchor mismatch: {old!r}")
+              source = source.replace(old, new)
 
           old_engine = '''    engine = BacktestEngine(
               config=BacktestEngineConfig(
@@ -85,10 +79,11 @@ jobs:
               raise SystemExit("report generation anchor mismatch")
           source = source.replace(old_reports, new_reports)
 
-          source = source.replace(
-              '"mark_price": "latest completed one-minute mark close is available before each funding boundary and liquidation check",',
-              '"mark_price": "latest completed one-minute mark close is available before each funding boundary and the native PyO3 liquidation check",',
-          )
+          old_mark = '"mark_price": "latest completed one-minute mark close is available before each funding boundary and liquidation check",'
+          new_mark = '"mark_price": "latest completed one-minute mark close is available before each funding boundary and the native PyO3 liquidation check",'
+          if source.count(old_mark) != 1:
+              raise SystemExit("mark-price manifest anchor mismatch")
+          source = source.replace(old_mark, new_mark)
           path.write_text(source, encoding="utf-8")
           PY
           smc4 doctor
@@ -111,8 +106,9 @@ jobs:
           )
 
           config = json.loads(Path("research/candidate-08/config_aggtrade_acceptance_nautilus.json").read_text())
+          fee_rate = float(config["effective_fee_rate_per_fill"])
           instruments = {
-              symbol: _build_instrument(symbol, values, config)
+              symbol: _build_instrument(symbol, values, fee_rate)
               for symbol, values in config["assets"].items()
           }
           bar_types = {symbol: _ten_second_bar_type(instrument) for symbol, instrument in instruments.items()}
