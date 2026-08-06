@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/candidate-04-v18c-regime-diagnostic.yml"
       - "research/candidate-04/nt_backtest_v18c_regime_diagnostic.py"
+      - "research/candidate-04/nt_v18c_event_outcome_audit.py"
   workflow_dispatch:
 
 permissions:
@@ -67,7 +68,8 @@ jobs:
           print(f"verified {len(paths)} frozen files at {commit}")
           PY
           python -m compileall -q \
-            research/candidate-04/nt_backtest_v18c_regime_diagnostic.py
+            research/candidate-04/nt_backtest_v18c_regime_diagnostic.py \
+            research/candidate-04/nt_v18c_event_outcome_audit.py
           python -m unittest discover \
             -s research/candidate-04/tests \
             -p 'test_nt_liquidity_strategy.py' -v
@@ -116,7 +118,7 @@ jobs:
           test -s "$out/positions.csv"
           test -s "$out/strategy_events.json"
 
-      - name: Build regime comparison table
+      - name: Build entry regime comparison and all-probe outcome ledgers
         shell: bash
         run: |
           set -euo pipefail
@@ -176,8 +178,21 @@ jobs:
               json.dumps(rows, indent=2, sort_keys=True, allow_nan=True) + "\n",
               encoding="utf-8",
           )
-          print(json.dumps(rows, indent=2, sort_keys=True, allow_nan=True))
           PY
+
+          python research/candidate-04/nt_v18c_event_outcome_audit.py \
+            --events artifacts/candidate-04-v18c-regime/week1/strategy_events.json \
+            --cache .cache/candidate-04-v18c-regime/week1 \
+            --build-start 2023-10-01 \
+            --build-end 2023-10-09 \
+            --output artifacts/candidate-04-v18c-regime/week1/probe_audit
+
+          python research/candidate-04/nt_v18c_event_outcome_audit.py \
+            --events artifacts/candidate-04-v18c-regime/week2/strategy_events.json \
+            --cache .cache/candidate-04-v18c-regime/week2 \
+            --build-start 2023-06-24 \
+            --build-end 2023-07-02 \
+            --output artifacts/candidate-04-v18c-regime/week2/probe_audit
 
       - uses: actions/upload-artifact@v4
         if: always()
