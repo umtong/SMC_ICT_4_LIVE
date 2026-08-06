@@ -1,0 +1,80 @@
+name: candidate-02-v90-materialize
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-v90/payload.part.*"
+      - ".github/workflows/candidate-02-v90-materialize.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify and extract exact prospective v90 payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .candidate-02-v90/payload.part.* > /tmp/v90_payload.b64
+          base64 -d /tmp/v90_payload.b64 > /tmp/v90_payload.tar.gz
+          echo "6758f964b1f5db76e45dc4661ae46741fd9a44b1575ac1f90bb3223a538a2b77  /tmp/v90_payload.tar.gz" | sha256sum -c -
+          tar -tzf /tmp/v90_payload.tar.gz | tee /tmp/v90_members.txt
+          if grep -Eq '(^/|(^|/)\.\.(/|$))' /tmp/v90_members.txt; then
+            echo "unsafe archive member" >&2
+            exit 1
+          fi
+          tar -xzf /tmp/v90_payload.tar.gz -C .
+          python -m py_compile \
+            research/candidate-02/v90_common_failed_auction_core.py \
+            research/candidate-02/v90_nt_backtest.py
+          python -m json.tool research/candidate-02/v90_common_failed_auction_lock.json >/dev/null
+          for file in research/candidate-02/v90_*_config.json; do python -m json.tool "$file" >/dev/null; done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v90_common_failed_auction_lock.json').read_text())
+          assert lock['status']=='LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['first_week']['start_utc']=='2022-02-14T00:00:00Z'
+          assert lock['first_week']['end_utc']=='2022-02-21T00:00:00Z'
+          assert lock['first_week']['raw_data_status_at_lock']=='NOT_COLLECTED_FOR_V90'
+          assert lock['performance_engine']=='NautilusTrader 1.230.0'
+          assert lock['custom_backtest_engine'] is False
+          assert float(lock['risk_fraction'])==0.03
+          assert int(lock['global_pending_entry_plus_position_limit'])==1
+          configs=sorted(Path('research/candidate-02').glob('v90_*_config.json'))
+          assert len(configs)==5
+          for path in configs:
+              cfg=json.loads(path.read_text())
+              assert cfg['validation']['first_week_start']=='2022-02-14'
+              assert float(cfg['risk']['risk_fraction'])==0.03
+              assert cfg['risk']['maximum_notional_cap'] is None
+              assert cfg['risk']['score_risk_multiplier'] is None
+              assert cfg['scenario']['mode'] in {'PERSISTENT_FLOW_ABSORPTION','ACTIVE_FLOW_REVERSAL','STATE_PORTFOLIO'}
+          PY
+
+      - name: Commit readable non-workflow v90 sources atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .candidate-02-v90/payload.part.*
+          git add \
+            research/candidate-02/v90_common_failed_auction_core.py \
+            research/candidate-02/v90_nt_backtest.py \
+            research/candidate-02/v90_common_failed_auction_lock.json \
+            research/candidate-02/v90_portfolio_15m_config.json \
+            research/candidate-02/v90_portfolio_30m_config.json \
+            research/candidate-02/v90_portfolio_60m_config.json \
+            research/candidate-02/v90_persistent30_config.json \
+            research/candidate-02/v90_reversal30_config.json
+          git commit -m "research(candidate-02): lock v90 common failed auction"
+          git push origin HEAD:research/candidate-02
