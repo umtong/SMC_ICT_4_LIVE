@@ -163,17 +163,23 @@ class MultiLiquidityTests(unittest.TestCase):
 
     def test_swing_and_equal_contract_keeps_both_pool_types(self):
         engine = self.seeded(hml_pool_families="SWING_AND_EQUAL")
-        engine._liquidity_history = [
+        bars = [
             auction(10, 102.0, 104.0, 100.0, 103.0),
             auction(11, 103.0, 105.0, 98.0, 104.0),
             auction(12, 104.0, 106.0, 100.0, 105.0),
             auction(13, 105.0, 106.5, 101.0, 105.5),
             auction(14, 105.5, 107.0, 100.1, 106.0),
         ]
+        engine._liquidity_history = bars[:3]
+        engine._confirm_liquidity_pools()
+        self.assertIn("CONFIRMED_SWING", set(engine._pool_kinds.values()))
+        engine._liquidity_history.append(bars[3])
+        engine._confirm_liquidity_pools()
+        engine._liquidity_history.append(bars[4])
         engine._confirm_liquidity_pools()
         kinds = set(engine._pool_kinds.values())
         self.assertIn("CONFIRMED_SWING", kinds)
-        self.assertTrue(any(kind.startswith("EQUAL_") for kind in kinds) or len(engine._liquidity_pools) >= 1)
+        self.assertTrue(any(kind.startswith("EQUAL_") for kind in kinds))
 
     def test_equal_lower_sweep_and_response_emit_hml(self):
         engine = self.seeded(hml_pool_families="SWING_AND_EQUAL")
