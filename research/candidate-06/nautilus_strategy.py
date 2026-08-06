@@ -48,10 +48,14 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from auction_relay_engine import RollingAuctionLiquidityRelayEngine
 
         return RollingAuctionLiquidityRelayEngine(logic_params)
-    if name == "MULTI_TIMESCALE_LIQUIDITY_RELAY":
-        from composite_engine import CompositeLiquidityRelayEngine
+    if name == "FIXED_INTERVAL_AUCTION_RELAY":
+        from fixed_interval_auction_engine import FixedIntervalAuctionLiquidityRelayEngine
 
-        return CompositeLiquidityRelayEngine(logic_params)
+        return FixedIntervalAuctionLiquidityRelayEngine(logic_params)
+    if name == "MULTI_TIMESCALE_LIQUIDITY_RELAY":
+        from composite_engine import MultiTimescaleLiquidityRelayEngine
+
+        return MultiTimescaleLiquidityRelayEngine(logic_params)
     raise ValueError(f"unsupported candidate-06 causal engine: {name}")
 
 
