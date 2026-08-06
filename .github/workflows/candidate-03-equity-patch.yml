@@ -8,16 +8,22 @@ on:
 
 permissions:
   contents: write
+  packages: read
 
 jobs:
   patch:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Read single-currency NAV from Portfolio equity map
         shell: bash
         run: |
@@ -67,10 +73,17 @@ jobs:
           test_path.write_text(tests.replace(marker, replacement), encoding='utf-8')
           PY
 
-          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:research/candidate-03 \
-            python research/candidate-03/test_nt_lvcfr.py
-          PYTHONPYCACHEPREFIX=/tmp/candidate-03-pycache \
-            python -m compileall -q research/candidate-03 src/smc_ict_4
+          IMAGE=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+          docker pull "$IMAGE"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c '
+              smc4 doctor &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr.py &&
+              PYTHONPYCACHEPREFIX=/tmp/candidate-03-pycache \
+                python -m compileall -q research/candidate-03 src/smc_ict_4
+            '
 
           git config user.name "candidate-03 research bot"
           git config user.email "candidate-03@users.noreply.github.com"
