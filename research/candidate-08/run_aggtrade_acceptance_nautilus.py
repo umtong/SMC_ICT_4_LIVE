@@ -16,10 +16,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-from nautilus_trader.analysis.reporter import ReportProvider
-from nautilus_trader.backtest.engine import BacktestEngine
-from nautilus_trader.backtest.models import LatencyModel, MakerTakerFeeModel, OneTickSlippageFillModel
-from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
+from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.model import FundingRateUpdate, MarkPriceUpdate
 from nautilus_trader.model.data import Bar, BarType
 from nautilus_trader.model.enums import AccountType, OmsType
@@ -68,8 +65,9 @@ from smc_ict_4.event_log import write_events  # noqa: E402
 from smc_ict_4.manifest import create_run_manifest, sha256_file, write_json_atomic  # noqa: E402
 
 
-VENUE = Venue("BINANCE")
-USDT = Currency.from_str("USDT")
+VENUE = nautilus_pyo3.Venue.from_str("BINANCE")
+NATIVE_USDT = nautilus_pyo3.Currency.from_str("USDT")
+LEGACY_USDT = Currency.from_str("USDT")
 
 
 def _build_instrument(
@@ -81,8 +79,8 @@ def _build_instrument(
         instrument_id=InstrumentId.from_str(str(specification["instrument_id"])),
         raw_symbol=Symbol(symbol),
         base_currency=Currency.from_str(str(specification["base_currency"])),
-        quote_currency=USDT,
-        settlement_currency=USDT,
+        quote_currency=LEGACY_USDT,
+        settlement_currency=LEGACY_USDT,
         is_inverse=False,
         price_precision=int(specification["price_precision"]),
         size_precision=int(specification["size_precision"]),
@@ -91,7 +89,7 @@ def _build_instrument(
         max_quantity=None,
         min_quantity=Quantity.from_str(str(specification["min_quantity"])),
         max_notional=None,
-        min_notional=Money(10.0, USDT),
+        min_notional=Money(10.0, LEGACY_USDT),
         max_price=None,
         min_price=None,
         margin_init=Decimal("1.0"),
@@ -111,29 +109,35 @@ def _build_instrument(
 
 def _create_engine(
     config: Mapping[str, Any],
-    instruments: Mapping[str, CryptoPerpetual],
-) -> BacktestEngine:
+    instruments: Mapping[str, Any],
+) -> Any:
     latency = config["cost_assumptions"]["latency_ms"]
-    engine = BacktestEngine(
-        config=BacktestEngineConfig(
-            logging=LoggingConfig(log_level="ERROR", bypass_logging=True),
+    engine = nautilus_pyo3.BacktestEngine(
+        nautilus_pyo3.BacktestEngineConfig(
             run_analysis=True,
+            bypass_logging=True,
         )
     )
     engine.add_venue(
         venue=VENUE,
-        oms_type=OmsType.HEDGING,
-        account_type=AccountType.MARGIN,
-        starting_balances=[Money(float(config["starting_nav_usdt"]), USDT)],
-        base_currency=USDT,
+        oms_type=nautilus_pyo3.OmsType.HEDGING,
+        account_type=nautilus_pyo3.AccountType.MARGIN,
+        starting_balances=[
+            nautilus_pyo3.Money.from_str(
+                f"{config['starting_nav_usdt']} USDT"
+            )
+        ],
+        base_currency=NATIVE_USDT,
         default_leverage=Decimal(str(config["venue"]["default_leverage"])),
-        fill_model=OneTickSlippageFillModel(
+        fill_model=nautilus_pyo3.OneTickSlippageFillModel(
             prob_fill_on_limit=1.0,
-            prob_slippage=float(config["cost_assumptions"]["one_tick_slippage_probability"]),
+            prob_slippage=float(
+                config["cost_assumptions"]["one_tick_slippage_probability"]
+            ),
             random_seed=int(config["random_seed"]),
         ),
-        fee_model=MakerTakerFeeModel(),
-        latency_model=LatencyModel(
+        fee_model=nautilus_pyo3.MakerTakerFeeModel(),
+        latency_model=nautilus_pyo3.StaticLatencyModel(
             base_latency_nanos=int(latency["base"] * 1_000_000),
             insert_latency_nanos=int(latency["insert"] * 1_000_000),
             update_latency_nanos=int(latency["update"] * 1_000_000),
@@ -156,7 +160,6 @@ def _create_engine(
     for instrument in instruments.values():
         engine.add_instrument(instrument)
     return engine
-
 
 def _ten_second_bar_type(instrument: CryptoPerpetual) -> BarType:
     return BarType.from_str(f"{instrument.id}-10-SECOND-LAST-EXTERNAL")
@@ -227,6 +230,78 @@ def _mark_price_updates_from_frame(
             )
         )
     return updates
+
+
+def _native_instrument(instrument: CryptoPerpetual) -> Any:
+    return nautilus_pyo3.CryptoPerpetual.from_dict(
+        type(instrument).to_dict(instrument)
+    )
+
+
+def _native_funding_update(update: FundingRateUpdate) -> Any:
+    return nautilus_pyo3.FundingRateUpdate.from_dict(
+        {
+            "type": "FundingRateUpdate",
+            "instrument_id": str(update.instrument_id),
+            "rate": str(update.rate),
+            "interval": int(update.interval),
+            "next_funding_ns": (
+                None if update.next_funding_ns is None else int(update.next_funding_ns)
+            ),
+            "ts_event": int(update.ts_event),
+            "ts_init": int(update.ts_init),
+        }
+    )
+
+
+def _native_events(value: Any) -> list[Any]:
+    events = getattr(value, "events", ())
+    return list(events() if callable(events) else events)
+
+
+def _native_dict(value: Any) -> dict[str, Any]:
+    method = getattr(value, "to_dict")
+    try:
+        result = method()
+    except TypeError:
+        result = type(value).to_dict(value)
+    return dict(result)
+
+
+def _native_fills_report(orders: list[Any]) -> pd.DataFrame:
+    rows = [
+        _native_dict(event)
+        for order in orders
+        for event in _native_events(order)
+        if type(event).__name__ == "OrderFilled"
+    ]
+    if not rows:
+        return pd.DataFrame()
+    report = pd.DataFrame(rows).set_index("client_order_id").sort_index()
+    for column in ("ts_event", "ts_init"):
+        if column in report.columns:
+            report[column] = [pd.Timestamp(int(value or 0), tz="UTC") for value in report[column]]
+    report.drop(columns=["type"], errors="ignore", inplace=True)
+    return report
+
+
+def _native_account_report(account: Any) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for event in _native_events(account):
+        state = _native_dict(event)
+        balances = list(state.pop("balances", []))
+        rows.extend({**dict(balance), **state} for balance in balances)
+    if not rows:
+        return pd.DataFrame()
+    report = pd.DataFrame(rows).set_index("ts_event").sort_index()
+    report.index = [pd.Timestamp(int(value), tz="UTC") for value in report.index]
+    report.drop(columns=["ts_init", "type", "event_id"], errors="ignore", inplace=True)
+    return report
+
+
+def _result_field(result: Any, name: str, default: Any) -> Any:
+    value = getattr(result, name, default)
+    return value() if callable(value) else value
 
 
 
@@ -408,6 +483,14 @@ def run_window(
         for symbol, specification in config["assets"].items()
     }
     bar_types = {symbol: _ten_second_bar_type(instrument) for symbol, instrument in instruments.items()}
+    native_instruments = {
+        symbol: _native_instrument(instrument)
+        for symbol, instrument in instruments.items()
+    }
+    native_bar_types = {
+        symbol: nautilus_pyo3.BarType.from_str(str(bar_types[symbol]))
+        for symbol in instruments
+    }
     pattern_source = json.loads(pattern_config_path.read_text(encoding="utf-8"))
     pattern = RangeFVGConfig.from_mapping(dict(pattern_source["pattern"]))
 
@@ -545,8 +628,8 @@ def run_window(
             maximum_hold_minutes=int(config["maximum_hold_minutes"]),
             funding_avoidance_minutes=int(config["funding_avoidance_minutes"]),
         ),
-        instrument_ids=tuple(instrument.id for instrument in instruments.values()),
-        bar_types=tuple(bar_types.values()),
+        instrument_ids=tuple(instrument.id for instrument in native_instruments.values()),
+        bar_types=tuple(native_bar_types.values()),
         signals_by_time_ns=signals_by_time_ns,
         funding_observations_by_instrument=funding_observations_by_instrument,
     )
@@ -554,13 +637,18 @@ def run_window(
     all_bars.sort(key=lambda bar: (int(bar.ts_event), str(bar.bar_type.instrument_id)))
     all_funding_updates.sort(key=lambda item: (int(item.ts_event), str(item.instrument_id)))
     all_mark_price_updates.sort(key=lambda item: (int(item.ts_event), str(item.instrument_id)))
-    engine = _create_engine(config, instruments)
+    native_bars = [bar.to_pyo3() for bar in all_bars]
+    native_funding_updates = [
+        _native_funding_update(update) for update in all_funding_updates
+    ]
+    native_mark_price_updates = [update.to_pyo3() for update in all_mark_price_updates]
+    engine = _create_engine(config, native_instruments)
     try:
         # Keep each homogeneous Nautilus data type in a separate add_data call, then perform one
         # deterministic global sort across bars and funding updates.
-        engine.add_data(all_bars, sort=False)
-        engine.add_data(all_mark_price_updates, sort=False)
-        engine.add_data(all_funding_updates, sort=False)
+        engine.add_data(native_bars, sort=False)
+        engine.add_data(native_mark_price_updates, sort=False)
+        engine.add_data(native_funding_updates, sort=False)
         engine.sort_data()
         engine.add_strategy(strategy)
         engine.run()
@@ -568,18 +656,17 @@ def run_window(
         account = engine.cache.account_for_venue(VENUE)
         if account is None:
             raise RuntimeError("NautilusTrader did not retain the shared Binance margin account")
-        cached_orders = engine.cache.orders()
-        cached_positions = engine.cache.positions()
-        orders = ReportProvider.generate_orders_report(cached_orders)
-        fills = ReportProvider.generate_fills_report(cached_orders)
-        positions = ReportProvider.generate_positions_report(cached_positions)
-        account_report = ReportProvider.generate_account_report(account)
+        cached_orders = list(engine.cache.orders())
+        orders = engine.generate_orders_report()
+        fills = _native_fills_report(cached_orders)
+        positions = engine.generate_positions_report()
+        account_report = _native_account_report(account)
         orders.to_csv(output_dir / "orders.csv", index=True)
         fills.to_csv(output_dir / "fills.csv", index=True)
         positions.to_csv(output_dir / "positions.csv", index=True)
         account_report.to_csv(output_dir / "account.csv", index=True)
 
-        final_money = account.balance_total(USDT)
+        final_money = account.balance_total(NATIVE_USDT)
         if final_money is None:
             raise RuntimeError("shared account had no total USDT balance")
         starting_nav = float(config["starting_nav_usdt"])
@@ -600,11 +687,11 @@ def run_window(
         max_drawdown, equity_curve = _equity_drawdown(account_report, starting_nav)
         open_positions = sum(
             len(engine.cache.positions_open(instrument_id=instrument.id))
-            for instrument in instruments.values()
+            for instrument in native_instruments.values()
         )
         open_orders = sum(
             len(engine.cache.orders_open(instrument_id=instrument.id))
-            for instrument in instruments.values()
+            for instrument in native_instruments.values()
         )
         unprocessed = sorted(set(signals_by_time_ns) - strategy.processed_signal_times)
         contract_checks = _evaluate_risk_contracts(
@@ -643,13 +730,13 @@ def run_window(
             "unprocessed_signal_times": len(unprocessed),
             "unprocessed_signal_time_ns": unprocessed,
             "nautilus_result": {
-                "iterations": result.iterations,
-                "total_events": result.total_events,
-                "total_orders": result.total_orders,
-                "total_positions": result.total_positions,
-                "stats_pnls": result.stats_pnls,
-                "stats_returns": result.stats_returns,
-                "stats_general": getattr(result, "stats_general", {}),
+                "iterations": _result_field(result, "iterations", 0),
+                "total_events": _result_field(result, "total_events", 0),
+                "total_orders": _result_field(result, "total_orders", 0),
+                "total_positions": _result_field(result, "total_positions", 0),
+                "stats_pnls": _result_field(result, "stats_pnls", {}),
+                "stats_returns": _result_field(result, "stats_returns", {}),
+                "stats_general": _result_field(result, "stats_general", {}),
             },
             "cost_assumptions": config["cost_assumptions"],
             "venue_runtime": {
@@ -742,12 +829,12 @@ def run_window(
                 "pattern_config_path": str(pattern_config_path),
                 "pattern_config_sha256": sha256_file(pattern_config_path),
                 "engine": {
-                    "name": "NautilusTrader BacktestEngine",
+                    "name": "NautilusTrader PyO3 BacktestEngine",
                     "shared_margin_account": True,
                     "global_entry_or_position_limit": 1,
                     "entry_order_type": "MARKET",
                     "exit_contingency": "OUO",
-                    "instruments": [str(instrument.id) for instrument in instruments.values()],
+                    "instruments": [str(instrument.id) for instrument in native_instruments.values()],
                     "actual_funding_rate_updates": len(all_funding_updates),
                     "mark_price_updates": len(all_mark_price_updates),
                     "actual_funding_settlement_enabled": True,

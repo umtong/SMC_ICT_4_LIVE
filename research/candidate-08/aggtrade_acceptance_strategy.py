@@ -5,12 +5,17 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any
 
-from nautilus_trader.config import StrategyConfig
-from nautilus_trader.model.data import Bar, BarType
-from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
-from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.objects import Currency
-from nautilus_trader.trading.strategy import Strategy
+from nautilus_trader.core import nautilus_pyo3
+
+StrategyConfig = nautilus_pyo3.StrategyConfig
+Strategy = nautilus_pyo3.Strategy
+Bar = nautilus_pyo3.Bar
+BarType = nautilus_pyo3.BarType
+InstrumentId = nautilus_pyo3.InstrumentId
+Currency = nautilus_pyo3.Currency
+OrderSide = nautilus_pyo3.OrderSide
+OrderType = nautilus_pyo3.OrderType
+TimeInForce = nautilus_pyo3.TimeInForce
 
 from aggtrade_acceptance_funding import (
     FundingObservation,
@@ -23,17 +28,57 @@ from logic import risk_sized_quantity
 _SOURCE_RANK = {"FOUR_HOUR": 1, "DAY": 2, "WEEK": 3}
 
 
-class AggTradeAcceptanceStrategyConfig(StrategyConfig, frozen=True):
-    trading_start_ns: int
-    trading_end_ns: int
-    risk_fraction: Decimal
-    effective_fee_rate: Decimal
-    minimum_net_reward_risk: Decimal
-    maximum_hold_minutes: int
-    funding_avoidance_minutes: int
+class AggTradeAcceptanceStrategyConfig(StrategyConfig):
+    _CUSTOM_FIELDS = (
+        "trading_start_ns",
+        "trading_end_ns",
+        "risk_fraction",
+        "effective_fee_rate",
+        "minimum_net_reward_risk",
+        "maximum_hold_minutes",
+        "funding_avoidance_minutes",
+    )
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        base_kwargs = dict(kwargs)
+        for field in cls._CUSTOM_FIELDS:
+            base_kwargs.pop(field, None)
+        # Venue-native OTO/OUO handling remains authoritative.
+        base_kwargs["manage_contingent_orders"] = False
+        return super().__new__(cls, *args, **base_kwargs)
+
+    def __init__(
+        self,
+        *,
+        trading_start_ns: int,
+        trading_end_ns: int,
+        risk_fraction: Decimal,
+        effective_fee_rate: Decimal,
+        minimum_net_reward_risk: Decimal,
+        maximum_hold_minutes: int,
+        funding_avoidance_minutes: int,
+        **_kwargs: Any,
+    ) -> None:
+        self.trading_start_ns = int(trading_start_ns)
+        self.trading_end_ns = int(trading_end_ns)
+        self.risk_fraction = Decimal(risk_fraction)
+        self.effective_fee_rate = Decimal(effective_fee_rate)
+        self.minimum_net_reward_risk = Decimal(minimum_net_reward_risk)
+        self.maximum_hold_minutes = int(maximum_hold_minutes)
+        self.funding_avoidance_minutes = int(funding_avoidance_minutes)
 
 
 class AggTradeAcceptanceStrategy(Strategy):
+    def __new__(
+        cls,
+        config: AggTradeAcceptanceStrategyConfig,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> Any:
+        # The pinned PyO3 base accepts only StrategyConfig at allocation time.
+        # Candidate-specific immutable schedules remain Python-side __init__ inputs.
+        return super().__new__(cls, config)
+
     """Trade one market-entry acceptance scenario at a time across all allowed instruments."""
 
     def __init__(
@@ -45,7 +90,7 @@ class AggTradeAcceptanceStrategy(Strategy):
         signals_by_time_ns: dict[int, tuple[AcceptanceSignal, ...]],
         funding_observations_by_instrument: dict[str, tuple[FundingObservation, ...]],
     ) -> None:
-        super().__init__(config=config)
+        super().__init__(config)
         self.instrument_ids = instrument_ids
         self.bar_types = bar_types
         self.signals_by_time_ns = signals_by_time_ns
@@ -280,7 +325,7 @@ class AggTradeAcceptanceStrategy(Strategy):
         if quantity_value <= 0:
             self._record_skip(signal, "QUANTITY_ROUNDED_TO_ZERO", ts_event_ns, {"nav": nav})
             return
-        quantity = instrument.make_qty(Decimal(str(quantity_value)))
+        quantity = instrument.make_qty(float(quantity_value))
         if instrument.min_quantity is not None and quantity < instrument.min_quantity:
             self._record_skip(
                 signal,
@@ -303,8 +348,8 @@ class AggTradeAcceptanceStrategy(Strategy):
             return
 
         order_side = OrderSide.BUY if signal.direction > 0 else OrderSide.SELL
-        stop_price = instrument.make_price(Decimal(str(geometry["stop"])))
-        target_price = instrument.make_price(Decimal(str(geometry["target"])))
+        stop_price = instrument.make_price(float(geometry["stop"]))
+        target_price = instrument.make_price(float(geometry["target"]))
         orders = self.order_factory.bracket(
             instrument_id=instrument_id,
             order_side=order_side,
@@ -323,7 +368,11 @@ class AggTradeAcceptanceStrategy(Strategy):
             tp_tags=[signal.scenario_id, "ACTIVE_COMPLETED_EXTERNAL_TARGET"],
             sl_tags=[signal.scenario_id, "OBSERVED_RETEST_INVALIDATION"],
         )
-        entry_order, stop_order, target_order = orders.orders
+        if not isinstance(orders, list) or len(orders) != 3:
+            raise RuntimeError(
+                f"pinned NautilusTrader bracket contract changed: {type(orders)!r}"
+            )
+        entry_order, stop_order, target_order = orders
         self.active_signal = signal
         self.active_instrument_id = instrument_id
         self.active_scenario_state = "CONFIRMED"
