@@ -1,0 +1,393 @@
+name: candidate-05-v29-external-displacement-fvg
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/external_displacement_fvg_logic.py"
+      - "research/candidate-05/strategy_v29_external_displacement_fvg.py"
+      - "research/candidate-05/tests/test_external_displacement_fvg_logic.py"
+      - ".github/workflows/candidate-05-v29-external-displacement-fvg.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  staged-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v29-external-displacement-fvg
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and all causal contracts
+        id: verify
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$ROOT" research/candidate-05/evidence
+          set +e
+          {
+            smc4 doctor
+            python -m compileall -q research/candidate-05
+            python -m unittest discover \
+              -s research/candidate-05/tests \
+              -p 'test_*.py' -v
+          } 2>&1 | tee "$ROOT/verification.log"
+          status=${PIPESTATUS[0]}
+          echo "verification_exit_code=$status" > "$ROOT/verification_status.txt"
+          exit "$status"
+
+      - name: Run fixed Week 1 v26 control
+        if: steps.verify.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          """Runtime entrypoint for the frozen v26 control."""
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v26 import ScenarioValidEntryStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          out="$ROOT/week-1-baseline"
+          mkdir -p "$out"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-07-07 \
+            --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 \
+            --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-05-v29/week-1-baseline \
+            --output "$out" | tee "$out/console.json"
+
+      - name: Run fixed Week 1 v29 candidate
+        if: steps.verify.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          """Runtime entrypoint for v29 external displacement FVG."""
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v29_external_displacement_fvg import ExternalDisplacementFvgStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          out="$ROOT/week-1-v29"
+          mkdir -p "$out"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-07-07 \
+            --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 \
+            --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-05-v29/week-1-v29 \
+            --output "$out" | tee "$out/console.json"
+
+      - name: Decide whether the new branch merits Weeks 2 and 3
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-v29-external-displacement-fvg")
+
+          def load(name):
+              p = root / name / "metrics.json"
+              if not p.exists():
+                  return None
+              return json.loads(p.read_text(encoding="utf-8"))
+
+          def integrity(m):
+              if m is None:
+                  return False
+              d = m.get("strategy_diagnostics", {})
+              return (
+                  m.get("engine") == "NautilusTrader BacktestNode"
+                  and m.get("ending_nav", 0.0) > 0.0
+                  and m.get("liquidations", 0) == 0
+                  and d.get("order_rejections", 0) == 0
+                  and d.get("max_simultaneous_entry_intents", 0) <= 1
+                  and d.get("max_open_positions_observed", 0) <= 1
+              )
+
+          baseline = load("week-1-baseline")
+          candidate = load("week-1-v29")
+          branch = (candidate or {}).get("scenario_metrics", {}).get(
+              "EXTERNAL_DISPLACEMENT_FVG_RETEST",
+              {"trades": 0, "wins": 0, "net_pnl": 0.0},
+          )
+          promote = bool(
+              integrity(baseline)
+              and integrity(candidate)
+              and int(branch.get("trades", 0)) > 0
+              and float(branch.get("net_pnl", 0.0)) > 0.0
+              and float(candidate["geometric_daily_growth"]) > float(baseline["geometric_daily_growth"])
+          )
+          state = {
+              "baseline_available": baseline is not None,
+              "candidate_available": candidate is not None,
+              "baseline_integrity": integrity(baseline),
+              "candidate_integrity": integrity(candidate),
+              "new_branch": branch,
+              "promote_to_weeks_2_3": promote,
+          }
+          (root / "week_1_decision.json").write_text(
+              json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          with Path("/tmp/v29.env").open("w", encoding="utf-8") as f:
+              f.write(f"PROMOTE_V29={'true' if promote else 'false'}\n")
+          print(json.dumps(state, indent=2, sort_keys=True))
+          PY
+          cat /tmp/v29.env >> "$GITHUB_ENV"
+
+      - name: Run fixed Weeks 2 and 3 controls
+        if: env.PROMOTE_V29 == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          """Runtime entrypoint for the frozen v26 control."""
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v26 import ScenarioValidEntryStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          for spec in \
+            "week-2-baseline 2024-01-13 2024-01-21 2024-01-15 2024-01-21" \
+            "week-3-baseline 2023-09-06 2023-09-14 2023-09-08 2023-09-14"; do
+            set -- $spec
+            name=$1; build_start=$2; build_end=$3; eval_start=$4; eval_end=$5
+            out="$ROOT/$name"; mkdir -p "$out"
+            python research/candidate-05/candidate.py stage \
+              --config research/candidate-05/config.json \
+              --build-start "$build_start" --build-end "$build_end" \
+              --evaluation-start "$eval_start" --evaluation-end "$eval_end" \
+              --cache ".cache/candidate-05-v29/$name" \
+              --output "$out" | tee "$out/console.json"
+          done
+
+      - name: Run fixed Weeks 2 and 3 v29 candidate
+        if: env.PROMOTE_V29 == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          """Runtime entrypoint for v29 external displacement FVG."""
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v29_external_displacement_fvg import ExternalDisplacementFvgStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          for spec in \
+            "week-2-v29 2024-01-13 2024-01-21 2024-01-15 2024-01-21" \
+            "week-3-v29 2023-09-06 2023-09-14 2023-09-08 2023-09-14"; do
+            set -- $spec
+            name=$1; build_start=$2; build_end=$3; eval_start=$4; eval_end=$5
+            out="$ROOT/$name"; mkdir -p "$out"
+            python research/candidate-05/candidate.py stage \
+              --config research/candidate-05/config.json \
+              --build-start "$build_start" --build-end "$build_end" \
+              --evaluation-start "$eval_start" --evaluation-end "$eval_end" \
+              --cache ".cache/candidate-05-v29/$name" \
+              --output "$out" | tee "$out/console.json"
+          done
+
+      - name: Decide whether v29 merits a continuous 30-day screen
+        if: env.PROMOTE_V29 == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math
+          from pathlib import Path
+          root = Path("artifacts/candidate-05-v29-external-displacement-fvg")
+
+          def load(name):
+              return json.loads((root / name / "metrics.json").read_text(encoding="utf-8"))
+
+          baseline = [load(f"week-{i}-baseline") for i in (1, 2, 3)]
+          candidate = [load(f"week-{i}-v29") for i in (1, 2, 3)]
+          b_multiple = math.prod(1.0 + float(m["total_return"]) for m in baseline)
+          c_multiple = math.prod(1.0 + float(m["total_return"]) for m in candidate)
+          b_growth = b_multiple ** (1.0 / 21.0) - 1.0
+          c_growth = c_multiple ** (1.0 / 21.0) - 1.0
+          branch = {
+              "trades": 0,
+              "wins": 0,
+              "net_pnl": 0.0,
+          }
+          for m in candidate:
+              item = m.get("scenario_metrics", {}).get(
+                  "EXTERNAL_DISPLACEMENT_FVG_RETEST", {}
+              )
+              for key in branch:
+                  branch[key] += item.get(key, 0)
+          promote = (
+              branch["trades"] > 0
+              and branch["net_pnl"] > 0.0
+              and c_growth > b_growth
+          )
+          result = {
+              "baseline_21d_multiple": b_multiple,
+              "candidate_21d_multiple": c_multiple,
+              "baseline_21d_geometric_daily_growth": b_growth,
+              "candidate_21d_geometric_daily_growth": c_growth,
+              "new_branch_aggregate": branch,
+              "promote_to_continuous_30d": promote,
+          }
+          (root / "three_week_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          with Path("/tmp/v29_30d.env").open("w", encoding="utf-8") as f:
+              f.write(f"PROMOTE_V29_30D={'true' if promote else 'false'}\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          cat /tmp/v29_30d.env >> "$GITHUB_ENV"
+
+      - name: Run v29 continuous 30-day screen
+        if: env.PROMOTE_V29_30D == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > research/candidate-05/strategy.py <<'PY'
+          """Runtime entrypoint for v29 external displacement FVG."""
+          from strategy_base import LiquidityResponseConfig
+          from strategy_v29_external_displacement_fvg import ExternalDisplacementFvgStrategy as LiquidityResponseStrategy
+          __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
+          PY
+          out="$ROOT/continuous-30d-v29"; mkdir -p "$out"
+          python research/candidate-05/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-30 \
+            --cache .cache/candidate-05-v29/continuous-30d \
+            --output "$out" | tee "$out/console.json"
+
+      - name: Build and persist final v29 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-05-v29-external-displacement-fvg")
+          evidence_dir = Path("research/candidate-05/evidence")
+          evidence_dir.mkdir(parents=True, exist_ok=True)
+
+          def compact(name):
+              p = root / name / "metrics.json"
+              if not p.exists():
+                  return {"available": False}
+              m = json.loads(p.read_text(encoding="utf-8"))
+              d = m.get("strategy_diagnostics", {})
+              checks = {
+                  "engine_is_nautilus": m.get("engine") == "NautilusTrader BacktestNode",
+                  "positive_nav": m.get("ending_nav", 0.0) > 0.0,
+                  "no_liquidation": m.get("liquidations", 0) == 0,
+                  "no_order_rejections": d.get("order_rejections", 0) == 0,
+                  "single_entry_intent": d.get("max_simultaneous_entry_intents", 0) <= 1,
+                  "single_position": d.get("max_open_positions_observed", 0) <= 1,
+              }
+              return {
+                  "available": True,
+                  "evaluation_start": m.get("evaluation_start"),
+                  "evaluation_end": m.get("evaluation_end"),
+                  "total_return": m.get("total_return"),
+                  "geometric_daily_growth": m.get("geometric_daily_growth"),
+                  "max_drawdown": m.get("max_drawdown"),
+                  "trades": m.get("trades"),
+                  "wins": m.get("wins"),
+                  "win_rate": m.get("win_rate"),
+                  "profit_factor": m.get("profit_factor"),
+                  "active_days": m.get("active_days"),
+                  "largest_winner_share": m.get("largest_winner_share"),
+                  "scenario_metrics": m.get("scenario_metrics", {}),
+                  "strategy_diagnostics": {
+                      key: value for key, value in d.items()
+                      if key.startswith("external_fvg_")
+                  },
+                  "integrity_checks": checks,
+                  "integrity_pass": all(checks.values()),
+              }
+
+          names = [
+              "week-1-baseline", "week-1-v29",
+              "week-2-baseline", "week-2-v29",
+              "week-3-baseline", "week-3-v29",
+              "continuous-30d-v29",
+          ]
+          runs = {name: compact(name) for name in names}
+          verify_status = (root / "verification_status.txt").read_text(encoding="utf-8").strip() if (root / "verification_status.txt").exists() else "missing"
+          verify_tail = []
+          if (root / "verification.log").exists():
+              verify_tail = (root / "verification.log").read_text(encoding="utf-8", errors="replace").splitlines()[-120:]
+          week1_decision = json.loads((root / "week_1_decision.json").read_text(encoding="utf-8")) if (root / "week_1_decision.json").exists() else None
+          three_week = json.loads((root / "three_week_decision.json").read_text(encoding="utf-8")) if (root / "three_week_decision.json").exists() else None
+          if verify_status != "verification_exit_code=0":
+              classification = "IMPLEMENTATION_ERROR"
+          elif not runs["week-1-v29"].get("available") or not runs["week-1-v29"].get("integrity_pass"):
+              classification = "IMPLEMENTATION_OR_EVIDENCE_ERROR"
+          elif not (week1_decision or {}).get("promote_to_weeks_2_3", False):
+              branch = runs["week-1-v29"].get("scenario_metrics", {}).get("EXTERNAL_DISPLACEMENT_FVG_RETEST", {})
+              classification = (
+                  "LOGIC_FAILURE_NO_INCREMENTAL_TRADES"
+                  if int(branch.get("trades", 0)) == 0
+                  else "LOGIC_FAILURE_NONPOSITIVE_INCREMENTAL_EXPECTANCY"
+              )
+          elif not (three_week or {}).get("promote_to_continuous_30d", False):
+              classification = "LOGIC_FAILURE_NOT_REPEATED_ACROSS_FROZEN_WEEKS"
+          else:
+              long = runs["continuous-30d-v29"]
+              classification = (
+                  "PROJECT_GROWTH_GOAL_REACHED_ON_30D"
+                  if long.get("integrity_pass") and float(long.get("geometric_daily_growth", -1.0)) >= 0.01
+                  else "LOGIC_FAILURE_ON_CONTINUOUS_30D"
+                  if long.get("integrity_pass")
+                  else "IMPLEMENTATION_OR_EVIDENCE_ERROR_30D"
+              )
+          result = {
+              "schema": "candidate-05-v29-staged-evidence-v1",
+              "source_commit": "${{ github.sha }}",
+              "workflow_run_id": "${{ github.run_id }}",
+              "hypothesis": "completed 4h external acceptance -> displacement FVG -> first defended retest",
+              "classification": classification,
+              "verification_status": verify_status,
+              "verification_log_tail": verify_tail,
+              "week_1_decision": week1_decision,
+              "three_week_decision": three_week,
+              "runs": runs,
+              "ablation_contract": "The v26 control is the exact removal of the new external-FVG observer and execution branch.",
+          }
+          output = evidence_dir / "v29_external_displacement_fvg.json"
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          test -s research/candidate-05/evidence/v29_external_displacement_fvg.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-05/evidence/v29_external_displacement_fvg.json
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-05: record v29 external-FVG evidence [skip ci]"
+            git push origin HEAD:research/candidate-05
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v29-external-displacement-fvg-${{ github.sha }}
+          path: artifacts/candidate-05-v29-external-displacement-fvg/**
+          if-no-files-found: warn
+          retention-days: 90
