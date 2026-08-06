@@ -1,7 +1,7 @@
 {
   "candidate": "candidate-08-flow-response-auction-btc-nautilus-v1",
   "description": "BTC-first causal aggressive-flow versus price-response auction scenarios at completed external liquidity",
-  "implementation_revision": "CAUSAL_FLOW_RESPONSE_EXTERNAL_AUCTION_V1",
+  "implementation_revision": "CAUSAL_FLOW_RESPONSE_EXTERNAL_AUCTION_V2",
   "random_seed": 8808,
   "starting_nav_usdt": 100000.0,
   "risk_fraction": 0.03,
@@ -43,12 +43,29 @@
     "runtime_liquidation_switch_supported": true
   },
   "pattern_source_config": "config_range_fvg.json",
+  "flow_response_config": {
+    "impact_lookback_bars": 360,
+    "minimum_history_bars": 90,
+    "response_window_bars": 3,
+    "pressure_quantile": 0.9,
+    "noise_quantile": 0.99,
+    "minimum_flow_consistency": 0.6666666666666666,
+    "initiative_progress_noise": 1.0,
+    "initiative_retention": 0.5,
+    "absorption_minimum_excursion_noise": 0.5,
+    "absorption_maximum_progress_noise": 0.5,
+    "absorption_maximum_retention": 0.5
+  },
+  "flow_response_auction_config": {
+    "interaction_response_windows": 3,
+    "reversal_confirmation_windows": 2
+  },
   "flow_response_state_contract": {
     "data_scope": "completed Binance USD-M aggTrades aggregated into ten-second OHLCV, signed aggressive base volume and trade count; no passive order submissions or cancellations are inferred",
     "causal_noise": "shifted prior-60-minute ten-second true-range Q99, minimum one tick",
     "causal_activity": "signed aggressive volume divided by the shifted prior-60-minute median total volume",
     "causal_local_impact": "positive rolling beta of prior signed activity versus prior noise-normalized close change; current row excluded; 60-minute maximum lookback and 15-minute minimum history",
-    "response_window": "three completed ten-second buckets (30 seconds)",
+    "response_window": "three completed ten-second buckets (30 seconds), strictly after the completed interaction or absorption bucket",
     "tail_pressure": "absolute 30-second cumulative signed activity at or above its shifted prior-60-minute Q90 with directional consistency at least two-thirds",
     "initiative_response": "directional progress at least one causal-noise unit, at least half of maximum directional excursion retained, and response surprise not below the causal local-impact expectation",
     "absorbed_response": "directional excursion at least half a causal-noise unit, final progress below half a noise unit, less than half the excursion retained, and response surprise below the causal local-impact expectation",
@@ -99,13 +116,13 @@
   },
   "validation_protocol": {
     "pattern_detector": "Completed 4-hour/day/week external-liquidity inventory is independent from the flow-response state detector.",
-    "initiative_scenario": "First external-level interaction; one complete 30-second post-interaction response window; outward initiative-response state; close remains beyond the interacted boundary; enter only after the completed confirmation bucket.",
-    "absorption_scenario": "First external-level interaction; outward absorbed-response state closes back through the boundary; then a separate 30-second opposite initiative-response window breaks the reclaim extreme while remaining inside the boundary.",
+    "initiative_scenario": "First external-level interaction; one complete strictly post-interaction 30-second response window; outward initiative-response state; close remains beyond the interacted boundary; enter only after the completed confirmation bucket.",
+    "absorption_scenario": "First external-level interaction; outward absorbed-response state closes back through the boundary; then a strictly post-absorption 30-second opposite initiative-response window breaks the reclaim extreme while remaining inside the boundary.",
     "global_selection": "At any timestamp only the highest causal cost-after net reward-risk signal is eligible; while any order or position exists the account is unavailable to every instrument.",
     "entry": "Market OUO bracket submitted after the completed ten-second confirmation bucket.",
     "sizing": "Current full shared USDT NAV times 3 percent divided by expected entry-to-stop loss including two 6 bp fill charges, one adverse entry tick, causal Q99 stop-slippage reserve and causal funding reserve; no separate notional cap or score multiplier.",
-    "initiative_stop": "Opposite extreme of the complete observed response window plus the existing ATR structural buffer/minimum distance contract.",
-    "absorption_stop": "Full observed sweep extreme through the completed opposite-response confirmation bucket plus the existing ATR structural buffer/minimum distance contract.",
+    "initiative_stop": "Opposite extreme of the complete configured post-interaction response window plus the existing ATR structural buffer/minimum distance contract.",
+    "absorption_stop": "Full observed sweep extreme through the completed separate opposite-response confirmation bucket plus the existing ATR structural buffer/minimum distance contract.",
     "target": "Nearest active completed external level in the scenario direction; no fitted R fallback.",
     "promotion": "The fixed first BTC week must pass before the remaining two fixed BTC weeks. All three must satisfy the unchanged screen gate before multiasset or long evaluation.",
     "family_ablation": "After a clean logic failure, exactly one diagnostic family removal is allowed only if one independently traded family is cost-after positive and the other independently traded family is negative. Diagnostic results are never directly promotable."
