@@ -51,14 +51,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Materialize and verify reviewed SIAR source payload
+      - name: Verify committed SIAR source material
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          cat research/candidate-06/siar_payload.part-* > /tmp/siar_payload.b64
-          base64 -d /tmp/siar_payload.b64 > /tmp/siar_payload.tar.gz
-          printf '%s  %s\n' 'f94cc97ec84d896d68269ebf1cbc32c2fde5138d16ea199bf3f366708a614aa1' '/tmp/siar_payload.tar.gz' | sha256sum -c -
-          tar -xzf /tmp/siar_payload.tar.gz
+          test -s research/candidate-06/surprise_impact_core.py
+          test -s research/candidate-06/surprise_impact_hierarchical_engine.py
+          test -s research/candidate-06/test_surprise_impact_hierarchical_engine.py
 
       - name: Verify fixed NautilusTrader environment
         run: |

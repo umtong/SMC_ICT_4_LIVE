@@ -83,8 +83,8 @@ class SurpriseImpactEngineTests(unittest.TestCase):
 
     def test_weak_response_rejects_baseline_break_as_absorption(self) -> None:
         engine = self.seeded()
-        bar = auction(9, 103.5, 106.0, 103.5, 104.8, 300.0, 0.8)
-        transitions = engine._evaluate_completed_bias(bar, snap(10, 9, 103.5, 106.0, 103.5, 104.8, 0.8))
+        bar = auction(9, 102.5, 105.0, 100.0, 104.8, 300.0, 0.8)
+        transitions = engine._evaluate_completed_bias(bar, snap(10, 9, 102.5, 105.0, 100.0, 104.8, 0.8))
         self.assertEqual(len(transitions), 1)
         self.assertEqual(transitions[0].previous_state, "IDLE")
         self.assertEqual(transitions[0].next_state, "RESET")
@@ -106,8 +106,8 @@ class SurpriseImpactEngineTests(unittest.TestCase):
 
     def test_impact_efficiency_can_be_removed_without_changing_surprise(self) -> None:
         engine = self.seeded(siar_use_impact_efficiency=False)
-        bar = auction(9, 103.5, 106.0, 103.5, 104.8, 300.0, 0.8)
-        transitions = engine._evaluate_completed_bias(bar, snap(10, 9, 103.5, 106.0, 103.5, 104.8, 0.8))
+        bar = auction(9, 102.5, 105.0, 100.0, 104.8, 300.0, 0.8)
+        transitions = engine._evaluate_completed_bias(bar, snap(10, 9, 102.5, 105.0, 100.0, 104.8, 0.8))
         self.assertTrue(transitions)
         self.assertIsNotNone(engine._bias)
 
