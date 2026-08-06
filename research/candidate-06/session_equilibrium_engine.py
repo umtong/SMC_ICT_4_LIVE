@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from causal_clock import source_bar_datetime
 from lrb_types import PrimitiveSnapshot, ScenarioStep
 from session_displacement_engine import SessionDisplacementRetestEngine
 from session_engine import _SessionEpisode
@@ -14,6 +15,11 @@ class SessionEquilibriumRetestEngine(SessionDisplacementRetestEngine):
     prior internal liquidity or range equilibrium which still clears the fixed
     after-entry structural RR is selected before the opposite external boundary.
     """
+
+    @staticmethod
+    def _datetime(ts_ns: int):
+        """Map completed-bar event time back to the source one-minute interval."""
+        return source_bar_datetime(ts_ns)
 
     def _arm_reversal(self, snapshot: PrimitiveSnapshot, episode: _SessionEpisode) -> ScenarioStep:
         buffer_value = float(self.params.get("stop_buffer_atr", 0.10)) * snapshot.atr
