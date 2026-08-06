@@ -120,7 +120,12 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
             if "TAKE_PROFIT" in tags:
                 return False
 
-        last_px = float(getattr(event, "last_px", plan.entry_reference))
+        raw_last_px = getattr(event, "last_px", plan.entry_reference)
+        last_px = (
+            raw_last_px.as_double()
+            if hasattr(raw_last_px, "as_double")
+            else float(raw_last_px)
+        )
         if self._instrument is None:
             tolerance = max(abs(plan.stop_price) * 1e-9, 1e-9)
         else:
