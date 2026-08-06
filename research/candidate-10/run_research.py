@@ -1,9 +1,8 @@
-"""Reproducible candidate 10 v3 research runner."""
+"""Reproducible candidate 10 v3.1 research runner."""
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 from datetime import date
 import json
 from pathlib import Path
@@ -12,9 +11,9 @@ import sys
 
 from c10_flow_model import FlowParams
 from c10_flow_precision_fix import reproducible_weeks
-from c10_flow_precision_fix import run_flow_backtest
+from c10_flow_v31 import run_v31_backtest
 
-VARIANT_NAMES = ("full", "ablation-price-only")
+VARIANT_NAMES = ("full", "ablation-midpoint-entry")
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,15 +35,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def variants() -> dict[str, FlowParams]:
-    full = FlowParams()
-    # Exact one-variable ablation: remove executed aggressor-flow direction and
-    # magnitude from absorption/repricing certification. Event bars, local range,
-    # price response, costs, targets, risk, seed and every threshold stay fixed.
-    price_only = replace(full, enable_order_flow=False)
+def variants() -> dict[str, tuple[FlowParams, bool]]:
+    # Both variants retain the v3 order-flow confirmation. The sole ablated
+    # variable is the passive entry anchor after confirmed opposite repricing.
+    params = FlowParams()
     return {
-        "full": full,
-        "ablation-price-only": price_only,
+        "full": (params, True),
+        "ablation-midpoint-entry": (params, False),
     }
 
 
@@ -52,9 +49,10 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
     if not args.week or not args.variant:
         raise SystemExit("isolated worker requires --week and --variant")
     week = date.fromisoformat(args.week)
-    params = variants()[args.variant]
+    params, boundary_entry = variants()[args.variant]
     destination = output_root / args.phase / week.isoformat() / args.variant
-    metrics = run_flow_backtest(
+    metrics = run_v31_backtest(
+        entry_at_source_boundary=boundary_entry,
         week_start=week,
         variant=args.variant,
         params=params,
@@ -71,8 +69,6 @@ def _run_isolated(
     week: date,
     variant: str,
 ) -> dict[str, object]:
-    # NautilusTrader 1.230 owns process-global Rust logging state. Fresh workers
-    # preserve exact variant isolation without rebuilding the engine.
     command = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -128,15 +124,16 @@ def main() -> int:
         "phase": args.phase,
         "executed_weeks": [item.isoformat() for item in weeks],
         "engine_process_isolation": True,
-        "candidate_generation": "v3-event-notional-flow-absorption-repricing",
+        "candidate_generation": "v3.1-absorbed-boundary-first-retest",
         "variants": list(VARIANT_NAMES),
         "ablation_contract": (
-            "only FlowParams.enable_order_flow changes; all price, execution, "
-            "cost, target, risk and selection rules remain identical"
+            "both variants retain executed order-flow absorption/repricing; only "
+            "the entry anchor changes from absorbed source boundary to the prior "
+            "50% repricing-body midpoint"
         ),
         "implementation_control": (
-            "Binance decimal strings are normalized to instrument Price/Quantity "
-            "precision without changing numeric values"
+            "Binance decimal strings normalized to instrument precision without "
+            "changing numeric values"
         ),
     }
     (output_root / "week_selection.json").write_text(
