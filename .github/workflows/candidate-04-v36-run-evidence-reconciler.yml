@@ -1,0 +1,79 @@
+name: candidate-04-v36-run-evidence-reconciler
+
+on:
+  workflow_run:
+    workflows:
+      - "candidate-04-v36-staged-development"
+      - "candidate-04-v36-survivor-followup"
+      - "candidate-04-v36-unopened-and-long"
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Download all V36 run artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: "*"
+          path: reconciled-artifacts
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Reduce artifacts without recalculating PnL
+        shell: bash
+        run: |
+          set -euo pipefail
+          safe_workflow="$(printf '%s' "$WORKFLOW_NAME" | tr -cs 'A-Za-z0-9._-' '-')"
+          relative="research/candidate-04/run-evidence/${safe_workflow}-${RUN_ID}.json"
+          mkdir -p "$(dirname "$relative")"
+          python research/candidate-04/reconcile_run_evidence.py \
+            --artifacts reconciled-artifacts \
+            --workflow "$WORKFLOW_NAME" \
+            --run-id "$RUN_ID" \
+            --head-sha "$HEAD_SHA" \
+            --conclusion "$CONCLUSION" \
+            --output "$relative"
+          echo "EVIDENCE_PATH=$relative" >> "$GITHUB_ENV"
+
+      - name: Commit unique evidence through Contents API with retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          content="$(base64 -w0 "$EVIDENCE_PATH")"
+          message="reconcile ${WORKFLOW_NAME} run ${RUN_ID} evidence"
+          for attempt in 1 2 3 4 5; do
+            if gh api \
+              --method PUT \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/contents/${EVIDENCE_PATH}" \
+              -f message="$message" \
+              -f content="$content" \
+              -f branch="research/candidate-04" \
+              >/tmp/reconcile-response.json 2>/tmp/reconcile-error.txt; then
+              cat /tmp/reconcile-response.json
+              exit 0
+            fi
+            cat /tmp/reconcile-error.txt >&2 || true
+            sleep $((attempt * 3))
+          done
+          exit 1
