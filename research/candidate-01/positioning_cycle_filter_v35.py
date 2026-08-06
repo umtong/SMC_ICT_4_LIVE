@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, replace
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from impact_regime_probe import ScenarioPlan
 from positioning_metrics_data_v35 import PositionMetric, PositionMetricBook
@@ -29,6 +29,7 @@ class PositioningCycleDiagnostic:
     control_plan_id: str
     side: str
     armed_time_ns: int | None
+    sweep_event_time_ns: int | None
     signal_time_ns: int
     prior_observation_time_ns: int | None
     prior_available_time_ns: int | None
@@ -69,6 +70,7 @@ def build_positioning_cycle_plans(
     *,
     source_plans: Iterable[ScenarioPlan],
     transitions: Iterable[Any],
+    sweep_times: Mapping[str, int],
     metrics: PositionMetricBook,
 ) -> tuple[
     list[ScenarioPlan],
@@ -105,6 +107,7 @@ def build_positioning_cycle_plans(
         )
         control.append(control_plan)
         armed_time = armed_times.get(base)
+        sweep_event_time = sweep_times.get(base)
 
         prior_row: PositionMetric | None = None
         sweep_row: PositionMetric | None = None
@@ -117,8 +120,12 @@ def build_positioning_cycle_plans(
 
         if armed_time is None:
             reason = "SOURCE_ARM_TRANSITION_NOT_FOUND"
+        elif sweep_event_time is None:
+            reason = "SOURCE_SWEEP_PIVOT_TIME_NOT_FOUND"
+        elif sweep_event_time > armed_time:
+            reason = "SOURCE_SWEEP_AFTER_CONFIRMATION_INVALID"
         else:
-            sweep_index = metrics.index_at(armed_time)
+            sweep_index = metrics.index_at(sweep_event_time)
             mss_index = metrics.index_at(int(source.signal_time_ns))
             if sweep_index is None or sweep_index <= 0:
                 reason = "INSUFFICIENT_CAUSAL_METRICS_BEFORE_SWEEP"
@@ -170,6 +177,7 @@ def build_positioning_cycle_plans(
                 control_plan_id=control_plan.scenario_id,
                 side=source.side.value,
                 armed_time_ns=armed_time,
+                sweep_event_time_ns=sweep_event_time,
                 signal_time_ns=int(source.signal_time_ns),
                 prior_observation_time_ns=prior_observation,
                 prior_available_time_ns=prior_available,
