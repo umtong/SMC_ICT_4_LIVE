@@ -1,0 +1,82 @@
+{
+  "candidate_family": "candidate-04-v26b-v26c",
+  "status": "rejected_after_first_untouched_week",
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "untouched_week": {
+    "evaluation_start": "2024-05-27",
+    "evaluation_end": "2024-06-02",
+    "source_commit": "ea4fd231a90a86a9ea2e01cf66c9b28198afb958",
+    "workflow_run_id": 31099167517,
+    "artifact_id": 8966794405,
+    "artifact_digest": "sha256:684d8b8f611d7d3e6bbfc24e33404e9f52c8ef7b52c58d9d86d889c08f80ea77",
+    "signals": 8,
+    "trades": 5,
+    "wins": 1,
+    "win_rate": 0.2,
+    "total_return": -0.008889731417599966,
+    "geometric_daily_growth": -0.001274826835526044,
+    "active_days": 3,
+    "max_drawdown": 0.04151738622096246,
+    "maximum_realized_loss_fraction": 0.01855906433960102,
+    "risk_pass": true,
+    "candidate_pass": false,
+    "stage_2_opened": false,
+    "scenario_metrics": {
+      "NORMAL_FAILED_AUCTION_RESUMPTION": {"trades": 2, "wins": 1, "net_pnl_usdt": 2381.9030652},
+      "ORDERLY_INVENTORY_DISPLACEMENT": {"trades": 3, "wins": 0, "net_pnl_usdt": -3270.87620696}
+    }
+  },
+  "implementation_error": {
+    "finding": "the inherited normal inventory detector used side * OI change, so a short with falling OI was treated as positive inventory confirmation",
+    "economic_error": "price decline plus falling OI can be long liquidation, not fresh short inventory creation",
+    "controlled_fix": "require raw exchange OI change greater than zero for ORDERLY_INVENTORY_DISPLACEMENT in both directions; change no other signal or execution variable",
+    "fixed_candidate": "candidate-04-v26c-corrected-inventory-semantics",
+    "workflow_run_id": 31099877094,
+    "artifact_id": 8967034303,
+    "artifact_digest": "sha256:bf67fcce60faf24b10a225cc0bea425ce5ce8f51f7144646b96ec1d9cef407bd",
+    "removed_signals": 1,
+    "same_week_result": {
+      "trades": 4,
+      "wins": 1,
+      "total_return": -0.008165567041799937,
+      "geometric_daily_growth": -0.0011706125674821877,
+      "max_drawdown": 0.04081560529949668,
+      "maximum_realized_loss_fraction": 0.018558764713681827
+    },
+    "classification_after_fix": "remaining failure is logic error"
+  },
+  "one_core_scenario_ablation": {
+    "removed_scenario": "ORDERLY_INVENTORY_DISPLACEMENT",
+    "changed_variables": 1,
+    "workflow_run_id": 31100186219,
+    "artifact_id": 8967141727,
+    "artifact_digest": "sha256:dd6e84136b59c8513b1e7770b7464d490a3d47255baca2298487111ffdd7467b",
+    "result": {
+      "signals": 5,
+      "trades": 2,
+      "wins": 1,
+      "win_rate": 0.5,
+      "total_return": 0.024623621598000023,
+      "geometric_daily_growth": 0.0034810945155911988,
+      "active_days": 2,
+      "max_drawdown": 0.021633943660623767,
+      "maximum_realized_loss_fraction": 0.014989108898102343,
+      "gate_pass": false
+    },
+    "interpretation": "removing the failed inventory mechanism turns the week positive, proving it was the dominant performance drag, but leaves only two trades and 0.348% daily growth; deletion alone has no path to the target"
+  },
+  "rejection_diagnosis": {
+    "largest_negative_factor": "ORDERLY_INVENTORY_DISPLACEMENT interpreted a strong one-minute break plus efficient five-minute movement and central basis as persistent inventory repricing; the two correctly positive-OI long events also failed, so raw OI creation was still not sufficient",
+    "why_no_more_tuning": "the state failed all three executions after the original freeze and both remaining executions after the semantic correction; one-scenario removal improved expectancy but destroyed opportunity count",
+    "final_action": "discard ORDERLY_INVENTORY_DISPLACEMENT and reject V26b/V26c as complete candidates without opening the second selected week"
+  },
+  "valid_components_retained": [
+    "normal-basis failed-auction resumption remained positive in the failed week",
+    "state-interval OI measurement between acceptance and retest",
+    "absolute basis and completed parent displacement as independent acceptance dimensions",
+    "causal pivot registration and first-penetration consumption",
+    "actual-fill stop/target geometry guard",
+    "current-NAV 3% risk sizing and NautilusTrader-only execution"
+  ],
+  "next_design_requirement": "add a complete independent mechanism with repeated opportunities; do not broaden one-minute inventory displacement or reintroduce side-adjusted OI"
+}
