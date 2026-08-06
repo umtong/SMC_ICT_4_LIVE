@@ -58,8 +58,8 @@ jobs:
               if read_line not in s:
                   raise SystemExit("expected Binance CSV read line not found")
               s = s.replace(read_line, read_line + clean_line)
-          old_wrangler = '    wrangle_frame = frame[["open", "high", "low", "close", "volume"]].copy()\n'
-          new_wrangler = "\n".join([
+          simple_wrangler = '    wrangle_frame = frame[["open", "high", "low", "close", "volume"]].copy()\n'
+          writable_wrangler = "\n".join([
               '    wrangle_columns = ["open", "high", "low", "close", "volume"]',
               '    wrangle_matrix = frame[wrangle_columns].to_numpy(dtype="float64", copy=True)',
               '    wrangle_matrix.setflags(write=True)',
@@ -70,12 +70,43 @@ jobs:
               '        copy=False,',
               '    )',
               '    wrangle_frame.values.setflags(write=True)',
+              '    bars = BarDataWrangler(bar_type, instrument).process(wrangle_frame)',
               '',
           ])
-          if old_wrangler in s:
-              s = s.replace(old_wrangler, new_wrangler)
-          elif new_wrangler not in s:
-              raise SystemExit("expected Nautilus wrangler frame construction not found")
+          manual_bars = "\n".join([
+              '    # Nautilus 1.230 BarDataWrangler requires a writable pandas data.values',
+              '    # buffer; pandas in the pinned Python 3.13 image exposes a read-only view.',
+              '    # Build the same Nautilus Bar objects directly, while the Nautilus engine',
+              '    # remains solely responsible for event ordering, fills, fees and account NAV.',
+              '    bar_rows = frame[["open", "high", "low", "close", "volume"]].to_numpy(',
+              '        dtype="float64",',
+              '        copy=True,',
+              '    )',
+              '    timestamps_ns = frame.index.asi8',
+              '    bars = [',
+              '        Bar(',
+              '            bar_type=bar_type,',
+              '            open=Price(row[0], instrument.price_precision),',
+              '            high=Price(row[1], instrument.price_precision),',
+              '            low=Price(row[2], instrument.price_precision),',
+              '            close=Price(row[3], instrument.price_precision),',
+              '            volume=Quantity(row[4], instrument.size_precision),',
+              '            ts_event=int(ts_ns),',
+              '            ts_init=int(ts_ns),',
+              '        )',
+              '        for row, ts_ns in zip(bar_rows, timestamps_ns, strict=True)',
+              '    ]',
+              '',
+          ])
+          if writable_wrangler in s:
+              s = s.replace(writable_wrangler, manual_bars)
+          elif simple_wrangler in s:
+              s = s.replace(
+                  simple_wrangler + '    bars = BarDataWrangler(bar_type, instrument).process(wrangle_frame)\n',
+                  manual_bars,
+              )
+          elif manual_bars not in s:
+              raise SystemExit("expected Nautilus bar adapter block not found")
           s = s.replace("engine.trader.generate_order_fills_report()", "engine.generate_order_fills_report()")
           s = s.replace("engine.trader.generate_positions_report()", "engine.generate_positions_report()")
           s = s.replace("engine.trader.generate_account_report(venue)", "engine.generate_account_report(venue)")
@@ -85,7 +116,7 @@ jobs:
             git config user.name "candidate-11-bot"
             git config user.email "candidate-11-bot@users.noreply.github.com"
             git add research/candidate-11/run.py
-            git commit -m "candidate-11: normalize Nautilus data and report APIs"
+            git commit -m "candidate-11: use direct Nautilus Bar adapter"
             git push origin HEAD:research/candidate-11
           fi
 
