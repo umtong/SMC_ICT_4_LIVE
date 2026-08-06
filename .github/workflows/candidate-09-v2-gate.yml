@@ -1,0 +1,200 @@
+name: Candidate 09 v2 anchored-auction gate
+
+on:
+  push:
+    branches:
+      - research/candidate-09
+    paths:
+      - .github/workflows/candidate-09-v2-gate.yml
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v2-gate
+  cancel-in-progress: false
+
+jobs:
+  activate-test-evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: ${{ github.workspace }}/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-v1
+
+      - name: Archive v1 diagnosis and activate structurally distinct v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09
+          archive="$root/archive/v1"
+          mkdir -p "$archive/evidence"
+          if [[ ! -f "$archive/README.md" ]]; then
+            cp "$root/state_engine.py" "$archive/state_engine.py"
+            cp "$root/config.json" "$archive/config.json"
+            for name in summary.json REPORT.md outcomes.csv trades.csv fills.csv run.json data_manifest.json; do
+              [[ -f "$root/evidence/latest/$name" ]] && cp "$root/evidence/latest/$name" "$archive/evidence/$name"
+            done
+            cat > "$archive/README.md" <<'EOF'
+          # Candidate 09 v1 — discarded complete candidate
+
+          Reproducible final v1 commit: `dc717478d0da4a0b699e6aef35f483aff02f2464`.
+
+          The implementation contract was repaired without changing the three frozen BTC weeks or strategy thresholds. Native account reconciliation then reached floating-point zero error. The causal local-pivot liquidity engine nevertheless failed all three weeks after composite costs:
+
+          - pooled daily geometric return: **-1.753871%**
+          - pooled NAV multiple over 21 sampled days: **0.689643x**
+          - trades: **24**
+          - week returns: **-19.6894%, -5.9111%, -8.7331%**
+          - maximum segment drawdown: **29.8281%**
+
+          Single-variable ablations (`no-flow`, `no-reclaim-confirmation`, `no-acceptance-confirmation`) all performed worse. This separates the failure from implementation defects and shows that flow/reclaim/acceptance checks reduced damage but did not create positive conditional edge. The complete v1 was classified `LOGIC_ERROR_NO_STRUCTURAL_PATH` and discarded.
+
+          Known v1 failure condition: treating every causal one-minute pivot as an external liquidity pool generated low-quality breaches, especially reversal entries without a genuine micro-structure shift.
+          EOF
+          fi
+
+          cp "$root/state_engine_v2.py" "$root/state_engine.py"
+          cp "$root/config_v2.json" "$root/config.json"
+          rm -rf "$root/tests"
+          cp -R "$root/tests_v2" "$root/tests"
+
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('research/candidate-09/run.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''ABLATIONS = (\n    "baseline",\n    "no-flow",\n    "no-reclaim-confirmation",\n    "no-acceptance-confirmation",\n)\n'''
+          new = '''ABLATIONS = (\n    "baseline",\n    "no-flow",\n    "no-mss-confirmation",\n    "no-acceptance-confirmation",\n)\n'''
+          if new not in text:
+              if old not in text:
+                  raise SystemExit('expected v1 ablation tuple not found')
+              text = text.replace(old, new, 1)
+          text = text.replace(
+              'No search or parameter optimizer is present.  The frozen baseline and three\n'
+              'single-variable ablations run on the same predeclared BTC weeks.',
+              'No search or parameter optimizer is present.  The structurally frozen v2 baseline and three\n'
+              'single-variable ablations run on the same predeclared BTC weeks.',
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Run doctor, v2 tests, and identical frozen-week gate
+        shell: bash
+        run: |
+          set +e
+          root=research/candidate-09
+          out="$root/evidence/latest"
+          diag="$root/diagnostics/v2-gate"
+          rm -rf "$out" "$diag"
+          mkdir -p "$out" "$diag"
+
+          smc4 doctor > "$diag/doctor.log" 2>&1
+          doctor_code=$?
+          python -m compileall -q "$root" > "$diag/compile.log" 2>&1
+          compile_code=$?
+          python -m unittest discover -s "$root/tests" -p 'test_*.py' -v > "$diag/tests.log" 2>&1
+          tests_code=$?
+          gate_code=99
+          if [[ "$doctor_code" == 0 && "$compile_code" == 0 && "$tests_code" == 0 ]]; then
+            python "$root/run.py" gate \
+              --config "$root/config.json" \
+              --cache "$SMC4_DATA_ROOT" \
+              --output "$out" > "$diag/gate.log" 2>&1
+            gate_code=$?
+          else
+            printf 'gate not run because a prerequisite failed\n' > "$diag/gate.log"
+          fi
+
+          DOCTOR_CODE="$doctor_code" COMPILE_CODE="$compile_code" TESTS_CODE="$tests_code" GATE_CODE="$gate_code" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path('research/candidate-09')
+          diag = root / 'diagnostics/v2-gate'
+          out = root / 'evidence/latest'
+          codes = {
+              'doctor': int(os.environ['DOCTOR_CODE']),
+              'compile': int(os.environ['COMPILE_CODE']),
+              'tests': int(os.environ['TESTS_CODE']),
+              'gate': int(os.environ['GATE_CODE']),
+          }
+          first_failure = next((name for name, value in codes.items() if value != 0), None)
+          (diag / 'diagnostic.json').write_text(json.dumps({
+              'candidate_generation': 'v2-anchored-auction',
+              'classification': 'IMPLEMENTATION_ERROR' if first_failure else 'EXECUTED',
+              'codes': codes,
+              'first_failure': first_failure,
+              'fixed_weeks_preserved': True,
+              'parameter_search_performed': False,
+              'structural_change': 'local pivots replaced by completed four-hour auction ranges plus MSS/acceptance paths',
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'trigger_sha': os.environ.get('GITHUB_SHA'),
+          }, indent=2, sort_keys=True) + '\n')
+          if not (out / 'summary.json').exists():
+              (out / 'summary.json').write_text(json.dumps({
+                  'candidate': 'candidate-09-v2',
+                  'status': 'IMPLEMENTATION_ERROR',
+                  'first_failure': first_failure,
+                  'codes': codes,
+              }, indent=2, sort_keys=True) + '\n')
+          for log in diag.glob('*.log'):
+              lines = log.read_text(errors='replace').splitlines()
+              log.write_text('\n'.join(lines[-1000:]) + ('\n' if lines else ''))
+          PY
+          exit 0
+
+      - name: Preserve exact v2 output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v2-gate-${{ github.run_id }}
+          path: |
+            research/candidate-09/evidence/latest
+            research/candidate-09/diagnostics/v2-gate
+            research/candidate-09/archive/v1
+            research/candidate-09/run.py
+            research/candidate-09/config.json
+            research/candidate-09/state_engine.py
+            research/candidate-09/nautilus_strategy.py
+            research/candidate-09/tests
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit v2 source, archive, and evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=$(dirname "$(dirname "$(dirname "$(realpath research/candidate-09/run.py)")")")
+          git config --global --add safe.directory "$repo"
+          git -C "$repo" config user.name "candidate-09-research-bot"
+          git -C "$repo" config user.email "candidate-09-research-bot@users.noreply.github.com"
+          git -C "$repo" add -A research/candidate-09
+          if git -C "$repo" diff --cached --quiet; then
+            exit 0
+          fi
+          status=$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('research/candidate-09/evidence/latest/summary.json').read_text()).get('status','UNKNOWN'))
+          PY
+          )
+          git -C "$repo" commit -m "candidate-09 v2: frozen gate result ${status}"
+          git -C "$repo" pull --rebase origin "${GITHUB_REF_NAME}"
+          git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
