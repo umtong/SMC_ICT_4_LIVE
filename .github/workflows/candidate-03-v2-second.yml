@@ -1,0 +1,163 @@
+name: candidate-03-nt-lvcfr-v2-second-week
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - ".github/workflows/candidate-03-v2-second.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  PYTHONPATH: /workspace/src:/workspace/research/candidate-03
+
+jobs:
+  second-btc-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify pinned runtime and frozen v2 contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c '
+              smc4 doctor &&
+              PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/workspace/src:/workspace/research/candidate-03 \
+                python research/candidate-03/test_nt_lvcfr.py &&
+              PYTHONPYCACHEPREFIX=/tmp/nt-lvcfr-v2-second-pycache \
+                python -m py_compile research/candidate-03/derive_nt_lvcfr_v2_signals.py
+            '
+
+      - name: Restore immutable full second-week NautilusTrader catalog
+        id: restore-second
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr/validation-2/prepared
+          key: nt-lvcfr-full-v1-btc-2025-06-23-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
+
+      - name: Preflight and materialize full second-week catalog
+        if: steps.restore-second.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          prepared=artifacts/candidate-03/nt-lvcfr/validation-2/prepared
+          mkdir -p "$prepared"
+          sudo chmod -R a+rwX artifacts
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c 'PYTHONPATH=/workspace/src:/workspace/research/candidate-03 python - <<"PY"
+          from datetime import date
+          from pathlib import Path
+          from nt_lvcfr_data import CandidateConfig, prepare_signal_schedule, prepare_week
+
+          root = Path("artifacts/candidate-03/nt-lvcfr/validation-2/prepared")
+          config = CandidateConfig.load(Path("research/candidate-03/nt_lvcfr_config.json"))
+          preflight = prepare_signal_schedule(
+              week_start=date.fromisoformat("2025-06-23"),
+              output_root=root,
+              config=config,
+          )
+          print({"v1_preflight_signals": preflight["signals"]})
+          if int(preflight["signals"]) < config.minimum_episodes:
+              raise SystemExit("second-week v1 opportunity count below minimum")
+          manifest = prepare_week(
+              week_start=date.fromisoformat("2025-06-23"),
+              output_root=root,
+              config=config,
+          )
+          print({
+              "signals": manifest["signals"],
+              "quotes": manifest["catalog"]["quote_ticks_retained"],
+              "funding": manifest["catalog"]["funding_updates"],
+          })
+          PY'
+          test -f "$prepared/data_manifest.json"
+
+      - name: Save immutable full second-week catalog
+        if: steps.restore-second.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: artifacts/candidate-03/nt-lvcfr/validation-2/prepared
+          key: nt-lvcfr-full-v1-btc-2025-06-23-${{ hashFiles('research/candidate-03/nt_lvcfr_data.py', 'research/candidate-03/nt_lvcfr_config.json') }}
+
+      - name: Derive the unchanged causal v2 scenario schedule
+        shell: bash
+        run: |
+          set -euo pipefail
+          prepared=artifacts/candidate-03/nt-lvcfr/validation-2/prepared
+          out=artifacts/candidate-03/nt-lvcfr-v2/validation-2
+          mkdir -p "$out"
+          sudo chmod -R a+rwX artifacts
+          cp "$prepared/signals.json" "$prepared/signals-v1.json"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/derive_nt_lvcfr_v2_signals.py \
+              --prepared-root $prepared \
+              --source-signals $prepared/signals-v1.json \
+              --output-signals $prepared/signals.json \
+              --output-manifest $out/v2_signal_manifest.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          prepared = Path("artifacts/candidate-03/nt-lvcfr/validation-2/prepared")
+          manifest_path = prepared / "data_manifest.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          signals = json.loads((prepared / "signals.json").read_text(encoding="utf-8"))
+          manifest["candidate"] = "candidate-03-nt-lvcfr-v2"
+          manifest["signals"] = len(signals)
+          manifest["signal_path"] = str((prepared / "signals.json").resolve())
+          manifest["catalog_scope"] = "v1 causal event-window superset reused without changing market data"
+          manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          if len(signals) < 8:
+              raise SystemExit(f"second-week v2 opportunity preflight failed: only {len(signals)} signals")
+          print(json.dumps({"v2_signals": len(signals)}, sort_keys=True))
+          PY
+
+      - name: Second frozen BTC week — NautilusTrader v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          prepared=artifacts/candidate-03/nt-lvcfr/validation-2/prepared
+          out=artifacts/candidate-03/nt-lvcfr-v2/validation-2
+          sudo chmod -R a+rwX artifacts
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            bash -c "PYTHONPATH=$PYTHONPATH python research/candidate-03/run_nt_lvcfr.py \
+              --week-start 2025-06-23 \
+              --prepared-root $prepared \
+              --output $out \
+              --config research/candidate-03/nt_lvcfr_v2_config.json" \
+            2>&1 | tee "$out/backtest.log"
+          docker run --rm \
+            -v "$PWD:/workspace" -w /workspace "$IMAGE" \
+            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
+              --config research/candidate-03/nt_lvcfr_v2_config.json \
+            | tee "$out/gate.json"
+
+      - name: Preserve second-week v2 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-03-nt-lvcfr-v2-second-${{ github.sha }}
+          path: |
+            artifacts/candidate-03/nt-lvcfr-v2/validation-2/**/*.json
+            artifacts/candidate-03/nt-lvcfr-v2/validation-2/**/*.jsonl
+            artifacts/candidate-03/nt-lvcfr-v2/validation-2/**/*.csv
+            artifacts/candidate-03/nt-lvcfr-v2/validation-2/**/*.log
+          if-no-files-found: warn
+          retention-days: 30
