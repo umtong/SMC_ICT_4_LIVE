@@ -1,0 +1,59 @@
+name: candidate-04-run-evidence-dashboard
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/run-evidence/*.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dashboard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Build current status from all durable evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-04/build_current_status.py \
+            --root research/candidate-04 \
+            --output research/candidate-04/CURRENT_STATUS.md
+
+      - name: Upsert status with API retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          path="research/candidate-04/CURRENT_STATUS.md"
+          content="$(base64 -w0 "$path")"
+          for attempt in 1 2 3 4 5; do
+            sha="$(gh api "/repos/${GITHUB_REPOSITORY}/contents/${path}?ref=research/candidate-04" --jq .sha 2>/dev/null || true)"
+            args=(
+              --method PUT
+              -H "Accept: application/vnd.github+json"
+              "/repos/${GITHUB_REPOSITORY}/contents/${path}"
+              -f message="refresh candidate-04 reproducible status"
+              -f content="$content"
+              -f branch="research/candidate-04"
+            )
+            if [[ -n "$sha" ]]; then
+              args+=( -f sha="$sha" )
+            fi
+            if gh api "${args[@]}" >/tmp/status-response.json 2>/tmp/status-error.txt; then
+              cat /tmp/status-response.json
+              exit 0
+            fi
+            cat /tmp/status-error.txt >&2 || true
+            sleep $((attempt * 3))
+          done
+          exit 1
