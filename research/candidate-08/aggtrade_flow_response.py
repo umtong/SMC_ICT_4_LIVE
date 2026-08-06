@@ -157,6 +157,42 @@ def _classify_frame_states(
     return pd.Series(states, index=features.index, dtype="string")
 
 
+def _causal_window_impact_response(
+    *,
+    signed_activity: pd.Series,
+    normalized_price_change: pd.Series,
+    impact_beta: pd.Series,
+    flow_direction: pd.Series,
+    window: int,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Return realized response, expected response and surprise in additive noise units.
+
+    Each completed bucket contributes the price change normalized by the noise state already known
+    for that bucket. Its expected contribution uses the positive impact beta estimated before that
+    bucket and that bucket's signed aggressive activity. Only after the full window is complete is
+    the common window direction applied. This keeps the realized and expected response in the same
+    additive units and avoids multiplying the entire window by a single endpoint beta.
+    """
+
+    if window < 2:
+        raise ValueError("impact response window must contain at least two completed bars")
+    expected_signed = (impact_beta * signed_activity).rolling(
+        window,
+        min_periods=window,
+    ).sum()
+    realized_signed = normalized_price_change.rolling(
+        window,
+        min_periods=window,
+    ).sum()
+    realized_directional = flow_direction * realized_signed
+    expected_directional = flow_direction * expected_signed
+    return (
+        realized_directional,
+        expected_directional,
+        realized_directional - expected_directional,
+    )
+
+
 def causal_flow_response_frame(
     data: pd.DataFrame,
     *,
@@ -262,8 +298,17 @@ def causal_flow_response_frame(
         directional_excursion > float(tick)
     )
     retention = retention.clip(lower=0.0, upper=1.0)
-    expected_response = impact_beta * cumulative_signed_activity.abs()
-    response_surprise = progress_noise - expected_response
+    (
+        directional_normalized_progress,
+        expected_response,
+        response_surprise,
+    ) = _causal_window_impact_response(
+        signed_activity=signed_activity,
+        normalized_price_change=normalized_price_change,
+        impact_beta=impact_beta,
+        flow_direction=flow_direction,
+        window=window,
+    )
 
     result = values.copy()
     result["causal_noise_reserve"] = noise
@@ -282,6 +327,7 @@ def causal_flow_response_frame(
     result["progress_noise"] = progress_noise
     result["excursion_noise"] = excursion_noise
     result["retention"] = retention
+    result["directional_normalized_progress"] = directional_normalized_progress
     result["expected_response"] = expected_response
     result["response_surprise"] = response_surprise
     result["flow_response_state"] = _classify_frame_states(result, config=config)
