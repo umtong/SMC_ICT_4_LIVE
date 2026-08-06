@@ -3,8 +3,10 @@
 
 This script performs no fills, order matching, position accounting, PnL
 calculation, or counterfactual backtest. It only joins completed NautilusTrader
-trade reports to the original checksum-verified one-minute market bars so entry
-timing failures can be inspected without guessing from terminal PnL.
+absorption/reclaim trade reports to the original checksum-verified one-minute
+market bars so entry-timing failures can be inspected without guessing from
+terminal PnL. Failed-absorption continuation trades use a different causal
+origin and are diagnosed by the generic excursion report instead.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ from data import load_bundle
 
 NS_PER_MINUTE = 60_000_000_000
 RETEST_FRACTIONS = (0.25, 0.50, 0.75)
+ABSORPTION_KIND = "ABSORPTION_RECLAIM"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -119,9 +122,15 @@ def _diagnose_stage(
     summaries: list[dict[str, Any]] = []
 
     for trade in trades.itertuples(index=False):
+        if str(trade.kind) != ABSORPTION_KIND:
+            continue
         scenario_id = str(trade.scenario_id)
         direction = str(trade.direction)
-        contact = _first_event(events, scenario_id, "UPPER_POOL_SWEEP_RECLAIM" if direction == "SHORT" else "LOWER_POOL_SWEEP_RECLAIM")
+        contact = _first_event(
+            events,
+            scenario_id,
+            "UPPER_POOL_SWEEP_RECLAIM" if direction == "SHORT" else "LOWER_POOL_SWEEP_RECLAIM",
+        )
         ready = _first_event(events, scenario_id, "CAUSAL_ROUTE_READY")
         confirm_ns = int(ready["event_time_ns"])
         opened_ns = int(trade.opened_ns)
@@ -139,6 +148,7 @@ def _diagnose_stage(
         ]
         summary: dict[str, Any] = {
             "scenario_id": scenario_id,
+            "kind": ABSORPTION_KIND,
             "direction": direction,
             "net_pnl": float(trade.net_pnl),
             "net_return_on_nav": float(trade.net_return_on_nav),
@@ -180,6 +190,7 @@ def _diagnose_stage(
             path_rows.append(
                 {
                     "scenario_id": scenario_id,
+                    "kind": ABSORPTION_KIND,
                     "direction": direction,
                     "net_pnl": float(trade.net_pnl),
                     "confirmation_ns": confirm_ns,
