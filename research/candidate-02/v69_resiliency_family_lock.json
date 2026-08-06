@@ -1,0 +1,93 @@
+{
+  "candidate_family": "candidate-02-v69-post-shock-liquidity-resiliency",
+  "status": "LOCKED_REVEALED_WEEK_FAMILY_BEFORE_NAUTILUSTRADER_RUN",
+  "locked_utc": "2026-08-06T06:02:00Z",
+  "performance_engine": "NautilusTrader 1.230.0 only",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "development_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2024-10-28T00:00:00Z",
+    "end_utc": "2024-11-04T00:00:00Z",
+    "status": "ALREADY_REVEALED_BY_V66",
+    "use": "controlled causal-family development only; never counted as a fresh random-week pass"
+  },
+  "causal_question": "After a completed aggressive-flow shock depletes liquidity in front of it, does the book rebuild quickly enough to absorb the shock, or remain depleted long enough for price discovery to continue?",
+  "base_scenario": {
+    "shock_window_minutes": 3,
+    "prior_window_minutes": 720,
+    "prior_minimum_minutes": 180,
+    "flow_abs_quantile": 0.65,
+    "volume_quantile": 0.60,
+    "return_abs_quantile": 0.60,
+    "depletion_abs_quantile": 0.60,
+    "slow_maximum_recovery_fraction": 0.50,
+    "continuation_minimum_retention": 0.55,
+    "continuation_minimum_directional_flow": -0.05,
+    "fast_minimum_recovery_fraction": 0.80,
+    "reversal_maximum_retention": 0.50,
+    "reversal_maximum_directional_flow": 0.0,
+    "continuation_invalidation_retention": 0.35,
+    "stop_buffer_atr": 0.10,
+    "continuation_target_extension": 0.75,
+    "reversal_target_overshoot": 0.0,
+    "atr_lookback_minutes": 60,
+    "cooldown_minutes": 10,
+    "maximum_holding_minutes": 90,
+    "minimum_cost_after_rr": 0.70,
+    "maximum_cost_after_rr": 5.0,
+    "flow_floor": 0.05
+  },
+  "prelocked_variants": [
+    {"label": "continuation_2m", "mode": "SLOW_RECOVERY_CONTINUATION", "recovery_window_minutes": 2},
+    {"label": "continuation_3m", "mode": "SLOW_RECOVERY_CONTINUATION", "recovery_window_minutes": 3},
+    {"label": "continuation_5m", "mode": "SLOW_RECOVERY_CONTINUATION", "recovery_window_minutes": 5},
+    {"label": "reversal_2m", "mode": "FAST_RECOVERY_REVERSAL", "recovery_window_minutes": 2},
+    {"label": "reversal_3m", "mode": "FAST_RECOVERY_REVERSAL", "recovery_window_minutes": 3},
+    {"label": "reversal_5m", "mode": "FAST_RECOVERY_REVERSAL", "recovery_window_minutes": 5}
+  ],
+  "signal_count_diagnostic_before_performance": {
+    "scope": "event definitions only; no fills, PnL or NAV",
+    "continuation": {"2m": 36, "3m": 40, "5m": 42},
+    "reversal": {"2m": 3, "3m": 3, "5m": 6}
+  },
+  "state_machine": {
+    "shock": "completed three-minute same-direction aggressive flow, above-threshold turnover and return, with front-side one-percent depth depletion",
+    "continuation_confirmation": "within the prelocked recovery window, less than half of depleted front depth is rebuilt, at least 55% of the shock displacement remains and directional flow is not materially negative",
+    "continuation_invalidation": "price loses the 35% retained-displacement level plus 0.10 ATR",
+    "continuation_target": "0.75 additional shock displacement beyond the shock close",
+    "reversal_confirmation": "at least 80% of depleted front depth rebuilds, at most half of the shock displacement remains and directional flow turns non-positive",
+    "reversal_invalidation": "beyond the completed shock extreme plus 0.10 ATR",
+    "reversal_target": "the pre-shock price origin"
+  },
+  "fixed_risk": {
+    "starting_nav_usdt": "100000",
+    "risk_fraction": "0.03",
+    "maximum_notional_cap": null,
+    "score_risk_multiplier": null
+  },
+  "fixed_costs": {
+    "entry_fee_rate": "0.00050",
+    "target_fee_rate": "0.00020",
+    "stop_fee_rate": "0.00050",
+    "entry_slippage_rate": "0.00015",
+    "stop_slippage_rate": "0.00025",
+    "market_impact_rate": "0.00005",
+    "funding_rate_allowance": "0.00010"
+  },
+  "pass_criteria": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor_after_cost": 1.50,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25
+  },
+  "family_promotion_rule": "A causal mode is eligible for a fresh first BTC week only when its central 3-minute recovery window and at least one adjacent 2- or 5-minute window satisfy every gate. An isolated passing point is rejected as unstable. The promoted rule remains the central 3-minute variant without parameter selection from the fresh week.",
+  "fresh_data_rule": "No new random-week data is collected unless the revealed-week plateau rule passes.",
+  "locked_files": [
+    "research/candidate-02/v69_resiliency_core.py",
+    "research/candidate-02/v69_nt_backtest.py",
+    "research/candidate-02/v69_resiliency_family_lock.json"
+  ]
+}
