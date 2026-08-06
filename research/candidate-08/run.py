@@ -308,7 +308,6 @@ def _create_engine(config: Mapping[str, Any], instrument: CryptoPerpetual) -> Ba
         config=BacktestEngineConfig(
             logging=LoggingConfig(log_level="ERROR"),
             run_analysis=True,
-            shutdown_on_error=True,
         )
     )
     engine.add_venue(
