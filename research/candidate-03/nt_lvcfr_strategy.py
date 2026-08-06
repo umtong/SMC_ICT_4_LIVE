@@ -572,7 +572,11 @@ class NTLvcfrStrategy(Strategy):
             instrument_id=self.config.instrument_id,
             order_side=side,
             quantity=quantity,
-            time_in_force=TimeInForce.FOK,
+            # A Binance market order is not a one-level all-or-none order.
+            # On L1 data NautilusTrader fills displayed top liquidity first and
+            # completes a GTC market remainder one tick through the book. The
+            # separately applied 1.5 bp impact remains the conservative fill cost.
+            time_in_force=TimeInForce.GTC,
             reduce_only=False,
             tags=["NT_LVCFR", pending.kind, pending.signal["scenario_id"]],
         )
@@ -739,9 +743,9 @@ class NTLvcfrStrategy(Strategy):
     def _handle_order_failure(self, client_order_id: Any, reason: str, timestamp_ns: int) -> None:
         if client_order_id == self.entry_order_id:
             if self.active is not None and self.active.entry_qty > 0:
-                # Defensive only: FOK entries should never partially fill. If a
-                # venue model reports a partial before cancellation, retain the
-                # native position and manage it rather than orphaning exposure.
+                # Defensive only: a venue can cancel a market remainder after
+                # partial execution. Retain and manage the native position rather
+                # than orphaning already filled exposure.
                 self.entry_order_id = None
                 return
             self.counters["entries_rejected"] += 1

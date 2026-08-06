@@ -58,6 +58,13 @@ class NativeEquityTests(unittest.TestCase):
         self.assertEqual(native_equity_amount(portfolio, "BINANCE", object()), 99_999.25)
 
 
+class EntryExecutionContractTests(unittest.TestCase):
+    def test_native_market_entry_is_gtc_not_one_level_fok(self) -> None:
+        source = Path(__file__).with_name("nt_lvcfr_strategy.py").read_text(encoding="utf-8")
+        self.assertIn("time_in_force=TimeInForce.GTC", source)
+        self.assertNotIn("time_in_force=TimeInForce.FOK", source)
+
+
 class PositionEventContractTests(unittest.TestCase):
     def test_strategy_uses_nautilus_1230_position_closed_fields(self) -> None:
         source = Path(__file__).with_name("nt_lvcfr_strategy.py").read_text(encoding="utf-8")

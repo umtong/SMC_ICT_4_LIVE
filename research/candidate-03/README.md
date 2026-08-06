@@ -81,7 +81,7 @@ checksum-verified Binance Vision data
 수량 = 계획 손실예산 ÷ 1개당 예상 손실
 ```
 
-모델 점수, 방향, 종목, 최근 손익에 따른 위험배수나 별도 명목한도는 없다. 신규 진입은 FOK 한 건만 제출하며, 미체결 신규 진입 주문과 보유 포지션을 동시에 유지하지 않는다. 청산 주문은 reduce-only다.
+모델 점수, 방향, 종목, 최근 손익에 따른 위험배수나 별도 명목한도는 없다. 신규 진입은 native GTC 시장가 한 건만 제출하며, NautilusTrader가 표시 top 수량을 먼저 체결하고 L1 잔량은 한 틱 불리하게 전량 체결한다. 진입 처리 중에는 다른 신규 진입을 제출하지 않으며, 청산 주문은 reduce-only다.
 
 ## 데이터와 실행 현실성
 
@@ -132,9 +132,9 @@ python research/candidate-03/gate_nt_lvcfr.py \
 ## 알려진 실패 조건
 
 - OI 감소가 실제 청산 연쇄가 아니라 포지션 교체·헤지 축소일 때.
-- top-of-book 공백이 매우 짧아 FOK 수량이 체결되지 않을 때. 이는 성과가 아니라 용량 실패로 기록한다.
+- 실제 다단계 호가 깊이와 NautilusTrader L1 시장가 잔량의 한 틱 체결 가정이 크게 다를 때. 이는 별도 깊이 데이터 검증 전 알려진 체결 근사다.
 - 뉴스성 정보 주문이 유동성 공백을 만들고 초기 극값을 지킨 뒤 급반전할 때.
-- Binance top-of-book만으로 다단계 호가 시장충격을 충분히 표현하지 못할 때. 1.5bp impact와 FOK top-size 제약으로 보수적으로 다룬다.
+- Binance top-of-book만으로 다단계 호가 시장충격을 충분히 표현하지 못할 때. 원본 bid/ask에 1.5bp impact를 선반영하고 NautilusTrader의 L1 잔량 한 틱 체결을 추가하지만 실제 깊이와 차이가 날 수 있다.
 - 실제 거래소의 주문 지연이 이번 중심 가정보다 커서 진입·청산 가격이 더 나빠질 때.
 - funding 급변이나 mark/index 괴리로 maintenance liquidation이 손절보다 먼저 발생할 때.
 
