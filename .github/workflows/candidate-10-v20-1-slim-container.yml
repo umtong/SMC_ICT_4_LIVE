@@ -1,0 +1,70 @@
+name: candidate-10-v20-1-slim-container
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/v20_1_patch/**
+      - research/candidate-10/V20_1_COST_CONTROL.md
+      - .github/workflows/candidate-10-v20-1-slim-container.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v20-1-slim-container-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-slim
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Extract immutable v20 signal source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/candidate10-v20 /tmp/candidate-10-v20-1-data
+          mkdir -p /tmp/candidate10-v20 artifacts/candidate-10-v20-1
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+          with zipfile.ZipFile(Path('research/candidate-10/v20_source.zip')) as archive:
+              archive.extractall(Path('/tmp/candidate10-v20'))
+          PY
+
+      - name: Test and run v20.1 cost control in pinned NautilusTrader image
+        shell: bash
+        env:
+          SMC4_PREBUILT_ENV: "1"
+          PYTHONPATH: ${{ github.workspace }}/research/candidate-10/v20_1_patch:/tmp/candidate10-v20:${{ github.workspace }}/research/candidate-10:${{ github.workspace }}/src
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile /tmp/candidate10-v20/*.py research/candidate-10/v20_1_patch/*.py
+          python -m unittest discover -s /tmp/candidate10-v20 -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-10/v20_1_patch -p 'test_*.py' -v
+          python /tmp/candidate10-v20/run_research.py \
+            --phase auto \
+            --output artifacts/candidate-10-v20-1 \
+            --data-root /tmp/candidate-10-v20-1-data
+
+      - name: Upload reproducible v20.1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v20-1-${{ github.sha }}
+          path: artifacts/candidate-10-v20-1
+          if-no-files-found: warn
+          retention-days: 14
