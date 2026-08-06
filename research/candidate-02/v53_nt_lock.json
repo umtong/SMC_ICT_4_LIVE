@@ -1,0 +1,43 @@
+{
+  "candidate": "candidate-02-full-auction-rotation-v53-nautilustrader",
+  "status": "LOCKED_BEFORE_FIRST_NAUTILUSTRADER_SCREEN",
+  "risk_fraction": 0.03,
+  "first_btc_week": "2025-03-03",
+  "engine_contract": {
+    "weekly_and_long_evaluation_engine": "NautilusTrader 1.230.0 only",
+    "orders": "NautilusTrader bracket order list",
+    "positions": "NautilusTrader portfolio",
+    "fees_and_execution_friction": "charged through NautilusTrader commission accounting",
+    "nav": "NautilusTrader account balance plus unrealized PnL",
+    "custom_fill_or_nav_simulator": false
+  },
+  "causal_sequence": [
+    "completed prior 60-minute low-efficiency auction",
+    "low VPIN and no extreme one-hour OI change",
+    "previous completed 5-minute bar extends beyond auction value with aligned aggressive flow",
+    "current completed 5-minute bar rotates toward the auction center",
+    "current depth imbalance supports the rotation",
+    "submit on the next one-minute executable opportunity",
+    "invalidate beyond the observed 20-minute excursion extreme plus ATR buffer",
+    "target the opposite-side liquidity of the same auction"
+  ],
+  "feature_availability": {
+    "source_bar_time": "5-minute bar open timestamp",
+    "decision_observed_time": "source timestamp plus five minutes",
+    "forward_columns_used": false,
+    "future_information_guard": "source_max_market_time_ns must be <= observed_time_ns"
+  },
+  "parameters": {
+    "auction_bars_5m": 12,
+    "z_min": 1.25,
+    "excursion_flow_min": 0.0,
+    "confirmation_depth_min": 0.0,
+    "target_extension": 1.0,
+    "minimum_cost_after_rr": 1.0,
+    "maximum_cost_after_rr": 3.0,
+    "stop_lookback_minutes": 20,
+    "stop_buffer_atr": 0.15,
+    "maximum_holding_minutes": 120
+  },
+  "promotion_rule": "Only a passing NautilusTrader first-week result may reveal and run the second week."
+}
