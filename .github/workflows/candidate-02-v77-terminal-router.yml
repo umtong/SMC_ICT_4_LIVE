@@ -1,101 +1,139 @@
-name: candidate-02-v77-terminal-router
+name: candidate-02-v102-nautilustrader-dispatch-runner
 
 on:
+  workflow_dispatch:
   push:
     branches: ["research/candidate-02"]
     paths:
       - ".github/workflows/candidate-02-v77-terminal-router.yml"
-      - "research/candidate-02/v77_first_week_decision.json"
-      - "research/candidate-02/v77_week2_decision.json"
-      - "research/candidate-02/v77_week3_decision.json"
-      - "research/candidate-02/v77_long_lock.json"
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
-  group: candidate-02-v77-terminal-router
-  cancel-in-progress: true
+  group: candidate-02-v102-nautilustrader-dispatch-runner
+  cancel-in-progress: false
 
 jobs:
-  route:
+  retained-impact-controls:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 55
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+      BRANCH: research/candidate-02
+
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - name: Wait only for an actual terminal transition
+      - name: Exit when the immutable v102 decision already exists
+        id: guard
+        shell: bash
+        run: |
+          if [[ -f research/candidate-02/v102_development_decision.json ]]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+            cat research/candidate-02/v102_development_decision.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify fixed engine and locked controls
+        if: steps.guard.outputs.skip != 'true'
         shell: bash
         run: |
           set -euo pipefail
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v102_impact_retention_core.py \
+            research/candidate-02/v102_nt_backtest.py \
+            research/candidate-02/v102_orchestrate.py \
+            .candidate-02-v75/collect_first_week.py \
+            .candidate-02-v75/build_features.py
+          python -m json.tool research/candidate-02/v102_base_config.json >/dev/null
+          python -m json.tool research/candidate-02/v102_development_lock.json >/dev/null
           python - <<'PY'
           import json
-          import subprocess
-          import time
-          from datetime import datetime, timezone
           from pathlib import Path
-
-          root = Path("research/candidate-02")
-          terminal = None
-          snapshots = {}
-
-          def read_json(name):
-              path = root / name
-              if not path.exists():
-                  return None
-              try:
-                  return json.loads(path.read_text(encoding="utf-8"))
-              except Exception as exc:
-                  return {"status": "MALFORMED_DECISION_FILE", "error": repr(exc), "path": str(path)}
-
-          for _ in range(48):
-              subprocess.run(["git", "fetch", "origin", "research/candidate-02"], check=True, stdout=subprocess.DEVNULL)
-              subprocess.run(["git", "reset", "--hard", "origin/research/candidate-02"], check=True, stdout=subprocess.DEVNULL)
-              first = read_json("v77_first_week_decision.json")
-              second = read_json("v77_week2_decision.json")
-              third = read_json("v77_week3_decision.json")
-              long_lock = read_json("v77_long_lock.json")
-              snapshots = {"first_week": first, "second_week": second, "third_week": third, "long_lock": long_lock}
-
-              if long_lock and long_lock.get("status") == "LOCKED_BEFORE_LONG_EVALUATION":
-                  terminal = "THREE_RANDOM_BTC_WEEKS_PASSED_LONG_EVALUATION_LOCKED"
-              elif third and str(third.get("status", "")).startswith(("REJECTED", "IMPLEMENTATION_ERROR")):
-                  terminal = str(third.get("status"))
-              elif second and str(second.get("status", "")).startswith(("REJECTED", "IMPLEMENTATION_ERROR")):
-                  terminal = str(second.get("status"))
-              elif first and str(first.get("status", "")).startswith(("REJECTED", "IMPLEMENTATION_ERROR")):
-                  terminal = str(first.get("status"))
-
-              if terminal:
-                  break
-              time.sleep(15)
-
-          if terminal is None:
-              terminal = "NON_TERMINAL_PIPELINE_TIMEOUT_DO_NOT_CLASSIFY_AS_STRATEGY_FAILURE"
-
-          output = {
-              "candidate_family": "candidate-02-v77-quarter-hour-metaorder-wave",
-              "status": terminal,
-              "recorded_utc": datetime.now(timezone.utc).isoformat(),
-              "performance_engine": "NautilusTrader 1.230.0",
-              "custom_backtest_engine": False,
-              "risk_fraction": 0.03,
-              "snapshots": snapshots,
-          }
-          path = root / "v77_terminal_status.json"
-          path.write_text(json.dumps(output, indent=2, sort_keys=True), encoding="utf-8")
-          print(json.dumps({"status": terminal}, indent=2))
+          lock=json.loads(Path('research/candidate-02/v102_development_lock.json').read_text())
+          cfg=json.loads(Path('research/candidate-02/v102_base_config.json').read_text())
+          assert lock['status']=='DEVELOPMENT_CONTROL_LOCKED'
+          assert lock['performance_engine']=='NautilusTrader 1.230.0'
+          assert lock['custom_backtest_engine'] is False
+          assert float(lock['risk_fraction'])==0.03
+          assert int(lock['global_pending_entry_plus_position_limit'])==1
+          assert [x['start_utc'] for x in lock['development_weeks']]==[
+              '2024-09-16T00:00:00Z','2024-01-29T00:00:00Z']
+          assert float(cfg['risk']['risk_fraction'])==0.03
+          assert cfg['risk']['maximum_notional_cap'] is None
+          assert cfg['risk']['score_risk_multiplier'] is None
+          assert int(cfg['scenario']['response_minutes'])==3
+          assert float(cfg['scenario']['minimum_impact_retention'])==1.0
+          assert float(cfg['scenario']['minimum_response_flow_alignment'])==0.0
           PY
 
-      - name: Commit terminal state when changed
+      - name: Run revealed controls and one-variable ablation through NautilusTrader
+        if: steps.guard.outputs.skip != 'true'
         shell: bash
         run: |
           set -euo pipefail
+          python research/candidate-02/v102_orchestrate.py | tee artifacts-v102-development.log
+          test -f artifacts-v102-development-decision.json
+
+      - name: Persist machine decision without altering the strategy
+        if: steps.guard.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp artifacts-v102-development-decision.json research/candidate-02/v102_development_decision.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add research/candidate-02/v77_terminal_status.json
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m "research(candidate-02): record v77 terminal state"
-          git push origin HEAD:research/candidate-02
+          git add research/candidate-02/v102_development_decision.json
+          git commit -m "research(candidate-02): record v102 NautilusTrader controls"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin "$BRANCH"
+            if git push origin HEAD:"$BRANCH"; then break; fi
+            sleep $((attempt * 3))
+          done
+
+      - name: Publish decision summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '# Candidate-02 v102 impact-retention controls'
+            if [[ -f artifacts-v102-development-decision.json ]]; then
+              echo '```json'
+              cat artifacts-v102-development-decision.json
+              echo '```'
+            elif [[ -f research/candidate-02/v102_development_decision.json ]]; then
+              echo '```json'
+              cat research/candidate-02/v102_development_decision.json
+              echo '```'
+            else
+              echo 'Implementation failed before a decision file was produced.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve NautilusTrader evidence
+        if: always() && steps.guard.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v102-development-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v102-*
+            artifacts-v102-development-decision.json
+            artifacts-v102-development.log
+            inputs/v102-week1/artifacts
+            inputs/v102-week2/artifacts
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
