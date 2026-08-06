@@ -1,0 +1,552 @@
+name: candidate-04-v34-staged-research
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v34-staged-research.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+jobs:
+  development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      development_pass: ${{ steps.staged.outputs.development_pass }}
+      failed_week: ${{ steps.staged.outputs.failed_week }}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore exact completed-data development observations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v27-cross-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Verify runtime and V34 causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/post_event_inventory_resolution_compiler.py \
+            research/candidate-04/summarize_candidate_week.py \
+            research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+            research/candidate-04/nt_rich_signal_strategy.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_post_event_inventory_resolution_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Run sequential development and controlled mechanism ablations
+        id: staged
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=(low_activity normal_basis stress_a)
+          build_starts=(2023-08-02 2023-12-16 2024-08-05)
+          build_ends=(2023-08-10 2023-12-24 2024-08-13)
+          eval_starts=(2023-08-04 2023-12-18 2024-08-07)
+          eval_ends=(2023-08-10 2023-12-24 2024-08-13)
+          mkdir -p artifacts/candidate-04-v34-development
+          failed=""
+
+          for i in "${!names[@]}"; do
+            name="${names[$i]}"
+            export C04_BUILD_START="${build_starts[$i]}"
+            export C04_BUILD_END="${build_ends[$i]}"
+            export C04_EVALUATION_START="${eval_starts[$i]}"
+            export C04_EVALUATION_END="${eval_ends[$i]}"
+            source="$(find sources -mindepth 1 -maxdepth 1 -type d -name "candidate-04-v27-cross-${name}-*" | head -n1)"
+            test -n "$source"
+            test -s "$source/source/rich/data_manifest.json"
+            root="artifacts/candidate-04-v34-development/$name"
+            mkdir -p "$root"
+
+            python research/candidate-04/post_event_inventory_resolution_compiler.py \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --rich-dir "$source/source/rich" \
+              --kline-dir ".cache/candidate-04-v34/$name/raw" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --output "$root/signals" \
+              --download-klines \
+              | tee "$root/signal_compiler_console.json"
+            test -s "$root/signals/signals.json"
+            test -s "$root/signals/summary.json"
+
+            C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$root/signals/signals.json" \
+            python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start "$C04_BUILD_START" \
+              --build-end "$C04_BUILD_END" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --cache ".cache/candidate-04-v34/$name/raw" \
+              --output "$root/nautilus" \
+              | tee "$root/nautilus_console.json"
+
+            python research/candidate-04/summarize_candidate_week.py \
+              --root "$root" \
+              --candidate candidate-04-v34-post-event-inventory-resolution \
+              --stage "development_${name}" \
+              --output "$root/summary.json"
+            passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$root/summary.json")"
+            if [[ "$passed" != "true" ]]; then
+              failed="$name"
+              break
+            fi
+          done
+
+          if [[ -z "$failed" ]]; then
+            echo "development_pass=true" >> "$GITHUB_OUTPUT"
+            echo "failed_week=" >> "$GITHUB_OUTPUT"
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-04-v34-development")
+          weeks = {
+              path.parent.name: json.loads(path.read_text())
+              for path in root.glob("*/summary.json")
+          }
+          report = {
+              "candidate": "candidate-04-v34-post-event-inventory-resolution",
+              "stage": "three_week_development",
+              "development_pass": True,
+              "weeks": weeks,
+              "next_stage": "predeclared_unopened_weeks",
+          }
+          (root / "research_decision.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+            exit 0
+          fi
+
+          echo "development_pass=false" >> "$GITHUB_OUTPUT"
+          echo "failed_week=$failed" >> "$GITHUB_OUTPUT"
+          root="artifacts/candidate-04-v34-development/$failed"
+          export C04_BUILD_START="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["build_start"])' "$root/signals/run_manifest.json" 2>/dev/null || true)"
+          # The exact dates are restored from the fixed arrays to avoid trusting metadata.
+          for i in "${!names[@]}"; do
+            if [[ "${names[$i]}" == "$failed" ]]; then
+              export C04_BUILD_START="${build_starts[$i]}"
+              export C04_BUILD_END="${build_ends[$i]}"
+              export C04_EVALUATION_START="${eval_starts[$i]}"
+              export C04_EVALUATION_END="${eval_ends[$i]}"
+            fi
+          done
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path("artifacts/candidate-04-v34-development") / os.environ["failed"] if "failed" in os.environ else None
+          PY
+          export V34_FAILED_ROOT="$root"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["V34_FAILED_ROOT"])
+          rows = json.loads((root / "signals/signals.json").read_text())
+          variants = {
+              "reversal_only": [
+                  row for row in rows
+                  if row["scenario"] in {
+                      "POST_ATTACK_LIQUIDATION_ABSORPTION_REVERSAL",
+                      "POST_ATTACK_TRAPPED_INVENTORY_REVERSAL",
+                  }
+              ],
+              "continuation_only": [
+                  row for row in rows
+                  if row["scenario"] == "INFORMED_INVENTORY_PULLBACK_CONTINUATION"
+              ],
+          }
+          for name, selected in variants.items():
+              path = root / "ablations" / name / "signals"
+              path.mkdir(parents=True, exist_ok=True)
+              (path / "signals.json").write_text(
+                  json.dumps(selected, indent=2, sort_keys=True) + "\n"
+              )
+              (path / "summary.json").write_text(
+                  json.dumps({
+                      "written_signals": len(selected),
+                      "route_counts": {
+                          "controlled_ablation": name,
+                          "removed_signals": len(rows) - len(selected),
+                      },
+                  }, indent=2, sort_keys=True) + "\n"
+              )
+          PY
+
+          for variant in reversal_only continuation_only; do
+            variant_root="$root/ablations/$variant"
+            C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$variant_root/signals/signals.json" \
+            python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start "$C04_BUILD_START" \
+              --build-end "$C04_BUILD_END" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --cache ".cache/candidate-04-v34/$failed/raw" \
+              --output "$variant_root/nautilus" \
+              | tee "$variant_root/nautilus_console.json"
+            python research/candidate-04/summarize_candidate_week.py \
+              --root "$variant_root" \
+              --candidate candidate-04-v34-post-event-inventory-resolution \
+              --stage "${failed}_${variant}_ablation" \
+              --output "$variant_root/summary.json"
+          done
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["V34_FAILED_ROOT"])
+          original = json.loads((root / "summary.json").read_text())
+          reversal = json.loads((root / "ablations/reversal_only/summary.json").read_text())
+          continuation = json.loads((root / "ablations/continuation_only/summary.json").read_text())
+          report = {
+              "candidate": "candidate-04-v34-post-event-inventory-resolution",
+              "stage": "controlled_failure_separation",
+              "development_pass": False,
+              "failed_week": root.name,
+              "original": original,
+              "reversal_only": reversal,
+              "continuation_only": continuation,
+              "interpretation": {
+                  "both_fail": (
+                      not reversal["candidate_pass"]
+                      and not continuation["candidate_pass"]
+                  ),
+                  "reversal_survives": reversal["candidate_pass"],
+                  "continuation_survives": continuation["candidate_pass"],
+              },
+              "next_stage": "discard_or_rebuild_from_the_surviving_mechanism",
+          }
+          target = root.parent / "research_decision.json"
+          target.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v34-development-${{ github.sha }}
+          path: artifacts/candidate-04-v34-development
+          if-no-files-found: error
+          retention-days: 90
+
+  unopened:
+    needs: development
+    if: needs.development.outputs.development_pass == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      unopened_pass: ${{ steps.evaluate.outputs.unopened_pass }}
+      long_build_start: ${{ steps.evaluate.outputs.long_build_start }}
+      long_start: ${{ steps.evaluate.outputs.long_start }}
+      long_end: ${{ steps.evaluate.outputs.long_end }}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Select unopened weeks before loading any market observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-04-v34-unopened
+          python - <<'PY'
+          import hashlib
+          import json
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          seed = "${{ github.sha }}:candidate-04-v34-unopened"
+          corpus = ""
+          for path in Path(".").rglob("*"):
+              if not path.is_file() or ".git" in path.parts:
+                  continue
+              try:
+                  corpus += path.read_text(errors="ignore")
+              except OSError:
+                  pass
+
+          candidates = []
+          cursor = date(2023, 1, 2)
+          end = date(2025, 12, 1)
+          while cursor <= end:
+              week_end = cursor + timedelta(days=6)
+              build_start = cursor - timedelta(days=2)
+              if str(cursor) not in corpus and str(week_end) not in corpus:
+                  rank = hashlib.sha256(
+                      f"{seed}:{cursor}".encode()
+                  ).hexdigest()
+                  candidates.append((rank, build_start, cursor, week_end))
+              cursor += timedelta(days=7)
+          candidates.sort()
+          if len(candidates) < 3:
+              raise SystemExit("not enough unopened weeks")
+          weeks = [
+              {
+                  "build_start": str(item[1]),
+                  "evaluation_start": str(item[2]),
+                  "evaluation_end": str(item[3]),
+              }
+              for item in candidates[:3]
+          ]
+
+          blocks = []
+          for start in (
+              date(2023, 7, 1),
+              date(2024, 1, 1),
+              date(2024, 7, 1),
+              date(2025, 1, 1),
+              date(2025, 7, 1),
+          ):
+              block_end = start + timedelta(days=90)
+              if all(
+                  not (
+                      date.fromisoformat(week["evaluation_start"]) <= block_end
+                      and date.fromisoformat(week["evaluation_end"]) >= start
+                  )
+                  for week in weeks
+              ):
+                  rank = hashlib.sha256(
+                      f"{seed}:long:{start}".encode()
+                  ).hexdigest()
+                  blocks.append((rank, start - timedelta(days=2), start, block_end))
+          blocks.sort()
+          if not blocks:
+              raise SystemExit("no disjoint long block")
+          selected = {
+              "selection_time": "before_market_data_access",
+              "source_commit": "${{ github.sha }}",
+              "selection_method": "sha256 rank over repository-unseen Monday weeks",
+              "weeks": weeks,
+              "long_evaluation": {
+                  "build_start": str(blocks[0][1]),
+                  "evaluation_start": str(blocks[0][2]),
+                  "evaluation_end": str(blocks[0][3]),
+              },
+          }
+          Path("artifacts/candidate-04-v34-unopened/selection.json").write_text(
+              json.dumps(selected, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(selected, indent=2, sort_keys=True))
+          PY
+
+      - name: Evaluate selected weeks sequentially through NautilusTrader
+        id: evaluate
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="artifacts/candidate-04-v34-unopened"
+          failed=""
+          for index in 0 1 2; do
+            export C04_BUILD_START="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["build_start"])' "$root/selection.json" "$index")"
+            export C04_EVALUATION_START="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["evaluation_start"])' "$root/selection.json" "$index")"
+            export C04_EVALUATION_END="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["weeks"][int(sys.argv[2])]["evaluation_end"])' "$root/selection.json" "$index")"
+            export C04_BUILD_END="$C04_EVALUATION_END"
+            week_root="$root/week_$((index + 1))"
+            mkdir -p "$week_root"
+
+            python research/candidate-04/rich_features_v2.py \
+              --start "$C04_BUILD_START" \
+              --end "$C04_BUILD_END" \
+              --cache ".cache/candidate-04-v34-unopened/week_$index/rich" \
+              --output "$week_root/rich"
+            test -s "$week_root/rich/data_manifest.json"
+
+            python research/candidate-04/post_event_inventory_resolution_compiler.py \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --rich-dir "$week_root/rich" \
+              --kline-dir ".cache/candidate-04-v34-unopened/week_$index/raw" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --output "$week_root/signals" \
+              --download-klines \
+              | tee "$week_root/signal_compiler_console.json"
+
+            C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$week_root/signals/signals.json" \
+            python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start "$C04_BUILD_START" \
+              --build-end "$C04_BUILD_END" \
+              --evaluation-start "$C04_EVALUATION_START" \
+              --evaluation-end "$C04_EVALUATION_END" \
+              --cache ".cache/candidate-04-v34-unopened/week_$index/raw" \
+              --output "$week_root/nautilus" \
+              | tee "$week_root/nautilus_console.json"
+
+            python research/candidate-04/summarize_candidate_week.py \
+              --root "$week_root" \
+              --candidate candidate-04-v34-post-event-inventory-resolution \
+              --stage "unopened_week_$((index + 1))" \
+              --output "$week_root/summary.json"
+            passed="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["candidate_pass"]).lower())' "$week_root/summary.json")"
+            if [[ "$passed" != "true" ]]; then
+              failed="week_$((index + 1))"
+              break
+            fi
+          done
+
+          if [[ -z "$failed" ]]; then
+            echo "unopened_pass=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "unopened_pass=false" >> "$GITHUB_OUTPUT"
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-04-v34-unopened")
+          selection = json.loads((root / "selection.json").read_text())
+          weeks = {
+              path.parent.name: json.loads(path.read_text())
+              for path in root.glob("week_*/summary.json")
+          }
+          passed = len(weeks) == 3 and all(
+              item["candidate_pass"] for item in weeks.values()
+          )
+          report = {
+              "candidate": "candidate-04-v34-post-event-inventory-resolution",
+              "source_commit": selection["source_commit"],
+              "selection": selection,
+              "weeks": weeks,
+              "unopened_pass": passed,
+              "candidate_modified_after_selection": False,
+              "next_stage": "long_evaluation" if passed else "controlled_failure_ablation",
+          }
+          (root / "research_decision.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          echo "long_build_start=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["long_evaluation"]["build_start"])' "$root/selection.json")" >> "$GITHUB_OUTPUT"
+          echo "long_start=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["long_evaluation"]["evaluation_start"])' "$root/selection.json")" >> "$GITHUB_OUTPUT"
+          echo "long_end=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["long_evaluation"]["evaluation_end"])' "$root/selection.json")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v34-unopened-${{ github.sha }}
+          path: artifacts/candidate-04-v34-unopened
+          if-no-files-found: error
+          retention-days: 90
+
+  long_evaluation:
+    needs: unopened
+    if: needs.unopened.outputs.unopened_pass == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      C04_BUILD_START: ${{ needs.unopened.outputs.long_build_start }}
+      C04_EVALUATION_START: ${{ needs.unopened.outputs.long_start }}
+      C04_EVALUATION_END: ${{ needs.unopened.outputs.long_end }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Run frozen 91-day long evaluation through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          export C04_BUILD_END="$C04_EVALUATION_END"
+          root="artifacts/candidate-04-v34-long"
+          mkdir -p "$root"
+          smc4 doctor
+          python research/candidate-04/rich_features_v2.py \
+            --start "$C04_BUILD_START" \
+            --end "$C04_BUILD_END" \
+            --cache ".cache/candidate-04-v34-long/rich" \
+            --output "$root/rich"
+          python research/candidate-04/post_event_inventory_resolution_compiler.py \
+            --base-config research/candidate-04/inventory_transfer_config.json \
+            --impact-config research/candidate-04/impact_exhaustion_config.json \
+            --router-config research/candidate-04/auction_activity_router_config.json \
+            --rich-dir "$root/rich" \
+            --kline-dir ".cache/candidate-04-v34-long/raw" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --output "$root/signals" \
+            --download-klines \
+            | tee "$root/signal_compiler_console.json"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$root/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v31_exact_causal_target.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start "$C04_BUILD_START" \
+            --build-end "$C04_BUILD_END" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --cache ".cache/candidate-04-v34-long/raw" \
+            --output "$root/nautilus" \
+            | tee "$root/nautilus_console.json"
+          python research/candidate-04/summarize_candidate_week.py \
+            --root "$root" \
+            --candidate candidate-04-v34-post-event-inventory-resolution \
+            --stage long_91_day_evaluation \
+            --min-trades 90 \
+            --min-active-days 45 \
+            --min-win-rate 0.55 \
+            --min-geometric-daily 0.01 \
+            --output "$root/summary.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-04-v34-long")
+          summary = json.loads((root / "summary.json").read_text())
+          report = {
+              "candidate": "candidate-04-v34-post-event-inventory-resolution",
+              "final_validation_completed": True,
+              "project_target_reached": summary["candidate_pass"],
+              "summary": summary,
+              "source_commit": "${{ github.sha }}",
+              "candidate_modified_after_unopened_weeks": False,
+          }
+          (root / "final_decision.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v34-long-${{ github.sha }}
+          path: artifacts/candidate-04-v34-long
+          if-no-files-found: error
+          retention-days: 90
