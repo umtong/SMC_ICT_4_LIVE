@@ -47,7 +47,7 @@ jobs:
       - name: Verify runtime and single confirmation control
         run: |
           smc4 doctor
-          python -m py_compile research/candidate-02/v67_two_close_acceptance_core.py research/candidate-02/v67_nt_backtest.py .candidate-02-v67/collect_revealed_klines.py
+          python -m py_compile research/candidate-02/v67_two_close_acceptance_core.py research/candidate-02/v67_nt_backtest.py .candidate-02-v67/collect_revealed_klines.py .candidate-02-v67/diagnose_funnel.py
           python -m json.tool research/candidate-02/v67_development_config.json >/dev/null
           python -m json.tool research/candidate-02/v67_control_lock.json >/dev/null
           python - <<'PY'
@@ -65,6 +65,8 @@ jobs:
           PY
       - name: Recollect revealed one-minute bars
         run: python .candidate-02-v67/collect_revealed_klines.py
+      - name: Count causal event funnel only
+        run: python .candidate-02-v67/diagnose_funnel.py --config research/candidate-02/v67_development_config.json --input-root inputs/v67-control --output artifacts/candidate-02-v67-funnel.json
       - name: Run v67 through NautilusTrader
         shell: bash
         run: |
@@ -82,5 +84,6 @@ jobs:
           name: candidate-02-v67-control-${{ github.sha }}
           path: |
             artifacts/candidate-02-v67-control
+            artifacts/candidate-02-v67-funnel.json
             artifacts-v67-console.log
           retention-days: 30
