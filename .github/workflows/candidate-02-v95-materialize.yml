@@ -22,7 +22,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          payload=.candidate-02-v95/payload.tar.gz
+          test "$(find .candidate-02-v95 -maxdepth 1 -name 'payload.part*' -type f | wc -l)" -eq 6
+          test "$(cat .candidate-02-v95/payload.part* | wc -c)" -eq 22248
+          cat .candidate-02-v95/payload.part* | base64 --decode > /tmp/v95_payload.tar.gz
+          payload=/tmp/v95_payload.tar.gz
           test "$(sha256sum "$payload" | cut -d' ' -f1)" = "5fb79dbde6f55d0a1dd04a97c0a0a6056b5d7871b144b8a69ec3e2a48e5daa42"
           tar -tzf "$payload"
           tar -xzf "$payload"
