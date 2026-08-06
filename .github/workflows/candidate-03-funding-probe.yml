@@ -1,4 +1,4 @@
-name: candidate-03-funding-catalog-probe
+name: candidate-03-backtest-node-source-probe
 
 on:
   push:
@@ -21,113 +21,78 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Inspect installed Nautilus funding persistence path
+      - name: Extract installed BacktestNode source and signatures
         shell: bash
         run: |
           set -euo pipefail
           IMAGE=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-          mkdir -p artifacts/candidate-03/funding-probe
-          chmod -R 0777 artifacts
+          out=artifacts/candidate-03/node-probe
+          mkdir -p "$out" && chmod -R 0777 artifacts
           docker pull "$IMAGE"
           docker run --rm -v "$PWD:/workspace" -w /workspace "$IMAGE" bash -c '
             python - <<"PY"
           import inspect
           import pathlib
-          import tempfile
+          import shutil
           import traceback
-          import nautilus_trader
-          from decimal import Decimal
-          from nautilus_trader.model.data import FundingRateUpdate
-          from nautilus_trader.model.identifiers import InstrumentId
-          from nautilus_trader.persistence.catalog import ParquetDataCatalog
+          import nautilus_trader.backtest.node as node_module
+          import nautilus_trader.backtest.config as config_module
+          from nautilus_trader.backtest.engine import BacktestEngine
+          from nautilus_trader.backtest.node import BacktestDataConfig, BacktestNode
 
-          out = pathlib.Path("/workspace/artifacts/candidate-03/funding-probe/probe.txt")
+          out = pathlib.Path("/workspace/artifacts/candidate-03/node-probe")
           lines = []
           def emit(value=""):
               text = str(value)
               lines.append(text)
               print(text)
 
-          emit("nautilus=" + str(nautilus_trader.__version__))
-          emit("FundingRateUpdate_module=" + str(FundingRateUpdate.__module__))
-          keywords = ("arrow", "record", "schema", "json", "type_name", "field", "metadata")
-          attrs = [name for name in dir(FundingRateUpdate) if any(key in name.lower() for key in keywords)]
-          emit("FundingRateUpdate_attrs=" + repr(attrs))
-          for name in ("get_fields", "get_metadata", "fully_qualified_name", "type_name_static", "decode_record_batch_py", "encode_record_batch_py", "from_json"):
-              emit("attr " + name + ": " + repr(getattr(FundingRateUpdate, name, None)))
+          for module in (node_module, config_module):
+              path = pathlib.Path(module.__file__)
+              emit("MODULE " + module.__name__ + " " + str(path))
+              if path.exists() and path.suffix in {".py", ".pyx", ".pxd"}:
+                  shutil.copy2(path, out / path.name)
 
-          try:
-              from nautilus_trader.model import register_custom_data_class
-              emit("register_custom_data_class=" + repr(register_custom_data_class))
+          for target in (BacktestDataConfig, BacktestNode, BacktestEngine):
+              emit("TARGET " + repr(target))
               try:
-                  register_custom_data_class(FundingRateUpdate)
-                  emit("register_custom_data_class FundingRateUpdate: SUCCESS")
+                  emit("SIGNATURE " + str(inspect.signature(target)))
               except Exception as exc:
-                  emit("register_custom_data_class FundingRateUpdate: " + type(exc).__name__ + ": " + str(exc))
-          except Exception as exc:
-              emit("registration import failed: " + type(exc).__name__ + ": " + str(exc))
-
-          try:
-              import nautilus_trader.persistence.catalog.parquet as parquet_module
-              emit("parquet_module=" + str(parquet_module.__file__))
-              for name in ("backend_session", "_register_directory_table", "write_data", "_write_chunk"):
-                  target = getattr(ParquetDataCatalog, name, None)
-                  emit("--- SOURCE " + name + " ---")
-                  try:
-                      emit(inspect.getsource(target))
-                  except Exception as exc:
-                      emit("source unavailable: " + type(exc).__name__ + ": " + str(exc))
-          except Exception:
-              emit(traceback.format_exc())
-
-          root = pathlib.Path(nautilus_trader.__file__).resolve().parent
-          emit("package_root=" + str(root))
-          for path in sorted(root.rglob("*.py")):
+                  emit("SIGNATURE_ERROR " + type(exc).__name__ + ": " + str(exc))
+              emit("ATTRS " + repr([name for name in dir(target) if any(token in name.lower() for token in ("build", "run", "engine", "data", "catalog", "load", "add", "config"))]))
               try:
-                  text = path.read_text(encoding="utf-8")
-              except Exception:
+                  emit(inspect.getsource(target))
+              except Exception as exc:
+                  emit("SOURCE_ERROR " + type(exc).__name__ + ": " + str(exc))
+
+          for name in ("build", "run", "get_engine", "_create_engine", "_load_data", "_run", "_run_streaming", "_run_oneshot"):
+              target = getattr(BacktestNode, name, None)
+              if target is None:
                   continue
-              if "FundingRateUpdate" in text or "funding_rate_update" in text:
-                  emit("--- MATCH FILE " + str(path.relative_to(root)) + " ---")
-                  for no, line in enumerate(text.splitlines(), 1):
-                      if "FundingRateUpdate" in line or "funding_rate_update" in line or "CUSTOM_DATA_TYPES" in line:
-                          emit(str(no) + ": " + line)
+              emit("METHOD " + name)
+              try:
+                  emit(inspect.getsource(target))
+              except Exception as exc:
+                  emit("SOURCE_ERROR " + type(exc).__name__ + ": " + str(exc))
 
-          temp = tempfile.mkdtemp(prefix="nt-funding-probe-")
-          catalog = ParquetDataCatalog(temp)
-          try:
-              item = FundingRateUpdate(
-                  InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),
-                  Decimal("0.0001"),
-                  1,
-                  1,
-                  interval=480,
-                  next_funding_ns=2,
-              )
-              emit("sample=" + repr(item))
+          for name in ("add_data", "run", "get_result"):
+              target = getattr(BacktestEngine, name, None)
+              emit("ENGINE_METHOD " + name + " " + repr(target))
               try:
-                  catalog.write_data([item])
-                  emit("write_data: SUCCESS")
+                  emit("SIG " + str(inspect.signature(target)))
               except Exception as exc:
-                  emit("write_data: " + type(exc).__name__ + ": " + str(exc))
-                  emit(traceback.format_exc())
-              try:
-                  emit("catalog files=" + repr(list(pathlib.Path(temp).rglob("*"))))
-                  loaded = catalog.funding_rates(instrument_ids=["BTCUSDT-PERP.BINANCE"])
-                  emit("catalog.funding_rates: SUCCESS " + repr(loaded))
-              except Exception as exc:
-                  emit("catalog.funding_rates: " + type(exc).__name__ + ": " + str(exc))
-                  emit(traceback.format_exc())
-          except Exception as exc:
-              emit("sample construction failed: " + type(exc).__name__ + ": " + str(exc))
-              emit(traceback.format_exc())
-          out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                  emit("SIG_ERROR " + type(exc).__name__ + ": " + str(exc))
+
+          emit("BacktestDataConfig fields=" + repr(getattr(BacktestDataConfig, "__struct_fields__", None)))
+          emit("BacktestDataConfig annotations=" + repr(getattr(BacktestDataConfig, "__annotations__", None)))
+          emit("BacktestDataConfig defaults=" + repr(getattr(BacktestDataConfig, "__struct_defaults__", None)))
+          (out / "probe.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
           '
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-03-funding-probe-${{ github.sha }}
-          path: artifacts/candidate-03/funding-probe/probe.txt
+          name: candidate-03-node-source-${{ github.sha }}
+          path: artifacts/candidate-03/node-probe
           if-no-files-found: error
           retention-days: 3
