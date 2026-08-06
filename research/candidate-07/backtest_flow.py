@@ -1,0 +1,219 @@
+"""NautilusTrader-only aggressor-flow replay for candidate-07."""
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+import json
+from pathlib import Path
+
+import pandas as pd
+
+import backtest as base
+from data import write_bundle_summary
+from data_flow import load_flow_bundle
+from flow_data import AggressorFlow
+from strategy_flow import Candidate07FlowStrategy, Candidate07FlowStrategyConfig
+
+from nautilus_trader.backtest.engine import BacktestEngine
+from nautilus_trader.backtest.models import FillModel, MakerTakerFeeModel
+from nautilus_trader.config import BacktestEngineConfig, LoggingConfig
+from nautilus_trader.model.data import Bar, BarType
+try:
+    from nautilus_trader.model.data import FundingRateUpdate
+except ImportError:  # pragma: no cover
+    from nautilus_trader.model.data.funding import FundingRateUpdate
+from nautilus_trader.model.enums import AccountType, OmsType
+from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.objects import Currency, Money
+from nautilus_trader.test_kit.providers import TestInstrumentProvider
+
+from smc_ict_4.event_log import write_events
+from smc_ict_4.manifest import create_run_manifest, write_json_atomic
+
+
+def run_week(
+    *,
+    config_path: Path,
+    stage: str,
+    start: date,
+    end: date,
+    output: Path,
+    cache_root: Path,
+) -> dict:
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    output.mkdir(parents=True, exist_ok=True)
+    data_manifest_path = output / "data_manifest.json"
+    bundle = load_flow_bundle(
+        symbol=str(config["symbol"]),
+        trade_start=start,
+        trade_end=end,
+        warmup_days=int(config["warmup_days"]),
+        cache_root=cache_root,
+        manifest_destination=data_manifest_path,
+    )
+    write_bundle_summary(output / "data_summary.json", bundle)
+
+    instrument = TestInstrumentProvider.btcusdt_perp_binance()
+    bar_type = BarType.from_str(f"{instrument.id}-1-MINUTE-LAST-EXTERNAL")
+    stream = []
+    bars_count = 0
+    flow_count = 0
+    for row in bundle.frame.itertuples():
+        flow_ts = int(row.Index.value)
+        stream.append(
+            AggressorFlow(
+                instrument_id=instrument.id,
+                total_volume=float(row.volume),
+                taker_buy_volume=float(row.taker_buy_base),
+                ts_event=flow_ts,
+                ts_init=flow_ts,
+            )
+        )
+        flow_count += 1
+        bar_ts = flow_ts + 1
+        stream.append(
+            Bar(
+                bar_type=bar_type,
+                open=instrument.make_price(row.open),
+                high=instrument.make_price(row.high),
+                low=instrument.make_price(row.low),
+                close=instrument.make_price(row.close),
+                volume=instrument.make_qty(row.volume),
+                ts_event=bar_ts,
+                ts_init=bar_ts,
+            )
+        )
+        bars_count += 1
+
+    funding_count = 0
+    for point in bundle.funding:
+        stream.append(
+            FundingRateUpdate(
+                instrument_id=instrument.id,
+                rate=point.rate,
+                interval=point.interval_minutes,
+                next_funding_ns=None,
+                ts_event=point.ts_event_ns,
+                ts_init=point.ts_event_ns,
+            )
+        )
+        funding_count += 1
+    stream.sort(
+        key=lambda item: (
+            int(item.ts_event),
+            0 if isinstance(item, AggressorFlow) else 1,
+        )
+    )
+
+    engine = BacktestEngine(
+        config=BacktestEngineConfig(
+            logging=LoggingConfig(log_level="ERROR"),
+        )
+    )
+    venue = Venue("BINANCE")
+    usdt = Currency.from_str("USDT")
+    fill_model = FillModel(
+        prob_fill_on_limit=float(config["fill_model"]["prob_fill_on_limit"]),
+        prob_slippage=float(config["fill_model"]["prob_slippage"]),
+        random_seed=int(config["fill_model"]["random_seed"]),
+    )
+    strategy = Candidate07FlowStrategy(
+        Candidate07FlowStrategyConfig(
+            instrument_id=instrument.id,
+            bar_type=bar_type,
+            trade_start_ns=base._utc_ns(start),
+            trade_end_ns=base._utc_ns(end),
+            initial_nav=Decimal(str(config["initial_nav"])),
+            risk_fraction=Decimal(str(config["risk_fraction"])),
+            risk_funding_reserve_bps=Decimal(str(config["risk_funding_reserve_bps"])),
+            max_hold_minutes=int(config["max_hold_minutes"]),
+            logic_json=json.dumps(config["logic"], sort_keys=True),
+            flow_logic_json=json.dumps(config["flow_logic"], sort_keys=True),
+        )
+    )
+
+    try:
+        engine.add_venue(
+            venue=venue,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            starting_balances=[Money(Decimal(str(config["initial_nav"])), usdt)],
+            base_currency=usdt,
+            default_leverage=Decimal(str(config["venue"]["default_leverage"])),
+            fill_model=fill_model,
+            fee_model=MakerTakerFeeModel(),
+            bar_adaptive_high_low_ordering=bool(config["venue"]["bar_adaptive_high_low_ordering"]),
+            use_position_ids=True,
+            use_reduce_only=True,
+            reject_stop_orders=False,
+        )
+        engine.add_instrument(instrument)
+        engine.add_data(stream)
+        engine.add_strategy(strategy)
+        engine.run()
+
+        fills = engine.trader.generate_order_fills_report()
+        positions = engine.trader.generate_positions_report()
+        account = engine.trader.generate_account_report(venue)
+        fills.to_csv(output / "fills.csv", index=False)
+        positions.to_csv(output / "positions.csv", index=False)
+        account.to_csv(output / "account.csv", index=False)
+        pd.DataFrame(strategy.nav_series).to_csv(output / "nav.csv", index=False)
+        pd.DataFrame(strategy.trade_diagnostics).to_csv(output / "trades.csv", index=False)
+        write_events(output / "events.jsonl", strategy.research_events)
+        write_json_atomic(
+            output / "scenario_diagnostics.json",
+            {"observations": list(strategy.scenario_diagnostics)},
+        )
+        metrics = base._metrics(
+            config=config,
+            stage=stage,
+            start=start,
+            end=end,
+            strategy=strategy,
+            fills=fills,
+            positions=positions,
+            account=account,
+            funding_points=funding_count,
+        )
+        metrics["execution_contract"].update(
+            {
+                "signal_state": "completed OHLCV plus Binance taker-buy base volume carried as NautilusTrader custom Data",
+                "pool_identity": "external level formation timestamp; one causal contact per formed pool",
+                "bar_ordering": "aggressor-flow event at completed-minute timestamp, matching bar one nanosecond later",
+            }
+        )
+        metrics["flow_contract"] = {
+            "total_flow_events": flow_count,
+            "consumed_pools": strategy.router.consumed_pool_count,
+            "generic_breakout_continuation": False,
+            "global_direction_lock": False,
+        }
+        write_json_atomic(output / "metrics.json", base._json_safe(metrics))
+        write_json_atomic(
+            output / "run.json",
+            create_run_manifest(
+                run_id=f"candidate-07-flow-{stage}-{start.isoformat()}",
+                candidate="candidate-07",
+                config_path=config_path,
+                data_manifest_path=data_manifest_path,
+                extra={
+                    "stage": stage,
+                    "start": start.isoformat(),
+                    "end_exclusive": end.isoformat(),
+                    "instrument_id": str(instrument.id),
+                    "bar_type": str(bar_type),
+                    "engine": "NautilusTrader BacktestEngine",
+                    "bars": bars_count,
+                    "aggressor_flow_events": flow_count,
+                    "funding_updates": funding_count,
+                    "signal_model": "consumed-pool aggressor-flow absorption",
+                },
+            ),
+        )
+        return metrics
+    finally:
+        engine.dispose()
+
+
+__all__ = ["run_week"]

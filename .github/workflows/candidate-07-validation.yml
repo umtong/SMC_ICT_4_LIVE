@@ -13,9 +13,9 @@ permissions:
   packages: read
 
 jobs:
-  staged-btc-weeks:
+  btc-week-1:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 60
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -36,61 +36,33 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .research-data/candidate-07
-          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          key: candidate-07-flow-week1-v1
           restore-keys: |
+            candidate-07-btcusdt-2024-through-2026h1-v1
             candidate-07-btcusdt-three-weeks-v3
-            candidate-07-btcusdt-three-weeks-v2
-            candidate-07-btcusdt-three-weeks-v1
             candidate-07-btcusdt-week1-v1
 
-      - name: NautilusTrader frozen staged BTC replays and long evaluation
+      - name: NautilusTrader frozen BTC week-1 replay
         run: >-
           python research/candidate-07/staged_cascade.py
           --config research/candidate-07/config.json
           --week-plan research/candidate-07/week_plan.json
           --output artifacts/candidate-07
           --data-root .research-data/candidate-07
-          --max-weeks 3
-          --run-long
+          --max-weeks 1
 
-      - name: Extract post-confirmation market paths
-        if: always()
-        run: >-
-          python research/candidate-07/diagnose_entry_paths.py
-          --config research/candidate-07/config.json
-          --output artifacts/candidate-07
-          --data-root .research-data/candidate-07
-
-      - name: Measure full-hold excursions
-        if: always()
-        run: >-
-          python research/candidate-07/diagnose_excursions.py
-          --config research/candidate-07/config.json
-          --output artifacts/candidate-07
-          --data-root .research-data/candidate-07
-
-      - name: Diagnose target-path protection state
-        if: always()
-        run: >-
-          python research/candidate-07/diagnose_progress_lock.py
-          --config research/candidate-07/config.json
-          --output artifacts/candidate-07
-          --data-root .research-data/candidate-07
-
-      - name: Print machine-readable results
+      - name: Print machine-readable result
         if: always()
         run: |
           test -f artifacts/candidate-07/pipeline_summary.json
           cat artifacts/candidate-07/pipeline_summary.json
-          find artifacts/candidate-07 -name metrics.json -print -exec cat {} \;
-          find artifacts/candidate-07 -name excursion_summary.json -print -exec cat {} \;
-          find artifacts/candidate-07 -name progress_lock_summary.json -print -exec cat {} \;
+          cat artifacts/candidate-07/week-1/metrics.json
 
       - name: Preserve complete replay evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-long-${{ github.sha }}
+          name: candidate-07-flow-week1-${{ github.sha }}
           path: artifacts/candidate-07
           retention-days: 14
           if-no-files-found: error
