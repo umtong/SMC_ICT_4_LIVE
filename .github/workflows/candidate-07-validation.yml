@@ -51,12 +51,23 @@ jobs:
           --data-root .research-data/candidate-07
           --max-weeks 1
 
+      - name: Diagnose failed absorption and accepted continuation paths
+        if: always()
+        run: >-
+          python research/candidate-07/diagnose_failed_flow.py
+          --config research/candidate-07/config.json
+          --stage week-1
+          --output artifacts/candidate-07
+          --data-root .research-data/candidate-07
+          --lookahead-minutes 120
+
       - name: Print machine-readable result
         if: always()
         run: |
           test -f artifacts/candidate-07/pipeline_summary.json
           cat artifacts/candidate-07/pipeline_summary.json
           cat artifacts/candidate-07/week-1/metrics.json
+          cat artifacts/candidate-07/week-1/failed_flow_diagnostic.json
 
       - name: Preserve complete replay evidence
         if: always()
