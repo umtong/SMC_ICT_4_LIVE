@@ -30,6 +30,7 @@ jobs:
       CACHE: /tmp/candidate-08-aggtrade-acceptance-data
       CONFIG: research/candidate-08/config_auction_router_nautilus_v1.json
       PATTERN: research/candidate-08/config_range_fvg.json
+      AUCTION_ROUTER_FAMILY_MODE: both
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,6 +72,9 @@ jobs:
           assert "require_contraction=False" in detector
           assert "_normalize_intent_scenario_families" in wrapper
           assert 'summary["by_scenario_family"]' in wrapper
+          assert 'AUCTION_ROUTER_FAMILY_MODE: both' in workflow
+          assert 'rm -rf "$FIRST_OUTPUT"' in workflow
+          assert 'rm -rf "$SCREEN_OUTPUT"' in workflow
           assert "Generalize scenario reporting" not in workflow
           assert '"risk_fraction": 0.03' in config
           assert '"default_leverage": 125' in config
@@ -92,11 +96,13 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          rm -rf "$FIRST_OUTPUT"
           mkdir -p "$FIRST_OUTPUT"
           cat > "$FIRST_OUTPUT/request.json" <<'JSON'
           {
             "suite": "first",
             "ablation": "none",
+            "auction_family_mode": "both",
             "output_name": "first-v2",
             "promotable": true,
             "scenario_contract": "auction-router-v1"
@@ -132,11 +138,13 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          rm -rf "$SCREEN_OUTPUT"
           mkdir -p "$SCREEN_OUTPUT"
           cat > "$SCREEN_OUTPUT/request.json" <<'JSON'
           {
             "suite": "screen",
             "ablation": "none",
+            "auction_family_mode": "both",
             "output_name": "screen-v1",
             "promotable": true,
             "scenario_contract": "auction-router-v1",
@@ -177,6 +185,7 @@ jobs:
           screen = root / "screen-v1" / "suite_metrics.json"
           decision = {
               "candidate": "candidate-08-auction-router-nautilus-v1",
+              "auction_family_mode": "both",
               "first_runner_status": os.environ.get("FIRST_STATUS", ""),
               "first_gate_passed": os.environ.get("FIRST_PASSED", "false") == "true",
               "screen_runner_status": os.environ.get("SCREEN_STATUS", ""),
