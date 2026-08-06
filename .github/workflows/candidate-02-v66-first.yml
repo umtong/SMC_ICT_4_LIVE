@@ -1,0 +1,122 @@
+name: candidate-02-v66-nautilustrader-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v66_*.py"
+      - "research/candidate-02/v66_*.json"
+      - ".candidate-02-v66/**"
+      - ".github/workflows/candidate-02-v66-first.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  first-week-direct-microstructure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - name: Checkout prospectively locked v66 family
+        uses: actions/checkout@v4
+
+      - name: Verify fixed runtime and pre-collection lock
+        run: |
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v66_depth_flow_core.py \
+            research/candidate-02/v66_nt_backtest.py \
+            .candidate-02-v66/collect_first_week.py \
+            .candidate-02-v66/build_features.py
+          python -m json.tool research/candidate-02/v66_depth_flow_family_lock.json >/dev/null
+          python -m json.tool research/candidate-02/v66_withdrawal_discovery_config.json >/dev/null
+          python -m json.tool research/candidate-02/v66_replenishment_absorption_config.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path("research/candidate-02/v66_depth_flow_family_lock.json").read_text())
+          assert lock["status"] == "LOCKED_BEFORE_FIRST_WEEK_DIRECT_MICROSTRUCTURE_COLLECTION"
+          assert lock["custom_backtest_engine"] is False
+          assert lock["first_week"]["start_utc"] == "2024-10-28T00:00:00Z"
+          assert lock["first_week"]["raw_data_status_at_lock"] == "NOT_COLLECTED_FOR_V66"
+          assert float(lock["risk_fraction"]) == 0.03
+          for path in ("research/candidate-02/v66_withdrawal_discovery_config.json","research/candidate-02/v66_replenishment_absorption_config.json"):
+              cfg=json.loads(Path(path).read_text())
+              assert cfg["validation"]["first_week_start"] == "2024-10-28"
+              assert float(cfg["risk"]["risk_fraction"]) == 0.03
+              assert cfg["risk"]["maximum_notional_cap"] is None
+              assert cfg["risk"]["score_risk_multiplier"] is None
+          PY
+
+      - name: Collect only locked aggTrades bookDepth and one-minute bars
+        run: python .candidate-02-v66/collect_first_week.py
+
+      - name: Build causal completed-minute features
+        run: python .candidate-02-v66/build_features.py
+
+      - name: Run both states in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A configs=(
+            [withdrawal]=research/candidate-02/v66_withdrawal_discovery_config.json
+            [absorption]=research/candidate-02/v66_replenishment_absorption_config.json
+          )
+          for label in withdrawal absorption; do
+            output="artifacts/candidate-02-v66-${label}-first-week"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v66_nt_backtest.py \
+              --config "${configs[$label]}" \
+              --input-root inputs/v66-first-week \
+              --output "$output" \
+              | tee "artifacts-v66-${label}-console.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish first-week matrix
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          print("# Candidate-02 v66 direct depth-flow first BTC week")
+          print("| Mode | Decision | Trades/day | Win | PF | Growth/day | MDD |")
+          print("|---|---:|---:|---:|---:|---:|---:|")
+          for label in ("withdrawal","absorption"):
+              p=Path(f"artifacts/candidate-02-v66-{label}-first-week/metrics.json")
+              if not p.exists():
+                  print(f"| {label} | implementation error | - | - | - | - | - |")
+                  continue
+              m=json.loads(p.read_text())
+              print(f"| {label} | {m['decision']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          PY
+
+      - name: Preserve manifests features and NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v66-first-week-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v66-withdrawal-first-week
+            artifacts/candidate-02-v66-absorption-first-week
+            artifacts-v66-withdrawal-console.log
+            artifacts-v66-absorption-console.log
+            inputs/v66-first-week/artifacts/candidate-02-v66-first-week-data
+            inputs/v66-first-week/candidate-02-v48-first-week
+          if-no-files-found: warn
+          retention-days: 30
