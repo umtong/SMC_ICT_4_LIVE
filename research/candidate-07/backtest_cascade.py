@@ -1,6 +1,6 @@
-"""Select the aggressor-flow candidate inside the existing Nautilus replay."""
+"""Select lossless geometry diagnostics for the aggressor-flow candidate."""
 from __future__ import annotations
 
-from backtest_flow import run_week
+from backtest_flow_diagnostic import run_week
 
 __all__ = ["run_week"]
