@@ -1,0 +1,42 @@
+name: candidate-08-engine-config-patch
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.patch-engine-config"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remove unsupported BacktestEngineConfig field
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-08/run.py")
+          source = path.read_text(encoding="utf-8")
+          old = '            shutdown_on_error=True,\n'
+          if source.count(old) != 1:
+              raise SystemExit(f"expected one shutdown_on_error line, found {source.count(old)}")
+          path.write_text(source.replace(old, ""), encoding="utf-8")
+          PY
+          rm research/candidate-08/.patch-engine-config
+          python -m compileall -q research/candidate-08/run.py
+          ! grep -q shutdown_on_error research/candidate-08/run.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-08/run.py research/candidate-08/.patch-engine-config
+          git commit -m "candidate-08: align BacktestEngineConfig with 1.230.0"
+          git push origin HEAD:research/candidate-08
