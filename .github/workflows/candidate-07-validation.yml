@@ -69,6 +69,17 @@ jobs:
           --stage week-1
           --output artifacts/candidate-07
 
+      - name: Diagnose directional external-liquidity acceptance
+        if: always()
+        run: >-
+          python research/candidate-07/diagnose_external_acceptance.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --stage week-1
+          --output artifacts/candidate-07
+          --data-root .research-data/candidate-07
+          --lookahead-bars 24
+
       - name: Print machine-readable result
         if: always()
         run: |
@@ -77,6 +88,7 @@ jobs:
           cat artifacts/candidate-07/week-1/metrics.json
           cat artifacts/candidate-07/week-1/failed_flow_diagnostic.json
           cat artifacts/candidate-07/week-1/failed_flow_strict.json
+          cat artifacts/candidate-07/week-1/external_acceptance_diagnostic.json
 
       - name: Preserve complete replay evidence
         if: always()
