@@ -12,11 +12,8 @@ from nautilus_trader.model.identifiers import InstrumentId
 
 from flow_data import AggressorFlow, FLOW_CLIENT_ID
 from model import TradePlan
-from model_positioning import (
-    PositioningAuctionRouter,
-    PositioningLogicConfig,
-    PositioningSignalBar,
-)
+from model_positioning import PositioningLogicConfig, PositioningSignalBar
+from model_positioning_gap_safe import GapSafePositioningAuctionRouter
 from positioning_data import POSITIONING_CLIENT_ID, PositioningSnapshot
 from strategy import Candidate07Strategy as ExecutionStrategy
 
@@ -56,7 +53,7 @@ class Candidate07PositioningStrategy(ExecutionStrategy):
         self.logic = PositioningLogicConfig.from_mapping(
             json.loads(config.positioning_logic_json)
         )
-        self.router = PositioningAuctionRouter(self.logic)
+        self.router = GapSafePositioningAuctionRouter(self.logic)
         self._bucket: list[_MinuteAuctionBar] = []
         self._signal_index = 0
         self._flow_by_ts: dict[int, AggressorFlow] = {}
@@ -111,11 +108,18 @@ class Candidate07PositioningStrategy(ExecutionStrategy):
 
         flow = self._flow_by_ts.pop(now - 1, None)
         if flow is None:
+            for transition in self.router.invalidate_data_gap(
+                index=self._signal_index,
+                event_time_ns=now,
+                reference_price=bar.close.as_double(),
+                reason_code="AGGRESSOR_FLOW_DATA_GAP",
+            ):
+                self._append_transition(transition)
             self._diagnostics.append(
                 {"reason": "AGGRESSOR_FLOW_MISSING", "bar_ts_event_ns": now}
             )
             self._bucket.clear()
-            return
+            raise RuntimeError(f"verified aggressor flow missing at {now - 1}")
 
         self._bucket.append(
             _MinuteAuctionBar(
@@ -135,14 +139,25 @@ class Candidate07PositioningStrategy(ExecutionStrategy):
 
         positioning = self._positioning_by_ts.pop(now - 1, None)
         if positioning is None:
+            for transition in self.router.invalidate_data_gap(
+                index=self._signal_index,
+                event_time_ns=now,
+                reference_price=self._bucket[-1].close,
+                reason_code="POSITIONING_DATA_GAP",
+            ):
+                self._append_transition(transition)
             self._diagnostics.append(
                 {
                     "reason": "POSITIONING_SNAPSHOT_MISSING",
                     "signal_ts_event_ns": now,
                     "expected_snapshot_ts_event_ns": now - 1,
                     "bucket_minutes": self.logic.signal_minutes,
+                    "signal_interval_skipped": True,
+                    "forward_fill_used": False,
+                    "interpolation_used": False,
                 }
             )
+            self._signal_index += 1
             self._bucket.clear()
             return
 

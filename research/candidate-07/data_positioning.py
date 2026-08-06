@@ -59,17 +59,35 @@ def _numeric_or_nan(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series.replace("", pd.NA), errors="coerce")
 
 
-def _invalid_preview(
+def _drop_invalid_positioning_rows(
     metrics: pd.DataFrame,
-    mask: pd.Series,
-) -> list[dict[str, object]]:
-    columns = [
+) -> tuple[pd.DataFrame, tuple[str, ...]]:
+    """Drop unusable snapshots without forward filling or interpolation.
+
+    A zero or missing open-interest snapshot is not a market state. The exact
+    completed five-minute interval is made unavailable. The router separately
+    treats the first later non-contiguous snapshot as OI-neutral, so a ten-minute
+    change cannot masquerade as a normal five-minute inventory impulse.
+    """
+    required = {
         "timestamp",
         "sum_open_interest",
         "sum_open_interest_value",
-        "create_time",
-    ]
-    return metrics.loc[mask, columns].head(12).to_dict(orient="records")
+    }
+    missing = required - set(metrics.columns)
+    if missing:
+        raise ValueError(f"positioning cleanup columns missing: {sorted(missing)}")
+    invalid = (
+        metrics["sum_open_interest"].isna()
+        | (metrics["sum_open_interest"] <= 0)
+        | metrics["sum_open_interest_value"].isna()
+        | (metrics["sum_open_interest_value"] <= 0)
+    )
+    timestamps = tuple(
+        timestamp.isoformat()
+        for timestamp in metrics.loc[invalid, "timestamp"].tolist()
+    )
+    return metrics.loc[~invalid].copy(), timestamps
 
 
 def load_positioning_bundle(
@@ -137,23 +155,9 @@ def load_positioning_bundle(
     if not metrics["timestamp_ns"].is_monotonic_increasing:
         raise RuntimeError("positioning metrics are not monotonic")
 
-    invalid_oi = metrics["sum_open_interest"].isna() | (
-        metrics["sum_open_interest"] <= 0
-    )
-    if bool(invalid_oi.any()):
-        raise RuntimeError(
-            "open interest must be present and positive: "
-            f"count={int(invalid_oi.sum())}, sample={_invalid_preview(metrics, invalid_oi)}"
-        )
-    invalid_oi_value = metrics["sum_open_interest_value"].isna() | (
-        metrics["sum_open_interest_value"] <= 0
-    )
-    if bool(invalid_oi_value.any()):
-        raise RuntimeError(
-            "open interest value must be present and positive: "
-            f"count={int(invalid_oi_value.sum())}, "
-            f"sample={_invalid_preview(metrics, invalid_oi_value)}"
-        )
+    metrics, invalid_timestamps = _drop_invalid_positioning_rows(metrics)
+    if metrics.empty:
+        raise RuntimeError("no valid positioning snapshots remain")
     if any(timestamp.minute % 5 for timestamp in metrics["timestamp"]):
         raise RuntimeError("positioning timestamps are not aligned to five-minute boundaries")
 
@@ -180,8 +184,17 @@ def load_positioning_bundle(
             "trade_end_exclusive": trade_end.isoformat(),
             "flow_rows": int(len(flow.frame.index)),
             "metrics_rows": int(len(metrics.index)),
-            "metrics_frequency": "five minutes; an expected ten-minute UTC-day boundary gap is allowed",
+            "metrics_frequency": (
+                "five minutes; one isolated invalid snapshot may create a "
+                "ten-minute gap; longer gaps are rejected"
+            ),
             "metrics_columns": list(METRICS_COLUMNS),
+            "invalid_positioning_rows_dropped": len(invalid_timestamps),
+            "invalid_positioning_timestamps": list(invalid_timestamps),
+            "invalid_positioning_policy": (
+                "drop exact snapshot; no interpolation or forward fill; affected "
+                "signal interval unavailable; next non-contiguous OI delta neutral"
+            ),
             "source": "Binance Vision public USD-M archives",
         },
     )
@@ -195,4 +208,9 @@ def load_positioning_bundle(
     )
 
 
-__all__ = ["METRICS_COLUMNS", "PositioningBundle", "load_positioning_bundle"]
+__all__ = [
+    "METRICS_COLUMNS",
+    "PositioningBundle",
+    "_drop_invalid_positioning_rows",
+    "load_positioning_bundle",
+]
