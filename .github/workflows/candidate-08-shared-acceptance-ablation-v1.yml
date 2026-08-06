@@ -1,0 +1,212 @@
+name: candidate-08-shared-acceptance-ablation-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-shared-acceptance-ablation-v1"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  routed-ablation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      OUTPUT_DIR: research/candidate-08/evidence/shared-acceptance-no-contraction-ablation-v1
+      DATA_CACHE: /tmp/candidate-08-acceptance-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for routing decision
+        id: route
+        shell: bash
+        run: |
+          set -euo pipefail
+          route_file=research/candidate-08/evidence/shared-acceptance-routing-v1/route.txt
+          for attempt in $(seq 1 180); do
+            git fetch origin research/candidate-08
+            git reset --hard origin/research/candidate-08
+            if [[ -f "$route_file" ]]; then
+              break
+            fi
+            sleep 15
+          done
+          route=$(cat "$route_file" 2>/dev/null || printf 'NO_ROUTE')
+          printf 'route=%s\n' "$route" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$route"
+
+      - name: Restore verified first-week data cache
+        if: steps.route.outputs.route == 'ONE_CORE_VARIABLE_ABLATION'
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/candidate-08-acceptance-data
+          key: candidate-08-shared-acceptance-ablation-v1-${{ github.sha }}
+          restore-keys: |
+            candidate-08-shared-acceptance-first-v1-
+            candidate-08-aggtrade-acceptance-
+
+      - name: Materialize fixed ablation config and run same week
+        if: steps.route.outputs.route == 'ONE_CORE_VARIABLE_ABLATION'
+        shell: bash
+        run: |
+          set -o pipefail
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
+          set +e
+          {
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/aggtrade_acceptance_no_contraction_ablation.py \
+              research/candidate-08/run_shared_acceptance_no_contraction_ablation.py \
+              research/candidate-08/test_acceptance_no_contraction_ablation.py
+            python research/candidate-08/test_shared_acceptance_v1.py -v
+            python research/candidate-08/test_acceptance_no_contraction_ablation.py -v
+            python - <<'PY'
+            import json
+            from pathlib import Path
+            source = Path("research/candidate-08/config_aggtrade_acceptance_shared.json")
+            config = json.loads(source.read_text())
+            config["candidate"] = "candidate-08-aggtrade-acceptance-no-contraction-ablation"
+            config["description"] = (
+                "Single-variable ablation of retest volume/trade/imbalance contraction; "
+                "all structural, execution, cost, risk, target, synchronization, and timing rules unchanged"
+            )
+            config["ablation"] = {
+                "removed_variable": "RETEST_ACTIVITY_AND_IMBALANCE_CONTRACTION",
+                "preserved": [
+                    "completed_external_level",
+                    "aggressive_flow_close_beyond",
+                    "retest_touch",
+                    "accepted_side_hold",
+                    "separate_same_direction_reacceleration",
+                    "retest_extreme_invalidation",
+                    "nearest_active_completed_external_target",
+                    "all_in_6bp_per_fill",
+                    "shared_nav_3pct_planned_loss",
+                    "global_single_pending_or_position",
+                ],
+                "evaluation_window": "same fixed screen-01 week",
+            }
+            destination = Path("research/candidate-08/config_aggtrade_acceptance_no_contraction_ablation.json")
+            destination.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+            PY
+            python research/candidate-08/run_shared_acceptance_no_contraction_ablation.py \
+              --config research/candidate-08/config_aggtrade_acceptance_no_contraction_ablation.json \
+              --output "$OUTPUT_DIR" \
+              --data-cache "$DATA_CACHE"
+            python - <<'PY'
+            import json
+            from pathlib import Path
+            base_root = Path("research/candidate-08/evidence/shared-acceptance-first-v1")
+            ablation_root = Path("research/candidate-08/evidence/shared-acceptance-no-contraction-ablation-v1")
+            base_suite = json.loads((base_root / "suite_metrics.json").read_text())
+            base_metrics = json.loads((base_root / "metrics.json").read_text())
+            ablation_suite = json.loads((ablation_root / "suite_metrics.json").read_text())
+            ablation_metrics = json.loads((ablation_root / "metrics.json").read_text())
+            promoted = bool(ablation_suite.get("gate_passed"))
+            comparison = {
+                "candidate": "candidate-08-aggtrade-acceptance-no-contraction-ablation",
+                "ablation": "remove only retest activity and imbalance contraction",
+                "same_week": True,
+                "base": {
+                    "signals": base_metrics.get("signals_in_window"),
+                    "closed_trades": base_metrics.get("position_metrics", {}).get("closed_trades"),
+                    "wins": base_metrics.get("position_metrics", {}).get("wins"),
+                    "total_return": base_metrics.get("total_return"),
+                    "daily_geometric_growth": base_metrics.get("daily_geometric_growth"),
+                    "maximum_realized_equity_drawdown": base_metrics.get("maximum_realized_equity_drawdown"),
+                    "gate_passed": base_suite.get("gate_passed"),
+                },
+                "ablation_result": {
+                    "signals": ablation_metrics.get("signals_in_window"),
+                    "closed_trades": ablation_metrics.get("position_metrics", {}).get("closed_trades"),
+                    "wins": ablation_metrics.get("position_metrics", {}).get("wins"),
+                    "total_return": ablation_metrics.get("total_return"),
+                    "daily_geometric_growth": ablation_metrics.get("daily_geometric_growth"),
+                    "maximum_realized_equity_drawdown": ablation_metrics.get("maximum_realized_equity_drawdown"),
+                    "gate_passed": ablation_suite.get("gate_passed"),
+                },
+                "decision": "PROMOTE_ABLATION_TO_REMAINING_WEEKS" if promoted else "DISCARD_ACCEPTANCE_FAMILY",
+                "decision_basis": (
+                    "A logical-failure candidate receives one core-variable ablation. "
+                    "Only a full first-week Nautilus gate pass constitutes a structural path worth promoting."
+                ),
+            }
+            (ablation_root / "ablation_decision.json").write_text(
+                json.dumps(comparison, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            (ablation_root / "route.txt").write_text(
+                comparison["decision"] + "\n",
+                encoding="utf-8",
+            )
+            print(json.dumps(comparison, indent=2, sort_keys=True))
+            PY
+          } 2>&1 | tee "$OUTPUT_DIR/runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT_DIR/runner_exit_status.txt"
+
+      - name: Record non-applicable route
+        if: steps.route.outputs.route != 'ONE_CORE_VARIABLE_ABLATION'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_DIR"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          route_path = Path("research/candidate-08/evidence/shared-acceptance-routing-v1/route.txt")
+          route = route_path.read_text().strip() if route_path.exists() else "NO_ROUTE"
+          root = Path("research/candidate-08/evidence/shared-acceptance-no-contraction-ablation-v1")
+          (root / "ablation_not_run.json").write_text(
+              json.dumps({
+                  "route": route,
+                  "reason": "The one-variable ablation is permitted only after a clean logical gate failure.",
+              }, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          (root / "route.txt").write_text("NOT_APPLICABLE\n", encoding="utf-8")
+          PY
+          printf '0\n' > "$OUTPUT_DIR/runner_exit_status.txt"
+
+      - name: Commit ablation source and evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin research/candidate-08
+          rm -f research/candidate-08/.run-shared-acceptance-ablation-v1
+          git add \
+            research/candidate-08/config_aggtrade_acceptance_no_contraction_ablation.json \
+            "$OUTPUT_DIR" \
+            research/candidate-08/.run-shared-acceptance-ablation-v1
+          git commit -m "candidate-08: record same-week retest contraction ablation" || true
+          git push origin HEAD:research/candidate-08
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: candidate-08-shared-acceptance-ablation-v1-${{ github.run_id }}
+          path: research/candidate-08/evidence/shared-acceptance-no-contraction-ablation-v1
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Return runner status
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          status=$(cat "$OUTPUT_DIR/runner_exit_status.txt" 2>/dev/null || printf '1')
+          exit "$status"
