@@ -35,6 +35,16 @@ _REQUIRED_COLUMNS = (
     "signed_volume",
     "trade_count",
 )
+_STATE_FEATURE_COLUMNS = (
+    "causal_impact_beta",
+    "flow_direction",
+    "flow_consistency",
+    "window_pressure_ratio",
+    "progress_noise",
+    "excursion_noise",
+    "retention",
+    "response_surprise",
+)
 
 
 class FlowResponseState(str, Enum):
@@ -95,6 +105,56 @@ def _numeric_frame(data: pd.DataFrame) -> pd.DataFrame:
     for column in _REQUIRED_COLUMNS:
         result[column] = pd.to_numeric(result[column], errors="coerce")
     return result
+
+
+def _classify_frame_states(
+    features: pd.DataFrame,
+    *,
+    config: FlowResponseConfig,
+) -> pd.Series:
+    """Vectorized equivalent of :func:`classify_flow_response`."""
+
+    matrix = features.loc[:, _STATE_FEATURE_COLUMNS].to_numpy(dtype="float64")
+    positions = {name: index for index, name in enumerate(_STATE_FEATURE_COLUMNS)}
+    finite = np.isfinite(matrix).all(axis=1)
+    beta = matrix[:, positions["causal_impact_beta"]]
+    direction = matrix[:, positions["flow_direction"]]
+    consistency = matrix[:, positions["flow_consistency"]]
+    pressure = matrix[:, positions["window_pressure_ratio"]]
+    progress = matrix[:, positions["progress_noise"]]
+    excursion = matrix[:, positions["excursion_noise"]]
+    retention = matrix[:, positions["retention"]]
+    surprise = matrix[:, positions["response_surprise"]]
+
+    observable = finite & (beta > 0.0) & (direction != 0.0)
+    persistent_tail_pressure = (
+        observable
+        & (pressure >= 1.0)
+        & (consistency >= config.minimum_flow_consistency)
+    )
+    initiative = (
+        persistent_tail_pressure
+        & (progress >= config.initiative_progress_noise)
+        & (retention >= config.initiative_retention)
+        & (surprise >= 0.0)
+    )
+    absorption = (
+        persistent_tail_pressure
+        & (excursion >= config.absorption_minimum_excursion_noise)
+        & (progress < config.absorption_maximum_progress_noise)
+        & (retention < config.absorption_maximum_retention)
+        & (surprise < 0.0)
+    )
+
+    states = np.full(
+        len(features.index),
+        FlowResponseState.BALANCED_OR_UNRESOLVED.value,
+        dtype=object,
+    )
+    states[~observable] = FlowResponseState.UNOBSERVABLE.value
+    states[initiative] = FlowResponseState.INITIATIVE_RESPONSE.value
+    states[absorption] = FlowResponseState.ABSORBED_RESPONSE.value
+    return pd.Series(states, index=features.index, dtype="string")
 
 
 def causal_flow_response_frame(
@@ -224,10 +284,7 @@ def causal_flow_response_frame(
     result["retention"] = retention
     result["expected_response"] = expected_response
     result["response_surprise"] = response_surprise
-    result["flow_response_state"] = [
-        classify_flow_response(row, config=config).value
-        for _, row in result.iterrows()
-    ]
+    result["flow_response_state"] = _classify_frame_states(result, config=config)
     return result
 
 
@@ -239,18 +296,8 @@ def classify_flow_response(
     """Classify one completed feature row without external levels or future outcomes."""
 
     config.validate()
-    required = (
-        "causal_impact_beta",
-        "flow_direction",
-        "flow_consistency",
-        "window_pressure_ratio",
-        "progress_noise",
-        "excursion_noise",
-        "retention",
-        "response_surprise",
-    )
     try:
-        values = {name: float(row[name]) for name in required}
+        values = {name: float(row[name]) for name in _STATE_FEATURE_COLUMNS}
     except (KeyError, TypeError, ValueError):
         return FlowResponseState.UNOBSERVABLE
     if not all(isfinite(value) for value in values.values()):
