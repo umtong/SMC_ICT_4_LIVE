@@ -1,0 +1,80 @@
+{
+  "candidate_family": "candidate-02-v95-mature-defended-swing-common-accepted-breakout",
+  "status": "LOCKED_BEFORE_FIRST_WEEK_COLLECTION",
+  "performance_engine": "NautilusTrader 1.230.0",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "first_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2025-10-06T00:00:00Z",
+    "end_utc": "2025-10-13T00:00:00Z",
+    "selection_seed": 2026080695,
+    "selection_method": "retained unchanged from the unexecuted v95 prospective design recorded before any v95 raw data collection",
+    "raw_data_status_at_lock": "NOT_COLLECTED_FOR_V95"
+  },
+  "inherited_failure_to_solve": {
+    "source": "v94",
+    "finding": "common spot-perpetual acceptance could work at an eight-hour level, but two newly formed four-hour boundaries failed immediately; target skipping explained one trade but not the family failure",
+    "design_response": "remove mechanical clock boundaries entirely and make level authority an observable causal life-cycle"
+  },
+  "locked_hypothesis": {
+    "detector": "a completed fifteen-minute swing is confirmed only after two later completed fifteen-minute bars",
+    "survival": "the confirmed swing must remain externally unbreached for eight hours and expires forty-eight hours after confirmation",
+    "market_memory": "after the eight-hour survival period, price must revisit within 0.15 prior ATR and close at least 0.25 prior ATR away within five completed minutes without first breaching the level",
+    "one_use_rule": "the first later external breach consumes the level whether or not a trade is eventually opened",
+    "acceptance": "at least two closes remain beyond the old level in the three-minute classification window, basis-adjusted spot also crosses, spot acceptance is at least 25% of perpetual acceptance, and basis expansion contributes at most 75%",
+    "delivery_confirmation": "same-direction displacement closes beyond the old level, leaves a causal three-candle FVG, and a later completed-minute retest touches the gap while closing beyond both its midpoint and the old level",
+    "invalidation": "a retest trading 0.10 prior ATR back inside the old level invalidates acceptance",
+    "objective": "the nearest intact and causally confirmed fifteen-minute swing in the delivery direction; never skip it to manufacture a larger reward/risk ratio",
+    "cost_gate": "if that nearest natural target does not produce strictly positive cost-after reward/risk, do not trade rather than selecting a farther target",
+    "ambiguous_state": "no trade when maturity, defense, common acceptance, displacement, retest, invalidation or target state is incomplete"
+  },
+  "variant_matrix": {
+    "central": {
+      "minimum_level_age_minutes": 480,
+      "retrace_minutes": 20
+    },
+    "retrace_adjacent": [
+      {
+        "minimum_level_age_minutes": 480,
+        "retrace_minutes": 15
+      },
+      {
+        "minimum_level_age_minutes": 480,
+        "retrace_minutes": 25
+      }
+    ],
+    "maturity_adjacent": [
+      {
+        "minimum_level_age_minutes": 360,
+        "retrace_minutes": 20
+      },
+      {
+        "minimum_level_age_minutes": 600,
+        "retrace_minutes": 20
+      }
+    ]
+  },
+  "promotion_rule": "The central variant, at least one adjacent retest horizon, and at least one adjacent maturity horizon must pass every original weekly gate under NautilusTrader. Otherwise execute the one precommitted core-variable ablation on the same immutable week before discarding.",
+  "precommitted_single_ablation": {
+    "name": "REMOVE_PRIOR_DEFENSE_MEMORY",
+    "only_change": "require_defense_memory true to false",
+    "held_fixed": "confirmed fifteen-minute swing, eight-hour survival, forty-eight-hour expiry, first-breach consumption, spot-perpetual acceptance, basis bound, displacement, FVG, retest, invalidation, nearest-only target, costs, 3% NAV risk and NautilusTrader execution",
+    "interpretation": "tests whether the prior rejection is genuine information about resting liquidity or merely a frequency-suppressing condition"
+  },
+  "research_basis": [
+    {
+      "reference": "Chung and Bellotti (2021), Evidence and Behaviour of Support and Resistance Levels in Financial Time Series, arXiv:2101.07410",
+      "implication": "repeat bounces strengthen subsequent barrier behaviour while predictive power decays with age"
+    },
+    {
+      "reference": "Osler (2001/2006), Currency Orders and Exchange-Rate Dynamics: Explaining the Success of Technical Analysis",
+      "implication": "take-profit orders can interrupt trends at known levels while stop-loss clusters can intensify movement after a genuine break"
+    },
+    {
+      "reference": "Degryse, de Jong, van Ravenswaaij and Wuyts (2005), Aggressive Orders and the Resiliency of a Limit Order Market",
+      "implication": "an aggressive shock alone is insufficient; subsequent price and liquidity response distinguishes partial reversal from persistent impact"
+    }
+  ]
+}
