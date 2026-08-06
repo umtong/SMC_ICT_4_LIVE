@@ -20,37 +20,63 @@ jobs:
       options: --user 0
     steps:
       - uses: actions/checkout@v4
-      - name: Verify fixed environment and official metrics archive
+      - name: Verify fixed environment and official metrics archives
         shell: bash
         run: |
           set -euo pipefail
           smc4 doctor
-          mkdir -p artifacts/candidate-05-metrics-probe
-          cd artifacts/candidate-05-metrics-probe
-          base="https://data.binance.vision/data/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-2023-07-09.zip"
-          curl --fail --location --silent --show-error "$base" --output BTCUSDT-metrics-2023-07-09.zip
-          curl --fail --location --silent --show-error "$base.CHECKSUM" --output BTCUSDT-metrics-2023-07-09.zip.CHECKSUM
-          sha256sum --check BTCUSDT-metrics-2023-07-09.zip.CHECKSUM | tee checksum_result.txt
-          unzip -l BTCUSDT-metrics-2023-07-09.zip | tee archive_listing.txt
-          unzip -p BTCUSDT-metrics-2023-07-09.zip | head -n 8 | tee sample.csv
+          mkdir -p artifacts/candidate-05-metrics-probe/raw
+          cd artifacts/candidate-05-metrics-probe/raw
+          : > checksum_results.txt
+          for day in 07 08 09 10 11 12 13 14 15; do
+            file="BTCUSDT-metrics-2023-07-${day}.zip"
+            base="https://data.binance.vision/data/futures/um/daily/metrics/BTCUSDT/${file}"
+            curl --fail --location --silent --show-error "$base" --output "$file"
+            curl --fail --location --silent --show-error "$base.CHECKSUM" --output "$file.CHECKSUM"
+            sha256sum --check "$file.CHECKSUM" | tee -a checksum_results.txt
+          done
+          cd ..
           python - <<'PY'
+          import glob
           import json
           import zipfile
           import pandas as pd
-          path = "BTCUSDT-metrics-2023-07-09.zip"
-          with zipfile.ZipFile(path) as archive:
-              names = archive.namelist()
-              if len(names) != 1:
-                  raise RuntimeError(f"expected one CSV, got {names}")
-              with archive.open(names[0]) as stream:
-                  frame = pd.read_csv(stream)
+
+          frames = []
+          source_files = sorted(glob.glob("raw/BTCUSDT-metrics-2023-07-*.zip"))
+          for path in source_files:
+              with zipfile.ZipFile(path) as archive:
+                  names = archive.namelist()
+                  if len(names) != 1:
+                      raise RuntimeError(f"expected one CSV in {path}, got {names}")
+                  with archive.open(names[0]) as stream:
+                      frame = pd.read_csv(stream)
+              frame["source_archive"] = path
+              frames.append(frame)
+          full = pd.concat(frames, ignore_index=True)
+          full["create_time"] = pd.to_datetime(full["create_time"], utc=True, errors="raise")
+          full = full.sort_values("create_time").reset_index(drop=True)
+          if full["create_time"].duplicated().any():
+              raise RuntimeError("duplicate metrics timestamps")
+          deltas = full["create_time"].diff().dropna().dt.total_seconds()
+          unexpected = deltas[deltas != 300.0]
+          if not unexpected.empty:
+              raise RuntimeError(f"non-five-minute metrics gaps: {unexpected.head().tolist()}")
+          expected_rows = 9 * 288
+          if len(full) != expected_rows:
+              raise RuntimeError(f"expected {expected_rows} rows, got {len(full)}")
+          full.to_csv("metrics-2023-07-07-through-15.csv.gz", index=False, compression="gzip")
           report = {
-              "rows": len(frame),
-              "columns": list(frame.columns),
-              "dtypes": {str(k): str(v) for k, v in frame.dtypes.items()},
-              "first": frame.head(3).to_dict(orient="records"),
-              "last": frame.tail(3).to_dict(orient="records"),
-              "null_counts": {str(k): int(v) for k, v in frame.isna().sum().items()},
+              "rows": len(full),
+              "source_files": source_files,
+              "start": str(full["create_time"].iloc[0]),
+              "end": str(full["create_time"].iloc[-1]),
+              "interval_seconds": sorted(deltas.unique().tolist()),
+              "columns": list(full.columns),
+              "dtypes": {str(k): str(v) for k, v in full.dtypes.items()},
+              "null_counts": {str(k): int(v) for k, v in full.isna().sum().items()},
+              "first": full.head(3).to_dict(orient="records"),
+              "last": full.tail(3).to_dict(orient="records"),
           }
           with open("schema_report.json", "w", encoding="utf-8") as stream:
               json.dump(report, stream, indent=2, sort_keys=True, default=str)
