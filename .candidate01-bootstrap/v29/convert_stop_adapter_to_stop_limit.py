@@ -92,7 +92,7 @@ if old not in text:
 text = text.replace(old, new, 1)
 
 start = text.index("        def _geometry(\n")
-end = text.index("        def _manage_pending(\n", start)
+end = text.index("        def _manage_pending(", start)
 geometry = '''        def _geometry(
             self,
             instruction: StopEntryInstruction,
