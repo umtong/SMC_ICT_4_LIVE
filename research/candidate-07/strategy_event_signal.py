@@ -157,7 +157,7 @@ class Candidate07EventSignalStrategy(Strategy):
         if signal is not None:
             self._append_event(
                 scenario_id=signal.scenario_id,
-                previous_state="ENTRY_READY",
+                previous_state="ORDER_SUBMITTED",
                 next_state="POSITION_OPEN",
                 reason_code="NAUTILUS_POSITION_OPENED",
                 event_time_ns=int(event.ts_event),
@@ -227,7 +227,7 @@ class Candidate07EventSignalStrategy(Strategy):
             return
         self._append_event(
             scenario_id=signal.scenario_id,
-            previous_state="ENTRY_READY",
+            previous_state="ORDER_SUBMITTED",
             next_state="INVALIDATED",
             reason_code="NAUTILUS_ORDER_REJECTED",
             event_time_ns=int(event.ts_event),
@@ -360,7 +360,10 @@ class Candidate07EventSignalStrategy(Strategy):
             ts_init=signal.ts_init,
         )
         self._active_entry_nav = float(equity)
-        self.submit_order_list(order_list)
+        # Nautilus can synchronously match the market parent while
+        # submit_order_list is still on the stack.  Record ORDER_SUBMITTED first
+        # so PositionOpened and OrderRejected callbacks extend, rather than
+        # overtake, the append-only state chain.
         self._append_event(
             scenario_id=signal.scenario_id,
             previous_state="ENTRY_READY",
@@ -374,6 +377,7 @@ class Candidate07EventSignalStrategy(Strategy):
                 "actual_rr": float(actual_rr),
             },
         )
+        self.submit_order_list(order_list)
 
     def _current_nav(self) -> float:
         try:
