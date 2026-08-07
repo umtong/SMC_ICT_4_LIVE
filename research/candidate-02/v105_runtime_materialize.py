@@ -34,6 +34,18 @@ def materialize_driver() -> None:
         "candidate-02-v105-external-liquidity-common-acceptance-retest",
         "candidate-02-v105-auction-state-continuation-reversal",
     )
+    # The orchestration template belongs to the v104 external-liquidity family.
+    # v105 deliberately keeps the proven data/NT plumbing but has a different
+    # authoritative core and lock filename.  Map those names explicitly rather
+    # than relying on the version-only substitution above.
+    text = text.replace(
+        "v105_external_liquidity_core.py",
+        "v105_auction_state_core.py",
+    )
+    text = text.replace(
+        "v105_external_liquidity_lock.json",
+        "v105_auction_state_lock.json",
+    )
     replacements = {
         "2025-12-08": "2025-08-25",
         "2025-12-15": "2025-09-01",
