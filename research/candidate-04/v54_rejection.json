@@ -1,0 +1,39 @@
+{
+  "candidate": "candidate-04-v54-common-factor-accepted-auction-failure-reversal",
+  "decision": "DISCARDED",
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "evidence_run_id": 31195888959,
+  "development_interval": {
+    "start_inclusive": "2023-02-27",
+    "end_inclusive": "2023-03-05",
+    "calendar_days": 7
+  },
+  "full_router": {
+    "parent_forced_deleveraging_states": 4,
+    "old_boundary_failures": 0,
+    "opposite_mss_displacement_fvg": 0,
+    "later_inside_retests": 0,
+    "signals": 0,
+    "trades": 0
+  },
+  "single_ablation": {
+    "removed_variable": "opposite_cross_sectional_common_factor_reversal",
+    "old_boundary_failures": 0,
+    "signals": 0,
+    "trades": 0,
+    "conclusion": "The opposite common factor was not the bottleneck. The V53 stop-outs did not become completed old-boundary failures within the allowed causal horizon, even when the common-turn requirement was removed."
+  },
+  "failure_classification": {
+    "implementation": false,
+    "risk_or_execution": false,
+    "logic": true,
+    "dominant_failure": "V53 losses were incorrectly generalized as failed auctions. Their narrow structural stops were traversed, but the accepted external boundary itself was not lost. Directional state and entry/stop timing must be separated."
+  },
+  "valid_components_preserved": [
+    "do not reverse immediately against an accepted auction",
+    "require an explicit old-boundary failure before failed-auction reversal",
+    "opposite common-factor and index-proxy confirmation remains a valid reversal contract",
+    "zero-trade NautilusTrader and risk-evidence contracts"
+  ],
+  "next_hypothesis": "The accepted-auction direction may remain valid, but the first FVG hold is not a completed entry state. Wait for a multi-bar boundary/FVG negotiation, then enter only when the common factor resolves the entire prior negotiation range in the accepted direction; invalidate beyond the full negotiation extreme."
+}
