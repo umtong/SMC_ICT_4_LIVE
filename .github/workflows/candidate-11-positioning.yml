@@ -1,0 +1,118 @@
+name: Candidate 11 positioning-unwind research
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/positioning_auction.py"
+      - "research/candidate-11/materialize_positioning_auction.py"
+      - "research/candidate-11/run_positioning_auction.py"
+      - "research/candidate-11/run_positioning_gated.sh"
+      - "research/candidate-11/positioning_validation_week.txt"
+      - "research/candidate-11/config.json"
+      - "research/candidate-11/test_positioning_auction.py"
+      - ".github/workflows/candidate-11-positioning.yml"
+  workflow_dispatch:
+    inputs:
+      week:
+        description: Frozen positioning-unwind screening week
+        required: true
+        default: W9
+        type: choice
+        options: [W1, W2, W3, W4, W5, W6, W7, W8, W9]
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-positioning-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Run causal positioning-unwind Nautilus interval
+        shell: bash
+        env:
+          REQUESTED_WEEK: ${{ github.event.inputs.week }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          WEEK="$REQUESTED_WEEK"
+          if [ -z "$WEEK" ]; then
+            WEEK="$(tr -d '[:space:]' < research/candidate-11/positioning_validation_week.txt)"
+          fi
+          bash research/candidate-11/run_positioning_gated.sh "$WEEK"
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            git config user.name "candidate-11-bot"
+            git config user.email "candidate-11-bot@users.noreply.github.com"
+            git add -A \
+              research/candidate-11/run_positioning_auction.py \
+              "research/candidate-11/results/POSITIONING_$WEEK"
+            if ! git diff --cached --quiet; then
+              git commit -m "candidate-11: record positioning $WEEK evidence [skip ci]"
+              git push origin HEAD:research/candidate-11
+            fi
+          fi
+
+      - name: Publish positioning metrics
+        if: always()
+        shell: bash
+        env:
+          REQUESTED_WEEK: ${{ github.event.inputs.week }}
+        run: |
+          WEEK="$REQUESTED_WEEK"
+          if [ -z "$WEEK" ]; then
+            WEEK="$(tr -d '[:space:]' < research/candidate-11/positioning_validation_week.txt)"
+          fi
+          METRICS="research/candidate-11/results/POSITIONING_$WEEK/metrics.json"
+          AUDIT="research/candidate-11/results/POSITIONING_$WEEK/audit.json"
+          if [ -s "$METRICS" ]; then
+            python - "$METRICS" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          metrics = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print(f"## {metrics.get('candidate', 'Candidate 11 positioning')}")
+          for key in (
+              "week_id", "daily_geometric_growth", "closed_trades", "win_rate",
+              "payoff_ratio", "closed_trade_max_drawdown", "submitted_plans",
+              "scenario_counts", "symbol_counts", "leadership_rejection_counts",
+              "global_slot_overlap_count", "partial_entry_fail_closed_count",
+              "liquidation_detected", "promising_gate_passed",
+              "complete_gate_passed", "success_claim",
+          ):
+              print(f"- **{key}**: `{metrics.get(key)}`")
+          PY
+          fi
+          if [ -s "$AUDIT" ]; then
+            python - "$AUDIT" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          audit = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print("## Independent evidence audit")
+          for key in (
+              "classification", "risk_budget_passed", "global_slot_passed",
+              "partial_entry_protection_passed", "no_liquidation_passed",
+          ):
+              print(f"- **{key}**: `{audit.get(key)}`")
+          PY
+          fi
