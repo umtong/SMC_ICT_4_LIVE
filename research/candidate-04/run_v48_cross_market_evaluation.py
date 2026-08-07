@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Compile and execute one V48 four-market week through NautilusTrader.
+"""Compile and execute one cross-market four-instrument week.
 
-This is orchestration only. Pattern/scenario modules emit completed-data intents;
-the causal target registry declares only pre-existing external destinations; the
-trusted multi-asset BacktestNode owns orders, fills, costs, positions, risk, PnL
-and NAV.
+This is orchestration only. A selected pattern/scenario compiler emits
+completed-data intents; the causal target registry preserves or declares only
+pre-existing external destinations; the trusted multi-asset BacktestNode owns
+orders, fills, costs, positions, risk, PnL and NAV.
 """
 from __future__ import annotations
 
@@ -22,6 +22,12 @@ C04 = Path(__file__).resolve().parent
 ROOT = C04.parent.parent
 SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
 FOLLOWERS = SYMBOLS[1:]
+DEFAULT_COMPILER = "cross_market_information_transfer_compiler_v2.py"
+DEFAULT_CANDIDATE = "candidate-04-v48-cross-market-information-transfer"
+DEFAULT_MARKET_CAUSE = (
+    "BTC information event, follower underreaction, independent follower "
+    "inventory and structure confirmation"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +99,21 @@ def prepare_inputs(restored: Path, output: Path) -> None:
         )
 
 
+def candidate_decision(
+    *,
+    implementation: bool,
+    potential: bool,
+    trades: int,
+) -> str:
+    if not implementation:
+        return "implementation_failure_repair_and_rerun_identical_week"
+    if potential:
+        return "retain_candidate_and_open_second_predeclared_four_asset_week"
+    if trades == 0:
+        return "diagnose_state_bottleneck_then_one_variable_ablation"
+    return "run_one_core_variable_ablation_on_identical_week_before_discard"
+
+
 def evidence_payload(
     args: argparse.Namespace,
     output: Path,
@@ -127,16 +148,14 @@ def evidence_payload(
         and active_days >= 2
         and win_rate >= 0.50
     )
-    if not implementation:
-        decision = "implementation_failure_repair_and_rerun_identical_week"
-    elif potential:
-        decision = "retain_v48_and_open_second_predeclared_four_asset_week"
-    elif trades == 0:
-        decision = "diagnose_v48_state_bottleneck_then_one_variable_ablation"
-    else:
-        decision = "run_one_core_variable_ablation_on_identical_week_before_discard"
+    decision = candidate_decision(
+        implementation=implementation,
+        potential=potential,
+        trades=trades,
+    )
     return {
-        "candidate": "candidate-04-v48-cross-market-information-transfer",
+        "candidate": args.candidate,
+        "compiler_script": args.compiler_script,
         "engine": "NautilusTrader 1.230.0 BacktestNode",
         "source_feature_workflow_run": args.source_feature_run,
         "evaluation": {
@@ -145,10 +164,7 @@ def evidence_payload(
             "evaluation_start": args.evaluation_start,
             "evaluation_end": args.evaluation_end,
         },
-        "market_cause": (
-            "BTC information event, follower underreaction, independent "
-            "follower inventory and structure confirmation"
-        ),
+        "market_cause": args.market_cause,
         "compiler": compiler,
         "target_summaries": targets,
         "nautilus_metrics": metrics,
@@ -165,6 +181,9 @@ def evidence_payload(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--compiler-script", default=DEFAULT_COMPILER)
+    parser.add_argument("--candidate", default=DEFAULT_CANDIDATE)
+    parser.add_argument("--market-cause", default=DEFAULT_MARKET_CAUSE)
     parser.add_argument("--restored-rich", type=Path, required=True)
     parser.add_argument("--source-feature-run", type=int, required=True)
     parser.add_argument("--build-start", required=True)
@@ -175,6 +194,10 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args()
+
+    compiler_path = (C04 / args.compiler_script).resolve()
+    if compiler_path.parent != C04 or not compiler_path.is_file():
+        raise SystemExit(f"invalid compiler script: {args.compiler_script}")
 
     restored = args.restored_rich.resolve()
     output = args.output.resolve()
@@ -200,7 +223,7 @@ def main() -> None:
         run(
             [
                 sys.executable,
-                str(C04 / "cross_market_information_transfer_compiler_v2.py"),
+                str(compiler_path),
                 "--rich-root",
                 str(output / "rich"),
                 "--config-root",
@@ -216,7 +239,7 @@ def main() -> None:
             ],
             env=env,
             log=output / "compiler.log",
-            stage="cross_market_compiler",
+            stage=f"compiler_{compiler_path.stem}",
         )
         btc = signals / "BTCUSDT"
         btc.mkdir(parents=True, exist_ok=True)
