@@ -26,6 +26,9 @@ METRICS_COLUMNS = (
     "count_long_short_ratio",
     "sum_taker_long_short_vol_ratio",
 )
+NS_PER_MINUTE = 60 * 1_000_000_000
+NS_PER_FIVE_MINUTES = 5 * NS_PER_MINUTE
+NS_PER_TEN_MINUTES = 10 * NS_PER_MINUTE
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +93,63 @@ def _drop_invalid_positioning_rows(
     return metrics.loc[~invalid].copy(), timestamps
 
 
+def _positioning_cadence_diagnostics(metrics: pd.DataFrame) -> dict[str, int]:
+    """Validate interval cadence while retaining actual publication seconds.
+
+    Binance metrics rows may be published a few seconds after a nominal
+    five-minute boundary. A raw 298/302-second delta is therefore not a missing
+    interval. We classify cadence by the completed interval label while keeping
+    the original publication timestamp untouched for causal availability. No
+    snapshot is shifted backward, forward-filled or interpolated.
+    """
+    required = {"timestamp", "timestamp_ns", "interval_timestamp_ns"}
+    missing = required.difference(metrics.columns)
+    if missing:
+        raise ValueError(f"positioning cadence columns missing: {sorted(missing)}")
+    if metrics.empty:
+        raise ValueError("positioning cadence frame must not be empty")
+    if not metrics["timestamp_ns"].is_monotonic_increasing:
+        raise RuntimeError("positioning metrics are not monotonic")
+    if any(timestamp.minute % 5 for timestamp in metrics["timestamp"]):
+        raise RuntimeError("positioning timestamps are not in a five-minute label minute")
+
+    delays = (
+        metrics["timestamp_ns"].astype("int64")
+        - metrics["interval_timestamp_ns"].astype("int64")
+    )
+    if bool(((delays < 0) | (delays >= NS_PER_MINUTE)).any()):
+        raise RuntimeError(
+            "positioning publication time falls outside the labelled boundary minute"
+        )
+    if bool(metrics["interval_timestamp_ns"].duplicated().any()):
+        raise RuntimeError("duplicate positioning snapshots for one five-minute interval")
+
+    interval_gaps = (
+        metrics["interval_timestamp_ns"].astype("int64").diff().dropna()
+    )
+    unexpected = interval_gaps[
+        (interval_gaps != NS_PER_FIVE_MINUTES)
+        & (interval_gaps != NS_PER_TEN_MINUTES)
+    ]
+    if not unexpected.empty:
+        raise RuntimeError(
+            "unexpected positioning interval gaps: "
+            f"count={len(unexpected)}, sample={unexpected.head().tolist()}"
+        )
+    raw_gaps = metrics["timestamp_ns"].astype("int64").diff().dropna()
+    return {
+        "publication_jitter_rows": int((delays != 0).sum()),
+        "maximum_publication_delay_ns": int(delays.max()),
+        "minimum_publication_delay_ns": int(delays.min()),
+        "raw_non_300_second_deltas": int(
+            (raw_gaps != NS_PER_FIVE_MINUTES).sum()
+        ),
+        "ten_minute_interval_gaps": int(
+            (interval_gaps == NS_PER_TEN_MINUTES).sum()
+        ),
+    }
+
+
 def load_positioning_bundle(
     *,
     symbol: str,
@@ -133,6 +193,14 @@ def load_positioning_bundle(
     metrics = metrics[metrics["symbol"].str.upper() == symbol].copy()
     metrics["timestamp"] = pd.to_datetime(metrics["create_time"], utc=True, errors="raise")
     metrics["timestamp_ns"] = metrics["timestamp"].map(lambda value: int(value.value))
+    metrics["interval_timestamp_ns"] = (
+        metrics["timestamp_ns"].astype("int64") // NS_PER_FIVE_MINUTES
+    ) * NS_PER_FIVE_MINUTES
+    metrics["interval_timestamp"] = pd.to_datetime(
+        metrics["interval_timestamp_ns"],
+        unit="ns",
+        utc=True,
+    )
     for name in METRICS_COLUMNS:
         metrics[name] = _numeric_or_nan(metrics[name])
     metrics = metrics.sort_values("timestamp_ns", kind="stable")
@@ -158,18 +226,7 @@ def load_positioning_bundle(
     metrics, invalid_timestamps = _drop_invalid_positioning_rows(metrics)
     if metrics.empty:
         raise RuntimeError("no valid positioning snapshots remain")
-    if any(timestamp.minute % 5 for timestamp in metrics["timestamp"]):
-        raise RuntimeError("positioning timestamps are not aligned to five-minute boundaries")
-
-    gaps = metrics["timestamp_ns"].diff().dropna()
-    five_minutes_ns = 5 * 60 * 1_000_000_000
-    ten_minutes_ns = 10 * 60 * 1_000_000_000
-    unexpected = gaps[(gaps != five_minutes_ns) & (gaps != ten_minutes_ns)]
-    if not unexpected.empty:
-        raise RuntimeError(
-            "unexpected positioning cadence gaps: "
-            f"count={len(unexpected)}, sample={unexpected.head().tolist()}"
-        )
+    cadence = _positioning_cadence_diagnostics(metrics)
     metrics = metrics.set_index("timestamp", drop=False)
 
     archives = tuple([*flow.archives, *metric_archives])
@@ -185,15 +242,20 @@ def load_positioning_bundle(
             "flow_rows": int(len(flow.frame.index)),
             "metrics_rows": int(len(metrics.index)),
             "metrics_frequency": (
-                "five minutes; one isolated invalid snapshot may create a "
-                "ten-minute gap; longer gaps are rejected"
+                "five-minute interval labels with retained publication-second "
+                "jitter; one isolated invalid snapshot may create a ten-minute gap"
             ),
+            "metrics_cadence": cadence,
             "metrics_columns": list(METRICS_COLUMNS),
             "invalid_positioning_rows_dropped": len(invalid_timestamps),
             "invalid_positioning_timestamps": list(invalid_timestamps),
             "invalid_positioning_policy": (
                 "drop exact snapshot; no interpolation or forward fill; affected "
                 "signal interval unavailable; next non-contiguous OI delta neutral"
+            ),
+            "publication_jitter_policy": (
+                "retain actual publication timestamp; validate cadence by nominal "
+                "five-minute interval label; never shift information earlier"
             ),
             "source": "Binance Vision public USD-M archives",
         },
@@ -210,7 +272,9 @@ def load_positioning_bundle(
 
 __all__ = [
     "METRICS_COLUMNS",
+    "NS_PER_FIVE_MINUTES",
     "PositioningBundle",
     "_drop_invalid_positioning_rows",
+    "_positioning_cadence_diagnostics",
     "load_positioning_bundle",
 ]
