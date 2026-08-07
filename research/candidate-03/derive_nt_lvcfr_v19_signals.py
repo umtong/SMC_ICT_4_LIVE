@@ -76,7 +76,7 @@ class TradeBlock:
         if self.first_price is None:
             self.first_price = price
         if self.last_price is not None:
-            self.path_bp += abs(price / self.last_price - 1.0) * 10_000.0
+            self.path_bp += abs(math.log(price / self.last_price)) * 10_000.0
         self.last_price = price
         self.high = max(self.high, price)
         self.low = min(self.low, price)
@@ -176,7 +176,7 @@ def block_features(
     if not block.valid or baseline_median_gross <= 0.0:
         return None
     assert block.first_price is not None and block.last_price is not None
-    progress = direction * (block.last_price / block.first_price - 1.0) * 10_000.0
+    progress = direction * math.log(block.last_price / block.first_price) * 10_000.0
     flow = direction * block.signed_notional / block.gross_notional
     activity = block.gross_notional / baseline_median_gross
     response = progress / max(activity, 1e-9)
@@ -210,8 +210,8 @@ def cumulative_features(
     path = sum(block.path_bp for block in valid)
     for previous, current in zip(valid, valid[1:]):
         assert previous.last_price is not None and current.first_price is not None
-        path += abs(current.first_price / previous.last_price - 1.0) * 10_000.0
-    progress = direction * (last / first - 1.0) * 10_000.0
+        path += abs(math.log(current.first_price / previous.last_price)) * 10_000.0
+    progress = direction * math.log(last / first) * 10_000.0
     flow = direction * signed / gross
     activity = gross / (baseline_median_gross * len(valid))
     response = progress / max(activity, 1e-9)

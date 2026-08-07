@@ -17,7 +17,7 @@ REF = os.environ.get("GITHUB_SHA", "research/candidate-03")
 BASE_PATH = "research/candidate-03/run_v18_staged_container.py"
 CONFIG = Path("research/candidate-03/nt_lvcfr_v19_config.json")
 FROZEN_BLOBS = {
-    "research/candidate-03/derive_nt_lvcfr_v19_signals.py": "f01bb00b38f11971019744038df24b8f105989a8",
+    "research/candidate-03/derive_nt_lvcfr_v19_signals.py": "dc338b760aa8dae28606f5c75c4904164face75b",
     "research/candidate-03/prepare_nt_lvcfr_v19.py": "955ebce86895b06549b3243e256835564eb1e1b7",
     "research/candidate-03/nt_lvcfr_v19_config.json": "651979bbb5458a034c3dd931eef9e33377310b98",
     "research/candidate-03/test_nt_lvcfr_v19.py": "0b08f3d0935db1644653f3925468b336199186bb",
