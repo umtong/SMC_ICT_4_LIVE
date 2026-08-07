@@ -1,4 +1,4 @@
-name: candidate-02-v103-endogenous-flow-clock-first-week
+name: candidate-02-v104-external-liquidity-first-week
 
 on:
   push:
@@ -7,18 +7,18 @@ on:
       - ".github/workflows/candidate-02-v77-terminal-router.yml"
 
 permissions:
-  contents: read
+  contents: write
   packages: read
   actions: read
 
 concurrency:
-  group: candidate-02-v103-endogenous-flow-clock-first-week
+  group: candidate-02-v104-external-liquidity-first-week
   cancel-in-progress: false
 
 jobs:
-  v103-first-week:
+  v104-first-week:
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 75
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       credentials:
@@ -33,66 +33,193 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research/candidate-02
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Verify v103 prospective lock and fixed NautilusTrader environment
+      - name: Materialize and verify the locked v104 source payload
         shell: bash
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python - <<'PY'
+          import hashlib
+          import json
+          import subprocess
+          from pathlib import Path
+
+          manifest = json.loads(Path('.candidate-02-v104/payload_manifest.json').read_text())
+          assert int(manifest['parts']) == 5
+          root = Path('.candidate-02-v104')
+          first_chunks = [root / f'payload.part00.{index:03d}' for index in range(4)]
+          later_parts = [root / f'payload.part{index:02d}' for index in range(1, 5)]
+          assert all(path.is_file() for path in first_chunks + later_parts)
+          first = b''.join(path.read_bytes() for path in first_chunks)
+          assert len(first) == 8000
+          first_blob = hashlib.sha1(b'blob ' + str(len(first)).encode() + b'\0' + first).hexdigest()
+          assert first_blob == '68ba636fe7af708325e3c3a57d5119097a0129b6'
+          encoded = first + b''.join(path.read_bytes() for path in later_parts)
+          assert len(encoded) == int(manifest['base64_chars'])
+          assert hashlib.sha256(encoded).hexdigest() == manifest['base64_sha256']
+          Path('/tmp/v104-payload.b64').write_bytes(encoded)
+          PY
+          base64 --decode /tmp/v104-payload.b64 > /tmp/v104-source.tar.gz
+          test "$(stat -c '%s' /tmp/v104-source.tar.gz)" -eq "$(python -c "import json; print(json.load(open('.candidate-02-v104/payload_manifest.json'))['tar_gz_bytes'])")"
+          test "$(sha256sum /tmp/v104-source.tar.gz | cut -d' ' -f1)" = "$(python -c "import json; print(json.load(open('.candidate-02-v104/payload_manifest.json'))['tar_gz_sha256'])")"
+          tar -tzf /tmp/v104-source.tar.gz | sort > /tmp/v104-tar-members.txt
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('.candidate-02-v104/payload_manifest.json').read_text())
+          actual = [line.strip() for line in Path('/tmp/v104-tar-members.txt').read_text().splitlines() if line.strip()]
+          assert actual == sorted(manifest['files']), (actual, sorted(manifest['files']))
+          PY
+          tar -xzf /tmp/v104-source.tar.gz
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+          manifest = json.loads(Path('.candidate-02-v104/payload_manifest.json').read_text())
+          for relative, expected in manifest['files'].items():
+              path = Path(relative)
+              assert path.is_file(), relative
+              assert path.stat().st_size == int(expected['bytes']), relative
+              actual = subprocess.check_output(['git', 'hash-object', str(path)], text=True).strip()
+              assert actual == expected['git_blob_sha'], (relative, actual, expected['git_blob_sha'])
+
+          # The payload was prospectively frozen before the registered router
+          # existed. Materialize the exact triggering router blob into the lock
+          # before any market archive is collected. All scenario/risk/cost/week
+          # fields and every other source blob remain unchanged.
+          lock_path = Path('research/candidate-02/v104_external_liquidity_lock.json')
+          lock = json.loads(lock_path.read_text())
+          assert lock['status'] == 'LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['first_week']['raw_data_status_at_lock'] == 'NOT_COLLECTED_FOR_V104'
+          assert lock['source_git_blob_sha']['router_workflow'] == '9c4289b41a16f39c5ac04a1471167d53f6276c72'
+          workflow = Path('.github/workflows/candidate-02-v77-terminal-router.yml')
+          router_blob = subprocess.check_output(['git', 'hash-object', str(workflow)], text=True).strip()
+          lock['source_git_blob_sha']['router_workflow'] = router_blob
+          lock['source_materialization'] = {
+              'contract': 'payload bytes, archive, extracted sizes, and every extracted Git blob are verified before compilation or collection',
+              'materialization_commit_does_not_retrigger_router': True,
+              'materialized_before_market_data': True,
+              'payload_manifest': '.candidate-02-v104/payload_manifest.json',
+              'payload_parts': int(manifest['parts']),
+          }
+          lock_path.write_text(json.dumps(lock, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          assert subprocess.check_output(['git', 'hash-object', str(workflow)], text=True).strip() == router_blob
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-02/v104_external_liquidity_core.py \
+            research/candidate-02/v104_first_week_driver.py \
+            research/candidate-02/v104_external_liquidity_lock.json \
+            research/candidate-02/tests/test_v104_causality.py \
+            research/candidate-02/tests/test_v104_activation_adapter.py
+          git commit -m "research(candidate-02): materialize locked v104 source"
+          git push origin HEAD:research/candidate-02
+          echo "V104_SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Verify exact prospective v104 source and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$V104_SOURCE_SHA"
           smc4 doctor
           python -m py_compile \
-            research/candidate-02/v103_endogenous_flow_clock_core.py \
-            research/candidate-02/v103_nt_backtest.py \
-            research/candidate-02/v103_first_week_driver.py
-          test "$(git hash-object research/candidate-02/v103_endogenous_flow_clock_core.py)" = "ece6aa6bb7bd3e8667f52b4d2669607c4c6fab0e"
-          test "$(git hash-object research/candidate-02/v103_base_config.json)" = "c64d2fdbf50d1d08eba2b6ab2ed8a6c3e6d38959"
+            research/candidate-02/v104_external_liquidity_core.py \
+            research/candidate-02/v104_nt_strategy.py \
+            research/candidate-02/v104_nt_backtest.py \
+            research/candidate-02/v104_first_week_driver.py
+          python -m pytest -q research/candidate-02/tests/test_v104_*.py
 
       - name: Run prospectively locked BTC first week in NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          python research/candidate-02/v103_first_week_driver.py 2>&1 | tee artifacts-v103-first-week-driver.log
-          test -f artifacts-v103-first-week-decision.json
+          python research/candidate-02/v104_first_week_driver.py 2>&1 | tee artifacts-v104-first-week-driver.log
+          test -f artifacts-v104-first-week-decision.json
           python - <<'PY'
           import json
           from pathlib import Path
-          d = json.loads(Path('artifacts-v103-first-week-decision.json').read_text())
-          assert d['candidate_family'] == 'candidate-02-v103-endogenous-turnover-clock-order-flow-regimes'
-          assert d['baseline']['performance_engine'] == 'NautilusTrader 1.230.0'
-          assert d['baseline']['custom_backtest_engine'] is False
-          assert float(d['baseline']['risk_fraction']) == 0.03
+          d = json.loads(Path('artifacts-v104-first-week-decision.json').read_text())
+          m = d['baseline']['metrics']
+          assert d['candidate_family'] == 'candidate-02-v104-external-liquidity-common-acceptance-retest'
+          assert m['engine'] == 'NautilusTrader 1.230.0'
+          assert m['custom_backtest_engine'] is False
+          assert float(m['risk_fraction']) == 0.03
+          assert d['long_evaluation_allowed'] is False
           print(json.dumps({
               'status': d['status'],
               'next_week_allowed': d['next_week_allowed'],
-              'ablation_passes_weekly_gate': d.get('ablation_passes_weekly_gate'),
+              'baseline_target_met': m['target_met'],
+              'baseline_trades': m['trades'],
+              'baseline_daily_growth': m['geometric_daily_growth_after_cost'],
           }, indent=2, sort_keys=True))
           PY
 
-      - name: Build compact evidence bundle
+      - name: Build compact reproducible evidence
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p compact-v103
-          cp -f artifacts-v103-*.json compact-v103/ 2>/dev/null || true
-          cp -f artifacts-v103-*.log compact-v103/ 2>/dev/null || true
-          for d in artifacts/candidate-02-v103-*; do
+          rm -rf compact-v104
+          mkdir -p compact-v104
+          cp -f artifacts-v104-*.json compact-v104/ 2>/dev/null || true
+          cp -f artifacts-v104-*.log compact-v104/ 2>/dev/null || true
+          for d in artifacts/candidate-02-v104-*; do
             test -d "$d" || continue
-            out="compact-v103/$(basename "$d")"
+            out="compact-v104/$(basename "$d")"
             mkdir -p "$out"
-            for f in metrics.json trades.jsonl signals.jsonl signals_schedule.json risk_sizing.jsonl account.csv fills.csv orders.csv positions.csv validation_exit_code.txt; do
+            for f in \
+              metrics.json signal_build_diagnostics.json scenario_attribution.json \
+              trade_diagnostics.jsonl trades.jsonl signals.jsonl signals_schedule.json \
+              risk_sizing.jsonl account.csv fills.csv orders.csv positions.csv \
+              validation_exit_code.txt; do
               test -f "$d/$f" && cp "$d/$f" "$out/$f"
             done
           done
-          find compact-v103 -type f -maxdepth 3 -print | sort
+          find inputs/v104-first-week -type f \
+            \( -name '*manifest*.json' -o -name 'STATUS_*' \) \
+            -exec cp --parents '{}' compact-v104/ \; 2>/dev/null || true
+          find compact-v104 -type f -maxdepth 8 -print | sort
 
-      - name: Upload compact v103 evidence
+      - name: Commit compact v104 evidence if branch is unchanged
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-02
+          if test "$(git rev-parse origin/research/candidate-02)" != "$V104_SOURCE_SHA"; then
+            echo "Branch moved; evidence remains in the workflow artifact only."
+            exit 0
+          fi
+          destination="research/candidate-02/results/v104_first_week/$V104_SOURCE_SHA"
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          cp -a compact-v104/. "$destination/"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$destination"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "research(candidate-02): record locked v104 first-week evidence"
+          git push origin HEAD:research/candidate-02
+
+      - name: Upload complete v104 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-02-v103-first-week-${{ github.sha }}
-          path: compact-v103
+          name: candidate-02-v104-first-week-${{ github.sha }}
+          path: |
+            compact-v104
+            artifacts/candidate-02-v104-*
+            artifacts-v104-*.json
+            artifacts-v104-*.log
           if-no-files-found: warn
           retention-days: 30
           compression-level: 9
