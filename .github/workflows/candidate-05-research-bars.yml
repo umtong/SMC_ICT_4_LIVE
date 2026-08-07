@@ -11,7 +11,7 @@ permissions:
   packages: read
 
 jobs:
-  export-bars:
+  export-market-context:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -21,50 +21,67 @@ jobs:
       PYTHONPATH: research/candidate-05
     steps:
       - uses: actions/checkout@v4
-      - name: Verify environment and export checksum-verified project bars
+      - name: Verify environment and export checksum-verified premium and funding context
         shell: bash
         run: |
           set -euo pipefail
           smc4 doctor
           python - <<'PY'
           from datetime import date, timedelta
+          from hashlib import sha256
           from pathlib import Path
-          import pandas as pd
-          import features
-          from timestamp_contract import install as install_timestamp_contract
+          import urllib.request
 
-          install_timestamp_contract()
-          root = Path("artifacts/candidate-05-research-bars")
-          cache = Path(".cache/candidate-05-research-bars")
+          root = Path("artifacts/candidate-05-market-context")
           root.mkdir(parents=True, exist_ok=True)
-          periods = {
-              "week_1": (date(2023, 7, 7), date(2023, 7, 15)),
-              "week_2": (date(2024, 1, 13), date(2024, 1, 21)),
-              "week_3": (date(2023, 9, 6), date(2023, 9, 14)),
-          }
+          base = "https://data.binance.vision/data/futures/um"
+
+          def digest(path: Path) -> str:
+              h = sha256()
+              with path.open("rb") as stream:
+                  while block := stream.read(1 << 20):
+                      h.update(block)
+              return h.hexdigest()
+
+          def checked(url: str, target: Path) -> None:
+              target.parent.mkdir(parents=True, exist_ok=True)
+              checksum = target.with_name(target.name + ".CHECKSUM")
+              urllib.request.urlretrieve(url, target)
+              urllib.request.urlretrieve(url + ".CHECKSUM", checksum)
+              expected = checksum.read_text(encoding="utf-8").split()[0].lower()
+              actual = digest(target)
+              if actual != expected:
+                  raise RuntimeError(f"checksum mismatch: {target}")
+
           symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
-          for period, (start, end) in periods.items():
-              for symbol in symbols:
-                  frames = []
+          periods = {
+              "week_1": (date(2023, 7, 7), date(2023, 7, 15), symbols),
+              "week_2": (date(2024, 1, 13), date(2024, 1, 21), symbols),
+              "week_3": (date(2023, 9, 6), date(2023, 9, 14), symbols),
+              "btc_30d": (date(2024, 2, 28), date(2024, 3, 30), ("BTCUSDT",)),
+          }
+          for period, (start, end, period_symbols) in periods.items():
+              for symbol in period_symbols:
                   day = start
                   while day <= end:
-                      archive, _, _ = features.download_checked(
-                          "klines", symbol, day, cache / period / symbol,
+                      stamp = day.isoformat()
+                      name = f"{symbol}-1m-{stamp}.zip"
+                      url = (
+                          f"{base}/daily/premiumIndexKlines/{symbol}/1m/{name}"
                       )
-                      frames.append(features.read_kline(archive))
+                      checked(url, root / "premiumIndexKlines" / period / symbol / name)
                       day += timedelta(days=1)
-                  frame = pd.concat(frames, ignore_index=True).sort_values("close_time_dt")
-                  if frame["close_time_dt"].duplicated().any():
-                      raise RuntimeError(f"duplicate bars in {period} {symbol}")
-                  frame.to_csv(
-                      root / f"{period}_{symbol}.csv.gz",
-                      index=False,
-                      compression="gzip",
-                  )
+
+          months = ("2023-07", "2023-09", "2024-01", "2024-02", "2024-03")
+          for symbol in symbols:
+              for month in months:
+                  name = f"{symbol}-fundingRate-{month}.zip"
+                  url = f"{base}/monthly/fundingRate/{symbol}/{name}"
+                  checked(url, root / "fundingRate" / symbol / name)
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: candidate-05-research-bars-${{ github.sha }}
-          path: artifacts/candidate-05-research-bars/**
+          name: candidate-05-market-context-${{ github.sha }}
+          path: artifacts/candidate-05-market-context/**
           if-no-files-found: error
           retention-days: 1
