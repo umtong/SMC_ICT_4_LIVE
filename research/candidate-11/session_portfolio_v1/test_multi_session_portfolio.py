@@ -57,7 +57,10 @@ class MultiSessionPortfolioTests(unittest.TestCase):
         self.assertIn("self.session_logic_keys", materialized)
         self.assertIn('price_increment=float(META[symbol]["price_increment"])', materialized)
         self.assertIn("symbol=session_symbol", materialized)
-        self.assertIn("Candidate 11 multi-session semantic gate", materialized)
+        self.assertIn(
+            "Every allowed market owns the same completed-session I7",
+            materialized,
+        )
         self.assertNotIn(
             'session_plan = self.logic[self.session_logic_key].on_bar(\n'
             '                self.buffer["BTCUSDT"]',
