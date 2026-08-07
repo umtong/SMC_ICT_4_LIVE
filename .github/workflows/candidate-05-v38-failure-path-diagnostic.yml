@@ -7,8 +7,9 @@ on:
       - "research/candidate-05/v38_trade_cases.json"
       - "research/candidate-05/failed_reversal_continuation_logic.py"
       - "research/candidate-05/v38_failure_path_diagnostic.py"
+      - "research/candidate-05/v38_failure_path_diagnostic_v2.py"
       - "research/candidate-05/tests/test_failed_reversal_continuation_logic.py"
-      - "research/candidate-05/tests/test_v38_failure_path_diagnostic.py"
+      - "research/candidate-05/tests/test_v38_failure_path_diagnostic_v2.py"
       - "research/candidate-05/V38B_RESULT.md"
       - ".github/workflows/candidate-05-v38-failure-path-diagnostic.yml"
   workflow_dispatch:
@@ -50,14 +51,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
-          python research/candidate-05/v38_failure_path_diagnostic.py \
+          python research/candidate-05/v38_failure_path_diagnostic_v2.py \
             --cases research/candidate-05/v38_trade_cases.json \
             --config research/candidate-05/config.json \
             --cache .cache/candidate-05-v38-failure-path \
             --output "$ROOT" \
             2>&1 | tee "$ROOT/console.log"
 
-      - name: Verify diagnostic is observational only
+      - name: Verify diagnostic is observational and unambiguous
         if: always()
         shell: bash
         run: |
@@ -67,9 +68,14 @@ jobs:
           from pathlib import Path
           path = Path("artifacts/candidate-05-v38-failure-path-diagnostic/v38_failure_path_diagnostic.json")
           payload = json.loads(path.read_text())
+          assert payload["schema"] == "candidate-05-v38-failure-path-diagnostic-v2"
           assert payload["method"]["engine"] == "OBSERVATIONAL_COMPLETED_BAR_DIAGNOSTIC_ONLY"
           assert payload["method"]["creates_orders_or_pnl"] is False
           assert len(payload["cases"]) == 11
+          for case in payload["cases"]:
+              assert "continuation_reference_price" not in case
+              assert "reacceptance_reference_price" in case
+              assert "retest_reference_price" in case
           print(json.dumps(payload, indent=2, sort_keys=True))
           PY
           fi
