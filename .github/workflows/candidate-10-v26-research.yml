@@ -7,6 +7,7 @@ on:
     paths:
       - research/candidate-10/v26_source_parts/**
       - research/candidate-10/v26_source_manifest.py
+      - research/candidate-10/v26_state_chain_patch.py
       - .github/workflows/candidate-10-v26-research.yml
   workflow_dispatch:
 
@@ -43,6 +44,9 @@ jobs:
             --parts-dir research/candidate-10/v26_source_parts \
             --destination .candidate10-v26-runtime/v26 \
             --provenance artifacts/candidate-10-v26/v26_source_provenance.json
+          python research/candidate-10/v26_state_chain_patch.py \
+            --source-dir .candidate10-v26-runtime/v26 \
+            --provenance artifacts/candidate-10-v26/v26_state_chain_patch.json
           chmod -R a+rwx .candidate10-v26-runtime artifacts
 
       - name: Run accepted-auction continuation experiment in pinned NautilusTrader image
