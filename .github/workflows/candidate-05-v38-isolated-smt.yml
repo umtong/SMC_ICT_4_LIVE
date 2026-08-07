@@ -1,0 +1,225 @@
+name: candidate-05-v38-isolated-smt
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/isolated_smt_*.py"
+      - "research/candidate-05/strategy_v38_isolated_smt_reversal.py"
+      - "research/candidate-05/shared_account_strategy_variants_v38.py"
+      - "research/candidate-05/shared_account_backtest_v38.py"
+      - "research/candidate-05/tests/test_isolated_smt_logic.py"
+      - "research/candidate-05/tests/test_strategy_v38_contract.py"
+      - "research/candidate-05/V37_RESULT.md"
+      - "research/candidate-05/LITERATURE_CROSS_ASSET_RESILIENCY.md"
+      - ".github/workflows/candidate-05-v38-isolated-smt.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v38-isolated-smt
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  controlled-shared-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v38-isolated-smt
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Run v38 against exact shared-account control
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/v26.json" <<'JSON'
+          {"classification":"VALIDATED_BTC_WINNER_RESOLVED","winner":"strategy_v26:ScenarioValidEntryStrategy","experiment_role":"EXACT_SHARED_CONTROL"}
+          JSON
+          cat > "$ROOT/evidence/v38.json" <<'JSON'
+          {"classification":"VALIDATED_BTC_WINNER_RESOLVED","winner":"strategy_v38_isolated_smt_reversal:IsolatedSmtReversalStrategy","experiment_role":"ISOLATED_SMT_REVERSAL"}
+          JSON
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          root = Path(os.environ["ROOT"])
+          runner = Path("research/candidate-05/shared_account_backtest_v38.py")
+          stages = [
+              ("week-1", "2023-07-07", "2023-07-15", "2023-07-09", "2023-07-15", 7),
+              ("week-2", "2024-01-13", "2024-01-21", "2024-01-15", "2024-01-21", 7),
+              ("week-3", "2023-09-06", "2023-09-14", "2023-09-08", "2023-09-14", 7),
+              ("continuous-30d", "2024-02-28", "2024-03-30", "2024-03-01", "2024-03-30", 30),
+          ]
+          branch_name = "SMT_ISOLATED_SESSION_REVERSAL"
+          decisions = []
+
+          def atomic(path: Path, value: object) -> None:
+              path.parent.mkdir(parents=True, exist_ok=True)
+              temporary = path.with_suffix(path.suffix + ".tmp")
+              temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+              temporary.replace(path)
+
+          for stage, build_start, build_end, evaluation_start, evaluation_end, days in stages:
+              implementation_error = None
+              for variant in ("v26", "v38"):
+                  output = root / stage / variant
+                  output.mkdir(parents=True, exist_ok=True)
+                  command = [
+                      sys.executable,
+                      str(runner),
+                      "--winner-evidence", str(root / "evidence" / f"{variant}.json"),
+                      "--build-start", build_start,
+                      "--build-end", build_end,
+                      "--evaluation-start", evaluation_start,
+                      "--evaluation-end", evaluation_end,
+                      "--cache", str(Path(".cache/candidate-05-v38-isolated-smt") / stage),
+                      "--output", str(output),
+                  ]
+                  completed = subprocess.run(
+                      command,
+                      text=True,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                  )
+                  (root / f"{stage}-{variant}-console.log").write_text(
+                      completed.stdout or "",
+                  )
+                  if completed.returncode != 0:
+                      implementation_error = {
+                          "classification": f"IMPLEMENTATION_ERROR_{stage.upper().replace('-', '_')}_{variant.upper()}",
+                          "stage": stage,
+                          "variant": variant,
+                          "returncode": completed.returncode,
+                      }
+                      break
+
+              if implementation_error is not None:
+                  decisions.append(implementation_error)
+                  atomic(root / f"{stage}-decision.json", implementation_error)
+                  break
+
+              control = json.loads((root / stage / "v26" / "metrics.json").read_text())
+              candidate = json.loads((root / stage / "v38" / "metrics.json").read_text())
+              branch = candidate.get("scenario_metrics", {}).get(branch_name, {})
+              integrity = bool(control.get("integrity_pass")) and bool(candidate.get("integrity_pass"))
+              branch_trades = int(branch.get("trades", 0))
+              branch_pnl = float(branch.get("net_pnl", 0.0))
+
+              if not integrity:
+                  classification = f"IMPLEMENTATION_ERROR_{stage.upper().replace('-', '_')}_INTEGRITY"
+              elif branch_trades == 0:
+                  classification = f"LOGIC_FAILURE_NO_INCREMENTAL_TRADES_{stage.upper().replace('-', '_')}"
+              elif branch_pnl <= 0.0:
+                  classification = f"LOGIC_FAILURE_NONPOSITIVE_INCREMENTAL_EXPECTANCY_{stage.upper().replace('-', '_')}"
+              elif float(candidate.get("total_return", -1.0)) <= float(control.get("total_return", -1.0)):
+                  classification = f"LOGIC_FAILURE_DID_NOT_IMPROVE_CONTROL_{stage.upper().replace('-', '_')}"
+              else:
+                  classification = ""
+
+              if days == 7:
+                  promotion_checks = {
+                      "control_integrity": bool(control.get("integrity_pass")),
+                      "candidate_integrity": bool(candidate.get("integrity_pass")),
+                      "candidate_improves_control": float(candidate.get("total_return", -1.0)) > float(control.get("total_return", -1.0)),
+                      "geometric_daily_growth": float(candidate.get("geometric_daily_growth", -1.0)) >= 0.01,
+                      "trades": int(candidate.get("trades", 0)) >= 7,
+                      "wins": int(candidate.get("wins", 0)) >= 4,
+                      "win_rate": float(candidate.get("win_rate", 0.0)) >= 0.40,
+                      "active_days": int(candidate.get("active_days", 0)) >= 4,
+                      "max_drawdown": float(candidate.get("max_drawdown", 1.0)) <= 0.20,
+                      "largest_winner_share": float(candidate.get("largest_winner_share", 1.0)) <= 0.55,
+                      "incremental_branch_traded": branch_trades >= 1,
+                      "incremental_branch_positive": branch_pnl > 0.0,
+                  }
+              else:
+                  promotion_checks = {
+                      "control_integrity": bool(control.get("integrity_pass")),
+                      "candidate_integrity": bool(candidate.get("integrity_pass")),
+                      "candidate_improves_control": float(candidate.get("total_return", -1.0)) > float(control.get("total_return", -1.0)),
+                      "geometric_daily_growth": float(candidate.get("geometric_daily_growth", -1.0)) >= 0.01,
+                      "trades": int(candidate.get("trades", 0)) >= 15,
+                      "wins": int(candidate.get("wins", 0)) >= 5,
+                      "active_days": int(candidate.get("active_days", 0)) >= 10,
+                      "max_drawdown": float(candidate.get("max_drawdown", 1.0)) <= 0.35,
+                      "largest_winner_share": float(candidate.get("largest_winner_share", 1.0)) <= 0.35,
+                      "incremental_branch_traded": branch_trades >= 3,
+                      "incremental_branch_positive": branch_pnl > 0.0,
+                  }
+
+              passed = all(promotion_checks.values())
+              if not classification:
+                  classification = (
+                      f"V38_{stage.upper().replace('-', '_')}_PASSED"
+                      if passed
+                      else f"LOGIC_SCREEN_BELOW_PROMOTION_GATE_{stage.upper().replace('-', '_')}"
+                  )
+              decision = {
+                  "schema": "candidate-05-v38-controlled-stage-v1",
+                  "stage": stage,
+                  "classification": classification,
+                  "passed": passed,
+                  "promotion_checks": promotion_checks,
+                  "control": control,
+                  "candidate": candidate,
+                  "incremental_branch": branch,
+                  "delta_total_return": float(candidate.get("total_return", 0.0)) - float(control.get("total_return", 0.0)),
+              }
+              decisions.append(decision)
+              atomic(root / f"{stage}-decision.json", decision)
+              print(json.dumps(decision, indent=2, sort_keys=True))
+              if not passed:
+                  break
+
+          final_pass = len(decisions) == 4 and bool(decisions[-1].get("passed"))
+          final = {
+              "schema": "candidate-05-v38-controlled-research-v1",
+              "classification": "V38_30D_PASSED" if final_pass else decisions[-1]["classification"],
+              "passed": final_pass,
+              "decisions": decisions,
+              "next_action": (
+                  "Promote to 91-day then exact 2024-01-01 through 2026-06-30 shared-account validation"
+                  if final_pass
+                  else "Separate implementation failure from logic failure; retain only causally useful observations and discard or replace the family"
+              ),
+          }
+          atomic(root / "v38_summary.json", final)
+          PY
+
+      - name: Print authoritative evidence
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$ROOT/v38_summary.json"; then python -m json.tool "$ROOT/v38_summary.json"; fi
+          find "$ROOT" -name '*console.log' -type f -print -exec tail -n 160 {} \;
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v38-isolated-smt-${{ github.sha }}
+          path: artifacts/candidate-05-v38-isolated-smt/**
+          if-no-files-found: error
+          retention-days: 90
