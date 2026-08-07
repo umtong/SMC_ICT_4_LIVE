@@ -10,48 +10,98 @@ permissions:
   contents: read
 
 jobs:
-  coin-m-liquidation-probe:
+  export-coin-m-liquidations:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Probe continuing COIN-M liquidation reference coverage
+      - name: Export checksum-verified COIN-M liquidation events
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from datetime import date, timedelta
+          from hashlib import sha256
           from pathlib import Path
           from urllib.error import HTTPError
           import json
           import urllib.request
 
-          root = Path("artifacts/candidate-05-coin-m-probe")
+          root = Path("artifacts/candidate-05-coin-m-liquidations")
           root.mkdir(parents=True, exist_ok=True)
-          symbols = ("BTCUSD_PERP", "ETHUSD_PERP", "SOLUSD_PERP", "XRPUSD_PERP")
-          dates = ("2023-07-09", "2024-03-15", "2024-05-15", "2025-01-15")
-          result = []
-          for symbol in symbols:
-              for day in dates:
-                  name = f"{symbol}-liquidationSnapshot-{day}.zip"
-                  url = (
-                      "https://data.binance.vision/data/futures/cm/daily/"
-                      f"liquidationSnapshot/{symbol}/{name}"
-                  )
-                  target = root / name
-                  try:
-                      with urllib.request.urlopen(url, timeout=20) as response:
-                          target.write_bytes(response.read())
-                      result.append({"symbol": symbol, "day": day, "available": True, "bytes": target.stat().st_size})
-                  except HTTPError as exc:
-                      if exc.code != 404:
-                          raise
-                      result.append({"symbol": symbol, "day": day, "available": False, "bytes": 0})
-          (root / "probe.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-          print(json.dumps(result, indent=2, sort_keys=True))
+          base = "https://data.binance.vision/data/futures/cm/daily/liquidationSnapshot"
+          mapping = {
+              "BTCUSDT": "BTCUSD_PERP",
+              "ETHUSDT": "ETHUSD_PERP",
+              "SOLUSDT": "SOLUSD_PERP",
+              "XRPUSDT": "XRPUSD_PERP",
+          }
+          periods = {
+              "week_1": (date(2023, 7, 7), date(2023, 7, 15), tuple(mapping)),
+              "week_2": (date(2024, 1, 13), date(2024, 1, 21), tuple(mapping)),
+              "week_3": (date(2023, 9, 6), date(2023, 9, 14), tuple(mapping)),
+              "btc_30d": (date(2024, 2, 28), date(2024, 3, 30), ("BTCUSDT",)),
+          }
+
+          def digest(path: Path) -> str:
+              h = sha256()
+              with path.open("rb") as stream:
+                  while block := stream.read(1 << 20):
+                      h.update(block)
+              return h.hexdigest()
+
+          def fetch(item: dict[str, str]) -> tuple[dict[str, str], bool]:
+              period, usd_symbol, day = item["period"], item["usd_symbol"], item["day"]
+              cm_symbol = mapping[usd_symbol]
+              name = f"{cm_symbol}-liquidationSnapshot-{day}.zip"
+              url = f"{base}/{cm_symbol}/{name}"
+              target = root / period / usd_symbol / name
+              checksum = target.with_name(target.name + ".CHECKSUM")
+              target.parent.mkdir(parents=True, exist_ok=True)
+              try:
+                  with urllib.request.urlopen(url, timeout=25) as response:
+                      target.write_bytes(response.read())
+                  with urllib.request.urlopen(url + ".CHECKSUM", timeout=25) as response:
+                      checksum.write_bytes(response.read())
+              except HTTPError as exc:
+                  if exc.code == 404:
+                      target.unlink(missing_ok=True)
+                      checksum.unlink(missing_ok=True)
+                      return item, False
+                  raise
+              expected = checksum.read_text(encoding="utf-8").split()[0].lower()
+              actual = digest(target)
+              if actual != expected:
+                  raise RuntimeError(f"checksum mismatch: {target}")
+              return item, True
+
+          requests = []
+          for period, (start, end, symbols) in periods.items():
+              for usd_symbol in symbols:
+                  day = start
+                  while day <= end:
+                      requests.append({"period": period, "usd_symbol": usd_symbol, "day": day.isoformat()})
+                      day += timedelta(days=1)
+          present, missing = [], []
+          with ThreadPoolExecutor(max_workers=16) as pool:
+              futures = [pool.submit(fetch, item) for item in requests]
+              for future in as_completed(futures):
+                  item, exists = future.result()
+                  (present if exists else missing).append(item)
+          present.sort(key=lambda x: (x["period"], x["usd_symbol"], x["day"]))
+          missing.sort(key=lambda x: (x["period"], x["usd_symbol"], x["day"]))
+          (root / "availability.json").write_text(
+              json.dumps({"present": present, "missing": missing}, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          if not present:
+              raise RuntimeError("no COIN-M liquidation events available")
+          print(json.dumps({"present": len(present), "missing": len(missing)}, sort_keys=True))
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: candidate-05-coin-m-probe-${{ github.sha }}
-          path: artifacts/candidate-05-coin-m-probe/**
+          name: candidate-05-coin-m-liquidations-${{ github.sha }}
+          path: artifacts/candidate-05-coin-m-liquidations/**
           if-no-files-found: error
           retention-days: 1
