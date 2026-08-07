@@ -1,0 +1,121 @@
+name: Candidate 09 v17 persistent internal reacceptance
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths: [.github/workflows/candidate-09-v17.yml]
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v17-persistent-reacceptance
+  cancel-in-progress: true
+
+jobs:
+  test-gate-and-long-if-qualified:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: ${{ github.workspace }}/research/candidate-09:${{ github.workspace }}/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-v2
+          restore-keys: |
+            candidate-09-binance-vision-v1
+
+      - name: Materialize and verify frozen v17 source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09
+          cat "$root"/v17_bundle/part* > /tmp/candidate-09-v17-bundle.tar.gz
+          echo 'c3f80199eb1a82df2d1296a6068eea04a7444cdde108c3b0fe926556b1848588  /tmp/candidate-09-v17-bundle.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/candidate-09-v17-bundle.tar.gz -C "$root"
+
+      - name: Run doctor, controlled contracts, pooled gate, and gated long evaluation
+        shell: bash
+        run: bash research/candidate-09/run_v17_ci.sh
+
+      - name: Preserve exact v17 source and full evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v17-${{ github.run_id }}
+          path: |
+            research/candidate-09/evidence/latest
+            research/candidate-09/diagnostics/v17-gate-long
+            research/candidate-09/archive/v4
+            research/candidate-09/config_v14.json
+            research/candidate-09/config_v17.json
+            research/candidate-09/state_engine_v10_direct.py
+            research/candidate-09/state_engine_v13_direct.py
+            research/candidate-09/state_engine_v14_direct.py
+            research/candidate-09/state_engine_v17_direct.py
+            research/candidate-09/nautilus_strategy.py
+            research/candidate-09/run.py
+            research/candidate-09/apply_v14_evidence_fix.py
+            research/candidate-09/apply_v14_account_exhaustion_fix.py
+            research/candidate-09/apply_v17_run_patch.py
+            research/candidate-09/run_v17_ci.sh
+            research/candidate-09/tests
+            research/candidate-09/tests_v17
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit compact v17 evidence only
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=$(dirname "$(dirname "$(dirname "$(realpath research/candidate-09/run.py)")")")
+          root="$repo/research/candidate-09"
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/evidence" "$tmp/diagnostics"
+
+          for name in summary.json REPORT.md outcomes.csv trades.csv fills.csv run.json \
+                      data_manifest.json event_summary.json trade_summary.json compact_manifest.json; do
+            [[ -f "$root/evidence/latest/$name" ]] && cp "$root/evidence/latest/$name" "$tmp/evidence/$name"
+          done
+          [[ -d "$root/diagnostics/v17-gate-long" ]] && \
+            cp -a "$root/diagnostics/v17-gate-long/." "$tmp/diagnostics/"
+
+          find "$tmp" -type f -size +95M -print -quit | grep -q . && {
+            echo 'compact evidence unexpectedly contains a file larger than 95 MB' >&2
+            exit 1
+          }
+
+          git config --global --add safe.directory "$repo"
+          git -C "$repo" config user.name candidate-09-research-bot
+          git -C "$repo" config user.email candidate-09-research-bot@users.noreply.github.com
+          git -C "$repo" fetch origin "$GITHUB_REF_NAME"
+          git -C "$repo" reset --hard "origin/$GITHUB_REF_NAME"
+          git -C "$repo" clean -fd research/candidate-09
+
+          rm -rf "$root/evidence/latest" "$root/diagnostics/v17-gate-long"
+          mkdir -p "$root/evidence/latest" "$root/diagnostics/v17-gate-long"
+          cp -a "$tmp/evidence/." "$root/evidence/latest/"
+          cp -a "$tmp/diagnostics/." "$root/diagnostics/v17-gate-long/"
+
+          git -C "$repo" add \
+            research/candidate-09/evidence/latest \
+            research/candidate-09/diagnostics/v17-gate-long
+          if git -C "$repo" diff --cached --quiet; then exit 0; fi
+          status=$(python -c "import json;print(json.load(open('research/candidate-09/evidence/latest/summary.json')).get('status','UNKNOWN'))")
+          git -C "$repo" commit -m "candidate-09 v17: frozen result ${status}"
+          git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
