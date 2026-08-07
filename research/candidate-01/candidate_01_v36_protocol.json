@@ -1,0 +1,140 @@
+{
+  "candidate": "candidate-01 v36 cross-market failed auction",
+  "candidate_version": 36,
+  "protocol_frozen_at_utc": "2026-08-07T02:50:40Z",
+  "research_question": "After both BTCUSDT spot and USD-M futures form synchronized two-sided balances, does a cost-resolved futures-only external-liquidity sweep followed by a completed futures re-entry with opposite aggressive flow identify a durable rotation toward the opposite futures balance boundary?",
+  "economic_logic": {
+    "liquidity_formation": "The immediately preceding 30 synchronized UTC minutes must form two-sided balances in both spot and futures, evidenced by at least two completed-close crossings of each market's own frozen midpoint.",
+    "liquidity_collection": "USD-M futures must trade at least one all-in per-side cost beyond its own frozen balance boundary while aggregate aggressive flow is aligned with the excursion.",
+    "cross_market_state": "The primary requires that spot never completes the same cost-resolved excursion through its corresponding own frozen boundary before futures failure. No unconditional spot-leads or futures-leads assumption is made.",
+    "confirmation": "Within the next three later completed synchronized minutes, futures must close back inside the frozen boundary with aggregate aggressive flow opposite the sweep direction.",
+    "expectation": "A futures sweep rejected without corresponding spot confirmation represents a failed cross-market auction and is expected to rotate toward the opposite frozen futures boundary.",
+    "invalidation": "The full observed futures sweep extreme plus one 7-bp all-in cost buffer.",
+    "destination": "The opposite boundary of the frozen 30-minute futures balance."
+  },
+  "pattern_scenario_separation": {
+    "pattern_detector": "detect_sweep_pattern freezes the prior joint balance and emits only a cost-resolved aligned-flow futures sweep observation.",
+    "scenario_state_machine": "CrossMarketFailedAuctionStateMachine tracks subsequent spot confirmation, futures extension, expiry and completed futures failure, then emits primary/control plans.",
+    "execution": "run_nautilus_tick_plan_backtest receives only completed plans and official futures TradeTicks; it exclusively owns orders, fills, fees, margin, positions, PnL and NAV."
+  },
+  "data_contract": {
+    "source": "Official Binance Vision daily BTCUSDT spot and USD-M futures aggTrades archives",
+    "integrity": "Every ZIP must match its published SHA-256 CHECKSUM before parsing.",
+    "timestamp_normalization": "Milliseconds and post-2025 spot microseconds are normalized to nanoseconds by magnitude.",
+    "bar_clock": "Exact UTC one-minute boundaries; a bar is available only at minute end, never at its last trade timestamp.",
+    "synchronization": "Only minutes containing official trades in both markets are joined; the weekly gate requires zero missing or unmatched BTC minutes.",
+    "execution_stream": "Official USD-M aggregate trades are represented one-for-one as NautilusTrader TradeTicks."
+  },
+  "frozen_parameters": {
+    "balance_minutes": 30,
+    "minimum_midpoint_crosses_per_market": 2,
+    "minimum_structure_width_fraction": 0.0028,
+    "minimum_structure_width_basis": "Four times 7 bps, equal to two frozen round trips; not PnL fitted.",
+    "minimum_sweep_fraction": 0.0007,
+    "minimum_sweep_basis": "One frozen all-in per-side cost; not PnL fitted.",
+    "confirmation_minutes": 3,
+    "confirmation_window_basis": "Immediate failed-auction response horizon fixed before performance evaluation; no week-specific tuning.",
+    "risk_fraction_current_nav": 0.03,
+    "all_in_cost_bps_per_side": 7.0,
+    "maximum_hold_hours": 4.0,
+    "global_pending_entry_plus_position_limit": 1
+  },
+  "primary": {
+    "rule": "spot-unconfirmed-primary",
+    "variable": "No cost-resolved spot excursion through the corresponding frozen spot boundary before completed futures failure."
+  },
+  "single_ablation": {
+    "rule": "futures-failure-control",
+    "removed_variable": "Spot non-confirmation only.",
+    "held_identical": [
+      "futures sweep detector",
+      "balance",
+      "failure timing",
+      "opposite futures aggressive flow",
+      "entry",
+      "stop",
+      "target",
+      "risk",
+      "cost",
+      "maximum hold",
+      "execution tick windows"
+    ]
+  },
+  "week_selection": {
+    "pool": "Every UTC Monday from 2020-01-06 through 2025-12-29 inclusive with official BTCUSDT spot and USD-M archive eligibility.",
+    "excluded_recent_candidate_weeks": [
+      "2020-11-23",
+      "2021-10-04",
+      "2022-11-28",
+      "2024-02-26",
+      "2025-05-12",
+      "2025-11-24"
+    ],
+    "seed": "candidate-01-v36-cross-market-failed-auction",
+    "algorithm": "For every eligible Monday compute SHA256(seed + '|' + ISO-date), sort lexicographically by full digest, and take the first three.",
+    "frozen_weeks": [
+      "2024-01-01",
+      "2021-03-01",
+      "2022-01-24"
+    ],
+    "staging": "Run week 1 only. Week 2 opens only after the primary weekly gate and primary/control discrimination comparison advance. Week 3 opens only after the unchanged week-2 gate and discrimination comparison advance."
+  },
+  "weekly_gate": {
+    "operational": [
+      "NautilusTrader authoritative execution",
+      "ended flat",
+      "zero global-entry-gate violations",
+      "zero protective-order failures",
+      "zero liquidation markers",
+      "seven daily NAV marks",
+      "all checksum and exact-minute causality assertions"
+    ],
+    "full_pass": {
+      "closed_positions_min": 7,
+      "win_rate_min": 0.45,
+      "total_return_strictly_positive": true,
+      "geometric_daily_return_min": 0.01,
+      "profit_factor_min": 1.2,
+      "max_drawdown_greater_than": -0.2
+    },
+    "promising_but_not_complete": {
+      "closed_positions_min": 7,
+      "win_rate_min": 0.45,
+      "total_return_strictly_positive": true,
+      "geometric_daily_return_min": 0.0075,
+      "profit_factor_min": 1.1,
+      "max_drawdown_greater_than": -0.15
+    },
+    "ablation_discrimination_required": "Primary must exclude at least one control event and strictly improve win rate, total return, geometric daily return, profit factor and maximum drawdown, with at least seven primary trades."
+  },
+  "long_evaluation_policy": "Closed until all three frozen BTC weeks advance unchanged. ETHUSDT, SOLUSDT and XRPUSDT remain closed until BTC demonstrates repeatable post-cost alpha.",
+  "research_basis": [
+    {
+      "type": "official_data_documentation",
+      "source": "binance/binance-public-data",
+      "supported_point": "Spot and futures aggTrades schemas, daily archives, post-2025 spot microsecond timestamps and per-file checksums."
+    },
+    {
+      "type": "peer_reviewed_literature",
+      "source": "Kapar and Olmo, An analysis of price discovery between Bitcoin futures and spot markets, Economics Letters 174 (2019)",
+      "supported_point": "One sample finds futures dominant in Bitcoin price discovery."
+    },
+    {
+      "type": "peer_reviewed_literature",
+      "source": "Baur and Dimpfl, Price discovery in Bitcoin spot or futures?, Journal of Futures Markets (2019)",
+      "supported_point": "Another intraday sample finds spot price discovery, so leadership is not frozen unconditionally."
+    },
+    {
+      "type": "market_microstructure",
+      "source": "Cont, Kukanov and Stoikov, The Price Impact of Order Book Events, Journal of Financial Econometrics (2014)",
+      "supported_point": "Order-flow imbalance and liquidity state motivate requiring opposite aggressive flow rather than treating a wick alone as a failed auction."
+    }
+  ],
+  "prohibited_adaptations_after_week_1": [
+    "Changing any threshold, balance length, confirmation horizon, stop, target, hold, risk or cost because of week-1 PnL",
+    "Adding session, volatility, direction or score filters to rescue the candidate",
+    "Changing the selected weeks",
+    "Running a long period after a failed first-week gate",
+    "Treating spot or futures as the permanent price-discovery leader"
+  ]
+}
