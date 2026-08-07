@@ -3,8 +3,8 @@
 The inherited Candidate 13 runner remains the execution source of truth.  This
 transformer inserts Candidate 12 I7 as a plan-producing BTC session module
 inside the same strategy, sends each completed session scenario through the
-same frozen four-market FAR/AAC semantic gate as the SCDAM core, and only then
-allows it to compete in the existing GlobalCandidateMutex.
+frozen four-market session semantic gate, and only then allows it to compete in
+the existing GlobalCandidateMutex.
 
 Every replacement is an exact source contract.  Upstream drift aborts before
 market data is downloaded.
@@ -201,9 +201,9 @@ def materialize_combined_portfolio_source(source: str) -> str:
         '''            if not plans:
                 return
             plan_by_id = {plan.scenario_id: (plan, candidate) for plan, candidate in plans}''',
-        '''            # Candidate 12 I7 observes BTC only, but a completed plan
-            # must pass the same already-frozen four-market economic semantics
-            # before it can compete for Candidate 14's one global slot.
+        '''            # Candidate 12 I7 observes BTC only.  Each complete local
+            # session plan must pass the dedicated four-market session semantic
+            # decision before competing for Candidate 14's one global slot.
             session_plan = self.logic[self.session_logic_key].on_bar(
                 self.buffer["BTCUSDT"],
                 allow_entry=True,
@@ -224,7 +224,7 @@ def materialize_combined_portfolio_source(source: str) -> str:
                     causal_start_ts_ns = int(
                         session_plan.details.get("causal_start_ts_ns", -1)
                     )
-                    session_leadership = self.leadership.decide(
+                    session_leadership = self.leadership.decide_session(
                         symbol="BTCUSDT",
                         scenario=semantic_scenario,
                         direction=session_plan.direction.value,
@@ -270,6 +270,6 @@ def materialize_combined_portfolio_source(source: str) -> str:
             plan_by_id = {plan.scenario_id: (plan, candidate) for plan, candidate in plans}''',
         label="session-plan-semantic-arbitration",
     )
-    if source.count("same already-frozen four-market economic semantics") != 1:
+    if source.count("dedicated four-market session semantic") != 1:
         raise RuntimeError("Candidate 14 session semantic gate was not materialized exactly once")
     return source

@@ -1,16 +1,22 @@
-"""Candidate 14's preserved Candidate 13 cross-market auction core.
+"""Candidate 14 cross-market semantics for SCDAM and completed sessions.
 
-FAR is a moderate counter-trend failed auction. The strongest form requires all
-three peers to reclaim in the proposed direction. A second form admits one
-sub-dominant dissenting peer only when the candidate is a follower, completes a
-top-half local event, contributes an efficient volatility-normalized reclaim,
-and the completed market-wide auction is coherently adverse to the proposed
-reversal.
+The ordinary SCDAM FAR/AAC policy is the preserved Candidate 13 core.  Session
+I7 plans have already completed a route-specific five-minute rejection,
+acceptance, MSS or FVG confirmation before this module is called.  Candidate 14
+therefore uses a distinct FAR admission function for those completed session
+plans: the final one-minute impulse is not required a second time, but the
+entire causal path must be efficient, volatility-normalized, unanimously
+supported by peers and in the top half of event price discovery.
 
-AAC is synchronized accepted repricing in the direction already controlling
-both the candidate's and the market's completed 24-hour auction. Candidate 14
-does not add leader catch-up, generic originator, laggard or trend-resumption
-permission to this core.
+A session failed auction may be either:
+
+* counter-trend transfer after a completed session liquidity raid; or
+* trend resumption after that raid fails against the already controlling
+  synchronized auction.
+
+Both roles use existing measurements and categorical ranks only.  No new fitted
+threshold, route whitelist, risk multiplier or SCDAM relaxation is introduced.
+Session AAC remains exactly the preserved SCDAM AAC semantic rule.
 """
 from __future__ import annotations
 
@@ -22,6 +28,17 @@ from market_leadership import LeadershipDecision, MarketLeadershipGate
 
 def _with(decision: LeadershipDecision, approved: bool, reason: str) -> LeadershipDecision:
     return replace(decision, approved=approved, reason=reason)
+
+
+def _complete(decision: LeadershipDecision, symbol_count: int) -> bool:
+    return (
+        len(decision.peer_returns) == symbol_count - 1
+        and len(decision.directional_trend_scores) == symbol_count
+        and decision.candidate_event_move is not None
+        and decision.confirmation_impulse is not None
+        and decision.trailing_direction_rank is not None
+        and decision.event_direction_rank is not None
+    )
 
 
 def _dominant_peer_quorum(decision: LeadershipDecision, sign: float) -> bool:
@@ -43,15 +60,8 @@ def semantic_decision(
     minimum_event_efficiency: float,
     minimum_event_displacement: float,
 ) -> LeadershipDecision:
-    required_peers = symbol_count - 1
-    complete = (
-        len(decision.peer_returns) == required_peers
-        and len(decision.directional_trend_scores) == symbol_count
-        and decision.candidate_event_move is not None
-        and decision.confirmation_impulse is not None
-        and decision.event_direction_rank is not None
-    )
-    if not complete:
+    """Preserved Candidate 13 SCDAM semantic policy."""
+    if not _complete(decision, symbol_count):
         return _with(decision, False, decision.reason)
 
     sign = 1.0 if decision.direction == "LONG" else -1.0
@@ -131,7 +141,95 @@ def semantic_decision(
     return _with(decision, False, "SEMANTIC_UNSUPPORTED_SCENARIO")
 
 
+def session_semantic_decision(
+    decision: LeadershipDecision,
+    *,
+    symbol_count: int,
+    severe_adverse_trend_score: float,
+    minimum_confirmation_impulse: float,
+    minimum_event_efficiency: float,
+    minimum_event_displacement: float,
+) -> LeadershipDecision:
+    """Evaluate an already-complete I7 session plan against four-market state.
+
+    AAC is deliberately unchanged.  FAR first receives the unchanged core
+    decision.  Only a core rejection may enter the I7-specific substitution,
+    where the full route confirmation replaces the final one-minute impulse.
+    """
+    core = semantic_decision(
+        decision,
+        symbol_count=symbol_count,
+        severe_adverse_trend_score=severe_adverse_trend_score,
+        minimum_confirmation_impulse=minimum_confirmation_impulse,
+        minimum_event_efficiency=minimum_event_efficiency,
+        minimum_event_displacement=minimum_event_displacement,
+    )
+    if core.approved or decision.scenario != "FAR":
+        return core
+    if not _complete(decision, symbol_count):
+        return core
+
+    sign = 1.0 if decision.direction == "LONG" else -1.0
+    if not all(sign * float(value) > 0.0 for value in decision.peer_returns.values()):
+        return _with(decision, False, "SEMANTIC_FAR_I7_REQUIRES_UNANIMOUS_PEER_TRANSFER")
+    if float(decision.candidate_event_move or 0.0) <= 0.0:
+        return _with(decision, False, "SEMANTIC_FAR_I7_WITHOUT_LOCAL_DIRECTIONAL_MOVE")
+    if (
+        decision.event_path_efficiency is None
+        or decision.event_path_efficiency < minimum_event_efficiency
+    ):
+        return _with(decision, False, "SEMANTIC_FAR_I7_INEFFICIENT_CAUSAL_PATH")
+    if (
+        decision.event_standardized_displacement is None
+        or decision.event_standardized_displacement < minimum_event_displacement
+    ):
+        return _with(decision, False, "SEMANTIC_FAR_I7_INSUFFICIENT_CAUSAL_DISPLACEMENT")
+
+    top_half = max(1, (symbol_count + 1) // 2)
+    event_rank = int(decision.event_direction_rank)
+    trailing_rank = int(decision.trailing_direction_rank)
+    if event_rank > top_half:
+        return _with(decision, False, "SEMANTIC_FAR_I7_EVENT_NOT_TOP_HALF")
+
+    candidate_trend = float(decision.directional_trend_scores[decision.symbol])
+    market_trend = float(median(decision.directional_trend_scores.values()))
+    countertrend = candidate_trend < 0.0 and market_trend < 0.0
+    trend_resumption = candidate_trend > 0.0 and market_trend > 0.0
+
+    if countertrend:
+        if (
+            candidate_trend <= severe_adverse_trend_score
+            and market_trend <= severe_adverse_trend_score
+        ):
+            return _with(decision, False, "SEMANTIC_FAR_I7_UNRESOLVED_ADVERSE_AUCTION")
+        return _with(decision, True, "SEMANTIC_FAR_I7_COUNTERTREND_TRANSFER")
+
+    if trend_resumption:
+        if trailing_rank > top_half:
+            return _with(decision, False, "SEMANTIC_FAR_I7_TREND_RESUMPTION_NOT_TOP_HALF")
+        return _with(decision, True, "SEMANTIC_FAR_I7_TREND_RESUMPTION")
+
+    return _with(decision, False, "SEMANTIC_FAR_I7_MIXED_TRAILING_AUCTION")
+
+
 class SemanticMarketLeadershipGate(MarketLeadershipGate):
+    def _measure(
+        self,
+        *,
+        symbol: str,
+        scenario: str,
+        direction: str,
+        sweep_ts_ns: int,
+        confirmation_ts_ns: int,
+    ) -> LeadershipDecision:
+        return super().decide(
+            symbol=symbol,
+            scenario=scenario,
+            direction=direction,
+            sweep_ts_ns=sweep_ts_ns,
+            confirmation_ts_ns=confirmation_ts_ns,
+        )
+
     def decide(
         self,
         *,
@@ -141,7 +239,7 @@ class SemanticMarketLeadershipGate(MarketLeadershipGate):
         sweep_ts_ns: int,
         confirmation_ts_ns: int,
     ) -> LeadershipDecision:
-        measured = super().decide(
+        measured = self._measure(
             symbol=symbol,
             scenario=scenario,
             direction=direction,
@@ -149,6 +247,31 @@ class SemanticMarketLeadershipGate(MarketLeadershipGate):
             confirmation_ts_ns=confirmation_ts_ns,
         )
         return semantic_decision(
+            measured,
+            symbol_count=len(self.symbols),
+            severe_adverse_trend_score=self.severe_adverse_trend_score,
+            minimum_confirmation_impulse=self.minimum_follower_confirmation_impulse,
+            minimum_event_efficiency=self.minimum_idiosyncratic_event_efficiency,
+            minimum_event_displacement=self.minimum_idiosyncratic_event_displacement,
+        )
+
+    def decide_session(
+        self,
+        *,
+        symbol: str,
+        scenario: str,
+        direction: str,
+        sweep_ts_ns: int,
+        confirmation_ts_ns: int,
+    ) -> LeadershipDecision:
+        measured = self._measure(
+            symbol=symbol,
+            scenario=scenario,
+            direction=direction,
+            sweep_ts_ns=sweep_ts_ns,
+            confirmation_ts_ns=confirmation_ts_ns,
+        )
+        return session_semantic_decision(
             measured,
             symbol_count=len(self.symbols),
             severe_adverse_trend_score=self.severe_adverse_trend_score,

@@ -1,82 +1,46 @@
-# Candidate 14 — SCDAM + Session Auction with Four-Market Semantics
+# Candidate 14 — Session FAR Price-Discovery Semantics
 
-Candidate 14 runs two independently causal scenario generators through one NautilusTrader portfolio:
+Candidate 14 runs the preserved Candidate 13 synchronized four-market SCDAM core and the frozen Candidate 12 I7 BTC session auction through one NautilusTrader portfolio, one current-NAV 3% loss sizer and one global pending-entry/open-position slot.
 
-1. **SCDAM core** — Candidate 13's synchronized four-market failed-auction reversal and accepted-auction continuation semantics, with Candidate 14's validated displacement-failure execution fallback.
-2. **Session I7 generator** — Candidate 12 I7's frozen BTC Asia/London completed-session rejection, acceptance, reacceptance and protected FVG routes from commit `036c0e8302c3826aa293f6037405a84fc7118ae8`.
+## Evidence path
 
-Every completed session plan must now pass the same four-market economic state machine as the SCDAM core before it can enter the shared global candidate arbitration.
+- **V1:** broad transfer and immediate AAC execution failed logically: 12 trades, 5 wins, 7 losses.
+- **V2:** restored core plus displacement-failure execution: 6 trades, 5 wins, 1 loss, 0.9032% daily geometric growth.
+- **V3:** unconditioned I7 combination solved frequency but admitted four session losses: 12 trades, 8 wins, 4 losses, 0.9485% daily growth.
+- **V4:** every I7 plan used the unchanged SCDAM FAR/AAC market gate: 6 trades, 6 wins, 1.0551% daily growth, NAV 1.4439x, zero trade-path drawdown. Only the 10-trade diagnostic requirement failed.
 
-## Development history
+V4 removed all four V3 losses, but it also rejected two W12 session-rejection winners because their final one-minute return was weak. Their complete I7 five-minute failed-auction route, peer unanimity, top-half event rank and standardized causal displacement were strong. The rejected W14 losing rejection was last in both event and trailing price discovery.
 
-### V1 — rejected
+## V5 hypothesis
 
-Generic trend resumption, originator/laggard transfer, path-only confirmation and AAC immediate execution produced 12 trades with 5 wins and 7 losses. Implementation audits were clean; the logic was bad.
-
-### V2 — selective, just below target
-
-The Candidate 13 core was restored and FAR received a full-displacement-traversal execution fallback. The result was 6 trades, 5 wins, 1 loss, 0.9032% daily geometric growth and a 2.456 payoff ratio. The only leader-catch-up trade lost, so that state was removed.
-
-### V3 — frequency solved, semantic breadth too loose
-
-The complete I7 session module was inserted into the same Nautilus account and global slot. Fresh provenance-verified diagnostics produced:
-
-- 35 days;
-- NAV multiple 1.3915;
-- 0.9485% daily geometric growth;
-- 12 trades, 8 wins, 4 losses;
-- payoff ratio 1.9449;
-- all safety audits passed.
-
-The four session losses were two fresh Asia reacceptances, one Asia high acceptance and one London high rejection. Yet earlier I7 evidence contains profitable continuation and rejection routes. Deleting route names would therefore memorize the current dates rather than identify the common failure cause.
-
-V3 evidence is retained in `development-v3-aggregate.json` and `development-v3-RESULT.md`.
-
-## V4 hypothesis
-
-The I7 local state machine answers whether a completed BTC session boundary produced a valid local plan. It does not by itself answer whether the four-market auction supports that plan. V4 reconstructs each plan's causal observation interval and applies the already-frozen four-market semantic gate:
+SCDAM and session AAC are unchanged. For an already-complete I7 failed-session-auction plan only:
 
 ```text
-session failed auction
-  raid close -> completed confirmation
-  -> evaluate as FAR
-
-first session acceptance
-  bullish FVG formation -> defended retest decision
-  -> evaluate as AAC
-
-fresh reacceptance
-  prior accepted-auction failure back inside -> fresh reacceptance decision
-  -> evaluate as AAC
+completed I7 five-minute rejection / MSS
+-> all three peers transfer in the plan direction
+-> candidate causal path passes existing efficiency and displacement floors
+-> event direction rank is in the top half
+-> countertrend transfer, or aligned trend resumption with top-half trailing rank
+-> shared global arbitration and exact costed 3% NAV sizing
 ```
 
-The start times are taken from the unchanged I7 plan or event log. Missing context fails closed. No lookback length, price threshold, route whitelist, stop, target or risk parameter is added.
+The I7 route substitutes only for the duplicated terminal one-minute impulse. It does not substitute for market synchronization, path quality or price-discovery rank. No threshold or route name is fitted.
 
-## Shared execution and risk contract
+## Execution contract
 
-- Both generators feed one `GlobalCandidateMutex`.
-- Pending new entry plus open position is globally limited to one.
-- NAV is read from Nautilus at each submission.
-- Planned loss budget is exactly `current NAV × 3%`.
-- Quantity includes the route's frozen entry-to-stop risk, fees and slippage reserve.
-- SCDAM passive limits remain post-only.
-- I7's one-bar protected FVG limit remains non-post-only because its frozen loss budget reserves taker entry and two ticks of slippage.
-- Take profit is post-only limit GTC; stop is stop-market GTC.
 - NautilusTrader exclusively owns orders, fills, fees, margin, positions and NAV.
+- Pending new entry plus open position is globally limited to one across BTC, ETH, SOL and XRP.
+- Planned loss budget is current NAV times 3%, including each route's frozen entry-to-stop risk, fees and slippage reserve.
+- SCDAM passive limits are post-only; I7 protected FVG limits retain their frozen non-post-only semantics.
+- Take profit is post-only limit GTC; stop is stop-market GTC.
 
 ## Validation status
 
-W10-W14 remain development diagnostics already exposed in prior candidates. They can reject V4 but can never prove success. If V4 survives, source and protocol are frozen before newly predeclared, non-overlapping intervals are evaluated.
-
-## Reproduction
+W10-W14 remain development diagnostics and cannot prove success. V5 must first survive the one-change comparison. If it does, code and protocol are frozen before deterministic, non-overlapping holdout weeks are selected and run.
 
 ```bash
 smc4 doctor
 export PYTHONPATH="$PWD/research/candidate-14:$PWD/src"
 python -m unittest discover -s research/candidate-14 -p 'test_*.py' -v
 bash research/candidate-14/run_week.sh W10
-python research/candidate-14/aggregate.py \
-  --results research/candidate-14/results \
-  --protocol research/candidate-14/protocol.json \
-  --output research/candidate-14/aggregate.json
 ```

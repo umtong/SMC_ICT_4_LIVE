@@ -19,7 +19,7 @@ class CombinedPortfolioMaterializerTests(unittest.TestCase):
     def test_materialization_is_exact_and_compilable(self):
         source = self.materialized()
         self.assertEqual(source.count("candidate-14-unified-parent"), 1)
-        self.assertEqual(source.count("same already-frozen four-market economic semantics"), 1)
+        self.assertEqual(source.count("dedicated four-market session semantic"), 1)
         self.assertEqual(source.count("SessionAuctionBridge("), 1)
         compile(source, str(ROOT / "run_leadership_scdam_base.py"), "exec")
 
@@ -30,10 +30,11 @@ class CombinedPortfolioMaterializerTests(unittest.TestCase):
         self.assertEqual(source.count("self.mutex.flush()"), 1)
         self.assertIn("plans.append((session_plan, session_candidate))", source)
 
-    def test_every_session_plan_uses_existing_market_semantic_gate(self):
+    def test_every_session_plan_uses_dedicated_market_semantic_gate(self):
         source = self.materialized()
         self.assertIn('semantic_scenario = str(', source)
-        self.assertIn('session_leadership = self.leadership.decide(', source)
+        self.assertIn('session_leadership = self.leadership.decide_session(', source)
+        self.assertNotIn('session_leadership = self.leadership.decide(\n', source)
         self.assertIn('symbol="BTCUSDT"', source)
         self.assertIn('sweep_ts_ns=causal_start_ts_ns', source)
         self.assertIn('SESSION_MARKET_LEADERSHIP_REJECTED', source)
