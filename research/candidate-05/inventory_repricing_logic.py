@@ -1,4 +1,4 @@
-"""Causal predicates for Candidate 05 v39 inventory/repricing system.
+"""Causal predicates for Candidate 05 inventory/repricing system.
 
 The module contains no order, fill, PnL, margin or NAV simulation. It only
 classifies completed observations into two economically distinct states:
@@ -30,7 +30,10 @@ QH_CONTEXT_ACCEPTED_DISTANCE_ATR = 0.50
 QH_CONTEXT_INVALIDATION_ATR = 0.20
 
 INTERNAL_PENETRATION_ATR_MIN = 0.20
-INTERNAL_TAIL_IMPROVEMENT_MIN = 0.20
+# Controlled v42 ablation: internal raids require the same material final-flow
+# reversal as external inventory traps. Penetration, depth, VWAP, CHoCH, target,
+# risk, cost and execution contracts remain unchanged.
+INTERNAL_TAIL_IMPROVEMENT_MIN = EXTERNAL_TAIL_IMPROVEMENT_MIN
 INTERNAL_DIRECTIONAL_DEPTH_MIN = 0.10
 
 
