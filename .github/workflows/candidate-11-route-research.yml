@@ -1,0 +1,45 @@
+name: Candidate 11 route next research
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/research_route_trigger.txt"
+      - ".github/workflows/candidate-11-route-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-11-route-research-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  route:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout latest evidence and decision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Create only an authorized trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase origin research/candidate-11
+          python research/candidate-11/route_research_next.py
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          for file in \
+            research/candidate-11/microstructure_v3_run_trigger.txt \
+            research/candidate-11/results/NEXT_ACTION.json; do
+            if [ -f "$file" ]; then git add "$file"; fi
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: route evidence-authorized next research"
+            git push origin HEAD:research/candidate-11
+          fi
