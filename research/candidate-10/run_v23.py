@@ -51,6 +51,11 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
         from c10_v22_install import install_external_target
 
         install_external_target()
+        # Import only after v22 installation so the ledger subclasses the
+        # exact v22 target/execution strategy used by the ablation.
+        from c10_live_cost_ledger import install_live_cost_ledger
+
+        install_live_cost_ledger()
         state_mapping = (
             "CLEARING_OR_BUILDING_ACCEPTANCE_CONTINUATION_V22"
         )
@@ -72,7 +77,8 @@ def _worker(args: argparse.Namespace, output_root: Path) -> int:
         "accepted clearing break to range-reclaim reversal while building "
         "retains continuation; ablation restores v22 where clearing and "
         "building both continue. Detector, pools, expiry, entry, stop, target, "
-        "fees, impact, seed and 3% current-NAV risk remain fixed."
+        "fees, fill-time impact ledger, seed and 3% current all-cost NAV risk "
+        "remain fixed."
     )
     research.write_json_atomic(destination / "metrics.json", metrics)
     print("RESULT_JSON=" + json.dumps(metrics, sort_keys=True), flush=True)
@@ -179,7 +185,8 @@ def main() -> int:
         "ablation_contract": (
             "only OI directional semantics change: accepted clearing breaks "
             "must reclaim with opposite flow in full, versus v22 continuation "
-            "in ablation; all numeric and execution variables are fixed"
+            "in ablation; all numeric, target, fill-time cost-ledger and "
+            "execution variables are fixed"
         ),
         "process_isolation": True,
     }
