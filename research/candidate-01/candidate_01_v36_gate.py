@@ -123,7 +123,10 @@ def classify(root: Path, week: str) -> dict[str, Any]:
         float(summary["minimum_structure_width_fraction"]),
         MIN_STRUCTURE_WIDTH_FRACTION,
     )
-    _assert_close(float(summary["minimum_sweep_fraction"]), MIN_SWEEP_FRACTION)
+    _assert_close(
+        float(summary["minimum_sweep_fraction"]),
+        MIN_SWEEP_FRACTION,
+    )
     assert float(summary["risk_fraction"]) == 0.03
     assert float(summary["all_in_cost_bps_per_side"]) == 7.0
     assert float(summary["maximum_hold_hours"]) == 4.0
@@ -181,19 +184,19 @@ def classify(root: Path, week: str) -> dict[str, Any]:
         assert balance_end - balance_start == BALANCE_MINUTES * MINUTE_NS
         assert int(row["futures_midpoint_crosses"]) >= 2
         assert int(row["spot_midpoint_crosses"]) >= 2
-        assert float(row["futures_balance_width_fraction"]) >= MIN_STRUCTURE_WIDTH_FRACTION
-        assert float(row["spot_balance_width_fraction"]) >= MIN_STRUCTURE_WIDTH_FRACTION
+        assert float(row["futures_balance_width_fraction"]) >= (
+            MIN_STRUCTURE_WIDTH_FRACTION
+        )
+        assert float(row["spot_balance_width_fraction"]) >= (
+            MIN_STRUCTURE_WIDTH_FRACTION
+        )
         assert float(row["futures_excursion_fraction"]) >= MIN_SWEEP_FRACTION
         outward = row["outward_side"]
         assert outward in {"LONG", "SHORT"}
         expected_reversal = "SHORT" if outward == "LONG" else "LONG"
         assert row["reversal_side"] == expected_reversal
         futures_imbalance = float(row["futures_imbalance"])
-        assert (
-            futures_imbalance > 0.0
-            if outward == "LONG"
-            else futures_imbalance < 0.0
-        )
+        assert futures_imbalance > 0.0 if outward == "LONG" else futures_imbalance < 0.0
 
     diagnostic_by_source: dict[str, dict[str, str]] = {}
     confirmed_rows: list[dict[str, str]] = []
@@ -206,9 +209,15 @@ def classify(root: Path, week: str) -> dict[str, Any]:
         assert expiry - sweep_time == CONFIRMATION_MINUTES * MINUTE_NS
         assert int(row["futures_midpoint_crosses"]) >= 2
         assert int(row["spot_midpoint_crosses"]) >= 2
-        assert float(row["futures_balance_width_fraction"]) >= MIN_STRUCTURE_WIDTH_FRACTION
-        assert float(row["spot_balance_width_fraction"]) >= MIN_STRUCTURE_WIDTH_FRACTION
-        assert float(row["futures_sweep_excursion_fraction"]) >= MIN_SWEEP_FRACTION
+        assert float(row["futures_balance_width_fraction"]) >= (
+            MIN_STRUCTURE_WIDTH_FRACTION
+        )
+        assert float(row["spot_balance_width_fraction"]) >= (
+            MIN_STRUCTURE_WIDTH_FRACTION
+        )
+        assert float(row["futures_sweep_excursion_fraction"]) >= (
+            MIN_SWEEP_FRACTION
+        )
         confirmed = _as_bool(row["futures_failed_auction_confirmed"])
         resolution = _as_optional_int(row["resolution_time_ns"])
         minutes_to_resolution = _as_optional_int(row["minutes_to_resolution"])
@@ -236,7 +245,9 @@ def classify(root: Path, week: str) -> dict[str, Any]:
             }
             failure_imbalance = _as_optional_float(row["failure_imbalance"])
             failure_close = _as_optional_float(row["failure_close"])
-            rejection_ratio = _as_optional_float(row["full_excursion_rejection_ratio"])
+            rejection_ratio = _as_optional_float(
+                row["full_excursion_rejection_ratio"],
+            )
             assert failure_imbalance is not None
             assert failure_close is not None
             assert rejection_ratio is not None and rejection_ratio > 1.0
@@ -281,7 +292,11 @@ def classify(root: Path, week: str) -> dict[str, Any]:
         source = _source_id(row["scenario_id"])
         diagnostic = diagnostic_by_source[source]
         assert _as_bool(diagnostic["futures_failed_auction_confirmed"])
-        assert int(row["signal_time_ns"]) == int(diagnostic["resolution_time_ns"])
+        resolution_time_ns = _as_optional_int(
+            diagnostic["resolution_time_ns"],
+        )
+        assert resolution_time_ns is not None
+        assert int(row["signal_time_ns"]) == resolution_time_ns
         assert row["side"] == diagnostic["reversal_side"]
         _assert_close(
             float(row["target_price"]),
