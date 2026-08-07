@@ -54,10 +54,10 @@ class Metric:
     ts_ns: int
     open_interest: float
     open_interest_value: float
-    top_count_ratio: float
-    top_sum_ratio: float
-    account_ratio: float
-    taker_ratio: float
+    top_count_ratio: float | None
+    top_sum_ratio: float | None
+    account_ratio: float | None
+    taker_ratio: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +94,13 @@ def _float(value: Any) -> float:
     if not isfinite(result):
         raise ValueError(f"non-finite numeric value: {value!r}")
     return result
+
+
+def _optional_float(value: Any) -> float | None:
+    text = str(value).strip()
+    if not text:
+        return None
+    return _float(text)
 
 
 def _read_csv_member(payload: bytes) -> tuple[str, list[list[str]]]:
@@ -374,10 +381,10 @@ def _load_positioning_sources(
                         ts_ns=ts_ns,
                         open_interest=_float(raw[2]),
                         open_interest_value=_float(raw[3]),
-                        top_count_ratio=_float(raw[4]),
-                        top_sum_ratio=_float(raw[5]),
-                        account_ratio=_float(raw[6]),
-                        taker_ratio=_float(raw[7]),
+                        top_count_ratio=_optional_float(raw[4]),
+                        top_sum_ratio=_optional_float(raw[5]),
+                        account_ratio=_optional_float(raw[6]),
+                        taker_ratio=_optional_float(raw[7]),
                     ))
             else:
                 if rows and rows[0] and rows[0][0] == "open_time":
@@ -452,13 +459,13 @@ def _feature_plan(
     )
     oi_value_event = _log_change(at_confirmation.open_interest_value, at_sweep.open_interest_value)
     signed_taker = None
-    if at_confirmation.taker_ratio > 0:
+    if at_confirmation.taker_ratio is not None and at_confirmation.taker_ratio > 0:
         signed_taker = sign * log(at_confirmation.taker_ratio)
     signed_account_crowding = None
-    if at_confirmation.account_ratio > 0:
+    if at_confirmation.account_ratio is not None and at_confirmation.account_ratio > 0:
         signed_account_crowding = sign * log(at_confirmation.account_ratio)
     signed_top_position = None
-    if at_confirmation.top_sum_ratio > 0:
+    if at_confirmation.top_sum_ratio is not None and at_confirmation.top_sum_ratio > 0:
         signed_top_position = sign * log(at_confirmation.top_sum_ratio)
 
     premium_at_confirmation = None if premium_confirmation is None else premium_confirmation.close
