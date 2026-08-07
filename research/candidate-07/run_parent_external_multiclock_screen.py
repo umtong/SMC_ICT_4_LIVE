@@ -19,6 +19,7 @@ import backtest as base
 import backtest_pre_attack_value as replay
 from binance_usdm_instruments import binance_usdm_perpetual
 from data_aggtrades_seeded import load_aggtrade_1s_bundle_seeded
+from exact_timestamp_context import exact_local_bar_timestamps
 from parent_external_multiclock_scenario import (
     build_parent_ensemble_signals,
     discover_parent_ensemble,
@@ -47,12 +48,16 @@ def _worker(
     )
     replay.load_aggtrade_1s_bundle = load_aggtrade_1s_bundle_seeded
     try:
-        metrics = local._run_variant(
-            args=args,
-            config_path=config_path,
-            variant=VARIANT,
-            require_retest=True,
-        )
+        # The base fifteen-second detector selects heterogeneous pandas rows.
+        # Preserve nanosecond endpoints as Python integers so one physical sweep
+        # cannot become two episodes across the 5S and 15S execution paths.
+        with exact_local_bar_timestamps():
+            metrics = local._run_variant(
+                args=args,
+                config_path=config_path,
+                variant=VARIANT,
+                require_retest=True,
+            )
         metrics["execution_contract"].update(
             {
                 "selected_route": (
@@ -69,6 +74,11 @@ def _worker(
                     "external 1M/5M swing"
                 ),
                 "sweep_mss_retest_target_risk_execution_logic_changed": False,
+                "exact_nanosecond_endpoints": True,
+                "episode_identity": (
+                    "source pool + causal completed wall-clock second + "
+                    "direction; raw nanoseconds retained as evidence"
+                ),
                 "episode_reuse": False,
                 "single_pending_or_open_slot": True,
                 "instrument_definition": (
@@ -159,6 +169,10 @@ def run(args: argparse.Namespace) -> int:
         "engine": "NautilusTrader BacktestEngine",
         "risk_fraction": base_config["risk_fraction"],
         "maximum_hold_minutes": base_config["max_hold_minutes"],
+        "exact_nanosecond_endpoints": True,
+        "episode_identity": (
+            "source pool + causal completed wall-clock second + direction"
+        ),
         "changed_variable": (
             "tradable source scope: every 15S swing versus causal unconsumed "
             "1M/5M external liquidity"
