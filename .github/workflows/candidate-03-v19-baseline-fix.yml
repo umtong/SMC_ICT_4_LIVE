@@ -31,71 +31,90 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from __future__ import annotations
+
           import hashlib
           import re
+          import textwrap
           from pathlib import Path
 
           source_path = Path('research/candidate-03/derive_nt_lvcfr_v19_signals.py')
           source = source_path.read_text(encoding='utf-8')
-          old_context = '''@dataclass(slots=True)
-          class CandidateContext:
-              candidate: dict[str, Any]
-              start_ns: int
-              end_ns: int
-              blocks: list[TradeBlock] = field(
-                  default_factory=lambda: [TradeBlock() for _ in range(TOTAL_BLOCKS)]
+
+          context_pattern = re.compile(
+              r'@dataclass\(slots=True\)\nclass CandidateContext:\n.*?'
+              r'\n\n@dataclass\(frozen=True, slots=True\)\nclass AuctionCandidate:',
+              re.DOTALL,
+          )
+          replacement_context = textwrap.dedent('''
+              @dataclass(slots=True)
+              class CandidateContext:
+                  candidate: dict[str, Any]
+                  baseline_start_ns: int
+                  baseline_end_ns: int
+                  observation_start_ns: int
+                  observation_end_ns: int
+                  blocks: list[TradeBlock] = field(
+                      default_factory=lambda: [TradeBlock() for _ in range(TOTAL_BLOCKS)]
+                  )
+
+                  @property
+                  def start_ns(self) -> int:
+                      return self.baseline_start_ns
+
+                  @property
+                  def end_ns(self) -> int:
+                      return self.observation_end_ns
+
+                  def add(
+                      self,
+                      timestamp_ns: int,
+                      price: float,
+                      quantity: float,
+                      buyer_was_maker: bool,
+                  ) -> None:
+                      if self.baseline_start_ns <= timestamp_ns < self.baseline_end_ns:
+                          index = (timestamp_ns - self.baseline_start_ns) // BLOCK_NS
+                      elif (
+                          self.observation_start_ns
+                          <= timestamp_ns
+                          < self.observation_end_ns
+                      ):
+                          index = BASELINE_BLOCKS + (
+                              timestamp_ns - self.observation_start_ns
+                          ) // BLOCK_NS
+                      else:
+                          # The inventory event is deliberately excluded from both
+                          # the pre-event baseline and post-confirmation response.
+                          return
+                      if 0 <= index < TOTAL_BLOCKS:
+                          self.blocks[int(index)].add(
+                              price,
+                              quantity,
+                              buyer_was_maker,
+                          )
+
+
+              @dataclass(frozen=True, slots=True)
+              class AuctionCandidate:
+          ''').lstrip()
+          if 'baseline_start_ns: int' not in source:
+              source, count = context_pattern.subn(
+                  replacement_context,
+                  source,
+                  count=1,
               )
+              if count != 1:
+                  raise RuntimeError('CandidateContext controlled target not found')
 
-              def add(self, timestamp_ns: int, price: float, quantity: float, buyer_was_maker: bool) -> None:
-                  if timestamp_ns < self.start_ns or timestamp_ns >= self.end_ns:
-                      return
-                  index = (timestamp_ns - self.start_ns) // BLOCK_NS
-                  if 0 <= index < TOTAL_BLOCKS:
-                      self.blocks[int(index)].add(price, quantity, buyer_was_maker)
-          '''.replace('          ', '')
-          new_context = '''@dataclass(slots=True)
-          class CandidateContext:
-              candidate: dict[str, Any]
-              baseline_start_ns: int
-              baseline_end_ns: int
-              observation_start_ns: int
-              observation_end_ns: int
-              blocks: list[TradeBlock] = field(
-                  default_factory=lambda: [TradeBlock() for _ in range(TOTAL_BLOCKS)]
-              )
-
-              @property
-              def start_ns(self) -> int:
-                  return self.baseline_start_ns
-
-              @property
-              def end_ns(self) -> int:
-                  return self.observation_end_ns
-
-              def add(self, timestamp_ns: int, price: float, quantity: float, buyer_was_maker: bool) -> None:
-                  if self.baseline_start_ns <= timestamp_ns < self.baseline_end_ns:
-                      index = (timestamp_ns - self.baseline_start_ns) // BLOCK_NS
-                  elif self.observation_start_ns <= timestamp_ns < self.observation_end_ns:
-                      index = BASELINE_BLOCKS + (
-                          timestamp_ns - self.observation_start_ns
-                      ) // BLOCK_NS
-                  else:
-                      # The inventory event is deliberately excluded from the
-                      # causal baseline and from the post-confirmation response.
-                      return
-                  if 0 <= index < TOTAL_BLOCKS:
-                      self.blocks[int(index)].add(price, quantity, buyer_was_maker)
-          '''.replace('          ', '')
-          if old_context not in source and new_context not in source:
-              raise RuntimeError('CandidateContext controlled target not found')
-          source = source.replace(old_context, new_context)
-
-          old_constructor = '''        candidate.scenario_id: CandidateContext(
-                      candidate=candidate.to_dict(),
-                      start_ns=candidate.confirm_time_ns - BASELINE_MINUTES * NS_PER_MINUTE,
-                      end_ns=candidate.confirm_time_ns + OBSERVATION_SECONDS * NS_PER_SECOND,
-                  )'''.replace('        ', '')
-          new_constructor = '''        candidate.scenario_id: CandidateContext(
+          constructor_pattern = re.compile(
+              r'candidate\.scenario_id: CandidateContext\(\n'
+              r'\s+candidate=candidate\.to_dict\(\),\n'
+              r'\s+start_ns=candidate\.confirm_time_ns - BASELINE_MINUTES \* NS_PER_MINUTE,\n'
+              r'\s+end_ns=candidate\.confirm_time_ns \+ OBSERVATION_SECONDS \* NS_PER_SECOND,\n'
+              r'\s+\)',
+          )
+          replacement_constructor = textwrap.dedent('''
+                  candidate.scenario_id: CandidateContext(
                       candidate=candidate.to_dict(),
                       baseline_start_ns=(
                           candidate.event_start_ns
@@ -107,66 +126,85 @@ jobs:
                           candidate.confirm_time_ns
                           + OBSERVATION_SECONDS * NS_PER_SECOND
                       ),
-                  )'''.replace('        ', '')
-          if old_constructor not in source and new_constructor not in source:
-              raise RuntimeError('collect_contexts controlled target not found')
-          source = source.replace(old_constructor, new_constructor)
+                  )
+          ''').strip('\n')
+          if 'baseline_start_ns=(' not in source:
+              source, count = constructor_pattern.subn(
+                  replacement_constructor,
+                  source,
+                  count=1,
+              )
+              if count != 1:
+                  raise RuntimeError('collect_contexts controlled target not found')
+
           compile(source, str(source_path), 'exec')
           source_path.write_text(source, encoding='utf-8')
 
           test_path = Path('research/candidate-03/test_nt_lvcfr_v19.py')
           tests = test_path.read_text(encoding='utf-8')
-          old_import = '''from derive_nt_lvcfr_v19_signals import (
-              TradeBlock,
-              block_features,
-              cumulative_features,
-          )'''
-          new_import = '''from derive_nt_lvcfr_v19_signals import (
-              BASELINE_BLOCKS,
-              BLOCK_NS,
-              CandidateContext,
-              TradeBlock,
-              block_features,
-              cumulative_features,
-          )'''
-          if old_import not in tests and new_import not in tests:
-              raise RuntimeError('test import controlled target not found')
-          tests = tests.replace(old_import, new_import)
-          marker = '''    def test_project_risk_and_native_execution_contract_are_fixed(self) -> None:
-          '''
-          inserted = '''    def test_candidate_context_excludes_inventory_event_gap(self) -> None:
-              baseline_start = 0
-              baseline_end = BASELINE_BLOCKS * BLOCK_NS
-              observation_start = baseline_end + 10 * 60 * 1_000_000_000
-              observation_end = observation_start + 6 * BLOCK_NS
-              context = CandidateContext(
-                  candidate={"scenario_id": "TEST"},
-                  baseline_start_ns=baseline_start,
-                  baseline_end_ns=baseline_end,
-                  observation_start_ns=observation_start,
-                  observation_end_ns=observation_end,
+          old_import = textwrap.dedent('''
+              from derive_nt_lvcfr_v19_signals import (
+                  TradeBlock,
+                  block_features,
+                  cumulative_features,
               )
-              context.add(BLOCK_NS, 100.0, 1.0, False)
-              context.add(baseline_end + BLOCK_NS, 999.0, 1.0, False)
-              context.add(observation_start + BLOCK_NS, 101.0, 1.0, False)
-              self.assertEqual(sum(block.trades for block in context.blocks), 2)
-              self.assertEqual(context.blocks[1].trades, 1)
-              self.assertEqual(context.blocks[BASELINE_BLOCKS + 1].trades, 1)
-              retained_prices = {
-                  price
-                  for block in context.blocks
-                  for price in (block.first_price, block.last_price)
-                  if price is not None
-              }
-              self.assertNotIn(999.0, retained_prices)
+          ''').lstrip()
+          new_import = textwrap.dedent('''
+              from derive_nt_lvcfr_v19_signals import (
+                  BASELINE_BLOCKS,
+                  BLOCK_NS,
+                  CandidateContext,
+                  TradeBlock,
+                  block_features,
+                  cumulative_features,
+              )
+          ''').lstrip()
+          if old_import in tests:
+              tests = tests.replace(old_import, new_import, 1)
+          elif new_import not in tests:
+              raise RuntimeError('test import controlled target not found')
 
-              
-              def test_project_risk_and_native_execution_contract_are_fixed(self) -> None:
-          '''.replace('              def test_project', '    def test_project')
           if 'test_candidate_context_excludes_inventory_event_gap' not in tests:
+              marker = (
+                  '    def test_project_risk_and_native_execution_contract_are_fixed'
+                  '(self) -> None:\n'
+              )
+              new_test = textwrap.dedent('''
+                  def test_candidate_context_excludes_inventory_event_gap(self) -> None:
+                      baseline_start = 0
+                      baseline_end = BASELINE_BLOCKS * BLOCK_NS
+                      observation_start = baseline_end + 10 * 60 * 1_000_000_000
+                      observation_end = observation_start + 6 * BLOCK_NS
+                      context = CandidateContext(
+                          candidate={"scenario_id": "TEST"},
+                          baseline_start_ns=baseline_start,
+                          baseline_end_ns=baseline_end,
+                          observation_start_ns=observation_start,
+                          observation_end_ns=observation_end,
+                      )
+                      context.add(BLOCK_NS, 100.0, 1.0, False)
+                      context.add(baseline_end + BLOCK_NS, 999.0, 1.0, False)
+                      context.add(observation_start + BLOCK_NS, 101.0, 1.0, False)
+                      self.assertEqual(sum(block.trades for block in context.blocks), 2)
+                      self.assertEqual(context.blocks[1].trades, 1)
+                      self.assertEqual(
+                          context.blocks[BASELINE_BLOCKS + 1].trades,
+                          1,
+                      )
+                      retained_prices = {
+                          price
+                          for block in context.blocks
+                          for price in (block.first_price, block.last_price)
+                          if price is not None
+                      }
+                      self.assertNotIn(999.0, retained_prices)
+
+              ''')
+              indented_test = textwrap.indent(new_test, '    ')
               if marker not in tests:
                   raise RuntimeError('test insertion marker not found')
-              tests = tests.replace(marker, inserted)
+              tests = tests.replace(marker, indented_test + marker, 1)
+
           compile(tests, str(test_path), 'exec')
           test_path.write_text(tests, encoding='utf-8')
 
@@ -179,7 +217,12 @@ jobs:
                   usedforsecurity=False,
               ).hexdigest()
               pattern = rf'("{re.escape(path.as_posix())}": )"[0-9a-f]{{40}}"'
-              runner, count = re.subn(pattern, rf'\1"{blob_sha}"', runner, count=1)
+              runner, count = re.subn(
+                  pattern,
+                  rf'\1"{blob_sha}"',
+                  runner,
+                  count=1,
+              )
               if count != 1:
                   raise RuntimeError(f'unable to refreeze {path}')
               print({path.as_posix(): blob_sha})
@@ -227,6 +270,7 @@ jobs:
           import json
           import os
           from pathlib import Path
+
           output = Path(os.environ['RUNNER_TEMP']) / 'candidate-03-v19-baseline/output'
           manifest = json.loads((output / 'v19_signal_manifest.json').read_text())
           signals = json.loads((output / 'signals.json').read_text())
@@ -234,7 +278,9 @@ jobs:
               'candidate': manifest['candidate'],
               'week_start': '2024-01-08',
               'engine_status': 'causal_opportunity_preflight_only_no_backtest',
-              'implementation_fix': 'pre_event_baseline_event_gap_observation_separation',
+              'implementation_fix': (
+                  'pre_event_baseline_event_gap_observation_separation'
+              ),
               'derived_signal_count': len(signals),
               'minimum_required_episodes': 8,
               'opportunity_gate_reachable': len(signals) >= 8,
@@ -269,6 +315,7 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
+
           summary = json.loads(Path(
               'research/candidate-03/results/v19-preflight-development-3/preflight_summary.json'
           ).read_text())
