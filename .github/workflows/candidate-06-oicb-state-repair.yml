@@ -1,0 +1,198 @@
+name: Candidate 06 OICB Entry-State Repair
+
+on:
+  push:
+    branches:
+      - research/candidate-06
+    paths:
+      - ".github/workflows/candidate-06-oicb-state-repair.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-oicb-state-repair
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  repair-and-rerun:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed NautilusTrader environment
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(f"NAUTILUS_VERSION={actual}")
+          PY
+
+      - name: Repair only the OICB executable state-chain bridge
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-06/open_interest_contraction_engine.py")
+          text = path.read_text(encoding="utf-8")
+          original = text
+
+          replacements = (
+              (
+                  """        if exhaustion:\n            transitions.append(\n""",
+                  """        if exhaustion:\n            signal = (\n                self._signal(shock, snapshot, branch=\"EXHAUSTION\")\n                if allow_new\n                else None\n            )\n            transitions.append(\n""",
+              ),
+              (
+                  """                    \"EXHAUSTION_CONFIRMED\",\n                    \"OI_CONTRACTION_PRICE_IMPACT_EXHAUSTED_AND_MIDPOINT_RECLAIMED\",\n""",
+                  """                    \"ENTRY_ARMED\" if signal is not None else \"EXHAUSTION_CONFIRMED\",\n                    \"OI_CONTRACTION_PRICE_IMPACT_EXHAUSTED_AND_MIDPOINT_RECLAIMED\",\n""",
+              ),
+              (
+                  """            signal = self._signal(shock, snapshot, branch=\"EXHAUSTION\") if allow_new else None\n            self._shock = None\n""",
+                  """            self._shock = None\n""",
+              ),
+              (
+                  """        if resumed and shock.retrace_index is not None and snapshot.index > shock.retrace_index:\n            transitions.append(\n""",
+                  """        if resumed and shock.retrace_index is not None and snapshot.index > shock.retrace_index:\n            signal = (\n                self._signal(shock, snapshot, branch=\"CONTINUATION\")\n                if allow_new\n                else None\n            )\n            transitions.append(\n""",
+              ),
+              (
+                  """                    \"CONTINUATION_CONFIRMED\",\n                    \"OI_CONTRACTION_RETEST_HELD_AND_SEPARATE_RESUMPTION_CONFIRMED\",\n""",
+                  """                    \"ENTRY_ARMED\" if signal is not None else \"CONTINUATION_CONFIRMED\",\n                    \"OI_CONTRACTION_RETEST_HELD_AND_SEPARATE_RESUMPTION_CONFIRMED\",\n""",
+              ),
+              (
+                  """            signal = self._signal(shock, snapshot, branch=\"CONTINUATION\") if allow_new else None\n            self._shock = None\n""",
+                  """            self._shock = None\n""",
+              ),
+          )
+          for old, new in replacements:
+              if old in text:
+                  text = text.replace(old, new, 1)
+              elif new not in text:
+                  raise RuntimeError(f"OICB repair anchor missing: {old[:80]!r}")
+
+          assert text.count('"ENTRY_ARMED" if signal is not None else') == 2
+          assert "oicb_minimum_drop_fraction" in text
+          assert "oicb_require_aligned_flow" in text
+          assert "minimum_structural_rr" in text
+          if text != original:
+              path.write_text(text, encoding="utf-8")
+          print("OICB confirmation-to-entry state bridge repaired")
+          PY
+
+      - name: Verify unchanged OICB causality and executable state contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile research/candidate-06/open_interest_contraction_engine.py
+          python research/candidate-06/test_open_interest_metrics_data.py
+          python research/candidate-06/test_open_interest_contraction_engine.py
+          python research/candidate-06/test_oicb_runner_contract.py
+          python research/candidate-06/test_excursion_diagnostics.py
+          python - <<'PY'
+          import inspect
+          from open_interest_contraction_engine import OpenInterestContractionBifurcationEngine
+          source = inspect.getsource(OpenInterestContractionBifurcationEngine._advance_shock)
+          assert source.count('"ENTRY_ARMED" if signal is not None else') == 2
+          assert source.index('self._signal(shock, snapshot, branch="EXHAUSTION")') < source.index('"ENTRY_ARMED" if signal is not None else "EXHAUSTION_CONFIRMED"')
+          assert source.index('self._signal(shock, snapshot, branch="CONTINUATION")') < source.index('"ENTRY_ARMED" if signal is not None else "CONTINUATION_CONFIRMED"')
+          print("OICB response logic unchanged; executable ledger bridge verified")
+          PY
+
+      - name: Rerun identical OICB staged matrix through NautilusTrader
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/oicb-first-week
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts
+          python research/candidate-06/run_open_interest_matrix.py \
+            --output artifacts/candidate-06/oicb-first-week \
+            > artifacts/candidate-06-oicb-state-repair.stdout \
+            2> artifacts/candidate-06-oicb-state-repair.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Guarantee terminal evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-06/oicb-first-week
+          mkdir -p "$root"
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > "$root/workflow_exit_code.txt"
+          if [ ! -f "$root/summary.json" ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-06/oicb-first-week")
+          payload = {
+              "all_three_weeks_passed": False,
+              "long_evaluation_authorized": False,
+              "selected": None,
+              "terminal_status": "IMPLEMENTATION_OR_DATA_FAILURE_BEFORE_SUMMARY",
+          }
+          (root / "summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+          cp artifacts/candidate-06-oicb-state-repair.stdout "$root/workflow_stdout.txt" 2>/dev/null || true
+          cp artifacts/candidate-06-oicb-state-repair.stderr "$root/workflow_stderr.txt" 2>/dev/null || true
+
+      - name: Commit repaired source and deterministic evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add research/candidate-06/open_interest_contraction_engine.py
+          git add -f artifacts/candidate-06/oicb-first-week
+          if [ -f research/candidate-06/config.oicb.locked.json ]; then
+            git add -f research/candidate-06/config.oicb.locked.json
+          fi
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record candidate-06 OICB state-repair evidence [candidate-06 evidence]"
+          git pull --rebase origin research/candidate-06
+          git push origin HEAD:research/candidate-06
+
+      - name: Upload repaired OICB evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-oicb-state-repair-${{ github.sha }}
+          path: artifacts/candidate-06/oicb-first-week
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce staged decision
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          exit "$code"
