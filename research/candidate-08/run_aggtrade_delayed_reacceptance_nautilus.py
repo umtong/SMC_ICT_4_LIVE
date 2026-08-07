@@ -1,9 +1,10 @@
 """Route delayed boundary reacceptance through the verified native Nautilus runner.
 
-Only detector selection, the one predeclared initial-state ablation, and evidence vocabulary are
-replaced.  The verified native base continues to own the shared margin account, current-NAV 3%
-loss-budget sizing, market OUO bracket, fees, causal stop reserve, official funding and mark prices,
-liquidation, global one-order/position constraint, and all order/fill/account reports.
+Only detector selection, the one predeclared initial-state ablation, evidence vocabulary and the
+variable-length causal event serializer are replaced.  The verified native base continues to own
+the shared margin account, current-NAV 3% loss-budget sizing, market OUO bracket, fees, causal stop
+reserve, official funding and mark prices, liquidation, global one-order/position constraint, and
+all order/fill/account reports.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-from aggtrade_delayed_reacceptance_signals_v2 import (
+from aggtrade_delayed_reacceptance_signals_v3 import (
     ABLATION_INITIAL_MODE,
     BASE_INITIAL_MODE,
     DelayedReacceptanceConfig,
@@ -75,6 +76,64 @@ def _build_signals(**kwargs: Any):
     return build_delayed_reacceptance_signals(**kwargs)
 
 
+def _write_merged_events(
+    path: Path,
+    *,
+    signals_by_time_ns: Mapping[int, tuple[Any, ...]],
+    execution_events: list[dict[str, Any]],
+) -> int:
+    """Write complete causal event chains without assuming every detector has three states."""
+
+    base_runner = execution.runner.base_runner
+    materialized: list[tuple[Any, int]] = []
+    for signals in signals_by_time_ns.values():
+        for signal in signals:
+            if not signal.events:
+                raise RuntimeError(
+                    f"scenario {signal.scenario_id!r} emitted an empty logic-event chain"
+                )
+            for ordinal, event in enumerate(signal.events, start=1):
+                materialized.append(
+                    base_runner._event_to_research(event, ordinal * 10)
+                )
+    for raw in execution_events:
+        reference = raw.get("reference_price")
+        materialized.append(
+            (
+                base_runner.ResearchEvent(
+                    scenario_id=str(raw["scenario_id"]),
+                    instrument_id=str(raw["instrument_id"]),
+                    event_type=str(raw["event_type"]),
+                    event_time_ns=int(raw["event_time_ns"]),
+                    observed_time_ns=int(raw["observed_time_ns"]),
+                    previous_state=str(raw["previous_state"]),
+                    next_state=str(raw["next_state"]),
+                    reason_code=str(raw["reason_code"]),
+                    reference_price=(
+                        None
+                        if reference is None
+                        else format(float(reference), ".12g")
+                    ),
+                    details={
+                        "symbol": raw.get("symbol"),
+                        **dict(raw.get("details", {})),
+                    },
+                ),
+                int(raw.get("sequence", 75)),
+            )
+        )
+    materialized.sort(
+        key=lambda item: (
+            item[0].observed_time_ns,
+            item[0].scenario_id,
+            item[1],
+            item[0].event_type,
+        )
+    )
+    base_runner.write_events(path, [item[0] for item in materialized])
+    return len(materialized)
+
+
 execution.runner.INITIATIVE_FAMILY = REACCEPTANCE_FAMILY
 execution.runner.FAILED_AUCTION_FAMILY = UNUSED_FAMILY
 execution.runner.UNCLASSIFIED_FAMILY = UNCLASSIFIED_FAMILY
@@ -85,6 +144,7 @@ execution.runner.FAMILY_MODES = {
 execution.runner.build_auction_router_signals = build_delayed_reacceptance_signals
 execution.runner._build_router_signals = _build_signals
 execution.runner.base_runner.build_acceptance_signals = _build_signals
+execution.runner.base_runner._write_merged_events = _write_merged_events
 
 _ORIGINAL_GLOBAL_SIGNAL_SUMMARY = execution._original_global_signal_summary
 _ORIGINAL_SUITE_SUMMARY = execution._original_suite_summary
@@ -111,6 +171,10 @@ def _global_signal_summary(
     summary["implementation_revision"] = IMPLEMENTATION_REVISION
     summary["delayed_reacceptance_initial_mode"] = _active_initial_mode()
     summary["ten_second_cadence_contract"] = "EXACT_CONSECUTIVE_10_SECONDS"
+    summary["event_chain_contract"] = (
+        "IDLE->INTERACTION_ARMED->INITIAL_OUTWARD_RESPONSE"
+        "->BOUNDARY_RECLAIMED->CONFIRMED"
+    )
     return summary
 
 
@@ -127,10 +191,11 @@ def _suite_summary(
         int(result.get("detector", {}).get("signals", 0)) for result in results
     )
     detector_primary_count = sum(
-        int(result.get("detector", {}).get("by_scenario_family", {}).get(
-            REACCEPTANCE_FAMILY,
-            0,
-        ))
+        int(
+            result.get("detector", {})
+            .get("by_scenario_family", {})
+            .get(REACCEPTANCE_FAMILY, 0)
+        )
         for result in results
     )
     closed = [
@@ -171,6 +236,10 @@ def _suite_summary(
     summary["trade_path_diagnostic_revision"] = DIAGNOSTIC_REVISION
     summary["trade_path_diagnostic_summary"] = path_summary
     summary["ten_second_cadence_contract"] = "EXACT_CONSECUTIVE_10_SECONDS"
+    summary["event_chain_contract"] = (
+        "IDLE->INTERACTION_ARMED->INITIAL_OUTWARD_RESPONSE"
+        "->BOUNDARY_RECLAIMED->CONFIRMED"
+    )
     checks = summary.setdefault("suite_gate_checks", {})
     checks["single_delayed_reacceptance_family_attributed"] = family_complete
     checks["complete_post_run_trade_path_diagnostics"] = path_complete
