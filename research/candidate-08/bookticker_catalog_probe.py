@@ -154,7 +154,11 @@ def build_catalog_evidence(
     seed: int = DEFAULT_SEED,
     objects: list[CatalogObject] | None = None,
 ) -> dict[str, Any]:
-    catalog_objects = objects if objects is not None else list_catalog_objects(symbol=symbol)
+    raw_objects = objects if objects is not None else list_catalog_objects(symbol=symbol)
+    catalog_objects = sorted(raw_objects, key=lambda item: item.key)
+    keys = [item.key for item in catalog_objects]
+    if len(keys) != len(set(keys)):
+        raise BinanceDataError("catalog evidence input contained duplicate object keys")
     archives, missing_checksums, malformed = _archive_days(catalog_objects, symbol=symbol)
     if not archives:
         raise BinanceDataError(f"no official daily bookTicker ZIP archives found for {symbol}")
@@ -181,7 +185,7 @@ def build_catalog_evidence(
         for start in selected
     ]
     canonical_key_text = "\n".join(item.key for item in catalog_objects) + "\n"
-    archive_sizes = [item.size for item in archives.values()]
+    archive_sizes = sorted(item.size for item in archives.values())
     return {
         "catalog_revision": CATALOG_REVISION,
         "source": {
@@ -203,9 +207,9 @@ def build_catalog_evidence(
             "earliest_day": min(archives).isoformat(),
             "latest_day": max(archives).isoformat(),
             "contiguous_week_starts": len(starts),
-            "minimum_archive_size_bytes": min(archive_sizes),
-            "median_archive_size_bytes": sorted(archive_sizes)[len(archive_sizes) // 2],
-            "maximum_archive_size_bytes": max(archive_sizes),
+            "minimum_archive_size_bytes": archive_sizes[0],
+            "median_archive_size_bytes": archive_sizes[len(archive_sizes) // 2],
+            "maximum_archive_size_bytes": archive_sizes[-1],
             "missing_checksum_archives": 0,
             "malformed_archive_names": 0,
         },
