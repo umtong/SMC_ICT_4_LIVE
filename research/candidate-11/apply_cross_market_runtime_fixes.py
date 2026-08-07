@@ -7,6 +7,7 @@ from pathlib import Path
 SAME_BATCH_MARKER = "C11_CROSS_SAME_BATCH_CONFIRMATION"
 EVENT_FLOOR_MARKER = "C11_CROSS_COMPLETION_EVENT"
 PARTIAL_MARKER = "C11_CROSS_PARTIAL_FAIL_CLOSED"
+RISK_TYPE_MARKER = "C11_CROSS_RISK_FLOAT_BOUNDARY"
 
 
 def patch_detector(path: Path) -> int:
@@ -34,6 +35,18 @@ def patch_detector(path: Path) -> int:
 def patch_runner(path: Path) -> int:
     source = path.read_text(encoding="utf-8")
     changed = 0
+    if RISK_TYPE_MARKER not in source:
+        old = '            self.sizer = RiskSizer(Decimal(str(account["risk_fraction"])))\n'
+        new = '''            # C11_CROSS_RISK_FLOAT_BOUNDARY: RiskSizer owns Decimal
+            # conversion internally. Passing a Decimal into its float-bounded
+            # constructor can make exact 0.03 compare above binary 0.03.
+            self.sizer = RiskSizer(float(account["risk_fraction"]))
+'''
+        count = source.count(old)
+        if count != 1:
+            raise SystemExit(f"risk-sizer runner anchor count={count}")
+        source = source.replace(old, new, 1)
+        changed += 1
     if PARTIAL_MARKER not in source:
         old = '''            if self.position_open and self.active_symbol is not None:
                 instrument_id = instruments[self.active_symbol].id
