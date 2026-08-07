@@ -182,6 +182,11 @@ def patch_validation_config(root: Path) -> int:
         "W4": {"start": "2023-11-18", "end_exclusive": "2023-11-25"},
         "W5": {"start": "2024-07-24", "end_exclusive": "2024-07-31"},
         "W6": {"start": "2025-04-05", "end_exclusive": "2025-04-12"},
+        # These post-gate holdouts were selected and committed before any W7-W9
+        # market data was downloaded. They extend, but do not alter, W4-W6.
+        "W7": {"start": "2024-12-24", "end_exclusive": "2024-12-31"},
+        "W8": {"start": "2024-10-26", "end_exclusive": "2024-11-02"},
+        "W9": {"start": "2025-09-22", "end_exclusive": "2025-09-29"},
     }
     changed = 0
     for week, interval in frozen.items():
@@ -199,6 +204,13 @@ def patch_validation_config(root: Path) -> int:
         ),
         "diagnostic_weeks": ["W1", "W2", "W3"],
         "untouched_weeks": ["W4", "W5", "W6"],
+        "post_freeze_seed": 2026080712,
+        "post_freeze_method": (
+            "random.Random(post_freeze_seed) over 2023-01-01 through 2025-12-25; "
+            "first three non-overlapping seven-day starts excluding W1-W6, "
+            "committed before downloading W7-W9 data"
+        ),
+        "post_freeze_weeks": ["W7", "W8", "W9"],
     }
     existing = config.get("leadership_validation")
     if existing is not None and existing != protocol:
