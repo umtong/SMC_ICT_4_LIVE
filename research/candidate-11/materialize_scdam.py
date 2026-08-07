@@ -1,104 +1,93 @@
 #!/usr/bin/env python3
-"""Fail-closed materializer for Candidate 11's deterministic SCDAM runtime."""
+"""Idempotent fail-closed migrations for the materialized Candidate 11 SCDAM."""
 from __future__ import annotations
 
-from base64 import b64decode
-from hashlib import sha256
-from io import BytesIO
-import json
-import lzma
-from pathlib import Path, PurePosixPath
-import tarfile
-
-RUNTIME_SHA256 = "a83f7781b4b96185ab4fb8530a3f4e849f308836adda41ad6176f13fbc7480e7"
-RUNTIME_SCHEMA = "candidate-11-scdam-runtime-v1"
-EXPECTED_PARTS = tuple(f"scdam_runtime.part{i:02d}.b64" for i in range(12))
+from pathlib import Path
 
 
-def _runtime_bytes(root: Path) -> bytes:
-    paths = tuple(root / name for name in EXPECTED_PARTS)
-    present = tuple(path.name for path in paths if path.exists())
-    if not present:
-        required = (root / "session_engine.py", root / "logic.py", root / "run.py")
-        if all(path.exists() for path in required):
-            print("SCDAM runtime is already materialized")
-            raise SystemExit(0)
-        raise SystemExit("SCDAM runtime chunks and materialized source are both missing")
-    if present != EXPECTED_PARTS:
-        missing = sorted(set(EXPECTED_PARTS) - set(present))
-        raise SystemExit(f"incomplete SCDAM runtime chunk set: missing={missing}")
-    encoded = "".join(path.read_text(encoding="ascii") for path in paths)
-    try:
-        payload = b64decode(encoded, validate=True)
-    except Exception as exc:
-        raise SystemExit(f"invalid SCDAM runtime base64: {exc}") from exc
-    actual = sha256(payload).hexdigest()
-    if actual != RUNTIME_SHA256:
-        raise SystemExit(
-            f"SCDAM runtime SHA-256 mismatch: expected={RUNTIME_SHA256} actual={actual}",
-        )
-    return payload
+def replace_once(path: Path, old: str, new: str, label: str) -> bool:
+    source = path.read_text(encoding="utf-8")
+    if new in source:
+        return False
+    if source.count(old) != 1:
+        raise SystemExit(f"{label}: expected one migration anchor, found {source.count(old)}")
+    path.write_text(source.replace(old, new, 1), encoding="utf-8")
+    return True
 
 
-def _safe_file_name(name: str) -> bool:
-    pure = PurePosixPath(name)
-    return not pure.is_absolute() and ".." not in pure.parts and len(pure.parts) == 1
+def migrate_logic(root: Path) -> int:
+    path = root / "logic.py"
+    changed = 0
+    changed += replace_once(
+        path,
+        '            "OBSERVE", "PENDING_ENTRY", "RECLAIM_MSS_DISPLACEMENT_TO_PAIRED_DRAW", a.pool.level,',
+        '            "OBSERVE", "FAR_CONFIRMED", "RECLAIM_MSS_DISPLACEMENT_TO_PAIRED_DRAW", a.pool.level,',
+        "FAR confirmation state",
+    )
+    changed += replace_once(
+        path,
+        '            "OBSERVE", "PENDING_ENTRY", "OUTSIDE_HOLD_CAUSAL_PULLBACK_REACCELERATION", a.pool.level,',
+        '            "OBSERVE", "AAC_CONFIRMED", "OUTSIDE_HOLD_CAUSAL_PULLBACK_REACCELERATION", a.pool.level,',
+        "AAC confirmation state",
+    )
+    changed += replace_once(
+        path,
+        '''    def mark_rejected(self, plan: TradePlan, ts_ns: int, reason: str, details: dict[str, Any] | None = None) -> None:\n        if self.active is None or self.active.pool.scenario_id != plan.scenario_id:\n            return\n        self._event(plan.scenario_id, "ENTRY_PLAN_REJECTED", plan.observed_ts_ns, ts_ns, "CONFIRMED", "TERMINAL", reason, plan.expected_entry, details or {})\n        self.skips[reason] += 1\n        self.active = None\n''',
+        '''    def mark_rejected(self, plan: TradePlan, ts_ns: int, reason: str, details: dict[str, Any] | None = None) -> None:\n        if self.active is None or self.active.pool.scenario_id != plan.scenario_id:\n            return\n        previous_state = self.active.state\n        self._event(\n            plan.scenario_id,\n            "ENTRY_PLAN_REJECTED",\n            plan.observed_ts_ns,\n            ts_ns,\n            previous_state,\n            "TERMINAL",\n            reason,\n            plan.expected_entry,\n            details or {},\n        )\n        self.skips[reason] += 1\n        self.active = None\n''',
+        "entry rejection state",
+    )
+    return changed
+
+
+def migrate_test(root: Path) -> int:
+    path = root / "test_logic.py"
+    source = path.read_text(encoding="utf-8")
+    if "test_far_confirmation_plan_and_rejection_form_one_state_chain" in source:
+        return 0
+    anchor = '''    def test_insufficient_costed_r_is_terminal_not_tuned(self) -> None:\n        auction, confirmation = self._auction(Direction.LONG)\n        auction.target_price = 108.0\n        plan = self.engine._costed_limit_plan(auction, confirmation, "TEST")\n        self.assertIsNone(plan)\n        self.assertIsNone(self.engine.active)\n        self.assertEqual(self.engine.skips["INSUFFICIENT_COSTED_STRUCTURAL_R"], 1)\n'''
+    addition = '''    def test_far_confirmation_plan_and_rejection_form_one_state_chain(self) -> None:\n        trigger = pool("TRIGGER", Side.HIGH, 100.0, range_id="R", opposite=80.0)\n        target = pool("TARGET", Side.LOW, 80.0, range_id="R", opposite=100.0)\n        self.engine.pools = [trigger, target]\n        confirmation = bar(100 * MINUTE_NS, 104.0, 106.0, 98.0, 100.0, buy=20.0)\n        auction = Auction(\n            pool=trigger,\n            sweep=bar(90 * MINUTE_NS, 99.0, 104.0, 98.0, 101.0, buy=70.0),\n            sweep_index=0,\n            atr=10.0,\n            internal_level=103.0,\n            sweep_extreme=104.0,\n            rejection_seed=True,\n            acceptance_seed=False,\n            reclaim_seen=True,\n            reversal_target_pool_id=target.scenario_id,\n            reversal_target_level=target.level,\n        )\n        self.engine.active = auction\n        self.engine.bars = [confirmation]\n        self.engine._index = 0\n        plan = self.engine._confirm_far(auction, confirmation)\n        self.assertIsNotNone(plan)\n        assert plan is not None\n        self.engine.mark_rejected(plan, confirmation.ts_ns, "TEST_REJECTION")\n        last_by_scenario = {}\n        for event in self.engine.events:\n            previous = last_by_scenario.get(event.scenario_id)\n            if previous is not None:\n                self.assertEqual(event.previous_state, previous.next_state)\n            last_by_scenario[event.scenario_id] = event\n        self.assertEqual(\n            [(event.previous_state, event.next_state) for event in self.engine.events],\n            [("OBSERVE", "FAR_CONFIRMED"), ("FAR_CONFIRMED", "PENDING_ENTRY"), ("PENDING_ENTRY", "TERMINAL")],\n        )\n\n'''
+    if source.count(anchor) != 1:
+        raise SystemExit("event-chain regression-test anchor is not unique")
+    path.write_text(source.replace(anchor, addition + anchor, 1), encoding="utf-8")
+    return 1
+
+
+def migrate_run_evidence(root: Path) -> int:
+    path = root / "run.py"
+    changed = 0
+    changed += replace_once(
+        path,
+        "from smc_ict_4.event_log import write_events\n",
+        "from smc_ict_4.event_log import EventLogError, write_events\n",
+        "event-log import",
+    )
+    source = path.read_text(encoding="utf-8")
+    if "def _write_raw_events(" not in source:
+        anchor = '''COLUMNS = (\n    "open_time", "open", "high", "low", "close", "volume", "close_time",\n    "quote_volume", "trades", "taker_buy_volume", "taker_buy_quote_volume", "ignore",\n)\n\n\n'''
+        helper = '''COLUMNS = (\n    "open_time", "open", "high", "low", "close", "volume", "close_time",\n    "quote_volume", "trades", "taker_buy_volume", "taker_buy_quote_volume", "ignore",\n)\n\n\ndef _write_raw_events(path: Path, events: list[Any]) -> Path:\n    """Persist diagnostics before validation; raw events are never success evidence."""\n    path.parent.mkdir(parents=True, exist_ok=True)\n    temporary = path.with_suffix(path.suffix + ".tmp")\n    with temporary.open("w", encoding="utf-8", newline="\\n") as stream:\n        for event in events:\n            stream.write(json.dumps(event.to_dict(), sort_keys=True, ensure_ascii=False) + "\\n")\n    temporary.replace(path)\n    return path\n\n\n'''
+        if source.count(anchor) != 1:
+            raise SystemExit("raw-event helper anchor is not unique")
+        path.write_text(source.replace(anchor, helper, 1), encoding="utf-8")
+        changed += 1
+    source = path.read_text(encoding="utf-8")
+    if 'metrics["event_log_valid"] = True' not in source:
+        old = '''        write_events(output_dir / "scenario_events.jsonl", strategy.logic.events)\n        write_json_atomic(output_dir / "submitted_plans.json", {"plans": strategy.plans})\n        write_json_atomic(output_dir / "order_lifecycle.json", {"events": strategy.lifecycle})\n        write_json_atomic(output_dir / "metrics.json", metrics)\n        manifest = create_run_manifest(\n            run_id=f"candidate-11-{week_id.lower()}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",\n            candidate=config["candidate"],\n            config_path=config_path,\n            data_manifest_path=output_dir / "data_manifest.json",\n            extra={\n                "week_id": week_id,\n                "bar_type": str(bar_type),\n                "evaluation_start": evaluation_start.isoformat(),\n                "evaluation_end_exclusive": evaluation_end.isoformat(),\n                "logic": config["logic"],\n                "execution": config["execution"],\n                "metrics_path": str(output_dir / "metrics.json"),\n            },\n        )\n        write_json_atomic(output_dir / "run.json", manifest)\n        return metrics\n'''
+        new = '''        _write_raw_events(output_dir / "scenario_events.raw.jsonl", strategy.logic.events)\n        write_json_atomic(output_dir / "submitted_plans.json", {"plans": strategy.plans})\n        write_json_atomic(output_dir / "order_lifecycle.json", {"events": strategy.lifecycle})\n        event_log_error: str | None = None\n        try:\n            write_events(output_dir / "scenario_events.jsonl", strategy.logic.events)\n            metrics["event_log_valid"] = True\n            metrics["event_log_error"] = None\n        except EventLogError as exc:\n            event_log_error = str(exc)\n            metrics["event_log_valid"] = False\n            metrics["event_log_error"] = event_log_error\n            metrics["promising_gate_passed"] = False\n            metrics["complete_gate_passed"] = False\n            metrics["success_claim"] = False\n        write_json_atomic(output_dir / "metrics.json", metrics)\n        manifest = create_run_manifest(\n            run_id=f"candidate-11-{week_id.lower()}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",\n            candidate=config["candidate"],\n            config_path=config_path,\n            data_manifest_path=output_dir / "data_manifest.json",\n            extra={\n                "week_id": week_id,\n                "bar_type": str(bar_type),\n                "evaluation_start": evaluation_start.isoformat(),\n                "evaluation_end_exclusive": evaluation_end.isoformat(),\n                "logic": config["logic"],\n                "execution": config["execution"],\n                "metrics_path": str(output_dir / "metrics.json"),\n                "event_log_valid": metrics["event_log_valid"],\n            },\n        )\n        write_json_atomic(output_dir / "run.json", manifest)\n        if event_log_error is not None:\n            raise EventLogError(event_log_error)\n        return metrics\n'''
+        if source.count(old) != 1:
+            raise SystemExit("evidence finalization anchor is not unique")
+        path.write_text(source.replace(old, new, 1), encoding="utf-8")
+        changed += 1
+    return changed
 
 
 def main() -> None:
     root = Path(__file__).resolve().parent
-    compressed = _runtime_bytes(root)
-    try:
-        tar_bytes = lzma.decompress(compressed, format=lzma.FORMAT_XZ)
-    except lzma.LZMAError as exc:
-        raise SystemExit(f"SCDAM runtime XZ failure: {exc}") from exc
-
-    with tarfile.open(fileobj=BytesIO(tar_bytes), mode="r:") as archive:
-        members = archive.getmembers()
-        names = [member.name for member in members]
-        if "RUNTIME_MANIFEST.json" not in names:
-            raise SystemExit("SCDAM runtime manifest missing")
-        if len(names) != len(set(names)):
-            raise SystemExit("duplicate SCDAM runtime member")
-        for member in members:
-            if not member.isfile() or not _safe_file_name(member.name):
-                raise SystemExit(f"unsafe SCDAM runtime member: {member.name}")
-        manifest_file = archive.extractfile("RUNTIME_MANIFEST.json")
-        if manifest_file is None:
-            raise SystemExit("SCDAM runtime manifest is unreadable")
-        manifest = json.loads(manifest_file.read())
-        if manifest.get("schema") != RUNTIME_SCHEMA:
-            raise SystemExit("unsupported SCDAM runtime schema")
-        expected_files = manifest.get("files") or {}
-        if set(names) - {"RUNTIME_MANIFEST.json"} != set(expected_files):
-            raise SystemExit("SCDAM runtime member set does not match manifest")
-        for name, record in expected_files.items():
-            if not _safe_file_name(name):
-                raise SystemExit(f"unsafe manifest member: {name}")
-            source = archive.extractfile(name)
-            if source is None:
-                raise SystemExit(f"SCDAM runtime member is unreadable: {name}")
-            payload = source.read()
-            if len(payload) != int(record["size_bytes"]):
-                raise SystemExit(f"SCDAM runtime size mismatch: {name}")
-            if sha256(payload).hexdigest() != record["sha256"]:
-                raise SystemExit(f"SCDAM runtime content hash mismatch: {name}")
-            temporary = root / f".{name}.tmp"
-            temporary.write_bytes(payload)
-            temporary.replace(root / name)
-
-    stale_paths = [
-        root / "scdam_source_bundle.zip",
-        root / "scdam_source_bundle.rebuilt.zip",
-        root / "v3_source_bundle.zip",
-        root / "validation_trigger.txt",
-        root / "scdam_source_bundle.part00.bin.b64",
-    ]
-    stale_paths.extend(root.glob("scdam_source_bundle.part*.b64"))
-    stale_paths.extend(root.glob("scdam_runtime.part*.b64"))
-    for stale in stale_paths:
-        stale.unlink(missing_ok=True)
-    print(f"materialized {len(expected_files)} verified SCDAM runtime files")
+    required = (root / "logic.py", root / "run.py", root / "test_logic.py", root / "session_engine.py")
+    missing = [path.name for path in required if not path.is_file()]
+    if missing:
+        raise SystemExit(f"materialized SCDAM source is incomplete: {missing}")
+    changed = migrate_logic(root) + migrate_test(root) + migrate_run_evidence(root)
+    print(f"SCDAM migrations applied: {changed}")
 
 
 if __name__ == "__main__":
