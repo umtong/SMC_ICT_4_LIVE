@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+import pandas as pd
+
 import cross_market_information_transfer_compiler_v2 as candidate
 
 
@@ -58,6 +60,66 @@ class AllowedSymbolConfigTests(unittest.TestCase):
         values["unapproved_parameter"] = 1
         with self.assertRaises(candidate.CandidateError):
             candidate.load_allowed_symbol_config(self.write(values))
+
+
+class SymbolAwareRichLoaderTests(unittest.TestCase):
+    def directory(self, name: str) -> Path:
+        root = Path(tempfile.mkdtemp()) / name
+        root.mkdir(parents=True)
+        self.addCleanup(
+            lambda: __import__("shutil").rmtree(root.parent, ignore_errors=True)
+        )
+        return root
+
+    def test_allowed_follower_file_is_loaded_with_close_observed_contract(self) -> None:
+        root = self.directory("ETHUSDT")
+        frame = pd.DataFrame(
+            {
+                "open_time": ["2025-07-21T00:00:00Z"],
+                "observed_time": ["2025-07-21T00:01:00Z"],
+                "value": [1.0],
+            }
+        )
+        frame.to_csv(
+            root / "ETHUSDT-rich-2025-07-21.csv.gz",
+            index=False,
+            compression="gzip",
+        )
+        loaded = candidate.load_allowed_symbol_rich(root)
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(float(loaded["value"].iloc[0]), 1.0)
+
+    def test_wrong_symbol_filename_does_not_silently_load(self) -> None:
+        root = self.directory("SOLUSDT")
+        frame = pd.DataFrame(
+            {
+                "open_time": ["2025-07-21T00:00:00Z"],
+                "observed_time": ["2025-07-21T00:01:00Z"],
+            }
+        )
+        frame.to_csv(
+            root / "BTCUSDT-rich-2025-07-21.csv.gz",
+            index=False,
+            compression="gzip",
+        )
+        with self.assertRaises(candidate.CandidateError):
+            candidate.load_allowed_symbol_rich(root)
+
+    def test_future_observed_timestamp_remains_rejected(self) -> None:
+        root = self.directory("XRPUSDT")
+        frame = pd.DataFrame(
+            {
+                "open_time": ["2025-07-21T00:00:00Z"],
+                "observed_time": ["2025-07-21T00:02:00Z"],
+            }
+        )
+        frame.to_csv(
+            root / "XRPUSDT-rich-2025-07-21.csv.gz",
+            index=False,
+            compression="gzip",
+        )
+        with self.assertRaises(candidate.CandidateError):
+            candidate.load_allowed_symbol_rich(root)
 
 
 if __name__ == "__main__":
