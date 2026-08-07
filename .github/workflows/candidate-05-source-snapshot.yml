@@ -1,0 +1,30 @@
+name: candidate-05-source-snapshot
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-source-snapshot.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-05-source-${{ github.sha }}
+          path: |
+            research/candidate-05/**
+            src/**
+            tests/**
+            pyproject.toml
+            uv.lock
+            PROJECT_PRINCIPLES.md
+            AGENTS.md
+            .github/workflows/candidate-05-*.yml
+          if-no-files-found: error
+          retention-days: 1
