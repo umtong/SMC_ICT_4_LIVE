@@ -31,7 +31,7 @@ class SemanticLeadershipTests(unittest.TestCase):
             candidate_event_move=0.006,
             peer_event_median=0.003,
             confirmation_impulse=2.10,
-            trailing_direction_rank=4,
+            trailing_direction_rank=3,
             event_direction_rank=2,
             event_path_efficiency=0.12,
             event_standardized_displacement=0.86,
@@ -54,11 +54,49 @@ class SemanticLeadershipTests(unittest.TestCase):
         self.assertTrue(result.approved)
         self.assertEqual(result.reason, "SEMANTIC_FAR_MODERATE_COUNTERTREND_UNANIMOUS")
 
-    def test_far_rejects_trend_following_state(self):
+    def test_lrc_requires_persistent_and_event_leadership(self):
+        scores = {symbol: value for symbol, value in zip(SYMBOLS, (0.2, 0.4, 1.8, 0.3), strict=True)}
+        result = self.classify(
+            self.decision(
+                directional_trend_scores=scores,
+                trailing_direction_rank=1,
+                event_direction_rank=1,
+            ),
+        )
+        self.assertTrue(result.approved)
+        self.assertEqual(result.reason, "SEMANTIC_LRC_PERSISTENT_EVENT_LEADER")
+
+    def test_aligned_reclaim_without_dual_leadership_is_rejected(self):
         scores = {symbol: 0.5 for symbol in SYMBOLS}
-        result = self.classify(self.decision(directional_trend_scores=scores))
+        result = self.classify(
+            self.decision(
+                directional_trend_scores=scores,
+                trailing_direction_rank=2,
+                event_direction_rank=1,
+            ),
+        )
         self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_FAR_NOT_COUNTERTREND")
+        self.assertEqual(result.reason, "SEMANTIC_RECLAIM_ALIGNED_BUT_NOT_LEADER")
+
+    def test_ldt_requires_candidate_to_finish_after_all_peers(self):
+        result = self.classify(
+            self.decision(
+                event_direction_rank=4,
+                event_standardized_displacement=0.56,
+            ),
+        )
+        self.assertTrue(result.approved)
+        self.assertEqual(result.reason, "SEMANTIC_LDT_UNANIMOUS_PEER_LEAD")
+
+    def test_ldt_rejects_weak_final_displacement(self):
+        result = self.classify(
+            self.decision(
+                event_direction_rank=4,
+                event_standardized_displacement=0.49,
+            ),
+        )
+        self.assertFalse(result.approved)
+        self.assertEqual(result.reason, "SEMANTIC_LDT_INSUFFICIENT_LOCAL_DISPLACEMENT")
 
     def test_far_rejects_severely_unresolved_countertrend(self):
         scores = {symbol: -2.0 for symbol in SYMBOLS}
