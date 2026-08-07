@@ -60,11 +60,14 @@ def run_cross_venue_nautilus_backtest(
 
     class CrossVenueStrategy(BaseStrategy):
         def __init__(self, strategy_config: Any) -> None:
+            base_logic_params = dict(logic_params)
+            base_logic_params["engine"] = "LIQUIDITY_RESPONSE_BIFURCATION"
             super().__init__(
                 strategy_config,
                 observations=observations,
-                logic_params=logic_params,
+                logic_params=base_logic_params,
             )
+            self._logic_params = dict(logic_params)
             self._scenario_engine = CrossVenuePriceDiscoveryBifurcationEngine(
                 logic_params,
                 spot_observations=spot_observations,
