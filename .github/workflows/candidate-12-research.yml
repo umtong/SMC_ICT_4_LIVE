@@ -1,9 +1,10 @@
-name: candidate-12-i8-w7-frozen-confirmation
+name: candidate-12-i9-causal-execution-regression
 
 on:
   push:
     branches: ["research/candidate-12"]
     paths:
+      - "research/candidate-12/**"
       - ".github/workflows/candidate-12-research.yml"
   workflow_dispatch:
 
@@ -11,11 +12,159 @@ permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i8-w7-${{ github.ref }}-${{ github.sha }}
+  group: candidate-12-i9-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  w7-frozen-confirmation:
+  w1-design-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    env:
+      SYMBOL: BTCUSDT
+      WEEK: W1
+      OUTPUT: artifacts/candidate-12/BTCUSDT-W1
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Verify prebuilt environment
+        run: smc4 doctor
+
+      - name: Compile candidate
+        run: python -m compileall -q research/candidate-12
+
+      - name: Candidate causal unit tests
+        run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+
+      - name: Run W1 design regression through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT"
+          python - <<'PY' | tee "$OUTPUT.console.json"
+          from decimal import Decimal
+          from pathlib import Path
+          import json
+          import sys
+
+          root = Path("research/candidate-12").resolve()
+          sys.path.insert(0, str(root))
+          from run import run
+
+          output = Path("artifacts/candidate-12/BTCUSDT-W1").resolve()
+          metrics = run(root / "config.json", "BTCUSDT", "W1", output)
+          assert metrics["success_claim"] is True, metrics
+          assert metrics["closed_trades"] == 6, metrics
+          assert metrics["wins"] == 6 and metrics["losses"] == 0, metrics
+          assert Decimal(str(metrics["final_nav"])) > Decimal(str(metrics["starting_nav"])), metrics
+          assert metrics["risk_budget_passed"] is True, metrics
+          assert metrics["global_slot_passed"] is True, metrics
+          assert metrics["event_log_valid"] is True, metrics
+          assert metrics["engine_errors"] == [], metrics
+          assert metrics["liquidation_detected"] is False, metrics
+          print(json.dumps(metrics, indent=2, sort_keys=True, default=str))
+          PY
+
+      - name: Surface W1 evidence
+        if: always()
+        shell: bash
+        run: |
+          test ! -f "$OUTPUT/metrics.json" || cat "$OUTPUT/metrics.json"
+          test ! -f "$OUTPUT/run.json" || cat "$OUTPUT/run.json"
+
+      - name: Preserve W1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-I9-BTCUSDT-W1-${{ github.sha }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: warn
+
+  w5-implementation-gate:
+    needs: w1-design-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    env:
+      SYMBOL: BTCUSDT
+      WEEK: W5
+      OUTPUT: artifacts/candidate-12/BTCUSDT-W5
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Verify prebuilt environment
+        run: smc4 doctor
+
+      - name: Compile candidate
+        run: python -m compileall -q research/candidate-12
+
+      - name: Candidate causal unit tests
+        run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+
+      - name: Run W5 implementation regression through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT"
+          python - <<'PY' | tee "$OUTPUT.console.json"
+          from decimal import Decimal
+          from pathlib import Path
+          import json
+          import sys
+
+          root = Path("research/candidate-12").resolve()
+          sys.path.insert(0, str(root))
+          from run import run
+
+          output = Path("artifacts/candidate-12/BTCUSDT-W5").resolve()
+          metrics = run(root / "config.json", "BTCUSDT", "W5", output)
+          plans = json.loads((output / "submitted_plans.json").read_text(encoding="utf-8"))["plans"]
+          passive = [
+              plan for plan in plans
+              if plan.get("details", {}).get("route") == "PASSIVE_FVG_MITIGATION_HOLD"
+          ]
+          assert metrics["success_claim"] is True, metrics
+          assert metrics["closed_trades"] == 5, metrics
+          assert metrics["wins"] == 5 and metrics["losses"] == 0, metrics
+          assert Decimal(str(metrics["final_nav"])) > Decimal(str(metrics["starting_nav"])), metrics
+          assert passive, plans
+          assert all(plan["entry_order_type"] == "LIMIT_GTD_PROTECTED" for plan in passive), passive
+          assert all(
+              float(plan["details"]["retest_close"])
+              <= float(plan["details"]["fvg_upper"])
+              for plan in passive
+          ), passive
+          assert metrics["risk_budget_passed"] is True, metrics
+          assert metrics["global_slot_passed"] is True, metrics
+          assert metrics["event_log_valid"] is True, metrics
+          assert metrics["engine_errors"] == [], metrics
+          assert metrics["liquidation_detected"] is False, metrics
+          print(json.dumps(metrics, indent=2, sort_keys=True, default=str))
+          PY
+
+      - name: Surface W5 evidence
+        if: always()
+        shell: bash
+        run: |
+          test ! -f "$OUTPUT/metrics.json" || cat "$OUTPUT/metrics.json"
+          test ! -f "$OUTPUT/run.json" || cat "$OUTPUT/run.json"
+
+      - name: Preserve W5 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-I9-BTCUSDT-W5-${{ github.sha }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: warn
+
+  w7-repair-diagnosis:
+    needs: w5-implementation-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -32,18 +181,19 @@ jobs:
       - name: Verify prebuilt environment
         run: smc4 doctor
 
-      - name: Compile unchanged candidate
+      - name: Compile candidate
         run: python -m compileall -q research/candidate-12
 
-      - name: Candidate unit tests
+      - name: Candidate causal unit tests
         run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
 
-      - name: Run frozen untouched W7 through NautilusTrader
+      - name: Run exposed W7 repair diagnosis through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$OUTPUT"
           python - <<'PY' | tee "$OUTPUT.console.json"
+          from decimal import Decimal
           from pathlib import Path
           import json
           import sys
@@ -52,34 +202,34 @@ jobs:
           sys.path.insert(0, str(root))
           from run import run
 
-          metrics = run(
-              root / "config.json",
-              "BTCUSDT",
-              "W7",
-              Path("artifacts/candidate-12/BTCUSDT-W7").resolve(),
-          )
+          output = Path("artifacts/candidate-12/BTCUSDT-W7").resolve()
+          metrics = run(root / "config.json", "BTCUSDT", "W7", output)
+          skips = metrics.get("skip_reasons", {})
+          assert metrics["submitted_plans"] == 0, metrics
+          assert metrics["closed_trades"] == 0, metrics
+          assert Decimal(str(metrics["final_nav"])) == Decimal(str(metrics["starting_nav"])), metrics
+          assert metrics["success_claim"] is False, metrics
+          assert metrics["risk_budget_passed"] is True, metrics
+          assert metrics["global_slot_passed"] is True, metrics
+          assert metrics["event_log_valid"] is True, metrics
+          assert metrics["engine_errors"] == [], metrics
+          assert metrics["liquidation_detected"] is False, metrics
+          assert skips.get("PASSIVE_LIMIT_NOT_MARKETABLE_AFTER_RETEST", 0) >= 1, skips
+          assert skips.get("HIGH_ACCEPTANCE_ORIGINAL_FVG_INVALIDATED", 0) >= 1, skips
           print(json.dumps(metrics, indent=2, sort_keys=True, default=str))
           PY
 
-      - name: Surface W7 decision evidence
+      - name: Surface W7 repair evidence
         if: always()
         shell: bash
         run: |
-          if [[ -f "$OUTPUT/metrics.json" ]]; then
-            echo '=== CANDIDATE_12_I8_W7_METRICS_BEGIN ==='
-            cat "$OUTPUT/metrics.json"
-            echo '=== CANDIDATE_12_I8_W7_METRICS_END ==='
-          fi
-          if [[ -f "$OUTPUT/run.json" ]]; then
-            echo '=== CANDIDATE_12_I8_W7_RUN_BEGIN ==='
-            cat "$OUTPUT/run.json"
-            echo '=== CANDIDATE_12_I8_W7_RUN_END ==='
-          fi
+          test ! -f "$OUTPUT/metrics.json" || cat "$OUTPUT/metrics.json"
+          test ! -f "$OUTPUT/run.json" || cat "$OUTPUT/run.json"
 
-      - name: Preserve reproducible W7 evidence
+      - name: Preserve W7 repair evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I8-BTCUSDT-W7-${{ github.sha }}
+          name: candidate-12-I9-BTCUSDT-W7-${{ github.sha }}
           path: ${{ env.OUTPUT }}
           if-no-files-found: warn
