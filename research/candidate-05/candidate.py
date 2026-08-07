@@ -14,10 +14,12 @@ from typing import Any
 from timestamp_contract import install as install_timestamp_contract
 from wrangler_contract import install as install_wrangler_contract
 from positioning_contract import install as install_positioning_contract
+from basis_contract import install as install_basis_contract
 
 install_timestamp_contract()
 install_wrangler_contract()
 install_positioning_contract()
+install_basis_contract()
 
 from backtest import run_backtest
 from smc_ict_4.manifest import write_json_atomic
@@ -37,7 +39,7 @@ def run_backtest_isolated(
 
     NautilusTrader 1.230.0 initializes its Rust logging system once per process.
     A fresh process for each gate prevents a second BacktestNode from attempting
-    to install another global logger.  This changes no data, strategy, execution,
+    to install another global logger. This changes no data, strategy, execution,
     accounting, or acceptance rule.
     """
     command = [
@@ -72,7 +74,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     cache = args.cache.resolve()
     summary: dict[str, Any] = {
-        "candidate": "candidate-05-auction-state-transition",
+        "candidate": "candidate-05-positioning-reset-reversal",
         "engine": "NautilusTrader BacktestNode",
         "process_isolation": "one Nautilus BacktestNode per child process",
         "week_selection": weeks["selection"],
