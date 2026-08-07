@@ -1,13 +1,12 @@
-name: candidate-03-candidate17-strict-target-development
+name: candidate-03-candidate18-retest-entry-development
 
 on:
   push:
     branches: ["research/candidate-03"]
     paths:
       - ".github/workflows/candidate-03-v30-staged-container.yml"
-      - "research/candidate-03/patch_candidate17_strict_target.py"
-      - "research/candidate-03/test_candidate17_strict_target.py"
-      - "research/candidate-03/aggregate_candidate17_strict_target.py"
+      - "research/candidate-03/patch_candidate18_retest_entry.py"
+      - "research/candidate-03/aggregate_candidate18_retest_entry.py"
   workflow_dispatch:
 
 permissions:
@@ -16,10 +15,10 @@ permissions:
 
 env:
   FROZEN_SOURCE_COMMIT: dfb180490b141fdafd5b5ac0b52d3dd0b842550d
-  RESULT_REL: research/candidate-03/results/candidate17-strict-target-development
+  RESULT_REL: research/candidate-03/results/candidate18-retest-entry-development
 
 concurrency:
-  group: candidate-03-candidate17-strict-target-development
+  group: candidate-03-candidate18-retest-entry-development
   cancel-in-progress: true
 
 jobs:
@@ -29,47 +28,40 @@ jobs:
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
     steps:
       - uses: actions/checkout@v4
         with: {ref: "${{ github.sha }}", path: orchestrator}
       - uses: actions/checkout@v4
         with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
-      - name: Verify frozen source and Candidate 17 target contract
+      - name: Verify Candidate 18 completed-retest contract
         shell: bash
         run: |
           set -euo pipefail
           smc4 doctor
           test "$(git -C frozen-source rev-parse HEAD)" = "$FROZEN_SOURCE_COMMIT"
-          python - <<'PY'
-          import json, subprocess
-          from pathlib import Path
-          p=json.loads(Path("orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json").read_text())
-          bad=[]
-          for name, expected in p["locked_source"]["blobs"].items():
-              actual=subprocess.check_output(["git","-C","frozen-source","hash-object",str(Path("research/candidate-14")/name)],text=True).strip()
-              if actual != expected: bad.append((name, expected, actual))
-          if bad: raise SystemExit(f"frozen source mismatch: {bad}")
-          print(f"verified {len(p['locked_source']['blobs'])} origin blobs")
-          PY
           cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/test_candidate16_failed_far.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/test_candidate17_strict_target.py frozen-source/research/candidate-14/
           python orchestrator/research/candidate-03/patch_candidate16_deep_reentry_call.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate17_strict_target.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate18_retest_entry.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
           python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
           python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
           python orchestrator/research/candidate-03/patch_candidate16_native_exit_reason.py frozen-source/research/candidate-14/run_leadership_scdam_base.py
-          grep -q 'def strict_failed_far_target' frozen-source/research/candidate-14/candidate16_failed_far.py
-          grep -q 'FAILED_FAR_NO_STRICT_EXTERNAL_TARGET' frozen-source/research/candidate-14/candidate16_failed_far.py
-          ! grep -q 'target = self._next_pool(context.pool_side' frozen-source/research/candidate-14/candidate16_failed_far.py
+          grep -q 'FAILED_FAR_ACCEPTANCE_BOUNDARY_RETEST_MARKET' frozen-source/research/candidate-14/candidate16_failed_far.py
+          block="$(python - <<'PY'
+          from pathlib import Path
+          s=Path('frozen-source/research/candidate-14/candidate16_failed_far.py').read_text()
+          print(s[s.index('    if state.state == "WAIT_RETEST":'):s.index('    if state.state != "WAIT_REACCELERATION":')])
+          PY
+          )"
+          ! grep -q 'WAIT_REACCELERATION' <<<"$block"
           export PYTHONPATH="$GITHUB_WORKSPACE/frozen-source/research/candidate-14:$GITHUB_WORKSPACE/frozen-source/src"
           python -m py_compile frozen-source/research/candidate-14/*.py
           python -m unittest discover -s frozen-source/research/candidate-14 -p 'test_*.py' -v
-          python -m py_compile orchestrator/research/candidate-03/aggregate_candidate17_strict_target.py
+          python -m py_compile orchestrator/research/candidate-03/aggregate_candidate18_retest_entry.py
 
   evaluate:
     needs: static
@@ -83,21 +75,20 @@ jobs:
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
     steps:
       - uses: actions/checkout@v4
         with: {ref: "${{ github.sha }}", path: orchestrator}
       - uses: actions/checkout@v4
         with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
-      - name: Install identical Candidate 17 runtime
+      - name: Install identical Candidate 18 runtime
         shell: bash
         run: |
           set -euo pipefail
           cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
           python orchestrator/research/candidate-03/patch_candidate16_deep_reentry_call.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate17_strict_target.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate18_retest_entry.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
           python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
           python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
@@ -105,20 +96,19 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          p=json.loads(Path("orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json").read_text())
-          p["schema"]="candidate-17-strict-external-target-development-v1"
-          p["candidate"]="candidate-17-strict-external-failed-far-continuation"
-          p["validation_mode"]="development_replay"
-          p["selection"]["seed"]=202608081717
-          p["claim_rules"]=[
-              "Development replay only; success_claim is false.",
-              "Candidate 17 differs from corrected Candidate 16 only in the failed-FAR continuation target definition.",
-              "The target must be a pre-existing unconsumed unexpired external pool strictly beyond both failed boundary and stop-time price.",
-              "All signal confirmation, costs, exact 3% NAV loss budget and one global slot remain unchanged.",
+          p=json.loads(Path('orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json').read_text())
+          p['schema']='candidate-18-completed-retest-entry-development-v1'
+          p['candidate']='candidate-18-failed-far-completed-retest-continuation'
+          p['validation_mode']='development_replay'
+          p['selection']['seed']=202608081818
+          p['claim_rules']=[
+              'Development replay only; success_claim is false.',
+              'Candidate 18 differs from Candidate 17 only by entering after completed boundary-retest defense instead of waiting for duplicate reacceleration.',
+              'Strict external target, cross-market semantics, costs, exact 3% NAV loss budget and one global slot remain unchanged.',
           ]
-          Path("frozen-source/research/candidate-14/protocol.json").write_text(json.dumps(p,indent=2,sort_keys=True)+"\n")
+          Path('frozen-source/research/candidate-14/protocol.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
           PY
-      - name: Run Candidate 17 ${{ matrix.week }} through NautilusTrader
+      - name: Run Candidate 18 ${{ matrix.week }} through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
@@ -129,7 +119,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate17-${{ matrix.week }}
+          name: candidate18-${{ matrix.week }}
           path: evidence/${{ matrix.week }}/
           if-no-files-found: error
           retention-days: 30
@@ -144,36 +134,36 @@ jobs:
       - uses: actions/checkout@v4
         with: {ref: research/candidate-03, fetch-depth: 0, path: orchestrator}
       - uses: actions/download-artifact@v4
-        with: {pattern: "candidate17-H*", path: downloaded}
-      - name: Attribute strict-target state and persist decision
+        with: {pattern: "candidate18-H*", path: downloaded}
+      - name: Attribute completed-retest state and persist decision
         shell: bash
         run: |
           set -euo pipefail
           root="orchestrator/$RESULT_REL"
           rm -rf "$root"; mkdir -p "$root"
           for week in H01 H02 H03 H04 H05 H06 H07 H08 H09 H10 H11 H12 H13 H14 H15 H16; do
-            src="downloaded/candidate17-$week"; test -d "$src"
+            src="downloaded/candidate18-$week"; test -d "$src"
             mkdir -p "$root/$week"; cp -a "$src/." "$root/$week/"
           done
-          python orchestrator/research/candidate-03/aggregate_candidate17_strict_target.py \
+          python orchestrator/research/candidate-03/aggregate_candidate18_retest_entry.py \
             --root "$root" \
             --baseline orchestrator/research/candidate-03/results/candidate14-frozen-holdout/aggregate.json \
             --candidate15 orchestrator/research/candidate-03/results/candidate15-far-execution-development/comparison.json \
-            --candidate16 orchestrator/research/candidate-03/results/candidate16-failed-far-development/aggregate.json \
+            --candidate17 orchestrator/research/candidate-03/results/candidate17-strict-target-development/aggregate.json \
             --output "$root/aggregate.json"
           git -C orchestrator config user.name candidate-03-development-bot
           git -C orchestrator config user.email candidate-03-development-bot@users.noreply.github.com
           git -C orchestrator add "$RESULT_REL"
-          git -C orchestrator commit -m "candidate-03: record Candidate 17 strict-target development [skip ci]"
+          git -C orchestrator commit -m "candidate-03: record Candidate 18 completed-retest development [skip ci]"
           git -C orchestrator fetch origin research/candidate-03
           git -C orchestrator rebase origin/research/candidate-03
           git -C orchestrator push origin HEAD:research/candidate-03
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate17-strict-target-aggregate-${{ github.run_id }}
+          name: candidate18-retest-entry-aggregate-${{ github.run_id }}
           path: |
-            orchestrator/research/candidate-03/results/candidate17-strict-target-development/aggregate.json
-            orchestrator/research/candidate-03/results/candidate17-strict-target-development/RESULT.md
+            orchestrator/research/candidate-03/results/candidate18-retest-entry-development/aggregate.json
+            orchestrator/research/candidate-03/results/candidate18-retest-entry-development/RESULT.md
           if-no-files-found: warn
           retention-days: 30
