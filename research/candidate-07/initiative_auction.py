@@ -1,20 +1,18 @@
 """Causal initiative-auction ownership after failed absorption.
 
-A stopped absorption/reclaim is not merely a losing trade. It is observable
-acceptance beyond the swept boundary and therefore transfers control to the
-opposite initiative auction. While that auction remains unresolved, later local
-liquidity levels in the failed reversal direction are not independent fade
-opportunities: they are internal pools created inside the same accepted leg.
+A stopped absorption/reclaim is observable acceptance beyond the swept boundary
+and transfers control to the opposite initiative auction. Later local pools in
+the failed reversal direction belong to that accepted leg until one of three
+observable transitions occurs:
 
-The state ends only through an observable market event:
+* the failed reversal's declared opposing liquidity is delivered;
+* a confirmed acceptance-continuation plan proves initiative changed sides; or
+* an absorption/reclaim in the opposite reversal direction itself stops,
+  directly confirming opposite-side initiative acceptance.
 
-* price delivers the opposing liquidity declared by the failed reversal, or
-* a confirmed acceptance-continuation plan appears in the blocked reversal
-  direction, proving initiative has changed sides.
-
-There is deliberately no elapsed-time expiry, loss-count rule, score, or PnL
-condition. This module owns causal state only and never computes orders, fills,
-PnL, cash, or NAV.
+There is no elapsed-time expiry, loss-count rule, model score, or PnL condition.
+This module owns causal state only and never computes orders, fills, PnL, cash,
+or NAV.
 """
 from __future__ import annotations
 
@@ -54,7 +52,7 @@ class InitiativeAuction:
 
 
 class InitiativeAuctionGate:
-    """Own at most one active accepted auction for each reversal direction."""
+    """Own one currently accepted auction state for each reversal direction."""
 
     def __init__(self) -> None:
         self._states: dict[Direction, InitiativeAuction] = {}
@@ -83,6 +81,29 @@ class InitiativeAuctionGate:
         self._states[blocked_reversal_direction] = state
         return state
 
+    def transfer_on_failed_reversal(
+        self,
+        *,
+        blocked_reversal_direction: Direction,
+        opposing_delivery_price: float,
+        source_scenario_id: str,
+        accepted_source_level: float,
+        accepted_at_ns: int,
+    ) -> tuple[InitiativeAuction, InitiativeAuction | None]:
+        """Install new initiative and displace its causal opposite, if active."""
+        displaced = self._states.pop(
+            self.opposite(blocked_reversal_direction),
+            None,
+        )
+        state = self.accept_failed_reversal(
+            blocked_reversal_direction=blocked_reversal_direction,
+            opposing_delivery_price=opposing_delivery_price,
+            source_scenario_id=source_scenario_id,
+            accepted_source_level=accepted_source_level,
+            accepted_at_ns=accepted_at_ns,
+        )
+        return state, displaced
+
     def state(self, reversal_direction: Direction) -> InitiativeAuction | None:
         return self._states.get(reversal_direction)
 
@@ -102,12 +123,7 @@ class InitiativeAuctionGate:
         self,
         continuation_direction: Direction,
     ) -> InitiativeAuction | None:
-        """Release when acceptance itself confirms the blocked direction.
-
-        A blocked SHORT reversal represents bullish initiative. A confirmed
-        SHORT acceptance-continuation plan is therefore a causal bearish state
-        transition and releases that SHORT block; LONG is symmetric.
-        """
+        """Release when a confirmed continuation proves the blocked direction."""
         return self._states.pop(continuation_direction, None)
 
     def clear(self, reversal_direction: Direction) -> InitiativeAuction | None:
