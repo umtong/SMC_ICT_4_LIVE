@@ -64,7 +64,7 @@ class QuoteResiliencyExecutionStrategy(RiskCompleteAggTradeAcceptanceStrategy):
         self.native_quote_submission_events: list[dict[str, Any]] = []
         super().on_start()
         for instrument_id in self.instrument_ids:
-            self.subscribe_quote_ticks(instrument_id)
+            self.subscribe_quotes(instrument_id)
 
     def on_bar(self, bar: Any) -> None:
         signal_time_ns = int(bar.ts_event)
@@ -86,7 +86,7 @@ class QuoteResiliencyExecutionStrategy(RiskCompleteAggTradeAcceptanceStrategy):
             self.signal_instruments_seen.pop(signal_time_ns, None)
             self._quote_ready_signal_times.add(signal_time_ns)
 
-    def on_quote_tick(self, tick: Any) -> None:
+    def on_quote(self, tick: Any) -> None:
         quote_time_ns = int(tick.ts_event)
         signal_time_ns = quote_time_ns - COMPLETION_DELAY_NS
         if signal_time_ns not in self._quote_ready_signal_times:
