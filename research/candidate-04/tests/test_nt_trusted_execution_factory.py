@@ -50,6 +50,14 @@ class TrustedVenueFactoryTests(unittest.TestCase):
 
 
 class FourInstrumentRunConfigTests(unittest.TestCase):
+    def test_declared_final_day_is_included_completely(self) -> None:
+        start, end = candidate.evaluation_window_iso(
+            date(2025, 1, 1),
+            date(2025, 1, 2),
+        )
+        self.assertEqual(start, "2025-01-01T00:00:00+00:00")
+        self.assertEqual(end, "2025-01-02T23:59:59.999999999+00:00")
+
     def test_v2_uses_trusted_venue_and_four_data_streams(self) -> None:
         config = json.loads(
             Path(candidate.__file__).with_name("nt_liquidity_config.json").read_text()
