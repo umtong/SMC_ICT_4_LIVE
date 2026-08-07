@@ -1,0 +1,494 @@
+name: candidate-04-v42-causal-research-continuation
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v42-research-continuation.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      RESULT_ROOT: artifacts/candidate-04-v42-research-continuation
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Apply implementation-contract repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-04/apply_v42_research_repair.py "$GITHUB_WORKSPACE"
+
+      - name: Verify prebuilt Nautilus and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-04
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_volume_clock_impact_residual_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_volume_clock_imbalance_gap_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_depth_conditioned_impact_innovation_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_v42_research_contracts.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_exact_causal_target_risk_sizing.py' -v
+          echo "V42_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Restore trusted completed-data development observations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v27-cross-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Resolve observation directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in low_activity normal_basis stress_a; do
+            rich_dir="$(
+              find sources -type f \
+                -path "*candidate-04-v27-cross-${name}-*/source/rich/data_manifest.json" \
+                -printf '%h\n' | head -n1
+            )"
+            test -n "$rich_dir"
+            echo "RICH_${name^^}=$rich_dir" >> "$GITHUB_ENV"
+          done
+
+      - name: Run repaired candidates on first BTC week with controlled ablations
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RESULT_ROOT"
+          : > "$RESULT_ROOT/runtime_failures.tsv"
+
+          compiler_for() {
+            case "$1" in
+              v37) echo "research/candidate-04/volume_clock_impact_residual_compiler.py" ;;
+              v38) echo "research/candidate-04/volume_clock_imbalance_gap_compiler.py" ;;
+              v41) echo "research/candidate-04/depth_conditioned_impact_innovation_compiler.py" ;;
+              *) return 2 ;;
+            esac
+          }
+
+          run_one() {
+            local family="$1" route="$2" week="$3"
+            local build_start="$4" build_end="$5" eval_start="$6" eval_end="$7" rich_dir="$8"
+            local compiler output candidate stage rc
+            compiler="$(compiler_for "$family")"
+            output="$RESULT_ROOT/runs/$family/$route/$week"
+            candidate="candidate-04-${family}-${route}"
+            stage="${week}_${route}"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-04/run_frozen_btc_route.py \
+              --family "$family" \
+              --route "$route" \
+              --candidate "$candidate" \
+              --stage "$stage" \
+              --compiler "$compiler" \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --execution-config research/candidate-04/nt_liquidity_config.json \
+              --rich-dir "$rich_dir" \
+              --build-start "$build_start" \
+              --build-end "$build_end" \
+              --evaluation-start "$eval_start" \
+              --evaluation-end "$eval_end" \
+              --cache ".cache/candidate-04-v42/$family/$week" \
+              --output "$output" \
+              --min-trades 3 \
+              --min-active-days 2 \
+              --min-win-rate 0.50 \
+              --min-geometric-daily 0.0
+            rc=$?
+            set -e
+            if [[ "$rc" -ne 0 ]]; then
+              printf '%s\t%s\t%s\t%s\n' "$family" "$route" "$week" "$rc" \
+                >> "$RESULT_ROOT/runtime_failures.tsv"
+            fi
+            return 0
+          }
+
+          export -f compiler_for run_one
+          export RESULT_ROOT
+
+          for family in v37 v38 v41; do
+            for route in full continuation reversal; do
+              run_one "$family" "$route" low_activity \
+                2023-08-02 2023-08-10 2023-08-04 2023-08-10 \
+                "$RICH_LOW_ACTIVITY"
+            done
+          done
+
+      - name: Select first-week economically viable routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-04-v42-research-continuation")
+          eligible = []
+          first_week = {}
+          for path in sorted(root.glob("runs/*/*/low_activity/summary.json")):
+              item = json.loads(path.read_text())
+              family = path.parts[-4]
+              route = path.parts[-3]
+              first_week[f"{family}/{route}"] = item
+              viable = (
+                  bool(item.get("risk_pass"))
+                  and float(item.get("total_return") or 0.0) > 0.0
+                  and int(item.get("trades") or 0) >= 3
+                  and int(item.get("active_days") or 0) >= 2
+                  and float(item.get("win_rate") or 0.0) >= 0.50
+              )
+              if viable:
+                  eligible.append({"family": family, "route": route})
+          payload = {"eligible": eligible, "first_week": first_week}
+          (root / "first_week_selection.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n"
+          )
+          (root / "eligible.tsv").write_text(
+              "".join(f"{row['family']}\t{row['route']}\n" for row in eligible)
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Confirm viable routes on two additional BTC weeks
+        shell: bash
+        run: |
+          set -euo pipefail
+          compiler_for() {
+            case "$1" in
+              v37) echo "research/candidate-04/volume_clock_impact_residual_compiler.py" ;;
+              v38) echo "research/candidate-04/volume_clock_imbalance_gap_compiler.py" ;;
+              v41) echo "research/candidate-04/depth_conditioned_impact_innovation_compiler.py" ;;
+              *) return 2 ;;
+            esac
+          }
+          run_one() {
+            local family="$1" route="$2" week="$3"
+            local build_start="$4" build_end="$5" eval_start="$6" eval_end="$7" rich_dir="$8"
+            local compiler output rc
+            compiler="$(compiler_for "$family")"
+            output="$RESULT_ROOT/runs/$family/$route/$week"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-04/run_frozen_btc_route.py \
+              --family "$family" \
+              --route "$route" \
+              --candidate "candidate-04-${family}-${route}" \
+              --stage "${week}_${route}" \
+              --compiler "$compiler" \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --execution-config research/candidate-04/nt_liquidity_config.json \
+              --rich-dir "$rich_dir" \
+              --build-start "$build_start" \
+              --build-end "$build_end" \
+              --evaluation-start "$eval_start" \
+              --evaluation-end "$eval_end" \
+              --cache ".cache/candidate-04-v42/$family/$week" \
+              --output "$output" \
+              --min-trades 3 \
+              --min-active-days 2 \
+              --min-win-rate 0.50 \
+              --min-geometric-daily 0.0
+            rc=$?
+            set -e
+            if [[ "$rc" -ne 0 ]]; then
+              printf '%s\t%s\t%s\t%s\n' "$family" "$route" "$week" "$rc" \
+                >> "$RESULT_ROOT/runtime_failures.tsv"
+            fi
+            return 0
+          }
+
+          while IFS=$'\t' read -r family route; do
+            [[ -n "$family" ]] || continue
+            run_one "$family" "$route" normal_basis \
+              2023-12-16 2023-12-24 2023-12-18 2023-12-24 \
+              "$RICH_NORMAL_BASIS"
+            run_one "$family" "$route" stress_a \
+              2024-08-05 2024-08-13 2024-08-07 2024-08-13 \
+              "$RICH_STRESS_A"
+          done < "$RESULT_ROOT/eligible.tsv"
+
+      - name: Aggregate evidence and distinguish implementation from logic failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-04-v42-research-continuation")
+          summaries = {}
+          for path in sorted(root.glob("runs/*/*/*/summary.json")):
+              family, route, week = path.parts[-4], path.parts[-3], path.parts[-2]
+              summaries[f"{family}/{route}/{week}"] = json.loads(path.read_text())
+
+          failures = []
+          failure_path = root / "runtime_failures.tsv"
+          if failure_path.exists():
+              for line in failure_path.read_text().splitlines():
+                  if not line.strip():
+                      continue
+                  family, route, week, rc = line.split("\t")
+                  failures.append(
+                      {
+                          "family": family,
+                          "route": route,
+                          "week": week,
+                          "return_code": int(rc),
+                      }
+                  )
+
+          weeks = ("low_activity", "normal_basis", "stress_a")
+          aggregates = {}
+          for family in ("v37", "v38", "v41"):
+              for route in ("full", "continuation", "reversal"):
+                  records = [
+                      summaries.get(f"{family}/{route}/{week}")
+                      for week in weeks
+                  ]
+                  if any(record is None for record in records):
+                      continue
+                  returns = [float(record.get("total_return") or 0.0) for record in records]
+                  compounded = math.prod(1.0 + value for value in returns) - 1.0
+                  trades = sum(int(record.get("trades") or 0) for record in records)
+                  wins = sum(int(record.get("wins") or 0) for record in records)
+                  active_days = sum(int(record.get("active_days") or 0) for record in records)
+                  positive_weeks = sum(value > 0.0 for value in returns)
+                  risk_pass = all(bool(record.get("risk_pass")) for record in records)
+                  geometric = (
+                      (1.0 + compounded) ** (1.0 / 21.0) - 1.0
+                      if 1.0 + compounded > 0.0
+                      else -1.0
+                  )
+                  development_survivor = (
+                      risk_pass
+                      and compounded > 0.0
+                      and trades >= 9
+                      and active_days >= 6
+                      and positive_weeks >= 2
+                      and (wins / trades if trades else 0.0) >= 0.50
+                  )
+                  target_rate_reached = (
+                      development_survivor and geometric >= 0.01
+                  )
+                  aggregates[f"{family}/{route}"] = {
+                      "calendar_days": 21,
+                      "weekly_returns": dict(zip(weeks, returns)),
+                      "positive_weeks": positive_weeks,
+                      "compounded_return": compounded,
+                      "geometric_daily_growth": geometric,
+                      "trades": trades,
+                      "wins": wins,
+                      "win_rate": wins / trades if trades else 0.0,
+                      "active_days": active_days,
+                      "risk_pass": risk_pass,
+                      "development_survivor": development_survivor,
+                      "target_rate_reached": target_rate_reached,
+                  }
+
+          classifications = {}
+          for family in ("v37", "v38", "v41"):
+              family_failures = [
+                  item for item in failures if item["family"] == family
+              ]
+              first = {
+                  route: summaries.get(f"{family}/{route}/low_activity")
+                  for route in ("full", "continuation", "reversal")
+              }
+              first_viable = [
+                  route
+                  for route, record in first.items()
+                  if record is not None
+                  and bool(record.get("risk_pass"))
+                  and float(record.get("total_return") or 0.0) > 0.0
+                  and int(record.get("trades") or 0) >= 3
+                  and int(record.get("active_days") or 0) >= 2
+                  and float(record.get("win_rate") or 0.0) >= 0.50
+              ]
+              if family_failures:
+                  classification = "implementation_failure_requires_same_week_rerun"
+              elif not first_viable:
+                  classification = "logic_failure_no_first_week_economic_route"
+              elif "full" not in first_viable:
+                  classification = "branch_interference_full_failed_but_ablation_survived"
+              elif any(
+                  value.get("development_survivor")
+                  for key, value in aggregates.items()
+                  if key.startswith(family + "/")
+              ):
+                  classification = "multiweek_development_survivor"
+              else:
+                  classification = "first_week_survivor_failed_confirmation"
+              classifications[family] = {
+                  "classification": classification,
+                  "first_week_viable_routes": first_viable,
+                  "runtime_failures": family_failures,
+              }
+
+          survivors = [
+              key for key, value in aggregates.items()
+              if value["development_survivor"]
+          ]
+          target_routes = [
+              key for key, value in aggregates.items()
+              if value["target_rate_reached"]
+          ]
+          if failures:
+              decision = "repair_implementation_and_rerun_identical_week"
+          elif target_routes:
+              decision = "freeze_route_and_open_long_plus_integrated_four_asset_validation"
+          elif survivors:
+              decision = "extend_survivors_without_return_target_parameter_tuning"
+          else:
+              decision = "discard_failed_logic_and_use_diagnostics_for_next_independent_candidate"
+
+          evidence = {
+              "candidate_family": "candidate-04-v42-research-continuation",
+              "source_commit_before_repair": os.environ["V42_SOURCE_COMMIT"],
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "execution_contract": {
+                  "risk_fraction": 0.03,
+                  "current_nav_sizing": True,
+                  "external_liquidity_target_only": True,
+                  "measured_move_projection_disabled": True,
+                  "single_instrument_first_stage": "BTCUSDT",
+                  "fees_slippage_and_fills_owned_by_nautilus": True,
+              },
+              "screening_contract": {
+                  "first_week_does_not_require_one_percent_daily": True,
+                  "first_week_minimum": {
+                      "positive_post_cost_return": True,
+                      "trades": 3,
+                      "active_days": 2,
+                      "win_rate": 0.50,
+                      "risk_pass": True,
+                  },
+                  "project_rate_target_assessed_on_aggregate_calendar_days": True,
+              },
+              "summaries": summaries,
+              "runtime_failures": failures,
+              "aggregates": aggregates,
+              "classifications": classifications,
+              "development_survivors": survivors,
+              "development_target_rate_routes": target_routes,
+              "project_target_reached": False,
+              "final_validation_completed": False,
+              "decision": decision,
+          }
+          target = Path(
+              "research/candidate-04/evidence-v42-research-continuation.json"
+          )
+          target.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          (root / "research_decision.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          markdown = [
+              "# Candidate 04 V42 research decision",
+              "",
+              f"- Decision: `{decision}`",
+              f"- Runtime implementation failures: {len(failures)}",
+              f"- Multiweek survivors: {', '.join(survivors) if survivors else 'none'}",
+              f"- 1% aggregate-rate routes: {', '.join(target_routes) if target_routes else 'none'}",
+              "- Project target reached: **no** (long and integrated four-asset validation remain required)",
+              "",
+              "## Candidate classifications",
+              "",
+          ]
+          for family, item in classifications.items():
+              markdown.append(
+                  f"- **{family}**: `{item['classification']}`; "
+                  f"first-week viable routes={item['first_week_viable_routes']}"
+              )
+          markdown.extend(["", "## Three-week aggregates", ""])
+          for key, item in sorted(aggregates.items()):
+              markdown.append(
+                  f"- **{key}**: return={item['compounded_return']:.6f}, "
+                  f"daily_g={item['geometric_daily_growth']:.6f}, "
+                  f"trades={item['trades']}, win_rate={item['win_rate']:.3f}, "
+                  f"positive_weeks={item['positive_weeks']}/3, "
+                  f"survivor={item['development_survivor']}"
+              )
+          Path("research/candidate-04/V42_RESEARCH_DECISION.md").write_text(
+              "\n".join(markdown) + "\n"
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v42-research-continuation-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v42-research-continuation
+            research/candidate-04/evidence-v42-research-continuation.json
+            research/candidate-04/V42_RESEARCH_DECISION.md
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Commit repaired implementation and reproducible evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/volume_clock_impact_residual_compiler.py \
+            research/candidate-04/volume_clock_imbalance_gap_compiler.py \
+            research/candidate-04/filter_candidate_signals.py \
+            research/candidate-04/run_frozen_btc_route.py \
+            research/candidate-04/evidence-v42-research-continuation.json \
+            research/candidate-04/V42_RESEARCH_DECISION.md \
+            2>/dev/null || true
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "record V42 causal research evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
