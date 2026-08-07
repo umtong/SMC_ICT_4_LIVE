@@ -8,9 +8,7 @@ from pathlib import Path
 
 
 ROUTES: dict[str, dict[str, set[str] | None]] = {
-    "v33": {
-        "full": None,
-    },
+    "v33": {"full": None},
     "v34": {
         "full": None,
         "continuation": {"INFORMED_INVENTORY_PULLBACK_CONTINUATION"},
@@ -65,14 +63,21 @@ ROUTES: dict[str, dict[str, set[str] | None]] = {
             "EXTERNAL_POOL_NEGATIVE_INNOVATION_LIQUIDATION_REVERSAL",
         },
     },
+    "v43": {
+        "full": None,
+        "continuation": {
+            "PARENT_SESSION_BOUNDARY_ACCEPTANCE_CONTINUATION",
+        },
+        "reversal": {
+            "PARENT_SESSION_TRAPPED_INVENTORY_LIQUIDITY_REVERSAL",
+            "PARENT_SESSION_LIQUIDATION_EXHAUSTION_REVERSAL",
+            "PARENT_SESSION_PASSIVE_ABSORPTION_REVERSAL",
+        },
+    },
 }
 
 
-def filter_rows(
-    rows: list[dict],
-    family: str,
-    route: str,
-) -> list[dict]:
+def filter_rows(rows: list[dict], family: str, route: str) -> list[dict]:
     try:
         scenarios = ROUTES[family][route]
     except KeyError as exc:
@@ -91,9 +96,7 @@ def main() -> None:
     args = parser.parse_args()
 
     rows = json.loads(args.input.read_text(encoding="utf-8"))
-    if not isinstance(rows, list) or not all(
-        isinstance(row, dict) for row in rows
-    ):
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         raise SystemExit("signals input must be a list of objects")
     selected = filter_rows(rows, args.family, args.route)
     args.output_dir.mkdir(parents=True, exist_ok=True)
