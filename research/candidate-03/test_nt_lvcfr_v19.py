@@ -50,8 +50,8 @@ class V19ExecutedFlowTests(unittest.TestCase):
         first.add(100.0, 1.0, False)
         first.add(101.0, 1.0, False)
         second = TradeBlock()
-        second.add(101.0, 1.0, False)
-        second.add(102.0, 1.0, False)
+        second.add(103.0, 1.0, False)
+        second.add(104.0, 1.0, False)
         features = cumulative_features(
             [first, second],
             direction=1,
