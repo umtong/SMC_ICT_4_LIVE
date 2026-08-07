@@ -1,0 +1,141 @@
+name: candidate-05-v47-promotion
+
+on:
+  workflow_run:
+    workflows: ["candidate-05-v47-relative-value"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v47-promotion
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v47-promotion
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+          fetch-depth: 0
+      - name: Resolve frozen promotion
+        id: resolve
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          p=Path('research/candidate-05/V47_RESULT.json'); d=json.loads(p.read_text()) if p.exists() else {}; passed=d.get('three_week_pass') is True
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write(f'passed={str(passed).lower()}\n')
+          print(json.dumps(d,indent=2,sort_keys=True))
+          PY
+      - name: Stop without a frozen winner
+        if: steps.resolve.outputs.passed != 'true'
+        run: echo 'v47 did not pass all frozen weeks.'
+      - name: Verify and inject v47 into existing shared runner
+        if: steps.resolve.outputs.passed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest research/candidate-05/tests/test_strategy_v47_contract.py -v
+          cat > research/candidate-05/strategy_v36_cross_asset_repricing_gate.py <<'PY'
+          from strategy_v47_relative_value import RelativeValueDislocationStrategy
+          CrossAssetRepricingGateStrategy = RelativeValueDislocationStrategy
+          CandidateStrategy = RelativeValueDislocationStrategy
+          StrategyClass = RelativeValueDislocationStrategy
+          PY
+      - name: Run shared continuous 30d
+        if: steps.resolve.outputs.passed == 'true'
+        id: d30
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_workflow_adapter_v2.py --workflow .github/workflows/candidate-05-v36-shared-screen.yml --output-root "$ROOT" --label continuous-30d --warmup 2024-02-28 --start 2024-03-01 --end 2024-03-30
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          root=Path('artifacts/candidate-05-v47-promotion/continuous-30d'); pairs=[]
+          for p in root.rglob('strategy_diagnostics.json'):
+              try:d=json.loads(p.read_text())
+              except:continue
+              if 'v47_' in json.dumps(d):
+                  metrics=list(p.parent.rglob('metrics.json')) or list(root.rglob('metrics.json'))
+                  pairs.extend((m,d) for m in metrics)
+          if not pairs: pairs=[(p,{}) for p in root.rglob('metrics.json')]
+          if not pairs: raise RuntimeError('no 30d shared metrics')
+          p,diag=pairs[-1]; d=json.loads(p.read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(v('trades','trade_count',default=0) or 0); wins=int(v('wins','winning_trades',default=0) or 0); active=int(v('active_days','trading_days',default=0) or 0); integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1 and int(d.get('max_global_slot_owners',d.get('max_combined_entry_and_position',1)) or 0)<=1; passed=integrity and growth>=.01 and trades>=20 and wins>=12 and active>=15
+          out={'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(v('max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'pass':passed,'diagnostics':diag}; Path('artifacts/candidate-05-v47-promotion/30d-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True)); print(json.dumps(out,indent=2,sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as stream: stream.write(f'passed={str(passed).lower()}\n')
+          PY
+      - name: Run shared continuous 91d
+        if: steps.d30.outputs.passed == 'true'
+        id: d91
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_workflow_adapter_v2.py --workflow .github/workflows/candidate-05-v36-shared-screen.yml --output-root "$ROOT" --label continuous-91d --warmup 2024-02-28 --start 2024-03-01 --end 2024-05-30
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          root=Path('artifacts/candidate-05-v47-promotion/continuous-91d'); pairs=[]
+          for p in root.rglob('strategy_diagnostics.json'):
+              try:d=json.loads(p.read_text())
+              except:continue
+              if 'v47_' in json.dumps(d):
+                  metrics=list(p.parent.rglob('metrics.json')) or list(root.rglob('metrics.json')); pairs.extend((m,d) for m in metrics)
+          if not pairs:pairs=[(p,{}) for p in root.rglob('metrics.json')]
+          if not pairs:raise RuntimeError('no 91d shared metrics')
+          p,diag=pairs[-1]; d=json.loads(p.read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(v('trades','trade_count',default=0) or 0); wins=int(v('wins','winning_trades',default=0) or 0); active=int(v('active_days','trading_days',default=0) or 0); integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1 and int(d.get('max_global_slot_owners',d.get('max_combined_entry_and_position',1)) or 0)<=1; passed=integrity and growth>=.01 and trades>=60 and wins>=36 and active>=45
+          out={'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(v('max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'pass':passed,'diagnostics':diag}; Path('artifacts/candidate-05-v47-promotion/91d-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True)); print(json.dumps(out,indent=2,sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as stream: stream.write(f'passed={str(passed).lower()}\n')
+          PY
+      - name: Commit promotion result
+        if: always() && steps.resolve.outputs.passed == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          root=Path('artifacts/candidate-05-v47-promotion')
+          def load(name):
+              p=root/name
+              return json.loads(p.read_text()) if p.exists() else None
+          d30=load('30d-assessment.json'); d91=load('91d-assessment.json'); decision='PROMOTE_TO_912D' if d91 and d91.get('pass') else 'DISCARD_CONTINUOUS_91D' if d30 and d30.get('pass') else 'DISCARD_CONTINUOUS_30D'; out={'schema':'candidate-05-v47-promotion-v1','continuous_30d':d30,'continuous_91d':d91,'decision':decision}; Path('research/candidate-05/V47_PROMOTION_RESULT.json').write_text(json.dumps(out,indent=2,sort_keys=True)); print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V47_PROMOTION_RESULT.json
+          git commit -m "candidate-05: record v47 continuous promotion [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.resolve.outputs.passed == 'true'
+        with:
+          name: candidate-05-v47-promotion-${{ github.sha }}
+          path: artifacts/candidate-05-v47-promotion/**
+          if-no-files-found: warn
+          retention-days: 90
