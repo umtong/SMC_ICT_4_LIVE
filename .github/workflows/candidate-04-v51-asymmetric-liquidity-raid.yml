@@ -1,0 +1,393 @@
+name: candidate-04-v51-asymmetric-liquidity-raid-first-week
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/v51_trigger.json"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-04-v51-asymmetric-liquidity-raid-first-week
+  cancel-in-progress: false
+
+jobs:
+  features:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      BUILD_START: 2023-02-25
+      BUILD_END: 2023-03-06
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify locked source before data access
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          test "$(python - <<'PY'
+          import json
+          from pathlib import Path
+          value=json.loads(Path('research/candidate-04/freeze-v51.json').read_text())
+          print(str(value['locked_before_market_data']).lower())
+          PY
+          )" = true
+          python -m py_compile \
+            research/candidate-04/cross_market_smt_liquidity_reversal_compiler.py \
+            research/candidate-04/tests/test_cross_market_smt_liquidity_reversal_compiler.py
+
+      - name: Build completed-data rich stream
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          root="artifacts/candidate-04-v51-rich/${{ matrix.symbol }}"
+          mkdir -p "$root"
+          python research/candidate-04/rich_features_for_symbol.py \
+            --symbol "${{ matrix.symbol }}" \
+            --start "$BUILD_START" \
+            --end "$BUILD_END" \
+            --cache ".cache/candidate-04-v51-rich/${{ matrix.symbol }}" \
+            --output "$root/rich"
+          test -s "$root/rich/data_manifest.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-v51-rich-${{ matrix.symbol }}-${{ github.run_id }}
+          path: artifacts/candidate-04-v51-rich/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 30
+
+  evaluate:
+    needs: features
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      BUILD_START: 2023-02-25
+      BUILD_END: 2023-03-06
+      EVALUATION_START: 2023-02-27
+      EVALUATION_END: 2023-03-06
+      ROOT: artifacts/candidate-04-v51-first-week
+      EVIDENCE: research/candidate-04/evidence-v51-first-week.json
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v51-rich-*-${{ github.run_id }}
+          path: restored-rich
+          merge-multiple: false
+
+      - name: Verify causal and Nautilus contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_cross_market_smt_liquidity_reversal_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_conditional_adverse_fill_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_global_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_multi_asset_risk_evidence.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_trusted_execution_factory.py' -v
+
+      - name: Normalize four observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT/rich" "$ROOT/config"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          base=json.loads(Path('research/candidate-04/inventory_transfer_config.json').read_text())
+          root=Path(os.environ['ROOT'])/'config'
+          for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'):
+              value=dict(base); value['symbol']=symbol
+              (root/f'{symbol}.json').write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
+          PY
+          for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+            source="$(find restored-rich -type f -path "*${symbol}*/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+            test -n "$source"
+            ln -s "$(realpath "$source")" "$ROOT/rich/$symbol"
+          done
+
+      - name: Compile and execute frozen baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          export C04_BUILD_START="$BUILD_START" C04_BUILD_END="$BUILD_END"
+          export C04_EVALUATION_START="$EVALUATION_START" C04_EVALUATION_END="$EVALUATION_END"
+          mkdir -p "$ROOT/baseline/all_signals" "$ROOT/baseline/signals"
+          python research/candidate-04/cross_market_smt_liquidity_reversal_compiler.py \
+            --rich-root "$ROOT/rich" \
+            --config-root "$ROOT/config" \
+            --kline-root .cache/candidate-04-v51/compiler-klines \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --output "$ROOT/baseline/all_signals" \
+            --minimum-peer-rejections 2 \
+            > "$ROOT/baseline/compiler.log"
+          python research/candidate-04/causal_target_registry_enricher.py \
+            --signals "$ROOT/baseline/all_signals/BTCUSDT/signals.json" \
+            --base-config "$ROOT/config/BTCUSDT.json" \
+            --rich-dir "$ROOT/rich/BTCUSDT" \
+            --kline-dir .cache/candidate-04-v51/target-klines/BTCUSDT \
+            --build-start "$BUILD_START" \
+            --build-end "$BUILD_END" \
+            --output-dir "$ROOT/baseline/signals/BTCUSDT" \
+            --download-klines \
+            --cost-rate 0.00075 \
+            --minimum-net-r 1.20 \
+            > "$ROOT/baseline/target.log"
+          for symbol in ETHUSDT SOLUSDT XRPUSDT; do
+            mkdir -p "$ROOT/baseline/signals/$symbol"
+            cp "$ROOT/baseline/all_signals/$symbol/signals.json" "$ROOT/baseline/signals/$symbol/signals.json"
+            cp "$ROOT/baseline/all_signals/$symbol/summary.json" "$ROOT/baseline/signals/$symbol/summary.json"
+          done
+          set +e
+          python research/candidate-04/nt_multi_asset_rich_backtest_v44.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --signals-root "$ROOT/baseline/signals" \
+            --build-start "$BUILD_START" \
+            --build-end "$BUILD_END" \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --cache .cache/candidate-04-v51/nautilus-baseline \
+            --output "$ROOT/baseline/nautilus" \
+            --min-trades 5 \
+            --min-active-days 3 \
+            --min-win-rate 0.60 \
+            --min-geometric-daily 0.01 \
+            > "$ROOT/baseline/nautilus.log" 2>&1
+          code=$?
+          set -e
+          test "$code" -eq 0 -o "$code" -eq 2
+          echo "$code" > "$ROOT/baseline/nautilus_exit_code.txt"
+          test -s "$ROOT/baseline/nautilus/metrics.json"
+          test -s "$ROOT/baseline/nautilus/risk_evidence.json"
+
+      - name: Decide whether the precommitted ablation is required
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          m=json.loads((root/'baseline/nautilus/metrics.json').read_text())
+          r=json.loads((root/'baseline/nautilus/risk_evidence.json').read_text())
+          implementation=bool(m.get('global_entry_pass') and m.get('risk_pass') and r.get('risk_pass'))
+          growth=float(m.get('geometric_daily_growth') or m.get('geometric_daily_growth_after_cost') or 0)
+          passed=bool(
+              implementation
+              and int(m.get('trades') or 0)>=5
+              and int(m.get('active_days') or 0)>=3
+              and float(m.get('win_rate') or 0)>=0.60
+              and growth>=0.01
+              and abs(float(m.get('max_drawdown') or m.get('maximum_drawdown') or 0))<=0.20
+          )
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write(f"BASELINE_IMPLEMENTATION_PASS={str(implementation).lower()}\n")
+              f.write(f"BASELINE_PASS={str(passed).lower()}\n")
+              f.write(f"RUN_ABLATION={str(implementation and not passed).lower()}\n")
+          print(json.dumps({'implementation_pass':implementation,'baseline_pass':passed},indent=2))
+          PY
+
+      - name: Run the single precommitted peer-asymmetry ablation
+        if: env.RUN_ABLATION == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          export C04_BUILD_START="$BUILD_START" C04_BUILD_END="$BUILD_END"
+          export C04_EVALUATION_START="$EVALUATION_START" C04_EVALUATION_END="$EVALUATION_END"
+          mkdir -p "$ROOT/ablation/all_signals" "$ROOT/ablation/signals"
+          python research/candidate-04/cross_market_smt_liquidity_reversal_compiler.py \
+            --rich-root "$ROOT/rich" \
+            --config-root "$ROOT/config" \
+            --kline-root .cache/candidate-04-v51/compiler-klines \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --output "$ROOT/ablation/all_signals" \
+            --minimum-peer-rejections 0 \
+            > "$ROOT/ablation/compiler.log"
+          python research/candidate-04/causal_target_registry_enricher.py \
+            --signals "$ROOT/ablation/all_signals/BTCUSDT/signals.json" \
+            --base-config "$ROOT/config/BTCUSDT.json" \
+            --rich-dir "$ROOT/rich/BTCUSDT" \
+            --kline-dir .cache/candidate-04-v51/target-klines/BTCUSDT \
+            --build-start "$BUILD_START" \
+            --build-end "$BUILD_END" \
+            --output-dir "$ROOT/ablation/signals/BTCUSDT" \
+            --download-klines \
+            --cost-rate 0.00075 \
+            --minimum-net-r 1.20 \
+            > "$ROOT/ablation/target.log"
+          for symbol in ETHUSDT SOLUSDT XRPUSDT; do
+            mkdir -p "$ROOT/ablation/signals/$symbol"
+            cp "$ROOT/ablation/all_signals/$symbol/signals.json" "$ROOT/ablation/signals/$symbol/signals.json"
+            cp "$ROOT/ablation/all_signals/$symbol/summary.json" "$ROOT/ablation/signals/$symbol/summary.json"
+          done
+          set +e
+          python research/candidate-04/nt_multi_asset_rich_backtest_v44.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --signals-root "$ROOT/ablation/signals" \
+            --build-start "$BUILD_START" \
+            --build-end "$BUILD_END" \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --cache .cache/candidate-04-v51/nautilus-ablation \
+            --output "$ROOT/ablation/nautilus" \
+            --min-trades 5 \
+            --min-active-days 3 \
+            --min-win-rate 0.60 \
+            --min-geometric-daily 0.01 \
+            > "$ROOT/ablation/nautilus.log" 2>&1
+          code=$?
+          set -e
+          test "$code" -eq 0 -o "$code" -eq 2
+          echo "$code" > "$ROOT/ablation/nautilus_exit_code.txt"
+          test -s "$ROOT/ablation/nautilus/metrics.json"
+
+      - name: Record exact V51 decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          def load(path):
+              return json.loads(path.read_text()) if path.exists() else None
+          baseline_summary=load(root/'baseline/all_signals/summary.json')
+          baseline_metrics=load(root/'baseline/nautilus/metrics.json')
+          baseline_risk=load(root/'baseline/nautilus/risk_evidence.json')
+          ablation_summary=load(root/'ablation/all_signals/summary.json')
+          ablation_metrics=load(root/'ablation/nautilus/metrics.json')
+          implementation=bool(
+              baseline_metrics and baseline_risk
+              and baseline_metrics.get('global_entry_pass')
+              and baseline_metrics.get('risk_pass')
+              and baseline_risk.get('risk_pass')
+          )
+          growth=float((baseline_metrics or {}).get('geometric_daily_growth') or (baseline_metrics or {}).get('geometric_daily_growth_after_cost') or 0)
+          baseline_pass=bool(
+              implementation
+              and int(baseline_metrics.get('trades') or 0)>=5
+              and int(baseline_metrics.get('active_days') or 0)>=3
+              and float(baseline_metrics.get('win_rate') or 0)>=0.60
+              and growth>=0.01
+              and abs(float(baseline_metrics.get('max_drawdown') or baseline_metrics.get('maximum_drawdown') or 0))<=0.20
+          )
+          if not implementation:
+              decision='IMPLEMENTATION_FAILURE_FIX_AND_RERUN_IDENTICAL_WEEK'
+              failure='implementation'
+          elif baseline_pass:
+              decision='FREEZE_V51_AND_OPEN_PRESELECTED_SECOND_WEEK'
+              failure=None
+          else:
+              decision='DISCARD_V51_AFTER_SINGLE_PRECOMMITTED_ABLATION'
+              failure='logic_or_frequency'
+          evidence={
+              'candidate':'candidate-04-v51-asymmetric-liquidity-raid-reversal',
+              'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+              'engine':'NautilusTrader 1.230.0 BacktestNode',
+              'evaluation':{
+                  'build_start':os.environ['BUILD_START'],
+                  'build_end':os.environ['BUILD_END'],
+                  'evaluation_start':os.environ['EVALUATION_START'],
+                  'evaluation_end':os.environ['EVALUATION_END'],
+              },
+              'baseline_compiler':baseline_summary,
+              'baseline_metrics':baseline_metrics,
+              'baseline_risk_evidence':baseline_risk,
+              'single_precommitted_ablation':{
+                  'removed_variable':'cross_market_peer_rejection_requirement',
+                  'compiler':ablation_summary,
+                  'metrics':ablation_metrics,
+              } if ablation_summary or ablation_metrics else None,
+              'implementation_pass':implementation,
+              'first_week_pass':baseline_pass,
+              'failure_classification':failure,
+              'decision':decision,
+              'second_week_allowed':baseline_pass,
+              'third_week_allowed':False,
+              'long_evaluation_allowed':False,
+              'project_target_reached':False,
+              'performance_recalculated_outside_nautilus':False,
+          }
+          Path(os.environ['EVIDENCE']).write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          (root/'decision.json').write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(evidence,indent=2,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v51-first-week-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v51-first-week
+            research/candidate-04/evidence-v51-first-week.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Persist V51 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE" 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research(candidate-04): record V51 first-week evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
