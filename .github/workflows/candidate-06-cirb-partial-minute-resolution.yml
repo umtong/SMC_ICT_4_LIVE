@@ -1,0 +1,361 @@
+name: Candidate 06 CIRB Causal Partial-Minute Resolution
+
+on:
+  push:
+    branches: [research/candidate-06]
+    paths:
+      - ".github/workflows/candidate-06-cirb-partial-minute-resolution.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-cirb-partial-minute-resolution
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  corrected-resolution:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply causal partial-minute and entry-family freeze correction
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-06/cirb_execution_resolution.py")
+          text = path.read_text(encoding="utf-8")
+          marker = '"partial_minute_aggregation": True'
+          if marker in text:
+              print("PARTIAL_MINUTE_CORRECTION_ALREADY_PRESENT")
+              raise SystemExit(0)
+
+          old = '''    for parent in parents:
+                  branch = parent.crowding_branch
+          '''
+          new = '''    eligible_parents = tuple(
+                  parent for parent in parents if parent.baseline_entry is not None
+              )
+
+              for parent in eligible_parents:
+                  assert parent.baseline_entry is not None
+                  branch = parent.crowding_branch
+                  expected_reason = str(parent.baseline_entry["reason_code"])
+                  expected_family = {
+                      "CROWD_DISCHARGE_REVERSAL_ENTRY_ARMED": "CIRB_D_R",
+                      "CROWD_DISCHARGE_CONTINUATION_ENTRY_ARMED": "CIRB_D_C",
+                      "TRAPPED_COUNTER_INVENTORY_CONTINUATION_ENTRY_ARMED": "CIRB_T_C",
+                  }.get(expected_reason)
+                  if expected_family is None:
+                      count("BASELINE_ENTRY_FAMILY_UNSUPPORTED")
+                      continue
+          '''
+          if old not in text:
+              raise SystemExit("ELIGIBLE_PARENT_PATCH_CONTEXT_MISSING")
+          text = text.replace(old, new, 1)
+
+          old = '''        extreme = parent.event_low if parent.side == "SELL" else parent.event_high
+                  previous_metric = metrics.get(parent.observed_ts_ns)
+                  signalled = False
+                  terminal_recorded = False
+                  for timestamp, row in subset.iterrows():
+                      ts_ns = int(timestamp.value)
+                      close = float(row["close"])
+                      prior_extreme = extreme
+                      extreme = min(extreme, float(row["low"])) if parent.side == "SELL" else max(
+                          extreme, float(row["high"])
+                      )
+                      flow = _flow_ratio(row)
+                      location = _close_location(row)
+                      metric = metrics.get(ts_ns)
+                      signal: ScenarioSignal | None = None
+                      signal_branch: str | None = None
+          '''
+          new = '''        extreme = parent.event_low if parent.side == "SELL" else parent.event_high
+                  previous_metric = metrics.get(parent.observed_ts_ns)
+                  signalled = False
+                  terminal_recorded = False
+                  partial_minute_index: int | None = None
+                  partial: dict[str, float] | None = None
+                  for timestamp, row in subset.iterrows():
+                      ts_ns = int(timestamp.value)
+                      response_minute_index = (
+                          ts_ns - parent.observed_ts_ns - 1
+                      ) // NS_PER_MINUTE
+                      if partial_minute_index != response_minute_index:
+                          partial_minute_index = response_minute_index
+                          partial = {
+                              "open": float(row["open"]),
+                              "high": float(row["high"]),
+                              "low": float(row["low"]),
+                              "close": float(row["close"]),
+                              "volume": float(row["volume"]),
+                              "taker_buy_volume": float(row["taker_buy_volume"]),
+                          }
+                      else:
+                          assert partial is not None
+                          partial["high"] = max(partial["high"], float(row["high"]))
+                          partial["low"] = min(partial["low"], float(row["low"]))
+                          partial["close"] = float(row["close"])
+                          partial["volume"] += float(row["volume"])
+                          partial["taker_buy_volume"] += float(row["taker_buy_volume"])
+                      assert partial is not None
+                      close = partial["close"]
+                      prior_extreme = extreme
+                      extreme = min(extreme, float(row["low"])) if parent.side == "SELL" else max(
+                          extreme, float(row["high"])
+                      )
+                      flow = _flow_ratio(partial)
+                      location = _close_location(partial)
+                      metric = metrics.get(ts_ns)
+                      signal: ScenarioSignal | None = None
+                      signal_branch: str | None = None
+          '''
+          if old not in text:
+              raise SystemExit("PARTIAL_MINUTE_PATCH_CONTEXT_MISSING")
+          text = text.replace(old, new, 1)
+
+          text = text.replace(
+              '''            if branch == "DISCHARGE":
+                              reversal = (
+              ''',
+              '''            if branch == "DISCHARGE":
+                              reversal = expected_family == "CIRB_D_R" and (
+              ''',
+              1,
+          )
+          text = text.replace(
+              '''                elif metric is not None and previous_metric is not None and previous_metric.open_interest > 0.0:
+              ''',
+              '''                elif (
+                                  expected_family == "CIRB_D_C"
+                                  and metric is not None
+                                  and previous_metric is not None
+                                  and previous_metric.open_interest > 0.0
+                              ):
+              ''',
+              1,
+          )
+          text = text.replace(
+              '''            else:
+                              invalid = (
+              ''',
+              '''            else:
+                              if expected_family != "CIRB_T_C":
+                                  count("BASELINE_ENTRY_FAMILY_MISMATCH")
+                                  terminal_recorded = True
+                                  break
+                              invalid = (
+              ''',
+              1,
+          )
+          text = text.replace(
+              '"response_resolution": "5S_COMPLETED_BAR"',
+              '"response_resolution": "CAUSAL_PARTIAL_MINUTE_FROM_COMPLETED_5S"',
+          )
+          text = text.replace(
+              '''            if signal is not None and signal_branch is not None:
+              ''',
+              '''            if signal is not None and signal.family != expected_family:
+                              raise RuntimeError(
+                                  f"five-second family drift: {signal.family} != {expected_family}"
+                              )
+                          if signal is not None and signal_branch is not None:
+              ''',
+              1,
+          )
+          old = '''    diagnostics = {
+                  "parent_signals_armed": len(parents),
+                  "child_5s_candidates": len(plans),
+                  "baseline_rr_eroded_parent_count": sum(parent.baseline_rr_eroded for parent in parents),
+          '''
+          new = '''    diagnostics = {
+                  "parent_events_observed": len(parents),
+                  "parent_signals_armed": len(eligible_parents),
+                  "child_5s_candidates": len(plans),
+                  "baseline_rr_eroded_parent_count": sum(
+                      parent.baseline_rr_eroded for parent in eligible_parents
+                  ),
+                  "partial_minute_aggregation": True,
+                  "entry_family_frozen": True,
+          '''
+          if old not in text:
+              raise SystemExit("DIAGNOSTIC_PATCH_CONTEXT_MISSING")
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+
+          runner = Path("research/candidate-06/run_cirb_execution_resolution_week.py")
+          runner_text = runner.read_text(encoding="utf-8").replace(
+              '"6.1.0-resolution-ablation"',
+              '"6.1.1-causal-partial-minute"',
+          )
+          runner.write_text(runner_text, encoding="utf-8")
+
+          doc = Path("research/candidate-06/CIRB_EXECUTION_RESOLUTION.md")
+          doc.write_text(
+              doc.read_text(encoding="utf-8")
+              + "\n## Causal partial-minute correction\n\n"
+              + "The original five-second draft incorrectly applied one-minute response "
+              + "thresholds to isolated five-second bars and scored every shock parent. "
+              + "The corrected experiment scores only frozen baseline-entry parents and "
+              + "reconstructs each still-forming response minute from completed five-second "
+              + "OHLCV and aggressor flow. Thresholds, entry family, direction, target family, "
+              + "risk, fees and invalidation remain unchanged.\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-06
+          key: candidate-06-cirb-5s-${{ runner.os }}-v1
+          restore-keys: |
+            candidate-06-cirb-5s-
+            candidate-06-
+
+      - name: Verify environment, contracts and synthetic causal aggregation
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          assert version("nautilus_trader") == "1.230.0"
+          PY
+          python -m py_compile \
+            research/candidate-06/cirb_execution_resolution.py \
+            research/candidate-06/run_cirb_execution_resolution_week.py
+          python research/candidate-06/test_cirb_execution_resolution.py
+          python research/candidate-06/test_crowding_inventory_response_engine.py
+          python research/candidate-06/test_signal_submission_timing_contract.py
+          python - <<'PY'
+          import pandas as pd
+          from cirb_execution_resolution import FrozenParent, build_child_plans
+
+          t = 1_700_000_000_000_000_000
+          base = dict(
+              event_drop=0.01, drop_threshold=0.005, event_open=101.0,
+              event_high=102.0, event_low=99.0, event_close=101.0,
+              event_mid=100.0, event_range=3.0, atr=1.0, slow_mid=98.0,
+              upper_fast=103.0, lower_fast=97.0, prior_open_interest=100.0,
+              event_open_interest=99.0, prior_all_account_ratio=1.0,
+              event_all_account_ratio=1.01, shock_sign=1.0,
+          )
+          parent = FrozenParent(
+              scenario_id="CIRB-SYNTHETIC-ENTRY", observed_ts_ns=t,
+              side="BUY", crowding_branch="DISCHARGE",
+              baseline_entry={"reason_code": "CROWD_DISCHARGE_REVERSAL_ENTRY_ARMED", "reference_price": 99.7},
+              baseline_rr_eroded=True, **base,
+          )
+          unused = FrozenParent(
+              scenario_id="CIRB-SYNTHETIC-NONENTRY", observed_ts_ns=t,
+              side="BUY", crowding_branch="DISCHARGE",
+              baseline_entry=None, baseline_rr_eroded=False, **base,
+          )
+          idx = pd.to_datetime([t + 5_000_000_000, t + 10_000_000_000], unit="ns", utc=True)
+          frame = pd.DataFrame({
+              "open": [101.0, 100.1], "high": [101.0, 100.2],
+              "low": [100.0, 99.5], "close": [100.1, 99.8],
+              "volume": [200.0, 100.0], "taker_buy_volume": [0.0, 100.0],
+              "trades": [10, 10],
+          }, index=idx)
+          plans, diag = build_child_plans(
+              parents=(parent, unused), five_second_frame=frame, metrics={},
+              logic_params={"oidb_response_flow_ratio": 0.05,
+                            "oidb_reclaim_close_location": 0.58,
+                            "minimum_structural_rr": 0.75,
+                            "oidb_stop_buffer_atr": 0.08,
+                            "oidb_extension_atr": 0.05,
+                            "oidb_projection_fraction": 1.0,
+                            "oidb_response_bars": 6,
+                            "oidb_invalidation_observation_bars": 6},
+              enable_discharge=True, enable_counter_inventory=True,
+          )
+          assert len(plans) == 1, (plans, diag)
+          assert plans[0].signal.family == "CIRB_D_R"
+          assert plans[0].signal.observed_ts_ns == t + 10_000_000_000
+          assert diag["parent_events_observed"] == 2
+          assert diag["parent_signals_armed"] == 1
+          assert diag["partial_minute_aggregation"] is True
+          print("CAUSAL_PARTIAL_MINUTE_CONTRACT=PASS")
+          PY
+
+      - name: Run corrected frozen W2-first matrix
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/cirb-execution-resolution
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts/candidate-06
+          python research/candidate-06/run_cirb_execution_resolution_matrix.py \
+            --output artifacts/candidate-06/cirb-execution-resolution \
+            > artifacts/candidate-06-cirb-execution-resolution.stdout \
+            2> artifacts/candidate-06-cirb-execution-resolution.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Preserve corrected source and deterministic evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-06/cirb-execution-resolution
+          code='${{ steps.lab.outputs.exit_code }}'; if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > "$root/workflow_exit_code.txt"
+          cp artifacts/candidate-06-cirb-execution-resolution.stdout "$root/workflow_stdout.txt" || true
+          cp artifacts/candidate-06-cirb-execution-resolution.stderr "$root/workflow_stderr.txt" || true
+          test -s "$root/summary.json"
+          test -s "$root/SUMMARY.md"
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add research/candidate-06/cirb_execution_resolution.py \
+                  research/candidate-06/run_cirb_execution_resolution_week.py \
+                  research/candidate-06/CIRB_EXECUTION_RESOLUTION.md
+          git add -u "$root" || true
+          git add -f "$root/summary.json" "$root/SUMMARY.md" \
+                     "$root/workflow_exit_code.txt" "$root/workflow_stdout.txt" \
+                     "$root/workflow_stderr.txt"
+          find "$root" -type f \( -name 'metrics.json' -o -name 'parent_audit.json' \
+            -o -name 'child_plans.json' -o -name 'run.json' \
+            -o -name '*data_quality.json' -o -name 'futures_metrics_quality.json' \
+            -o -name 'errors.log' \) -print0 | xargs -0 -r git add -f
+          if ! git diff --cached --quiet; then
+            git commit -m "Correct candidate-06 CIRB causal 5S resolution and record verdict [candidate-06 evidence]"
+            git push origin HEAD:research/candidate-06
+          fi
+
+      - name: Upload complete corrected evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-cirb-partial-minute-${{ github.sha }}
+          path: artifacts/candidate-06/cirb-execution-resolution
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce corrected research verdict
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'; if [ -z "$code" ]; then code=1; fi
+          exit "$code"
