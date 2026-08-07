@@ -17,11 +17,7 @@ class SemanticLeadershipTests(unittest.TestCase):
             direction="SHORT",
             sweep_ts_ns=1,
             confirmation_ts_ns=2,
-            peer_returns={
-                "BTCUSDT": -0.004,
-                "ETHUSDT": -0.003,
-                "XRPUSDT": -0.002,
-            },
+            peer_returns={"BTCUSDT": -0.004, "ETHUSDT": -0.003, "XRPUSDT": -0.002},
             directional_returns={
                 "BTCUSDT": -0.01,
                 "ETHUSDT": -0.01,
@@ -39,8 +35,8 @@ class SemanticLeadershipTests(unittest.TestCase):
             confirmation_impulse=2.10,
             trailing_direction_rank=4,
             event_direction_rank=2,
-            event_path_efficiency=0.02,
-            event_standardized_displacement=0.14,
+            event_path_efficiency=0.12,
+            event_standardized_displacement=0.86,
         )
         base.update(updates)
         return LeadershipDecision(**base)
@@ -78,29 +74,27 @@ class SemanticLeadershipTests(unittest.TestCase):
         self.assertFalse(result.approved)
         self.assertEqual(result.reason, "SEMANTIC_FAR_REQUIRES_UNANIMOUS_PEER_RECLAIM")
 
-    def test_aac_accepts_synchronized_candidate_event_leader(self):
-        result = self.classify(
-            self.decision(
-                scenario="AAC",
-                event_direction_rank=1,
-                event_path_efficiency=0.24,
-                event_standardized_displacement=1.27,
-            ),
-        )
+    def test_aac_accepts_own_efficient_nonlaggard_move(self):
+        result = self.classify(self.decision(scenario="AAC", event_direction_rank=3))
         self.assertTrue(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_AAC_SYNCHRONIZED_EVENT_LEADER")
+        self.assertEqual(result.reason, "SEMANTIC_AAC_SYNCHRONIZED_NONLAGGARD")
 
-    def test_aac_rejects_candidate_that_borrows_peer_move(self):
+    def test_aac_rejects_last_mover(self):
+        result = self.classify(self.decision(scenario="AAC", event_direction_rank=4))
+        self.assertFalse(result.approved)
+        self.assertEqual(result.reason, "SEMANTIC_AAC_EVENT_LAGGARD")
+
+    def test_aac_rejects_inefficient_borrowed_peer_move(self):
         result = self.classify(
             self.decision(
                 scenario="AAC",
                 event_direction_rank=2,
-                event_path_efficiency=0.24,
-                event_standardized_displacement=1.27,
+                event_path_efficiency=0.077,
+                event_standardized_displacement=0.67,
             ),
         )
         self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_AAC_CANDIDATE_NOT_EVENT_LEADER")
+        self.assertEqual(result.reason, "SEMANTIC_AAC_INEFFICIENT_EVENT_PATH")
 
     def test_incomplete_snapshot_preserves_fail_closed_reason(self):
         result = self.classify(

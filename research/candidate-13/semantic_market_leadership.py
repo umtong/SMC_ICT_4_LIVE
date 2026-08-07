@@ -1,25 +1,10 @@
-"""Semantic separation of failed auctions and accepted repricing.
+"""Mutually exclusive cross-market semantics for Candidate 13.
 
-Candidate 13 v1 reused a causal detector but allowed the leadership gate to
-approve the same cross-market state as either FAR or continuation depending on
-which local state machine happened to emit first.  The untouched W10-W14 run
-showed that this semantic overlap was the dominant failure mode.
-
-This module changes no detector, target, stop, fee, sizing, order or execution
-parameter.  It reclassifies only the already-completed, synchronized evidence
-returned by the frozen base gate:
-
-* FAR is a moderate counter-trend failed auction.  The local market must reclaim
-  in the proposed direction, all three peers must move with it after the sweep,
-  and the preceding 24-hour auction must still be adverse but not severely
-  unresolved.
-* AAC is accepted repricing.  All peers must agree, while the candidate itself
-  must rank first during the event and exhibit efficient, volatility-normalized
-  displacement.  Quote-notional leadership is informative but not a monopoly:
-  a follower that actually leads the event may carry price discovery.
-
-Every input is visible at the confirmation close.  Missing or asynchronous
-state continues to fail closed in the base implementation.
+FAR is a moderate counter-trend failed auction with unanimous peer reclaim.
+AAC is synchronized accepted repricing: every peer participates, the candidate
+has its own efficient volatility-normalized displacement, and it is not the
+last market to move.  Quote-notional leadership or rank one is not required;
+that would confuse persistent price discovery with a single-minute race.
 """
 from __future__ import annotations
 
@@ -42,7 +27,6 @@ def semantic_decision(
     minimum_event_efficiency: float,
     minimum_event_displacement: float,
 ) -> LeadershipDecision:
-    """Apply one causal semantic partition to a fully observed base decision."""
     required_peers = symbol_count - 1
     complete = (
         len(decision.peer_returns) == required_peers
@@ -52,12 +36,12 @@ def semantic_decision(
         and decision.event_direction_rank is not None
     )
     if not complete:
-        # Preserve the more precise causal precondition emitted by the base gate.
         return _with(decision, False, decision.reason)
 
     sign = 1.0 if decision.direction == "LONG" else -1.0
-    signed_peer_moves = [sign * value for value in decision.peer_returns.values()]
-    all_peers_aligned = all(value > 0.0 for value in signed_peer_moves)
+    all_peers_aligned = all(
+        sign * value > 0.0 for value in decision.peer_returns.values()
+    )
     candidate_move = float(decision.candidate_event_move)
     impulse = float(decision.confirmation_impulse)
     candidate_trend = float(decision.directional_trend_scores[decision.symbol])
@@ -72,15 +56,12 @@ def semantic_decision(
             return _with(decision, False, "SEMANTIC_FAR_WEAK_LOCAL_DISPLACEMENT")
         if decision.event_direction_rank >= symbol_count:
             return _with(decision, False, "SEMANTIC_FAR_EVENT_LAGGARD")
-        # A failed auction is a reversal.  If the proposed direction already
-        # owns the trailing auction, this is continuation and must wait for AAC.
         if candidate_trend >= 0.0 or market_trend >= 0.0:
             return _with(decision, False, "SEMANTIC_FAR_NOT_COUNTERTREND")
-        severe_unresolved = (
+        if (
             candidate_trend <= severe_adverse_trend_score
             and market_trend <= severe_adverse_trend_score
-        )
-        if severe_unresolved:
+        ):
             return _with(decision, False, "SEMANTIC_FAR_UNRESOLVED_ADVERSE_AUCTION")
         return _with(decision, True, "SEMANTIC_FAR_MODERATE_COUNTERTREND_UNANIMOUS")
 
@@ -91,8 +72,8 @@ def semantic_decision(
             return _with(decision, False, "SEMANTIC_AAC_WITHOUT_LOCAL_ACCEPTANCE")
         if impulse < minimum_confirmation_impulse:
             return _with(decision, False, "SEMANTIC_AAC_WEAK_LOCAL_DISPLACEMENT")
-        if decision.event_direction_rank != 1:
-            return _with(decision, False, "SEMANTIC_AAC_CANDIDATE_NOT_EVENT_LEADER")
+        if decision.event_direction_rank >= symbol_count:
+            return _with(decision, False, "SEMANTIC_AAC_EVENT_LAGGARD")
         if (
             decision.event_path_efficiency is None
             or decision.event_path_efficiency < minimum_event_efficiency
@@ -103,20 +84,17 @@ def semantic_decision(
             or decision.event_standardized_displacement < minimum_event_displacement
         ):
             return _with(decision, False, "SEMANTIC_AAC_INSUFFICIENT_EVENT_DISPLACEMENT")
-        severe_unresolved = (
+        if (
             candidate_trend <= severe_adverse_trend_score
             and market_trend <= severe_adverse_trend_score
-        )
-        if severe_unresolved:
+        ):
             return _with(decision, False, "SEMANTIC_AAC_UNRESOLVED_ADVERSE_AUCTION")
-        return _with(decision, True, "SEMANTIC_AAC_SYNCHRONIZED_EVENT_LEADER")
+        return _with(decision, True, "SEMANTIC_AAC_SYNCHRONIZED_NONLAGGARD")
 
     return _with(decision, False, "SEMANTIC_UNSUPPORTED_SCENARIO")
 
 
 class SemanticMarketLeadershipGate(MarketLeadershipGate):
-    """Base causal measurements with mutually exclusive FAR/AAC semantics."""
-
     def decide(
         self,
         *,

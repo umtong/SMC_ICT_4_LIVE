@@ -1,20 +1,18 @@
-"""Candidate 13 accepted-auction execution semantics.
+"""Candidate 13 structural execution semantics.
 
-The detector confirms AAC only after an outside hold, a causally known defended
-pullback and reacceleration.  The inherited executor nevertheless rested at the
-nearest edge of the reacceleration void for only twelve *one-minute* bars.  That
-made the order late in price and early in time even though the configuration's
-structure interval is five minutes.
+A failed auction and an accepted auction have different invalidations.  FAR is
+invalidated beyond the raid extreme and therefore retains the inherited plan.
+AAC is invalidated only when price is reaccepted through the original external
+liquidity boundary; a local defended pullback may be raided without negating the
+larger accepted repricing.
 
-For AAC only, this module executes at the premium/discount equilibrium between
-that first void edge and the already-known defended pullback pivot.  Structural
-invalidation sits beyond the pivot by the detector's existing acceptance-retest
-allowance plus its existing stop buffer.  The order remains live for twelve
-completed structure bars.  FAR execution is unchanged.
+AAC therefore rests at the already-known defended pullback pivot, protects
+beyond the source boundary, and remains live for twelve completed structure
+bars.  FAR keeps its price logic but receives the same structure-bar time unit
+correction.  No target, fee, risk fraction, leverage, position cap or fill rule
+is changed.
 """
 from __future__ import annotations
-
-from typing import Any
 
 from logic import (
     Auction,
@@ -30,24 +28,46 @@ from logic import (
 BASE_COSTED_LIMIT_PLAN = CausalAuctionEngine._costed_limit_plan
 
 
-def aac_equilibrium_prices(
+def aac_boundary_prices(
     *,
     direction: Direction,
-    void_entry: float,
     defended_pullback: float,
+    source_boundary: float,
     atr: float,
-    acceptance_retest_atr: float,
     stop_buffer_atr: float,
 ) -> tuple[float, float]:
-    """Return causal 50% pullback entry and structural pivot invalidation."""
-    entry = (void_entry + defended_pullback) / 2.0
-    allowance = (acceptance_retest_atr + stop_buffer_atr) * atr
+    """Enter at the defended pivot; invalidate beyond source-range reacceptance."""
+    entry = defended_pullback
+    allowance = stop_buffer_atr * atr
     stop = (
-        defended_pullback - allowance
+        min(defended_pullback, source_boundary) - allowance
         if direction == Direction.LONG
-        else defended_pullback + allowance
+        else max(defended_pullback, source_boundary) + allowance
     )
     return entry, stop
+
+
+def _structure_expiry(self: CausalAuctionEngine, confirmation_ts_ns: int) -> tuple[int, int]:
+    minutes = self.config.retrace_expiry_bars * self.config.internal_tf_bars
+    return confirmation_ts_ns + minutes * MINUTE_NS, minutes
+
+
+def _amend_last_plan_event(
+    self: CausalAuctionEngine,
+    scenario_id: str,
+    expire_ts_ns: int,
+    structural_minutes: int,
+) -> None:
+    for event in reversed(self.events):
+        if getattr(event, "scenario_id", None) != scenario_id:
+            continue
+        if getattr(event, "event_type", None) != "TRADE_PLAN_CONFIRMED":
+            continue
+        details = getattr(event, "details", None)
+        if isinstance(details, dict):
+            details["expire_ts_ns"] = expire_ts_ns
+            details["entry_expiry_structure_minutes"] = structural_minutes
+        break
 
 
 def semantic_costed_limit_plan(
@@ -57,46 +77,43 @@ def semantic_costed_limit_plan(
     reason: str,
 ) -> TradePlan | None:
     if a.scenario != Scenario.AAC:
-        return BASE_COSTED_LIMIT_PLAN(self, a, confirmation_bar, reason)
+        plan = BASE_COSTED_LIMIT_PLAN(self, a, confirmation_bar, reason)
+        if plan is not None:
+            expire_ts_ns, structural_minutes = _structure_expiry(self, confirmation_bar.ts_ns)
+            plan.expire_ts_ns = expire_ts_ns
+            plan.details["entry_expiry_structure_minutes"] = structural_minutes
+            _amend_last_plan_event(self, plan.scenario_id, expire_ts_ns, structural_minutes)
+        return plan
 
     assert a.direction is not None and a.scenario is not None
     assert a.target_price is not None
-    assert a.zone_low is not None and a.zone_high is not None
     if a.pullback_extreme is None:
         self._terminal(a, confirmation_bar, "AAC_DEFENDED_PULLBACK_NOT_KNOWN")
         return None
 
-    void_entry = a.zone_high if a.direction == Direction.LONG else a.zone_low
-    entry, stop = aac_equilibrium_prices(
+    entry, stop = aac_boundary_prices(
         direction=a.direction,
-        void_entry=void_entry,
         defended_pullback=float(a.pullback_extreme),
+        source_boundary=a.pool.level,
         atr=a.atr,
-        acceptance_retest_atr=self.config.acceptance_retest_atr,
         stop_buffer_atr=self.config.stop_buffer_atr,
     )
     target = a.target_price
-
-    causal_order = (
-        float(a.pullback_extreme) < entry < confirmation_bar.close
+    passive = (
+        entry < confirmation_bar.close
         if a.direction == Direction.LONG
-        else confirmation_bar.close < entry < float(a.pullback_extreme)
+        else entry > confirmation_bar.close
     )
-    if not causal_order:
-        self._terminal(a, confirmation_bar, "AAC_NON_CAUSAL_EQUILIBRIUM_ORDER")
+    if not passive:
+        self._terminal(a, confirmation_bar, "AAC_PULLBACK_LIMIT_NOT_PASSIVE")
         return None
 
     if a.direction == Direction.LONG:
         risk = entry - stop
         gain = target - entry
-        passive = entry < confirmation_bar.close
     else:
         risk = stop - entry
         gain = entry - target
-        passive = entry > confirmation_bar.close
-    if not passive:
-        self._terminal(a, confirmation_bar, "LIMIT_NOT_PASSIVE_AT_CONFIRMATION")
-        return None
     if risk <= 0.0 or gain <= 0.0:
         self._terminal(a, confirmation_bar, "NON_CAUSAL_PRICE_ORDER")
         return None
@@ -104,25 +121,16 @@ def semantic_costed_limit_plan(
         self._terminal(a, confirmation_bar, "STOP_DISTANCE_BELOW_EXECUTION_FLOOR")
         return None
 
-    loss = (
-        risk
-        + entry * self.config.effective_maker_rate
-        + stop * self.config.effective_taker_rate
-    )
-    net_gain = (
-        gain
-        - entry * self.config.effective_maker_rate
-        - target * self.config.effective_maker_rate
-    )
+    loss = risk + entry * self.config.effective_maker_rate + stop * self.config.effective_taker_rate
+    net_gain = gain - entry * self.config.effective_maker_rate - target * self.config.effective_maker_rate
     net_r = net_gain / loss
     if net_gain <= 0.0 or net_r < self.config.min_net_r:
         self._terminal(a, confirmation_bar, "INSUFFICIENT_COSTED_STRUCTURAL_R")
         return None
 
-    structural_minutes = self.config.retrace_expiry_bars * self.config.internal_tf_bars
-    expire_ts_ns = confirmation_bar.ts_ns + structural_minutes * MINUTE_NS
+    expire_ts_ns, structural_minutes = _structure_expiry(self, confirmation_bar.ts_ns)
     a.stop_price = stop
-    reason_code = "AAC_DEFENDED_PULLBACK_EQUILIBRIUM_LIMIT"
+    reason_code = "AAC_DEFENDED_PULLBACK_SOURCE_BOUNDARY_LIMIT"
     plan = TradePlan(
         scenario_id=a.pool.scenario_id,
         scenario=a.scenario,
@@ -156,9 +164,9 @@ def semantic_costed_limit_plan(
             "zone_high": a.zone_high,
             "confirmation_close": confirmation_bar.close,
             "defended_pullback": float(a.pullback_extreme),
-            "original_void_entry": void_entry,
-            "entry_model": "VOID_TO_DEFENDED_PULLBACK_50PCT",
-            "stop_model": "PULLBACK_PLUS_ACCEPTANCE_RETEST_AND_BUFFER",
+            "source_boundary": a.pool.level,
+            "entry_model": "DEFENDED_PULLBACK_PIVOT",
+            "stop_model": "SOURCE_BOUNDARY_REACCEPTANCE",
             "entry_cost_assumption": "MAKER",
             "entry_expiry_bars": self.config.retrace_expiry_bars,
             "entry_expiry_structure_minutes": structural_minutes,
@@ -183,7 +191,8 @@ def semantic_costed_limit_plan(
             "stop": stop,
             "net_r": net_r,
             "defended_pullback": float(a.pullback_extreme),
-            "original_void_entry": void_entry,
+            "source_boundary": a.pool.level,
+            "entry_expiry_structure_minutes": structural_minutes,
         },
     )
     a.state = "PENDING_ENTRY"
