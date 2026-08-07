@@ -30,7 +30,7 @@ import json
 import math
 import tempfile
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from statistics import median
@@ -627,8 +627,8 @@ def derive_v19(
                 prior=prior,
                 details={
                     "observation_blocks": block_count,
-                    "futures_features": future_features.__dict__,
-                    "spot_features": spot_features.__dict__,
+                    "futures_features": asdict(future_features),
+                    "spot_features": asdict(spot_features),
                     "thresholds": thresholds,
                 },
             )
