@@ -110,22 +110,54 @@ class FlowFeatures:
 @dataclass(slots=True)
 class CandidateContext:
     candidate: dict[str, Any]
-    start_ns: int
-    end_ns: int
+    baseline_start_ns: int
+    baseline_end_ns: int
+    observation_start_ns: int
+    observation_end_ns: int
     blocks: list[TradeBlock] = field(
         default_factory=lambda: [TradeBlock() for _ in range(TOTAL_BLOCKS)]
     )
 
-    def add(self, timestamp_ns: int, price: float, quantity: float, buyer_was_maker: bool) -> None:
-        if timestamp_ns < self.start_ns or timestamp_ns >= self.end_ns:
+    @property
+    def start_ns(self) -> int:
+        return self.baseline_start_ns
+
+    @property
+    def end_ns(self) -> int:
+        return self.observation_end_ns
+
+    def add(
+        self,
+        timestamp_ns: int,
+        price: float,
+        quantity: float,
+        buyer_was_maker: bool,
+    ) -> None:
+        if self.baseline_start_ns <= timestamp_ns < self.baseline_end_ns:
+            index = (timestamp_ns - self.baseline_start_ns) // BLOCK_NS
+        elif (
+            self.observation_start_ns
+            <= timestamp_ns
+            < self.observation_end_ns
+        ):
+            index = BASELINE_BLOCKS + (
+                timestamp_ns - self.observation_start_ns
+            ) // BLOCK_NS
+        else:
+            # The inventory event is deliberately excluded from both
+            # the pre-event baseline and post-confirmation response.
             return
-        index = (timestamp_ns - self.start_ns) // BLOCK_NS
         if 0 <= index < TOTAL_BLOCKS:
-            self.blocks[int(index)].add(price, quantity, buyer_was_maker)
+            self.blocks[int(index)].add(
+                price,
+                quantity,
+                buyer_was_maker,
+            )
 
 
 @dataclass(frozen=True, slots=True)
 class AuctionCandidate:
+
     scenario_id: str
     inventory_regime: str
     direction: int
@@ -234,10 +266,18 @@ def collect_contexts(
 ) -> dict[str, CandidateContext]:
     contexts = {
         candidate.scenario_id: CandidateContext(
-            candidate=candidate.to_dict(),
-            start_ns=candidate.confirm_time_ns - BASELINE_MINUTES * NS_PER_MINUTE,
-            end_ns=candidate.confirm_time_ns + OBSERVATION_SECONDS * NS_PER_SECOND,
-        )
+    candidate=candidate.to_dict(),
+    baseline_start_ns=(
+        candidate.event_start_ns
+        - BASELINE_MINUTES * NS_PER_MINUTE
+    ),
+    baseline_end_ns=candidate.event_start_ns,
+    observation_start_ns=candidate.confirm_time_ns,
+    observation_end_ns=(
+        candidate.confirm_time_ns
+        + OBSERVATION_SECONDS * NS_PER_SECOND
+    ),
+)
         for candidate in candidates
     }
     ordered = sorted(contexts.values(), key=lambda context: context.start_ns)

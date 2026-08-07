@@ -4,6 +4,9 @@ import unittest
 from pathlib import Path
 
 from derive_nt_lvcfr_v19_signals import (
+    BASELINE_BLOCKS,
+    BLOCK_NS,
+    CandidateContext,
     TradeBlock,
     block_features,
     cumulative_features,
@@ -63,6 +66,36 @@ class V19ExecutedFlowTests(unittest.TestCase):
         self.assertGreater(features.directional_flow, 0.0)
         self.assertGreater(features.path_efficiency, 0.0)
         self.assertLessEqual(features.path_efficiency, 1.01)
+
+
+    def test_candidate_context_excludes_inventory_event_gap(self) -> None:
+        baseline_start = 0
+        baseline_end = BASELINE_BLOCKS * BLOCK_NS
+        observation_start = baseline_end + 10 * 60 * 1_000_000_000
+        observation_end = observation_start + 6 * BLOCK_NS
+        context = CandidateContext(
+            candidate={"scenario_id": "TEST"},
+            baseline_start_ns=baseline_start,
+            baseline_end_ns=baseline_end,
+            observation_start_ns=observation_start,
+            observation_end_ns=observation_end,
+        )
+        context.add(BLOCK_NS, 100.0, 1.0, False)
+        context.add(baseline_end + BLOCK_NS, 999.0, 1.0, False)
+        context.add(observation_start + BLOCK_NS, 101.0, 1.0, False)
+        self.assertEqual(sum(block.trades for block in context.blocks), 2)
+        self.assertEqual(context.blocks[1].trades, 1)
+        self.assertEqual(
+            context.blocks[BASELINE_BLOCKS + 1].trades,
+            1,
+        )
+        retained_prices = {
+            price
+            for block in context.blocks
+            for price in (block.first_price, block.last_price)
+            if price is not None
+        }
+        self.assertNotIn(999.0, retained_prices)
 
     def test_project_risk_and_native_execution_contract_are_fixed(self) -> None:
         root = Path(__file__).resolve().parent
