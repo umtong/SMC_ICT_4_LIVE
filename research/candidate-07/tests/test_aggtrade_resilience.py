@@ -10,7 +10,10 @@ import zipfile
 import numpy as np
 import pandas as pd
 
-from data_aggtrades_1s import _read_archive_to_seconds
+from data_aggtrades_1s import (
+    _complete_no_trade_seconds,
+    _read_archive_to_seconds,
+)
 from diagnose_aggtrade_resilience_v2 import preconsume_before_event_window
 from diagnose_impact_resilience_1s import Pool
 from run_aggtrade_resilience_second_safe import (
@@ -75,6 +78,67 @@ class AggTradeLoaderTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertAlmostEqual(records[0]["taker_sell_quote"], 100.0)
         self.assertAlmostEqual(records[0]["taker_buy_quote"], 199.0)
+
+    def test_no_trade_second_is_causal_zero_flow_not_data_gap(self) -> None:
+        base = 1_735_689_600_000_000_000
+        records = pd.DataFrame(
+            [
+                {
+                    "timestamp_ns": base + 999_999_999,
+                    "open": 100.0,
+                    "high": 100.0,
+                    "low": 100.0,
+                    "close": 100.0,
+                    "volume": 1.0,
+                    "quote_volume": 100.0,
+                    "taker_buy_quote": 100.0,
+                    "taker_sell_quote": 0.0,
+                    "trade_count": 1,
+                    "first_trade_ns": base + 100,
+                    "last_trade_ns": base + 100,
+                },
+                {
+                    "timestamp_ns": base + 2_999_999_999,
+                    "open": 102.0,
+                    "high": 102.0,
+                    "low": 102.0,
+                    "close": 102.0,
+                    "volume": 2.0,
+                    "quote_volume": 204.0,
+                    "taker_buy_quote": 0.0,
+                    "taker_sell_quote": 204.0,
+                    "trade_count": 1,
+                    "first_trade_ns": base + 2_000_000_100,
+                    "last_trade_ns": base + 2_000_000_100,
+                },
+            ]
+        )
+        completed, diagnostics = _complete_no_trade_seconds(
+            records,
+            load_start_ns=base,
+            trade_end_ns=base + 3_000_000_000,
+        )
+        self.assertEqual(len(completed.index), 3)
+        middle = completed.iloc[1]
+        self.assertFalse(bool(middle["had_trade"]))
+        self.assertEqual(int(middle["trade_count"]), 0)
+        self.assertEqual(float(middle["open"]), 100.0)
+        self.assertEqual(float(middle["high"]), 100.0)
+        self.assertEqual(float(middle["low"]), 100.0)
+        self.assertEqual(float(middle["close"]), 100.0)
+        self.assertEqual(float(middle["quote_volume"]), 0.0)
+        self.assertEqual(float(middle["taker_buy_quote"]), 0.0)
+        self.assertEqual(float(middle["taker_sell_quote"]), 0.0)
+        self.assertEqual(int(middle["first_trade_ns"]), -1)
+        self.assertEqual(diagnostics["causal_zero_flow_seconds"], 1)
+        self.assertTrue(
+            bool(
+                (
+                    completed["timestamp_ns"].diff().dropna()
+                    == 1_000_000_000
+                ).all()
+            )
+        )
 
 
 class CausalSecondBoundaryTests(unittest.TestCase):
