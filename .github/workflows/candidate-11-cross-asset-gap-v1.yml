@@ -6,6 +6,7 @@ on:
       - research/candidate-11
     paths:
       - "research/candidate-11/cross_asset_gap_v1/**"
+      - "research/candidate-11/run_microstructure_nautilus.py"
       - ".github/workflows/candidate-11-cross-asset-gap-v1.yml"
   workflow_dispatch:
 
@@ -38,8 +39,9 @@ jobs:
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           CAND=research/candidate-11/cross_asset_gap_v1
+          ROOT=research/candidate-11
           smc4 doctor
-          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/src"
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/$ROOT:$GITHUB_WORKSPACE/src"
           python -m py_compile "$CAND"/*.py
           python -m unittest discover -s "$CAND" -p 'test_*.py' -v
           python - <<'PY'
@@ -49,18 +51,27 @@ jobs:
           import subprocess
 
           root = Path("research/candidate-11/cross_asset_gap_v1")
+          candidate_root = root.parent
           protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
           assert protocol["validation_mode"] == "mechanism-diagnostic"
           assert protocol["success_claim"] is False
           assert protocol["account_return_claim"] is False
           assert sorted(protocol["weeks"]) == ["G1", "G2", "G3"]
-          actual = subprocess.check_output(
-              ["git", "hash-object", str(root / "diagnose_cross_asset_gap.py")],
-              text=True,
-          ).strip()
-          expected = protocol["locked_source"]["diagnostic_blob"]
+          expected = protocol["locked_source"]
+          actual = {
+              "detector_blob": subprocess.check_output(
+                  ["git", "hash-object", str(root / "diagnose_cross_asset_gap.py")], text=True
+              ).strip(),
+              "aggtrades_adapter_blob": subprocess.check_output(
+                  ["git", "hash-object", str(root / "diagnose_cross_asset_gap_agg.py")], text=True
+              ).strip(),
+              "verified_aggtrades_loader_blob": subprocess.check_output(
+                  ["git", "hash-object", str(candidate_root / "run_microstructure_nautilus.py")], text=True
+              ).strip(),
+          }
           if actual != expected:
-              raise SystemExit(f"diagnostic source-lock mismatch: {expected} != {actual}")
+              raise SystemExit(f"cross-gap source-lock mismatch: expected={expected}, actual={actual}")
+          assert protocol["dataset"]["source"] == "Binance public USD-M daily aggregate trades"
           PY
 
   evaluate:
@@ -87,9 +98,10 @@ jobs:
         run: |
           set -euo pipefail
           CAND=research/candidate-11/cross_asset_gap_v1
-          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/src"
+          ROOT=research/candidate-11
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/$ROOT:$GITHUB_WORKSPACE/src"
           smc4 doctor
-          python "$CAND/diagnose_cross_asset_gap.py" \
+          python "$CAND/diagnose_cross_asset_gap_agg.py" \
             --protocol "$CAND/protocol.json" \
             --interval "${{ matrix.interval }}" \
             --output "$CAND/results/${{ matrix.interval }}"
@@ -157,9 +169,11 @@ jobs:
           latest_head="$(git rev-parse origin/research/candidate-11)"
           if ! git diff --quiet "$GITHUB_SHA" "$latest_head" -- \
             "$CAND/diagnose_cross_asset_gap.py" \
+            "$CAND/diagnose_cross_asset_gap_agg.py" \
             "$CAND/protocol.json" \
             "$CAND/test_cross_asset_gap.py" \
-            "$CAND/aggregate_diagnostic.py"; then
+            "$CAND/aggregate_diagnostic.py" \
+            "research/candidate-11/run_microstructure_nautilus.py"; then
             echo "cross-asset gap mechanism changed during evaluation"
             exit 1
           fi
