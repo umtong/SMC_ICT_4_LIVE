@@ -30,6 +30,23 @@ def decimal(value: Any) -> Decimal:
     return Decimal(str(value))
 
 
+def baseline_view(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Candidate 14's committed aggregate evidence schema."""
+    trades = int(raw.get("closed_trades", 0))
+    wins = int(raw.get("wins", 0))
+    losses = int(raw.get("losses", 0))
+    return {
+        "daily_geometric_growth": float(raw["daily_geometric_growth"]),
+        "nav_multiple": float(raw.get("pooled_nav_multiple", raw.get("nav_multiple", 1.0))),
+        "closed_trades": trades,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": float(raw.get("win_rate", wins / trades if trades else 0.0)),
+        "active_weeks": int(raw.get("active_weeks", 0)),
+        "payoff_ratio": raw.get("payoff_ratio"),
+    }
+
+
 def aggregate_variant(root: Path, variant: str) -> dict[str, Any]:
     nav_multiple = Decimal("1")
     trades = wins = losses = active = 0
@@ -111,8 +128,7 @@ def aggregate_variant(root: Path, variant: str) -> dict[str, Any]:
                 raw = row.get("realized_pnl") or row.get("realized_pnl_event") or row.get("native_account_pnl")
                 if raw is None:
                     continue
-                text = str(raw).split()[0]
-                pnl = float(text)
+                pnl = float(str(raw).split()[0])
                 pnl_by_outcome["win" if pnl > 0 else "loss" if pnl < 0 else "flat"].append(pnl)
     if pnl_by_outcome["win"]:
         avg_win = sum(pnl_by_outcome["win"]) / len(pnl_by_outcome["win"])
@@ -155,7 +171,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    baseline = load(args.baseline)
+    baseline = baseline_view(load(args.baseline))
     variants = {variant: aggregate_variant(args.root, variant) for variant in VARIANTS}
     payload = {
         "schema": "candidate-15-far-execution-development-comparison-v1",
@@ -168,16 +184,7 @@ def main() -> int:
             "Same exact current-NAV 3% planned-loss budget",
             "Same fees, order types per selected variant, global slot and NautilusTrader accounting",
         ],
-        "baseline_candidate14": {
-            "daily_geometric_growth": baseline["daily_geometric_growth"],
-            "nav_multiple": baseline["nav_multiple"],
-            "closed_trades": baseline["closed_trades"],
-            "wins": baseline["wins"],
-            "losses": baseline["losses"],
-            "win_rate": baseline["win_rate"],
-            "active_weeks": baseline["active_weeks"],
-            "payoff_ratio": baseline["payoff_ratio"],
-        },
+        "baseline_candidate14": baseline,
         "variants": variants,
         "success_claim": False,
     }
