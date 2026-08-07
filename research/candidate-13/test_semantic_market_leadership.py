@@ -65,7 +65,7 @@ class SemanticLeadershipTests(unittest.TestCase):
         scores = {
             "BTCUSDT": -0.85,
             "ETHUSDT": -0.69,
-            "SOLUSDT": 0.22,
+            "SOLUSDT": 0.05,
             "XRPUSDT": -0.14,
         }
         result = self.classify(
