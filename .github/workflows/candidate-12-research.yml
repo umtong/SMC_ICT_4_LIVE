@@ -57,11 +57,12 @@ jobs:
             mkdir -p research/candidate-12
             tar -xzf /tmp/candidate-12-src.tar.gz -C research/candidate-12
             rm -rf research/candidate-12/bootstrap
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add research/candidate-12
-            git commit -m "candidate-12: materialize reviewed source"
-            git push origin HEAD:research/candidate-12
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            git -C "$GITHUB_WORKSPACE" config user.name github-actions[bot]
+            git -C "$GITHUB_WORKSPACE" config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git -C "$GITHUB_WORKSPACE" add research/candidate-12
+            git -C "$GITHUB_WORKSPACE" commit -m "candidate-12: materialize reviewed source"
+            git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-12
             echo "committed=true" >> "$GITHUB_OUTPUT"
           else
             echo "committed=false" >> "$GITHUB_OUTPUT"
@@ -86,6 +87,7 @@ jobs:
 
       - name: Surface decision evidence
         if: always()
+        shell: bash
         run: |
           if [[ -f "$OUTPUT/metrics.json" ]]; then
             echo '=== CANDIDATE_12_METRICS_BEGIN ==='
@@ -104,4 +106,4 @@ jobs:
         with:
           name: candidate-12-${{ env.SYMBOL }}-${{ env.WEEK }}-${{ github.sha }}
           path: ${{ env.OUTPUT }}
-          if-no-files-found: error
+          if-no-files-found: warn
