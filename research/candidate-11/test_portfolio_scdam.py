@@ -54,6 +54,17 @@ class TestIndependentPortfolioLogic(unittest.TestCase):
         self.assertLess(process, flush)
         self.assertLess(flush, submit)
 
+    def test_partial_gtd_entry_is_fail_closed_before_terminal_release(self) -> None:
+        source = (ROOT / "run_portfolio_scdam.py").read_text(encoding="utf-8")
+        callback = source.index("def on_order_expired")
+        fail_close = source.index("self._fail_close_partial_entry(event)", callback)
+        release = source.index("self._release_if_terminal", fail_close)
+        helper = source.index("def _fail_close_partial_entry")
+        market_close = source.index("self.close_all_positions(instrument_id)", helper)
+        self.assertLess(fail_close, release)
+        self.assertGreater(market_close, helper)
+        self.assertIn("PARTIAL_ENTRY_EXPIRED_FAIL_CLOSED", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
@@ -59,6 +60,26 @@ def time_value(row: dict[str, str], names: tuple[str, ...]) -> Decimal | None:
             return dec(value)
         except InvalidOperation:
             pass
+    return None
+
+
+def timestamp_ns(row: dict[str, str], names: tuple[str, ...]) -> Decimal | None:
+    """Parse either integer nanoseconds or an ISO-8601 report timestamp."""
+    for name in names:
+        value = row.get(name)
+        if value in (None, "", "None", "nan", "NaT"):
+            continue
+        try:
+            number = dec(value)
+            if abs(number) >= Decimal("1000000000000"):
+                return number
+        except InvalidOperation:
+            pass
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            return Decimal(str(parsed.timestamp())) * Decimal("1000000000")
+        except (ValueError, TypeError, OverflowError):
+            continue
     return None
 
 
@@ -119,6 +140,60 @@ def audit(root: Path, week: str) -> dict[str, Any]:
     if not slot_ok:
         reasons.append("overlapping position intervals violate the global one-position invariant")
 
+    order_rows = csv_rows(root / "orders.csv")
+    position_rows = csv_rows(root / "positions.csv")
+    partial_expiry_records: list[dict[str, Any]] = []
+    protection_ok = True
+    max_close_delay_ns = Decimal("60000000000")
+    for row in order_rows:
+        try:
+            quantity = dec(row.get("quantity"))
+            filled = dec(row.get("filled_qty"))
+        except InvalidOperation:
+            continue
+        tags = str(row.get("tags", "")).upper()
+        is_partial_expiry = (
+            str(row.get("status", "")).upper() == "EXPIRED"
+            and str(row.get("time_in_force", "")).upper() == "GTD"
+            and "ENTRY" in tags
+            and Decimal("0") < filled < quantity
+        )
+        if not is_partial_expiry:
+            continue
+        expired_ns = timestamp_ns(row, ("ts_last", "expire_time_ns"))
+        matching_positions: list[tuple[Decimal, dict[str, str]]] = []
+        if expired_ns is not None:
+            for position_row in position_rows:
+                if position_row.get("instrument_id") != row.get("instrument_id"):
+                    continue
+                opened_ns = timestamp_ns(position_row, ("ts_opened", "ts_init"))
+                position_closed_ns = timestamp_ns(position_row, ("ts_closed", "ts_last"))
+                if (
+                    opened_ns is not None
+                    and position_closed_ns is not None
+                    and opened_ns <= expired_ns <= position_closed_ns
+                ):
+                    matching_positions.append((opened_ns, position_row))
+        position = max(matching_positions, key=lambda item: item[0])[1] if matching_positions else None
+        closed_ns = None if position is None else timestamp_ns(position, ("ts_closed", "ts_last"))
+        delay_ns = None if expired_ns is None or closed_ns is None else closed_ns - expired_ns
+        passed = delay_ns is not None and Decimal("0") <= delay_ns <= max_close_delay_ns
+        partial_expiry_records.append({
+            "instrument_id": row.get("instrument_id"),
+            "position_id": row.get("position_id"),
+            "quantity": str(quantity),
+            "filled_qty": str(filled),
+            "expired_ns": None if expired_ns is None else str(expired_ns),
+            "closed_ns": None if closed_ns is None else str(closed_ns),
+            "close_delay_ns": None if delay_ns is None else str(delay_ns),
+            "fail_closed_within_one_bar": passed,
+        })
+        if not passed:
+            protection_ok = False
+            reasons.append(
+                f"partially filled GTD entry {row.get('position_id')} remained open beyond one bar after expiry",
+            )
+
     liquidation = pick(metrics, "liquidation_detected", "was_liquidated")
     no_liquidation = liquidation not in (True, "true", "True", 1)
     if not no_liquidation:
@@ -135,7 +210,7 @@ def audit(root: Path, week: str) -> dict[str, Any]:
     complete = pick(metrics, "complete_gate_passed", "complete_candidate_gate_passed") is True
     recorded_success = metrics.get("success_claim") is True
 
-    if not all((evidence_ok, metric_ok, risk_ok, slot_ok, no_liquidation, engine_ok)):
+    if not all((evidence_ok, metric_ok, risk_ok, slot_ok, protection_ok, no_liquidation, engine_ok)):
         classification = "IMPLEMENTATION_OR_EVIDENCE_FAILURE"
     elif submitted and not closed_trades:
         classification = "EXECUTION_FAILURE_NO_CLOSED_TRADES"
@@ -152,7 +227,7 @@ def audit(root: Path, week: str) -> dict[str, Any]:
         classification = "W1_PROMISING_ADVANCE_TO_INDEPENDENT_WEEK"
 
     advance = week == "W1" and classification in {"W1_COMPLETE_GATE_PASSED", "W1_PROMISING_ADVANCE_TO_INDEPENDENT_WEEK"}
-    success_allowed = week != "W1" and complete and recorded_success and all((evidence_ok, metric_ok, risk_ok, slot_ok, no_liquidation, engine_ok))
+    success_allowed = week != "W1" and complete and recorded_success and all((evidence_ok, metric_ok, risk_ok, slot_ok, protection_ok, no_liquidation, engine_ok))
     if week == "W1" and (complete or recorded_success):
         reasons.append("W1 is a screening week and cannot alone establish durable project success")
 
@@ -166,6 +241,8 @@ def audit(root: Path, week: str) -> dict[str, Any]:
         "metric_recalculation_passed": metric_ok,
         "risk_budget_passed": risk_ok,
         "global_slot_passed": slot_ok,
+        "partial_entry_protection_passed": protection_ok,
+        "partial_entry_expiry_records": partial_expiry_records,
         "no_liquidation_passed": no_liquidation,
         "engine_errors_absent": engine_ok,
         "reasons": reasons,
@@ -186,7 +263,7 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     lines = ["# Candidate 11 evidence audit", "", f"**{result['classification']}**", ""]
-    for key in ("advance_allowed", "success_claim_allowed", "evidence_complete", "metric_recalculation_passed", "risk_budget_passed", "global_slot_passed", "no_liquidation_passed"):
+    for key in ("advance_allowed", "success_claim_allowed", "evidence_complete", "metric_recalculation_passed", "risk_budget_passed", "global_slot_passed", "partial_entry_protection_passed", "no_liquidation_passed"):
         lines.append(f"- {key}: `{result[key]}`")
     lines.extend(("", "## Reasons"))
     lines.extend(f"- {reason}" for reason in result["reasons"])

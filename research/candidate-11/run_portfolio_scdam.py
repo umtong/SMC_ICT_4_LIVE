@@ -277,6 +277,10 @@ def calculate_metrics(
         "detected_events": detected_events,
         "skip_reasons": dict(skip_reasons),
         "engine_errors": errors,
+        "partial_entry_fail_closed_count": sum(
+            item.get("type") == "PARTIAL_ENTRY_EXPIRED_FAIL_CLOSED"
+            for item in lifecycle
+        ),
         "liquidation_detected": liquidation_detected,
         "global_slot_overlap_count": overlap_count,
         "promising_gate_passed": promising_pass,
@@ -692,12 +696,41 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
                 if not self.portfolio.is_flat(instrument_id):
                     self.close_all_positions(instrument_id)
 
+        def _fail_close_partial_entry(self, event: OrderEvent) -> None:
+            """Flatten a residual position when its GTD parent expires.
+
+            The global slot remains POSITION_OPEN until Nautilus confirms the
+            market close. This is execution safety, not an alpha filter.
+            """
+            if (
+                self.active_plan is None
+                or self.active_symbol is None
+                or self.mutex.state != SlotState.POSITION_OPEN
+            ):
+                return
+            instrument_id = instruments[self.active_symbol].id
+            if self.portfolio.is_flat(instrument_id):
+                return
+            ts_ns = int(event.ts_event)
+            record = {
+                "type": "PARTIAL_ENTRY_EXPIRED_FAIL_CLOSED",
+                "ts_event": ts_ns,
+                "scenario_id": self.active_plan.scenario_id,
+                "symbol": self.active_symbol,
+                "expired_client_order_id": str(event.client_order_id),
+            }
+            self.lifecycle.append(record)
+            if self.cache.orders_open_count(instrument_id=instrument_id, strategy_id=self.id):
+                self.cancel_all_orders(instrument_id)
+            self.close_all_positions(instrument_id)
+
         def on_order_filled(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_FILLED")
             self._release_if_terminal(int(event.ts_event), "ORDER_FILLED")
 
         def on_order_expired(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_EXPIRED")
+            self._fail_close_partial_entry(event)
             self._release_if_terminal(int(event.ts_event), "ENTRY_EXPIRED")
 
         def on_order_canceled(self, event: OrderEvent) -> None:

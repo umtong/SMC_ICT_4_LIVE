@@ -77,6 +77,71 @@ class EvidenceAuditTests(unittest.TestCase):
         self.assertFalse(result["global_slot_passed"])
         self.assertEqual(result["classification"], "IMPLEMENTATION_OR_EVIDENCE_FAILURE")
 
+    def test_partial_entry_expiry_must_fail_close_within_one_bar(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_result(Path(temp))
+            with (root / "orders.csv").open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=(
+                    "instrument_id", "position_id", "status", "time_in_force",
+                    "tags", "quantity", "filled_qty", "ts_last",
+                ))
+                writer.writeheader()
+                writer.writerow({
+                    "instrument_id": "XRPUSDT-PERP.BINANCE",
+                    "position_id": "P-1",
+                    "status": "EXPIRED",
+                    "time_in_force": "GTD",
+                    "tags": "['ENTRY']",
+                    "quantity": "1000",
+                    "filled_qty": "100",
+                    "ts_last": "2024-01-01 00:10:00+00:00",
+                })
+            with (root / "positions.csv").open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=("instrument_id", "position_id", "ts_opened", "ts_closed", "realized_pnl"))
+                writer.writeheader()
+                writer.writerow({
+                    "instrument_id": "XRPUSDT-PERP.BINANCE",
+                    "position_id": "P-1",
+                    "ts_opened": "2024-01-01 00:01:00+00:00",
+                    "ts_closed": "2024-01-01 00:20:00+00:00",
+                    "realized_pnl": "-10",
+                })
+            result = audit(root, "W1")
+        self.assertFalse(result["partial_entry_protection_passed"])
+        self.assertEqual(result["classification"], "IMPLEMENTATION_OR_EVIDENCE_FAILURE")
+
+    def test_partial_entry_expiry_closed_next_bar_passes_protection_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.make_result(Path(temp))
+            with (root / "orders.csv").open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=(
+                    "instrument_id", "position_id", "status", "time_in_force",
+                    "tags", "quantity", "filled_qty", "ts_last",
+                ))
+                writer.writeheader()
+                writer.writerow({
+                    "instrument_id": "XRPUSDT-PERP.BINANCE",
+                    "position_id": "P-1",
+                    "status": "EXPIRED",
+                    "time_in_force": "GTD",
+                    "tags": "['ENTRY']",
+                    "quantity": "1000",
+                    "filled_qty": "100",
+                    "ts_last": "2024-01-01 00:10:00+00:00",
+                })
+            with (root / "positions.csv").open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=("instrument_id", "position_id", "ts_opened", "ts_closed", "realized_pnl"))
+                writer.writeheader()
+                writer.writerow({
+                    "instrument_id": "XRPUSDT-PERP.BINANCE",
+                    "position_id": "P-1",
+                    "ts_opened": "2024-01-01 00:01:00+00:00",
+                    "ts_closed": "2024-01-01 00:11:00+00:00",
+                    "realized_pnl": "-10",
+                })
+            result = audit(root, "W1")
+        self.assertTrue(result["partial_entry_protection_passed"])
+
 
 if __name__ == "__main__":
     unittest.main()
