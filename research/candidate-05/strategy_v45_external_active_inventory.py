@@ -14,11 +14,33 @@ rotation. Internal context, target handoff, PBA, prices, stops, targets, costs,
 """
 from __future__ import annotations
 
+from typing import Any
+
 from flow_inflection_logic import choch_flow_state
 from inventory_repricing_logic import inventory_trap_confirmed
 from strategy import LiquidityResponseConfig
 from strategy_base import PendingSetup
 from strategy_v44_context_aligned_internal import ContextAlignedInternalStrategy
+
+
+INTERNAL_HYBRID_STATE = "INTERNAL_INVENTORY_TRAP"
+EXTERNAL_POOL_SOURCE = "CONFIRMED_5M_SWING"
+
+
+def external_setup_from_hybrid(details: dict[str, Any]) -> bool:
+    """Whether a newly armed hybrid setup came from external 5m liquidity.
+
+    ``PositioningResetInventoryHybridStrategy._detect_sweep`` always evaluates
+    the untouched external five-minute pool store first. Only when it produces
+    no setup does it temporarily substitute the independent 1m/3m pool store;
+    those setups are explicitly tagged ``INTERNAL_INVENTORY_TRAP``. Therefore a
+    new setup with the frozen five-minute pool source and without the internal
+    tag is the external branch which must receive the strict inventory gate.
+    """
+    return (
+        details.get("hybrid_state") != INTERNAL_HYBRID_STATE
+        and str(details.get("pool_source", "")) == EXTERNAL_POOL_SOURCE
+    )
 
 
 class ActiveExternalInventoryStrategy(ContextAlignedInternalStrategy):
@@ -45,9 +67,12 @@ class ActiveExternalInventoryStrategy(ContextAlignedInternalStrategy):
         setup = self.pending
         if setup is None or setup.scenario_id == prior:
             return
-        if setup.details.get("hybrid_state") != "EXTERNAL_REJECTION_BASELINE":
+        if not external_setup_from_hybrid(setup.details):
             return
 
+        # Persist the branch identity so the later CHOCH decision receives the
+        # same causal sweep contract rather than inferring it from a price shape.
+        setup.details["hybrid_state"] = "EXTERNAL_REJECTION_BASELINE"
         passed = inventory_trap_confirmed(
             side=setup.side,
             penetration_atr=float(
@@ -100,6 +125,9 @@ LiquidityResponseStrategy = ActiveExternalInventoryStrategy
 
 __all__ = [
     "ActiveExternalInventoryStrategy",
+    "EXTERNAL_POOL_SOURCE",
+    "INTERNAL_HYBRID_STATE",
     "LiquidityResponseConfig",
     "LiquidityResponseStrategy",
+    "external_setup_from_hybrid",
 ]
