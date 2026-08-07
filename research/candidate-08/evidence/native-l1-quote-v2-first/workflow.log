@@ -11,7 +11,7 @@ test_duplicate_exchange_milliseconds_are_distinct_ordered_events (__main__.Dupli
 test_raw_time_regression_is_rejected_without_deduplication (__main__.DuplicateTimestampRawQuoteContracts.test_raw_time_regression_is_rejected_without_deduplication) ... ok
 
 ----------------------------------------------------------------------
-Ran 7 tests in 0.103s
+Ran 7 tests in 0.105s
 
 OK
 test_cross_chunk_time_regression_is_rejected (__main__.RawChunkIntegrityContracts.test_cross_chunk_time_regression_is_rejected) ... ok
@@ -24,7 +24,7 @@ test_later_buckets_cannot_change_already_closed_history (__main__.RawOpenBucketC
 test_streaming_revision_contains_no_daily_materialization_or_trading_logic (__main__.RawOpenBucketCarryContracts.test_streaming_revision_contains_no_daily_materialization_or_trading_logic) ... ok
 
 ----------------------------------------------------------------------
-Ran 8 tests in 0.330s
+Ran 8 tests in 0.334s
 
 OK
 test_confirmation_quote_ofi_ablation_changes_only_the_predeclared_gate (__main__.QuoteResiliencySignalContracts.test_confirmation_quote_ofi_ablation_changes_only_the_predeclared_gate) ... ok
@@ -36,13 +36,13 @@ test_quote_withdrawal_acceptance_emits_long_continuation_after_separate_retest (
 test_target_crossed_on_confirmation_bucket_is_not_reused (__main__.QuoteResiliencySignalContracts.test_target_crossed_on_confirmation_bucket_is_not_reused) ... ok
 
 ----------------------------------------------------------------------
-Ran 7 tests in 0.044s
+Ran 7 tests in 0.043s
 
 OK
 test_rejected_response_bucket_cannot_arm_another_crossed_level (__main__.OneScenarioTransitionPerBucketContract.test_rejected_response_bucket_cannot_arm_another_crossed_level) ... ok
 
 ----------------------------------------------------------------------
-Ran 1 test in 0.020s
+Ran 1 test in 0.021s
 
 OK
 test_direction_must_be_signed (__main__.ExecutableQuoteReferenceContracts.test_direction_must_be_signed) ... ok
@@ -50,21 +50,97 @@ test_invalid_or_crossed_completed_quote_fails_closed (__main__.ExecutableQuoteRe
 test_long_uses_completed_best_ask_not_trade_close (__main__.ExecutableQuoteReferenceContracts.test_long_uses_completed_best_ask_not_trade_close) ... ok
 test_short_uses_completed_best_bid_not_trade_close (__main__.ExecutableQuoteReferenceContracts.test_short_uses_completed_best_bid_not_trade_close) ... ok
 test_invalid_direction_or_nonpositive_inputs_fail_closed (__main__.ExpectedOneTickFillContracts.test_invalid_direction_or_nonpositive_inputs_fail_closed) ... ok
-test_long_and_short_fill_one_tick_adverse_from_l1 (__main__.ExpectedOneTickFillContracts.test_long_and_short_fill_one_tick_adverse_from_l1) ... FAIL
+test_long_and_short_fill_one_tick_adverse_from_l1 (__main__.ExpectedOneTickFillContracts.test_long_and_short_fill_one_tick_adverse_from_l1) ... ok
 test_fill_adjusted_exit_requires_strictly_later_event_time (__main__.FillAdjustedExitTimingContracts.test_fill_adjusted_exit_requires_strictly_later_event_time) ... ok
 test_fill_adjusted_exit_without_position_open_time_fails_closed (__main__.FillAdjustedExitTimingContracts.test_fill_adjusted_exit_without_position_open_time_fails_closed) ... ok
 test_non_risk_exit_is_not_changed_by_guard (__main__.FillAdjustedExitTimingContracts.test_non_risk_exit_is_not_changed_by_guard) ... ok
 
-======================================================================
-FAIL: test_long_and_short_fill_one_tick_adverse_from_l1 (__main__.ExpectedOneTickFillContracts.test_long_and_short_fill_one_tick_adverse_from_l1)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_quote_resiliency_execution_price_contract.py", line 76, in test_long_and_short_fill_one_tick_adverse_from_l1
-    self.assertEqual(expected_one_tick_entry_fill(100.1, 1, 0.1), 100.2)
-    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: 100.19999999999999 != 100.2
-
 ----------------------------------------------------------------------
 Ran 9 tests in 0.015s
 
-FAILED (failures=1)
+OK
+test_completed_snapshot_reproduces_venue_state_at_bar_end_plus_one_ns (__main__.NativeQuoteSnapshotContracts.test_completed_snapshot_reproduces_venue_state_at_bar_end_plus_one_ns) ... ERROR
+test_invalid_or_crossed_state_fails_closed (__main__.NativeQuoteSnapshotContracts.test_invalid_or_crossed_state_fails_closed) ... ERROR
+test_non_quote_frame_is_backward_compatible (__main__.NativeQuoteSnapshotContracts.test_non_quote_frame_is_backward_compatible) ... ERROR
+test_source_event_must_be_inside_the_completed_bucket (__main__.NativeQuoteSnapshotContracts.test_source_event_must_be_inside_the_completed_bucket) ... ERROR
+test_unobservable_bucket_emits_no_native_quote (__main__.NativeQuoteSnapshotContracts.test_unobservable_bucket_emits_no_native_quote) ... ERROR
+
+======================================================================
+ERROR: test_completed_snapshot_reproduces_venue_state_at_bar_end_plus_one_ns (__main__.NativeQuoteSnapshotContracts.test_completed_snapshot_reproduces_venue_state_at_bar_end_plus_one_ns)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_quote_resiliency_native_quotes.py", line 54, in test_completed_snapshot_reproduces_venue_state_at_bar_end_plus_one_ns
+    instrument=self._instrument(),
+               ~~~~~~~~~~~~~~~~^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_quote_resiliency_native_quotes.py", line 20, in _instrument
+    return _build_instrument(
+        "BTCUSDT",
+    ...<9 lines>...
+        0.0006,
+    )
+TypeError: _build_instrument() takes 1 positional argument but 3 were given
+
+======================================================================
+ERROR: test_invalid_or_crossed_state_fails_closed (__main__.NativeQuoteSnapshotContracts.test_invalid_or_crossed_state_fails_closed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_quote_resiliency_native_quotes.py", line 121, in test_invalid_or_crossed_state_fails_closed
+    instrument=self._instrument(),
+               ~~~~~~~~~~~~~~~~^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_quote_resiliency_native_quotes.py", line 20, in _instrument
+    return _build_instrument(
+        "BTCUSDT",
+    ...<9 lines>...
+        0.0006,
+    )
+TypeError: _build_instrument() takes 1 positional argument but 3 were given
+
+======================================================================
+ERROR: test_non_quote_frame_is_backward_compatible (__main__.NativeQuoteSnapshotContracts.test_non_quote_frame_is_backward_compatible)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_quote_resiliency_native_quotes.py", line 88, in test_non_quote_frame_is_backward_compatible
+    instrument=self._instrument(),
+               ~~~~~~~~~~~~~~~~^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_quote_resiliency_native_quotes.py", line 20, in _instrument
+    return _build_instrument(
+        "BTCUSDT",
+    ...<9 lines>...
+        0.0006,
+    )
+TypeError: _build_instrument() takes 1 positional argument but 3 were given
+
+======================================================================
+ERROR: test_source_event_must_be_inside_the_completed_bucket (__main__.NativeQuoteSnapshotContracts.test_source_event_must_be_inside_the_completed_bucket)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_quote_resiliency_native_quotes.py", line 106, in test_source_event_must_be_inside_the_completed_bucket
+    instrument=self._instrument(),
+               ~~~~~~~~~~~~~~~~^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_quote_resiliency_native_quotes.py", line 20, in _instrument
+    return _build_instrument(
+        "BTCUSDT",
+    ...<9 lines>...
+        0.0006,
+    )
+TypeError: _build_instrument() takes 1 positional argument but 3 were given
+
+======================================================================
+ERROR: test_unobservable_bucket_emits_no_native_quote (__main__.NativeQuoteSnapshotContracts.test_unobservable_bucket_emits_no_native_quote)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_quote_resiliency_native_quotes.py", line 76, in test_unobservable_bucket_emits_no_native_quote
+    instrument=self._instrument(),
+               ~~~~~~~~~~~~~~~~^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_quote_resiliency_native_quotes.py", line 20, in _instrument
+    return _build_instrument(
+        "BTCUSDT",
+    ...<9 lines>...
+        0.0006,
+    )
+TypeError: _build_instrument() takes 1 positional argument but 3 were given
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.006s
+
+FAILED (errors=5)
