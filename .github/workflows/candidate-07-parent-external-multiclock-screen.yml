@@ -4,8 +4,11 @@ on:
   push:
     branches: ["research/candidate-07"]
     paths:
+      - "research/candidate-07/exact_timestamp_context.py"
+      - "research/candidate-07/multiclock_ensemble_scenario.py"
       - "research/candidate-07/parent_external_multiclock_scenario.py"
       - "research/candidate-07/run_parent_external_multiclock_screen.py"
+      - "research/candidate-07/tests/test_multiclock_ensemble.py"
       - "research/candidate-07/tests/test_parent_external_multiclock.py"
       - ".github/workflows/candidate-07-parent-external-multiclock-screen.yml"
   workflow_dispatch:
@@ -39,7 +42,7 @@ jobs:
       - name: Checkout exact source
         uses: actions/checkout@v4
 
-      - name: Verify foundation and parent-external contracts
+      - name: Verify foundation and exact parent-external contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -54,8 +57,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .research-data/candidate-07
-          key: candidate-07-parent-external-${{ matrix.label }}-v1
+          key: candidate-07-parent-external-${{ matrix.label }}-exact-v2
           restore-keys: |
+            candidate-07-parent-external-${{ matrix.label }}-
             candidate-07-btc-xrp-frozen-validation-v1
             candidate-07-btc-xrp-context-identity-v1
             candidate-07-btc-xrp-multiclock-portfolio-week1-v1
@@ -63,7 +67,7 @@ jobs:
             candidate-07-cross-symbol-15s-
             candidate-07-multiclock-ensemble-week1-v1
 
-      - name: Run unchanged BTC and XRP research-period screen in NautilusTrader
+      - name: Run exact BTC and XRP research-period screen in NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
@@ -71,16 +75,16 @@ jobs:
           /opt/smc4/.venv/bin/python \
             research/candidate-07/run_parent_external_multiclock_screen.py \
             --config research/candidate-07/config.json \
-            --screen-stage "${{ matrix.label }}" \
+            --screen-stage "${{ matrix.label }}-exact-episode" \
             --start "${{ matrix.start }}" \
             --end "${{ matrix.end }}" \
             --event-warmup-days 3 \
             --source-commit "${GITHUB_SHA}" \
-            --output "artifacts/candidate-07/parent-external/${{ matrix.label }}" \
+            --output "artifacts/candidate-07/parent-external-exact/${{ matrix.label }}" \
             --data-root .research-data/candidate-07 \
             --symbols BTCUSDT XRPUSDT
 
-      - name: Print immutable screen result
+      - name: Print immutable exact screen result
         if: always()
         shell: bash
         run: |
@@ -90,10 +94,10 @@ jobs:
           import json
           from pathlib import Path
 
-          root = Path('artifacts/candidate-07/parent-external/${{ matrix.label }}')
+          root = Path('artifacts/candidate-07/parent-external-exact/${{ matrix.label }}')
           summary = root / 'summary.json'
           if not summary.exists():
-              raise SystemExit('PARENT_EXTERNAL_SUMMARY_MISSING')
+              raise SystemExit('PARENT_EXTERNAL_EXACT_SUMMARY_MISSING')
           payload = json.loads(summary.read_text())
           hashes = {
               str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -108,11 +112,11 @@ jobs:
           }, indent=2, sort_keys=True))
           PY
 
-      - name: Preserve complete parent-external evidence
+      - name: Preserve complete exact parent-external evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-parent-external-${{ matrix.label }}-${{ github.sha }}
-          path: artifacts/candidate-07/parent-external/${{ matrix.label }}
+          name: candidate-07-parent-external-exact-${{ matrix.label }}-${{ github.sha }}
+          path: artifacts/candidate-07/parent-external-exact/${{ matrix.label }}
           retention-days: 14
           if-no-files-found: error
