@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from cancel_race_exit_logic import SUBMIT_MARKET_FLATTEN
+from cancel_race_exit_logic import WAIT_FOR_CONTINGENT_RESOLUTION
+from cancel_race_exit_logic import cancel_race_exit_action
 from entry_cancel_race_logic import entry_cancel_resolution
 from retrace_logic import pending_limit_invalidated
 from strategy_base import LiquidityResponseConfig
@@ -11,23 +14,17 @@ from strategy_v17 import EarlySponsoredChochStrategy
 
 
 class ExecutionConfirmedCancelStrategy(EarlySponsoredChochStrategy):
-    """Keep scenario state until a pending entry cancel is execution-confirmed.
+    """Keep scenario and exit state until Nautilus execution is authoritative.
 
-    A completed one-minute bar can cross both a resting limit and its structural
-    stop. NautilusTrader may match the entry before the strategy receives the
-    bar, while position/cancel events are delivered afterward. The earlier code
-    labeled the order unfilled, cleared its scenario, and could then receive a
-    real fill which remained open as an unmatched position.
+    A completed one-minute bar can cross a resting entry and its structural stop.
+    The entry may fill after cancellation was requested. Existing bracket exits
+    can then race an explicit market flatten. Submitting both produced a real
+    reduce-only rejection when the structural stop closed first.
 
-    v18 changes only that lifecycle:
-
-    * an invalidation/expiry/funding/evaluation condition requests cancellation
-      and enters ENTRY_CANCEL_PENDING without clearing the scenario;
-    * a confirmed cancel is finalized as unfilled only on a later completed bar;
-    * if a position opens before that finalization, all contingents are canceled
-      and the filled position is immediately flattened through NautilusTrader;
-    * no signal, order price, target, stop, size, fee, slippage, risk or market
-      interpretation is changed.
+    This version changes only order lifecycle. A market flatten is submitted
+    only after no reduce-only contingent remains and the position is still open.
+    Signal, entry, target, stop, size, fees, slippage, three-percent NAV risk and
+    all market interpretation are unchanged.
     """
 
     def __init__(self, config: LiquidityResponseConfig) -> None:
@@ -37,6 +34,8 @@ class ExecutionConfirmedCancelStrategy(EarlySponsoredChochStrategy):
         self.entry_cancel_reason: str | None = None
         self.entry_cancel_requested_index = -1
         self.entry_cancel_requested_ts = 0
+        self.cancel_race_exit_armed = False
+        self.cancel_race_flatten_submitted = False
         self.diagnostics.update(
             {
                 "entry_cancel_requests": 0,
@@ -44,6 +43,9 @@ class ExecutionConfirmedCancelStrategy(EarlySponsoredChochStrategy):
                 "entry_cancel_retries": 0,
                 "entry_fills_during_cancel_pending": 0,
                 "entry_cancel_unfilled_finalizations": 0,
+                "cancel_race_contingent_waits": 0,
+                "cancel_race_contingent_cancel_retries": 0,
+                "cancel_race_market_flatten_submissions": 0,
             },
         )
 
@@ -59,11 +61,6 @@ class ExecutionConfirmedCancelStrategy(EarlySponsoredChochStrategy):
             if resolution == "CLOSE_UNFILLED":
                 self._finalize_confirmed_unfilled_cancel(row)
                 return
-
-            # Some adapters may emit multiple child-order cancellation events or
-            # omit an entry-specific event from this callback. On a later bar,
-            # the cache is authoritative: no open non-reduce entry order and a
-            # flat portfolio is equivalent to cancel confirmation.
             if (
                 self.bar_index > self.entry_cancel_requested_index
                 and self.portfolio.is_flat(self.config.instrument_id)
@@ -72,7 +69,6 @@ class ExecutionConfirmedCancelStrategy(EarlySponsoredChochStrategy):
                 self.entry_cancel_confirmed = True
                 self._finalize_confirmed_unfilled_cancel(row)
                 return
-
             if self.bar_index > self.entry_cancel_requested_index + 1:
                 self.cancel_all_orders(self.config.instrument_id)
                 self.diagnostics["entry_cancel_retries"] += 1
@@ -121,25 +117,31 @@ class ExecutionConfirmedCancelStrategy(EarlySponsoredChochStrategy):
             )
 
     def on_order_canceled(self, event: Any) -> None:
-        if not self.entry_cancel_requested:
-            return
-        if not self.entry_cancel_confirmed:
-            self.entry_cancel_confirmed = True
-            self.diagnostics["entry_cancel_confirmations"] += 1
-        ts = int(getattr(event, "ts_event", self.bars[-1]["ts"]))
-        if (
-            self.current_scenario_id is not None
-            and self.scenario_states.get(self.current_scenario_id) != "CLOSED"
-        ):
-            self._transition(
-                self.current_scenario_id,
-                "ENTRY_CANCEL_EVENT_OBSERVED",
-                ts,
-                ts,
-                "ENTRY_CANCEL_PENDING",
-                "NAUTILUS_ORDER_CANCEL_EVENT_RECEIVED",
-                float(self.bars[-1]["close"]),
-                {"event": str(event), "requested_reason": self.entry_cancel_reason},
+        if self.entry_cancel_requested:
+            if not self.entry_cancel_confirmed:
+                self.entry_cancel_confirmed = True
+                self.diagnostics["entry_cancel_confirmations"] += 1
+            ts = int(getattr(event, "ts_event", self.bars[-1]["ts"]))
+            if (
+                self.current_scenario_id is not None
+                and self.scenario_states.get(self.current_scenario_id) != "CLOSED"
+            ):
+                self._transition(
+                    self.current_scenario_id,
+                    "ENTRY_CANCEL_EVENT_OBSERVED",
+                    ts,
+                    ts,
+                    "ENTRY_CANCEL_PENDING",
+                    "NAUTILUS_ORDER_CANCEL_EVENT_RECEIVED",
+                    float(self.bars[-1]["close"]),
+                    {"event": str(event), "requested_reason": self.entry_cancel_reason},
+                )
+        if self.cancel_race_exit_armed:
+            self._continue_cancel_race_exit(
+                ts=int(getattr(event, "ts_event", self.bars[-1]["ts"])),
+                reference_price=float(self.bars[-1]["close"]),
+                source="ORDER_CANCEL_EVENT",
+                retry_cancel=False,
             )
 
     def on_position_opened(self, event: Any) -> None:
@@ -167,13 +169,67 @@ class ExecutionConfirmedCancelStrategy(EarlySponsoredChochStrategy):
                     "entry_limit": self.entry_limit,
                     "structural_stop": self.entry_stop,
                     "cancel_requested_index": self.entry_cancel_requested_index,
+                    "exit_resolution_policy": "CONTINGENT_FIRST_THEN_SINGLE_MARKET_FLATTEN",
                 },
             )
         self.entry_pending = False
-        if not self.portfolio.is_flat(self.config.instrument_id):
-            self.exit_pending = True
-            self.cancel_all_orders(self.config.instrument_id)
-            self.close_all_positions(self.config.instrument_id)
+        self.exit_pending = True
+        self.cancel_race_exit_armed = True
+        self.cancel_race_flatten_submitted = False
+        self.cancel_all_orders(self.config.instrument_id)
+
+    def _manage_open_position(self, row: dict[str, float | int]) -> None:
+        if self.cancel_race_exit_armed:
+            self._continue_cancel_race_exit(
+                ts=int(row["ts"]),
+                reference_price=float(row["close"]),
+                source="COMPLETED_BAR",
+                retry_cancel=True,
+            )
+            return
+        super()._manage_open_position(row)
+
+    def _continue_cancel_race_exit(
+        self,
+        *,
+        ts: int,
+        reference_price: float,
+        source: str,
+        retry_cancel: bool,
+    ) -> None:
+        action = cancel_race_exit_action(
+            position_open=not self.portfolio.is_flat(self.config.instrument_id),
+            open_reduce_only_orders=self._has_open_reduce_only_order(),
+            flatten_submitted=self.cancel_race_flatten_submitted,
+        )
+        if action == WAIT_FOR_CONTINGENT_RESOLUTION:
+            self.diagnostics["cancel_race_contingent_waits"] += 1
+            if retry_cancel:
+                self.cancel_all_orders(self.config.instrument_id)
+                self.diagnostics["cancel_race_contingent_cancel_retries"] += 1
+            return
+        if action != SUBMIT_MARKET_FLATTEN:
+            return
+
+        self.cancel_race_flatten_submitted = True
+        self.diagnostics["cancel_race_market_flatten_submissions"] += 1
+        if self.current_scenario_id is not None:
+            self._transition(
+                self.current_scenario_id,
+                "CANCEL_RACE_MARKET_FLATTEN_SUBMITTED",
+                ts,
+                ts,
+                "EXIT_PENDING",
+                "NO_REDUCE_ONLY_CONTINGENT_REMAINS_WHILE_POSITION_OPEN",
+                reference_price,
+                {
+                    "source": source,
+                    "cancel_reason": self.entry_cancel_reason,
+                    "entry_limit": self.entry_limit,
+                    "structural_stop": self.entry_stop,
+                },
+            )
+        self.close_all_positions(self.config.instrument_id)
 
     def _finalize_confirmed_unfilled_cancel(
         self,
@@ -204,6 +260,12 @@ class ExecutionConfirmedCancelStrategy(EarlySponsoredChochStrategy):
                 return True
         return False
 
+    def _has_open_reduce_only_order(self) -> bool:
+        for order in self.cache.orders(instrument_id=self.config.instrument_id):
+            if order.is_open and bool(getattr(order, "is_reduce_only", False)):
+                return True
+        return False
+
     def _clear_trade_state(self) -> None:
         super()._clear_trade_state()
         self.entry_cancel_requested = False
@@ -211,6 +273,8 @@ class ExecutionConfirmedCancelStrategy(EarlySponsoredChochStrategy):
         self.entry_cancel_reason = None
         self.entry_cancel_requested_index = -1
         self.entry_cancel_requested_ts = 0
+        self.cancel_race_exit_armed = False
+        self.cancel_race_flatten_submitted = False
 
 
 __all__ = ["ExecutionConfirmedCancelStrategy"]
