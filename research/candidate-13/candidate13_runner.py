@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Frozen Candidate 13 holdout runner.
 
-This wrapper does not alter the imported trading state machine. It binds the
-predeclared Candidate 13 holdout calendar, invokes the NautilusTrader runner,
-then annotates and independently audits the emitted evidence.
+This wrapper does not alter the imported trading state machine. It binds an
+explicit protocol calendar, verifies the protocol's Git-blob source lock before
+any market archive is requested, invokes the NautilusTrader runner, then
+annotates and independently audits the emitted evidence.
 """
 from __future__ import annotations
 
 import argparse
-from hashlib import sha256
+from hashlib import sha1, sha256
 import json
 from pathlib import Path
 import sys
@@ -22,7 +23,7 @@ from evidence_audit import audit
 from run_leadership_scdam import run
 
 
-LOCKED_FILES = (
+DEFAULT_LOCKED_FILES = (
     "bar_adapter.py",
     "global_allocator.py",
     "logic.py",
@@ -51,21 +52,54 @@ def load_object(path: Path) -> dict[str, Any]:
     return value
 
 
+def git_blob_oid(payload: bytes) -> str:
+    header = f"blob {len(payload)}\0".encode()
+    return sha1(header + payload).hexdigest()
+
+
 def source_lock(protocol: dict[str, Any]) -> dict[str, Any]:
+    locked = protocol["locked_source"]
+    expected = locked["blobs"]
+    if not isinstance(expected, dict) or not expected:
+        raise ValueError("locked_source.blobs must be a non-empty object")
+
+    enforce = bool(locked.get("enforce_git_blobs", False))
     actual: dict[str, Any] = {}
-    expected = protocol["locked_source"]["blobs"]
-    for name in LOCKED_FILES:
+    mismatches: list[str] = []
+    for name in sorted(expected):
         path = ROOT / name
+        if not path.is_file():
+            mismatches.append(f"{name}: missing")
+            continue
         payload = path.read_bytes()
+        oid = git_blob_oid(payload)
+        expected_oid = str(expected[name])
+        matched = oid == expected_oid
+        if not matched:
+            mismatches.append(f"{name}: expected {expected_oid}, actual {oid}")
         actual[name] = {
             "bytes": len(payload),
             "sha256": sha256(payload).hexdigest(),
-            "origin_git_blob": expected[name],
+            "git_blob": oid,
+            "expected_git_blob": expected_oid,
+            "matched": matched,
         }
+
+    if enforce and mismatches:
+        raise RuntimeError(
+            "Candidate 13 frozen source mismatch before data access:\n"
+            + "\n".join(mismatches),
+        )
+
     return {
-        "schema": "candidate-13-source-lock-v1",
+        "schema": "candidate-13-source-lock-v2",
         "candidate": protocol["candidate"],
-        "origin_branch": protocol["locked_source"]["origin_branch"],
+        "origin_branch": locked["origin_branch"],
+        "strategy_freeze_commit": locked.get("strategy_freeze_commit"),
+        "development_evidence_commit": locked.get("development_evidence_commit"),
+        "enforced": enforce,
+        "all_matched": not mismatches,
+        "mismatches": mismatches,
         "files": actual,
     }
 
@@ -78,11 +112,23 @@ def annotate(path: Path, updates: dict[str, Any]) -> None:
     write_json(path, payload)
 
 
-def execute(week: str, output_dir: Path) -> dict[str, Any]:
-    protocol = load_object(ROOT / "protocol.json")
+def execute(
+    week: str,
+    output_dir: Path,
+    *,
+    protocol_path: Path | None = None,
+) -> dict[str, Any]:
+    selected_protocol = (protocol_path or (ROOT / "protocol.json")).resolve()
+    protocol = load_object(selected_protocol)
     holdouts = protocol["selection"]["holdouts"]
     if week not in holdouts:
-        raise ValueError(f"unknown frozen holdout {week!r}; expected one of {sorted(holdouts)}")
+        raise ValueError(
+            f"unknown frozen holdout {week!r}; expected one of {sorted(holdouts)}",
+        )
+
+    # Verify byte-exact trading source before writing a config or allowing the
+    # inherited runner to download any market archive.
+    verified_lock = source_lock(protocol)
 
     config = load_object(ROOT / "base_config.json")
     config["candidate"] = protocol["candidate"]
@@ -97,6 +143,7 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
     }
     config["candidate13_protocol"] = {
         "schema": protocol["schema"],
+        "protocol_file": selected_protocol.name,
         "holdout": week,
         "role": holdouts[week]["role"],
         "aggregate_gate": protocol["aggregate_gate"],
@@ -105,7 +152,7 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     effective_config = output_dir / "effective_config.json"
     write_json(effective_config, config)
-    write_json(output_dir / "source_lock.json", source_lock(protocol))
+    write_json(output_dir / "source_lock.json", verified_lock)
 
     metrics = run(effective_config, week, output_dir)
     metrics_path = output_dir / "metrics.json"
@@ -115,8 +162,12 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
         {
             "candidate": protocol["candidate"],
             "candidate13_protocol": protocol["schema"],
+            "candidate13_protocol_file": selected_protocol.name,
             "holdout_role": holdouts[week]["role"],
             "source_origin_branch": protocol["locked_source"]["origin_branch"],
+            "strategy_freeze_commit": protocol["locked_source"].get(
+                "strategy_freeze_commit",
+            ),
             "individual_success_claim": False,
             "success_claim": False,
         }
@@ -128,6 +179,7 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
         {
             "candidate": protocol["candidate"],
             "candidate13_protocol": protocol["schema"],
+            "candidate13_protocol_file": selected_protocol.name,
             "holdout": week,
         },
     )
@@ -136,6 +188,7 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
         {
             "candidate": protocol["candidate"],
             "candidate13_protocol": protocol["schema"],
+            "candidate13_protocol_file": selected_protocol.name,
             "holdout": week,
             "source_lock": "source_lock.json",
         },
@@ -148,6 +201,7 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
             "candidate": protocol["candidate"],
             "holdout_role": holdouts[week]["role"],
             "aggregate_gate_scope": True,
+            "source_lock_passed": verified_lock["all_matched"],
         }
     )
     write_json(output_dir / "audit.json", audit_result)
@@ -165,6 +219,7 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
         "partial_entry_protection_passed",
         "no_liquidation_passed",
         "engine_errors_absent",
+        "source_lock_passed",
     ):
         lines.append(f"- {key}: `{audit_result[key]}`")
     lines.extend(("", "## Reasons"))
@@ -173,6 +228,7 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
 
     summary = {
         "candidate": protocol["candidate"],
+        "candidate13_protocol": protocol["schema"],
         "week": week,
         "start": holdouts[week]["start"],
         "end_exclusive": holdouts[week]["end_exclusive"],
@@ -184,7 +240,7 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
         "win_rate": metrics.get("win_rate"),
         "final_nav": metrics.get("final_nav"),
         "closed_trade_max_drawdown": metrics.get("closed_trade_max_drawdown"),
-        "safety_audit_passed": all(
+        "safety_audit_passed": verified_lock["all_matched"] and all(
             audit_result.get(key) is True
             for key in (
                 "evidence_complete",
@@ -209,8 +265,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("week")
     parser.add_argument("output_dir", type=Path)
+    parser.add_argument(
+        "--protocol",
+        type=Path,
+        default=ROOT / "protocol.json",
+    )
     args = parser.parse_args()
-    execute(args.week, args.output_dir.resolve())
+    execute(
+        args.week,
+        args.output_dir.resolve(),
+        protocol_path=args.protocol,
+    )
     return 0
 
 
