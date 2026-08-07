@@ -1,10 +1,10 @@
 """Route delayed boundary reacceptance through the verified native Nautilus runner.
 
-Only detector selection, the one predeclared initial-state ablation, evidence vocabulary and the
-variable-length causal event serializer are replaced.  The verified native base continues to own
-the shared margin account, current-NAV 3% loss-budget sizing, market OUO bracket, fees, causal stop
-reserve, official funding and mark prices, liquidation, global one-order/position constraint, and
-all order/fill/account reports.
+Only detector selection, the one predeclared initial-state ablation, evidence vocabulary, the
+variable-length causal event serializer, and risk-evidence classification are replaced.  The
+verified native base continues to own the shared margin account, current-NAV 3% loss-budget sizing,
+market OUO bracket, fees, causal stop reserve, official funding and mark prices, liquidation,
+global one-order/position constraint, and all order/fill/account reports.
 """
 
 from __future__ import annotations
@@ -15,6 +15,11 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from aggtrade_acceptance_risk_v2 import (
+    RISK_ACCOUNTING_REVISION,
+    RiskCompleteAggTradeAcceptanceStrategy,
+    run_window_classifying_realized_slippage,
+)
 from aggtrade_delayed_reacceptance_signals_v3 import (
     ABLATION_INITIAL_MODE,
     BASE_INITIAL_MODE,
@@ -144,7 +149,26 @@ execution.runner.FAMILY_MODES = {
 execution.runner.build_auction_router_signals = build_delayed_reacceptance_signals
 execution.runner._build_router_signals = _build_signals
 execution.runner.base_runner.build_acceptance_signals = _build_signals
+execution.runner.base_runner.AggTradeAcceptanceStrategy = (
+    RiskCompleteAggTradeAcceptanceStrategy
+)
 execution.runner.base_runner._write_merged_events = _write_merged_events
+
+_NATIVE_ORIGINAL_RUN_WINDOW = execution._original_run_window
+
+
+def _run_window_with_risk_classification(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return run_window_classifying_realized_slippage(
+        _NATIVE_ORIGINAL_RUN_WINDOW,
+        *args,
+        **kwargs,
+    )
+
+
+# The flow-response adapter resolves this module global at call time.  An evidence-complete realized
+# slippage tail therefore returns metrics with a failed risk gate instead of being mislabeled as a
+# Python/runtime implementation failure by the staged orchestrator.
+execution._original_run_window = _run_window_with_risk_classification
 
 _ORIGINAL_GLOBAL_SIGNAL_SUMMARY = execution._original_global_signal_summary
 _ORIGINAL_SUITE_SUMMARY = execution._original_suite_summary
@@ -169,6 +193,7 @@ def _global_signal_summary(
     execution.runner.FAMILY_MODE = "both"
     summary = _ORIGINAL_GLOBAL_SIGNAL_SUMMARY(signals_by_time_ns)
     summary["implementation_revision"] = IMPLEMENTATION_REVISION
+    summary["risk_accounting_revision"] = RISK_ACCOUNTING_REVISION
     summary["delayed_reacceptance_initial_mode"] = _active_initial_mode()
     summary["ten_second_cadence_contract"] = "EXACT_CONSECUTIVE_10_SECONDS"
     summary["event_chain_contract"] = (
@@ -227,7 +252,12 @@ def _suite_summary(
     path_summary["diagnostic_revision_counts"] = dict(sorted(revision_counts.items()))
     path_summary["expected_diagnostic_revision"] = DIAGNOSTIC_REVISION
 
+    realized_risk_breach_windows = sum(
+        bool(result.get("execution_contract_classification")) for result in results
+    )
     summary["implementation_revision"] = IMPLEMENTATION_REVISION
+    summary["risk_accounting_revision"] = RISK_ACCOUNTING_REVISION
+    summary["realized_risk_breach_windows"] = realized_risk_breach_windows
     summary["delayed_reacceptance_initial_mode"] = mode
     summary["diagnostic_initial_ablation"] = not base_mode
     summary["promotable"] = bool(summary.get("promotable", True) and base_mode)
@@ -244,11 +274,13 @@ def _suite_summary(
     checks["single_delayed_reacceptance_family_attributed"] = family_complete
     checks["complete_post_run_trade_path_diagnostics"] = path_complete
     checks["base_initial_initiative_required"] = base_mode
+    checks["no_realized_risk_budget_breach"] = realized_risk_breach_windows == 0
     summary["suite_gate_passed"] = bool(
         summary.get("suite_gate_passed", False)
         and family_complete
         and path_complete
         and base_mode
+        and realized_risk_breach_windows == 0
     )
     return summary
 
