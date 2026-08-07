@@ -4,13 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from nautilus_trader.model import CryptoPerpetual
-from nautilus_trader.model import Currency
-from nautilus_trader.model import InstrumentId
-from nautilus_trader.model import Price
-from nautilus_trader.model import Quantity
-from nautilus_trader.model import Symbol
-from nautilus_trader.model import Venue
+from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
+from nautilus_trader.model.instruments import CryptoPerpetual
+from nautilus_trader.model.objects import Currency, Price, Quantity
 
 
 @dataclass(frozen=True, slots=True)
