@@ -395,6 +395,72 @@ class LogicTests(unittest.TestCase):
         )
         self.assertEqual(engine.skips["LOW_ACCEPTANCE_PULLBACK_NOT_STRUCTURAL"], 1)
 
+    def test_distant_low_acceptance_waits_for_local_reacceleration(self) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(
+            config(low_acceptance_max_entry_distance_atr=0.1),
+            "X",
+        )
+        self.seed_asia(engine)
+        # Initial sell-side acceptance forms far below the completed boundary.
+        engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
+        engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 87, 88), True)
+        engine._on_five(bar(ts(y, m, d, 6, 15), 88, 91, 86, 87), True)
+        # A bullish pullback is too distant for the completed-session entry.
+        self.assertIsNone(
+            engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 86.5, 89.5), True)
+        )
+        state = engine._sources[SessionLabel.ASIA]
+        self.assertEqual(state.low_acceptance_phase, "WAIT_LOCAL_REACCELERATION")
+        # The local pullback establishes its own invalidation.  A fresh bearish
+        # FVG then confirms reacceleration while the completed low remains accepted.
+        engine._on_five(bar(ts(y, m, d, 6, 25), 89.5, 92, 89, 91), True)
+        engine._on_five(bar(ts(y, m, d, 6, 30), 91, 91, 87, 87.5), True)
+        plan = engine._on_five(
+            bar(ts(y, m, d, 6, 35), 87.5, 88.5, 86.8, 87.2),
+            True,
+        )
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.scenario, ScenarioKind.ASIA_LOW_ACCEPTANCE_REACCELERATION)
+        self.assertEqual(plan.direction, Direction.SHORT)
+        self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
+        self.assertGreater(plan.stop_price, 92.0)
+        self.assertEqual(plan.target_price, 86.0)
+        self.assertEqual(
+            plan.details["target_semantics"],
+            "PRIOR_ACCEPTANCE_EXPANSION_LOW",
+        )
+
+    def test_local_low_reacceleration_dies_when_session_low_is_reclaimed(self) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(
+            config(low_acceptance_max_entry_distance_atr=0.1),
+            "X",
+        )
+        self.seed_asia(engine)
+        engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
+        engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 87, 88), True)
+        engine._on_five(bar(ts(y, m, d, 6, 15), 88, 91, 86, 87), True)
+        engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 86.5, 89.5), True)
+        state = engine._sources[SessionLabel.ASIA]
+        self.assertEqual(state.low_acceptance_phase, "WAIT_LOCAL_REACCELERATION")
+        # Closing back inside the completed range invalidates the continuation
+        # context before any later local FVG can be used.
+        engine._on_five(bar(ts(y, m, d, 6, 25), 89.5, 97, 89, 96), True)
+        self.assertEqual(state.low_acceptance_phase, "WAIT_REACCEPT")
+        engine._on_five(bar(ts(y, m, d, 6, 30), 96, 96, 87, 88), True)
+        plan = engine._on_five(
+            bar(ts(y, m, d, 6, 35), 88, 89, 86.8, 87.2),
+            True,
+        )
+        self.assertIsNone(plan)
+        self.assertFalse(any(
+            event.details.get("route")
+            == "DISTANT_LOW_ACCEPTANCE_PULLBACK_THEN_LOCAL_BEARISH_REACCELERATION"
+            for event in engine.events
+        ))
+
     def test_failed_premium_low_acceptance_can_reaccept_bearishly(self) -> None:
         y, m, d = self.DAY
         engine = CausalLiquidityAuctionEngine(config(), "X")

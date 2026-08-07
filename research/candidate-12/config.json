@@ -1,9 +1,9 @@
 {
-  "schema_version": 10,
-  "candidate": "candidate-12-connected-reacceptance-session-auction-router",
+  "schema_version": 11,
+  "candidate": "candidate-12-local-reacceleration-session-auction-router",
   "selection": {
     "seed": 2026080712,
-    "selection_rule": "W1/W2/W4/W5/W6/W7/W8 are exposed design evidence. I10 repairs the W8 re-acceptance classification without opening new data: after a shallow failed Asia high acceptance, only the first fresh bullish FVG may continue the old auction, and it must overlap the preserved original bullish FVG. A disconnected first fresh FVG is a new extension, so the old full-range objective becomes terminal rather than being reused later. I10 must re-pass W1, preserve the W5 connected re-acceptance winner, remove both W8 disconnected-extension losses, and then measure exposed W2/W6 before selecting another untouched week.",
+    "selection_rule": "W1-W10 are exposed design evidence. I11 does not relax the completed-session boundary entry gate. When sell-side acceptance remains valid but its bullish pullback is too distant for the completed boundary to be the entry structure, the engine opens a separate local auction: the prior acceptance trough is frozen as the live objective, the pullback high is the structural invalidation, and a fresh bearish FVG must confirm reacceleration while price still closes below the completed session low. A close back inside terminates this route. I11 must re-pass W1/W5/W6, preserve no-loss behavior on W2/W4/W8/W9, and convert the exposed W10 missed continuation into a causal Nautilus trade before any untouched W11 is opened.",
     "warmup_days": 4,
     "evaluation_days": 7,
     "design_week": "W1",
@@ -40,6 +40,14 @@
       "W8": {
         "start": "2024-08-18",
         "end_exclusive": "2024-08-25"
+      },
+      "W9": {
+        "start": "2023-08-13",
+        "end_exclusive": "2023-08-20"
+      },
+      "W10": {
+        "start": "2023-04-28",
+        "end_exclusive": "2023-05-05"
       }
     },
     "development_weeks": [
@@ -48,11 +56,13 @@
       "W5",
       "W6",
       "W7",
-      "W8"
+      "W8",
+      "W9",
+      "W10"
     ],
-    "confirmation_seed": 2026080809,
-    "implementation_week": "W5",
-    "diagnosis_week": "W8"
+    "confirmation_seed": 2026080811,
+    "implementation_week": "W10",
+    "diagnosis_week": "W10"
   },
   "symbols": {
     "BTCUSDT": {
@@ -110,7 +120,7 @@
     "random_seed": 2026080712,
     "bar_adaptive_high_low_ordering": true,
     "tick_slippage_units_in_risk_budget": 2.0,
-    "note": "NautilusTrader exclusively owns matching, fills, contingent orders, fees, margin, positions, and NAV. Buy-side and sell-side session boundaries have independent causal lifecycles, while the strategy adapter enforces one global pending-entry/open-position slot. A passive mitigation limit is submitted only when marketable at the completed decision close; otherwise the setup is classified as continuing sell pressure. Risk sizing reserves taker entry and stop costs for all protected limits, maker target cost, slippage, market impact, and funding uncertainty."
+    "note": "NautilusTrader exclusively owns matching, fills, contingent orders, fees, margin, positions, and NAV. Buy-side and sell-side session boundaries have independent causal lifecycles, while the strategy adapter enforces one global pending-entry/open-position slot. A passive mitigation limit is submitted only when marketable at the completed decision close. A distant sell-side acceptance pullback cannot reuse the completed boundary as an entry: it requires a fresh local bearish FVG, uses the pullback high as structural invalidation, and targets only the already observed acceptance trough. Risk sizing reserves taker entry and stop costs for all protected limits, maker target cost, slippage, market impact, and funding uncertainty."
   },
   "logic": {
     "bar_minutes": 5,
