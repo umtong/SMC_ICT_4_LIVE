@@ -1,0 +1,136 @@
+name: Candidate 13 v4 twenty-week regression
+
+on:
+  push:
+    branches: [research/candidate-13]
+    paths:
+      - "research/candidate-13/protocol-v4-regression.json"
+      - "research/candidate-13/run_v4_regression_week.sh"
+      - "research/candidate-13/candidate13_runner_v4.py"
+      - "research/candidate-13/run_leadership_scdam_v4.py"
+      - "research/candidate-13/semantic_market_leadership_v4.py"
+      - "research/candidate-13/runner_materializer_v4.py"
+      - "research/candidate-13/test_v4_*.py"
+      - ".github/workflows/candidate-13-v4-regression.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-13-v4-regression-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}"}
+      - name: Verify v4 and byte lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-13:$GITHUB_WORKSPACE/src"
+          python -m py_compile research/candidate-13/*.py
+          python -m unittest discover -s research/candidate-13 -p 'test_*.py' -v
+          python - <<'PY'
+          from pathlib import Path
+          from candidate13_runner_v4 import load_object, source_lock
+          p = load_object(Path('research/candidate-13/protocol-v4-regression.json'))
+          r = source_lock(p)
+          assert r['enforced'] and r['all_matched']
+          PY
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        week: [W10, W11, W12, W13, W14, W15, W16, W17, W18, W19, W20, W21, W22, W23, W24, W25, W26, W27, W28, W29]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}"}
+      - name: Run v4 NautilusTrader regression week
+        shell: bash
+        run: bash research/candidate-13/run_v4_regression_week.sh "${{ matrix.week }}"
+      - name: Remove market archives
+        if: always()
+        run: rm -rf "research/candidate-13/v4/regression/results/${{ matrix.week }}/data"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate13-v4-reg-${{ matrix.week }}
+          path: research/candidate-13/v4/regression/results/${{ matrix.week }}
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: always()
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: candidate13-v4-reg-W*
+          path: artifacts
+      - name: Aggregate and persist commit-scoped evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-13
+          [[ "$(git rev-parse origin/research/candidate-13)" == "$GITHUB_SHA" ]] || exit 0
+          mkdir -p research/candidate-13/v4/regression/results
+          for dir in artifacts/candidate13-v4-reg-W*; do
+            [[ -d "$dir" ]] || continue
+            week="${dir##*-}"
+            rm -rf "research/candidate-13/v4/regression/results/$week"
+            mkdir -p "research/candidate-13/v4/regression/results/$week"
+            cp -a "$dir/." "research/candidate-13/v4/regression/results/$week/"
+          done
+          python research/candidate-13/aggregate.py \
+            --results research/candidate-13/v4/regression/results \
+            --protocol research/candidate-13/protocol-v4-regression.json \
+            --output research/candidate-13/v4/regression/aggregate.json
+          [[ "$(git ls-remote origin refs/heads/research/candidate-13 | cut -f1)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-13-bot
+          git config user.email candidate-13-bot@users.noreply.github.com
+          git add research/candidate-13/v4/regression
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-13 v4: record twenty-week regression [skip ci]"
+            git push origin HEAD:research/candidate-13
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate13-v4-regression-aggregate-${{ github.run_id }}
+          path: |
+            research/candidate-13/v4/regression/aggregate.json
+            research/candidate-13/v4/regression/RESULT.md
+          if-no-files-found: warn
+          retention-days: 30
