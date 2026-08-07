@@ -1,49 +1,63 @@
-# Candidate 14 — Event Price-Discovery Transfer Auction
+# Candidate 14 — Core Preservation, Leader Catch-up, Displacement Execution
 
-Candidate 14 starts from Candidate 13's audited SCDAM detector, regional liquidity map, exact current-NAV 3% risk sizing, global one-slot allocator and NautilusTrader execution/accounting. It changes no market data, session ranges, liquidity targets, fee reserves, stop order, quantity formula or portfolio constraint.
+Candidate 14 uses Candidate 13's audited SCDAM detector, regional liquidity map, exact current-NAV 3% risk sizing, global one-slot allocator and NautilusTrader execution/accounting. It does not alter market data, session ranges, liquidity targets, fees, order accounting or portfolio constraints.
 
-## Research claim under test
+## Development v1 was rejected
 
-A local failed auction is not always a reversal of the completed 24-hour auction. The same causal sequence can be one of four different market roles:
+The first implementation generalized countertrend reversal into trend resumption, originator transfer, laggard transfer and path-only confirmation, and changed AAC to confirmation-close market execution. It increased closed trades from 4 to 12 but produced 5 wins and 7 losses, only 0.0110% daily geometric growth and a 6.20% weekly trade-path drawdown. That result is preserved in `development-v1-aggregate.json` and `development-v1-RESULT.md`.
 
-1. **COUNTERTREND_REVERSAL** — a moderate adverse auction exhausts after an external liquidity raid.
-2. **TREND_RESUMPTION** — a counter-directional raid fails and the already controlling auction resumes.
-3. **ORIGINATOR_TRANSFER** — one instrument completes efficient local price discovery before most peers, while at least one peer has begun to follow and visible support dominates opposition.
-4. **LAGGARD_TRANSFER** — all peers have already repriced, but the candidate still completes its own efficient structural confirmation and retains an independent costed target.
+The failure was logical, not an engine error: all safety audits passed. Generic transfer branches and AAC market execution were removed rather than tuned.
 
-The local SMC/ICT invariant remains:
+## Development v2 hypothesis
+
+Candidate 13 remains the immutable core. Candidate 14 adds one cross-market state and one execution state.
+
+### 1. Dynamic liquidity-leader catch-up
+
+```text
+candidate is the dynamic 24-hour quote-notional leader
+-> candidate still lags the proposed reversal
+-> a strict majority of peers already has positive direction-signed drift
+-> all peers move in the proposed direction from candidate sweep to confirmation
+-> candidate prints an efficient, volatility-normalized recovery path
+-> candidate is not the final event laggard
+-> approve LIQUIDITY_LEADER_CATCHUP
+```
+
+This is not generic originator or laggard permission. It represents transfer of peer price discovery into the deepest currently observed liquidity venue.
+
+### 2. Confirmed displacement-failure execution
+
+Candidate 13 sometimes approves a strong FAR scenario but leaves a passive order at the displacement void because confirmation-close entry with the original sweep-extreme stop does not retain the minimum after-cost R. If price never retraces, the valid move is missed.
+
+After reclaim, structure shift and displacement are complete, full buffered traversal back through the known displacement void invalidates the immediate continuation. Candidate 14 therefore tests, in order:
+
+```text
+confirmation-close market + original sweep stop
+-> if exact costed R fails:
+confirmation-close market + full-displacement-traversal stop
+-> if exact costed R or ATR floor fails:
+unchanged passive void order
+```
+
+The independent external target is unchanged. Quantity is still computed from exact current NAV and a maximum planned loss of 3%, including entry/stop fees. AAC remains the original defended-pivot post-only limit because development v1 showed that immediate AAC execution surrendered too much structural reward.
+
+## Causal invariant
 
 ```text
 completed regional range
--> pre-existing external liquidity is traded through
--> reclaim or outside acceptance is observed
--> local structure displaces in causal order
--> an independent live external target remains
--> exact costed price plan and 3% NAV loss budget
+-> pre-existing external liquidity traded through
+-> reclaim or outside acceptance observed
+-> local structure displacement completed
+-> independent live external target remains
+-> cross-market semantic state approved
+-> exact costed price plan
+-> NautilusTrader order and account NAV
 ```
-
-## Why this is not threshold relaxation
-
-Candidate 14 adds no fitted numerical threshold. It reuses the already frozen measurements:
-
-- confirmation impulse;
-- sweep-to-confirmation path efficiency;
-- pre-event-volatility standardized displacement;
-- synchronized peer returns;
-- candidate and market trailing directional auction;
-- event direction rank.
-
-These observations are assigned to mutually exclusive economic roles rather than requiring every valid event to look like a countertrend reversal led by a large final one-minute candle.
-
-## Execution change
-
-FAR retains confirmation-close market entry only when taker entry, stop-market loss and maker target costs still satisfy the existing structural net-R floor. AAC now receives the same test after acceptance, defended pullback and reacceleration have all completed. If the confirmation close does not retain sufficient costed R, AAC falls back to its defended-pivot post-only limit. Signal evidence, stop and target do not change with order type.
 
 ## Validation discipline
 
-The first protocol is explicitly `diagnostic`. It reuses Candidate 13 W10-W14 only to isolate the effect of Candidate 14 semantics. Even if the diagnostic gate passes, `success_claim` is forced to `false`.
-
-Only after a coherent diagnostic result may the code and strategy semantics be frozen and tested on newly predeclared, non-overlapping intervals. Final success requires the full aggregate gate and all independent evidence audits.
+W10-W14 are development diagnostics already observed by Candidates 13 and 14. They can identify implementation or mechanism failure but can never support a Candidate 14 success claim. A successful development result must be frozen before newly predeclared, non-overlapping evaluation intervals are run.
 
 ## Reproduction
 
@@ -58,4 +72,4 @@ python research/candidate-14/aggregate.py \
   --output research/candidate-14/aggregate.json
 ```
 
-NautilusTrader remains the only backtest and account engine.
+NautilusTrader is the only backtest and account engine.
