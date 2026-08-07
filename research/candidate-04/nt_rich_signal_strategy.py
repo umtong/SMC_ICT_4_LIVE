@@ -3,9 +3,10 @@
 
 The attached signal file contains only completed-data scenario decisions. This
 Strategy owns the live-like boundary: it checks the global portfolio state,
-selects a causal external-liquidity target, sizes from current Nautilus NAV,
-submits contingent orders, manages funding/holding exits and persists portfolio
-equity. No signal compiler output contains fills, positions, PnL or NAV.
+validates a compiler-declared target or selects one from its own pre-signal
+external-liquidity registry, sizes from current Nautilus NAV, submits contingent
+orders, manages funding/holding exits and persists portfolio equity. No signal
+compiler output contains fills, positions, PnL or NAV.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from nt_declared_causal_target import choose_declared_causal_target
 from nt_liquidity_strategy import LiquidityTransitionConfig
 from nt_liquidity_strategy import LiquidityTransitionStrategy
 from nt_liquidity_strategy import PendingSetup
@@ -170,8 +172,9 @@ class RichSignalStrategy(LowImpactExternalLiquidityStrategy):
         side: int,
         cost_rate: float,
     ) -> tuple[float, float, str] | None:
+        """Legacy diagnostic only; never called by the execution path."""
+
         rows = list(self.bars)
-        # Exclude the current signal bar so it cannot manufacture its own target.
         history = rows[-(self.config.projection_bars + 1) : -1]
         if len(history) < self.config.projection_bars:
             return None
@@ -227,14 +230,36 @@ class RichSignalStrategy(LowImpactExternalLiquidityStrategy):
         if not math.isfinite(atr) or atr <= 0.0:
             return False
         cost_rate = self.config.all_in_cost_bps_each_side / 10_000.0
-        target = choose_external_liquidity_target(
-            self._external_levels(side),
+        target, declaration_error = choose_declared_causal_target(
+            signal,
             entry=entry,
             stop=stop,
             side=side,
             cost_rate=cost_rate,
             minimum_net_r=self.config.minimum_target_net_r,
         )
+        if declaration_error is not None:
+            self._event(
+                "RICH_SIGNAL_INVALID_DECLARED_TARGET",
+                scenario,
+                row,
+                {
+                    "signal": signal,
+                    "entry": entry,
+                    "stop": stop,
+                    "declaration_error": declaration_error,
+                },
+            )
+            return False
+        if target is None:
+            target = choose_external_liquidity_target(
+                self._external_levels(side),
+                entry=entry,
+                stop=stop,
+                side=side,
+                cost_rate=cost_rate,
+                minimum_net_r=self.config.minimum_target_net_r,
+            )
         if target is None:
             self._event(
                 "RICH_SIGNAL_NO_CAUSAL_TARGET",
@@ -278,6 +303,12 @@ class RichSignalStrategy(LowImpactExternalLiquidityStrategy):
             "causal_target_source": target_source,
             "causal_target_net_r_at_signal": target_net_r,
             "minimum_target_net_r": self.config.minimum_target_net_r,
+            "target_selected_by": (
+                "scenario_compiler"
+                if (signal.get("details") or {}).get("causal_target_reference")
+                is not None
+                else "execution_registry"
+            ),
         }
         self.pending_entry_guard = {
             "scenario": scenario,
