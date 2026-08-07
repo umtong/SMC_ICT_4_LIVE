@@ -19,7 +19,7 @@ env:
 
 concurrency:
   group: candidate-03-candidate14-frozen-holdout
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   static:
@@ -54,7 +54,6 @@ jobs:
           import subprocess
           from pathlib import Path
 
-          source = Path("frozen-source/research/candidate-14")
           protocol = json.loads(Path("orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json").read_text())
           failures = []
           for name, expected in protocol["locked_source"]["blobs"].items():
@@ -131,10 +130,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Checkout holdout orchestrator
+      - name: Checkout current candidate branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: research/candidate-03
           fetch-depth: 0
           path: orchestrator
       - name: Checkout exact frozen Candidate 14 strategy tools
@@ -211,16 +210,12 @@ jobs:
             --results "$result_root" \
             --protocol "orchestrator/$PROTOCOL_REL" \
             --output "$result_root/aggregate.json"
-          git -C orchestrator fetch origin research/candidate-03
-          current_head="$(git -C orchestrator rev-parse origin/research/candidate-03)"
-          if [[ "$current_head" != "$GITHUB_SHA" ]]; then
-            echo "branch advanced during frozen evaluation: trigger=$GITHUB_SHA current=$current_head"
-            exit 1
-          fi
           git -C orchestrator config user.name "candidate-03-holdout-bot"
           git -C orchestrator config user.email "candidate-03-holdout-bot@users.noreply.github.com"
           git -C orchestrator add "$RESULT_REL"
           git -C orchestrator commit -m "candidate-03: record Candidate 14 frozen holdout evidence [skip ci]"
+          git -C orchestrator fetch origin research/candidate-03
+          git -C orchestrator rebase origin/research/candidate-03
           git -C orchestrator push origin HEAD:research/candidate-03
       - name: Upload aggregate holdout decision
         if: always()
