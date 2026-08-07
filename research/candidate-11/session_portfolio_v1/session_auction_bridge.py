@@ -1,9 +1,10 @@
-"""Bridge frozen Candidate 12 I7 plans into Candidate 14's shared portfolio.
+"""Bridge frozen Candidate 12 I7 plans into Candidate 11's shared portfolio.
 
-The source engine remains byte-identical under :mod:`session_auction_i7`.  This
+The source engine remains byte-identical under :mod:`session_auction_i7`. This
 module only converts its completed plans, reconstructs the causal observation
-window needed by Candidate 14's already-frozen four-market semantic gate, and
-routes lifecycle events back to the original engine.
+window needed by the already-frozen four-market semantic gate, injects each
+instrument's actual tick size, and routes lifecycle events back to the original
+engine.
 
 Causal windows are scenario identities, not fitted lookbacks:
 
@@ -17,7 +18,7 @@ the I7 engine, the plan carries ``-1`` and the market gate fails closed.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable
 
 from logic import BarObs as PortfolioBarObs
@@ -31,10 +32,22 @@ from session_auction_i7 import LogicConfig
 from session_auction_i7 import TradePlan as SessionTradePlan
 
 
-SESSION_LOGIC_KEY = "BTCUSDT::SESSION_I7"
+SESSION_LOGIC_SUFFIX = "SESSION_I7"
 SESSION_MODULE = "SESSION_I7"
 SESSION_SOURCE_COMMIT = "036c0e8302c3826aa293f6037405a84fc7118ae8"
+SESSION_PORTFOLIO_VARIANT = "CANDIDATE11_MULTI_SYMBOL_I7_V1"
 DAY_NS = 86_400_000_000_000
+
+
+def session_logic_key(symbol: str) -> str:
+    clean = str(symbol).strip().upper()
+    if not clean:
+        raise ValueError("session symbol must be non-empty")
+    return f"{clean}::{SESSION_LOGIC_SUFFIX}"
+
+
+# Compatibility for the frozen BTC-only baseline and its existing unit tests.
+SESSION_LOGIC_KEY = session_logic_key("BTCUSDT")
 
 REVERSAL_SCENARIOS = frozenset(
     {
@@ -55,7 +68,7 @@ CONTINUATION_SCENARIOS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class SessionPortfolioPlan:
-    """Structural plan shape consumed by the shared Candidate 14 portfolio."""
+    """Structural plan shape consumed by the shared Candidate 11 portfolio."""
 
     scenario_id: str
     scenario: Any
@@ -98,9 +111,9 @@ def session_causal_start_ns(
     """Return the earliest already-observed event proving this exact plan.
 
     Reacceptance plan details intentionally do not contain the earlier failure
-    timestamp.  The unchanged source engine does record that event, so this
+    timestamp. The unchanged source engine does record that event, so this
     bridge retrieves the most recent same-day, same-source failure which
-    causally precedes the plan.  No future event or arbitrary time window is
+    causally precedes the plan. No future event or arbitrary time window is
     used.
     """
     details = plan.details
@@ -163,6 +176,7 @@ def adapt_session_plan(
             "_logic_key": logic_key,
             "module": SESSION_MODULE,
             "session_source_commit": SESSION_SOURCE_COMMIT,
+            "session_portfolio_variant": SESSION_PORTFOLIO_VARIANT,
             "session_entry_order": plan.entry_order.value,
             "entry_cost_assumption": "TAKER",
             "entry_post_only": False,
@@ -194,7 +208,7 @@ def adapt_session_plan(
 
 
 class SessionAuctionBridge:
-    """Expose the frozen I7 engine through Candidate 14's lifecycle protocol."""
+    """Expose one frozen I7 engine through the shared lifecycle protocol."""
 
     def __init__(
         self,
@@ -202,7 +216,15 @@ class SessionAuctionBridge:
         instrument_id: str,
         *,
         logic_key: str = SESSION_LOGIC_KEY,
+        price_increment: float | None = None,
     ) -> None:
+        if price_increment is not None:
+            tick = float(price_increment)
+            if tick <= 0.0:
+                raise ValueError("price_increment must be positive")
+            # Only execution metadata differs by instrument. Every causal I7
+            # threshold and state transition remains byte-identical.
+            config = replace(config, price_increment=tick)
         self.logic_key = logic_key
         self.engine = CausalLiquidityAuctionEngine(config, instrument_id)
         self._originals: dict[str, SessionTradePlan] = {}
@@ -291,8 +313,8 @@ class SessionAuctionBridge:
 
     def mark_entry_filled(self, ts_ns: int, details: dict[str, Any]) -> None:
         # Candidate 12's original evidence contract transitions directly from
-        # SUBMITTED to terminal. Candidate 14 records the fill in the common
-        # Nautilus order lifecycle, so no synthetic detector event is inserted.
+        # SUBMITTED to terminal. The shared portfolio records the fill in the
+        # common Nautilus order lifecycle, so no synthetic event is inserted.
         del ts_ns, details
 
     def mark_trade_terminal(self, ts_ns: int, reason: str) -> None:
