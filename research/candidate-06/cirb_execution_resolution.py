@@ -515,8 +515,22 @@ def build_child_plans(
     def count(name: str) -> None:
         outcomes[name] = int(outcomes.get(name, 0)) + 1
 
-    for parent in parents:
+    eligible_parents = tuple(
+        parent for parent in parents if parent.baseline_entry is not None
+    )
+
+    for parent in eligible_parents:
+        assert parent.baseline_entry is not None
         branch = parent.crowding_branch
+        expected_reason = str(parent.baseline_entry["reason_code"])
+        expected_family = {
+            "CROWD_DISCHARGE_REVERSAL_ENTRY_ARMED": "CIRB_D_R",
+            "CROWD_DISCHARGE_CONTINUATION_ENTRY_ARMED": "CIRB_D_C",
+            "TRAPPED_COUNTER_INVENTORY_CONTINUATION_ENTRY_ARMED": "CIRB_T_C",
+        }.get(expected_reason)
+        if expected_family is None:
+            count("BASELINE_ENTRY_FAMILY_UNSUPPORTED")
+            continue
         if branch == "DISCHARGE" and not enable_discharge:
             count("DISCHARGE_DISABLED")
             continue
@@ -541,15 +555,38 @@ def build_child_plans(
         previous_metric = metrics.get(parent.observed_ts_ns)
         signalled = False
         terminal_recorded = False
+        partial_minute_index: int | None = None
+        partial: dict[str, float] | None = None
         for timestamp, row in subset.iterrows():
             ts_ns = int(timestamp.value)
-            close = float(row["close"])
+            response_minute_index = (
+                ts_ns - parent.observed_ts_ns - 1
+            ) // NS_PER_MINUTE
+            if partial_minute_index != response_minute_index:
+                partial_minute_index = response_minute_index
+                partial = {
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row["volume"]),
+                    "taker_buy_volume": float(row["taker_buy_volume"]),
+                }
+            else:
+                assert partial is not None
+                partial["high"] = max(partial["high"], float(row["high"]))
+                partial["low"] = min(partial["low"], float(row["low"]))
+                partial["close"] = float(row["close"])
+                partial["volume"] += float(row["volume"])
+                partial["taker_buy_volume"] += float(row["taker_buy_volume"])
+            assert partial is not None
+            close = partial["close"]
             prior_extreme = extreme
             extreme = min(extreme, float(row["low"])) if parent.side == "SELL" else max(
                 extreme, float(row["high"])
             )
-            flow = _flow_ratio(row)
-            location = _close_location(row)
+            flow = _flow_ratio(partial)
+            location = _close_location(partial)
             metric = metrics.get(ts_ns)
             signal: ScenarioSignal | None = None
             signal_branch: str | None = None
@@ -595,7 +632,7 @@ def build_child_plans(
                         details={
                             "parent_scenario_id": parent.scenario_id,
                             "crowding_branch": branch,
-                            "response_resolution": "5S_COMPLETED_BAR",
+                            "response_resolution": "CAUSAL_PARTIAL_MINUTE_FROM_COMPLETED_5S",
                             "baseline_rr_eroded": parent.baseline_rr_eroded,
                             "causal_exit_reason_codes": (
                                 "DELEVERAGING_REVERSAL_THESIS_INVALIDATED",
@@ -603,7 +640,12 @@ def build_child_plans(
                             "causal_exit_open_position": True,
                         },
                     )
-                elif metric is not None and previous_metric is not None and previous_metric.open_interest > 0.0:
+                elif (
+                        expected_family == "CIRB_D_C"
+                        and metric is not None
+                        and previous_metric is not None
+                        and previous_metric.open_interest > 0.0
+                    ):
                     next_change = (
                         metric.open_interest - previous_metric.open_interest
                     ) / previous_metric.open_interest
@@ -649,7 +691,7 @@ def build_child_plans(
                             details={
                                 "parent_scenario_id": parent.scenario_id,
                                 "crowding_branch": branch,
-                                "response_resolution": "5S_COMPLETED_BAR",
+                                "response_resolution": "CAUSAL_PARTIAL_MINUTE_FROM_COMPLETED_5S",
                                 "baseline_rr_eroded": parent.baseline_rr_eroded,
                                 "causal_exit_reason_codes": (
                                     "DELEVERAGING_CONTINUATION_THESIS_INVALIDATED",
@@ -732,7 +774,7 @@ def build_child_plans(
                             details={
                                 "parent_scenario_id": parent.scenario_id,
                                 "crowding_branch": branch,
-                                "response_resolution": "5S_COMPLETED_BAR",
+                                "response_resolution": "CAUSAL_PARTIAL_MINUTE_FROM_COMPLETED_5S",
                                 "counter_inventory_rebuild_fraction": rebuild,
                                 "required_counter_inventory_rebuild_fraction": required,
                                 "counter_composition_change_log": composition_change,
@@ -744,7 +786,11 @@ def build_child_plans(
                             },
                         )
 
-            if signal is not None and signal_branch is not None:
+            if signal is not None and signal.family != expected_family:
+                    raise RuntimeError(
+                        f"five-second family drift: {signal.family} != {expected_family}"
+                    )
+                if signal is not None and signal_branch is not None:
                 invalidation_ts, invalidation_reason = _scan_invalidation(
                     parent=parent,
                     frame=five_second_frame,
@@ -777,9 +823,14 @@ def build_child_plans(
 
     plans.sort(key=lambda item: (item.signal.observed_ts_ns, item.signal.scenario_id))
     diagnostics = {
-        "parent_signals_armed": len(parents),
+        "parent_events_observed": len(parents),
+        "parent_signals_armed": len(eligible_parents),
         "child_5s_candidates": len(plans),
-        "baseline_rr_eroded_parent_count": sum(parent.baseline_rr_eroded for parent in parents),
+        "baseline_rr_eroded_parent_count": sum(
+            parent.baseline_rr_eroded for parent in eligible_parents
+        ),
+        "partial_minute_aggregation": True,
+        "entry_family_frozen": True,
         "rescued_by_5s_candidate_count": sum(plan.baseline_rr_eroded for plan in plans),
         "response_outcomes": dict(sorted(outcomes.items())),
         "entry_delay_seconds": delays,

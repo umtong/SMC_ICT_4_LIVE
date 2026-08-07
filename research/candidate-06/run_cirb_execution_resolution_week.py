@@ -178,7 +178,7 @@ def main() -> int:
             rows=len(five_second.frame),
         )
         metrics["candidate"] = "candidate-06-cirb-parent-frozen-5s"
-        metrics["candidate_version"] = "6.1.0-resolution-ablation"
+        metrics["candidate_version"] = "6.1.1-causal-partial-minute"
         metrics["bar_interval"] = "5s"
         metrics["variant"] = args.variant
         metrics["parent_audit"] = {

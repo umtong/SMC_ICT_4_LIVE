@@ -101,3 +101,7 @@ combined cost-after-fee daily geometric NAV growth of at least `1%`.
 A profitable result is not accepted if parent identity changes. A failed result
 does not authorize lowering the RR floor, changing the crowding sign split,
 retargeting the frozen weeks or fitting five-second flow thresholds.
+
+## Causal partial-minute correction
+
+The original five-second draft incorrectly applied one-minute response thresholds to isolated five-second bars and scored every shock parent. The corrected experiment scores only frozen baseline-entry parents and reconstructs each still-forming response minute from completed five-second OHLCV and aggressor flow. Thresholds, entry family, direction, target family, risk, fees and invalidation remain unchanged.
