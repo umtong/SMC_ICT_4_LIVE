@@ -14,6 +14,8 @@ is changed.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 from logic import (
     Auction,
     BarObs,
@@ -77,12 +79,18 @@ def semantic_costed_limit_plan(
     reason: str,
 ) -> TradePlan | None:
     if a.scenario != Scenario.AAC:
-        plan = BASE_COSTED_LIMIT_PLAN(self, a, confirmation_bar, reason)
-        if plan is not None:
-            expire_ts_ns, structural_minutes = _structure_expiry(self, confirmation_bar.ts_ns)
-            plan.expire_ts_ns = expire_ts_ns
-            plan.details["entry_expiry_structure_minutes"] = structural_minutes
-            _amend_last_plan_event(self, plan.scenario_id, expire_ts_ns, structural_minutes)
+        inherited = BASE_COSTED_LIMIT_PLAN(self, a, confirmation_bar, reason)
+        if inherited is None:
+            return None
+        expire_ts_ns, structural_minutes = _structure_expiry(self, confirmation_bar.ts_ns)
+        details = dict(inherited.details)
+        details["entry_expiry_structure_minutes"] = structural_minutes
+        plan = replace(
+            inherited,
+            expire_ts_ns=expire_ts_ns,
+            details=details,
+        )
+        _amend_last_plan_event(self, plan.scenario_id, expire_ts_ns, structural_minutes)
         return plan
 
     assert a.direction is not None and a.scenario is not None
