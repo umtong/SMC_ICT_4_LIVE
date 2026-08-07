@@ -28,19 +28,18 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Fetch exact branch and verify frozen V17 source
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: research/candidate-03
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Verify frozen V17 source and pinned runtime
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if ! command -v git >/dev/null 2>&1; then
-            apt-get update -qq
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git ca-certificates
-          fi
-          git clone --depth 1 --branch research/candidate-03 \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
-          cd repo
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test "$(git hash-object research/candidate-03/derive_nt_lvcfr_v17_signals.py)" = "fcc05dd19bbfc621226250743979d341a7194bf7"
           test "$(git hash-object research/candidate-03/nt_lvcfr_v17_config.json)" = "64c7ef99cc076582ffff59c961208bc09d22cae7"
           test "$(git hash-object research/candidate-03/nt_lvcfr_strategy.py)" = "e4d00ae0c6fa1d24198c846bccb247baacdc0456"
@@ -59,7 +58,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd repo
           export PYTHONPATH="$PWD/src:$PWD/research/candidate-03"
 
           run_week() {
@@ -139,7 +137,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          cd repo
           copy_result() {
             local src="$1"
             local dst="$2"
