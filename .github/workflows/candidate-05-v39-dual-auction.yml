@@ -1,0 +1,132 @@
+name: candidate-05-v39-dual-auction
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/strategy_v39_dual_auction.py"
+      - "research/candidate-05/tests/test_strategy_v39_contract.py"
+      - ".github/workflows/candidate-05-v39-dual-auction.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v39-dual-auction
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  frozen-btc-stages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v39
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and full contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Select v39 without changing the committed active strategy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-05/strategy.py /tmp/candidate05-strategy.py
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("research/candidate-05/strategy.py")
+          source = path.read_text(encoding="utf-8")
+          pattern = re.compile(
+              r"^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$",
+              re.MULTILINE,
+          )
+          match = pattern.search(source)
+          if match is None:
+              raise RuntimeError(f"could not identify the frozen v26 import in {source!r}")
+          exported = match.group(2) or match.group(1)
+          replacement = (
+              "from strategy_v39_dual_auction import "
+              f"DualAuctionStateStrategy as {exported}"
+          )
+          path.write_text(pattern.sub(replacement, source, count=1), encoding="utf-8")
+          print(path.read_text(encoding="utf-8"))
+          PY
+
+      - name: Run frozen BTC stages in NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks research/candidate-05/weeks.json \
+            --cache .cache/candidate-05-v39 \
+            --output "$ROOT" \
+            --max-weeks 3 \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify Nautilus-only evidence and summarize promotion state
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("artifacts/candidate-05-v39")
+          evidence = []
+          for path in sorted(root.rglob("metrics.json")):
+              data = json.loads(path.read_text(encoding="utf-8"))
+              evidence.append({"path": str(path), "metrics": data})
+              assert int(data.get("liquidations", 0) or 0) == 0
+              assert int(data.get("order_rejections", 0) or 0) == 0
+              assert int(data.get("order_denials", 0) or 0) == 0
+              assert int(data.get("max_open_positions_observed", 0) or 0) <= 1
+              assert int(data.get("max_entry_intents_observed", 0) or 0) <= 1
+          if not evidence:
+              raise RuntimeError("v39 produced no Nautilus metrics evidence")
+          summary = {
+              "schema": "candidate-05-v39-frozen-btc-v1",
+              "engine": "NautilusTrader BacktestNode",
+              "strategy": "strategy_v39_dual_auction:DualAuctionStateStrategy",
+              "risk_fraction": 0.03,
+              "stages_completed": len(evidence),
+              "evidence": evidence,
+          }
+          (root / "v39_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True),
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Restore committed active strategy
+        if: always()
+        shell: bash
+        run: cp /tmp/candidate05-strategy.py research/candidate-05/strategy.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v39-dual-auction-${{ github.sha }}
+          path: artifacts/candidate-05-v39/**
+          if-no-files-found: error
+          retention-days: 90
