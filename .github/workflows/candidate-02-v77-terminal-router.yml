@@ -1,4 +1,4 @@
-name: candidate-02-v103-slim-evidence-extractor
+name: candidate-02-current-research-source-export
 
 on:
   push:
@@ -8,44 +8,42 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
-  group: candidate-02-v103-slim-evidence-extractor
+  group: candidate-02-current-research-source-export
   cancel-in-progress: false
 
 jobs:
-  extract-small-diagnostics:
+  export-current-research-source:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
-      - name: Download immutable successful v103 evidence bundle
-        uses: actions/download-artifact@v8
+      - uses: actions/checkout@v4
         with:
-          name: candidate-02-v103-first-week-branch-ed1c1ec068d3b593eb7e810e834c6468d9ec74e4
-          path: /tmp/v103-full
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: umtong/SMC_ICT_4_LIVE
-          run-id: 31141672951
+          ref: research/candidate-02
+          fetch-depth: 0
 
-      - name: Extract only human-auditable small evidence
+      - name: Build deterministic source-only archive
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/v103-slim"
-          cd /tmp/v103-full
-          find . -type f \
-            \( -name '*.json' -o -name '*.jsonl' -o -name '*.csv' -o -name '*.log' -o -name 'STATUS*' -o -name '*.txt' \) \
-            -print0 | tar --null --files-from=- -cf - | tar -C "$GITHUB_WORKSPACE/v103-slim" -xf -
-          find "$GITHUB_WORKSPACE/v103-slim" -type f -printf '%s\t%p\n' | sort -n > "$GITHUB_WORKSPACE/v103-slim/FILE_INVENTORY.tsv"
-          du -sh "$GITHUB_WORKSPACE/v103-slim"
-          tail -n 80 "$GITHUB_WORKSPACE/v103-slim/FILE_INVENTORY.tsv"
+          mkdir -p export
+          tar --sort=name --mtime='UTC 2026-08-07' --owner=0 --group=0 --numeric-owner \
+            -czf export/candidate-02-current-research-source.tar.gz \
+            research/candidate-02 \
+            .candidate-02-v75 \
+            .candidate-02-v89 \
+            .github/workflows/candidate-02-v53-nt.yml \
+            .github/workflows/candidate-02-v77-terminal-router.yml
+          sha256sum export/candidate-02-current-research-source.tar.gz \
+            > export/candidate-02-current-research-source.sha256
+          git rev-parse HEAD > export/branch-head.txt
 
-      - name: Upload lightweight v103 diagnostic evidence
+      - name: Upload current research source
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-02-v103-slim-evidence-ed1c1ec
-          path: v103-slim
+          name: candidate-02-current-research-source-${{ github.sha }}
+          path: export
           if-no-files-found: error
           retention-days: 30
           compression-level: 9
