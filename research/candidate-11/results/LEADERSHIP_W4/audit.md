@@ -1,6 +1,6 @@
 # Candidate 11 evidence audit
 
-**LOGIC_FAILURE_NO_EXECUTABLE_PLANS**
+**LOGIC_OR_FREQUENCY_FAILURE**
 
 - advance_allowed: `False`
 - success_claim_allowed: `False`
@@ -12,4 +12,4 @@
 - no_liquidation_passed: `True`
 
 ## Reasons
-- the causal state machine produced no executable plans
+- the frozen W1 promising gate did not pass
