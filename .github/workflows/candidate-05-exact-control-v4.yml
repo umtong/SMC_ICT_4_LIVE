@@ -1,0 +1,80 @@
+name: candidate-05-exact-control-v4
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/validated_btc_research.py"
+      - "research/candidate-05/controlled_candidate_research.py"
+      - "research/candidate-05/strategy_v29b_external_displacement_fvg.py"
+      - "research/candidate-05/strategy_v30_external_acceptance_retest.py"
+      - "research/candidate-05/strategy_v31_impact_resiliency_reversal.py"
+      - "research/candidate-05/strategy_v32_queue_pressure_release.py"
+      - "research/candidate-05/tests/test_strategy_v29b_contract.py"
+      - ".github/workflows/candidate-05-exact-control-v4.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-exact-control-v4
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  btc-exact-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-exact-control-v4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and all contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Run exact-control BTC candidate sequence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-05/validated_btc_research.py \
+            --output "$ROOT/runs" \
+            --cache .cache/candidate-05-exact-control-v4 \
+            --summary "$ROOT/validated_btc_research.json" \
+            --winner "$ROOT/validated_btc_winner.json" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify authoritative evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f "$ROOT/validated_btc_research.json"; then
+            python -m json.tool "$ROOT/validated_btc_research.json"
+          fi
+          if test -f "$ROOT/validated_btc_winner.json"; then
+            python -m json.tool "$ROOT/validated_btc_winner.json"
+          fi
+          if test -f "$ROOT/console.log"; then tail -n 400 "$ROOT/console.log"; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-exact-control-v4-${{ github.sha }}
+          path: artifacts/candidate-05-exact-control-v4/**
+          if-no-files-found: error
+          retention-days: 90
