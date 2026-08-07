@@ -1,0 +1,176 @@
+name: Candidate 06 CIRB 5S State-Link Evidence V2
+
+on:
+  push:
+    branches:
+      - research/candidate-06
+    paths:
+      - ".github/workflows/candidate-06-cirb-5s-state-link-evidence-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-cirb-5s-state-link-evidence-v2
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  frozen-rerun:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply the same implementation-only state-link fix
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-06/cirb_five_second_nautilus.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''            super().__init__(
+                          strategy_config,
+                          observations=observations,
+                          logic_params=logic_params,
+                      )
+                      self._scenario_engine = _NoopScenarioEngine()
+          '''
+          new = '''            base_logic = dict(logic_params)
+                      base_logic["engine"] = "LIQUIDITY_RESPONSE_BIFURCATION"
+                      super().__init__(
+                          strategy_config,
+                          observations=observations,
+                          logic_params=base_logic,
+                      )
+                      self._logic_params = dict(logic_params)
+                      self._scenario_engine = _NoopScenarioEngine()
+          '''
+          if new in text:
+              print("STATE_LINK_ALREADY_FIXED")
+          elif old in text:
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+              print("STATE_LINK_FIXED")
+          else:
+              raise SystemExit("STATE_LINK_PATCH_CONTEXT_MISSING")
+          PY
+
+      - name: Restore checksum-verified research cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-06
+          key: candidate-06-cirb-5s-${{ runner.os }}-v1
+          restore-keys: |
+            candidate-06-cirb-5s-
+            candidate-06-
+
+      - name: Verify environment and unchanged contracts
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          assert version("nautilus_trader") == "1.230.0"
+          PY
+          python -m py_compile \
+            research/candidate-06/cirb_execution_resolution.py \
+            research/candidate-06/cirb_five_second_nautilus.py \
+            research/candidate-06/run_cirb_execution_resolution_week.py \
+            research/candidate-06/run_cirb_execution_resolution_matrix.py
+          python research/candidate-06/test_cirb_execution_resolution.py
+          python research/candidate-06/test_crowding_inventory_response_engine.py
+          python research/candidate-06/test_signal_submission_timing_contract.py
+
+      - name: Execute identical frozen W2-first matrix
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/cirb-execution-resolution
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts/candidate-06
+          python research/candidate-06/run_cirb_execution_resolution_matrix.py \
+            --output artifacts/candidate-06/cirb-execution-resolution \
+            > artifacts/candidate-06-cirb-execution-resolution.stdout \
+            2> artifacts/candidate-06-cirb-execution-resolution.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Materialize terminal evidence files
+        if: always()
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-06/cirb-execution-resolution
+          mkdir -p "$root"
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > "$root/workflow_exit_code.txt"
+          cp artifacts/candidate-06-cirb-execution-resolution.stdout \
+            "$root/workflow_stdout.txt" 2>/dev/null || true
+          cp artifacts/candidate-06-cirb-execution-resolution.stderr \
+            "$root/workflow_stderr.txt" 2>/dev/null || true
+          test -s "$root/summary.json"
+          test -s "$root/SUMMARY.md"
+
+      - name: Commit corrected source and complete deterministic evidence index
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          root=artifacts/candidate-06/cirb-execution-resolution
+          git add research/candidate-06/cirb_five_second_nautilus.py
+          git add -u "$root" || true
+          git add -f \
+            "$root/summary.json" \
+            "$root/SUMMARY.md" \
+            "$root/workflow_exit_code.txt" \
+            "$root/workflow_stdout.txt" \
+            "$root/workflow_stderr.txt"
+          find "$root" -type f \
+            \( -name 'metrics.json' \
+            -o -name 'parent_audit.json' \
+            -o -name 'child_plans.json' \
+            -o -name 'run.json' \
+            -o -name '*data_quality.json' \
+            -o -name 'futures_metrics_quality.json' \
+            -o -name 'errors.log' \) \
+            -print0 | xargs -0 -r git add -f
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Fix candidate-06 CIRB 5S state link and preserve verdict [candidate-06 evidence]"
+          git push origin HEAD:research/candidate-06
+
+      - name: Upload complete frozen rerun evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-cirb-5s-state-link-v2-${{ github.sha }}
+          path: artifacts/candidate-06/cirb-execution-resolution
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce research verdict
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          exit "$code"
