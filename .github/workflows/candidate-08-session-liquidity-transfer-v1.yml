@@ -1,0 +1,212 @@
+name: candidate-08-session-liquidity-transfer-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-session-liquidity-transfer-v1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-session-liquidity-transfer-v1
+  cancel-in-progress: true
+
+jobs:
+  staged-btc-validation:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.run-session-liquidity-transfer-v1
+      OUTPUT_DIR: research/candidate-08/evidence/session-liquidity-transfer-v1
+      FIRST_DIR: research/candidate-08/evidence/session-liquidity-transfer-v1/first
+      SCREEN_DIR: research/candidate-08/evidence/session-liquidity-transfer-v1/screen
+      LOG: research/candidate-08/evidence/session-liquidity-transfer-v1/workflow.log
+      STATUS: research/candidate-08/evidence/session-liquidity-transfer-v1/exit_status.txt
+      CACHE_DIR: .cache/candidate-08-session-liquidity-transfer
+      CONFIG: research/candidate-08/config_session_liquidity_transfer_btc_v1.json
+      PATTERN_CONFIG: research/candidate-08/config_range_fvg.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore checksum-verified market-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/candidate-08-session-liquidity-transfer
+          key: candidate-08-session-liquidity-transfer-v1-${{ hashFiles('research/candidate-08/config_session_liquidity_transfer_btc_v1.json') }}
+          restore-keys: |
+            candidate-08-session-liquidity-transfer-v1-
+
+      - name: Run frozen first week and conditional screen
+        id: research
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/session_liquidity_transfer_signals_v1.py \
+              research/candidate-08/run_session_liquidity_transfer_nautilus_v1.py
+            python research/candidate-08/test_session_liquidity_transfer_signals_v1.py -v
+            python research/candidate-08/run_session_liquidity_transfer_nautilus_v1.py \
+              --suite first \
+              --config "$CONFIG" \
+              --pattern-config "$PATTERN_CONFIG" \
+              --output "$FIRST_DIR" \
+              --data-cache "$CACHE_DIR"
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          first_dir = Path(os.environ["FIRST_DIR"])
+          summary = json.loads((first_dir / "suite_metrics.json").read_text())
+          result = summary["window_results"][0]
+          promote = bool(result.get("first_window_gate_passed", False))
+          (Path(os.environ["OUTPUT_DIR"]) / "promote_screen.txt").write_text(
+              "1\n" if promote else "0\n",
+              encoding="utf-8",
+          )
+          print(json.dumps({"first_window_gate_passed": promote}, indent=2))
+          PY
+            if [[ "$(cat "$OUTPUT_DIR/promote_screen.txt")" == "1" ]]; then
+              python research/candidate-08/run_session_liquidity_transfer_nautilus_v1.py \
+                --suite screen \
+                --config "$CONFIG" \
+                --pattern-config "$PATTERN_CONFIG" \
+                --output "$SCREEN_DIR" \
+                --reuse-first-dir "$FIRST_DIR/screen-01" \
+                --data-cache "$CACHE_DIR"
+            fi
+            python - <<'PY'
+          import json
+          import os
+          from collections import Counter
+          from pathlib import Path
+
+          output = Path(os.environ["OUTPUT_DIR"])
+          first_dir = Path(os.environ["FIRST_DIR"])
+          screen_dir = Path(os.environ["SCREEN_DIR"])
+          first = json.loads((first_dir / "suite_metrics.json").read_text())
+          first_result = first["window_results"][0]
+          first_name = str(first_result["name"])
+          first_window = first_dir / first_name
+          manifest = json.loads((first_window / "data_manifest.json").read_text())
+          diagnostics = manifest["assets"]["BTCUSDT"]["detector_diagnostics"]
+          rejections = json.loads((first_window / "detector_rejections.json").read_text())
+          reasons = Counter(
+              str(item.get("reason"))
+              for item in rejections.get("by_symbol", {}).get("BTCUSDT", [])
+          )
+
+          signals = int(first_result.get("detector", {}).get("signals", 0))
+          closed = int(first_result.get("position_metrics", {}).get("closed_trades", 0))
+          wins = int(first_result.get("position_metrics", {}).get("wins", 0))
+          first_gate = bool(first_result.get("first_window_gate_passed", False))
+          if not first_gate:
+              if signals == 0:
+                  classification = "CLEAN_LOGIC_FAILURE_NO_TRADEABLE_SESSION_TRANSFER"
+              elif closed < 3:
+                  classification = "CLEAN_LOGIC_FAILURE_INSUFFICIENT_DAY_TRADING_FREQUENCY"
+              elif float(first_result.get("total_return", 0.0)) <= 0.0:
+                  classification = "CLEAN_LOGIC_FAILURE_COST_AFTER_EDGE_NEGATIVE"
+              else:
+                  classification = "FIRST_GATE_FAILED_EXECUTION_OR_EVIDENCE_CONTRACT"
+              screen = None
+              next_action = "ONE_PREREGISTERED_DIRECTIONAL_RETEST_CLOSE_ABLATION_ONLY_IF_DOMINANT"
+          else:
+              screen = json.loads((screen_dir / "suite_metrics.json").read_text())
+              suite_gate = bool(screen.get("suite_gate_passed", False))
+              goal = bool(screen.get("goal_met", False))
+              if suite_gate and goal:
+                  classification = "PROMOTE_TO_LONGER_BTC_EVALUATION"
+                  next_action = "RUN_FROZEN_LONGER_BTC_EVALUATION"
+              elif suite_gate:
+                  classification = "THREE_WEEK_GATE_PASSED_BUT_DAILY_GROWTH_GOAL_MISSED"
+                  next_action = "DO_NOT_TUNE;_ANALYZE_STRUCTURAL_GROWTH_LIMIT"
+              else:
+                  classification = "MULTIWEEK_GENERALIZATION_FAILURE"
+                  next_action = "DISCARD_OR_SINGLE_CAUSAL_ABLATION_FROM_DOMINANT_FAILURE"
+
+          decision = {
+              "candidate": first.get("candidate"),
+              "classification": classification,
+              "first_window": {
+                  "signals": signals,
+                  "closed_trades": closed,
+                  "wins": wins,
+                  "win_rate": float(first_result.get("position_metrics", {}).get("win_rate", 0.0)),
+                  "total_return": float(first_result.get("total_return", 0.0)),
+                  "daily_geometric_growth": float(first_result.get("daily_geometric_growth", 0.0)),
+                  "maximum_drawdown": float(first_result.get("maximum_realized_equity_drawdown", 0.0)),
+                  "gate_passed": first_gate,
+              },
+              "detector_diagnostics": diagnostics,
+              "top_rejection_reasons": dict(reasons.most_common(20)),
+              "screen_summary": screen,
+              "next_action": next_action,
+              "scalping_alpha_inputs": False,
+          }
+          (output / "decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit implementation and evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- \
+            research/candidate-08/session_liquidity_transfer_signals_v1.py \
+            research/candidate-08/test_session_liquidity_transfer_signals_v1.py \
+            research/candidate-08/run_session_liquidity_transfer_nautilus_v1.py \
+            research/candidate-08/config_session_liquidity_transfer_btc_v1.json \
+            research/candidate-08/SESSION_LIQUIDITY_TRANSFER_V1_PREREGISTRATION.md \
+            "$OUTPUT_DIR" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record session liquidity transfer evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce reproducible execution
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS_VALUE: ${{ steps.research.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
