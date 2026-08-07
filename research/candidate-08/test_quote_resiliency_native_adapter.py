@@ -24,10 +24,14 @@ HERE = Path(__file__).resolve().parent
 
 
 class NativeAdapterContracts(unittest.TestCase):
-    def test_config_and_implementation_revisions_are_bound(self) -> None:
-        payload = json.loads(
+    @staticmethod
+    def _payload() -> dict:
+        return json.loads(
             (HERE / "config_quote_resiliency_btc_v1.json").read_text(encoding="utf-8")
         )
+
+    def test_config_and_implementation_revisions_are_bound(self) -> None:
+        payload = self._payload()
         self.assertEqual(
             payload["implementation_revision"],
             adapter.CONFIG_IMPLEMENTATION_REVISION,
@@ -41,6 +45,30 @@ class NativeAdapterContracts(unittest.TestCase):
             adapter.EXECUTION_ADAPTER_REVISION,
             EXECUTION_ADAPTER_REVISION,
         )
+
+    def test_inherited_native_engine_config_contract_is_complete(self) -> None:
+        payload = self._payload()
+        cost = payload["cost_assumptions"]
+        venue = payload["venue"]
+        self.assertEqual(cost["one_tick_slippage_probability"], 1.0)
+        self.assertEqual(
+            set(cost["latency_ms"]),
+            {"base", "insert", "update", "cancel"},
+        )
+        self.assertTrue(0.0 <= float(cost["one_tick_slippage_probability"]) <= 1.0)
+        self.assertEqual(
+            {
+                "default_leverage",
+                "bar_adaptive_high_low_ordering",
+                "liquidation_enabled",
+                "liquidation_trigger_ratio",
+                "liquidation_cancel_open_orders",
+            }
+            - set(venue),
+            set(),
+        )
+        self.assertGreater(float(payload["starting_nav_usdt"]), 0.0)
+        self.assertIsInstance(int(payload["random_seed"]), int)
 
     def test_only_predeclared_ablation_is_exposed(self) -> None:
         self.assertEqual(
