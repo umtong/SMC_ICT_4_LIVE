@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the isolated M7-M9 balance-acceptance Nautilus runner.
 
-The balance-acceptance family is evaluated on its own.  Earlier pool-impact and
+The balance-acceptance family is evaluated on its own. Earlier pool-impact and
 VWAP-exhaustion families are not silently bundled into its evidence, so every
 plan, fill, skip reason, and NAV outcome remains attributable to the hypothesis
 being screened.
@@ -47,6 +47,12 @@ def main() -> None:
         'default=ROOT / "results" / "MICRO_M1"',
         'default=ROOT / "results" / "MICRO_V3_M7"',
         1,
+    )
+    source = replace_once(
+        source,
+        'self.sizer = RiskSizer(Decimal(str(account_config["risk_fraction"])))',
+        'self.sizer = RiskSizer(float(account_config["risk_fraction"]))',
+        "RiskSizer public API boundary",
     )
     (root / "run_microstructure_v3_nautilus.py").write_text(source, encoding="utf-8")
 
