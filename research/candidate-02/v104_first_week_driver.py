@@ -146,6 +146,7 @@ def materialize_futures_tools(lock: Mapping[str, Any], base: Mapping[str, Any]) 
     shutil.copytree(ROOT / ".candidate-02-v75", tools)
     start = date.fromisoformat(str(lock["first_week"]["start_utc"])[:10])
     warmup_days = int(base["validation"]["warmup_days"])
+    expected_archives = warmup_days + 8
     constructor = re.compile(r"EVALUATION_START\s*=\s*date\(\s*\d{4}\s*,\s*\d{1,2}\s*,\s*\d{1,2}\s*\)")
     replacements = {
         "inputs/v75-first-week": "inputs/v104-first-week",
@@ -174,6 +175,18 @@ def materialize_futures_tools(lock: Mapping[str, Any], base: Mapping[str, Any]) 
                 text,
             )
             warmup_changes += count
+        if path.name == "build_features.py":
+            archive_before = (
+                '    if len(agg_frames) != 10 or len(book_frames) != 10:\n'
+                '        raise ValueError("expected ten daily direct-data archives per source")'
+            )
+            archive_after = (
+                f'    if len(agg_frames) != {expected_archives} or len(book_frames) != {expected_archives}:\n'
+                f'        raise ValueError("expected {expected_archives} daily direct-data archives per source")'
+            )
+            if text.count(archive_before) != 1:
+                raise RuntimeError("v75 feature-builder archive assertion materialization mismatch")
+            text = text.replace(archive_before, archive_after)
         path.write_text(text, encoding="utf-8")
     if date_changes != 1 or warmup_changes != 1:
         raise RuntimeError(f"collector materialization mismatch: date={date_changes}, warmup={warmup_changes}")
