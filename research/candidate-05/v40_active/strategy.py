@@ -1,7 +1,7 @@
-"""Temporary import shim for the controlled v40 Nautilus experiment.
+"""Temporary import shim for the controlled v41 Nautilus experiment.
 
 The production candidate remains in the parent ``strategy.py``. This shim loads
-that exact module under a private name, then exposes only the v40 subclass while
+that exact module under a private name, then exposes only the v41 subclass while
 preserving the same config class and every inherited execution contract.
 """
 from __future__ import annotations
@@ -23,13 +23,13 @@ _SPEC.loader.exec_module(_BASE)
 _WRAPPER = sys.modules[__name__]
 sys.modules["strategy"] = _BASE
 try:
-    from strategy_v40_unfilled_target_handoff import (  # noqa: E402
-        UnfilledTargetHandoffStrategy,
+    from strategy_v41_target_reset_participation import (  # noqa: E402
+        TargetResetParticipationStrategy,
     )
 finally:
     sys.modules["strategy"] = _WRAPPER
 
 LiquidityResponseConfig = _BASE.LiquidityResponseConfig
-LiquidityResponseStrategy = UnfilledTargetHandoffStrategy
+LiquidityResponseStrategy = TargetResetParticipationStrategy
 
 __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
