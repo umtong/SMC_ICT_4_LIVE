@@ -1,0 +1,113 @@
+{
+  "schema": "candidate-13-frozen-protocol-v1",
+  "candidate": "candidate-13-price-discovery-leadership-auction",
+  "created_utc": "2026-08-08",
+  "research_question": "Can a dynamic price-discovery leader and synchronized peer response distinguish failed liquidity auctions from accepted repricing strongly enough to compound NAV above 1% per observed day after realistic costs?",
+  "hypothesis": {
+    "leader": "Determine the current price-discovery leader from trailing completed 24-hour quote notional, without hard-coding BTC.",
+    "leader_scenarios": [
+      "FAR",
+      "AAC"
+    ],
+    "follower_scenarios": [
+      "FAR only when all three completed peer paths support the proposed reversal"
+    ],
+    "fail_closed": [
+      "missing or asynchronous peer observations",
+      "follower AAC without leadership",
+      "peer directional disagreement",
+      "weak local displacement",
+      "event laggard",
+      "unresolved adverse auction",
+      "leader recovery without directional support"
+    ]
+  },
+  "locked_source": {
+    "origin_branch": "research/candidate-11",
+    "note": "Direct materialized source only; candidate-11 patch/materialization generators and historical results are intentionally not copied.",
+    "blobs": {
+      "bar_adapter.py": "c2ce386a42956c22039f0bf7490cf9493ab51003",
+      "global_allocator.py": "6dcc95a4f02a0613ad7c72ff0b738cee4b640fc4",
+      "logic.py": "08ac6c0119c2e83039c864ff3a0aff06d6a75c75",
+      "market_leadership.py": "272b1aee7468cbbd6b79a4bc6c8e421e93df6bf0",
+      "session_engine.py": "21180b2397f0ee63c887079764df1ee94e426a03",
+      "run_leadership_scdam.py": "e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f",
+      "evidence_audit.py": "990dd8986246a7dac8d5c619ef930ffd54ba430e",
+      "base_config.json": "050b5b9413c22e4fc2ef247cc2b272657ff66f38"
+    }
+  },
+  "prior_evidence_not_used_for_candidate13_validation": {
+    "candidate11_W4_to_W8": {
+      "calendar_days": 35,
+      "closed_trades": 12,
+      "wins": 12,
+      "losses": 0,
+      "description": "Motivation and source selection only; these intervals are not candidate-13 holdouts."
+    },
+    "candidate11_W9": {
+      "calendar_days": 7,
+      "closed_trades": 0,
+      "description": "Shows opportunity drought risk."
+    }
+  },
+  "selection": {
+    "seed": 2026080813,
+    "method": "random.Random(seed) shuffled every seven-day start from 2023-01-01 through 2025-12-25, then accepted the first non-overlapping starts after excluding candidate-11 W1-W9; fixed before downloading candidate-13 data.",
+    "warmup_days": 3,
+    "holdouts": {
+      "W10": {
+        "start": "2025-04-14",
+        "end_exclusive": "2025-04-21",
+        "role": "primary"
+      },
+      "W11": {
+        "start": "2023-03-20",
+        "end_exclusive": "2023-03-27",
+        "role": "primary"
+      },
+      "W12": {
+        "start": "2023-06-20",
+        "end_exclusive": "2023-06-27",
+        "role": "primary"
+      },
+      "W13": {
+        "start": "2024-09-17",
+        "end_exclusive": "2024-09-24",
+        "role": "stress"
+      },
+      "W14": {
+        "start": "2024-12-31",
+        "end_exclusive": "2025-01-07",
+        "role": "stress"
+      }
+    }
+  },
+  "aggregate_gate": {
+    "observed_calendar_days": 35,
+    "minimum_daily_geometric_growth": 0.01,
+    "minimum_closed_trades": 10,
+    "minimum_active_weeks": 4,
+    "minimum_win_rate": 0.8,
+    "minimum_payoff_ratio": 1.2,
+    "maximum_trade_path_drawdown": 0.2,
+    "maximum_positive_log_growth_share_from_one_week": 0.6,
+    "require_all_safety_audits": true,
+    "risk_fraction": 0.03,
+    "global_pending_entry_plus_position_limit": 1
+  },
+  "execution_lock": {
+    "engine": "NautilusTrader",
+    "starting_nav": "100000",
+    "effective_maker_rate": "0.0004",
+    "effective_taker_rate": "0.0008",
+    "parent_order": "POST_ONLY_LIMIT_GTD",
+    "stop_order": "STOP_MARKET_GTC",
+    "risk_fraction": 0.03,
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ]
+  }
+}

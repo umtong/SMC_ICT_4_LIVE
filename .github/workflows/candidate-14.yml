@@ -1,0 +1,254 @@
+name: Candidate 14 combined portfolio diagnostics
+
+on:
+  push:
+    branches:
+      - research/candidate-14
+    paths:
+      - "research/candidate-14/**"
+      - ".github/workflows/candidate-14.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-14-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify environment, source contracts and semantic tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
+          python -m py_compile research/candidate-14/*.py
+          python -m unittest discover -s research/candidate-14 -p 'test_*.py' -v
+          sha256sum \
+            research/candidate-14/bar_adapter.py \
+            research/candidate-14/global_allocator.py \
+            research/candidate-14/logic.py \
+            research/candidate-14/market_leadership.py \
+            research/candidate-14/session_engine.py \
+            research/candidate-14/session_auction_i7.py \
+            research/candidate-14/session_auction_bridge.py \
+            research/candidate-14/session_i7_config.json \
+            research/candidate-14/semantic_logic.py \
+            research/candidate-14/semantic_market_leadership.py \
+            research/candidate-14/runner_materializer.py \
+            research/candidate-14/portfolio_materializer.py \
+            research/candidate-14/run_leadership_scdam.py \
+            research/candidate-14/run_leadership_scdam_base.py \
+            research/candidate-14/evidence_audit.py \
+            research/candidate-14/base_config.json \
+            research/candidate-14/protocol.json
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      matrix:
+        week: [W10, W11, W12, W13, W14]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Run Candidate 14 combined Nautilus diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash research/candidate-14/run_week.sh "${{ matrix.week }}"
+      - name: Upload raw bars only for explicitly requested path diagnosis
+        if: contains(github.event.head_commit.message, '[raw]')
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate14raw-${{ matrix.week }}
+          path: research/candidate-14/results/${{ matrix.week }}/data
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Remove downloaded market archives from evidence payload
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "research/candidate-14/results/${{ matrix.week }}/data"
+      - name: Upload auditable evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate14-${{ matrix.week }}
+          path: |
+            research/candidate-14/results/${{ matrix.week }}/run.json
+            research/candidate-14/results/${{ matrix.week }}/data_manifest.json
+            research/candidate-14/results/${{ matrix.week }}/metrics.json
+            research/candidate-14/results/${{ matrix.week }}/summary.json
+            research/candidate-14/results/${{ matrix.week }}/audit.json
+            research/candidate-14/results/${{ matrix.week }}/audit.md
+            research/candidate-14/results/${{ matrix.week }}/source_lock.json
+            research/candidate-14/results/${{ matrix.week }}/effective_config.json
+            research/candidate-14/results/${{ matrix.week }}/scenario_events.jsonl
+            research/candidate-14/results/${{ matrix.week }}/submitted_plans.json
+            research/candidate-14/results/${{ matrix.week }}/order_lifecycle.json
+            research/candidate-14/results/${{ matrix.week }}/orders.csv
+            research/candidate-14/results/${{ matrix.week }}/positions.csv
+            research/candidate-14/results/${{ matrix.week }}/account.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: ${{ needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Download every fresh diagnostic artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate14-W*
+          path: artifacts
+      - name: Validate provenance, aggregate and persist fresh evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-14
+          current_head="$(git rev-parse origin/research/candidate-14)"
+          if [[ "$current_head" != "$GITHUB_SHA" ]]; then
+            echo "stale research run: $GITHUB_SHA; current branch: $current_head"
+            exit 0
+          fi
+
+          rm -rf research/candidate-14/results
+          mkdir -p research/candidate-14/results
+          for week in W10 W11 W12 W13 W14; do
+            src="artifacts/candidate14-$week"
+            test -d "$src"
+            mkdir -p "research/candidate-14/results/$week"
+            cp -a "$src/." "research/candidate-14/results/$week/"
+            for file in \
+              run.json data_manifest.json metrics.json summary.json audit.json audit.md \
+              source_lock.json effective_config.json scenario_events.jsonl \
+              submitted_plans.json order_lifecycle.json orders.csv positions.csv account.csv; do
+              test -s "research/candidate-14/results/$week/$file"
+            done
+          done
+
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          root = Path("research/candidate-14")
+          protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+          schema = protocol["schema"]
+          candidate = protocol["candidate"]
+          mode = protocol["validation_mode"]
+          expected = set(protocol["selection"]["holdouts"])
+          actual = {path.name for path in (root / "results").iterdir() if path.is_dir()}
+          if actual != expected:
+              raise SystemExit(f"fresh artifact set mismatch: expected {sorted(expected)}, got {sorted(actual)}")
+
+          for week in sorted(expected):
+              folder = root / "results" / week
+              effective = json.loads((folder / "effective_config.json").read_text(encoding="utf-8"))
+              run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+              metrics = json.loads((folder / "metrics.json").read_text(encoding="utf-8"))
+              summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
+              audit = json.loads((folder / "audit.json").read_text(encoding="utf-8"))
+              lock = json.loads((folder / "source_lock.json").read_text(encoding="utf-8"))
+
+              if effective.get("candidate") != candidate:
+                  raise SystemExit(f"{week}: candidate mismatch in effective_config")
+              contract = effective.get("candidate14_protocol", {})
+              if contract.get("schema") != schema or contract.get("validation_mode") != mode:
+                  raise SystemExit(f"{week}: effective protocol mismatch")
+              if "session_i7" not in effective:
+                  raise SystemExit(f"{week}: combined session module absent")
+              for name, payload in (
+                  ("run", run),
+                  ("metrics", metrics),
+                  ("summary", summary),
+                  ("audit", audit),
+              ):
+                  if payload.get("candidate") != candidate:
+                      raise SystemExit(f"{week}: {name} candidate mismatch")
+                  if payload.get("validation_mode") != mode:
+                      raise SystemExit(f"{week}: {name} validation mode mismatch")
+              if run.get("candidate14_protocol") != schema:
+                  raise SystemExit(f"{week}: run protocol mismatch")
+              if metrics.get("candidate14_protocol") != schema:
+                  raise SystemExit(f"{week}: metrics protocol mismatch")
+              if lock.get("candidate") != candidate or lock.get("validation_mode") != mode:
+                  raise SystemExit(f"{week}: source-lock provenance mismatch")
+              if not all(
+                  audit.get(key) is True
+                  for key in (
+                      "evidence_complete",
+                      "metric_recalculation_passed",
+                      "risk_budget_passed",
+                      "global_slot_passed",
+                      "partial_entry_protection_passed",
+                      "no_liquidation_passed",
+                      "engine_errors_absent",
+                  )
+              ):
+                  raise SystemExit(f"{week}: safety audit failed")
+          PY
+
+          python research/candidate-14/aggregate.py \
+            --results research/candidate-14/results \
+            --protocol research/candidate-14/protocol.json \
+            --output research/candidate-14/aggregate.json
+
+          latest_head="$(git ls-remote origin refs/heads/research/candidate-14 | cut -f1)"
+          if [[ "$latest_head" != "$GITHUB_SHA" ]]; then
+            echo "branch advanced during evaluation; fresh evidence remains an artifact only"
+            exit 0
+          fi
+
+          git config user.name "candidate-14-bot"
+          git config user.email "candidate-14-bot@users.noreply.github.com"
+          git add -A \
+            research/candidate-14/results \
+            research/candidate-14/aggregate.json \
+            research/candidate-14/RESULT.md
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-14: record provenance-verified Nautilus evidence [skip ci]"
+            git push origin HEAD:research/candidate-14
+          fi
+      - name: Upload aggregate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate14-aggregate-${{ github.run_id }}
+          path: |
+            research/candidate-14/aggregate.json
+            research/candidate-14/RESULT.md
+          if-no-files-found: error
+          retention-days: 30
