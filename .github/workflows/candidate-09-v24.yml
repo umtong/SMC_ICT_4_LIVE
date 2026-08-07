@@ -59,6 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           root=research/candidate-09
+          cp "$root/run_v24_ci.sh" /tmp/run_v24_ci.sh
           while read -r part digest bytes git_blob; do
             [[ "$part" == part* ]] || continue
             test "$(wc -c < "$root/v24_bundle/$part")" -eq "$bytes"
@@ -73,7 +74,7 @@ jobs:
           cp "$root/data_loader_v24.py" "$root/data_loader.py"
           cp "$root/run_v24_direct.py" "$root/run.py"
           cp "$root/config_v24.json" "$root/config.json"
-          git show "$GITHUB_SHA:research/candidate-09/run_v24_ci.sh" > "$root/run_v24_ci.sh"
+          cp /tmp/run_v24_ci.sh "$root/run_v24_ci.sh"
           chmod +x "$root/run_v24_ci.sh"
 
       - name: Run contracts, pooled gate, and gated long evaluation
