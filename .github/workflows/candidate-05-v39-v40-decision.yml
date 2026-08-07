@@ -1,0 +1,143 @@
+name: candidate-05-v39-v40-decision
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v39-v40-decision.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v39-v40-decision
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  controlled-decision:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v39-v40-decision
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify fixed environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+      - name: Run controlled Week 1 comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          cp research/candidate-05/strategy.py /tmp/candidate05-strategy.py
+          run_variant() {
+            module="$1"; class="$2"; label="$3"
+            cp /tmp/candidate05-strategy.py research/candidate-05/strategy.py
+            MODULE="$module" CLASS="$class" python - <<'PY'
+          from pathlib import Path
+          import os,re
+          path=Path('research/candidate-05/strategy.py')
+          source=path.read_text()
+          pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE)
+          match=pattern.search(source)
+          if match is None: raise RuntimeError(f'v26 import not found: {source!r}')
+          exported=match.group(2) or match.group(1)
+          replacement=f"from {os.environ['MODULE']} import {os.environ['CLASS']} as {exported}"
+          path.write_text(pattern.sub(replacement,source,count=1))
+          PY
+            python research/candidate-05/candidate.py pipeline \
+              --config research/candidate-05/config.json \
+              --weeks research/candidate-05/weeks.json \
+              --cache ".cache/candidate-05-${label}" \
+              --output "$ROOT/$label" \
+              --max-weeks 1 2>&1 | tee "$ROOT/$label-console.log"
+          }
+          run_variant strategy_v39_dual_auction DualAuctionStateStrategy v39
+          run_variant strategy_v40_auction_router MultiCauseAuctionRouterStrategy v40
+          cp /tmp/candidate05-strategy.py research/candidate-05/strategy.py
+      - name: Select only a natural Week 1 winner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json, math
+          root=Path('artifacts/candidate-05-v39-v40-decision')
+          def value(data,*names,default=0):
+              for name in names:
+                  if data.get(name) is not None:return data[name]
+              return default
+          def read(label):
+              files=sorted((root/label).rglob('metrics.json'))
+              if not files: return {'label':label,'available':False,'pass':False}
+              data=json.loads(files[0].read_text())
+              growth=float(value(data,'geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0)
+              trades=int(value(data,'trades','trade_count',default=0) or 0)
+              wins=int(value(data,'wins','winning_trades',default=0) or 0)
+              active=int(value(data,'active_days','trading_days',default=0) or 0)
+              integrity=(int(data.get('liquidations',0) or 0)==0 and int(data.get('order_rejections',0) or 0)==0 and int(data.get('order_denials',0) or 0)==0 and int(data.get('max_open_positions_observed',0) or 0)<=1 and int(data.get('max_entry_intents_observed',0) or 0)<=1)
+              passed=integrity and growth>=0.01 and trades>=7 and wins>=4 and active>=4
+              return {'label':label,'available':True,'pass':passed,'growth':growth,'total_return':float(value(data,'total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(value(data,'max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'metrics_path':str(files[0])}
+          rows=[read('v39'),read('v40')]
+          passed=[row for row in rows if row['pass']]
+          winner=max(passed,key=lambda row:(row['growth'],row['wins'],row['trades']))['label'] if passed else None
+          result={'schema':'candidate-05-v39-v40-decision-v1','engine':'NautilusTrader BacktestNode','rows':rows,'winner':winner,'decision':'PROMOTE_TO_THREE_WEEKS' if winner else 'DISCARD_BOTH_FAMILIES'}
+          (root/'decision.json').write_text(json.dumps(result,indent=2,sort_keys=True))
+          print(json.dumps(result,indent=2,sort_keys=True))
+          PY
+      - name: Run all frozen weeks only for the Week 1 winner
+        shell: bash
+        run: |
+          set -euo pipefail
+          winner=$(python -c "import json;print(json.load(open('$ROOT/decision.json')).get('winner') or '')")
+          if [ -z "$winner" ]; then exit 0; fi
+          if [ "$winner" = v39 ]; then module=strategy_v39_dual_auction; class=DualAuctionStateStrategy; else module=strategy_v40_auction_router; class=MultiCauseAuctionRouterStrategy; fi
+          cp /tmp/candidate05-strategy.py research/candidate-05/strategy.py
+          MODULE="$module" CLASS="$class" python - <<'PY'
+          from pathlib import Path
+          import os,re
+          path=Path('research/candidate-05/strategy.py'); source=path.read_text()
+          pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE)
+          match=pattern.search(source); exported=match.group(2) or match.group(1)
+          path.write_text(pattern.sub(f"from {os.environ['MODULE']} import {os.environ['CLASS']} as {exported}",source,count=1))
+          PY
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks research/candidate-05/weeks.json \
+            --cache ".cache/candidate-05-${winner}-three" \
+            --output "$ROOT/${winner}-three-weeks" \
+            --max-weeks 3 2>&1 | tee "$ROOT/${winner}-three-weeks-console.log"
+          cp /tmp/candidate05-strategy.py research/candidate-05/strategy.py
+      - name: Commit the compact authoritative decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$ROOT/decision.json" research/candidate-05/V39_V40_DECISION.json
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V39_V40_DECISION.json
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-05: record v39-v40 controlled decision [skip ci]"
+            git push origin HEAD:research/candidate-05
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v39-v40-decision-${{ github.sha }}
+          path: artifacts/candidate-05-v39-v40-decision/**
+          if-no-files-found: error
+          retention-days: 90
