@@ -19,7 +19,7 @@ permissions:
 jobs:
   btc-week-1-event-time-tournament:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -42,8 +42,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .research-data/candidate-07
-          key: candidate-07-aggtrade-event-tournament-week1-v2
+          key: candidate-07-pre-attack-value-week1-v1
           restore-keys: |
+            candidate-07-aggtrade-event-tournament-week1-v2
             candidate-07-aggtrade-event-tournament-week1-v1
             candidate-07-aggtrade-resilience-week1-v1
             candidate-07-positioning-three-weeks-v1
@@ -63,6 +64,37 @@ jobs:
             --event-warmup-days 1 \
             --source-commit "${GITHUB_SHA}" \
             --output-dir artifacts/candidate-07/week-1/event-tournament \
+            --data-root .research-data/candidate-07
+
+      - name: Classify structural result
+        id: structural
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          path = Path('artifacts/candidate-07/week-1/event-tournament/tournament_summary.json')
+          report = json.loads(path.read_text())
+          selected = report.get('selected_structural_route') or ''
+          print(f"selected={selected}")
+          print(f"implementation_clean={'true' if report.get('implementation_clean') else 'false'}")
+          PY
+
+      - name: Run selected route through NautilusTrader
+        if: steps.structural.outputs.selected == 'pre_attack_value_vwap'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/python research/candidate-07/backtest_pre_attack_value.py \
+            --config research/candidate-07/config.json \
+            --stage week-1 \
+            --start 2025-12-22 \
+            --end 2025-12-29 \
+            --event-warmup-days 1 \
+            --output artifacts/candidate-07/week-1/pre-attack-value-nautilus \
             --data-root .research-data/candidate-07
 
       - name: Print compact immutable result
@@ -93,11 +125,20 @@ jobs:
                   'summary': payload.get('summary'),
                   'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
               }
+          nautilus_path = Path(
+              'artifacts/candidate-07/week-1/pre-attack-value-nautilus/metrics.json'
+          )
+          nautilus = json.loads(nautilus_path.read_text()) if nautilus_path.exists() else None
           print(json.dumps({
               'source_commit': '${{ github.sha }}',
               'tournament': summary,
               'variants': variant_digest,
+              'nautilus_metrics': nautilus,
               'tournament_sha256': hashlib.sha256(summary_path.read_bytes()).hexdigest(),
+              'nautilus_metrics_sha256': (
+                  hashlib.sha256(nautilus_path.read_bytes()).hexdigest()
+                  if nautilus_path.exists() else None
+              ),
               'data_manifest_sha256': (
                   hashlib.sha256(manifest.read_bytes()).hexdigest()
                   if manifest.exists() else None
@@ -105,11 +146,11 @@ jobs:
           }, indent=2, sort_keys=True))
           PY
 
-      - name: Preserve complete structural evidence
+      - name: Preserve complete Week-1 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-07-event-tournament-week1-${{ github.sha }}
-          path: artifacts/candidate-07/week-1/event-tournament
+          name: candidate-07-pre-attack-value-week1-${{ github.sha }}
+          path: artifacts/candidate-07/week-1
           retention-days: 14
           if-no-files-found: error
