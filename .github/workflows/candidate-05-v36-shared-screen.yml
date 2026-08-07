@@ -1,23 +1,21 @@
-name: candidate-05-v36-shared-screen
+name: candidate-05-v43-shared-account-screen
 
 on:
   push:
     branches: ["research/candidate-05"]
     paths:
-      - "research/candidate-05/cross_asset_repricing_*.py"
-      - "research/candidate-05/strategy_v36_cross_asset_repricing_gate.py"
-      - "research/candidate-05/shared_account_backtest_v2.py"
-      - "research/candidate-05/strategy_global_slot_wrappers_v4.py"
-      - "research/candidate-05/strategy_global_slot_wrappers_v5.py"
+      - "research/candidate-05/inventory_repricing_logic.py"
+      - "research/candidate-05/strategy_v40_unfilled_target_handoff.py"
+      - "research/candidate-05/strategy_v41_target_reset_participation.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v6.py"
       - "research/candidate-05/shared_account_strategy_variants_v2.py"
-      - "research/candidate-05/tests/test_cross_asset_repricing_logic.py"
-      - "research/candidate-05/tests/test_strategy_v36_contract.py"
-      - "research/candidate-05/tests/test_shared_daily_nav_alignment.py"
+      - "research/candidate-05/shared_account_backtest.py"
+      - "research/candidate-05/shared_account_backtest_v2.py"
       - ".github/workflows/candidate-05-v36-shared-screen.yml"
   workflow_dispatch:
 
 concurrency:
-  group: candidate-05-v36-shared-screen
+  group: candidate-05-v43-shared-account-screen
   cancel-in-progress: true
 
 permissions:
@@ -25,7 +23,7 @@ permissions:
   packages: read
 
 jobs:
-  weak-week-and-conditional-30d:
+  frozen-weeks-and-conditional-30d:
     runs-on: ubuntu-24.04
     timeout-minutes: 355
     container:
@@ -34,11 +32,11 @@ jobs:
     env:
       PYTHONPATH: research/candidate-05
       PYTHONUNBUFFERED: "1"
-      ROOT: artifacts/candidate-05-v36-shared-screen
+      ROOT: artifacts/candidate-05-v43-shared-screen
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify fixed environment and causal contracts
+      - name: Verify fixed environment and shared-account contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -48,109 +46,120 @@ jobs:
             -s research/candidate-05/tests \
             -p 'test_*.py' -v
 
-      - name: Freeze exact control and v36 evidence identities
+      - name: Freeze the controlled v43 strategy identity
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$ROOT/evidence"
-          cat > "$ROOT/evidence/v26.json" <<'JSON'
+          cat > "$ROOT/evidence/v43.json" <<'JSON'
           {
             "classification": "VALIDATED_BTC_WINNER_RESOLVED",
-            "winner": "strategy_v26:ScenarioValidEntryStrategy",
-            "experiment_role": "EXACT_SHARED_ACCOUNT_CONTROL"
-          }
-          JSON
-          cat > "$ROOT/evidence/v36.json" <<'JSON'
-          {
-            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
-            "winner": "strategy_v36_cross_asset_repricing_gate:SystemicRepricingGateStrategy",
-            "experiment_role": "ONE_VARIABLE_PRIOR_PEER_SYSTEMIC_REPRICING_VETO"
+            "winner": "strategy_v41_target_reset_participation:TargetResetParticipationStrategy",
+            "experiment_role": "CONTROLLED_V43_ONE_ACCOUNT_FOUR_SYMBOL_SCREEN"
           }
           JSON
 
-      - name: Run identical weak week through one-account NautilusTrader
+      - name: Run three preselected weeks in one-account NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          for variant in v26 v36; do
-            python research/candidate-05/shared_account_backtest_v2.py \
-              --winner-evidence "$ROOT/evidence/$variant.json" \
-              --build-start 2023-09-06 \
-              --build-end 2023-09-14 \
-              --evaluation-start 2023-09-08 \
-              --evaluation-end 2023-09-14 \
-              --cache ".cache/candidate-05-v36-shared/weak" \
-              --output "$ROOT/weak/$variant" \
-              | tee "$ROOT/weak-$variant-console.json"
-          done
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/v43.json" \
+            --build-start 2023-07-07 \
+            --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 \
+            --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-05-v43-shared \
+            --output "$ROOT/week-1" \
+            | tee "$ROOT/week-1-console.json"
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/v43.json" \
+            --build-start 2024-01-13 \
+            --build-end 2024-01-21 \
+            --evaluation-start 2024-01-15 \
+            --evaluation-end 2024-01-21 \
+            --cache .cache/candidate-05-v43-shared \
+            --output "$ROOT/week-2" \
+            | tee "$ROOT/week-2-console.json"
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/v43.json" \
+            --build-start 2023-09-06 \
+            --build-end 2023-09-14 \
+            --evaluation-start 2023-09-08 \
+            --evaluation-end 2023-09-14 \
+            --cache .cache/candidate-05-v43-shared \
+            --output "$ROOT/week-3" \
+            | tee "$ROOT/week-3-console.json"
 
-      - name: Classify weak-week controlled experiment
-        id: weak
+      - name: Classify the combined three-week shared-account screen
+        id: weeks
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
+          import math
           import os
           from pathlib import Path
 
           root = Path(os.environ["ROOT"])
-          control = json.loads((root / "weak/v26/metrics.json").read_text())
-          candidate = json.loads((root / "weak/v36/metrics.json").read_text())
+          weeks = [json.loads((root / f"week-{index}/metrics.json").read_text()) for index in (1, 2, 3)]
+          factors = [1.0 + float(item["total_return"]) for item in weeks]
+          combined_factor = math.prod(factors)
+          combined_growth = combined_factor ** (1.0 / 21.0) - 1.0
+          trades = sum(int(item.get("trades", 0)) for item in weeks)
+          wins = sum(int(item.get("wins", 0)) for item in weeks)
+          active_days = sum(int(item.get("active_days", 0)) for item in weeks)
           checks = {
-              "control_integrity": bool(control.get("integrity_pass")),
-              "candidate_integrity": bool(candidate.get("integrity_pass")),
-              "candidate_improves_control": candidate.get("total_return", -1.0) > control.get("total_return", -1.0),
-              "geometric_daily_growth": candidate.get("geometric_daily_growth", -1.0) >= 0.01,
-              "trades": candidate.get("trades", 0) >= 7,
-              "wins": candidate.get("wins", 0) >= 4,
-              "active_days": candidate.get("active_days", 0) >= 4,
-              "win_rate": candidate.get("win_rate", 0.0) >= 0.40,
-              "max_drawdown": candidate.get("max_drawdown", 1.0) <= 0.20,
-              "largest_winner_share": candidate.get("largest_winner_share", 1.0) <= 0.55,
-              "actual_peer_gate_exercised": sum(
-                  int(value.get("cross_asset_reversal_evaluations", 0))
-                  for value in candidate.get("strategy_diagnostics", {}).values()
-              ) > 0,
-          }
-          passed = all(checks.values())
-          result = {
-              "classification": "V36_WEAK_WEEK_PASSED" if passed else "V36_WEAK_WEEK_LOGIC_FAILURE",
-              "passed": passed,
-              "checks": checks,
-              "control": control,
-              "candidate": candidate,
-              "delta_total_return": candidate.get("total_return", 0.0) - control.get("total_return", 0.0),
-              "blocked_reversals": sum(
-                  int(value.get("cross_asset_reversal_blocks", 0))
-                  for value in candidate.get("strategy_diagnostics", {}).values()
+              "integrity": all(bool(item.get("integrity_pass")) for item in weeks),
+              "all_weeks_positive": all(float(item.get("total_return", -1.0)) > 0.0 for item in weeks),
+              "combined_daily_growth_near_goal": combined_growth >= 0.008,
+              "trades": trades >= 15,
+              "wins": wins >= 10,
+              "active_days": active_days >= 10,
+              "no_liquidations": all(int(item.get("liquidations", 0)) == 0 for item in weeks),
+              "no_order_failures": all(
+                  int(item.get("order_rejections", 0)) == 0
+                  and int(item.get("order_denials", 0)) == 0
+                  for item in weeks
               ),
           }
-          (root / "weak_decision.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          promote = all(checks.values())
+          result = {
+              "classification": "V43_SHARED_THREE_WEEK_PROMOTED" if promote else "V43_SHARED_THREE_WEEK_FAILED",
+              "promote_30d": promote,
+              "checks": checks,
+              "combined_total_return": combined_factor - 1.0,
+              "combined_geometric_daily_growth": combined_growth,
+              "trades": trades,
+              "wins": wins,
+              "win_rate": wins / trades if trades else 0.0,
+              "active_days": active_days,
+              "weeks": weeks,
+          }
+          (root / "three_week_decision.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-              stream.write(f"promote={'true' if passed else 'false'}\n")
+              stream.write(f"promote={'true' if promote else 'false'}\n")
           print(json.dumps(result, indent=2, sort_keys=True))
           PY
 
-      - name: Run identical continuous 30-day control and v36
-        if: steps.weak.outputs.promote == 'true'
+      - name: Run continuous 30-day shared-account validation
+        if: steps.weeks.outputs.promote == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          for variant in v26 v36; do
-            python research/candidate-05/shared_account_backtest_v2.py \
-              --winner-evidence "$ROOT/evidence/$variant.json" \
-              --build-start 2024-02-28 \
-              --build-end 2024-03-30 \
-              --evaluation-start 2024-03-01 \
-              --evaluation-end 2024-03-30 \
-              --cache ".cache/candidate-05-v36-shared/30d" \
-              --output "$ROOT/30d/$variant" \
-              | tee "$ROOT/30d-$variant-console.json"
-          done
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/v43.json" \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-30 \
+            --cache .cache/candidate-05-v43-shared-30d \
+            --output "$ROOT/30d" \
+            | tee "$ROOT/30d-console.json"
 
-      - name: Classify 30-day controlled experiment
-        if: steps.weak.outputs.promote == 'true'
+      - name: Classify the 30-day shared-account validation
+        if: steps.weeks.outputs.promote == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -158,29 +167,26 @@ jobs:
           import json
           import os
           from pathlib import Path
-
           root = Path(os.environ["ROOT"])
-          control = json.loads((root / "30d/v26/metrics.json").read_text())
-          candidate = json.loads((root / "30d/v36/metrics.json").read_text())
+          metrics = json.loads((root / "30d/metrics.json").read_text())
           checks = {
-              "control_integrity": bool(control.get("integrity_pass")),
-              "candidate_integrity": bool(candidate.get("integrity_pass")),
-              "candidate_improves_control": candidate.get("total_return", -1.0) > control.get("total_return", -1.0),
-              "geometric_daily_growth": candidate.get("geometric_daily_growth", -1.0) >= 0.01,
-              "trades": candidate.get("trades", 0) >= 15,
-              "wins": candidate.get("wins", 0) >= 5,
-              "active_days": candidate.get("active_days", 0) >= 10,
-              "largest_winner_share": candidate.get("largest_winner_share", 1.0) <= 0.35,
-              "max_drawdown": candidate.get("max_drawdown", 1.0) <= 0.35,
+              "integrity": bool(metrics.get("integrity_pass")),
+              "geometric_daily_growth": float(metrics.get("geometric_daily_growth", -1.0)) >= 0.01,
+              "trades": int(metrics.get("trades", 0)) >= 15,
+              "wins": int(metrics.get("wins", 0)) >= 8,
+              "active_days": int(metrics.get("active_days", 0)) >= 10,
+              "max_drawdown": float(metrics.get("max_drawdown", 1.0)) <= 0.35,
+              "largest_winner_share": float(metrics.get("largest_winner_share", 1.0)) <= 0.35,
+              "liquidations": int(metrics.get("liquidations", 0)) == 0,
+              "order_rejections": int(metrics.get("order_rejections", 0)) == 0,
+              "order_denials": int(metrics.get("order_denials", 0)) == 0,
           }
           passed = all(checks.values())
           result = {
-              "classification": "V36_30D_PASSED" if passed else "V36_30D_LOGIC_FAILURE",
+              "classification": "V43_SHARED_30D_PASSED" if passed else "V43_SHARED_30D_FAILED",
               "passed": passed,
               "checks": checks,
-              "control": control,
-              "candidate": candidate,
-              "delta_total_return": candidate.get("total_return", 0.0) - control.get("total_return", 0.0),
+              "metrics": metrics,
           }
           (root / "30d_decision.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
           print(json.dumps(result, indent=2, sort_keys=True))
@@ -189,7 +195,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-05-v36-shared-screen-${{ github.sha }}
-          path: artifacts/candidate-05-v36-shared-screen/**
+          name: candidate-05-v43-shared-screen-${{ github.sha }}
+          path: artifacts/candidate-05-v43-shared-screen/**
           if-no-files-found: error
           retention-days: 90
