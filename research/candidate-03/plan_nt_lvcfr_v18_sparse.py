@@ -13,7 +13,7 @@ import argparse
 import json
 import urllib.error
 import urllib.request
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from derive_nt_lvcfr_v18_signals import derive_expansion_pre_candidates
@@ -53,7 +53,7 @@ def main() -> int:
     candidates = derive_expansion_pre_candidates(
         raw_root=output / "raw",
         evaluation_start_ns=date_to_ns(args.week_start),
-        evaluation_end_ns=date_to_ns(args.week_start.replace(day=args.week_start.day) ) + 7 * 86_400_000_000_000,
+        evaluation_end_ns=date_to_ns(args.week_start + timedelta(days=7)),
     )
     dates = required_book_ticker_dates(candidates)
     probes = []
