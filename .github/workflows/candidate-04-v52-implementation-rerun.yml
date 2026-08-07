@@ -1,0 +1,227 @@
+name: candidate-04-v52-implementation-rerun
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/v52_rerun_trigger.json"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-04-v52-implementation-rerun
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      SOURCE_RUN_ID: "31191716971"
+      BUILD_START: 2023-02-25
+      BUILD_END: 2023-03-06
+      SIGNAL_START: 2023-02-27
+      SIGNAL_END_EXCLUSIVE: 2023-03-06
+      NT_END_INCLUSIVE: 2023-03-05
+      ROOT: artifacts/candidate-04-v52-rerun
+      EVIDENCE: research/candidate-04/evidence-v52-development-rerun.json
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v51-rich-*-${{ env.SOURCE_RUN_ID }}
+          path: restored-rich
+          merge-multiple: false
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+
+      - name: Verify identical market logic and repaired evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-04/common_factor_accepted_auction_compiler.py \
+            research/candidate-04/nt_multi_asset_rich_backtest_v52.py
+          python -m unittest discover -s research/candidate-04/tests -p 'test_common_factor_accepted_auction_compiler.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_multi_asset_runtime_contract.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_multi_asset_risk_evidence.py' -v
+          python - <<'PY'
+          from datetime import date
+          assert (date(2023,3,5)-date(2023,2,27)).days+1 == 7
+          PY
+
+      - name: Normalize restored observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT/rich" "$ROOT/config"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          base=json.loads(Path('research/candidate-04/inventory_transfer_config.json').read_text())
+          root=Path(os.environ['ROOT'])/'config'
+          for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'):
+              value=dict(base); value['symbol']=symbol
+              (root/f'{symbol}.json').write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
+          PY
+          for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+            source="$(find restored-rich -type f -path "*${symbol}*/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+            test -n "$source"
+            ln -s "$(realpath "$source")" "$ROOT/rich/$symbol"
+          done
+
+      - name: Execute unchanged full router and the one committed ablation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          export C04_BUILD_START="$BUILD_START" C04_BUILD_END="$BUILD_END"
+          export C04_EVALUATION_START="$SIGNAL_START" C04_EVALUATION_END="$SIGNAL_END_EXCLUSIVE"
+          for variant in full ablation; do
+            mkdir -p "$ROOT/$variant/all_signals" "$ROOT/$variant/signals"
+            extra=()
+            if test "$variant" = ablation; then
+              extra=(--minimum-breadth 0 --minimum-common-return -1000000 --minimum-common-flow -1000000)
+            fi
+            python research/candidate-04/common_factor_accepted_auction_compiler.py \
+              --rich-root "$ROOT/rich" \
+              --config-root "$ROOT/config" \
+              --kline-root .cache/candidate-04-v52/compiler-klines \
+              --evaluation-start "$SIGNAL_START" \
+              --evaluation-end "$SIGNAL_END_EXCLUSIVE" \
+              --output "$ROOT/$variant/all_signals" \
+              "${extra[@]}" \
+              > "$ROOT/$variant/compiler.log"
+            python research/candidate-04/causal_target_registry_enricher.py \
+              --signals "$ROOT/$variant/all_signals/BTCUSDT/signals.json" \
+              --base-config "$ROOT/config/BTCUSDT.json" \
+              --rich-dir "$ROOT/rich/BTCUSDT" \
+              --kline-dir .cache/candidate-04-v52/target-klines/BTCUSDT \
+              --build-start "$BUILD_START" \
+              --build-end "$BUILD_END" \
+              --output-dir "$ROOT/$variant/signals/BTCUSDT" \
+              --download-klines \
+              --cost-rate 0.00075 \
+              --minimum-net-r 1.20 \
+              > "$ROOT/$variant/target.log"
+            for symbol in ETHUSDT SOLUSDT XRPUSDT; do
+              mkdir -p "$ROOT/$variant/signals/$symbol"
+              cp "$ROOT/$variant/all_signals/$symbol/signals.json" "$ROOT/$variant/signals/$symbol/signals.json"
+              cp "$ROOT/$variant/all_signals/$symbol/summary.json" "$ROOT/$variant/signals/$symbol/summary.json"
+            done
+            python research/candidate-04/nt_multi_asset_rich_backtest_v52.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --signals-root "$ROOT/$variant/signals" \
+              --build-start "$BUILD_START" \
+              --build-end "$BUILD_END" \
+              --evaluation-start "$SIGNAL_START" \
+              --evaluation-end "$NT_END_INCLUSIVE" \
+              --cache ".cache/candidate-04-v52/nautilus-$variant" \
+              --output "$ROOT/$variant/nautilus" \
+              --min-trades 5 \
+              --min-active-days 3 \
+              --min-win-rate 0.60 \
+              --min-geometric-daily 0.01 \
+              > "$ROOT/$variant/nautilus.log" 2>&1
+            test -s "$ROOT/$variant/nautilus/metrics.json"
+            test -s "$ROOT/$variant/nautilus/risk_evidence.json"
+          done
+
+      - name: Record implementation-controlled V52 decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          def load(path): return json.loads(path.read_text()) if path.exists() else None
+          full_summary=load(root/'full/all_signals/summary.json')
+          full_metrics=load(root/'full/nautilus/metrics.json')
+          full_risk=load(root/'full/nautilus/risk_evidence.json')
+          abl_summary=load(root/'ablation/all_signals/summary.json')
+          abl_metrics=load(root/'ablation/nautilus/metrics.json')
+          implementation=bool(full_metrics and full_risk and full_metrics.get('global_entry_pass') and full_metrics.get('risk_pass') and full_risk.get('risk_pass'))
+          full_pass=bool(implementation and full_metrics.get('candidate_pass'))
+          evidence={
+              'candidate':'candidate-04-v52-common-factor-accepted-auction-continuation',
+              'stage':'implementation_controlled_development_rerun',
+              'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+              'engine':'NautilusTrader 1.230.0 BacktestNode',
+              'market_logic_changed':False,
+              'week_changed':False,
+              'seven_day_contract':{'start':'2023-02-27','end_inclusive':'2023-03-05'},
+              'full_compiler':full_summary,
+              'full_metrics':full_metrics,
+              'full_risk_evidence':full_risk,
+              'single_precommitted_ablation':{
+                  'removed_variable':'cross_sectional_common_factor_acceptance',
+                  'compiler':abl_summary,
+                  'metrics':abl_metrics,
+              },
+              'implementation_pass':implementation,
+              'full_router_pass':full_pass,
+              'decision':(
+                  'PROMOTE_TO_NEW_PROSPECTIVE_WEEK_LOCK' if full_pass
+                  else 'DISCARD_V52_NO_STRUCTURAL_PATH_AFTER_ONE_ABLATION'
+                  if implementation
+                  else 'IMPLEMENTATION_FAILURE_FIX_AND_RERUN_IDENTICAL_WEEK'
+              ),
+              'prospective_week_allowed':full_pass,
+              'long_evaluation_allowed':False,
+              'project_target_reached':False,
+              'performance_recalculated_outside_nautilus':False,
+          }
+          Path(os.environ['EVIDENCE']).write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          (root/'decision.json').write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(evidence,indent=2,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v52-rerun-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v52-rerun
+            research/candidate-04/evidence-v52-development-rerun.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Persist V52 rerun evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE" 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research(candidate-04): record V52 controlled rerun evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
