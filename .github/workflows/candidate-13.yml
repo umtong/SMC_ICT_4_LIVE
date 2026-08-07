@@ -14,7 +14,7 @@ permissions:
   packages: read
 
 concurrency:
-  group: candidate-13-${{ github.ref }}
+  group: candidate-13-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research/candidate-13
+          ref: ${{ github.sha }}
       - name: Verify common environment and frozen source
         shell: bash
         run: |
@@ -66,7 +66,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research/candidate-13
+          ref: ${{ github.sha }}
       - name: Run frozen NautilusTrader holdout
         shell: bash
         run: |
@@ -108,7 +108,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: research/candidate-13
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: Download all completed holdouts
         continue-on-error: true
@@ -120,6 +120,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git fetch origin research/candidate-13
+          current_head="$(git rev-parse origin/research/candidate-13)"
+          if [[ "$current_head" != "$GITHUB_SHA" ]]; then
+            echo "stale research run: $GITHUB_SHA; current branch: $current_head"
+            exit 0
+          fi
+
           mkdir -p research/candidate-13/results
           if compgen -G 'artifacts/candidate13-*' > /dev/null; then
             for dir in artifacts/candidate13-*; do
@@ -133,6 +140,12 @@ jobs:
             --results research/candidate-13/results \
             --protocol research/candidate-13/protocol.json \
             --output research/candidate-13/aggregate.json
+
+          latest_head="$(git ls-remote origin refs/heads/research/candidate-13 | cut -f1)"
+          if [[ "$latest_head" != "$GITHUB_SHA" ]]; then
+            echo "branch advanced during evaluation; evidence remains an artifact only"
+            exit 0
+          fi
 
           git config user.name "candidate-13-bot"
           git config user.email "candidate-13-bot@users.noreply.github.com"
