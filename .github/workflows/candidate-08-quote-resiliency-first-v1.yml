@@ -1,0 +1,115 @@
+name: candidate-08-quote-resiliency-first-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-quote-resiliency-first-v1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-quote-resiliency-first-v1
+  cancel-in-progress: true
+
+jobs:
+  frozen-btc-week-01:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.run-quote-resiliency-first-v1
+      OUTPUT_DIR: research/candidate-08/evidence/quote-resiliency-first-v1
+      LOG: research/candidate-08/evidence/quote-resiliency-first-v1/workflow.log
+      STATUS: research/candidate-08/evidence/quote-resiliency-first-v1/exit_status.txt
+      CACHE_DIR: .cache/candidate-08-quote-resiliency
+      CONFIG: research/candidate-08/config_quote_resiliency_btc_v1.json
+      PATTERN_CONFIG: research/candidate-08/config_range_fvg.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore checksum-verified market-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/candidate-08-quote-resiliency
+          key: candidate-08-quote-resiliency-data-v1-${{ hashFiles('research/candidate-08/config_quote_resiliency_btc_v1.json') }}
+          restore-keys: |
+            candidate-08-quote-resiliency-data-v1-
+
+      - name: Run frozen BTC week through native NautilusTrader
+        id: research
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/quote_resiliency_features_v3.py \
+              research/candidate-08/quote_resiliency_data.py \
+              research/candidate-08/quote_resiliency_data_v2.py \
+              research/candidate-08/quote_resiliency_signals.py \
+              research/candidate-08/quote_resiliency_strategy.py \
+              research/candidate-08/run_quote_resiliency_nautilus.py
+            python research/candidate-08/test_quote_resiliency_features_v3.py -v
+            python research/candidate-08/test_quote_resiliency_data.py -v
+            python research/candidate-08/test_quote_resiliency_signals.py -v
+            python research/candidate-08/test_quote_resiliency_transition_contract.py -v
+            python research/candidate-08/test_quote_resiliency_native_adapter.py -v
+            python research/candidate-08/test_quote_resiliency_config_path.py -v
+            python research/candidate-08/run_quote_resiliency_nautilus.py \
+              --suite first \
+              --config "$CONFIG" \
+              --pattern-config "$PATTERN_CONFIG" \
+              --output "$OUTPUT_DIR" \
+              --data-cache "$CACHE_DIR" \
+              --ablation none
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Record first-window evidence and implementation failures
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- "$OUTPUT_DIR" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record quote resiliency first-window evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce implementation completion
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS_VALUE: ${{ steps.research.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
