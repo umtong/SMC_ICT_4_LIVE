@@ -4,6 +4,8 @@ import ast
 from pathlib import Path
 import unittest
 
+from strategy_v45_external_active_inventory import external_setup_from_hybrid
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "strategy_v45_external_active_inventory.py"
@@ -25,12 +27,43 @@ class ActiveExternalInventoryContractTests(unittest.TestCase):
         }
         self.assertEqual(methods, {"__init__", "_detect_sweep", "_submit_entry"})
 
+    def test_hybrid_detector_routes_only_confirmed_five_minute_setups(self) -> None:
+        self.assertTrue(
+            external_setup_from_hybrid(
+                {
+                    "pool_source": "CONFIRMED_5M_SWING",
+                },
+            ),
+        )
+        self.assertTrue(
+            external_setup_from_hybrid(
+                {
+                    "pool_source": "CONFIRMED_5M_SWING",
+                    "target_handoff": True,
+                },
+            ),
+        )
+        self.assertFalse(
+            external_setup_from_hybrid(
+                {
+                    "hybrid_state": "INTERNAL_INVENTORY_TRAP",
+                    "pool_source": "CONFIRMED_3M_INTERNAL",
+                },
+            ),
+        )
+        self.assertFalse(external_setup_from_hybrid({"pool_source": "UNKNOWN"}))
+
     def test_uses_existing_inventory_and_active_choch_predicates(self) -> None:
         text = SOURCE.read_text(encoding="utf-8")
         self.assertIn("inventory_trap_confirmed(", text)
         self.assertIn('state != "ACTIVE_CONFIRMATION"', text)
+        self.assertIn("external_setup_from_hybrid(setup.details)", text)
         self.assertIn("super()._detect_sweep(row, previous_close)", text)
         self.assertIn("return super()._submit_entry(setup, row)", text)
+        self.assertNotIn(
+            'setup.details.get("hybrid_state") != "EXTERNAL_REJECTION_BASELINE"',
+            text,
+        )
         for forbidden in (
             "BacktestNode",
             "submit_order(",
