@@ -1,9 +1,10 @@
-name: candidate-12-i10-w10-frozen-confirmation
+name: candidate-12-i11-regression-and-exposed-implementation
 
 on:
   push:
     branches: ["research/candidate-12"]
     paths:
+      - "research/candidate-12/**"
       - ".github/workflows/candidate-12-research.yml"
   workflow_dispatch:
 
@@ -11,134 +12,147 @@ permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i10-w10-${{ github.ref }}-${{ github.sha }}
+  group: candidate-12-i11-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  w10-frozen-confirmation:
+  regression-and-implementation:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user root
     steps:
-      - name: Checkout frozen I10 candidate
+      - name: Checkout I11 candidate
         uses: actions/checkout@v4
 
       - name: Verify prebuilt environment
         run: smc4 doctor
 
-      - name: Verify unchanged I10 strategy source
+      - name: Verify reviewed I11 source
         shell: bash
         run: |
           set -euo pipefail
-          echo "078ed0d09a3235d010e4b665db54251e8fc10fc32f0462c63b2c6840fb38d1f9  research/candidate-12/logic.py" | sha256sum -c -
-          echo "59148fcec9a1e4a833220b55878146646dfe948a3683de18219ee665919ae22c  research/candidate-12/strategy_adapter.py" | sha256sum -c -
-          echo "97d8e9e498e95518df56f81dabdde5cdba6a64bcbb1014fb4da1c19142872865  research/candidate-12/test_logic.py" | sha256sum -c -
+          echo "2583d83f7d5605354892311c24d32c111dc7c1450719866d9fc9c43d07156575  research/candidate-12/logic.py" | sha256sum -c -
+          echo "8e7a111a5e20db965e9fdafa67118e4dffd407677708d3ccdde4f333264c3f0b  research/candidate-12/test_logic.py" | sha256sum -c -
+          echo "a75747a9be29dfe55b22cb5f78769ac0f89e595f7f1bf284ff5d76b0c6555187  research/candidate-12/config.json" | sha256sum -c -
 
-      - name: Compile unchanged candidate
+      - name: Compile candidate
         run: python -m compileall -q research/candidate-12
 
-      - name: Run 23 causal unit tests
+      - name: Run 25 causal unit tests
         run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
 
-      - name: Reproduce and freeze W10 before data access
+      - name: Run exposed regression weeks through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts/candidate-12
-          python - <<'PY'
-          from datetime import date, timedelta
-          from pathlib import Path
-          import json
-          import random
+          for WEEK in W1 W2 W4 W5 W6 W8 W9 W10; do
+            OUTPUT="artifacts/candidate-12/BTCUSDT-${WEEK}"
+            mkdir -p "$OUTPUT"
+            python research/candidate-12/run.py \
+              --symbol BTCUSDT \
+              --week "$WEEK" \
+              --output "$OUTPUT" | tee "$OUTPUT.console.json"
+          done
 
-          source = Path("research/candidate-12/config.json")
-          config = json.loads(source.read_text(encoding="utf-8"))
-          weeks = config["selection"]["weeks"]
-          assert "W9" not in weeks and "W10" not in weeks
-
-          w9_start = date(2023, 8, 13)
-          w9_end = w9_start + timedelta(days=7)
-          existing_starts = [date.fromisoformat(item["start"]) for item in weeks.values()]
-          existing_starts.append(w9_start)
-
-          candidates = []
-          cursor = date(2022, 1, 1)
-          final_start = date(2025, 12, 24)
-          while cursor <= final_start:
-              if all(abs((cursor - prior).days) >= 21 for prior in existing_starts):
-                  candidates.append(cursor)
-              cursor += timedelta(days=1)
-
-          seed = 2026080811
-          selected = random.Random(seed).choice(candidates)
-          assert len(candidates) == 1096
-          assert selected == date(2023, 4, 28)
-          end_exclusive = selected + timedelta(days=7)
-
-          weeks["W9"] = {
-              "start": w9_start.isoformat(),
-              "end_exclusive": w9_end.isoformat(),
-          }
-          weeks["W10"] = {
-              "start": selected.isoformat(),
-              "end_exclusive": end_exclusive.isoformat(),
-          }
-          config["selection"]["confirmation_week"] = "W10"
-          config["selection"]["confirmation_seed"] = seed
-          config["selection"]["selection_rule"] = (
-              "W1-W9 are exposed evidence. I10 strategy source remains frozen after W9 "
-              "produced no submitted orders and preserved NAV. W10 was selected before "
-              "data access by Python random.Random(2026080811).choice over "
-              "2022-01-01..2025-12-24 daily seven-day starts at least 21 days from every "
-              "W1-W9 start; selected W10 is 2023-04-28..2023-05-05 UTC. W10 is "
-              "performance-blind: only causal, execution, risk, slot, event-log, and "
-              "liquidation invariants are asserted."
-          )
-          destination = Path("artifacts/candidate-12/W10-frozen-config.json")
-          destination.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-          print(destination.read_text(encoding="utf-8"))
-          PY
-
-      - name: Run frozen untouched W10 through NautilusTrader
-        shell: bash
-        run: |
-          set -euo pipefail
-          OUTPUT=artifacts/candidate-12/BTCUSDT-W10
-          mkdir -p "$OUTPUT"
-          python research/candidate-12/run.py \
-            --config artifacts/candidate-12/W10-frozen-config.json \
-            --symbol BTCUSDT \
-            --week W10 \
-            --output "$OUTPUT" | tee "$OUTPUT.console.json"
-
-      - name: Enforce performance-blind W10 invariants
+      - name: Enforce causal regression and W10 implementation gate
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
+          from decimal import Decimal
           from pathlib import Path
           import json
 
-          path = Path("artifacts/candidate-12/BTCUSDT-W10/metrics.json")
-          metrics = json.loads(path.read_text(encoding="utf-8"))
-          assert metrics["candidate"] == "candidate-12-connected-reacceptance-session-auction-router", metrics
-          assert metrics["week_id"] == "W10", metrics
-          assert metrics["evaluation_start"] == "2023-04-28", metrics
-          assert metrics["evaluation_end_exclusive"] == "2023-05-05", metrics
-          assert metrics["risk_budget_passed"] is True, metrics
-          assert metrics["global_slot_passed"] is True, metrics
-          assert metrics["event_log_valid"] is True, metrics
-          assert metrics["engine_errors"] == [], metrics
-          assert metrics["liquidation_detected"] is False, metrics
-          print(json.dumps(metrics, indent=2, sort_keys=True))
+          root = Path("artifacts/candidate-12")
+          weeks = ("W1", "W2", "W4", "W5", "W6", "W8", "W9", "W10")
+          metrics = {
+              week: json.loads(
+                  (root / f"BTCUSDT-{week}" / "metrics.json").read_text(encoding="utf-8")
+              )
+              for week in weeks
+          }
+          candidate = "candidate-12-local-reacceleration-session-auction-router"
+          for week, item in metrics.items():
+              assert item["candidate"] == candidate, (week, item)
+              assert item["week_id"] == week, item
+              assert item["risk_budget_passed"] is True, (week, item)
+              assert item["global_slot_passed"] is True, (week, item)
+              assert item["event_log_valid"] is True, (week, item)
+              assert item["engine_errors"] == [], (week, item)
+              assert item["liquidation_detected"] is False, (week, item)
+
+          expected_winners = {"W1": 6, "W5": 5, "W6": 5}
+          for week, count in expected_winners.items():
+              item = metrics[week]
+              assert item["closed_trades"] == count, (week, item)
+              assert item["wins"] == count and item["losses"] == 0, (week, item)
+              assert Decimal(str(item["final_nav"])) > Decimal(str(item["starting_nav"])), item
+
+          for week in ("W2", "W4", "W8", "W9"):
+              item = metrics[week]
+              assert item["losses"] == 0, (week, item)
+              assert Decimal(str(item["final_nav"])) >= Decimal(str(item["starting_nav"])), item
+
+          w5_plans = json.loads(
+              (root / "BTCUSDT-W5" / "submitted_plans.json").read_text(encoding="utf-8")
+          )["plans"]
+          assert any(
+              plan["scenario"] == "ASIA_LOW_ACCEPTANCE_REACCELERATION"
+              for plan in w5_plans
+          ), w5_plans
+
+          w10 = metrics["W10"]
+          w10_plans = json.loads(
+              (root / "BTCUSDT-W10" / "submitted_plans.json").read_text(encoding="utf-8")
+          )["plans"]
+          local_w10 = [
+              plan for plan in w10_plans
+              if plan["scenario"] == "LONDON_LOW_ACCEPTANCE_REACCELERATION"
+          ]
+          assert len(local_w10) == 1, w10_plans
+          assert w10["closed_trades"] == 1, w10
+          assert w10["wins"] == 1 and w10["losses"] == 0, w10
+          assert Decimal(str(w10["final_nav"])) > Decimal(str(w10["starting_nav"])), w10
+
+          summary = {
+              week: {
+                  "closed_trades": item["closed_trades"],
+                  "wins": item["wins"],
+                  "losses": item["losses"],
+                  "final_nav": item["final_nav"],
+                  "net_return": item["net_return"],
+                  "daily_geometric_growth": item["daily_geometric_growth"],
+                  "closed_trade_max_drawdown": item["closed_trade_max_drawdown"],
+                  "submitted_plans": item["submitted_plans"],
+                  "scenario_plan_counts": item.get("scenario_plan_counts", {}),
+                  "skip_reasons": item.get("skip_reasons", {}),
+              }
+              for week, item in metrics.items()
+          }
+          output = root / "I11-exposed-regression.json"
+          output.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+          print(json.dumps(summary, indent=2, sort_keys=True))
           PY
 
-      - name: Preserve reproducible W10 evidence
+      - name: Surface I11 metrics
+        if: always()
+        shell: bash
+        run: |
+          for WEEK in W1 W2 W4 W5 W6 W8 W9 W10; do
+            METRICS="artifacts/candidate-12/BTCUSDT-${WEEK}/metrics.json"
+            if [[ -f "$METRICS" ]]; then
+              echo "=== I11_${WEEK}_METRICS_BEGIN ==="
+              cat "$METRICS"
+              echo "=== I11_${WEEK}_METRICS_END ==="
+            fi
+          done
+
+      - name: Preserve reproducible I11 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I10-BTCUSDT-W10-${{ github.sha }}
+          name: candidate-12-I11-regression-implementation-${{ github.sha }}
           path: artifacts/candidate-12
           if-no-files-found: warn
