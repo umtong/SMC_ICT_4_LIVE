@@ -13,13 +13,21 @@ class BasisContractTest(unittest.TestCase):
         frame = pd.DataFrame(
             {
                 "close_time_dt": times,
-                "close": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0],
+                "close": [
+                    -0.00040,
+                    -0.00035,
+                    -0.00030,
+                    -0.00025,
+                    -0.00020,
+                    -0.00010,
+                    -0.00005,
+                ],
             },
         )
         result = _premium_features(frame)
         self.assertEqual(len(result), 7)
         self.assertTrue(result["premium_observed_time"].is_monotonic_increasing)
-        self.assertAlmostEqual(result.iloc[5]["premium_change_5m"], 0.05)
+        self.assertAlmostEqual(result.iloc[5]["premium_change_5m"], 0.00030)
 
 
 if __name__ == "__main__":
