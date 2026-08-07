@@ -1,0 +1,119 @@
+name: Candidate 09 v10 frozen long check
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths:
+      - .github/workflows/candidate-09-v10-long-check.yml
+      - research/candidate-09/long_checks/v10_bundle.b64
+      - research/candidate-09/long_checks/v10_bundle.sha256
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v10-frozen-long-check
+  cancel-in-progress: true
+
+jobs:
+  long-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-v2
+          restore-keys: |
+            candidate-09-binance-vision-v1
+
+      - name: Materialize and verify the exact v10 long-check source
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09/long_checks/v10
+          rm -rf "$root"
+          mkdir -p "$root"
+          base64 -d research/candidate-09/long_checks/v10_bundle.b64 > /tmp/candidate-09-v10-longcheck.tar.gz
+          expected=$(awk 'NR==1 {print $1}' research/candidate-09/long_checks/v10_bundle.sha256)
+          echo "$expected  /tmp/candidate-09-v10-longcheck.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/candidate-09-v10-longcheck.tar.gz -C "$root"
+
+      - name: Run frozen v10 contracts and three-year NautilusTrader evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09/long_checks/v10
+          export PYTHONPATH="$GITHUB_WORKSPACE/$root:$GITHUB_WORKSPACE/src"
+          smc4 doctor | tee "$root/doctor.txt"
+          python -m compileall -q "$root"
+          python -m unittest "$root/tests/test_accounting_contract.py" "$root/tests/test_state_engine_v10.py" -v |& tee "$root/tests-pure.txt"
+          python -m unittest "$root/tests/test_nautilus_contract.py" -v |& tee "$root/tests-nautilus.txt"
+          rm -rf "$root/evidence/latest"
+          python "$root/run.py" long \
+            --config "$root/config.json" \
+            --cache "$GITHUB_WORKSPACE/.cache/candidate-09" \
+            --output "$root/evidence/latest" |& tee "$root/long.txt"
+
+      - name: Preserve exact source and full evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v10-long-${{ github.run_id }}
+          path: |
+            research/candidate-09/long_checks/v10
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit compact v10 long evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_WORKSPACE"
+          root="$repo/research/candidate-09/long_checks/v10"
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/evidence"
+          for name in summary.json REPORT.md outcomes.csv trades.csv fills.csv run.json data_manifest.json; do
+            [[ -f "$root/evidence/latest/$name" ]] && cp "$root/evidence/latest/$name" "$tmp/evidence/$name"
+          done
+          for name in doctor.txt tests-pure.txt tests-nautilus.txt long.txt; do
+            [[ -f "$root/$name" ]] && cp "$root/$name" "$tmp/$name"
+          done
+          git config --global --add safe.directory "$repo"
+          git -C "$repo" config user.name candidate-09-research-bot
+          git -C "$repo" config user.email candidate-09-research-bot@users.noreply.github.com
+          git -C "$repo" fetch origin "$GITHUB_REF_NAME"
+          git -C "$repo" reset --hard "origin/$GITHUB_REF_NAME"
+          out="$repo/research/candidate-09/long_checks/v10-result"
+          rm -rf "$out"
+          mkdir -p "$out/evidence"
+          cp -a "$tmp/evidence/." "$out/evidence/"
+          for name in doctor.txt tests-pure.txt tests-nautilus.txt long.txt; do
+            [[ -f "$tmp/$name" ]] && cp "$tmp/$name" "$out/$name"
+          done
+          git -C "$repo" add research/candidate-09/long_checks/v10-result
+          if git -C "$repo" diff --cached --quiet; then exit 0; fi
+          status=$(python - <<'PY'
+import json
+from pathlib import Path
+p=Path('research/candidate-09/long_checks/v10-result/evidence/summary.json')
+print(json.loads(p.read_text()).get('status','IMPLEMENTATION_ERROR') if p.exists() else 'IMPLEMENTATION_ERROR')
+PY
+          )
+          git -C "$repo" commit -m "candidate-09 v10 long check: ${status}"
+          git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
