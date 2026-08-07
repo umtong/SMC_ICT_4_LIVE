@@ -1,12 +1,12 @@
-name: candidate-02-v109-minimum-rr-ablation
+name: candidate-02-v110-competing-auction-family
 on:
   push:
     branches: ["research/candidate-02"]
-    paths: ["research/candidate-02/v109_trigger.json"]
+    paths: ["research/candidate-02/v110_trigger.json"]
 permissions: {contents: write, packages: read, actions: read}
-concurrency: {group: candidate-02-v109-minimum-rr-ablation, cancel-in-progress: false}
+concurrency: {group: candidate-02-v110-competing-auction-family, cancel-in-progress: false}
 jobs:
-  v109-ablation:
+  v110-family:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     container:
@@ -20,70 +20,73 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {ref: "${{ github.sha }}", fetch-depth: 0}
-      - name: Verify engine and single ablation
+      - name: Verify engine and causal resolver
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           smc4 doctor
-          python -m py_compile research/candidate-02/v107_regime_rotation_core.py research/candidate-02/v107_nt_backtest.py
+          python -m py_compile research/candidate-02/v110_competing_auction_core.py research/candidate-02/v110_nt_backtest.py
       - name: Download week one
         uses: actions/download-artifact@v4
-        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v109-week1, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
+        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v110-week1, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
       - name: Download week two matrix
         uses: actions/download-artifact@v4
-        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v109-week2, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
+        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v110-week2, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
       - name: Download week two bars
         uses: actions/download-artifact@v4
-        with: {name: candidate-02-v53-nt-second-week-3c73273b563ee221a0e0b9f4ec3c87077c645edd, path: inputs/v109-week2-source, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31065619489"}
-      - name: Build fixed inputs and configs
+        with: {name: candidate-02-v53-nt-second-week-3c73273b563ee221a0e0b9f4ec3c87077c645edd, path: inputs/v110-week2-source, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31065619489"}
+      - name: Materialize inputs and decision-window family
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf inputs/v109-week2/.cache; mkdir -p inputs/v109-week2/.cache/candidate-02/v109-week2/binance_1m
-          find inputs/v109-week2-source -path '*/binance_1m/*.zip' -type f -exec cp '{}' inputs/v109-week2/.cache/candidate-02/v109-week2/binance_1m/ \;
-          test "$(find inputs/v109-week2/.cache/candidate-02/v109-week2/binance_1m -name '*.zip' | wc -l)" -eq 10
-          mkdir -p /tmp/v109-ablation
+          rm -rf inputs/v110-week2/.cache; mkdir -p inputs/v110-week2/.cache/candidate-02/v110-week2/binance_1m
+          find inputs/v110-week2-source -path '*/binance_1m/*.zip' -type f -exec cp '{}' inputs/v110-week2/.cache/candidate-02/v110-week2/binance_1m/ \;
+          test "$(find inputs/v110-week2/.cache/candidate-02/v110-week2/binance_1m -name '*.zip' | wc -l)" -eq 10
+          mkdir -p /tmp/v110
           python - <<'PY'
           import json
           from pathlib import Path
           for week in ('week1','week2'):
               base=json.loads(Path(f'research/candidate-02/v107_{week}_config.json').read_text())
-              for q in (55,65,75):
-                  obj=json.loads(json.dumps(base)); obj['scenario']['volatility_quantile']=q/100
-                  obj['scenario']['target_extension']=0.0; obj['scenario']['minimum_cost_after_rr']=0.01
-                  obj['candidate']=f'candidate-02-v109-no-rr-floor-q{q}'
-                  Path(f'/tmp/v109-ablation/{week}-q{q}.json').write_text(json.dumps(obj,indent=2)+'\n')
+              for window in (10,15,20):
+                  obj=json.loads(json.dumps(base)); scenario=obj['scenario']
+                  scenario['volatility_quantile']=0.55; scenario['target_extension']=0.0
+                  scenario['minimum_cost_after_rr']=0.50; scenario['maximum_cost_after_rr']=4.0
+                  scenario['maximum_holding_minutes']=60; scenario['decision_window_minutes']=window
+                  scenario['activation_delay_minutes']=1; scenario['resolution_stop_buffer_atr']=0.15
+                  obj['candidate']=f'candidate-02-v110-w{window}'
+                  Path(f'/tmp/v110/{week}-w{window}.json').write_text(json.dumps(obj,indent=2)+'\n')
           PY
       - name: Run six NautilusTrader screens
         shell: bash
         run: |
           set -euo pipefail
-          for q in 55 65 75; do for week in week1 week2; do
-            out="artifacts/candidate-02-v109-ablation/q${q}/${week}"; mkdir -p "$out"; set +e
-            python research/candidate-02/v107_nt_backtest.py --config "/tmp/v109-ablation/${week}-q${q}.json" --input-root "inputs/v109-${week}" --output "$out" | tee "artifacts-v109-ablation-q${q}-${week}.log"
+          for window in 10 15 20; do for week in week1 week2; do
+            out="artifacts/candidate-02-v110/w${window}/${week}"; mkdir -p "$out"; set +e
+            python research/candidate-02/v110_nt_backtest.py --config "/tmp/v110/${week}-w${window}.json" --input-root "inputs/v110-${week}" --output "$out" | tee "artifacts-v110-w${window}-${week}.log"
             status=${PIPESTATUS[0]}; set -e; echo "$status" > "$out/validation_exit_code.txt"; [[ "$status" == 0 || "$status" == 2 ]] || exit "$status"
           done; done
           python - <<'PY'
           import json
           from pathlib import Path
-          out={'candidate':'candidate-02-v109-minimum-rr-ablation','engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':0.03,'removed_variable':'minimum cost-after RR floor','variants':{}}
-          for q in (55,65,75): out['variants'][str(q)]={w:json.loads(Path(f'artifacts/candidate-02-v109-ablation/q{q}/{w}/metrics.json').read_text()) for w in ('week1','week2')}
-          passes={q:all(m['target_met'] for m in ws.values()) for q,ws in out['variants'].items()}; out['variant_both_week_pass']=passes
-          out['plateau_pass']=passes['65'] and (passes['55'] or passes['75']); out['status']='ABLATION_STRUCTURAL_ROUTE' if out['plateau_pass'] else 'ABLATION_REJECT'
-          Path('artifacts-v109-ablation-decision.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
-          print(json.dumps({'status':out['status'],'metrics':{q:{w:{k:m.get(k) for k in ('trades','trades_per_day','win_rate','profit_factor_after_cost','geometric_daily_growth_after_cost','maximum_mark_to_market_drawdown','target_met')} for w,m in ws.items()} for q,ws in out['variants'].items()}},indent=2))
+          out={'candidate':'candidate-02-v110-competing-auction-rotation','engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':0.03,'variants':{}}
+          for window in (10,15,20): out['variants'][str(window)]={w:json.loads(Path(f'artifacts/candidate-02-v110/w{window}/{w}/metrics.json').read_text()) for w in ('week1','week2')}
+          passes={key:all(m['target_met'] for m in ws.values()) for key,ws in out['variants'].items()}; out['variant_both_week_pass']=passes
+          out['plateau_pass']=passes['15'] and (passes['10'] or passes['20']); out['status']='READY_FOR_PROSPECTIVE_WEEK' if out['plateau_pass'] else 'DEVELOPMENT_REJECT'
+          Path('artifacts-v110-family-decision.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'status':out['status'],'passes':passes,'metrics':{v:{w:{k:m.get(k) for k in ('trades','trades_per_day','win_rate','profit_factor_after_cost','geometric_daily_growth_after_cost','maximum_mark_to_market_drawdown','target_met')} for w,m in ws.items()} for v,ws in out['variants'].items()}},indent=2))
           PY
       - name: Commit evidence
         if: always()
         shell: bash
         run: |
-          rm -rf compact-v109-ablation; mkdir compact-v109-ablation
-          cp -f artifacts-v109-ablation-*.json compact-v109-ablation/ 2>/dev/null || true; cp -f artifacts-v109-ablation-*.log compact-v109-ablation/ 2>/dev/null || true; cp -a artifacts/candidate-02-v109-ablation compact-v109-ablation/ 2>/dev/null || true
+          rm -rf compact-v110; mkdir compact-v110
+          cp -f artifacts-v110-*.json compact-v110/ 2>/dev/null || true; cp -f artifacts-v110-*.log compact-v110/ 2>/dev/null || true; cp -a artifacts/candidate-02-v110 compact-v110/ 2>/dev/null || true
           git fetch origin research/candidate-02
-          if test "$(git rev-parse origin/research/candidate-02)" = "$GITHUB_SHA" && test -f artifacts-v109-ablation-decision.json; then
-            d="research/candidate-02/results/v109_ablation/$GITHUB_SHA"; mkdir -p "$d"; cp -a compact-v109-ablation/. "$d/"
-            git config user.name github-actions[bot]; git config user.email 41898282+github-actions[bot]@users.noreply.github.com; git add "$d"; git commit -m "research(candidate-02): record v109 ablation evidence"; git push origin HEAD:research/candidate-02
+          if test "$(git rev-parse origin/research/candidate-02)" = "$GITHUB_SHA" && test -f artifacts-v110-family-decision.json; then
+            d="research/candidate-02/results/v110_family/$GITHUB_SHA"; mkdir -p "$d"; cp -a compact-v110/. "$d/"
+            git config user.name github-actions[bot]; git config user.email 41898282+github-actions[bot]@users.noreply.github.com; git add "$d"; git commit -m "research(candidate-02): record v110 family evidence"; git push origin HEAD:research/candidate-02
           fi
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
-        with: {name: "candidate-02-v109-ablation-${{ github.sha }}", path: compact-v109-ablation, if-no-files-found: warn, retention-days: 30}
+        with: {name: "candidate-02-v110-family-${{ github.sha }}", path: compact-v110, if-no-files-found: warn, retention-days: 30}
