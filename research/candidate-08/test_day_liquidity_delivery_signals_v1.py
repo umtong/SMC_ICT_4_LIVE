@@ -184,11 +184,7 @@ class DayLiquidityDeliverySignalTests(unittest.TestCase):
         candidate = _candidate(target)
         with (
             patch.object(signals, "build_draw_contexts", return_value=contexts),
-            patch.object(
-                signals,
-                "build_route_candidates",
-                return_value=((candidate,), {"ROUTE_SYNTHETIC": 1}, ()),
-            ),
+            patch.object(signals, "build_route_candidates", return_value=(candidate,)),
             patch.object(signals, "same_draw", return_value=True),
             patch.object(signals, "target_still_active", return_value=True),
         ):
