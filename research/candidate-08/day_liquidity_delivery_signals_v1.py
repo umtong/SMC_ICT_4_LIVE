@@ -107,8 +107,8 @@ def _confirmed_five_swings(
                     and float(bar.high) >= max(float(item.high) for item in right)
                 ):
                     latest_high = Swing(
-                        kind="HIGH",
-                        level=float(bar.high),
+                        kind="FIVE_HIGH",
+                        price=float(bar.high),
                         formed_index=candidate,
                         formed_time_ns=int(bar.ts_event_ns),
                         confirmed_index=current,
@@ -119,8 +119,8 @@ def _confirmed_five_swings(
                     and float(bar.low) <= min(float(item.low) for item in right)
                 ):
                     latest_low = Swing(
-                        kind="LOW",
-                        level=float(bar.low),
+                        kind="FIVE_LOW",
+                        price=float(bar.low),
                         formed_index=candidate,
                         formed_time_ns=int(bar.ts_event_ns),
                         confirmed_index=current,
@@ -183,11 +183,11 @@ def _five_displacement_fvg(
     directional_body = direction * (float(bar.close) - float(bar.open))
     bar_range = float(bar.high) - float(bar.low)
     if direction > 0:
-        broke = float(bar.close) > float(frozen_swing.level) + tick
+        broke = float(bar.close) > float(frozen_swing.price) + tick
         fvg_low = float(two_back.high)
         fvg_high = float(bar.low)
     else:
-        broke = float(bar.close) < float(frozen_swing.level) - tick
+        broke = float(bar.close) < float(frozen_swing.price) - tick
         fvg_low = float(bar.high)
         fvg_high = float(two_back.low)
     if not (
@@ -387,23 +387,20 @@ def build_day_liquidity_delivery_signals(
     rejected: list[dict[str, Any]] = []
     signals: dict[int, list[QuoteResiliencySignal]] = {}
 
-    draw_contexts = build_draw_contexts(context_bars, snapshots, config)
+    draw_contexts = build_draw_contexts(context_bars, config)
     diagnostics["ACTIVE_H4_DRAW_BARS"] = sum(item is not None for item in draw_contexts)
-    diagnostics["ACTIVE_HTF_TARGET_BARS"] = sum(
-        item is not None and item.target is not None for item in draw_contexts
-    )
-    route_candidates, route_diagnostics, route_rejections = build_route_candidates(
-        symbol=symbol,
+    route_candidates = build_route_candidates(
         bars=context_bars,
+        draw_by_five=draw_contexts,
         snapshots=snapshots,
-        draw_contexts=draw_contexts,
         config=config,
+        symbol=symbol,
+        diagnostics=diagnostics,
+        rejected=rejected,
     )
-    diagnostics.update(route_diagnostics)
-    diagnostics["ROUTE_CANDIDATES"] = len(route_candidates)
+    diagnostics["ROUTE_CANDIDATES_WITH_HTF_TARGET"] = len(route_candidates)
     for candidate in route_candidates:
         diagnostics[f"ROUTE_FAMILY_{candidate.family}"] += 1
-    rejected.extend(route_rejections)
 
     swing_states = _confirmed_five_swings(context_bars, span=config.five_swing_span)
     prior_body, prior_range = _shifted_prior_medians(
@@ -541,7 +538,12 @@ def build_day_liquidity_delivery_signals(
                     position=position,
                 )
                 break
-            if not entry_is_in_draw_location(candidate.draw, candidate.target, entry=entry):
+            if not entry_is_in_draw_location(
+                candidate.direction,
+                entry,
+                candidate.draw.origin_level,
+                candidate.target.level,
+            ):
                 _reject(
                     rejected,
                     diagnostics,
@@ -607,13 +609,13 @@ def build_day_liquidity_delivery_signals(
                     previous_state="SESSION_ROUTE_CONFIRMED",
                     next_state="FIVE_MINUTE_DELIVERY_DISPLACEMENT",
                     reason_code="FROZEN_OPPOSING_SWING_BROKEN_WITH_DISPLACEMENT_AND_STANDARD_FVG",
-                    reference_price=float(displacement.broken_swing.level),
+                    reference_price=float(displacement.broken_swing.price),
                     details={
                         "scenario_family": candidate.family,
                         "fvg_low": displacement.fvg_low,
                         "fvg_high": displacement.fvg_high,
                         "broken_swing_kind": displacement.broken_swing.kind,
-                        "broken_swing_level": displacement.broken_swing.level,
+                        "broken_swing_level": displacement.broken_swing.price,
                         "broken_swing_confirmed_time_ns": displacement.broken_swing.confirmed_time_ns,
                     },
                 ),
@@ -678,7 +680,7 @@ def build_day_liquidity_delivery_signals(
                     "target_id": candidate.target.level_id,
                     "target_source": _source_name(candidate.target),
                     "frozen_five_swing_kind": frozen_swing.kind,
-                    "frozen_five_swing_level": frozen_swing.level,
+                    "frozen_five_swing_level": frozen_swing.price,
                     "frozen_five_swing_confirmed_time_ns": frozen_swing.confirmed_time_ns,
                     "displacement_five_index": displacement.position,
                     "retrace_five_index": position,
