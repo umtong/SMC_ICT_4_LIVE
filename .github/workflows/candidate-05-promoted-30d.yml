@@ -1,0 +1,167 @@
+name: candidate-05-promoted-30d
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/V39_V40_DECISION.json"
+      - "research/candidate-05/V41_RESULT.json"
+      - "research/candidate-05/V42_RESULT.json"
+      - ".github/workflows/candidate-05-promoted-30d.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-promoted-30d
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  continuous-30d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-promoted-30d
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve a three-week winner
+        id: resolve
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json, os
+          choices=[]
+          mapping={
+            'v39':('strategy_v39_dual_auction','DualAuctionStateStrategy'),
+            'v40':('strategy_v40_auction_router','MultiCauseAuctionRouterStrategy'),
+            'v41':('strategy_v41_competing_auction','CompetingAuctionStrategy'),
+            'v42':('strategy_v42_external_auction','HierarchicalExternalAuctionStrategy'),
+          }
+          p=Path('research/candidate-05/V39_V40_DECISION.json')
+          if p.exists():
+              d=json.loads(p.read_text()); winner=d.get('winner')
+              # The controller records only Week-1 promotion, so require a later
+              # three-week result before accepting v39/v40 here.
+              if d.get('three_week_pass') is True and winner in mapping: choices.append(winner)
+          for name,label in [('V41_RESULT.json','v41'),('V42_RESULT.json','v42')]:
+              p=Path('research/candidate-05')/name
+              if p.exists() and json.loads(p.read_text()).get('decision')=='PROMOTE_TO_CONTINUOUS_30D': choices.append(label)
+          winner=choices[0] if choices else ''
+          module,cls=mapping[winner] if winner else ('','')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f'winner={winner}\nmodule={module}\nclass={cls}\n')
+          print({'winner':winner,'module':module,'class':cls})
+          PY
+      - name: Stop when no candidate passed all frozen weeks
+        if: steps.resolve.outputs.winner == ''
+        run: echo 'No three-week winner; continuous evaluation is correctly blocked.'
+      - name: Verify and select winner
+        if: steps.resolve.outputs.winner != ''
+        shell: bash
+        env:
+          MODULE: ${{ steps.resolve.outputs.module }}
+          CLASS: ${{ steps.resolve.outputs.class }}
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+          cp research/candidate-05/strategy.py /tmp/candidate05-strategy.py
+          python - <<'PY'
+          from pathlib import Path
+          import os,re
+          p=Path('research/candidate-05/strategy.py'); s=p.read_text()
+          pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE)
+          m=pattern.search(s); exported=m.group(2) or m.group(1)
+          p.write_text(pattern.sub(f"from {os.environ['MODULE']} import {os.environ['CLASS']} as {exported}",s,count=1))
+          PY
+      - name: Build frozen continuous 30-day stage
+        if: steps.resolve.outputs.winner != ''
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          source=json.loads(Path('research/candidate-05/weeks.json').read_text())
+          changed=False
+          def visit(value):
+              global changed
+              if isinstance(value,dict):
+                  for key,item in list(value.items()): value[key]=visit(item)
+                  return value
+              if isinstance(value,list) and not changed and len(value)>=3 and all(isinstance(x,dict) for x in value):
+                  keys=set().union(*(x.keys() for x in value))
+                  if any(k in keys for k in ('start','evaluation_start')) and any(k in keys for k in ('end','evaluation_end')):
+                      item=dict(value[0])
+                      for key in tuple(item):
+                          low=key.lower()
+                          if 'warmup' in low and ('start' in low or low=='warmup'): item[key]='2024-02-28'
+                          elif low in ('start','evaluation_start','eval_start'): item[key]='2024-03-01'
+                          elif low in ('end','evaluation_end','eval_end'): item[key]='2024-03-30'
+                          elif low in ('name','label','stage'): item[key]='continuous-30d'
+                      changed=True
+                      return [item]
+              if isinstance(value,list): return [visit(x) for x in value]
+              return value
+          result=visit(source)
+          if not changed: raise RuntimeError('could not locate frozen week list')
+          Path('/tmp/candidate05-30d-weeks.json').write_text(json.dumps(result,indent=2))
+          print(json.dumps(result,indent=2))
+          PY
+      - name: Run continuous 30d with NautilusTrader
+        if: steps.resolve.outputs.winner != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks /tmp/candidate05-30d-weeks.json \
+            --cache .cache/candidate-05-promoted-30d \
+            --output "$ROOT" \
+            --max-weeks 1 2>&1 | tee "$ROOT/console.log"
+      - name: Record 30d result
+        if: always() && steps.resolve.outputs.winner != ''
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          root=Path('artifacts/candidate-05-promoted-30d')
+          files=sorted(root.rglob('metrics.json'))
+          if not files: raise RuntimeError('no 30d metrics')
+          d=json.loads(files[0].read_text())
+          def value(*names,default=0):
+              for name in names:
+                  if d.get(name) is not None:return d[name]
+              return default
+          growth=float(value('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(value('trades','trade_count',default=0) or 0); wins=int(value('wins','winning_trades',default=0) or 0); active=int(value('active_days','trading_days',default=0) or 0)
+          integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1
+          passed=integrity and growth>=.01 and trades>=20 and wins>=10 and active>=15
+          out={'schema':'candidate-05-promoted-30d-v1','winner':'${{ steps.resolve.outputs.winner }}','growth':growth,'total_return':float(value('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(value('max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'pass':passed,'decision':'PROMOTE_TO_91D' if passed else 'DISCARD_AT_30D'}
+          (root/'promoted_30d_result.json').write_text(json.dumps(out,indent=2,sort_keys=True)); Path('research/candidate-05/PROMOTED_30D_RESULT.json').write_text(json.dumps(out,indent=2,sort_keys=True)); print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/PROMOTED_30D_RESULT.json
+          if ! git diff --cached --quiet; then git commit -m "candidate-05: record promoted 30d result [skip ci]"; git push origin HEAD:research/candidate-05; fi
+      - name: Restore active strategy
+        if: always() && steps.resolve.outputs.winner != ''
+        run: cp /tmp/candidate05-strategy.py research/candidate-05/strategy.py
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.resolve.outputs.winner != ''
+        with:
+          name: candidate-05-promoted-30d-${{ github.sha }}
+          path: artifacts/candidate-05-promoted-30d/**
+          if-no-files-found: error
+          retention-days: 90
