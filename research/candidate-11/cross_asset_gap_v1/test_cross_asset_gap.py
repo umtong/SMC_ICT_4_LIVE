@@ -39,10 +39,10 @@ class CrossAssetGapTests(unittest.TestCase):
         )
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertEqual(result["entry"], 100.2)
-        self.assertEqual(result["target"], 100.8)
-        self.assertEqual(result["stop_trigger"], 99.6)
-        self.assertEqual(result["stop_execution"], 99.4)
+        self.assertAlmostEqual(result["entry"], 100.2)
+        self.assertAlmostEqual(result["target"], 100.8)
+        self.assertAlmostEqual(result["stop_trigger"], 99.6)
+        self.assertAlmostEqual(result["stop_execution"], 99.4)
         self.assertGreater(result["loss_per_unit"], 0.8)
         self.assertGreater(result["gain_per_unit"], 0.4)
 
