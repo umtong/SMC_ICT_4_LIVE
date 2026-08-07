@@ -1,0 +1,221 @@
+name: candidate-04-v43-parent-session-first-week
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v43-first-week.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      RESULT_ROOT: artifacts/candidate-04-v43-first-week
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Verify V43 causal and Nautilus contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/parent_session_liquidity_transfer_compiler.py \
+            research/candidate-04/nt_declared_causal_target.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/run_frozen_btc_route.py \
+            research/candidate-04/filter_candidate_signals.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_parent_session_liquidity_transfer_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_declared_causal_target.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_exact_causal_target_risk_sizing.py' -v
+          echo "V43_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Restore trusted low-activity BTC observations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v27-cross-low_activity-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Resolve rich observation directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          rich_dir="$(
+            find sources -type f \
+              -path '*candidate-04-v27-cross-low_activity-*/source/rich/data_manifest.json' \
+              -printf '%h\n' | head -n1
+          )"
+          test -n "$rich_dir"
+          echo "V43_RICH_DIR=$rich_dir" >> "$GITHUB_ENV"
+
+      - name: Run full and controlled branch ablations through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RESULT_ROOT"
+          : > "$RESULT_ROOT/runtime_failures.tsv"
+          for route in full continuation reversal; do
+            output="$RESULT_ROOT/$route"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-04/run_frozen_btc_route.py \
+              --family v43 \
+              --route "$route" \
+              --candidate "candidate-04-v43-parent-session-liquidity-transfer-${route}" \
+              --stage "low_activity_${route}" \
+              --compiler research/candidate-04/parent_session_liquidity_transfer_compiler.py \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --execution-config research/candidate-04/nt_liquidity_config.json \
+              --rich-dir "$V43_RICH_DIR" \
+              --build-start 2023-08-02 \
+              --build-end 2023-08-10 \
+              --evaluation-start 2023-08-04 \
+              --evaluation-end 2023-08-10 \
+              --cache ".cache/candidate-04-v43/low_activity" \
+              --output "$output" \
+              --min-trades 3 \
+              --min-active-days 2 \
+              --min-win-rate 0.50 \
+              --min-geometric-daily 0.0
+            rc=$?
+            set -e
+            if [[ "$rc" -ne 0 ]]; then
+              printf '%s\t%s\n' "$route" "$rc" >> "$RESULT_ROOT/runtime_failures.tsv"
+            fi
+          done
+
+      - name: Aggregate implementation and economic diagnosis
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-04-v43-first-week")
+          summaries = {}
+          compiler_summaries = {}
+          execution_events = {}
+          for route in ("full", "continuation", "reversal"):
+              base = root / route
+              summary_path = base / "summary.json"
+              compiler_path = base / "all_signals/summary.json"
+              events_path = base / "nautilus/strategy_events.json"
+              if summary_path.exists():
+                  summaries[route] = json.loads(summary_path.read_text())
+              if compiler_path.exists():
+                  compiler_summaries[route] = json.loads(compiler_path.read_text())
+              if events_path.exists():
+                  events = json.loads(events_path.read_text())
+                  counts = {}
+                  for event in events:
+                      key = str(event.get("event_type"))
+                      counts[key] = counts.get(key, 0) + 1
+                  execution_events[route] = counts
+
+          failures = []
+          failure_path = root / "runtime_failures.tsv"
+          if failure_path.exists():
+              for line in failure_path.read_text().splitlines():
+                  if not line.strip():
+                      continue
+                  route, rc = line.split("\t")
+                  failures.append({"route": route, "return_code": int(rc)})
+
+          viable = []
+          for route, item in summaries.items():
+              if (
+                  bool(item.get("risk_pass"))
+                  and float(item.get("total_return") or 0.0) > 0.0
+                  and int(item.get("trades") or 0) >= 3
+                  and int(item.get("active_days") or 0) >= 2
+                  and float(item.get("win_rate") or 0.0) >= 0.50
+              ):
+                  viable.append(route)
+
+          if failures:
+              classification = "implementation_failure_requires_same_week_rerun"
+              decision = "repair_implementation_and_rerun_identical_week"
+          elif viable:
+              classification = "first_week_economic_survivor"
+              decision = "confirm_surviving_routes_on_two_additional_btc_weeks"
+          else:
+              full = summaries.get("full", {})
+              compiler = compiler_summaries.get("full", {})
+              route_counts = compiler.get("route_counts") or {}
+              if int(compiler.get("written_signals") or 0) == 0:
+                  classification = "logic_failure_no_completed_scenario"
+              elif int(full.get("trades") or 0) == 0:
+                  classification = "completed_scenarios_without_executable_causal_target"
+              else:
+                  classification = "economic_logic_failure_first_week"
+              decision = "perform_one_causal_component_ablation_then_discard_or_redesign"
+
+          evidence = {
+              "candidate": "candidate-04-v43-parent-session-liquidity-transfer",
+              "source_commit": os.environ.get("V43_SOURCE_COMMIT"),
+              "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "evaluation": {
+                  "symbol": "BTCUSDT",
+                  "start": "2023-08-04",
+                  "end": "2023-08-10",
+                  "calendar_days": 7,
+              },
+              "runtime_failures": failures,
+              "compiler_summaries": compiler_summaries,
+              "execution_events": execution_events,
+              "routes": summaries,
+              "first_week_viable_routes": viable,
+              "classification": classification,
+              "decision": decision,
+              "project_target_reached": False,
+              "final_validation_completed": False,
+          }
+          target = Path("research/candidate-04/evidence-v43-first-week.json")
+          target.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          (root / "research_decision.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v43-first-week-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v43-first-week
+            research/candidate-04/evidence-v43-first-week.json
+          if-no-files-found: warn
+          retention-days: 90
