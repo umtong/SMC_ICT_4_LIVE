@@ -1,16 +1,14 @@
-"""Fail-closed materialization of Candidate 11's multi-session portfolio.
+"""Materialize the isolated relative failed-auction portfolio.
 
-The inherited Candidate 13 runner remains the execution source of truth. This
-transformer installs the byte-identical Candidate 12 I7 state machine on every
-allowed instrument, sends each completed local session scenario through the
-same frozen four-market semantic gate, and only then allows it to compete in
-the existing GlobalCandidateMutex.
+The inherited runner remains the execution source of truth.  This transformer
+installs the byte-identical I7 state machine on BTC, ETH, SOL and XRP, routes
+all lifecycle events back to the originating engine, and permits only completed
+I7 FAR plans approved by the relative peer-nonconfirmation semantic gate to
+reach the existing GlobalCandidateMutex.
 
-No alpha threshold is relaxed. The only economic change from the locked
-Candidate 14 baseline is opportunity symmetry: BTC, ETH, SOL and XRP may each
-originate a fully completed session auction, with their own exact tick size.
-Every replacement is an exact source contract; upstream drift aborts before
-market data is downloaded.
+Ordinary SCDAM plans, I7 AAC plans and broad peer-transfer FAR plans are
+explicitly rejected and audited.  No alpha threshold, cost assumption, risk
+fraction, position limit or NautilusTrader execution rule is relaxed.
 """
 from __future__ import annotations
 
@@ -26,7 +24,7 @@ def _replace(
     count = source.count(old)
     if count != expected:
         raise RuntimeError(
-            f"Candidate 11 multi-session boundary drifted at {label}: "
+            f"Candidate 11 RFAR boundary drifted at {label}: "
             f"expected {expected} occurrence(s), found {count}",
         )
     return source.replace(old, new)
@@ -98,7 +96,7 @@ def materialize_combined_portfolio_source(source: str) -> str:
                     price_increment=float(META[symbol]["price_increment"]),
                 )
             self.sizer = RiskSizer(logic_config.risk_fraction)''',
-        label="strategy-multi-session-engines",
+        label="strategy-session-engines",
     )
     source = _replace(
         source,
@@ -210,10 +208,34 @@ def materialize_combined_portfolio_source(source: str) -> str:
         '''            if not plans:
                 return
             plan_by_id = {plan.scenario_id: (plan, candidate) for plan, candidate in plans}''',
-        '''            # Every allowed market owns the same completed-session I7
-            # detector. A local plan still needs unanimous four-market transfer,
-            # causal efficiency/displacement and top-half price discovery before
-            # it may compete for the single global account slot.
+        '''            # RFAR is a single-scenario experiment.  Ordinary SCDAM
+            # plans are fully observed for causal diagnostics but cannot enter
+            # the candidate set or the global account slot.
+            for ordinary_plan, ordinary_candidate in plans:
+                ordinary_symbol = ordinary_candidate.symbol
+                ordinary_engine = self._logic_for_plan(ordinary_plan, ordinary_symbol)
+                ordinary_engine.mark_rejected(
+                    ordinary_plan,
+                    ts_ns,
+                    "RELATIVE_FAR_SESSION_ONLY",
+                )
+                self._capture_events(
+                    self._logic_key_for_plan(ordinary_plan, ordinary_symbol)
+                )
+                self.rejections.append({
+                    "type": "RELATIVE_FAR_NON_SESSION_PLAN_REJECTED",
+                    "observed_ts_ns": ordinary_plan.observed_ts_ns,
+                    "scenario_id": ordinary_plan.scenario_id,
+                    "scenario": ordinary_plan.scenario.value,
+                    "symbol": ordinary_symbol,
+                    "reason": "RELATIVE_FAR_SESSION_ONLY",
+                    "net_structural_r": str(ordinary_plan.net_r),
+                })
+            plans = []
+
+            # Every allowed market owns the same completed I7 state machine.
+            # Only failed-session auctions (FAR) whose local repair is not
+            # confirmed by the peer majority may compete for the global slot.
             for session_symbol in SYMBOLS:
                 session_logic_key_value = self.session_logic_keys[session_symbol]
                 session_engine = self.logic[session_logic_key_value]
@@ -236,6 +258,25 @@ def materialize_combined_portfolio_source(source: str) -> str:
                 semantic_scenario = str(
                     session_plan.details.get("market_semantic_scenario", "UNSUPPORTED")
                 )
+                if semantic_scenario != "FAR":
+                    session_engine.mark_rejected(
+                        session_plan,
+                        ts_ns,
+                        "RELATIVE_FAR_I7_ONLY",
+                    )
+                    self._capture_events(session_logic_key_value)
+                    self.rejections.append({
+                        "type": "RELATIVE_FAR_NON_FAR_SESSION_REJECTED",
+                        "observed_ts_ns": session_plan.observed_ts_ns,
+                        "scenario_id": session_plan.scenario_id,
+                        "scenario": session_plan.scenario.value,
+                        "market_semantic_scenario": semantic_scenario,
+                        "symbol": session_symbol,
+                        "reason": "RELATIVE_FAR_I7_ONLY",
+                        "net_structural_r": str(session_plan.net_r),
+                    })
+                    continue
+
                 causal_start_ts_ns = int(
                     session_plan.details.get("causal_start_ts_ns", -1)
                 )
@@ -257,7 +298,7 @@ def materialize_combined_portfolio_source(source: str) -> str:
                     )
                     self._capture_events(session_logic_key_value)
                     self.rejections.append({
-                        "type": "SESSION_MARKET_LEADERSHIP_REJECTED",
+                        "type": "RELATIVE_FAR_MARKET_STATE_REJECTED",
                         "observed_ts_ns": session_plan.observed_ts_ns,
                         "causal_start_ts_ns": causal_start_ts_ns,
                         "scenario_id": session_plan.scenario_id,
@@ -284,12 +325,12 @@ def materialize_combined_portfolio_source(source: str) -> str:
             if not plans:
                 return
             plan_by_id = {plan.scenario_id: (plan, candidate) for plan, candidate in plans}''',
-        label="multi-session-semantic-arbitration",
+        label="relative-failed-auction-arbitration",
     )
-    if source.count("Every allowed market owns the same completed-session I7") != 1:
-        raise RuntimeError("Candidate 11 multi-session semantic gate was not materialized once")
+    if source.count("RFAR is a single-scenario experiment") != 1:
+        raise RuntimeError("RFAR ordinary-plan isolation was not materialized once")
+    if source.count("Only failed-session auctions (FAR)") != 1:
+        raise RuntimeError("RFAR session gate was not materialized once")
     if 'self.buffer["BTCUSDT"]' in source and "session_plan =" in source:
-        # A remaining hard-coded BTC session feed would invalidate the symmetry
-        # hypothesis even if ordinary SCDAM code still mentions BTC elsewhere.
-        raise RuntimeError("hard-coded BTC-only session feed remains")
+        raise RuntimeError("hard-coded BTC-only RFAR session feed remains")
     return source
