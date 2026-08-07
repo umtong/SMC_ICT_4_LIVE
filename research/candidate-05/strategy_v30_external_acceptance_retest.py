@@ -24,7 +24,7 @@ from strategy_v29b_external_displacement_fvg import ExternalDisplacementFvgStrat
 class ExternalAcceptanceFirstRetestStrategy(ExternalDisplacementFvgStrategyV2):
     """Keep external acceptance but remove the three-bar imbalance condition.
 
-    This is a one-variable structural ablation of v29b.  Completed four-hour
+    This is a one-variable structural ablation of v29b. Completed four-hour
     external levels, the unchanged acceptance classifier, first-retest horizon,
     current tail flow and depth, structural invalidation, real liquidity target,
     costs, 3% NAV risk sizing and Nautilus execution remain identical in role.
@@ -166,6 +166,7 @@ class ExternalAcceptanceFirstRetestStrategy(ExternalDisplacementFvgStrategyV2):
             **watch.details,
             "ablation": "REMOVE_DISPLACEMENT_FVG_REQUIREMENT",
             "retest_index": self.bar_index,
+            "retest_ts": bar.ts,
             "retest_close": bar.close,
             "retest_flow_15s": bar.flow_15s,
             "retest_depth_imbalance": bar.depth_imbalance,
@@ -198,7 +199,7 @@ class ExternalAcceptanceFirstRetestStrategy(ExternalDisplacementFvgStrategyV2):
             stop=stop,
             atr=atr,
             created_index=watch.breakout_index,
-            expires_index=expiry,
+            created_ts=bar.ts,
             details=details,
         )
         submitted = self._submit_price_capped_bracket(
