@@ -1,44 +1,73 @@
-name: candidate-12-materialize-session-auction
+name: candidate-12-w1-design-gate
 
 on:
   push:
     branches: ["research/candidate-12"]
     paths:
-      - "research/candidate-12/update-v3.part*"
+      - "research/candidate-12/**"
       - ".github/workflows/candidate-12-research.yml"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: candidate-12-w1-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
-  materialize:
+  w1-design-gate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    env:
+      SYMBOL: BTCUSDT
+      WEEK: W1
+      OUTPUT: artifacts/candidate-12/BTCUSDT-W1
     steps:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
 
-      - name: Apply reviewed W1-only source atomically
+      - name: Verify prebuilt environment
+        run: smc4 doctor
+
+      - name: Compile candidate
+        run: python -m compileall -q research/candidate-12
+
+      - name: Candidate unit tests
+        run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+
+      - name: Run W1 through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          ROOT=research/candidate-12
-          cat "$ROOT/update-v3.part00" "$ROOT/update-v3.part01" \
-              "$ROOT/update-v3.part02" "$ROOT/update-v3.part03" \
-            | base64 -d > /tmp/candidate-12-update-v3.tar.gz
-          echo "9fe8448c08c0325bd9b0507c98357625b4103bca70b40421391153f2bf554b15  /tmp/candidate-12-update-v3.tar.gz" | sha256sum -c -
-          rm -rf /tmp/candidate-12-update-v3
-          mkdir -p /tmp/candidate-12-update-v3
-          tar -xzf /tmp/candidate-12-update-v3.tar.gz -C /tmp/candidate-12-update-v3
-          rm -f \
-            "$ROOT/.upload-test" \
-            "$ROOT/confirmation.py" \
-            "$ROOT/ledger.py" \
-            "$ROOT/model.py" \
-            "$ROOT/probe.py"
-          cp -a /tmp/candidate-12-update-v3/research/candidate-12/. "$ROOT/"
-          rm -f "$ROOT"/update-v3.part*
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A research/candidate-12
-          git commit -m "candidate-12: replace CLAR with W1-only session auction source"
-          git push origin HEAD:research/candidate-12
+          mkdir -p "$OUTPUT"
+          python research/candidate-12/run.py \
+            --symbol "$SYMBOL" \
+            --week "$WEEK" \
+            --output "$OUTPUT" | tee "$OUTPUT.console.json"
+
+      - name: Surface W1 decision evidence
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$OUTPUT/metrics.json" ]]; then
+            echo '=== CANDIDATE_12_W1_METRICS_BEGIN ==='
+            cat "$OUTPUT/metrics.json"
+            echo '=== CANDIDATE_12_W1_METRICS_END ==='
+          fi
+          if [[ -f "$OUTPUT/run.json" ]]; then
+            echo '=== CANDIDATE_12_W1_RUN_BEGIN ==='
+            cat "$OUTPUT/run.json"
+            echo '=== CANDIDATE_12_W1_RUN_END ==='
+          fi
+
+      - name: Preserve reproducible W1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-BTCUSDT-W1-${{ github.sha }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: warn
