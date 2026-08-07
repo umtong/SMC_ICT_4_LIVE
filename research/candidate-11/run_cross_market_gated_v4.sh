@@ -29,9 +29,9 @@ path.write_text(json.dumps({
 PY
   exit 0
 fi
-# The independent C1 screen is authorized solely by this family's implementation
-# check. The generated runner now executes only cross-market and shared
-# risk/execution tests; its own C1 audit controls whether C2/C3 may be opened.
+# Independent C1, with exact 3% risk converted only at the RiskSizer API type
+# boundary; the economic fraction, quantity formula and progression gates remain
+# unchanged.
 python "$CAND/apply_cross_market_runtime_fixes.py"
 python "$CAND/materialize_cross_market_gated_v2.py"
 chmod +x "$CAND/run_cross_market_generated_v2.sh"
