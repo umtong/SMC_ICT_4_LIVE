@@ -8,6 +8,8 @@ from io import BytesIO
 from pathlib import Path, PurePosixPath
 import tarfile
 
+from apply_independent_aac_draw import apply as apply_independent_aac_draw
+
 
 COMPLEX_ARCHIVE = "complex_runtime.tar.xz"
 COMPLEX_PARTS = tuple(f"complex_runtime.part{i:02d}.b64" for i in range(6))
@@ -129,6 +131,7 @@ def main() -> None:
     old_test = '''    def test_gtd_expiry_uses_timezone_aware_datetime(self) -> None:\n        source = (ROOT / "run.py").read_text(encoding="utf-8")\n        self.assertIn("expire_time=datetime.fromtimestamp(", source)\n        self.assertIn("tz=timezone.utc", source)\n        self.assertNotIn("expire_time=plan.expire_ts_ns", source)\n'''
     new_test = '''    def test_gtd_expiry_uses_timezone_aware_datetime(self) -> None:\n        source = (ROOT / "run.py").read_text(encoding="utf-8")\n        self.assertIn("expire_time=datetime.fromtimestamp(", source)\n        self.assertIn("tz=timezone.utc", source)\n        self.assertIn("+ timedelta(microseconds=1)", source)\n        self.assertNotIn("expire_time=plan.expire_ts_ns", source)\n'''
     changed += int(replace_once(test_path, old_test, new_test, "inclusive GTD contract test"))
+    changed += apply_independent_aac_draw(root)
 
     print(f"Candidate 11 materialization/migrations applied: {changed}")
 
