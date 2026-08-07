@@ -13,7 +13,7 @@ permissions:
 jobs:
   export-bars:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -21,7 +21,7 @@ jobs:
       PYTHONPATH: research/candidate-05
     steps:
       - uses: actions/checkout@v4
-      - name: Verify environment and export checksum-verified BTC bars
+      - name: Verify environment and export checksum-verified project bars
         shell: bash
         run: |
           set -euo pipefail
@@ -38,22 +38,29 @@ jobs:
           cache = Path(".cache/candidate-05-research-bars")
           root.mkdir(parents=True, exist_ok=True)
           periods = {
-              "btc_30d_2024_03": (date(2024, 2, 28), date(2024, 3, 30)),
-              "btc_week_1": (date(2023, 7, 7), date(2023, 7, 15)),
-              "btc_week_2": (date(2024, 1, 13), date(2024, 1, 21)),
-              "btc_week_3": (date(2023, 9, 6), date(2023, 9, 14)),
+              "week_1": (date(2023, 7, 7), date(2023, 7, 15)),
+              "week_2": (date(2024, 1, 13), date(2024, 1, 21)),
+              "week_3": (date(2023, 9, 6), date(2023, 9, 14)),
           }
-          for name, (start, end) in periods.items():
-              frames = []
-              day = start
-              while day <= end:
-                  archive, _, _ = features.download_checked("klines", "BTCUSDT", day, cache / name)
-                  frames.append(features.read_kline(archive))
-                  day += timedelta(days=1)
-              frame = pd.concat(frames, ignore_index=True).sort_values("close_time_dt")
-              if frame["close_time_dt"].duplicated().any():
-                  raise RuntimeError(f"duplicate bars in {name}")
-              frame.to_csv(root / f"{name}.csv.gz", index=False, compression="gzip")
+          symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+          for period, (start, end) in periods.items():
+              for symbol in symbols:
+                  frames = []
+                  day = start
+                  while day <= end:
+                      archive, _, _ = features.download_checked(
+                          "klines", symbol, day, cache / period / symbol,
+                      )
+                      frames.append(features.read_kline(archive))
+                      day += timedelta(days=1)
+                  frame = pd.concat(frames, ignore_index=True).sort_values("close_time_dt")
+                  if frame["close_time_dt"].duplicated().any():
+                      raise RuntimeError(f"duplicate bars in {period} {symbol}")
+                  frame.to_csv(
+                      root / f"{period}_{symbol}.csv.gz",
+                      index=False,
+                      compression="gzip",
+                  )
           PY
       - uses: actions/upload-artifact@v4
         with:
