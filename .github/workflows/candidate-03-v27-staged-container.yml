@@ -6,9 +6,10 @@ on:
     paths:
       - ".github/workflows/candidate-03-v27-staged-container.yml"
       - "research/candidate-03/run_v27_staged_container.py"
-      - "research/candidate-03/run_v27_staged_container_v3.py"
+      - "research/candidate-03/run_v27_staged_container_v4.py"
       - "research/candidate-03/derive_nt_lvcfr_v27_signals.py"
       - "research/candidate-03/patch_v27_parser_v2.py"
+      - "research/candidate-03/patch_v27_rank_calibration.py"
       - "research/candidate-03/test_nt_lvcfr_v27.py"
       - "research/candidate-03/test_nt_lvcfr_v27_parser.py"
       - "research/candidate-03/nt_lvcfr_v27_config.json"
@@ -32,7 +33,7 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Run V27 staged controller from exact commit
+      - name: Run V27 rank-calibrated controller from exact commit
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,19 +45,19 @@ jobs:
           repository=os.environ['GITHUB_REPOSITORY']
           commit=os.environ['GITHUB_SHA']
           token=os.environ['GITHUB_TOKEN']
-          path='research/candidate-03/run_v27_staged_container_v3.py'
+          path='research/candidate-03/run_v27_staged_container_v4.py'
           request=urllib.request.Request(
               f'https://api.github.com/repos/{repository}/contents/{path}?ref={commit}',
               headers={
                   'Authorization':f'Bearer {token}',
                   'Accept':'application/vnd.github+json',
                   'X-GitHub-Api-Version':'2022-11-28',
-                  'User-Agent':'candidate-03-v27-v3',
+                  'User-Agent':'candidate-03-v27-v4',
               },
           )
           with urllib.request.urlopen(request,timeout=120) as response:
               payload=json.loads(response.read().decode())
-          target=Path('/tmp/run_v27_staged_container_v3.py')
+          target=Path('/tmp/run_v27_staged_container_v4.py')
           target.write_bytes(base64.b64decode(payload['content']))
           PY
-          python /tmp/run_v27_staged_container_v3.py
+          python /tmp/run_v27_staged_container_v4.py
