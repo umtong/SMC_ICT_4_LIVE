@@ -592,7 +592,7 @@ def build_child_plans(
             signal_branch: str | None = None
 
             if branch == "DISCHARGE":
-                reversal = (
+                reversal = expected_family == "CIRB_D_R" and (
                     parent.side == "SELL"
                     and close >= parent.event_mid
                     and flow >= floor
@@ -702,6 +702,10 @@ def build_child_plans(
                 if metric is not None:
                     previous_metric = metric
             else:
+                if expected_family != "CIRB_T_C":
+                    count("BASELINE_ENTRY_FAMILY_MISMATCH")
+                    terminal_recorded = True
+                    break
                 invalid = (
                     parent.side == "SELL"
                     and close >= parent.event_mid
@@ -787,10 +791,10 @@ def build_child_plans(
                         )
 
             if signal is not None and signal.family != expected_family:
-                    raise RuntimeError(
-                        f"five-second family drift: {signal.family} != {expected_family}"
-                    )
-                if signal is not None and signal_branch is not None:
+                raise RuntimeError(
+                    f"five-second family drift: {signal.family} != {expected_family}"
+                )
+            if signal is not None and signal_branch is not None:
                 invalidation_ts, invalidation_reason = _scan_invalidation(
                     parent=parent,
                     frame=five_second_frame,
