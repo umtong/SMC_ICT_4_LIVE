@@ -1,0 +1,175 @@
+name: candidate-04-v57-evaluate-repair
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/v57_evaluate_trigger.json"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-04-v57-evaluate-repair
+  cancel-in-progress: false
+
+env:
+  SOURCE_RUN_ID: "31210600263"
+  BUILD_START: "2023-02-25"
+  BUILD_END: "2023-03-06"
+  EVALUATION_START: "2023-02-27"
+  EVALUATION_END: "2023-03-05"
+  ROOT: artifacts/candidate-04-v57-evaluation-repair
+  EVIDENCE: research/candidate-04/evidence-v57-development.json
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v57-*-${{ env.SOURCE_RUN_ID }}
+          path: restored-signals
+          merge-multiple: false
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalize the already-compiled symbol intents
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT/signals"
+          for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+            artifact="$(find restored-signals -maxdepth 1 -type d -name "candidate-04-v57-${symbol}-${SOURCE_RUN_ID}" | head -n1)"
+            test -n "$artifact"
+            source="$artifact/signals/signals.json"
+            summary="$artifact/signals/summary.json"
+            test -s "$source" -a -s "$summary"
+            mkdir -p "$ROOT/signals/$symbol"
+            cp "$source" "$ROOT/signals/$symbol/signals.json"
+            cp "$summary" "$ROOT/signals/$symbol/summary.json"
+          done
+
+      - name: Execute the unchanged one-account candidate only through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-04/nt_global_state_preserving_rich_signal_strategy.py \
+            research/candidate-04/nt_multi_asset_v56.py
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_state_preserving_rich_signal_strategy.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_multi_asset_runtime_contract.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_multi_asset_risk_evidence.py' -v
+          for attempt in 1 2 3 4; do
+            if python research/candidate-04/nt_multi_asset_v56.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --signals-root "$ROOT/signals" \
+              --build-start "$BUILD_START" \
+              --build-end "$BUILD_END" \
+              --evaluation-start "$EVALUATION_START" \
+              --evaluation-end "$EVALUATION_END" \
+              --cache ".cache/candidate-04-v57/evaluation-repair" \
+              --output "$ROOT/nautilus" \
+              --min-trades 4 \
+              --min-active-days 3 \
+              --min-win-rate 0.75 \
+              --min-geometric-daily 0.0; then break; fi
+            test "$attempt" -lt 4
+            sleep $((attempt*8))
+          done
+          test -s "$ROOT/nautilus/metrics.json"
+          test -s "$ROOT/nautilus/risk_evidence.json"
+
+      - name: Record the implementation-controlled V57 decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT" "$(dirname "$EVIDENCE")"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          metrics=json.loads((root/'nautilus/metrics.json').read_text())
+          risk=json.loads((root/'nautilus/risk_evidence.json').read_text())
+          signal_counts={}
+          for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'):
+              summary=json.loads((root/f'signals/{symbol}/summary.json').read_text())
+              signal_counts[symbol]=int(summary.get('written_signals') or 0)
+          pass_=bool(
+              risk.get('risk_pass')
+              and metrics.get('global_entry_pass')
+              and int(metrics.get('trades') or 0)>=4
+              and int(metrics.get('active_days') or 0)>=3
+              and float(metrics.get('win_rate') or 0.0)>=0.75
+              and float(metrics.get('total_return') or 0.0)>0.0
+          )
+          evidence={
+              'candidate':'candidate-04-v57-internal-pool-failed-auction',
+              'stage':'implementation_controlled_four_asset_development_screen',
+              'source_commit':os.environ.get('GITHUB_SHA'),
+              'source_compilation_run':int(os.environ['SOURCE_RUN_ID']),
+              'engine':'NautilusTrader 1.230.0 BacktestNode',
+              'evaluation':{'start':'2023-02-27','end_inclusive':'2023-03-05'},
+              'implementation_fix_only':'artifact normalization matched the actual per-symbol artifact root',
+              'market_logic_changed':False,
+              'week_changed':False,
+              'signal_counts':signal_counts,
+              'metrics':metrics,
+              'risk_evidence':risk,
+              'implementation_pass':bool(risk.get('risk_pass') and metrics.get('global_entry_pass')),
+              'development_pass':pass_,
+              'prospective_week_allowed':pass_,
+              'project_target_reached':False,
+              'decision':'FREEZE_V57_AND_OPEN_NEW_FOUR_ASSET_WEEK' if pass_ else 'DISCARD_V57_NO_FOUR_ASSET_FREQUENCY_EDGE',
+          }
+          Path(os.environ['EVIDENCE']).write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          (root/'decision.json').write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(evidence,indent=2,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v57-evaluation-repair-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v57-evaluation-repair
+            research/candidate-04/evidence-v57-development.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist V57 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test -s "$EVIDENCE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research(candidate-04): record V57 repaired evaluation evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt*3))
+          done
+          exit 1
