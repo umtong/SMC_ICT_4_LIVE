@@ -1,0 +1,258 @@
+name: candidate-05-v38-three-weeks
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/isolated_smt_*.py"
+      - "research/candidate-05/strategy_v38_isolated_smt_reversal.py"
+      - "research/candidate-05/shared_account_strategy_variants_v38.py"
+      - "research/candidate-05/shared_account_backtest_v38.py"
+      - ".github/workflows/candidate-05-v38-three-weeks.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v38-three-weeks
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  three-week-controlled-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v38-three-weeks
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and unchanged v38 contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Run all three frozen weeks against exact shared control
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/v26.json" <<'JSON'
+          {"classification":"VALIDATED_BTC_WINNER_RESOLVED","winner":"strategy_v26:ScenarioValidEntryStrategy","experiment_role":"EXACT_SHARED_CONTROL"}
+          JSON
+          cat > "$ROOT/evidence/v38.json" <<'JSON'
+          {"classification":"VALIDATED_BTC_WINNER_RESOLVED","winner":"strategy_v38_isolated_smt_reversal:IsolatedSmtReversalStrategy","experiment_role":"FROZEN_V38_GENERALIZATION"}
+          JSON
+
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          root = Path(os.environ["ROOT"])
+          runner = Path("research/candidate-05/shared_account_backtest_v38.py")
+          ranges = [
+              ("week-1", "2023-07-07", "2023-07-15", "2023-07-09", "2023-07-15"),
+              ("week-2", "2024-01-13", "2024-01-21", "2024-01-15", "2024-01-21"),
+              ("week-3", "2023-09-06", "2023-09-14", "2023-09-08", "2023-09-14"),
+          ]
+          branch_name = "SMT_ISOLATED_SESSION_REVERSAL"
+
+          def write_json(path: Path, value: object) -> None:
+              path.parent.mkdir(parents=True, exist_ok=True)
+              temporary = path.with_suffix(path.suffix + ".tmp")
+              temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+              temporary.replace(path)
+
+          records = []
+          implementation_errors = []
+          for name, build_start, build_end, evaluation_start, evaluation_end in ranges:
+              stage = {"name": name, "runs": {}}
+              for variant in ("v26", "v38"):
+                  output = root / name / variant
+                  output.mkdir(parents=True, exist_ok=True)
+                  command = [
+                      sys.executable,
+                      str(runner),
+                      "--winner-evidence", str(root / "evidence" / f"{variant}.json"),
+                      "--build-start", build_start,
+                      "--build-end", build_end,
+                      "--evaluation-start", evaluation_start,
+                      "--evaluation-end", evaluation_end,
+                      "--cache", str(Path(".cache/candidate-05-v38-three-weeks") / name),
+                      "--output", str(output),
+                  ]
+                  completed = subprocess.run(
+                      command,
+                      text=True,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                  )
+                  (root / f"{name}-{variant}-console.log").write_text(
+                      completed.stdout or "",
+                  )
+                  if completed.returncode != 0:
+                      error = {
+                          "classification": f"IMPLEMENTATION_ERROR_{name.upper().replace('-', '_')}_{variant.upper()}",
+                          "stage": name,
+                          "variant": variant,
+                          "returncode": completed.returncode,
+                      }
+                      implementation_errors.append(error)
+                      stage["runs"][variant] = error
+                      break
+                  metrics = json.loads((output / "metrics.json").read_text())
+                  stage["runs"][variant] = metrics
+              records.append(stage)
+              if implementation_errors:
+                  break
+
+          if implementation_errors:
+              summary = {
+                  "schema": "candidate-05-v38-three-week-control-v1",
+                  "classification": implementation_errors[0]["classification"],
+                  "passed": False,
+                  "implementation_errors": implementation_errors,
+                  "records": records,
+              }
+              write_json(root / "v38_three_week_summary.json", summary)
+              print(json.dumps(summary, indent=2, sort_keys=True))
+              raise SystemExit(0)
+
+          control_returns = []
+          candidate_returns = []
+          weekly = []
+          branch_trades = 0
+          branch_wins = 0
+          branch_pnl = 0.0
+          total_trades = 0
+          total_wins = 0
+          positive_candidate_weeks = 0
+          positive_branch_weeks = 0
+          for stage in records:
+              control = stage["runs"]["v26"]
+              candidate = stage["runs"]["v38"]
+              branch = candidate.get("scenario_metrics", {}).get(branch_name, {})
+              control_return = float(control["total_return"])
+              candidate_return = float(candidate["total_return"])
+              control_returns.append(control_return)
+              candidate_returns.append(candidate_return)
+              branch_trades += int(branch.get("trades", 0))
+              branch_wins += int(branch.get("wins", 0))
+              branch_pnl += float(branch.get("net_pnl", 0.0))
+              total_trades += int(candidate.get("trades", 0))
+              total_wins += int(candidate.get("wins", 0))
+              positive_candidate_weeks += int(candidate_return > 0.0)
+              positive_branch_weeks += int(float(branch.get("net_pnl", 0.0)) > 0.0)
+              weekly.append(
+                  {
+                      "stage": stage["name"],
+                      "control_total_return": control_return,
+                      "candidate_total_return": candidate_return,
+                      "delta_total_return": candidate_return - control_return,
+                      "candidate_geometric_daily_growth": candidate["geometric_daily_growth"],
+                      "candidate_trades": candidate["trades"],
+                      "candidate_wins": candidate["wins"],
+                      "candidate_max_drawdown": candidate["max_drawdown"],
+                      "candidate_integrity_pass": candidate["integrity_pass"],
+                      "control_integrity_pass": control["integrity_pass"],
+                      "incremental_branch": branch,
+                  },
+              )
+
+          control_compound = math.prod(1.0 + value for value in control_returns) - 1.0
+          candidate_compound = math.prod(1.0 + value for value in candidate_returns) - 1.0
+          geometric_daily = (1.0 + candidate_compound) ** (1.0 / 21.0) - 1.0
+          all_integrity = all(
+              item["candidate_integrity_pass"] and item["control_integrity_pass"]
+              for item in weekly
+          )
+          checks = {
+              "all_integrity": all_integrity,
+              "candidate_improves_control_compound": candidate_compound > control_compound,
+              "incremental_branch_traded": branch_trades >= 3,
+              "incremental_branch_positive": branch_pnl > 0.0,
+              "incremental_branch_wins": branch_wins >= 2,
+              "candidate_positive_weeks": positive_candidate_weeks >= 2,
+              "no_week_drawdown_over_twenty_percent": all(
+                  float(item["candidate_max_drawdown"]) <= 0.20 for item in weekly
+              ),
+              "trade_density": total_trades >= 21,
+              "win_density": total_wins >= 12,
+              "whole_screen_geometric_daily_growth": geometric_daily >= 0.01,
+          }
+
+          if not all_integrity:
+              classification = "IMPLEMENTATION_ERROR_THREE_WEEK_INTEGRITY"
+          elif branch_trades == 0:
+              classification = "LOGIC_FAILURE_NO_INCREMENTAL_TRADES_THREE_WEEKS"
+          elif branch_pnl <= 0.0:
+              classification = "LOGIC_FAILURE_NONPOSITIVE_INCREMENTAL_EXPECTANCY_THREE_WEEKS"
+          elif candidate_compound <= control_compound:
+              classification = "LOGIC_FAILURE_DID_NOT_IMPROVE_CONTROL_THREE_WEEKS"
+          elif all(checks.values()):
+              classification = "V38_THREE_WEEK_PROMOTION_PASSED"
+          else:
+              classification = "V38_POSITIVE_ALPHA_BELOW_FULL_PROMOTION_GATE"
+
+          summary = {
+              "schema": "candidate-05-v38-three-week-control-v1",
+              "classification": classification,
+              "passed": classification == "V38_THREE_WEEK_PROMOTION_PASSED",
+              "checks": checks,
+              "weekly": weekly,
+              "control_compound_return": control_compound,
+              "candidate_compound_return": candidate_compound,
+              "candidate_geometric_daily_growth_over_21_screen_days": geometric_daily,
+              "candidate_total_trades": total_trades,
+              "candidate_total_wins": total_wins,
+              "candidate_positive_weeks": positive_candidate_weeks,
+              "incremental_branch": {
+                  "trades": branch_trades,
+                  "wins": branch_wins,
+                  "net_pnl": branch_pnl,
+                  "positive_weeks": positive_branch_weeks,
+              },
+              "records": records,
+              "next_action": (
+                  "Run the frozen continuous 30-day shared-account screen"
+                  if classification == "V38_THREE_WEEK_PROMOTION_PASSED"
+                  else "Diagnose whether the stable incremental branch still supports a continuous 30-day test without changing market logic"
+                  if classification == "V38_POSITIVE_ALPHA_BELOW_FULL_PROMOTION_GATE"
+                  else "Discard or replace the family after recording the causal failure"
+              ),
+          }
+          write_json(root / "v38_three_week_summary.json", summary)
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Print evidence
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$ROOT/v38_three_week_summary.json"; then
+            python -m json.tool "$ROOT/v38_three_week_summary.json"
+          fi
+          find "$ROOT" -name '*console.log' -type f -print -exec tail -n 100 {} \;
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v38-three-weeks-${{ github.sha }}
+          path: artifacts/candidate-05-v38-three-weeks/**
+          if-no-files-found: error
+          retention-days: 90
