@@ -8,9 +8,11 @@ families are evaluated in the mandated order:
 2. remove only the OI-release requirement after a clean logic failure;
 3. aggressor-volume-time impact-asymmetry baseline;
 4. remove only its OI-release requirement after a clean logic failure;
-5. only if all direct-impact variants fail, require impact -> one-minute MSS,
-   ranked displacement, causal FVG and first episode-bounded FVG retest;
-6. remove only the FVG-retest requirement after a clean logic failure.
+5. retarget accepted volume-time events to the pre-attack 15-second VWAP;
+6. remove only volume weighting and use the same bucket's close after failure;
+7. only if prior routes fail, require impact -> one-minute MSS, ranked
+   displacement, causal FVG and first episode-bounded FVG retest;
+8. remove only the FVG-retest requirement after a clean logic failure.
 
 No family here creates orders, fills, PnL, cash or NAV. A structural pass only
 selects a route for immediate NautilusTrader implementation on the same Week-1.
@@ -31,6 +33,7 @@ import diagnose_aggtrade_resilience as fixed
 import diagnose_aggtrade_volume_time as volume_time
 import diagnose_impact_mss_fvg_paths as mss_fvg_paths
 import diagnose_impact_resilience_1s as impact
+import diagnose_pre_attack_value as pre_attack_value
 from data_aggtrades_1s import load_aggtrade_1s_bundle
 from diagnose_aggtrade_resilience_v2 import preconsume_before_event_window
 from diagnose_failed_flow import aggregate_flow
@@ -95,6 +98,14 @@ def run(args: argparse.Namespace) -> int:
     fixed_logic.validate()
     volume_logic = volume_time.VolumeTimeLogic()
     volume_logic.validate()
+    pre_attack_vwap_logic = pre_attack_value.PreAttackValueLogic(
+        target_statistic="vwap",
+    )
+    pre_attack_vwap_logic.validate()
+    pre_attack_close_logic = pre_attack_value.PreAttackValueLogic(
+        target_statistic="close",
+    )
+    pre_attack_close_logic.validate()
     mss_fvg_logic = ImpactMSSFVGLogic()
     mss_fvg_logic.validate()
     output_dir = args.output_dir.resolve()
@@ -224,6 +235,7 @@ def run(args: argparse.Namespace) -> int:
             selected = "fixed_time_ablation_no_oi"
 
     volume_baseline: dict[str, Any] | None = None
+    volume_ablation: dict[str, Any] | None = None
     if selected is None and implementation_clean:
         volume_baseline_result = volume_time.diagnose(
             bars,
@@ -273,6 +285,59 @@ def run(args: argparse.Namespace) -> int:
         records.append(volume_ablation)
         if _gate_passed(volume_ablation):
             selected = "volume_time_ablation_no_oi"
+
+    # Structural redesign after the direct-impact target failure: preserve the
+    # accepted volume-time event, but target the completed auction value from
+    # which the failed attack originated rather than a remote liquidity pool.
+    pre_attack_vwap: dict[str, Any] | None = None
+    if selected is None and implementation_clean and volume_ablation is not None:
+        pre_attack_vwap_result = pre_attack_value.diagnose(
+            bars,
+            upstream_report=volume_ablation_result,
+            max_hold_seconds=int(config["max_hold_minutes"]) * 60,
+            logic=pre_attack_vwap_logic,
+        )
+        pre_attack_vwap = _write_variant(
+            output_dir / "pre_attack_value_vwap.json",
+            family="pre_attack_auction_value",
+            variant="baseline_prior_15s_vwap",
+            period=period,
+            logic=_logic_payload(pre_attack_vwap_logic),
+            loader_diagnostics=bundle.diagnostics,
+            preconsumption=preconsumption,
+            result=pre_attack_vwap_result,
+        )
+        records.append(pre_attack_vwap)
+        if _gate_passed(pre_attack_vwap):
+            selected = "pre_attack_value_vwap"
+
+    # One controlled ablation: remove only volume weighting from the already
+    # completed pre-attack bucket and use its final trade price.
+    if (
+        selected is None
+        and implementation_clean
+        and pre_attack_vwap is not None
+        and volume_ablation is not None
+    ):
+        pre_attack_close_result = pre_attack_value.diagnose(
+            bars,
+            upstream_report=volume_ablation_result,
+            max_hold_seconds=int(config["max_hold_minutes"]) * 60,
+            logic=pre_attack_close_logic,
+        )
+        pre_attack_close = _write_variant(
+            output_dir / "pre_attack_value_ablation_close.json",
+            family="pre_attack_auction_value",
+            variant="ablation_remove_volume_weighting",
+            period=period,
+            logic=_logic_payload(pre_attack_close_logic),
+            loader_diagnostics=bundle.diagnostics,
+            preconsumption=preconsumption,
+            result=pre_attack_close_result,
+        )
+        records.append(pre_attack_close)
+        if _gate_passed(pre_attack_close):
+            selected = "pre_attack_value_ablation_close"
 
     # Independent successor: preserve the OI-qualified impact event, but wait
     # for the ICT-style MSS/displacement/FVG sequence and first valid retest.
