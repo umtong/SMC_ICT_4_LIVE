@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
-"""Generate the M7-M9 gated evaluator from the M4-M6 evidence harness."""
+"""Generate the isolated M7-M9 balance-acceptance evaluator.
+
+The evaluator reuses the tested one-second Nautilus harness while limiting
+preflight tests and evidence to the microstructure family plus shared bar/risk
+contracts.  Unrelated candidate families cannot block or contaminate the
+screening result.
+"""
 from __future__ import annotations
 
 from pathlib import Path
+
+
+def replace_once(source: str, old: str, new: str, label: str) -> str:
+    count = source.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected one anchor, found {count}")
+    return source.replace(old, new, 1)
 
 
 def main() -> None:
@@ -26,10 +39,27 @@ def main() -> None:
         if old not in source:
             raise SystemExit(f"v3 gated materializer anchor missing: {old}")
         source = source.replace(old, new)
+
+    source = replace_once(
+        source,
+        'python "$CAND/apply_microstructure_lifecycle_fix.py"\n',
+        'python "$CAND/apply_microstructure_lifecycle_fix.py"\n'
+        'python "$CAND/apply_balance_acceptance_safety.py"\n',
+        "balance target-consumption guard",
+    )
+    source = replace_once(
+        source,
+        "python -m unittest discover -s \"$CAND\" -p 'test_*.py' -v\n",
+        "python -m unittest discover -s \"$CAND\" -p 'test_microstructure*.py' -v\n"
+        "python -m unittest discover -s \"$CAND\" -p 'test_bar_adapter.py' -v\n"
+        "python -m unittest discover -s \"$CAND\" -p 'test_logic.py' -v\n",
+        "focused microstructure preflight",
+    )
+
     destination = root / "run_microstructure_v3_generated.sh"
     destination.write_text(source, encoding="utf-8")
     destination.chmod(0o755)
-    print("microstructure-v3 gated evaluator materialized")
+    print("isolated microstructure-v3 gated evaluator materialized")
 
 
 if __name__ == "__main__":
