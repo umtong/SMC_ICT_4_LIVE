@@ -1,0 +1,276 @@
+name: candidate-05-v39-v45-master
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v39-v45-master.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v39-v45-master
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+
+  week1:
+    needs: contracts
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: v39
+            module: strategy_v39_dual_auction
+            class: DualAuctionStateStrategy
+          - label: v40
+            module: strategy_v40_auction_router
+            class: MultiCauseAuctionRouterStrategy
+          - label: v41
+            module: strategy_v41_competing_auction
+            class: CompetingAuctionStrategy
+          - label: v42
+            module: strategy_v42_external_auction
+            class: HierarchicalExternalAuctionStrategy
+          - label: v43
+            module: strategy_v43_balance_competition
+            class: BalanceAuctionCompetitionStrategy
+          - label: v44
+            module: strategy_v44_regime_auction
+            class: RegimeConditionedAuctionStrategy
+          - label: v45b
+            module: strategy_v45b_hybrid_auction
+            class: CorrectedHybridAuctionStrategy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/master-week1/${{ matrix.label }}
+      MODULE: ${{ matrix.module }}
+      CLASS: ${{ matrix.class }}
+      LABEL: ${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select candidate in isolated worktree
+        id: select
+        shell: bash
+        run: |
+          set +e
+          python - <<'PY'
+          from pathlib import Path
+          import importlib,os,re
+          module=importlib.import_module(os.environ['MODULE'])
+          getattr(module,os.environ['CLASS'])
+          path=Path('research/candidate-05/strategy.py'); source=path.read_text()
+          pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE)
+          match=pattern.search(source)
+          if match is None: raise RuntimeError(f'v26 import not found: {source!r}')
+          exported=match.group(2) or match.group(1)
+          path.write_text(pattern.sub(f"from {os.environ['MODULE']} import {os.environ['CLASS']} as {exported}",source,count=1))
+          PY
+          status=$?
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Run frozen Week 1 in NautilusTrader
+        if: steps.select.outputs.status == '0'
+        id: run
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$ROOT"
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks research/candidate-05/weeks.json \
+            --cache ".cache/candidate-05-master-${LABEL}" \
+            --output "$ROOT" \
+            --max-weeks 1 2>&1 | tee "$ROOT/console.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Create normalized result
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$ROOT"
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          root=Path(os.environ['ROOT']); files=sorted(root.rglob('metrics.json'))
+          def value(d,*names,default=0):
+              for name in names:
+                  if d.get(name) is not None:return d[name]
+              return default
+          if not files:
+              out={'label':os.environ['LABEL'],'module':os.environ['MODULE'],'class':os.environ['CLASS'],'available':False,'pass':False,'classification':'IMPLEMENTATION_OR_EXECUTION_FAILURE'}
+          else:
+              d=json.loads(files[0].read_text()); growth=float(value(d,'geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(value(d,'trades','trade_count',default=0) or 0); wins=int(value(d,'wins','winning_trades',default=0) or 0); active=int(value(d,'active_days','trading_days',default=0) or 0); dd=float(value(d,'max_drawdown','maximum_drawdown',default=0) or 0)
+              integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1
+              passed=integrity and growth>=.01 and trades>=7 and wins>=4 and active>=4 and dd<=.20
+              classification='PASS' if passed else 'INSUFFICIENT_OPPORTUNITIES' if trades<7 else 'NEGATIVE_EXPECTANCY' if growth<=0 else 'PROMOTION_GATE_MISS'
+              out={'label':os.environ['LABEL'],'module':os.environ['MODULE'],'class':os.environ['CLASS'],'available':True,'pass':passed,'classification':classification,'growth':growth,'total_return':float(value(d,'total_return',default=0) or 0),'trades':trades,'wins':wins,'win_rate':wins/trades if trades else 0.0,'active_days':active,'max_drawdown':dd,'integrity':integrity,'metrics_path':str(files[0])}
+          (root/'normalized_result.json').write_text(json.dumps(out,indent=2,sort_keys=True)); print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: master-week1-${{ matrix.label }}
+          path: artifacts/master-week1/${{ matrix.label }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  choose:
+    needs: week1
+    runs-on: ubuntu-24.04
+    outputs:
+      winner: ${{ steps.choose.outputs.winner }}
+      module: ${{ steps.choose.outputs.module }}
+      class: ${{ steps.choose.outputs.class }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: master-week1-*
+          path: artifacts/downloaded
+          merge-multiple: true
+      - id: choose
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          rows=[json.loads(path.read_text()) for path in Path('artifacts/downloaded').rglob('normalized_result.json')]
+          passed=[row for row in rows if row.get('pass')]
+          winner=max(passed,key=lambda row:(row['growth'],row['win_rate'],row['trades'],-row['max_drawdown'])) if passed else None
+          result={'schema':'candidate-05-v39-v45-master-week1-v1','rows':sorted(rows,key=lambda row:row['label']),'winner':winner}
+          Path('master_week1_decision.json').write_text(json.dumps(result,indent=2,sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f"winner={winner['label'] if winner else ''}\n")
+              out.write(f"module={winner['module'] if winner else ''}\n")
+              out.write(f"class={winner['class'] if winner else ''}\n")
+          print(json.dumps(result,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: master-week1-decision
+          path: master_week1_decision.json
+          retention-days: 90
+
+  frozen-three:
+    needs: choose
+    if: needs.choose.outputs.winner != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/master-frozen-three
+      WINNER: ${{ needs.choose.outputs.winner }}
+      MODULE: ${{ needs.choose.outputs.module }}
+      CLASS: ${{ needs.choose.outputs.class }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select winner and run all frozen weeks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import os,re
+          path=Path('research/candidate-05/strategy.py'); source=path.read_text()
+          pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE)
+          match=pattern.search(source); exported=match.group(2) or match.group(1)
+          path.write_text(pattern.sub(f"from {os.environ['MODULE']} import {os.environ['CLASS']} as {exported}",source,count=1))
+          PY
+          mkdir -p "$ROOT"
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks research/candidate-05/weeks.json \
+            --cache ".cache/candidate-05-master-three-${WINNER}" \
+            --output "$ROOT" \
+            --max-weeks 3 2>&1 | tee "$ROOT/console.log"
+      - name: Normalize three-week decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          root=Path(os.environ['ROOT'])
+          def value(d,*names,default=0):
+              for name in names:
+                  if d.get(name) is not None:return d[name]
+              return default
+          rows=[]
+          for path in sorted(root.rglob('metrics.json')):
+              d=json.loads(path.read_text()); growth=float(value(d,'geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(value(d,'trades','trade_count',default=0) or 0); wins=int(value(d,'wins','winning_trades',default=0) or 0); active=int(value(d,'active_days','trading_days',default=0) or 0); dd=float(value(d,'max_drawdown','maximum_drawdown',default=0) or 0); integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1; passed=integrity and growth>=.01 and trades>=7 and wins>=4 and active>=4 and dd<=.20
+              rows.append({'path':str(path),'growth':growth,'total_return':float(value(d,'total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':dd,'integrity':integrity,'pass':passed})
+          passed=len(rows)>=3 and all(row['pass'] for row in rows[:3])
+          out={'schema':'candidate-05-v39-v45-master-three-v1','winner':os.environ['WINNER'],'module':os.environ['MODULE'],'class':os.environ['CLASS'],'rows':rows,'three_week_pass':passed,'decision':'PROMOTE_TO_30D' if passed else 'DISCARD_AFTER_FROZEN_WEEKS'}
+          (root/'master_three_result.json').write_text(json.dumps(out,indent=2,sort_keys=True)); print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: master-frozen-three-result
+          path: artifacts/master-frozen-three/**
+          if-no-files-found: error
+          retention-days: 90
+
+  commit-result:
+    needs: [choose, frozen-three]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: master-week1-decision
+          path: artifacts/decision
+      - uses: actions/download-artifact@v4
+        if: needs.choose.outputs.winner != ''
+        with:
+          name: master-frozen-three-result
+          path: artifacts/three
+      - name: Commit one authoritative master result
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          week=json.loads(next(Path('artifacts/decision').rglob('master_week1_decision.json')).read_text())
+          three_files=list(Path('artifacts/three').rglob('master_three_result.json'))
+          three=json.loads(three_files[0].read_text()) if three_files else None
+          out={'schema':'candidate-05-v39-v45-master-result-v1','week1':week,'frozen_three':three,'decision':three['decision'] if three else 'DISCARD_NO_WEEK1_WINNER'}
+          Path('research/candidate-05/V39_V45_MASTER_RESULT.json').write_text(json.dumps(out,indent=2,sort_keys=True)); print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V39_V45_MASTER_RESULT.json
+          git commit -m "candidate-05: record v39-v45 master decision [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
