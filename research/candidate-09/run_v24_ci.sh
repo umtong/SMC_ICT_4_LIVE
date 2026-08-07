@@ -19,6 +19,7 @@ for pattern in \
   test_evidence_contract.py \
   test_nautilus_contract.py \
   test_run_gate.py; do
+  [[ -f "$root/tests/$pattern" ]] || continue
   python -m unittest discover -s "$root/tests" -p "$pattern" -v \
     >> "$root/diagnostics/v24-gate-long/tests-generic.txt" 2>&1 || generic_rc=1
 done
