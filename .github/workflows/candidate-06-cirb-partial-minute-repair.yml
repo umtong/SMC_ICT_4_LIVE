@@ -1,0 +1,220 @@
+name: Candidate 06 CIRB Partial-Minute Repair and Rerun
+
+on:
+  push:
+    branches: [research/candidate-06]
+    paths:
+      - ".github/workflows/candidate-06-cirb-partial-minute-repair.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-cirb-partial-minute-repair
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  repair-and-rerun:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Repair only the partial-minute patch defects
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          rm -rf artifacts/candidate-06/cirb-execution-resolution
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-06/cirb_execution_resolution.py")
+          text = path.read_text(encoding="utf-8")
+
+          old = '''            if branch == "DISCHARGE":
+                          reversal = (
+          '''
+          new = '''            if branch == "DISCHARGE":
+                          reversal = expected_family == "CIRB_D_R" and (
+          '''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit("REVERSAL_FAMILY_FREEZE_CONTEXT_MISSING")
+
+          old = '''            else:
+                          invalid = (
+          '''
+          new = '''            else:
+                          if expected_family != "CIRB_T_C":
+                              count("BASELINE_ENTRY_FAMILY_MISMATCH")
+                              terminal_recorded = True
+                              break
+                          invalid = (
+          '''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit("COUNTER_FAMILY_FREEZE_CONTEXT_MISSING")
+
+          old = '''            if signal is not None and signal.family != expected_family:
+                          raise RuntimeError(
+                              f"five-second family drift: {signal.family} != {expected_family}"
+                          )
+                      if signal is not None and signal_branch is not None:
+                      invalidation_ts, invalidation_reason = _scan_invalidation(
+          '''
+          new = '''            if signal is not None and signal.family != expected_family:
+                          raise RuntimeError(
+                              f"five-second family drift: {signal.family} != {expected_family}"
+                          )
+                      if signal is not None and signal_branch is not None:
+                          invalidation_ts, invalidation_reason = _scan_invalidation(
+          '''
+          if old not in text:
+              raise SystemExit("INDENTATION_REPAIR_CONTEXT_MISSING")
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+
+      - uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-06
+          key: candidate-06-cirb-5s-${{ runner.os }}-v1
+          restore-keys: |
+            candidate-06-cirb-5s-
+            candidate-06-
+
+      - name: Verify environment and causal contracts
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          assert version("nautilus_trader") == "1.230.0"
+          PY
+          python -m py_compile \
+            research/candidate-06/cirb_execution_resolution.py \
+            research/candidate-06/cirb_five_second_nautilus.py \
+            research/candidate-06/run_cirb_execution_resolution_week.py \
+            research/candidate-06/run_cirb_execution_resolution_matrix.py
+          python research/candidate-06/test_cirb_execution_resolution.py
+          python research/candidate-06/test_crowding_inventory_response_engine.py
+          python research/candidate-06/test_signal_submission_timing_contract.py
+          python - <<'PY'
+          import pandas as pd
+          from cirb_execution_resolution import FrozenParent, build_child_plans
+          t = 1_700_000_000_000_000_000
+          base = dict(event_drop=.01, drop_threshold=.005, event_open=101.,
+              event_high=102., event_low=99., event_close=101., event_mid=100.,
+              event_range=3., atr=1., slow_mid=98., upper_fast=103., lower_fast=97.,
+              prior_open_interest=100., event_open_interest=99.,
+              prior_all_account_ratio=1., event_all_account_ratio=1.01, shock_sign=1.)
+          parent = FrozenParent(scenario_id="CIRB-SYNTHETIC-ENTRY", observed_ts_ns=t,
+              side="BUY", crowding_branch="DISCHARGE",
+              baseline_entry={"reason_code":"CROWD_DISCHARGE_REVERSAL_ENTRY_ARMED","reference_price":99.7},
+              baseline_rr_eroded=True, **base)
+          unused = FrozenParent(scenario_id="CIRB-SYNTHETIC-NONENTRY", observed_ts_ns=t,
+              side="BUY", crowding_branch="DISCHARGE", baseline_entry=None,
+              baseline_rr_eroded=False, **base)
+          idx = pd.to_datetime([t+5_000_000_000,t+10_000_000_000],unit="ns",utc=True)
+          frame = pd.DataFrame({"open":[101.,100.1],"high":[101.,100.2],
+              "low":[100.,99.5],"close":[100.1,99.8],"volume":[200.,100.],
+              "taker_buy_volume":[0.,100.],"trades":[10,10]},index=idx)
+          plans, diag = build_child_plans(parents=(parent,unused),five_second_frame=frame,
+              metrics={},logic_params={"oidb_response_flow_ratio":.05,
+              "oidb_reclaim_close_location":.58,"minimum_structural_rr":.75,
+              "oidb_stop_buffer_atr":.08,"oidb_extension_atr":.05,
+              "oidb_projection_fraction":1.,"oidb_response_bars":6,
+              "oidb_invalidation_observation_bars":6},enable_discharge=True,
+              enable_counter_inventory=True)
+          assert len(plans)==1,(plans,diag)
+          assert plans[0].signal.family=="CIRB_D_R"
+          assert plans[0].signal.observed_ts_ns==t+10_000_000_000
+          assert diag["parent_events_observed"]==2
+          assert diag["parent_signals_armed"]==1
+          assert diag["partial_minute_aggregation"] is True
+          print("CAUSAL_PARTIAL_MINUTE_CONTRACT=PASS")
+          PY
+
+      - name: Run corrected frozen W2-first matrix
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts/candidate-06
+          python research/candidate-06/run_cirb_execution_resolution_matrix.py \
+            --output artifacts/candidate-06/cirb-execution-resolution \
+            > artifacts/candidate-06-cirb-execution-resolution.stdout \
+            2> artifacts/candidate-06-cirb-execution-resolution.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Preserve authoritative source and evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-06/cirb-execution-resolution
+          mkdir -p "$root"
+          code='${{ steps.lab.outputs.exit_code }}'; if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > "$root/workflow_exit_code.txt"
+          cp artifacts/candidate-06-cirb-execution-resolution.stdout "$root/workflow_stdout.txt" 2>/dev/null || true
+          cp artifacts/candidate-06-cirb-execution-resolution.stderr "$root/workflow_stderr.txt" 2>/dev/null || true
+          if [ ! -s "$root/summary.json" ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("artifacts/candidate-06/cirb-execution-resolution")
+          payload={"terminal_status":"IMPLEMENTATION_FAILURE_BEFORE_W2",
+                   "selected":None,"long_evaluation_authorized":False}
+          (root/"summary.json").write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n")
+          (root/"SUMMARY.md").write_text("# CIRB partial-minute run\n\nImplementation failure before W2.\n")
+          PY
+          fi
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add research/candidate-06/cirb_execution_resolution.py
+          git add -u "$root" || true
+          git add -f "$root/summary.json" "$root/SUMMARY.md" "$root/workflow_exit_code.txt" \
+            "$root/workflow_stdout.txt" "$root/workflow_stderr.txt"
+          find "$root" -type f \( -name 'metrics.json' -o -name 'parent_audit.json' \
+            -o -name 'child_plans.json' -o -name 'run.json' -o -name '*data_quality.json' \
+            -o -name 'futures_metrics_quality.json' -o -name 'errors.log' \) \
+            -print0 | xargs -0 -r git add -f
+          if ! git diff --cached --quiet; then
+            git commit -m "Repair candidate-06 CIRB partial-minute contract and record W2 verdict [candidate-06 evidence]"
+            git push origin HEAD:research/candidate-06
+          fi
+
+      - name: Upload complete evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-cirb-partial-minute-repair-${{ github.sha }}
+          path: artifacts/candidate-06/cirb-execution-resolution
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce research verdict
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'; if [ -z "$code" ]; then code=1; fi
+          exit "$code"
