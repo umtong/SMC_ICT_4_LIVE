@@ -6,7 +6,7 @@ from typing import Any
 from c10_liquidation_strategy import LiquidationCandidate10Config
 from c10_live_cost_ledger import LiveCostLiquidationStrategy
 from c10_v25_model import LiquidityResponseBar, LiquidityResponseParams
-from c10_v25_state import LiquidityResponseStateMachine
+from c10_v25_strict_state import StrictLiquidityResponseStateMachine
 
 
 LiquidityResponseCandidate10Config = LiquidationCandidate10Config
@@ -22,7 +22,7 @@ class LiquidityResponseCandidate10Strategy(LiveCostLiquidationStrategy):
                 f"instrument not in cache: {self.config.instrument_id}",
             )
         params = LiquidityResponseParams(**dict(self.config.params))
-        self.machine = LiquidityResponseStateMachine(
+        self.machine = StrictLiquidityResponseStateMachine(
             params,
             tick_size=self.instrument.price_increment.as_double(),
             instrument_id=str(self.config.instrument_id),
