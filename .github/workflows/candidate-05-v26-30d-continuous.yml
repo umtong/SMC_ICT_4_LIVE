@@ -1,14 +1,17 @@
-name: candidate-05-v43-btc-30d-continuous
+name: candidate-05-v44-btc-30d-internal-context
 
 on:
   push:
     branches: ["research/candidate-05"]
     paths:
+      - "research/candidate-05/strategy_v44_context_aligned_internal.py"
+      - "research/candidate-05/tests/test_strategy_v44_context_aligned_internal_contract.py"
+      - "research/candidate-05/v40_active/strategy.py"
       - ".github/workflows/candidate-05-v26-30d-continuous.yml"
   workflow_dispatch:
 
 concurrency:
-  group: candidate-05-v43-btc-30d-continuous
+  group: candidate-05-v44-btc-30d-internal-context
   cancel-in-progress: true
 
 permissions:
@@ -28,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify fixed environment and v43 contracts
+      - name: Verify fixed environment and v44 contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -36,14 +39,15 @@ jobs:
           python -m compileall -q research/candidate-05
           python -m unittest discover -s research/candidate-05/tests -p 'test_inventory_repricing_logic.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v40_unfilled_target_handoff_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v44_context_aligned_internal_contract.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_basis_contract.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_reset_logic.py' -v
 
-      - name: Run continuous 30-day BTC evaluation through NautilusTrader
+      - name: Run identical continuous 30-day BTC evaluation through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          root=artifacts/candidate-05-v43-btc-30d
+          root=artifacts/candidate-05-v44-btc-30d
           mkdir -p "$root"
           python research/candidate-05/v40_active/candidate.py stage \
             --config research/candidate-05/config.json \
@@ -51,22 +55,22 @@ jobs:
             --build-end 2024-03-30 \
             --evaluation-start 2024-03-01 \
             --evaluation-end 2024-03-30 \
-            --cache .cache/candidate-05-v43-btc-30d \
+            --cache .cache/candidate-05-v44-btc-30d \
             --output "$root" \
             2>&1 | tee "$root/console.log"
 
-      - name: Build research screen summary
+      - name: Build controlled ablation summary
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          root=artifacts/candidate-05-v43-btc-30d
+          root=artifacts/candidate-05-v44-btc-30d
           if test -f "$root/metrics.json"; then
             python -m json.tool "$root/metrics.json"
             python - <<'PY'
           import json
           from pathlib import Path
-          root = Path("artifacts/candidate-05-v43-btc-30d")
+          root = Path("artifacts/candidate-05-v44-btc-30d")
           metrics = json.loads((root / "metrics.json").read_text())
           checks = {
               "positive_nav": metrics.get("ending_nav", 0.0) > 0.0,
@@ -77,10 +81,7 @@ jobs:
               "single_position": metrics.get("max_open_positions_observed", 0) <= 1,
           }
           summary = {
-              "classification": "V43_BTC_30D_GOAL_REACHED" if (
-                  metrics.get("geometric_daily_growth", -1.0) >= 0.01
-                  and all(checks.values())
-              ) else "V43_BTC_30D_NOT_YET_GOAL",
+              "classification": "V44_INTERNAL_CONTEXT_ABLATION",
               "checks": checks,
               "metrics": metrics,
           }
@@ -98,7 +99,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-05-v43-btc-30d-${{ github.sha }}
-          path: artifacts/candidate-05-v43-btc-30d/**
+          name: candidate-05-v44-btc-30d-${{ github.sha }}
+          path: artifacts/candidate-05-v44-btc-30d/**
           if-no-files-found: warn
           retention-days: 90
