@@ -63,6 +63,36 @@ class ComplexEngineTests(unittest.TestCase):
         self.assertEqual(plans[0].scenario, Scenario.FAR)
         self.assertEqual(plans[0].direction, Direction.SHORT)
 
+    def test_completed_source_boundary_is_consumed_only_once(self):
+        engine = ComplexSCDAMEngine(EngineConfig(min_net_r=0.1))
+        self.warm(engine)
+        contexts = {symbol: context() for symbol in SYMBOLS}
+        first = {symbol: bar(symbol, 31, 95, 99, 94, 95) for symbol in SYMBOLS}
+        first["BTCUSDT"] = bar("BTCUSDT", 31, 99, 103, 98, 99, 0.4)
+        self.assertEqual(engine.on_snapshot(first, contexts), [])
+        self.assertIn("BTCUSDT", engine._active)
+
+        # The completed ASIA high was consumed even when the local episode
+        # terminates without producing a trade plan.
+        engine._active.pop("BTCUSDT")
+        repeated = {symbol: bar(symbol, 32, 95, 99, 94, 95) for symbol in SYMBOLS}
+        repeated["BTCUSDT"] = bar("BTCUSDT", 32, 99, 104, 98, 99, 0.4)
+        self.assertEqual(engine.on_snapshot(repeated, contexts), [])
+        self.assertNotIn("BTCUSDT", engine._active)
+        self.assertEqual(engine.skip_reasons["SOURCE_BOUNDARY_ALREADY_CONSUMED"], 1)
+
+        # A newly completed source range defines a new finite pool.
+        next_contexts = {
+            symbol: AuctionContext(
+                "ASIA", "LONDON", 91.0, 101.0, 80.0, 120.0, 300 * MINUTE_NS,
+            )
+            for symbol in SYMBOLS
+        }
+        fresh = {symbol: bar(symbol, 33, 96, 100, 95, 96) for symbol in SYMBOLS}
+        fresh["BTCUSDT"] = bar("BTCUSDT", 33, 100, 104, 99, 100, 0.4)
+        self.assertEqual(engine.on_snapshot(fresh, next_contexts), [])
+        self.assertIn("BTCUSDT", engine._active)
+
     def test_aac_uses_breadth_and_separate_frozen_impulse(self):
         engine = ComplexSCDAMEngine(
             EngineConfig(min_net_r=0.1, min_displacement_atr=0.05),

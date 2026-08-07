@@ -183,6 +183,10 @@ class ComplexSCDAMEngine:
             symbol: deque(maxlen=self.config.atr_period) for symbol in SYMBOLS
         }
         self._active: dict[str, _Episode] = {}
+        # A completed source-session boundary represents one finite liquidity
+        # pool. Once that side is first traded through, later candles cannot
+        # manufacture a new independent hypothesis from the same consumed pool.
+        self._consumed_boundaries: set[tuple[object, ...]] = set()
         self.events: list[dict[str, object]] = []
         self.skip_reasons: dict[str, int] = {}
         self._seq = 0
@@ -260,6 +264,22 @@ class ComplexSCDAMEngine:
     def _inside_close(bar: BarObs, context: AuctionContext, side: BoundarySide) -> bool:
         return bar.close < context.source_high if side == BoundarySide.HIGH else bar.close > context.source_low
 
+    @staticmethod
+    def _boundary_key(
+        symbol: str,
+        context: AuctionContext,
+        side: BoundarySide,
+    ) -> tuple[object, ...]:
+        return (
+            symbol,
+            context.source_session,
+            context.target_session,
+            context.source_low,
+            context.source_high,
+            context.valid_until_ns,
+            side.value,
+        )
+
     def _start_episode(
         self,
         *,
@@ -270,6 +290,10 @@ class ComplexSCDAMEngine:
         side: BoundarySide,
         evidence: dict[str, object],
     ) -> None:
+        boundary_key = self._boundary_key(symbol, context, side)
+        if boundary_key in self._consumed_boundaries:
+            raise RuntimeError("consumed boundary cannot start a new episode")
+        self._consumed_boundaries.add(boundary_key)
         extreme = bar.high if side == BoundarySide.HIGH else bar.low
         episode = _Episode(
             scenario_id=(
@@ -629,6 +653,10 @@ class ComplexSCDAMEngine:
                 continue
             for side, crossed in ((BoundarySide.HIGH, high), (BoundarySide.LOW, low)):
                 if not crossed:
+                    continue
+                boundary_key = self._boundary_key(symbol, context, side)
+                if boundary_key in self._consumed_boundaries:
+                    self._skip("SOURCE_BOUNDARY_ALREADY_CONSUMED")
                     continue
                 evidence = self.market_complex.evaluate(observations, symbol=symbol, side=side)
                 common = {
