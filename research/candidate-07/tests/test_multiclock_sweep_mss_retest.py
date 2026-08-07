@@ -13,6 +13,7 @@ import run_local_liquidity_sweep_mss_retest as local
 from five_second_flow_bars import (
     _latest_five_second_boundary,
     _prepare_five_second_bars,
+    same_wall_clock_second_index,
     scaled_execution_logic,
 )
 from multiclock_sweep_mss_scenario import build_five_second_signals
@@ -85,6 +86,24 @@ class MulticlockSweepMSSRetestTests(unittest.TestCase):
                 changed.loc[:6, name].to_numpy(dtype=float),
                 equal_nan=True,
             )
+
+    def test_completed_second_alignment_ignores_endpoint_precision(self) -> None:
+        timestamps = np.array(
+            [
+                4_999_999_999,
+                9_999_999_999,
+                14_999_999_999,
+            ],
+            dtype=np.int64,
+        )
+        # The 15-second source may encode the same completed second at 999 ms.
+        self.assertEqual(
+            same_wall_clock_second_index(timestamps, 14_999_000_000),
+            2,
+        )
+        self.assertIsNone(
+            same_wall_clock_second_index(timestamps, 15_999_000_000)
+        )
 
     def test_boundary_must_be_confirmed_before_sweep_bar_begins(self) -> None:
         pools = [
