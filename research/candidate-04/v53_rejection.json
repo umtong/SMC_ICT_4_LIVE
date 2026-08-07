@@ -1,0 +1,49 @@
+{
+  "candidate": "candidate-04-v53-common-factor-forced-deleveraging-continuation",
+  "decision": "DISCARDED",
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "evidence_run_id": 31195002204,
+  "development_interval": {
+    "start_inclusive": "2023-02-27",
+    "end_inclusive": "2023-03-05",
+    "calendar_days": 7
+  },
+  "full_router": {
+    "common_factor_accepted_sweeps": 306,
+    "outside_acceptances": 105,
+    "displacement_fvgs": 91,
+    "held_retests": 10,
+    "material_oi_contraction_states": 5,
+    "compiled_signals": 4,
+    "trades": 3,
+    "wins": 0,
+    "total_return_after_cost": -0.06284238410029996,
+    "geometric_daily_growth_after_cost": -0.009229118898372524,
+    "maximum_drawdown": 0.06284238410029996,
+    "maximum_realized_loss_to_entry_nav": 0.02403406767823604
+  },
+  "single_ablation": {
+    "removed_variable": "material_state_interval_oi_contraction_and_retention",
+    "compiled_signals": 8,
+    "trades": 7,
+    "wins": 0,
+    "approximate_total_return_after_cost": -0.15622322824050006,
+    "geometric_daily_growth_after_cost": -0.0239746877841982,
+    "maximum_realized_loss_to_entry_nav": 0.03430234359565203,
+    "conclusion": "OI contraction was a useful veto because removing it increased losing opportunities, but neither branch had directional alpha. All executed continuation trades lost."
+  },
+  "failure_classification": {
+    "implementation": false,
+    "baseline_risk_or_execution": false,
+    "logic": true,
+    "dominant_failure": "Common-market acceptance, outside closes, displacement/FVG and a later held retest did not imply continued delivery. The continuation assumption was systematically wrong in this development week, including every trade surviving the forced-deleveraging state filter."
+  },
+  "valid_components_preserved": [
+    "past-only common return and executed-flow factor",
+    "state-interval raw OI contraction and rebuild measurement",
+    "separate later retest instead of same-bar confirmation",
+    "pre-existing external target registry",
+    "NautilusTrader global one-entry and 3% NAV risk contracts"
+  ],
+  "next_hypothesis": "The high-information event is not the apparent held continuation retest but its subsequent failure. A common-factor accepted sweep that later loses the old boundary with an opposite common-factor displacement traps the accepted-auction participants. Reversal requires that failure plus a separate inside retest, not an immediate contrarian entry."
+}
