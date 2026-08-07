@@ -6,7 +6,8 @@ from controlled_candidate_research import classify_continuous_control
 
 
 class ControlledCandidateResearchTest(unittest.TestCase):
-    def run(self, *, growth: float, branch_pnl: float, branch_trades: int = 5):
+    @staticmethod
+    def make_run(*, growth: float, branch_pnl: float, branch_trades: int = 5):
         return {
             "available": True,
             "integrity_checks": {
@@ -31,8 +32,8 @@ class ControlledCandidateResearchTest(unittest.TestCase):
         }
 
     def test_candidate_must_beat_same_period_control_and_growth_goal(self) -> None:
-        baseline = self.run(growth=0.008, branch_pnl=0.0, branch_trades=0)
-        candidate = self.run(growth=0.011, branch_pnl=2500.0)
+        baseline = self.make_run(growth=0.008, branch_pnl=0.0, branch_trades=0)
+        candidate = self.make_run(growth=0.011, branch_pnl=2500.0)
         decision = classify_continuous_control(
             baseline=baseline,
             candidate=candidate,
@@ -52,8 +53,8 @@ class ControlledCandidateResearchTest(unittest.TestCase):
         self.assertEqual(decision["classification"], "LOGIC_FAILURE_DID_NOT_IMPROVE_CONTROL_30D")
 
     def test_positive_branch_below_whole_period_goal_is_not_promoted(self) -> None:
-        baseline = self.run(growth=0.004, branch_pnl=0.0, branch_trades=0)
-        candidate = self.run(growth=0.009, branch_pnl=2500.0)
+        baseline = self.make_run(growth=0.004, branch_pnl=0.0, branch_trades=0)
+        candidate = self.make_run(growth=0.009, branch_pnl=2500.0)
         decision = classify_continuous_control(
             baseline=baseline,
             candidate=candidate,
@@ -64,8 +65,8 @@ class ControlledCandidateResearchTest(unittest.TestCase):
         self.assertEqual(decision["classification"], "LOGIC_FAILURE_BELOW_GOAL_ON_CONTINUOUS_30D")
 
     def test_nonpositive_incremental_branch_is_rejected_even_with_high_growth(self) -> None:
-        baseline = self.run(growth=0.008, branch_pnl=0.0, branch_trades=0)
-        candidate = self.run(growth=0.012, branch_pnl=-100.0)
+        baseline = self.make_run(growth=0.008, branch_pnl=0.0, branch_trades=0)
+        candidate = self.make_run(growth=0.012, branch_pnl=-100.0)
         decision = classify_continuous_control(
             baseline=baseline,
             candidate=candidate,
