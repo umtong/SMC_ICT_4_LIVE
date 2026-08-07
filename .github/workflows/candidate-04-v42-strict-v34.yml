@@ -1,0 +1,211 @@
+name: candidate-04-v42-strict-external-target-v34
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v42-strict-v34.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Restore exact V31 validated-core observations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v31-ablation-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31114267295
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Apply strict target contract and verify Nautilus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python research/candidate-04/apply_v42_research_repair.py "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v34_expected_fill_only.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_v42_research_contracts.py' -v
+
+      - name: Replay identical seven BTC weeks with pre-existing external targets only
+        shell: bash
+        run: |
+          set -euo pipefail
+          names=(low_activity normal_basis stress_a year_end autumn may_2024 failed_untouched_2025_03)
+          build_starts=(2023-08-02 2023-12-16 2024-08-05 2024-12-25 2025-10-18 2024-05-25 2025-03-22)
+          build_ends=(2023-08-10 2023-12-24 2024-08-13 2025-01-02 2025-10-26 2024-06-02 2025-03-30)
+          eval_starts=(2023-08-04 2023-12-18 2024-08-07 2024-12-27 2025-10-20 2024-05-27 2025-03-24)
+          eval_ends=(2023-08-10 2023-12-24 2024-08-13 2025-01-02 2025-10-26 2024-06-02 2025-03-30)
+          root="artifacts/candidate-04-v42-strict-v34"
+          mkdir -p "$root"
+          for i in "${!names[@]}"; do
+            name="${names[$i]}"
+            source="$(find sources -mindepth 1 -maxdepth 1 -type d -name "candidate-04-v31-ablation-${name}-*" | head -n1)"
+            test -n "$source"
+            test -s "$source/ablated/signals/signals.json"
+            output="$root/$name"
+            mkdir -p "$output/source"
+            cp "$source/ablated/signals/signals.json" "$output/source/signals.json"
+            C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$output/source/signals.json" \
+            python research/candidate-04/nt_backtest_v34_expected_fill_only.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --build-start "${build_starts[$i]}" \
+              --build-end "${build_ends[$i]}" \
+              --evaluation-start "${eval_starts[$i]}" \
+              --evaluation-end "${eval_ends[$i]}" \
+              --cache ".cache/candidate-04-v42-strict-v34/$name" \
+              --output "$output/nautilus" \
+              > "$output/nautilus_console.log"
+          done
+
+      - name: Aggregate strict-target evidence and rejection causes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          from collections import Counter
+          from pathlib import Path
+          import pandas as pd
+          from pandas.errors import EmptyDataError
+
+          root = Path("artifacts/candidate-04-v42-strict-v34")
+          names = [
+              "low_activity", "normal_basis", "stress_a", "year_end",
+              "autumn", "may_2024", "failed_untouched_2025_03",
+          ]
+          rows = []
+          all_rejections = Counter()
+          for name in names:
+              base = root / name
+              metrics = json.loads((base / "nautilus/metrics.json").read_text())
+              events = json.loads((base / "nautilus/strategy_events.json").read_text())
+              try:
+                  positions = pd.read_csv(base / "nautilus/positions.csv")
+              except EmptyDataError:
+                  positions = pd.DataFrame()
+              entries = [e for e in events if e.get("event_type") == "ENTRY_SUBMITTED"]
+              if len(entries) != len(positions.index):
+                  raise SystemExit(f"{name}: entry-position mismatch")
+              rejected = Counter(
+                  event.get("event_type")
+                  for event in events
+                  if event.get("event_type") in {
+                      "RICH_SIGNAL_NO_CAUSAL_TARGET",
+                      "RICH_SIGNAL_INVALID_STOP",
+                      "RICH_SIGNAL_FUNDING_BLACKOUT",
+                      "RICH_SIGNAL_OCCUPIED",
+                      "ORDER_REJECTED",
+                  }
+              )
+              all_rejections.update(rejected)
+              losses = []
+              target_sources = Counter()
+              for position, entry in zip(positions.to_dict("records"), entries):
+                  details = entry["details"]
+                  target_sources[str(details.get("causal_target_source"))] += 1
+                  if details.get("target_contract") not in {
+                      "exact_pre_signal_causal_reference",
+                      "validated_v31_capped_reference",
+                  }:
+                      raise SystemExit(f"{name}: invalid target contract")
+                  pnl = float(str(position["realized_pnl"]).split()[0].replace("_", ""))
+                  if pnl < 0.0:
+                      losses.append(abs(pnl) / float(details["equity"]))
+              maximum = max(losses, default=0.0)
+              if maximum > 0.0301:
+                  raise SystemExit(f"{name}: risk violation {maximum}")
+              row = {
+                  "week": name,
+                  "engine": metrics.get("engine"),
+                  "trades": int(metrics.get("trades") or 0),
+                  "wins": int(metrics.get("wins") or 0),
+                  "total_return": float(metrics.get("total_return") or 0.0),
+                  "geometric_daily_growth": float(metrics.get("geometric_daily_growth") or 0.0),
+                  "active_days": int(metrics.get("active_days") or 0),
+                  "max_drawdown": float(metrics.get("max_drawdown") or 0.0),
+                  "largest_winner_share": float(metrics.get("largest_winner_share") or 0.0),
+                  "maximum_realized_loss_fraction": maximum,
+                  "rejections": dict(rejected),
+                  "target_sources": dict(target_sources),
+                  "scenario_metrics": metrics.get("scenario_metrics"),
+              }
+              (base / "summary.json").write_text(
+                  json.dumps(row, indent=2, sort_keys=True) + "\n"
+              )
+              rows.append(row)
+
+          returns = [row["total_return"] for row in rows]
+          compounded = math.prod(1.0 + value for value in returns) - 1.0
+          trades = sum(row["trades"] for row in rows)
+          wins = sum(row["wins"] for row in rows)
+          active_days = sum(row["active_days"] for row in rows)
+          daily = (
+              (1.0 + compounded) ** (1.0 / 49.0) - 1.0
+              if 1.0 + compounded > 0.0 else -1.0
+          )
+          evidence = {
+              "candidate": "candidate-04-v42-strict-external-target-v34",
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "controlled_change": "remove non-liquidity four-hour measured-move target; all signals, stops, expected-fill sizing, costs and execution unchanged",
+              "weeks": rows,
+              "calendar_days": 49,
+              "positive_weeks": sum(value > 0.0 for value in returns),
+              "compounded_return": compounded,
+              "geometric_daily_growth": daily,
+              "trades": trades,
+              "wins": wins,
+              "win_rate": wins / trades if trades else 0.0,
+              "active_days": active_days,
+              "rejections": dict(all_rejections),
+              "development_target_rate_reached": daily >= 0.01,
+              "project_target_reached": False,
+              "final_validation_completed": False,
+              "decision": (
+                  "retain_as_strict_baseline_and_improve_causal_target_registry"
+                  if compounded > 0.0 and trades >= 7
+                  else "discard_v34_after_non_liquidity_target_removal"
+              ),
+          }
+          target = Path("research/candidate-04/evidence-v42-strict-v34.json")
+          target.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          (root / "aggregate.json").write_text(
+              json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v42-strict-v34-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v42-strict-v34
+            research/candidate-04/evidence-v42-strict-v34.json
+          if-no-files-found: warn
+          retention-days: 90
