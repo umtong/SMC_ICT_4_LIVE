@@ -190,6 +190,40 @@ class TestCausalPlanContract(unittest.TestCase):
             [("OBSERVE", "FAR_CONFIRMED"), ("FAR_CONFIRMED", "PENDING_ENTRY"), ("PENDING_ENTRY", "TERMINAL")],
         )
 
+    def _aac_ready_auction(self, draw_method: str) -> tuple[Auction, BarObs]:
+        trigger = pool("AAC-HIGH", Side.HIGH, 100.0, range_id="AAC-R", opposite=90.0)
+        target = pool("AAC-TARGET", Side.HIGH, 120.0, strength=3)
+        confirmation = bar(200 * MINUTE_NS, 104.0, 108.0, 103.0, 107.0, buy=75.0)
+        auction = Auction(
+            pool=trigger, sweep=bar(190 * MINUTE_NS, 99.0, 105.0, 98.0, 104.0, buy=75.0),
+            sweep_index=0, atr=10.0, internal_level=98.0, sweep_extreme=105.0,
+            rejection_seed=False, acceptance_seed=True, cascade_count=2,
+            framed_draw_side=Side.HIGH, framed_draw_score=0.50,
+            framed_draw_method=draw_method, framed_high_hazard=0.50, framed_low_hazard=0.10,
+            continuation_target_pool_id=target.scenario_id, continuation_target_level=target.level,
+            last_crossed_level=100.0, pullback_known_index=0, pullback_extreme=101.0,
+            acceptance_impulse_extreme=105.0,
+        )
+        self.engine.pools = [trigger, target]
+        self.engine.active = auction
+        self.engine.bars = [bar(199 * MINUTE_NS, 103.0, 105.0, 102.0, 104.0), confirmation]
+        self.engine._index = 1
+        return auction, confirmation
+
+    def test_aac_rejects_self_confirming_source_range_draw(self) -> None:
+        auction, confirmation = self._aac_ready_auction("SOURCE_RANGE_ACCEPTANCE")
+        plan = self.engine._confirm_aac(auction, confirmation)
+        self.assertIsNone(plan)
+        self.assertIsNone(self.engine.active)
+        self.assertEqual(self.engine.skips["AAC_REQUIRES_INDEPENDENT_EXTERNAL_DRAW"], 1)
+
+    def test_aac_accepts_independent_external_hazard_draw(self) -> None:
+        auction, confirmation = self._aac_ready_auction("EXTERNAL_HAZARD_DOMINANCE")
+        plan = self.engine._confirm_aac(auction, confirmation)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.details["draw_method"], "EXTERNAL_HAZARD_DOMINANCE")
+
     def test_insufficient_costed_r_is_terminal_not_tuned(self) -> None:
         auction, confirmation = self._auction(Direction.LONG)
         auction.target_price = 108.0

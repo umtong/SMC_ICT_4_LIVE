@@ -245,6 +245,7 @@ class Auction:
     source_draw_side: Side | None = None
     source_draw_score: float = 0.0
     framed_draw_score: float = 0.0
+    framed_draw_method: str = "UNRESOLVED"
     framed_high_hazard: float = 0.0
     framed_low_hazard: float = 0.0
     crossed_pool_ids: list[str] = field(default_factory=list)
@@ -862,6 +863,7 @@ class CausalAuctionEngine:
             source_draw_side=source_draw_side,
             source_draw_score=source_score,
             framed_draw_score=draw_score,
+            framed_draw_method=draw_method,
             framed_high_hazard=high_hazard,
             framed_low_hazard=low_hazard,
             crossed_pool_ids=[p.scenario_id for p in all_crossed],
@@ -938,6 +940,7 @@ class CausalAuctionEngine:
                 if target is not None and not target.consumed:
                     a.framed_draw_side = draw_side
                     a.framed_draw_score = draw_score
+                    a.framed_draw_method = draw_method
                     a.framed_high_hazard = high_hazard
                     a.framed_low_hazard = low_hazard
                     if draw_side == a.pool.side:
@@ -1197,6 +1200,11 @@ class CausalAuctionEngine:
         if target_pool is None or target_level is None:
             self._terminal(a, bar, "CONTINUATION_TARGET_NO_LONGER_LIVE")
             return None
+        # A source range may define the boundary, but using that same range's
+        # close/flow both to create and confirm continuation is circular.
+        if a.framed_draw_method != "EXTERNAL_HAZARD_DOMINANCE":
+            self._terminal(a, bar, "AAC_REQUIRES_INDEPENDENT_EXTERNAL_DRAW")
+            return None
         target_hazard = a.framed_high_hazard if side == Side.HIGH else a.framed_low_hazard
         counter_hazard = a.framed_low_hazard if side == Side.HIGH else a.framed_high_hazard
         a.state = "AAC_CONFIRMED"
@@ -1215,6 +1223,7 @@ class CausalAuctionEngine:
             {
                 "draw_side": side.value,
                 "draw_score": context,
+                "draw_method": a.framed_draw_method,
                 "target_pool": target_pool.scenario_id,
                 "target": target_level,
                 "target_hazard": target_hazard,
@@ -1289,6 +1298,7 @@ class CausalAuctionEngine:
                 "sweep_extreme": a.sweep_extreme,
                 "draw_side": None if a.draw_side is None else a.draw_side.value,
                 "draw_score": a.draw_score,
+                "draw_method": a.framed_draw_method,
                 "zone_low": a.zone_low,
                 "zone_high": a.zone_high,
                 "confirmation_close": confirmation_bar.close,

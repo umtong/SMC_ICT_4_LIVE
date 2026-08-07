@@ -76,3 +76,20 @@ This ledger is append-only in meaning: later research may supersede a decision, 
 5. Positive expectancy but insufficient frequency: unchanged four-market extension on W1.
 6. Only a passed W1 screening gate unlocks untouched W2, then W3, then long evaluation.
 7. No single screening week may authorize a durable project-success claim.
+
+## Iteration 8 — independent-draw requirement for AAC
+
+**Frozen evidence:** the unchanged four-market SCDAM produced five W1 fills
+(80% wins and positive after-cost NAV growth), eleven W2 fills (45.45% wins and
+negative growth), and one W3 fill (loss). All three filled AAC plans whose draw
+was created by `SOURCE_RANGE_ACCEPTANCE` stopped out. The W1 AAC winner was
+framed by independent external-liquidity hazard dominance.
+
+**Hypothesis:** source-range close/flow may define an auction boundary but may
+not also self-confirm continuation. Otherwise the same observation is counted
+twice. AAC now requires `EXTERNAL_HAZARD_DOMINANCE`; FAR, sessions, targets,
+stops, costs, exact 3% NAV risk, orders and the global slot are unchanged.
+
+**Evaluation order:** rerun frozen W1, then untouched W2 and W3 only if W1
+remains promising. Nautilus account NAV, not first-passage labels, decides.
+
