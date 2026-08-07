@@ -1,4 +1,4 @@
-name: candidate-12-i7-w5-implementation-gate
+name: candidate-12-i7-w6-untouched-confirmation
 
 on:
   push:
@@ -12,11 +12,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i7-w5-${{ github.ref }}-${{ github.sha }}
+  group: candidate-12-i7-w6-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  w5-implementation-gate:
+  w6-untouched-confirmation:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -24,8 +24,8 @@ jobs:
       options: --user root
     env:
       SYMBOL: BTCUSDT
-      WEEK: W5
-      OUTPUT: artifacts/candidate-12/BTCUSDT-W5
+      WEEK: W6
+      OUTPUT: artifacts/candidate-12/BTCUSDT-W6
     steps:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
         run: python -m compileall -q research/candidate-12
       - name: Candidate unit tests
         run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
-      - name: Run W5 through NautilusTrader
+      - name: Run untouched W6 through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
@@ -44,24 +44,24 @@ jobs:
             --symbol "$SYMBOL" \
             --week "$WEEK" \
             --output "$OUTPUT" | tee "$OUTPUT.console.json"
-      - name: Surface W5 decision evidence
+      - name: Surface W6 decision evidence
         if: always()
         shell: bash
         run: |
           if [[ -f "$OUTPUT/metrics.json" ]]; then
-            echo '=== CANDIDATE_12_I7_W5_METRICS_BEGIN ==='
+            echo '=== CANDIDATE_12_I7_W6_METRICS_BEGIN ==='
             cat "$OUTPUT/metrics.json"
-            echo '=== CANDIDATE_12_I7_W5_METRICS_END ==='
+            echo '=== CANDIDATE_12_I7_W6_METRICS_END ==='
           fi
           if [[ -f "$OUTPUT/run.json" ]]; then
-            echo '=== CANDIDATE_12_I7_W5_RUN_BEGIN ==='
+            echo '=== CANDIDATE_12_I7_W6_RUN_BEGIN ==='
             cat "$OUTPUT/run.json"
-            echo '=== CANDIDATE_12_I7_W5_RUN_END ==='
+            echo '=== CANDIDATE_12_I7_W6_RUN_END ==='
           fi
-      - name: Preserve reproducible W5 evidence
+      - name: Preserve reproducible W6 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I7-BTCUSDT-W5-${{ github.sha }}
+          name: candidate-12-I7-BTCUSDT-W6-${{ github.sha }}
           path: ${{ env.OUTPUT }}
           if-no-files-found: warn
