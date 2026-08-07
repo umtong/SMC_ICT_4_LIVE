@@ -14,6 +14,7 @@ from five_second_flow_bars import (
     entry_second_index,
     latest_five_second_boundary,
     prepare_five_second_bars,
+    same_wall_clock_second_index,
     scaled_execution_logic,
 )
 
@@ -89,8 +90,8 @@ def diagnose_five_second_execution(
         if boundary is None:
             counters["NO_CAUSAL_5S_OPPOSING_SWING_FOR_MSS"] += 1
             continue
-        contact_5_index = int(np.searchsorted(five_timestamps, event_ns, side="left"))
-        if contact_5_index >= len(bars_5.index) or int(five_timestamps[contact_5_index]) != event_ns:
+        contact_5_index = same_wall_clock_second_index(five_timestamps, event_ns)
+        if contact_5_index is None:
             counters["NO_ALIGNED_5S_EVENT_CLOSE"] += 1
             continue
         event_atr = float(event["atr"])
