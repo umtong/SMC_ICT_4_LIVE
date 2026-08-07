@@ -77,12 +77,16 @@ class PressureGatedHierarchicalEngine:
             )
             details["causal_exit_open_position"] = True
         resolved = replace(signal, family="PHML", details=details)
+        # Pressure alignment refines the economic meaning of an already armed
+        # HML signal; it does not create a new execution state.  The shared
+        # Nautilus execution layer must still see ENTRY_ARMED so abstentions,
+        # order submission and strict event-ledger transitions remain valid.
         transitions.append(
             ScenarioTransition(
                 scenario_id=signal.scenario_id,
                 event_type="PHML_SIGNAL_DECISION",
                 previous_state="ENTRY_ARMED",
-                next_state="PRESSURE_ALIGNED_ENTRY_ARMED",
+                next_state="ENTRY_ARMED",
                 reason_code="HML_SIGNAL_ALIGNED_WITH_LIVE_SEQUENTIAL_PRESSURE_REGIME",
                 reference_price=signal.reference_entry,
                 details={
