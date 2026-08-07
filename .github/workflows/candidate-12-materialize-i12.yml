@@ -1,0 +1,47 @@
+name: candidate-12-materialize-i12
+
+on:
+  push:
+    branches: ["research/candidate-12"]
+    paths:
+      - "research/candidate-12/update-i12.patch"
+      - ".github/workflows/candidate-12-materialize-i12.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-12-materialize-i12-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Install reviewed I12 source atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          PATCH=research/candidate-12/update-i12.patch
+          echo "2771d3adf914b7ef3c6eebcc9eb05ef0ed204a6238aea63ce377ea500954e9f7  $PATCH" | sha256sum -c -
+          git apply --check "$PATCH"
+          git apply "$PATCH"
+          smc4 doctor
+          python -m compileall -q research/candidate-12
+          python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+          echo "33d6f81c230cd9c3d4bf36c52e6d8079365d94139b9299a99b4e16af2d83c689  research/candidate-12/logic.py" | sha256sum -c -
+          echo "b4e854ec9c59c73a0f199e4d8d29a84d6da6839ff566459dcad47a6af6d7335c  research/candidate-12/test_logic.py" | sha256sum -c -
+          echo "71123e7c41e696e394f5a1aafd66bbc5eabf786c942383cdffd87a0e5dddb2cc  research/candidate-12/config.json" | sha256sum -c -
+          git rm "$PATCH" .github/workflows/candidate-12-materialize-i12.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-12/logic.py research/candidate-12/test_logic.py research/candidate-12/config.json
+          git commit -m "candidate-12: install I12 post-confirmation extension gate"
+          git push origin HEAD:research/candidate-12

@@ -1,0 +1,254 @@
+diff -ruN a/research/candidate-12/config.json b/research/candidate-12/config.json
+--- a/research/candidate-12/config.json	2026-08-07 19:20:31.032606477 +0000
++++ b/research/candidate-12/config.json	2026-08-07 19:20:31.034215814 +0000
+@@ -1,9 +1,9 @@
+ {
+-  "schema_version": 11,
+-  "candidate": "candidate-12-local-reacceleration-session-auction-router",
++  "schema_version": 12,
++  "candidate": "candidate-12-confirmed-extension-session-auction-router",
+   "selection": {
+     "seed": 2026080712,
+-    "selection_rule": "W1-W10 are exposed design evidence. I11 does not relax the completed-session boundary entry gate. When sell-side acceptance remains valid but its bullish pullback is too distant for the completed boundary to be the entry structure, the engine opens a separate local auction: the prior acceptance trough is frozen as the live objective, the pullback high is the structural invalidation, and a fresh bearish FVG must confirm reacceleration while price still closes below the completed session low. A close back inside terminates this route. I11 must re-pass W1/W5/W6, preserve no-loss behavior on W2/W4/W8/W9, and convert the exposed W10 missed continuation into a causal Nautilus trade before any untouched W11 is opened.",
++    "selection_rule": "W1-W11 are exposed design, implementation, and diagnosis evidence. I12 repairs the W11 London low-acceptance loss without opening new data. A SELL_SIDE_ACCEPTANCE_FAILED_PULLBACK_LIMIT is now valid only after a completed post-confirmation bar establishes a fresh auction low (the qualifying pullback bar may itself make that low). An immediate bullish return that does not extend below the acceptance-confirmation trough is mean reversion, not a failed pullback. No numeric threshold is added; the minimum extension is one configured price increment. I12 must re-pass W1/W5/W6/W10, remove the W11 loss, and preserve all causal, cost, risk, slot, and event invariants before another untouched week is selected.",
+     "warmup_days": 4,
+     "evaluation_days": 7,
+     "design_week": "W1",
+@@ -48,6 +48,10 @@
+       "W10": {
+         "start": "2023-04-28",
+         "end_exclusive": "2023-05-05"
++      },
++      "W11": {
++        "start": "2022-12-26",
++        "end_exclusive": "2023-01-02"
+       }
+     },
+     "development_weeks": [
+@@ -58,11 +62,12 @@
+       "W7",
+       "W8",
+       "W9",
+-      "W10"
++      "W10",
++      "W11"
+     ],
+     "confirmation_seed": 2026080811,
+     "implementation_week": "W10",
+-    "diagnosis_week": "W10"
++    "diagnosis_week": "W11"
+   },
+   "symbols": {
+     "BTCUSDT": {
+diff -ruN a/research/candidate-12/logic.py b/research/candidate-12/logic.py
+--- a/research/candidate-12/logic.py	2026-08-07 19:20:31.032514508 +0000
++++ b/research/candidate-12/logic.py	2026-08-07 19:20:31.034019153 +0000
+@@ -1,4 +1,4 @@
+-"""Causal completed-session auction router for Candidate 12 I11.
++"""Causal completed-session auction router for Candidate 12 I12.
+ 
+ The engine distinguishes economically different interactions with a completed
+ Asia or London dealing range instead of forcing one candle pattern onto every
+@@ -432,6 +432,7 @@
+     failed_low_acceptance: bool = False
+     low_acceptance_pullback_peak: float | None = None
+     low_acceptance_trough: float | None = None
++    low_acceptance_extension_confirmed: bool = False
+     low_continuation_pullback_high: float | None = None
+     low_continuation_started_index: int | None = None
+     low_reacceptance_outside_closes: int = 0
+@@ -1206,6 +1207,7 @@
+             state.low_acceptance_pullback_peak = bar.high
+             state.low_reacceptance_outside_closes = 0
+             state.active_bear_fvg = None
++            state.low_acceptance_extension_confirmed = False
+             state.low_continuation_pullback_high = None
+             state.low_continuation_started_index = None
+             sid = state.low_acceptance_scenario_id
+@@ -1245,6 +1247,7 @@
+                 state.had_low_acceptance = True
+                 state.low_acceptance_started_index = self._five_index
+                 state.low_acceptance_trough = bar.low
++                state.low_acceptance_extension_confirmed = False
+                 state.low_acceptance_phase = (
+                     "WAIT_PULLBACK"
+                     if source.close_location
+@@ -1280,10 +1283,14 @@
+         if state.low_acceptance_phase == "WAIT_PULLBACK":
+             assert state.active_bear_fvg is not None
+             assert state.low_acceptance_started_index is not None
+-            state.low_acceptance_trough = min(
+-                state.low_acceptance_trough if state.low_acceptance_trough is not None else bar.low,
+-                bar.low,
++            prior_trough = (
++                state.low_acceptance_trough
++                if state.low_acceptance_trough is not None
++                else bar.low
+             )
++            if bar.low <= prior_trough - self.config.price_increment:
++                state.low_acceptance_extension_confirmed = True
++                state.low_acceptance_trough = bar.low
+             if (
+                 self._five_index - state.low_acceptance_started_index
+                 > self.config.acceptance_retest_expiry_bars
+@@ -1296,7 +1303,7 @@
+                 or bar.close >= source.low
+             ):
+                 return None
+-            pullback = (
++            pullback_shape = (
+                 bar.close > bar.open
+                 and bar.body / atr
+                 >= self.config.low_acceptance_pullback_body_atr
+@@ -1304,7 +1311,31 @@
+                 >= self.config.low_acceptance_pullback_min_close_location
+                 and bar.high <= state.active_bear_fvg.upper
+             )
+-            if not pullback:
++            if pullback_shape and not state.low_acceptance_extension_confirmed:
++                self.skips["LOW_ACCEPTANCE_PULLBACK_BEFORE_POST_CONFIRMATION_EXTENSION"] += 1
++                self._emit(
++                    scenario_id=(
++                        state.low_acceptance_scenario_id
++                        or self._next_scenario_id(source.label, "LOW-ACCEPTANCE")
++                    ),
++                    event_type="LOW_ACCEPTANCE_PULLBACK_REJECTED",
++                    event_time_ns=bar.ts_ns,
++                    observed_time_ns=bar.ts_ns,
++                    next_state="WAIT_POST_CONFIRMATION_EXTENSION",
++                    reason_code=(
++                        "FAILED_PULLBACK_REQUIRES_A_NEW_AUCTION_LOW_AFTER_ACCEPTANCE_CONFIRMATION"
++                    ),
++                    reference_price=source.low,
++                    details={
++                        "source": source.label.value,
++                        "acceptance_confirmation_trough": prior_trough,
++                        "candidate_pullback_low": bar.low,
++                        "candidate_pullback_high": bar.high,
++                        "candidate_pullback_close": bar.close,
++                    },
++                )
++                return None
++            if not pullback_shape:
+                 return None
+ 
+             state.low_acceptance_attempted = True
+@@ -1400,6 +1431,12 @@
+                     "fvg_formed_ts_ns": fvg.formed_ts_ns,
+                     "pullback_high": bar.high,
+                     "pullback_close": bar.close,
++                    "post_confirmation_extension_confirmed": (
++                        state.low_acceptance_extension_confirmed
++                    ),
++                    "post_confirmation_extension_trough": (
++                        state.low_acceptance_trough
++                    ),
+                     "source_width_atr": source_width_atr,
+                     "fvg_width_atr": fvg_width_atr,
+                     "entry_distance_atr": entry_distance_atr,
+diff -ruN a/research/candidate-12/test_logic.py b/research/candidate-12/test_logic.py
+--- a/research/candidate-12/test_logic.py	2026-08-07 19:20:31.032587422 +0000
++++ b/research/candidate-12/test_logic.py	2026-08-07 19:20:31.034183360 +0000
+@@ -366,13 +366,16 @@
+ 
+     def test_low_acceptance_requires_failed_pullback_near_completed_boundary(self) -> None:
+         y, m, d = self.DAY
+-        engine = CausalLiquidityAuctionEngine(config(), "X")
++        engine = CausalLiquidityAuctionEngine(
++            config(low_acceptance_mid_projection=1.0),
++            "X",
++        )
+         self.seed_asia(engine)
+         engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
+         engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 91, 92), True)
+         engine._on_five(bar(ts(y, m, d, 6, 15), 92, 96.1, 90, 93), True)
+         decision_ts = ts(y, m, d, 6, 20)
+-        plan = engine._on_five(bar(decision_ts, 93, 95.2, 92.8, 94.8), True)
++        plan = engine._on_five(bar(decision_ts, 93, 95.2, 89.5, 94.8), True)
+         self.assertIsNotNone(plan)
+         assert plan is not None
+         self.assertEqual(plan.scenario, ScenarioKind.ASIA_LOW_ACCEPTANCE)
+@@ -380,6 +383,47 @@
+         self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
+         self.assertEqual(plan.expire_ts_ns, decision_ts + 5 * NS_MINUTE)
+ 
++    def test_low_acceptance_pullback_requires_post_confirmation_extension(self) -> None:
++        y, m, d = self.DAY
++        engine = CausalLiquidityAuctionEngine(
++            config(low_acceptance_mid_projection=1.0),
++            "X",
++        )
++        self.seed_asia(engine)
++        engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
++        engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 91, 92), True)
++        engine._on_five(bar(ts(y, m, d, 6, 15), 92, 96.1, 90, 93), True)
++        # A bullish retest which does not trade below the confirmation trough is
++        # only immediate mean reversion, not a failed pullback of an accepted auction.
++        immediate = engine._on_five(
++            bar(ts(y, m, d, 6, 20), 93, 95.2, 92.8, 94.8),
++            True,
++        )
++        self.assertIsNone(immediate)
++        self.assertEqual(
++            engine.skips[
++                "LOW_ACCEPTANCE_PULLBACK_BEFORE_POST_CONFIRMATION_EXTENSION"
++            ],
++            1,
++        )
++        state = engine._sources[SessionLabel.ASIA]
++        self.assertEqual(state.low_acceptance_phase, "WAIT_PULLBACK")
++        self.assertFalse(state.low_acceptance_extension_confirmed)
++        # Once price establishes a new auction low after confirmation, a later
++        # bullish return into the same FVG can be classified as a failed pullback.
++        engine._on_five(bar(ts(y, m, d, 6, 25), 94.8, 95, 88.5, 89), True)
++        plan = engine._on_five(
++            bar(ts(y, m, d, 6, 30), 89, 95.2, 88.8, 94.8),
++            True,
++        )
++        self.assertIsNotNone(plan)
++        assert plan is not None
++        self.assertTrue(plan.details["post_confirmation_extension_confirmed"])
++        self.assertAlmostEqual(
++            plan.details["post_confirmation_extension_trough"],
++            88.5,
++        )
++
+     def test_low_acceptance_does_not_chase_far_below_boundary(self) -> None:
+         y, m, d = self.DAY
+         engine = CausalLiquidityAuctionEngine(
+@@ -391,7 +435,7 @@
+         engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 87, 88), True)
+         engine._on_five(bar(ts(y, m, d, 6, 15), 88, 91, 86, 87), True)
+         self.assertIsNone(
+-            engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 86.5, 89.5), True)
++            engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 85.5, 89.5), True)
+         )
+         self.assertEqual(engine.skips["LOW_ACCEPTANCE_PULLBACK_NOT_STRUCTURAL"], 1)
+ 
+@@ -408,7 +452,7 @@
+         engine._on_five(bar(ts(y, m, d, 6, 15), 88, 91, 86, 87), True)
+         # A bullish pullback is too distant for the completed-session entry.
+         self.assertIsNone(
+-            engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 86.5, 89.5), True)
++            engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 85.5, 89.5), True)
+         )
+         state = engine._sources[SessionLabel.ASIA]
+         self.assertEqual(state.low_acceptance_phase, "WAIT_LOCAL_REACCELERATION")
+@@ -426,7 +470,7 @@
+         self.assertEqual(plan.direction, Direction.SHORT)
+         self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
+         self.assertGreater(plan.stop_price, 92.0)
+-        self.assertEqual(plan.target_price, 86.0)
++        self.assertEqual(plan.target_price, 85.5)
+         self.assertEqual(
+             plan.details["target_semantics"],
+             "PRIOR_ACCEPTANCE_EXPANSION_LOW",
+@@ -442,7 +486,7 @@
+         engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
+         engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 87, 88), True)
+         engine._on_five(bar(ts(y, m, d, 6, 15), 88, 91, 86, 87), True)
+-        engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 86.5, 89.5), True)
++        engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 85.5, 89.5), True)
+         state = engine._sources[SessionLabel.ASIA]
+         self.assertEqual(state.low_acceptance_phase, "WAIT_LOCAL_REACCELERATION")
+         # Closing back inside the completed range invalidates the continuation
