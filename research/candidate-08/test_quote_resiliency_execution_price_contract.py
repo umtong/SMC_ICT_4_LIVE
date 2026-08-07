@@ -51,8 +51,16 @@ class ExecutableQuoteReferenceContracts(unittest.TestCase):
 
 class ExpectedOneTickFillContracts(unittest.TestCase):
     def test_long_and_short_fill_one_tick_adverse_from_l1(self) -> None:
-        self.assertEqual(expected_one_tick_entry_fill(100.1, 1, 0.1), 100.2)
-        self.assertEqual(expected_one_tick_entry_fill(99.9, -1, 0.1), 99.8)
+        self.assertAlmostEqual(
+            expected_one_tick_entry_fill(100.1, 1, 0.1),
+            100.2,
+            places=12,
+        )
+        self.assertAlmostEqual(
+            expected_one_tick_entry_fill(99.9, -1, 0.1),
+            99.8,
+            places=12,
+        )
 
     def test_invalid_direction_or_nonpositive_inputs_fail_closed(self) -> None:
         with self.assertRaises(ValueError):
