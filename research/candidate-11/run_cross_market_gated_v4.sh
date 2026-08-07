@@ -29,6 +29,8 @@ path.write_text(json.dumps({
 PY
   exit 0
 fi
+# The independent C1 screen is now authorized solely by this implementation
+# check. Its own audit controls whether C2 and C3 may be opened.
 python "$CAND/apply_cross_market_runtime_fixes.py"
 python "$CAND/materialize_cross_market_gated_v2.py"
 chmod +x "$CAND/run_cross_market_generated_v2.sh"
