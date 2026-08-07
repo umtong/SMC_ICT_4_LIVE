@@ -10,11 +10,9 @@ This layer changes no thresholds. It ensures that:
 from __future__ import annotations
 
 from c10_v25_model import (
-    LiquidityProbe,
     LiquidityResponseBar,
     LiquidityResponsePlan,
     LiquidityResponseTransition,
-    LiquidityShelf,
 )
 from c10_v25_state import LiquidityResponseStateMachine
 
@@ -67,12 +65,12 @@ class StrictLiquidityResponseStateMachine(LiquidityResponseStateMachine):
         ]
 
     def _consume_target_by_id(self, target_id: str) -> bool:
+        """Consume an originally active target even if this bar did so earlier."""
         for shelf in self.shelves:
             if shelf.shelf_id == target_id:
-                was_active = shelf.active or shelf.reserved
                 shelf.active = False
                 shelf.reserved = False
-                return was_active
+                return True
         return False
 
     def _process_probe(
