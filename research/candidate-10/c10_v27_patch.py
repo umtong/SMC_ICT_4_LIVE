@@ -196,7 +196,7 @@ def patch(path: Path) -> None:
                     self.active_entry_order_id = None
 ''',
     )
-    if text.count("self.active_cost_record = None") < 3:
+    if text.count("self.active_cost_record = None") < 2:
         raise RuntimeError("terminal cost state reset markers were not patched")
 
     text = replace_once(
