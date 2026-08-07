@@ -70,7 +70,7 @@ class InventoryRepricingLogicTest(unittest.TestCase):
             ),
         )
 
-    def test_internal_inventory_trap_requires_material_tail_reversal(self) -> None:
+    def test_internal_inventory_trap_requires_material_tail_and_penetration(self) -> None:
         long_base = dict(
             side=1,
             penetration_atr=0.70,
@@ -90,6 +90,15 @@ class InventoryRepricingLogicTest(unittest.TestCase):
             inventory_trap_confirmed(
                 **long_base,
                 flow_15s=0.40,
+            ),
+        )
+        self.assertFalse(
+            inventory_trap_confirmed(
+                **{
+                    **long_base,
+                    "penetration_atr": 0.25,
+                    "flow_15s": 0.40,
+                },
             ),
         )
         short_base = dict(
