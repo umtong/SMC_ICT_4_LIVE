@@ -4,21 +4,22 @@ import unittest
 
 from market_leadership import LeadershipDecision
 from semantic_market_leadership import (
+    AAC_LAGGARD_TRANSFER,
+    FAR_CAPITULATION_IDIOSYNCRATIC,
+    FAR_CAPITULATION_SYNCHRONIZED,
+    FAR_EXHAUSTION_LAGGARD,
     FAR_EXHAUSTION_QUORUM,
     FAR_EXHAUSTION_UNANIMOUS,
-    FAR_IDIOSYNCRATIC,
-    FAR_ROTATION_DISPLACEMENT,
-    FAR_ROTATION_UNANIMOUS,
+    FAR_NASCENT_TREND_RESUMPTION,
     semantic_decision,
 )
-
 
 SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
 
 
 class SemanticLeadershipTests(unittest.TestCase):
     def decision(self, **updates):
-        base = dict(
+        values = dict(
             approved=False,
             reason="BASE_POLICY",
             leader="BTCUSDT",
@@ -43,8 +44,8 @@ class SemanticLeadershipTests(unittest.TestCase):
             event_path_efficiency=0.12,
             event_standardized_displacement=0.86,
         )
-        base.update(updates)
-        return LeadershipDecision(**base)
+        values.update(updates)
+        return LeadershipDecision(**values)
 
     def classify(self, decision):
         return semantic_decision(
@@ -56,199 +57,122 @@ class SemanticLeadershipTests(unittest.TestCase):
             minimum_event_displacement=0.50,
         )
 
-    def test_far_exhaustion_unanimous(self):
+    def test_unanimous_common_auction(self):
         result = self.classify(self.decision())
         self.assertTrue(result.approved)
         self.assertEqual(result.reason, FAR_EXHAUSTION_UNANIMOUS)
 
-    def test_far_exhaustion_dominant_quorum_for_strong_follower(self):
+    def test_partial_quorum_requires_full_atr_candidate_event(self):
         peers = {"BTCUSDT": -0.004, "ETHUSDT": -0.003, "XRPUSDT": 0.0005}
-        result = self.classify(self.decision(peer_returns=peers))
-        self.assertTrue(result.approved)
-        self.assertEqual(result.reason, FAR_EXHAUSTION_QUORUM)
-
-    def test_far_exhaustion_rejects_material_dissent(self):
-        peers = {"BTCUSDT": -0.004, "ETHUSDT": -0.003, "XRPUSDT": 0.0045}
-        result = self.classify(self.decision(peer_returns=peers))
-        self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_FAR_EXHAUSTION_REQUIRES_PEER_QUORUM")
-
-    def test_far_exhaustion_quorum_cannot_validate_liquidity_leader(self):
-        peers = {"ETHUSDT": -0.004, "SOLUSDT": -0.003, "XRPUSDT": 0.0005}
-        result = self.classify(
-            self.decision(symbol="BTCUSDT", peer_returns=peers, event_direction_rank=1),
+        weak = self.classify(
+            self.decision(peer_returns=peers, event_standardized_displacement=0.99),
         )
-        self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_FAR_QUORUM_CANNOT_USE_LIQUIDITY_LEADER")
-
-    def test_far_exhaustion_quorum_requires_local_event_quality(self):
-        peers = {"BTCUSDT": -0.004, "ETHUSDT": -0.003, "XRPUSDT": 0.0005}
-        result = self.classify(
-            self.decision(peer_returns=peers, event_path_efficiency=0.09),
+        strong = self.classify(
+            self.decision(peer_returns=peers, event_standardized_displacement=1.01),
         )
-        self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_FAR_QUORUM_REQUIRES_LOCAL_EVENT_QUALITY")
+        self.assertFalse(weak.approved)
+        self.assertEqual(strong.reason, FAR_EXHAUSTION_QUORUM)
 
-    def test_far_split_prior_unanimous_rotation(self):
-        scores = {
-            "BTCUSDT": -0.85,
-            "ETHUSDT": -0.69,
-            "SOLUSDT": -0.44,
-            "XRPUSDT": 0.33,
-        }
-        result = self.classify(self.decision(directional_trend_scores=scores))
-        self.assertTrue(result.approved)
-        self.assertEqual(result.reason, FAR_ROTATION_UNANIMOUS)
+    def test_synchronized_capitulation(self):
+        scores = {symbol: -1.8 for symbol in SYMBOLS}
+        result = self.classify(
+            self.decision(directional_trend_scores=scores, event_direction_rank=3),
+        )
+        self.assertEqual(result.reason, FAR_CAPITULATION_SYNCHRONIZED)
 
-    def test_far_split_prior_weak_impulse_can_use_event_displacement(self):
+    def test_idiosyncratic_capitulation_requires_nonleader_full_atr_event(self):
         scores = {
-            "BTCUSDT": -0.68,
-            "ETHUSDT": 0.72,
-            "SOLUSDT": 0.34,
-            "XRPUSDT": -0.95,
+            "BTCUSDT": -1.7,
+            "ETHUSDT": -1.6,
+            "SOLUSDT": -1.8,
+            "XRPUSDT": -1.4,
         }
+        peers = {"BTCUSDT": -0.003, "ETHUSDT": 0.001, "XRPUSDT": 0.002}
         result = self.classify(
             self.decision(
-                symbol="BTCUSDT",
                 directional_trend_scores=scores,
-                confirmation_impulse=0.72,
-                event_direction_rank=3,
-                event_path_efficiency=0.15,
-                event_standardized_displacement=0.91,
-            ),
-        )
-        self.assertTrue(result.approved)
-        self.assertEqual(result.reason, FAR_ROTATION_DISPLACEMENT)
-
-    def test_far_split_prior_weak_impulse_without_event_quality_rejected(self):
-        scores = {
-            "BTCUSDT": -0.68,
-            "ETHUSDT": 0.72,
-            "SOLUSDT": 0.34,
-            "XRPUSDT": -0.95,
-        }
-        result = self.classify(
-            self.decision(
-                symbol="BTCUSDT",
-                directional_trend_scores=scores,
-                confirmation_impulse=0.72,
-                event_direction_rank=3,
-                event_path_efficiency=0.05,
-            ),
-        )
-        self.assertFalse(result.approved)
-        self.assertEqual(
-            result.reason,
-            "SEMANTIC_FAR_ROTATION_REQUIRES_IMPULSE_OR_EVENT_QUALITY",
-        )
-
-    def test_far_split_prior_partial_quorum_is_not_transfer(self):
-        peers = {"BTCUSDT": -0.004, "ETHUSDT": -0.003, "XRPUSDT": 0.0005}
-        scores = {
-            "BTCUSDT": -0.85,
-            "ETHUSDT": -0.69,
-            "SOLUSDT": -0.44,
-            "XRPUSDT": 0.33,
-        }
-        result = self.classify(
-            self.decision(peer_returns=peers, directional_trend_scores=scores),
-        )
-        self.assertFalse(result.approved)
-        self.assertEqual(
-            result.reason,
-            "SEMANTIC_FAR_SPLIT_AUCTION_REQUIRES_UNANIMOUS_TRANSFER",
-        )
-
-    def test_far_idiosyncratic_price_discovery(self):
-        peers = {"BTCUSDT": 0.00014, "ETHUSDT": 0.00039, "XRPUSDT": -0.00101}
-        scores = {
-            "BTCUSDT": -0.77,
-            "ETHUSDT": -0.27,
-            "SOLUSDT": -0.90,
-            "XRPUSDT": 0.30,
-        }
-        result = self.classify(
-            self.decision(
                 peer_returns=peers,
-                directional_trend_scores=scores,
                 event_direction_rank=1,
-                event_path_efficiency=0.61,
-                event_standardized_displacement=1.19,
+                event_path_efficiency=0.30,
+                event_standardized_displacement=1.40,
             ),
         )
-        self.assertTrue(result.approved)
-        self.assertEqual(result.reason, FAR_IDIOSYNCRATIC)
+        self.assertEqual(result.reason, FAR_CAPITULATION_IDIOSYNCRATIC)
 
-    def test_far_idiosyncratic_requires_event_lead(self):
-        peers = {"BTCUSDT": 0.00014, "ETHUSDT": 0.00039, "XRPUSDT": -0.00101}
-        scores = {
-            "BTCUSDT": -0.77,
-            "ETHUSDT": -0.27,
-            "SOLUSDT": -0.90,
-            "XRPUSDT": 0.30,
-        }
+    def test_laggard_must_replace_rank_with_full_atr_event(self):
         result = self.classify(
             self.decision(
-                peer_returns=peers,
-                directional_trend_scores=scores,
-                event_direction_rank=2,
-                event_path_efficiency=0.61,
-                event_standardized_displacement=1.19,
-            ),
-        )
-        self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_FAR_IDIOSYNCRATIC_REQUIRES_EVENT_LEAD")
-
-    def test_far_rejects_trend_following_state(self):
-        scores = {symbol: 0.5 for symbol in SYMBOLS}
-        result = self.classify(self.decision(directional_trend_scores=scores))
-        self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_FAR_NOT_COUNTERTREND")
-
-    def test_far_rejects_event_laggard(self):
-        result = self.classify(self.decision(event_direction_rank=4))
-        self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_FAR_EVENT_LAGGARD")
-
-    def test_far_rejects_severely_unresolved_countertrend(self):
-        scores = {symbol: -2.0 for symbol in SYMBOLS}
-        result = self.classify(self.decision(directional_trend_scores=scores))
-        self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_FAR_UNRESOLVED_ADVERSE_AUCTION")
-
-    def test_aac_accepts_aligned_efficient_nonlaggard_move(self):
-        scores = {
-            symbol: value
-            for symbol, value in zip(SYMBOLS, (0.10, 0.42, 0.23, 0.40), strict=True)
-        }
-        result = self.classify(
-            self.decision(
-                scenario="AAC",
-                event_direction_rank=3,
-                directional_trend_scores=scores,
-            ),
-        )
-        self.assertTrue(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_AAC_ALIGNED_SYNCHRONIZED_NONLAGGARD")
-
-    def test_aac_rejects_countertrend_attempted_acceptance(self):
-        result = self.classify(self.decision(scenario="AAC", event_direction_rank=1))
-        self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_AAC_REQUIRES_ALIGNED_TRAILING_AUCTION")
-
-    def test_aac_rejects_last_mover(self):
-        scores = {symbol: 0.5 for symbol in SYMBOLS}
-        result = self.classify(
-            self.decision(
-                scenario="AAC",
                 event_direction_rank=4,
-                directional_trend_scores=scores,
+                event_path_efficiency=0.20,
+                event_standardized_displacement=1.20,
             ),
         )
-        self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_AAC_EVENT_LAGGARD")
+        self.assertEqual(result.reason, FAR_EXHAUSTION_LAGGARD)
 
-    def test_incomplete_snapshot_preserves_fail_closed_reason(self):
+    def test_nascent_trend_resumption_is_not_generic_trend_following(self):
+        scores = {
+            "BTCUSDT": 0.20,
+            "ETHUSDT": 0.10,
+            "SOLUSDT": 0.30,
+            "XRPUSDT": 0.70,
+        }
+        peers = {"BTCUSDT": -0.003, "ETHUSDT": -0.004, "XRPUSDT": 0.002}
+        result = self.classify(
+            self.decision(
+                directional_trend_scores=scores,
+                peer_returns=peers,
+                confirmation_impulse=1.80,
+                trailing_direction_rank=2,
+                event_direction_rank=2,
+            ),
+        )
+        self.assertEqual(result.reason, FAR_NASCENT_TREND_RESUMPTION)
+
+        intermediate = dict(scores)
+        intermediate["SOLUSDT"] = 0.65
+        rejected = self.classify(
+            self.decision(
+                directional_trend_scores=intermediate,
+                peer_returns=peers,
+                confirmation_impulse=2.00,
+                trailing_direction_rank=2,
+                event_direction_rank=1,
+            ),
+        )
+        self.assertFalse(rejected.approved)
+        self.assertEqual(rejected.reason, "SEMANTIC_FAR_NOT_COUNTERTREND")
+
+    def test_aac_laggard_transfer_cannot_also_be_trailing_laggard(self):
+        scores = {symbol: 0.5 for symbol in SYMBOLS}
+        peers = {"BTCUSDT": 0.003, "ETHUSDT": 0.002, "XRPUSDT": 0.001}
+        accepted = self.classify(
+            self.decision(
+                scenario="AAC",
+                direction="LONG",
+                directional_trend_scores=scores,
+                peer_returns=peers,
+                event_direction_rank=4,
+                trailing_direction_rank=3,
+                event_path_efficiency=0.14,
+                event_standardized_displacement=0.75,
+            ),
+        )
+        rejected = self.classify(
+            self.decision(
+                scenario="AAC",
+                direction="LONG",
+                directional_trend_scores=scores,
+                peer_returns=peers,
+                event_direction_rank=4,
+                trailing_direction_rank=4,
+                event_path_efficiency=0.14,
+                event_standardized_displacement=0.75,
+            ),
+        )
+        self.assertEqual(accepted.reason, AAC_LAGGARD_TRANSFER)
+        self.assertFalse(rejected.approved)
+
+    def test_incomplete_snapshot_fails_closed(self):
         result = self.classify(
             self.decision(
                 reason="MISSING_SYNCHRONIZED_PEER_SNAPSHOT",
