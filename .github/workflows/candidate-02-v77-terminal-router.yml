@@ -1,4 +1,4 @@
-name: candidate-02-current-research-source-export
+name: candidate-02-v95-nautilustrader-recovery-runner
 
 on:
   push:
@@ -8,42 +8,228 @@ on:
 
 permissions:
   contents: read
+  packages: read
+  actions: read
 
 concurrency:
-  group: candidate-02-current-research-source-export
+  group: candidate-02-v95-nautilustrader-recovery-runner
   cancel-in-progress: false
 
 jobs:
-  export-current-research-source:
+  first-week-mature-defended-swing-breakout:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 55
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
     steps:
       - uses: actions/checkout@v4
         with:
           ref: research/candidate-02
           fetch-depth: 0
 
-      - name: Build deterministic source-only archive
+      - name: Trust fixed container checkout and verify untouched v95 lock
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p export
-          tar --sort=name --mtime='UTC 2026-08-07' --owner=0 --group=0 --numeric-owner \
-            -czf export/candidate-02-current-research-source.tar.gz \
-            research/candidate-02 \
-            .candidate-02-v75 \
-            .candidate-02-v89 \
-            .github/workflows/candidate-02-v53-nt.yml \
-            .github/workflows/candidate-02-v77-terminal-router.yml
-          sha256sum export/candidate-02-current-research-source.tar.gz \
-            > export/candidate-02-current-research-source.sha256
-          git rev-parse HEAD > export/branch-head.txt
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git branch --show-current)" = "research/candidate-02"
+          test ! -e inputs/v95-first-week
+          test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "cbb08f4ed11b02638c30a898444e1d8bc8a1867cfc61036044905866524295b0"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v95_mature_swing_breakout_lock.json').read_text())
+          assert lock['status']=='LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['first_week']['symbol']=='BTCUSDT'
+          assert lock['first_week']['start_utc']=='2025-10-06T00:00:00Z'
+          assert lock['first_week']['end_utc']=='2025-10-13T00:00:00Z'
+          assert int(lock['first_week']['selection_seed'])==2026080695
+          assert lock['first_week']['raw_data_status_at_lock']=='NOT_COLLECTED_FOR_V95'
+          assert lock['performance_engine']=='NautilusTrader 1.230.0'
+          assert lock['custom_backtest_engine'] is False
+          assert float(lock['risk_fraction'])==0.03
+          assert int(lock['global_pending_entry_plus_position_limit'])==1
+          assert lock['precommitted_single_ablation']['only_change']=='require_defense_memory true to false'
+          PY
 
-      - name: Upload current research source
+      - name: Apply only deterministic pre-data implementation fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('research/candidate-02/v95_prepare_before_data.py')
+          text=path.read_text()
+          old='    assert lock["first_week"] == FIXED_WEEK | {"raw_data_status_at_lock": "NOT_COLLECTED_FOR_V95"}\n'
+          new='    expected_week = FIXED_WEEK | {"raw_data_status_at_lock": "NOT_COLLECTED_FOR_V95"}\n    assert all(lock["first_week"].get(key) == value for key, value in expected_week.items())\n'
+          assert text.count(old)==1
+          path.write_text(text.replace(old,new))
+          PY
+          python research/candidate-02/v95_prepare_before_data.py | tee artifacts-v95-predata-verification.log
+          test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "60ea90e83b3f1cffb0d816c0cb08ff6c6bf6b160a025c7da5f75d7d83e5598a8"
+          test "$(cat research/candidate-02/v95_payload_sha256.txt)" = "e5847fdb56138b4b09ddb3bf62d468d3e96cb6011957121169c5c121878f2356"
+          python -m json.tool research/candidate-02/v95_predata_verification.json >/dev/null
+
+      - name: Materialize the prospectively locked v95 runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find .candidate-02-v95-runner -maxdepth 1 -name 'payload.part*' -type f | wc -l)" -eq 4
+          test "$(cat .candidate-02-v95-runner/payload.part* | wc -c)" -eq 15356
+          cat .candidate-02-v95-runner/payload.part* | base64 --decode > research/candidate-02/v95_first_week_runner.sh
+          test "$(sha256sum research/candidate-02/v95_first_week_runner.sh | cut -d' ' -f1)" = "725db7f6347910f675fdf34a71d1ea34b628854dd574c2b213182c37e698525d"
+          chmod +x research/candidate-02/v95_first_week_runner.sh
+          bash -n research/candidate-02/v95_first_week_runner.sh
+
+      - name: Execute unchanged locked v95 baseline matrix through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          bash research/candidate-02/v95_first_week_runner.sh 2>&1 | tee artifacts-v95-runner.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "$status" > artifacts-v95-runner-exit-code.txt
+          if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          test -f artifacts-v95-first-week-decision.json
+          test -f artifacts/candidate-02-v95-central20/metrics.json
+
+      - name: Execute the one precommitted ablation only when baseline matrix does not promote
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_status="$(python -c "import json;print(json.load(open('artifacts-v95-first-week-decision.json'))['status'])")"
+          if [[ "$baseline_status" == "FIRST_WEEK_PROMOTION_ELIGIBLE" ]]; then
+            echo "Baseline matrix passed; precommitted diagnostic ablation not executed."
+            exit 0
+          fi
+          python - <<'PY'
+          import copy,json
+          from pathlib import Path
+          base=json.loads(Path('research/candidate-02/v95_base_config.json').read_text())
+          cfg=copy.deepcopy(base)
+          cfg['candidate']='candidate-02-v95-remove-prior-defense-memory'
+          cfg['scenario']['require_defense_memory']=False
+          Path('/tmp/v95-remove-defense.json').write_text(json.dumps(cfg,indent=2,sort_keys=True)+'\n')
+          PY
+          mkdir -p artifacts/candidate-02-v95-remove-defense
+          set +e
+          python research/candidate-02/v95_nt_backtest.py \
+            --config /tmp/v95-remove-defense.json \
+            --input-root inputs/v95-first-week \
+            --output artifacts/candidate-02-v95-remove-defense \
+            2>&1 | tee artifacts-v95-remove-defense.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "$status" > artifacts/candidate-02-v95-remove-defense/validation_exit_code.txt
+          if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          test -f artifacts/candidate-02-v95-remove-defense/metrics.json
+
+      - name: Build compact immutable evidence and final first-week decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p v95-evidence/source v95-evidence/results v95-evidence/manifests
+          cp -f research/candidate-02/v95_mature_swing_breakout_core.py v95-evidence/source/
+          cp -f research/candidate-02/v95_nt_backtest.py v95-evidence/source/
+          cp -f research/candidate-02/v95_base_config.json v95-evidence/source/
+          cp -f research/candidate-02/v95_mature_swing_breakout_lock.json v95-evidence/source/
+          cp -f research/candidate-02/v95_design.md v95-evidence/source/
+          cp -f research/candidate-02/v95_prepare_before_data.py v95-evidence/source/
+          cp -f research/candidate-02/v95_implementation_fix_*.json v95-evidence/source/ 2>/dev/null || true
+          cp -f research/candidate-02/v95_predata_verification.json v95-evidence/source/ 2>/dev/null || true
+          cp -f research/candidate-02/v95_payload_sha256.txt v95-evidence/source/ 2>/dev/null || true
+          cp -f research/candidate-02/v95_first_week_runner.sh v95-evidence/source/ 2>/dev/null || true
+          cp -f artifacts-v95-* v95-evidence/results/ 2>/dev/null || true
+          for directory in artifacts/candidate-02-v95-*; do
+            [[ -d "$directory" ]] || continue
+            target="v95-evidence/results/$(basename "$directory")"
+            mkdir -p "$target"
+            find "$directory" -maxdepth 1 -type f -size -20M -exec cp -f {} "$target"/ \;
+          done
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json
+          root=Path('inputs/v95-first-week')
+          records=[]
+          if root.exists():
+              for path in sorted(p for p in root.rglob('*') if p.is_file()):
+                  records.append({'path':path.relative_to(root).as_posix(),'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+          manifest={
+              'candidate':'candidate-02-v95-mature-defended-swing-common-accepted-breakout',
+              'evaluation_start_utc':'2025-10-06T00:00:00Z',
+              'evaluation_end_utc':'2025-10-13T00:00:00Z',
+              'selection_seed':2026080695,
+              'workflow_commit':'${{ github.sha }}',
+              'performance_engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+              'risk_fraction':0.03,
+              'files':records,
+          }
+          Path('v95-evidence/manifests/immutable_input_sha256.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+
+          def passed(m):
+              return bool(m) and (
+                  m.get('trades_per_day',0)>=.75 and
+                  m.get('win_rate',0)>=.50 and
+                  m.get('profit_factor_after_cost',0)>=1.5 and
+                  m.get('geometric_daily_growth_after_cost',-1)>=.01 and
+                  abs(m.get('maximum_mark_to_market_drawdown',-1))<=.25 and
+                  str(m.get('engine','')).startswith('NautilusTrader') and
+                  m.get('custom_backtest_engine') is False and
+                  abs(float(m.get('risk_fraction',0))-.03)<=1e-12
+              )
+          baseline_path=Path('artifacts-v95-first-week-decision.json')
+          baseline=json.loads(baseline_path.read_text()) if baseline_path.exists() else {'status':'IMPLEMENTATION_ERROR'}
+          ablation_path=Path('artifacts/candidate-02-v95-remove-defense/metrics.json')
+          ablation=json.loads(ablation_path.read_text()) if ablation_path.exists() else None
+          baseline_promotes=baseline.get('status')=='FIRST_WEEK_PROMOTION_ELIGIBLE'
+          ablation_pass=passed(ablation)
+          if baseline_promotes:
+              status='FIRST_WEEK_PROMOTION_ELIGIBLE'
+          elif ablation_pass:
+              status='PRECOMMITTED_ABLATION_PASSED_REQUIRES_NEW_CANDIDATE_LOCK'
+          elif baseline.get('status')=='IMPLEMENTATION_ERROR':
+              status='IMPLEMENTATION_ERROR'
+          else:
+              status='FIRST_WEEK_REJECT_AFTER_SINGLE_ABLATION'
+          final={
+              'status':status,
+              'baseline':baseline,
+              'precommitted_ablation':{
+                  'name':'REMOVE_PRIOR_DEFENSE_MEMORY',
+                  'only_change':'require_defense_memory true to false',
+                  'metrics':ablation,
+                  'pass':ablation_pass,
+              },
+              'risk_fraction':.03,
+              'performance_engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+          }
+          Path('artifacts-v95-final-decision.json').write_text(json.dumps(final,indent=2,sort_keys=True)+'\n')
+          Path('v95-evidence/results/artifacts-v95-final-decision.json').write_text(json.dumps(final,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(final,indent=2,sort_keys=True))
+          PY
+          git rev-parse HEAD > v95-evidence/source/branch-head.txt
+          find v95-evidence -type f -printf '%s\t%p\n' | sort -n > v95-evidence/FILE_INVENTORY.tsv
+          du -sh v95-evidence
+
+      - name: Upload compact v95 evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-02-current-research-source-${{ github.sha }}
-          path: export
+          name: candidate-02-v95-first-week-evidence-${{ github.sha }}
+          path: v95-evidence
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
           compression-level: 9
