@@ -2,7 +2,7 @@
 
 At the midpoint of the pre-existing source dealing range, close the minimum
 position fraction whose modeled all-cost profit funds the complete original-stop
-loss of the residual runner.  The fraction is solved from current price, fees,
+loss of the residual runner. The fraction is solved from current price, fees,
 impact and the original loss budget; it is never a tuned fixed percentage.
 """
 from __future__ import annotations
@@ -17,6 +17,7 @@ from c10_v30_overlay import (  # re-export frozen v29/v28/v27 layers
     apply_cost_overlay,
     build_leadership_gate,
     certify_plan,
+    cost_neutral_stop,
     equilibrium_enabled,
     equilibrium_reached,
     far_only_enabled,
