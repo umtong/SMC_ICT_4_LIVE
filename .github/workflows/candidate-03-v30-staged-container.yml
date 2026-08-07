@@ -1,159 +1,56 @@
-name: candidate-03-candidate15-far-execution-development
+name: candidate-03-candidate15-aggregate-recovery
 
 on:
   push:
     branches: ["research/candidate-03"]
     paths:
       - ".github/workflows/candidate-03-v30-staged-container.yml"
-      - "research/candidate-03/patch_candidate14_event_ids.py"
-      - "research/candidate-03/patch_candidate15_far_execution.py"
       - "research/candidate-03/compare_candidate15_far_execution.py"
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
-  packages: read
 
 env:
-  FROZEN_SOURCE_COMMIT: dfb180490b141fdafd5b5ac0b52d3dd0b842550d
-  BASE_PROTOCOL_REL: research/candidate-03/candidate14_frozen_holdout_protocol.json
-  EVENT_PATCH_REL: research/candidate-03/patch_candidate14_event_ids.py
-  FAR_PATCH_REL: research/candidate-03/patch_candidate15_far_execution.py
+  SOURCE_RUN_ID: "31211433447"
   RESULT_REL: research/candidate-03/results/candidate15-far-execution-development
 
 concurrency:
-  group: candidate-03-candidate15-far-execution-development
+  group: candidate-03-candidate15-aggregate-recovery
   cancel-in-progress: true
 
 jobs:
-  static:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    container:
-      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-      options: --user 0
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with: {ref: "${{ github.sha }}", path: orchestrator}
-      - uses: actions/checkout@v4
-        with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
-      - name: Verify frozen source and both execution patches
-        shell: bash
-        run: |
-          set -euo pipefail
-          smc4 doctor
-          test "$(git -C frozen-source rev-parse HEAD)" = "$FROZEN_SOURCE_COMMIT"
-          python - <<'PY'
-          import json, subprocess
-          from pathlib import Path
-          p=json.loads(Path("orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json").read_text())
-          bad=[]
-          for name, expected in p["locked_source"]["blobs"].items():
-              actual=subprocess.check_output(["git","-C","frozen-source","hash-object",str(Path("research/candidate-14")/name)],text=True).strip()
-              if actual != expected: bad.append((name, expected, actual))
-          if bad: raise SystemExit(f"frozen source mismatch: {bad}")
-          print(f"verified {len(p['locked_source']['blobs'])} origin blobs")
-          PY
-          export PYTHONPATH="$GITHUB_WORKSPACE/frozen-source/research/candidate-14:$GITHUB_WORKSPACE/frozen-source/src"
-          python -m py_compile frozen-source/research/candidate-14/*.py
-          python -m unittest discover -s frozen-source/research/candidate-14 -p 'test_*.py' -v
-          for variant in SWEEP_MARKET PASSIVE_RETEST; do
-            git -C frozen-source reset --hard "$FROZEN_SOURCE_COMMIT"
-            python "orchestrator/$EVENT_PATCH_REL" frozen-source/research/candidate-14/logic.py
-            python "orchestrator/$FAR_PATCH_REL" frozen-source/research/candidate-14/semantic_logic.py "$variant"
-            git -C frozen-source diff --exit-code -- \
-              ':(exclude)research/candidate-14/logic.py' \
-              ':(exclude)research/candidate-14/semantic_logic.py' \
-              'research/candidate-14'
-            grep -q "candidate15_execution_variant.*$variant" frozen-source/research/candidate-14/semantic_logic.py
-            if [[ "$variant" == SWEEP_MARKET ]]; then
-              ! grep -q 'FULL_DISPLACEMENT_VOID_TRAVERSAL' frozen-source/research/candidate-14/semantic_logic.py
-            else
-              ! grep -q 'FAR_CONFIRMED_RECLAIM_DISPLACEMENT_MARKET' frozen-source/research/candidate-14/semantic_logic.py
-            fi
-            python -m py_compile frozen-source/research/candidate-14/logic.py frozen-source/research/candidate-14/semantic_logic.py
-          done
-
-  evaluate:
-    needs: static
-    strategy:
-      fail-fast: false
-      max-parallel: 16
-      matrix:
-        variant: [SWEEP_MARKET, PASSIVE_RETEST]
-        week: [H01, H02, H03, H04, H05, H06, H07, H08, H09, H10, H11, H12, H13, H14, H15, H16]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    container:
-      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-      options: --user 0
-      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
-    steps:
-      - uses: actions/checkout@v4
-        with: {ref: "${{ github.sha }}", path: orchestrator}
-      - uses: actions/checkout@v4
-        with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
-      - name: Materialize development variant
-        shell: bash
-        env: {VARIANT: "${{ matrix.variant }}"}
-        run: |
-          set -euo pipefail
-          test "$(git -C frozen-source rev-parse HEAD)" = "$FROZEN_SOURCE_COMMIT"
-          python "orchestrator/$EVENT_PATCH_REL" frozen-source/research/candidate-14/logic.py
-          python "orchestrator/$FAR_PATCH_REL" frozen-source/research/candidate-14/semantic_logic.py "$VARIANT"
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          v=os.environ["VARIANT"]
-          p=json.loads(Path("orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json").read_text())
-          slug=v.lower().replace("_","-")
-          p["schema"]=f"candidate-15-{slug}-development-v1"
-          p["candidate"]=f"candidate-15-{slug}-far-execution"
-          p["validation_mode"]="development_replay"
-          p["selection"]["seed"]=202608081500+(1 if v=="SWEEP_MARKET" else 2)
-          p["claim_rules"]=["Development replay only; success_claim is false.","Only FAR post-confirmation execution semantics differ.","Any survivor requires untouched holdouts after a new source freeze."]
-          Path("frozen-source/research/candidate-14/protocol.json").write_text(json.dumps(p,indent=2,sort_keys=True)+"\n")
-          PY
-      - name: Run NautilusTrader development week
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="$GITHUB_WORKSPACE/evidence/${{ matrix.variant }}/${{ matrix.week }}"
-          bash frozen-source/research/candidate-14/run_week.sh "${{ matrix.week }}" "$out"
-          rm -rf "$out/data"
-          for f in metrics.json summary.json audit.json source_lock.json effective_config.json submitted_plans.json positions.csv account.csv; do test -s "$out/$f"; done
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: candidate15-${{ matrix.variant }}-${{ matrix.week }}
-          path: evidence/${{ matrix.variant }}/${{ matrix.week }}/
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 6
-
   aggregate:
-    if: ${{ always() && needs.static.result == 'success' && needs.evaluate.result == 'success' }}
-    needs: [static, evaluate]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-        with: {ref: research/candidate-03, fetch-depth: 0, path: orchestrator}
-      - uses: actions/download-artifact@v4
-        with: {pattern: "candidate15-*", path: downloaded}
-      - name: Compare and persist development evidence
+      - name: Checkout current candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: research/candidate-03
+          fetch-depth: 0
+          path: orchestrator
+      - name: Download the 32 successful native evidence artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate15-*
+          path: downloaded
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compare and persist execution variants
         shell: bash
         run: |
           set -euo pipefail
           root="orchestrator/$RESULT_REL"
-          rm -rf "$root"; mkdir -p "$root"
+          rm -rf "$root"
+          mkdir -p "$root"
           for variant in SWEEP_MARKET PASSIVE_RETEST; do
             for week in H01 H02 H03 H04 H05 H06 H07 H08 H09 H10 H11 H12 H13 H14 H15 H16; do
-              src="downloaded/candidate15-$variant-$week"; test -d "$src"
-              mkdir -p "$root/$variant/$week"; cp -a "$src/." "$root/$variant/$week/"
+              src="downloaded/candidate15-$variant-$week"
+              test -d "$src"
+              mkdir -p "$root/$variant/$week"
+              cp -a "$src/." "$root/$variant/$week/"
             done
           done
           python orchestrator/research/candidate-03/compare_candidate15_far_execution.py \
@@ -167,7 +64,8 @@ jobs:
           git -C orchestrator fetch origin research/candidate-03
           git -C orchestrator rebase origin/research/candidate-03
           git -C orchestrator push origin HEAD:research/candidate-03
-      - if: always()
+      - name: Upload comparison
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: candidate15-far-execution-comparison-${{ github.run_id }}
