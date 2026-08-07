@@ -1,0 +1,146 @@
+name: candidate-07-initiative-auction
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/initiative_auction.py"
+      - "research/candidate-07/strategy_initiative_auction.py"
+      - "research/candidate-07/backtest_initiative_auction.py"
+      - "research/candidate-07/candidate_initiative_auction.py"
+      - "research/candidate-07/staged_initiative_auction.py"
+      - "research/candidate-07/tests/test_initiative_auction.py"
+      - ".github/workflows/candidate-07-initiative-auction.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify prebuilt foundation and state contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-initiative-pyc \
+            python -m compileall -q research/candidate-07
+          python -m unittest discover \
+            -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+
+      - name: Run frozen weeks and gated continuous evaluation
+        run: >-
+          python research/candidate-07/staged_initiative_auction.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --output artifacts/candidate-07-initiative-auction
+          --data-root .research-data/candidate-07
+          --max-weeks 3
+          --run-long
+
+      - name: Audit initiative state persistence and segment identity
+        if: always()
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+          import re
+          import pandas as pd
+
+          root = Path("artifacts/candidate-07-initiative-auction")
+          long_root = root / "long-evaluation"
+          output = {"long_evaluation_present": long_root.exists(), "weeks": {}}
+          if long_root.exists():
+              events = [json.loads(line) for line in (long_root / "events.jsonl").read_text().splitlines()]
+              active = {}
+              lifetimes = []
+              for event in events:
+                  reason = event.get("reason_code")
+                  details = event.get("details") or {}
+                  direction = details.get("blocked_reversal_direction")
+                  if reason == "ABSORPTION_STOP_CONFIRMS_INITIATIVE_ACCEPTANCE" and direction:
+                      active[direction] = (int(event["event_time_ns"]), event["scenario_id"])
+                  elif reason in {
+                      "INITIATIVE_OPPOSING_LIQUIDITY_DELIVERED",
+                      "COUNTER_ACCEPTANCE_TRANSFERS_INITIATIVE",
+                  } and direction in active:
+                      start, scenario = active.pop(direction)
+                      lifetimes.append({
+                          "direction": direction,
+                          "source_scenario_id": scenario,
+                          "release_reason": reason,
+                          "seconds": (int(event["event_time_ns"]) - start) / 1_000_000_000,
+                      })
+              output["initiative_state"] = {
+                  "completed_lifetimes": len(lifetimes),
+                  "maximum_days": max((item["seconds"] for item in lifetimes), default=0.0) / 86400.0,
+                  "unreleased_directions": sorted(active),
+              }
+              continuous = pd.read_csv(long_root / "trades.csv")
+              continuous["opened_dt"] = pd.to_datetime(continuous["opened_ns"], unit="ns", utc=True)
+              periods = {
+                  "week-1": ("2025-12-22", "2025-12-29"),
+                  "week-2": ("2025-01-27", "2025-02-03"),
+                  "week-3": ("2024-06-24", "2024-07-01"),
+              }
+              def causal_id(raw: str) -> str:
+                  match = re.match(r"^(c07-\d+)-\d+(.*)$", str(raw))
+                  return str(raw) if match is None else match.group(1) + match.group(2)
+              for label, (start, end) in periods.items():
+                  isolated_path = root / label / "trades.csv"
+                  isolated = pd.read_csv(isolated_path)
+                  bounded = continuous[(continuous["opened_dt"] >= start) & (continuous["opened_dt"] < end)]
+                  left = {causal_id(item) for item in isolated["scenario_id"]}
+                  right = {causal_id(item) for item in bounded["scenario_id"]}
+                  output["weeks"][label] = {
+                      "isolated_trades": len(isolated),
+                      "continuous_window_trades": len(bounded),
+                      "causal_overlap": len(left & right),
+                      "only_isolated": sorted(left - right),
+                      "only_continuous": sorted(right - left),
+                  }
+          destination = root / "state_audit.json"
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_text(json.dumps(output, indent=2, sort_keys=True), encoding="utf-8")
+          print(destination.read_text(encoding="utf-8"))
+          PY
+
+      - name: Print immutable result
+        if: always()
+        run: |
+          test -f artifacts/candidate-07-initiative-auction/pipeline_summary.json
+          cat artifacts/candidate-07-initiative-auction/pipeline_summary.json
+          find artifacts/candidate-07-initiative-auction -name metrics.json \
+            -print -exec cat {} \;
+          test -f artifacts/candidate-07-initiative-auction/state_audit.json
+          cat artifacts/candidate-07-initiative-auction/state_audit.json
+
+      - name: Preserve complete initiative evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-initiative-auction-${{ github.sha }}
+          path: artifacts/candidate-07-initiative-auction
+          retention-days: 14
+          if-no-files-found: error
