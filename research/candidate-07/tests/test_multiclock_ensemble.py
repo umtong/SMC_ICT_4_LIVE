@@ -53,6 +53,61 @@ class MulticlockFirstRetestTests(unittest.TestCase):
             {"15S": 1},
         )
 
+    def test_final_nanosecond_and_rounded_boundary_are_same_episode(self) -> None:
+        five = {
+            "scenarios": [
+                self._scenario(
+                    "five",
+                    observed_ns=20_000_000_000,
+                    sweep_ns=14_999_999_999,
+                )
+            ]
+        }
+        fifteen = {
+            "scenarios": [
+                self._scenario(
+                    "fifteen",
+                    observed_ns=25_000_000_000,
+                    sweep_ns=15_000_000_000,
+                )
+            ]
+        }
+        selected, diagnostics = select_first_retests(five, fifteen)
+        self.assertEqual([item["scenario_id"] for item in selected], ["five"])
+        self.assertEqual(diagnostics["source_episodes"], 1)
+        self.assertEqual(diagnostics["duplicate_clock_episodes"], 1)
+        self.assertEqual(diagnostics["endpoint_precision_collisions"], 1)
+        self.assertEqual(
+            selected[0]["episode_key"]["completed_sweep_second"],
+            15,
+        )
+        self.assertEqual(
+            selected[0]["episode_key"]["candidate_sweep_timestamps_ns"],
+            [14_999_999_999, 15_000_000_000],
+        )
+
+    def test_same_source_cannot_reappear_in_another_physical_second(self) -> None:
+        five = {
+            "scenarios": [
+                self._scenario(
+                    "five",
+                    observed_ns=20_000_000_000,
+                    sweep_ns=14_999_999_999,
+                )
+            ]
+        }
+        fifteen = {
+            "scenarios": [
+                self._scenario(
+                    "fifteen",
+                    observed_ns=35_000_000_000,
+                    sweep_ns=29_999_999_999,
+                )
+            ]
+        }
+        with self.assertRaises(RuntimeError):
+            select_first_retests(five, fifteen)
+
     def test_simultaneous_confirmation_prefers_more_complete_clock(self) -> None:
         five = {"scenarios": [self._scenario("five", observed_ns=20)]}
         fifteen = {"scenarios": [self._scenario("fifteen", observed_ns=20)]}
