@@ -1,0 +1,24 @@
+name: candidate-12-export-source
+
+on:
+  push:
+    branches: ["research/candidate-12"]
+    paths:
+      - ".github/workflows/candidate-12-export-source.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+      - name: Preserve current candidate source
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-source-${{ github.sha }}
+          path: research/candidate-12
+          if-no-files-found: error
+          retention-days: 1
