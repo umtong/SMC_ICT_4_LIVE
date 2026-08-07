@@ -1,0 +1,329 @@
+name: candidate-07-btc-xrp-frozen-validation
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - ".github/workflows/candidate-07-btc-xrp-frozen-validation.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-07-btc-xrp-frozen-validation
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  frozen-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      FROZEN_SOURCE: 89e03f9314eab9a456c3fe1cb0d08b2a1190dba6
+    steps:
+      - name: Checkout exact frozen candidate source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_SOURCE }}
+
+      - name: Verify exact source and foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          test "$(git rev-parse HEAD)" = "${FROZEN_SOURCE}"
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-frozen-validation-pyc \
+            /opt/smc4/.venv/bin/python -m compileall -q research/candidate-07
+          /opt/smc4/.venv/bin/python -m unittest discover \
+            -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Restore checksum-verified research cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btc-xrp-frozen-validation-v1
+          restore-keys: |
+            candidate-07-btc-xrp-context-identity-v1
+            candidate-07-btc-xrp-multiclock-portfolio-week1-v1
+            candidate-07-cross-symbol-multiclock-week1-v1
+            candidate-07-cross-symbol-15s-
+            candidate-07-multiclock-ensemble-week1-v1
+
+      - name: Replay preregistered Week 2 with one-day context
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/python \
+            research/candidate-07/run_btc_xrp_multiclock_portfolio.py \
+            --config research/candidate-07/config.json \
+            --stage frozen-week-2-context-1d \
+            --start 2025-07-28 \
+            --end 2025-08-04 \
+            --event-warmup-days 1 \
+            --source-commit "${FROZEN_SOURCE}" \
+            --output artifacts/candidate-07/frozen-validation/week-2/one-day \
+            --data-root .research-data/candidate-07
+
+      - name: Replay preregistered Week 2 with three-day context
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/python \
+            research/candidate-07/run_btc_xrp_multiclock_portfolio.py \
+            --config research/candidate-07/config.json \
+            --stage frozen-week-2-context-3d \
+            --start 2025-07-28 \
+            --end 2025-08-04 \
+            --event-warmup-days 3 \
+            --source-commit "${FROZEN_SOURCE}" \
+            --output artifacts/candidate-07/frozen-validation/week-2/three-day \
+            --data-root .research-data/candidate-07
+
+      - name: Require Week 2 context identity and weekly gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          /opt/smc4/.venv/bin/python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('artifacts/candidate-07/frozen-validation/week-2')
+          left = root / 'one-day'
+          right = root / 'three-day'
+          signal_columns = [
+              'scenario_id', 'instrument_id', 'direction',
+              'entry_reference', 'stop_price', 'target_price',
+              'expected_rr', 'source_pool_id',
+              'observed_time_ns', 'delivery_time_ns',
+          ]
+          trade_columns = [
+              'scenario_id', 'instrument_id', 'direction',
+              'opened_ns', 'closed_ns', 'net_pnl', 'net_return_on_nav',
+          ]
+          by_symbol = {}
+          identical = True
+          for symbol in ('BTCUSDT', 'XRPUSDT'):
+              one = pd.read_csv(left / symbol / 'signals.csv')[signal_columns]
+              three = pd.read_csv(right / symbol / 'signals.csv')[signal_columns]
+              same = (
+                  one.to_dict(orient='records')
+                  == three.to_dict(orient='records')
+              )
+              identical = identical and same
+              one_ids = {str(value) for value in one['scenario_id'].tolist()}
+              three_ids = {str(value) for value in three['scenario_id'].tolist()}
+              by_symbol[symbol] = {
+                  'identical': same,
+                  'one_day_signals': len(one.index),
+                  'three_day_signals': len(three.index),
+                  'only_one_day': sorted(one_ids - three_ids),
+                  'only_three_day': sorted(three_ids - one_ids),
+              }
+
+          one_trades = pd.read_csv(left / 'trades.csv')[trade_columns]
+          three_trades = pd.read_csv(right / 'trades.csv')[trade_columns]
+          trade_identity = (
+              one_trades.to_dict(orient='records')
+              == three_trades.to_dict(orient='records')
+          )
+          identical = identical and trade_identity
+          summary = json.loads((right / 'summary.json').read_text())
+          gate_passed = bool(summary['weekly_gate']['passed'])
+          payload = {
+              'frozen_source': '89e03f9314eab9a456c3fe1cb0d08b2a1190dba6',
+              'period': {
+                  'start': '2025-07-28',
+                  'end_exclusive': '2025-08-04',
+              },
+              'by_symbol': by_symbol,
+              'trade_identity': trade_identity,
+              'context_identity': identical,
+              'weekly_gate_passed': gate_passed,
+              'authoritative_summary': summary,
+              'interpretation': (
+                  'FROZEN_WEEK_2_PASSED'
+                  if identical and gate_passed
+                  else (
+                      'WEEK_2_CONTEXT_IDENTITY_FAILED'
+                      if not identical
+                      else 'WEEK_2_PERFORMANCE_GATE_FAILED'
+                  )
+              ),
+          }
+          (root / 'validation.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True),
+              encoding='utf-8',
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          if not identical:
+              raise SystemExit('FROZEN_WEEK_2_CONTEXT_IDENTITY_FAILED')
+          if not gate_passed:
+              raise SystemExit('FROZEN_WEEK_2_GATE_FAILED')
+          PY
+
+      - name: Replay preregistered Week 3 with one-day context
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/python \
+            research/candidate-07/run_btc_xrp_multiclock_portfolio.py \
+            --config research/candidate-07/config.json \
+            --stage frozen-week-3-context-1d \
+            --start 2025-02-17 \
+            --end 2025-02-24 \
+            --event-warmup-days 1 \
+            --source-commit "${FROZEN_SOURCE}" \
+            --output artifacts/candidate-07/frozen-validation/week-3/one-day \
+            --data-root .research-data/candidate-07
+
+      - name: Replay preregistered Week 3 with three-day context
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/python \
+            research/candidate-07/run_btc_xrp_multiclock_portfolio.py \
+            --config research/candidate-07/config.json \
+            --stage frozen-week-3-context-3d \
+            --start 2025-02-17 \
+            --end 2025-02-24 \
+            --event-warmup-days 3 \
+            --source-commit "${FROZEN_SOURCE}" \
+            --output artifacts/candidate-07/frozen-validation/week-3/three-day \
+            --data-root .research-data/candidate-07
+
+      - name: Require Week 3 context identity and weekly gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          /opt/smc4/.venv/bin/python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('artifacts/candidate-07/frozen-validation/week-3')
+          left = root / 'one-day'
+          right = root / 'three-day'
+          signal_columns = [
+              'scenario_id', 'instrument_id', 'direction',
+              'entry_reference', 'stop_price', 'target_price',
+              'expected_rr', 'source_pool_id',
+              'observed_time_ns', 'delivery_time_ns',
+          ]
+          trade_columns = [
+              'scenario_id', 'instrument_id', 'direction',
+              'opened_ns', 'closed_ns', 'net_pnl', 'net_return_on_nav',
+          ]
+          by_symbol = {}
+          identical = True
+          for symbol in ('BTCUSDT', 'XRPUSDT'):
+              one = pd.read_csv(left / symbol / 'signals.csv')[signal_columns]
+              three = pd.read_csv(right / symbol / 'signals.csv')[signal_columns]
+              same = (
+                  one.to_dict(orient='records')
+                  == three.to_dict(orient='records')
+              )
+              identical = identical and same
+              one_ids = {str(value) for value in one['scenario_id'].tolist()}
+              three_ids = {str(value) for value in three['scenario_id'].tolist()}
+              by_symbol[symbol] = {
+                  'identical': same,
+                  'one_day_signals': len(one.index),
+                  'three_day_signals': len(three.index),
+                  'only_one_day': sorted(one_ids - three_ids),
+                  'only_three_day': sorted(three_ids - one_ids),
+              }
+
+          one_trades = pd.read_csv(left / 'trades.csv')[trade_columns]
+          three_trades = pd.read_csv(right / 'trades.csv')[trade_columns]
+          trade_identity = (
+              one_trades.to_dict(orient='records')
+              == three_trades.to_dict(orient='records')
+          )
+          identical = identical and trade_identity
+          summary = json.loads((right / 'summary.json').read_text())
+          gate_passed = bool(summary['weekly_gate']['passed'])
+          payload = {
+              'frozen_source': '89e03f9314eab9a456c3fe1cb0d08b2a1190dba6',
+              'period': {
+                  'start': '2025-02-17',
+                  'end_exclusive': '2025-02-24',
+              },
+              'by_symbol': by_symbol,
+              'trade_identity': trade_identity,
+              'context_identity': identical,
+              'weekly_gate_passed': gate_passed,
+              'authoritative_summary': summary,
+              'interpretation': (
+                  'FROZEN_WEEK_3_PASSED'
+                  if identical and gate_passed
+                  else (
+                      'WEEK_3_CONTEXT_IDENTITY_FAILED'
+                      if not identical
+                      else 'WEEK_3_PERFORMANCE_GATE_FAILED'
+                  )
+              ),
+          }
+          (root / 'validation.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True),
+              encoding='utf-8',
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          if not identical:
+              raise SystemExit('FROZEN_WEEK_3_CONTEXT_IDENTITY_FAILED')
+          if not gate_passed:
+              raise SystemExit('FROZEN_WEEK_3_GATE_FAILED')
+          PY
+
+      - name: Write immutable validation summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          /opt/smc4/.venv/bin/python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('artifacts/candidate-07/frozen-validation')
+          week_2 = json.loads((root / 'week-2' / 'validation.json').read_text())
+          week_3 = json.loads((root / 'week-3' / 'validation.json').read_text())
+          payload = {
+              'candidate': 'candidate-07',
+              'family': 'BTC_XRP_multiclock_first_retest_portfolio',
+              'frozen_source': '89e03f9314eab9a456c3fe1cb0d08b2a1190dba6',
+              'selection_contract': (
+                  'SHA-256 preregistered dates in FROZEN_VALIDATION_WEEKS.md'
+              ),
+              'week_2': week_2,
+              'week_3': week_3,
+              'eligible_for_continuous_evaluation': bool(
+                  week_2['context_identity']
+                  and week_2['weekly_gate_passed']
+                  and week_3['context_identity']
+                  and week_3['weekly_gate_passed']
+              ),
+          }
+          (root / 'summary.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True),
+              encoding='utf-8',
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Preserve complete frozen-validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-btc-xrp-frozen-validation-${{ env.FROZEN_SOURCE }}
+          path: artifacts/candidate-07/frozen-validation
+          retention-days: 14
+          if-no-files-found: error
