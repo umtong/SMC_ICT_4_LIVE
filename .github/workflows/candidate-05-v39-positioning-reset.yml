@@ -1,4 +1,4 @@
-name: candidate-05-v40-unfilled-target-handoff
+name: candidate-05-v41-target-reset-participation
 
 on:
   push:
@@ -10,6 +10,7 @@ on:
       - "research/candidate-05/strategy_v39_positioning_reset.py"
       - "research/candidate-05/strategy.py"
       - "research/candidate-05/strategy_v40_unfilled_target_handoff.py"
+      - "research/candidate-05/strategy_v41_target_reset_participation.py"
       - "research/candidate-05/v40_active/strategy.py"
       - "research/candidate-05/v40_active/candidate.py"
       - "research/candidate-05/candidate.py"
@@ -20,7 +21,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: candidate-05-v40-unfilled-target-handoff
+  group: candidate-05-v41-target-reset-participation
   cancel-in-progress: true
 
 permissions:
@@ -37,7 +38,7 @@ jobs:
     env:
       PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
       PYTHONUNBUFFERED: "1"
-      ROOT: artifacts/candidate-05-v40
+      ROOT: artifacts/candidate-05-v41
     steps:
       - uses: actions/checkout@v4
 
@@ -59,7 +60,7 @@ jobs:
           python research/candidate-05/v40_active/candidate.py pipeline \
             --config research/candidate-05/config.json \
             --weeks research/candidate-05/weeks.json \
-            --cache .cache/candidate-05-v40 \
+            --cache .cache/candidate-05-v41 \
             --output "$ROOT" \
             --max-weeks 3 \
             2>&1 | tee "$ROOT-console.log"
@@ -90,9 +91,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-05-v40-unfilled-target-handoff-${{ github.sha }}
+          name: candidate-05-v41-target-reset-participation-${{ github.sha }}
           path: |
-            artifacts/candidate-05-v40/**
-            artifacts/candidate-05-v40-console.log
+            artifacts/candidate-05-v41/**
+            artifacts/candidate-05-v41-console.log
           if-no-files-found: warn
           retention-days: 90
