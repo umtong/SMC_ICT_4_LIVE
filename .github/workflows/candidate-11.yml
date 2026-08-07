@@ -1,4 +1,4 @@
-name: Candidate 11 SCDAM validation
+name: Candidate 11 market-leadership research
 
 on:
   push:
@@ -17,11 +17,11 @@ on:
   workflow_dispatch:
     inputs:
       week:
-        description: Frozen evaluation week
+        description: Frozen market-leadership evaluation week
         required: true
         default: W1
         type: choice
-        options: [W1, W2, W3]
+        options: [W1, W2, W3, W4, W5, W6]
 
 permissions:
   contents: write
@@ -49,7 +49,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
-      - name: Materialize verified SCDAM source
+      - name: Materialize causal research candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -59,47 +59,37 @@ jobs:
           python research/candidate-11/revert_rejected_episode_horizon.py
           python research/candidate-11/materialize_portfolio.py
           python research/candidate-11/apply_partial_fill_fail_closed.py
-          chmod +x research/candidate-11/ci_validate.sh
-          chmod +x research/candidate-11/run_complex_gated.sh
+          python research/candidate-11/apply_market_leadership.py
+          chmod +x research/candidate-11/run_leadership_gated.sh
           if [ "${{ github.event_name }}" != "pull_request" ] && [ -n "$(git status --porcelain -- research/candidate-11)" ]; then
             git config user.name "candidate-11-bot"
             git config user.email "candidate-11-bot@users.noreply.github.com"
             git add -A research/candidate-11
-            git commit -m "candidate-11: materialize research candidates [skip ci]"
+            git commit -m "candidate-11: materialize market-leadership candidate [skip ci]"
             git push origin HEAD:research/candidate-11
           fi
 
-      - name: Run causal contracts and frozen NautilusTrader interval
+      - name: Run frozen NautilusTrader market-leadership interval
         shell: bash
         env:
           REQUESTED_WEEK: ${{ github.event.inputs.week }}
         run: |
+          set -euo pipefail
           WEEK="$REQUESTED_WEEK"
           if [ -z "$WEEK" ]; then
-            if [ -s research/candidate-11/validation_week.txt ]; then
-              WEEK="$(tr -d '[:space:]' < research/candidate-11/validation_week.txt)"
+            if [ -s research/candidate-11/leadership_validation_week.txt ]; then
+              WEEK="$(tr -d '[:space:]' < research/candidate-11/leadership_validation_week.txt)"
             else
               WEEK=W1
             fi
           fi
-          bash research/candidate-11/ci_validate.sh "$WEEK"
-
-      - name: Run synchronized four-market causal-auction candidate
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -s research/candidate-11/complex_validation_week.txt ]; then
-            COMPLEX_WEEK="$(tr -d '[:space:]' < research/candidate-11/complex_validation_week.txt)"
-          else
-            COMPLEX_WEEK=W1
-          fi
-          bash research/candidate-11/run_complex_gated.sh "$COMPLEX_WEEK"
+          bash research/candidate-11/run_leadership_gated.sh "$WEEK"
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             git config user.name "candidate-11-bot"
             git config user.email "candidate-11-bot@users.noreply.github.com"
-            git add -A "research/candidate-11/results_complex/$COMPLEX_WEEK"
+            git add -A "research/candidate-11/results/LEADERSHIP_$WEEK"
             if ! git diff --cached --quiet; then
-              git commit -m "candidate-11: record synchronized $COMPLEX_WEEK evidence [skip ci]"
+              git commit -m "candidate-11: record leadership $WEEK evidence [skip ci]"
               git push origin HEAD:research/candidate-11
             fi
           fi
@@ -112,23 +102,16 @@ jobs:
         run: |
           WEEK="$REQUESTED_WEEK"
           if [ -z "$WEEK" ]; then
-            if [ -s research/candidate-11/validation_week.txt ]; then
-              WEEK="$(tr -d '[:space:]' < research/candidate-11/validation_week.txt)"
+            if [ -s research/candidate-11/leadership_validation_week.txt ]; then
+              WEEK="$(tr -d '[:space:]' < research/candidate-11/leadership_validation_week.txt)"
             else
               WEEK=W1
             fi
           fi
-          if [ -s research/candidate-11/complex_validation_week.txt ]; then
-            COMPLEX_WEEK="$(tr -d '[:space:]' < research/candidate-11/complex_validation_week.txt)"
-          else
-            COMPLEX_WEEK=W1
-          fi
-          for METRICS in \
-            "research/candidate-11/results/$WEEK/metrics.json" \
-            "research/candidate-11/results/PORTFOLIO_$WEEK/metrics.json" \
-            "research/candidate-11/results_complex/$COMPLEX_WEEK/metrics.json"; do
-            if [ -s "$METRICS" ]; then
-              python - "$METRICS" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          METRICS="research/candidate-11/results/LEADERSHIP_$WEEK/metrics.json"
+          AUDIT="research/candidate-11/results/LEADERSHIP_$WEEK/audit.json"
+          if [ -s "$METRICS" ]; then
+            python - "$METRICS" >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -137,19 +120,16 @@ jobs:
           for key in (
               "week_id", "daily_geometric_growth", "closed_trades", "win_rate",
               "payoff_ratio", "closed_trade_max_drawdown", "submitted_plans",
-              "scenario_counts", "symbol_counts", "global_slot_overlap_count",
-              "partial_entry_fail_closed_count", "liquidation_detected",
-              "promising_gate_passed", "complete_gate_passed", "success_claim",
+              "scenario_counts", "symbol_counts", "leadership_rejection_counts",
+              "global_slot_overlap_count", "partial_entry_fail_closed_count",
+              "liquidation_detected", "promising_gate_passed",
+              "complete_gate_passed", "success_claim",
           ):
               print(f"- **{key}**: `{metrics.get(key)}`")
           PY
-            fi
-          done
-          for AUDIT in \
-            "research/candidate-11/results/PORTFOLIO_$WEEK/evidence_audit.json" \
-            "research/candidate-11/results_complex/$COMPLEX_WEEK/audit.json"; do
-            if [ -s "$AUDIT" ]; then
-              python - "$AUDIT" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          fi
+          if [ -s "$AUDIT" ]; then
+            python - "$AUDIT" >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -162,8 +142,7 @@ jobs:
           ):
               print(f"- **{key}**: `{audit.get(key)}`")
           PY
-            fi
-          done
+          fi
 
       - name: Upload full evidence and tested source
         if: always()
@@ -171,8 +150,7 @@ jobs:
         with:
           name: candidate-11-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            research/candidate-11/results/
-            research/candidate-11/results_complex/
+            research/candidate-11/results/LEADERSHIP_*/
             research/candidate-11/*.py
             research/candidate-11/*.json
             research/candidate-11/*.md
