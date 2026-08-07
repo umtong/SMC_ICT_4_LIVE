@@ -5,8 +5,7 @@ on:
     branches: [research/candidate-09]
     paths:
       - .github/workflows/candidate-09-v10-long-check.yml
-      - research/candidate-09/long_checks/v10_bundle.b64
-      - research/candidate-09/long_checks/v10_bundle.sha256
+      - research/candidate-09/long_checks/v10_bundle_parts/**
 
 permissions:
   contents: write
@@ -46,10 +45,19 @@ jobs:
         run: |
           set -euo pipefail
           root=research/candidate-09/long_checks/v10
+          parts=research/candidate-09/long_checks/v10_bundle_parts
           rm -rf "$root"
           mkdir -p "$root"
-          base64 -d research/candidate-09/long_checks/v10_bundle.b64 > /tmp/candidate-09-v10-longcheck.tar.gz
-          expected=$(awk 'NR==1 {print $1}' research/candidate-09/long_checks/v10_bundle.sha256)
+          while read -r part digest bytes git_blob; do
+            [[ "$part" == part* ]] || continue
+            test "$(wc -c < "$parts/$part")" -eq "$bytes"
+            echo "$digest  $parts/$part" | sha256sum -c -
+            test "$(git hash-object "$parts/$part")" = "$git_blob"
+          done < "$parts/SHA256"
+          cat "$parts"/part* | base64 -d > /tmp/candidate-09-v10-longcheck.tar.gz
+          expected=$(awk '$1=="archive" {print $2}' "$parts/SHA256")
+          expected_bytes=$(awk '$1=="archive" {print $3}' "$parts/SHA256")
+          test "$(wc -c < /tmp/candidate-09-v10-longcheck.tar.gz)" -eq "$expected_bytes"
           echo "$expected  /tmp/candidate-09-v10-longcheck.tar.gz" | sha256sum -c -
           tar -xzf /tmp/candidate-09-v10-longcheck.tar.gz -C "$root"
 
@@ -74,8 +82,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: candidate-09-v10-long-${{ github.run_id }}
-          path: |
-            research/candidate-09/long_checks/v10
+          path: research/candidate-09/long_checks/v10
           if-no-files-found: error
           retention-days: 30
 
