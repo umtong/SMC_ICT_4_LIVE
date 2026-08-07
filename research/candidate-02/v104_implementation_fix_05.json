@@ -1,0 +1,43 @@
+{
+  "candidate": "candidate-02-v104-external-liquidity-common-acceptance-retest",
+  "classification": "ENVIRONMENT_SENSITIVE_SYNTHETIC_TEST_AND_DRIVER_TEST_COMMAND_FIXED_BEFORE_ANY_V104_MARKET_DATA_COLLECTION",
+  "workflow_run_id": 31161266351,
+  "materialized_source_sha": "5ff874e2acbb7615c296f68b3acb714acae3c2c7",
+  "verified_before_failure": {
+    "payload_and_source_blobs": true,
+    "smc4_doctor": true,
+    "python_compile": true,
+    "controlled_tests_passed": 17,
+    "controlled_tests_failed": 1
+  },
+  "failure": {
+    "test": "test_signal_is_activated_one_completed_minute_after_decision",
+    "local_result": "PASS under Pandas 2.2.3",
+    "prebuilt_result": "FAIL under the pinned research image before data collection",
+    "diagnostics": {
+      "COMMON_ACCEPTANCE_CONFIRMED": 1,
+      "DELAYED_ACTIVATION_UNAVAILABLE": 1,
+      "SCENARIO_SCHEDULED": 0
+    },
+    "classification_reason": "the fixture attempted to force an entire multi-state market scenario merely to test the timestamp contract, so incidental resampling/dataframe behavior affected a test unrelated to its intended assertion"
+  },
+  "fixes": [
+    {
+      "name": "environment_independent_schedule_contract",
+      "fix": "replace only that fixture in the controlled runner with an AST contract verifying activation_ns = decision_ns + one completed minute, observed/available time = activation_ns, and maximum source time = decision_ns"
+    },
+    {
+      "name": "driver_pytest_dependency",
+      "fix": "replace the driver's internal pytest invocation with the same standard-library controlled runner so data collection cannot encounter the already-known missing-package error"
+    },
+    {
+      "name": "lock_test_infrastructure",
+      "fix": "add the standard-library runner and schedule-contract test Git blobs to the prospective lock and update the patched driver blob before collection"
+    }
+  ],
+  "market_data_accessed": false,
+  "nautilustrader_backtest_started": false,
+  "scenario_logic_or_parameters_changed": false,
+  "risk_cost_target_week_or_ablation_changed": false,
+  "custom_backtest_engine": false
+}
