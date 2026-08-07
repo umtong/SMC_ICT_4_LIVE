@@ -28,22 +28,69 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Checkout exact branch
-        uses: actions/checkout@v4
-        with:
-          ref: research/candidate-03
-          fetch-depth: 1
-          persist-credentials: true
+      - name: Fetch branch tarball without checkout or git
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf repo source.tar.gz
+          python - <<'PY'
+          import io
+          import os
+          import shutil
+          import tarfile
+          import urllib.request
+          from pathlib import Path
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GITHUB_TOKEN']
+          request = urllib.request.Request(
+              f'https://api.github.com/repos/{repository}/tarball/research/candidate-03',
+              headers={
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'User-Agent': 'candidate-03-v17-staged-container',
+              },
+          )
+          with urllib.request.urlopen(request, timeout=120) as response:
+              payload = response.read()
+          with tarfile.open(fileobj=io.BytesIO(payload), mode='r:gz') as archive:
+              members = archive.getmembers()
+              roots = {Path(member.name).parts[0] for member in members if Path(member.name).parts}
+              if len(roots) != 1:
+                  raise RuntimeError(f'unexpected archive roots: {roots}')
+              root = next(iter(roots))
+              for member in members:
+                  target = Path(member.name)
+                  if target.is_absolute() or '..' in target.parts:
+                      raise RuntimeError(f'unsafe archive member: {member.name}')
+              archive.extractall('.')
+          shutil.move(root, 'repo')
+          PY
 
       - name: Verify frozen V17 source and pinned runtime
         shell: bash
         run: |
           set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          test "$(git hash-object research/candidate-03/derive_nt_lvcfr_v17_signals.py)" = "fcc05dd19bbfc621226250743979d341a7194bf7"
-          test "$(git hash-object research/candidate-03/nt_lvcfr_v17_config.json)" = "64c7ef99cc076582ffff59c961208bc09d22cae7"
-          test "$(git hash-object research/candidate-03/nt_lvcfr_strategy.py)" = "e4d00ae0c6fa1d24198c846bccb247baacdc0456"
-          test "$(git hash-object research/candidate-03/run_nt_lvcfr.py)" = "74bb02f1b69ee31ce32ddfa47497bdd9770ac00b"
+          cd repo
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          expected = {
+              'research/candidate-03/derive_nt_lvcfr_v17_signals.py': 'fcc05dd19bbfc621226250743979d341a7194bf7',
+              'research/candidate-03/nt_lvcfr_v17_config.json': '64c7ef99cc076582ffff59c961208bc09d22cae7',
+              'research/candidate-03/nt_lvcfr_strategy.py': 'e4d00ae0c6fa1d24198c846bccb247baacdc0456',
+              'research/candidate-03/run_nt_lvcfr.py': '74bb02f1b69ee31ce32ddfa47497bdd9770ac00b',
+          }
+          for path, expected_sha in expected.items():
+              payload = Path(path).read_bytes()
+              actual = hashlib.sha1(f'blob {len(payload)}\0'.encode() + payload).hexdigest()
+              if actual != expected_sha:
+                  raise SystemExit(f'frozen source mismatch: {path}: {actual} != {expected_sha}')
+          PY
           smc4 doctor
           export PYTHONDONTWRITEBYTECODE=1
           export PYTHONPATH="$PWD/src:$PWD/research/candidate-03"
@@ -58,6 +105,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cd repo
           export PYTHONPATH="$PWD/src:$PWD/research/candidate-03"
 
           run_week() {
@@ -131,12 +179,13 @@ jobs:
           echo "next_stage=$next_stage" >> "$GITHUB_OUTPUT"
           echo "final_status=$final_status" >> "$GITHUB_OUTPUT"
 
-      - name: Commit native evidence before enforcing gate
+      - name: Commit native evidence through Git Data API
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          cd repo
           copy_result() {
             local src="$1"
             local dst="$2"
@@ -156,11 +205,18 @@ jobs:
           copy_result artifacts/candidate-03/v17-staged/expansion-ablation-development-2/output \
             research/candidate-03/results/v17-expansion-ablation-development-2
           python - <<'PY'
+          import base64
           import json
+          import os
+          import urllib.request
           from pathlib import Path
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GITHUB_TOKEN']
+          branch = 'research/candidate-03'
           root = Path('research/candidate-03/results')
           week2 = json.loads((root / 'v17-development-2/gate.json').read_text())
-          payload = {
+          status = {
               'candidate': 'candidate-03-nt-lvcfr-v17-dual-inventory-auction',
               'week2_passed': bool(week2['passed']),
               'next_stage': '${{ steps.staged.outputs.next_stage }}',
@@ -172,17 +228,59 @@ jobs:
               },
           }
           if (root / 'v17-validation-3/gate.json').exists():
-              payload['week3_passed'] = bool(json.loads((root / 'v17-validation-3/gate.json').read_text())['passed'])
+              status['week3_passed'] = bool(json.loads((root / 'v17-validation-3/gate.json').read_text())['passed'])
           if (root / 'v17-expansion-ablation-development-2/gate.json').exists():
-              payload['expansion_ablation_passed'] = bool(json.loads((root / 'v17-expansion-ablation-development-2/gate.json').read_text())['passed'])
-          (root / 'V17_STAGED_STATUS.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+              status['expansion_ablation_passed'] = bool(json.loads((root / 'v17-expansion-ablation-development-2/gate.json').read_text())['passed'])
+          (root / 'V17_STAGED_STATUS.json').write_text(json.dumps(status, indent=2, sort_keys=True) + '\n')
+
+          def api(method, path, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              request = urllib.request.Request(
+                  f'https://api.github.com/repos/{repository}{path}',
+                  data=data,
+                  method=method,
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'User-Agent': 'candidate-03-v17-staged-container',
+                      'Content-Type': 'application/json',
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=120) as response:
+                  return json.loads(response.read().decode())
+
+          ref = api('GET', f'/git/ref/heads/{branch}')
+          parent = ref['object']['sha']
+          commit = api('GET', f'/git/commits/{parent}')
+          entries = []
+          for path in sorted(item for item in root.rglob('*') if item.is_file()):
+              payload = path.read_bytes()
+              blob = api('POST', '/git/blobs', {
+                  'content': base64.b64encode(payload).decode(),
+                  'encoding': 'base64',
+              })
+              entries.append({
+                  'path': path.as_posix(),
+                  'mode': '100644',
+                  'type': 'blob',
+                  'sha': blob['sha'],
+              })
+          tree = api('POST', '/git/trees', {
+              'base_tree': commit['tree']['sha'],
+              'tree': entries,
+          })
+          new_commit = api('POST', '/git/commits', {
+              'message': 'candidate-03: record staged V17 native evidence',
+              'tree': tree['sha'],
+              'parents': [parent],
+          })
+          api('PATCH', f'/git/refs/heads/{branch}', {
+              'sha': new_commit['sha'],
+              'force': False,
+          })
+          print(json.dumps({'committed_sha': new_commit['sha'], **status}, indent=2, sort_keys=True))
           PY
-          git config user.name "candidate-03 research bot"
-          git config user.email "candidate-03@users.noreply.github.com"
-          git add research/candidate-03/results
-          git commit -m "candidate-03: record staged V17 native evidence"
-          git pull --rebase origin research/candidate-03
-          git push origin HEAD:research/candidate-03
 
       - name: Enforce staged gate after evidence commit
         shell: bash
