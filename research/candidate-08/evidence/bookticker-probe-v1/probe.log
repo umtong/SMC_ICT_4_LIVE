@@ -6,18 +6,30 @@ test_headerless_archive_uses_documented_canonical_order (__main__.BookTickerData
 test_noncanonical_header_order_persists_across_multiple_chunks (__main__.BookTickerDataContractTests.test_noncanonical_header_order_persists_across_multiple_chunks) ... ok
 test_probe_source_contains_no_strategy_or_backtest (__main__.BookTickerDataContractTests.test_probe_source_contains_no_strategy_or_backtest) ... ok
 test_source_path_and_revision_are_predeclared (__main__.BookTickerDataContractTests.test_source_path_and_revision_are_predeclared) ... ok
-test_weighted_quantiles_are_exact_for_discrete_spreads (__main__.BookTickerDataContractTests.test_weighted_quantiles_are_exact_for_discrete_spreads) ... FAIL
+test_weighted_quantiles_use_conservative_higher_observation (__main__.BookTickerDataContractTests.test_weighted_quantiles_use_conservative_higher_observation) ... ok
 
-======================================================================
-FAIL: test_weighted_quantiles_are_exact_for_discrete_spreads (__main__.BookTickerDataContractTests.test_weighted_quantiles_are_exact_for_discrete_spreads)
 ----------------------------------------------------------------------
+Ran 6 tests in 0.033s
+
+OK
 Traceback (most recent call last):
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_bookticker_data_probe_v2.py", line 94, in test_weighted_quantiles_are_exact_for_discrete_spreads
-    self.assertEqual(base._weighted_quantile(counts, 0.50), 0.1)
-    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: 0.2 != 0.1
-
-----------------------------------------------------------------------
-Ran 6 tests in 0.032s
-
-FAILED (failures=1)
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/bookticker_data_probe_v2.py", line 109, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/bookticker_data_probe_v2.py", line 97, in main
+    result = probe_bookticker(
+        symbol=args.symbol,
+        day=args.day,
+        cache_dir=args.cache.resolve(),
+    )
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/bookticker_data_probe_v2.py", line 80, in probe_bookticker
+    result = base.probe_bookticker(symbol=symbol, day=day, cache_dir=cache_dir)
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/bookticker_data_probe.py", line 187, in probe_bookticker
+    path, url, checksum_url = _verified_archive(cache_dir, symbol, day)
+                              ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/bookticker_data_probe.py", line 85, in _verified_archive
+    checksum_text = _download(checksum_url, timeout=180).decode("utf-8").strip()
+                    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/data.py", line 83, in _download
+    raise BinanceDataError(f"download failed after {retries} attempts: {url}: {error}")
+data.BinanceDataError: download failed after 4 attempts: https://data.binance.vision/data/futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-04-08.zip.CHECKSUM: HTTP Error 404: Not Found
