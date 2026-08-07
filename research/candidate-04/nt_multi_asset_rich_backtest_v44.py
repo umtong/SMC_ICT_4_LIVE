@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Four-instrument execution with repaired fill risk and evaluation bounds.
+"""Four-instrument execution with repaired fill risk and execution config.
 
 The V3 runner owns the one-account global coordinator, exact trusted
 NautilusTrader venue configuration and risk-evidence reconciliation. This
-wrapper changes only two implementation contracts already used by the trusted
-single-instrument runner:
+wrapper changes only implementation contracts already established by the
+trusted single-instrument runner:
 
 1. bracket sizing uses the conditional mean of completed adverse entry-delay
    transitions established by the V45c repair;
 2. every imported strategy receives the declared evaluation start/end
-   nanoseconds required by ``LiquidityTransitionConfig``.
+   nanoseconds required by ``LiquidityTransitionConfig``;
+3. the obsolete explicit strategy-id injection is removed so NautilusTrader
+   creates its normal internal strategy identifiers.
 
 No market-state, entry, target, stop, fee or execution-model logic is changed.
 """
@@ -20,6 +22,8 @@ import sys
 from typing import Any
 
 import pandas as pd
+
+from nautilus_trader.config import ImportableStrategyConfig
 
 import nt_multi_asset_rich_backtest as runner
 import nt_multi_asset_rich_backtest_v3 as base
@@ -65,24 +69,39 @@ def evaluation_bounds_ns(argv: list[str] | None = None) -> tuple[int, int]:
     return int(start_ts.value), int(end_ts.value)
 
 
+def normalized_strategy_config(
+    imported: ImportableStrategyConfig,
+) -> ImportableStrategyConfig:
+    """Remove only the invalid explicit strategy-id field."""
+
+    values = dict(imported.config)
+    values.pop("strategy_id", None)
+    return ImportableStrategyConfig(
+        strategy_path=imported.strategy_path,
+        config_path=imported.config_path,
+        config=values,
+    )
+
+
 def _strategy_config_with_evaluation_bounds(
     symbol: str,
     config: dict[str, Any],
     signals_root: Any,
     strategy_root: Any,
     coordinator_key: str,
-):
+) -> ImportableStrategyConfig:
     start_ns, end_ns = evaluation_bounds_ns()
     values = dict(config)
     values["evaluation_start_ns"] = start_ns
     values["evaluation_end_ns"] = end_ns
-    return _ORIGINAL_STRATEGY_CONFIG(
+    imported = _ORIGINAL_STRATEGY_CONFIG(
         symbol,
         values,
         signals_root,
         strategy_root,
         coordinator_key,
     )
+    return normalized_strategy_config(imported)
 
 
 runner.strategy_config = _strategy_config_with_evaluation_bounds
