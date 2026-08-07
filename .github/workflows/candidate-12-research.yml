@@ -1,120 +1,41 @@
-name: candidate-12-research
+name: candidate-12-materialize-session-auction
 
 on:
   push:
     branches: ["research/candidate-12"]
     paths:
-      - "research/candidate-12/**"
+      - "research/candidate-12/update-v3.part*"
       - ".github/workflows/candidate-12-research.yml"
-  workflow_dispatch:
-    inputs:
-      symbol:
-        description: Instrument
-        required: true
-        default: BTCUSDT
-        type: choice
-        options: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
-      week:
-        description: Frozen evaluation week
-        required: true
-        default: W1
-        type: choice
-        options: [W1, W2, W3, W4, W5, W6]
 
 permissions:
   contents: write
 
-concurrency:
-  group: candidate-12-${{ github.ref }}-${{ inputs.symbol || 'BTCUSDT' }}-${{ github.sha }}
-  cancel-in-progress: false
-
 jobs:
   materialize:
     runs-on: ubuntu-24.04
-    outputs:
-      committed: ${{ steps.apply.outputs.committed }}
     steps:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
 
-      - name: Apply reviewed candidate update atomically
-        id: apply
+      - name: Apply reviewed W1-only candidate atomically
         shell: bash
         run: |
           set -euo pipefail
-          UPDATE=research/candidate-12/update-v2.tar.gz
-          if [[ -f "$UPDATE" ]]; then
-            echo "6148e2187a0d742aa10da8e47b23828bcf06f486e0b017979a39e4286b72050e  $UPDATE" | sha256sum -c -
-            tar -xzf "$UPDATE" -C research/candidate-12
-            rm "$UPDATE"
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add research/candidate-12
-            git commit -m "candidate-12: enforce first-touch liquidity lifecycle"
-            git push origin HEAD:research/candidate-12
-            echo "committed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "committed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  research:
-    needs: materialize
-    if: needs.materialize.outputs.committed == 'false'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    container:
-      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-      options: --user root
-    strategy:
-      fail-fast: false
-      matrix:
-        week: [W1, W2, W3]
-    env:
-      SYMBOL: ${{ inputs.symbol || 'BTCUSDT' }}
-      WEEK: ${{ matrix.week }}
-      OUTPUT: artifacts/candidate-12/${{ inputs.symbol || 'BTCUSDT' }}-${{ matrix.week }}
-    steps:
-      - name: Checkout candidate branch
-        uses: actions/checkout@v4
-
-      - name: Verify prebuilt environment
-        run: smc4 doctor
-
-      - name: Compile candidate
-        run: python -m compileall -q research/candidate-12
-
-      - name: Candidate unit tests
-        run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
-
-      - name: Run frozen NautilusTrader evaluation
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$OUTPUT"
-          python research/candidate-12/run.py \
-            --symbol "$SYMBOL" \
-            --week "$WEEK" \
-            --output "$OUTPUT" | tee "$OUTPUT.console.json"
-
-      - name: Surface decision evidence
-        if: always()
-        shell: bash
-        run: |
-          if [[ -f "$OUTPUT/metrics.json" ]]; then
-            echo '=== CANDIDATE_12_METRICS_BEGIN ==='
-            cat "$OUTPUT/metrics.json"
-            echo '=== CANDIDATE_12_METRICS_END ==='
-          fi
-          if [[ -f "$OUTPUT/run.json" ]]; then
-            echo '=== CANDIDATE_12_RUN_BEGIN ==='
-            cat "$OUTPUT/run.json"
-            echo '=== CANDIDATE_12_RUN_END ==='
-          fi
-
-      - name: Preserve reproducible evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: candidate-12-${{ env.SYMBOL }}-${{ env.WEEK }}-${{ github.sha }}
-          path: ${{ env.OUTPUT }}
-          if-no-files-found: warn
+          ROOT=research/candidate-12
+          cat "$ROOT/update-v3.part00" "$ROOT/update-v3.part01" \
+              "$ROOT/update-v3.part02" "$ROOT/update-v3.part03" \
+            | base64 -d > /tmp/candidate-12-update-v3.tar.gz
+          echo "9fe8448c08c0325bd9b0507c98357625b4103bca70b40421391153f2bf554b15  /tmp/candidate-12-update-v3.tar.gz" | sha256sum -c -
+          rm -f \
+            "$ROOT/.upload-test" \
+            "$ROOT/confirmation.py" \
+            "$ROOT/ledger.py" \
+            "$ROOT/model.py" \
+            "$ROOT/probe.py"
+          tar -xzf /tmp/candidate-12-update-v3.tar.gz -C .
+          rm -f "$ROOT"/update-v3.part*
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A .github/workflows/candidate-12-research.yml research/candidate-12
+          git commit -m "candidate-12: replace CLAR with W1-only session auction"
+          git push origin HEAD:research/candidate-12
