@@ -29,9 +29,9 @@ path.write_text(json.dumps({
 PY
   exit 0
 fi
-# Independent C1, with exact 3% risk converted only at the RiskSizer API type
-# boundary; the economic fraction, quantity formula and progression gates remain
-# unchanged.
+# C1 now enters on the first passive retest of the follower's confirmed local
+# structure break. Exact 3% risk, structural invalidation and post-cost R remain
+# unchanged; no arbitrary upper stop-width cap duplicates those controls.
 python "$CAND/apply_cross_market_runtime_fixes.py"
 python "$CAND/materialize_cross_market_gated_v2.py"
 chmod +x "$CAND/run_cross_market_generated_v2.sh"
