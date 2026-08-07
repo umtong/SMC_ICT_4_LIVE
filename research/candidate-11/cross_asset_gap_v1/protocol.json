@@ -1,0 +1,60 @@
+{
+  "schema": "candidate-11-cross-asset-gap-diagnostic-protocol-v1",
+  "candidate": "candidate-11-second-scale-peer-implied-fair-value-gap",
+  "created_utc": "2026-08-08",
+  "validation_mode": "mechanism-diagnostic",
+  "success_claim": false,
+  "account_return_claim": false,
+  "research_question": "After a five-second peer-majority displacement with aligned taker flow, does a causally estimated lagging market retain a costed beta-implied fair-value gap at the next one-second executable price?",
+  "hypothesis": {
+    "economic_cause": "Information is incorporated asynchronously across related perpetual markets. A majority peer displacement can establish a temporary equilibrium change before the lagging market has fully repriced.",
+    "causal_sequence": "Prior one-hour beta and correlation -> completed five-second peer displacement -> aligned peer taker flow -> follower underreaction -> frozen peer-implied target -> next-second executable entry -> local two-bar micro-pivot invalidation.",
+    "market_structure_mapping": "Cross-market displacement creates an intermarket fair-value gap. The target is the peer-implied equilibrium frozen at confirmation, not a fitted fixed reward multiple.",
+    "cost_and_ordering": "Next-second open plus two adverse ticks, taker entry, maker target, taker stop, two additional adverse stop ticks, stop-first ordering if target and stop occur in the same second.",
+    "forbidden_changes": "No threshold grid, no future beta, no same-bar entry, no target extension, no follower-confirmation delay, no account-performance claim from this diagnostic."
+  },
+  "locked_source": {
+    "diagnostic_blob": "dc9317e405a415c65f79d8d0c5769f40d6fefe40"
+  },
+  "dataset": {
+    "source": "Binance public USD-M daily one-second klines",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "visibility": "open_time plus one second",
+    "warmup_days": 1
+  },
+  "weeks": {
+    "G1": {"start": "2023-03-06", "end_exclusive": "2023-03-13", "role": "opened-mechanism-diagnostic"},
+    "G2": {"start": "2023-09-08", "end_exclusive": "2023-09-15", "role": "opened-mechanism-diagnostic"},
+    "G3": {"start": "2024-04-14", "end_exclusive": "2024-04-21", "role": "opened-mechanism-diagnostic"}
+  },
+  "frozen_detector": {
+    "bar_seconds": 5,
+    "rolling_bars": 720,
+    "minimum_history": 360,
+    "peer_factor_z": 3.0,
+    "peer_return_z": 1.0,
+    "minimum_aligned_peer_returns": 2,
+    "minimum_aligned_peer_flows": 2,
+    "minimum_beta": 0.15,
+    "maximum_beta": 2.5,
+    "minimum_correlation": 0.25,
+    "minimum_costed_net_r": 1.25,
+    "entry_taker_rate": 0.0008,
+    "target_maker_rate": 0.0004,
+    "stop_taker_rate": 0.0008,
+    "adverse_ticks": 2,
+    "maximum_horizon_seconds": 60
+  },
+  "advance_gate": {
+    "minimum_total_events": 30,
+    "minimum_events_per_week": 5,
+    "minimum_pooled_target_first_rate": 0.6,
+    "minimum_pooled_mean_realized_r_diagnostic": 0.2,
+    "minimum_positive_mean_weeks": 2,
+    "require_all_three_data_manifests": true
+  },
+  "decision_rule": {
+    "pass": "Implement the unchanged detector in NautilusTrader, freeze fresh non-overlapping weeks before data, and enforce the project account/risk/execution contracts.",
+    "fail": "Reject the second-scale cross-asset gap mechanism. Do not tune G1-G3 thresholds or horizons."
+  }
+}
