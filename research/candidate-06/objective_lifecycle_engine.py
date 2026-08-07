@@ -121,11 +121,29 @@ class UnresolvedObjectiveLifecycleEngine(HierarchicalMultiLiquidityEngine):
         bias: _Bias,
     ) -> list[_LiquidityPool]:
         side = "UPPER" if bias.direction == "LONG" else "LOWER"
+        timing_mode = str(
+            self.params.get(
+                "uoam_objective_timing_mode",
+                "CONFIRMED_BEFORE_ACCEPTANCE",
+            ),
+        ).upper()
+        if timing_mode == "CONFIRMED_BEFORE_ACCEPTANCE":
+            def timing_ok(pool: _LiquidityPool) -> bool:
+                return pool.confirmed_ts_ns < bar.start_ts_ns
+        elif timing_mode == "SOURCE_BEFORE_CONFIRM_BY_ACCEPTANCE_END":
+            def timing_ok(pool: _LiquidityPool) -> bool:
+                return (
+                    pool.source_ts_ns < bar.start_ts_ns
+                    and pool.confirmed_ts_ns <= bar.end_ts_ns
+                )
+        else:
+            raise ValueError(f"unsupported uoam_objective_timing_mode: {timing_mode}")
+
         pools = [
             pool
             for pool in self._liquidity_pools
             if pool.side == side
-            and pool.confirmed_ts_ns < bar.start_ts_ns
+            and timing_ok(pool)
             and (
                 (pool.level > bar.high)
                 if bias.direction == "LONG"
