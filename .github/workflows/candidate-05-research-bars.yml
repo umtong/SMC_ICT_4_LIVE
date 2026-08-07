@@ -30,8 +30,10 @@ jobs:
           from datetime import date, timedelta
           from pathlib import Path
           import pandas as pd
-          from features import download_checked, read_kline
+          import features
+          from timestamp_contract import install as install_timestamp_contract
 
+          install_timestamp_contract()
           root = Path("artifacts/candidate-05-research-bars")
           cache = Path(".cache/candidate-05-research-bars")
           root.mkdir(parents=True, exist_ok=True)
@@ -45,8 +47,8 @@ jobs:
               frames = []
               day = start
               while day <= end:
-                  archive, _, _ = download_checked("klines", "BTCUSDT", day, cache / name)
-                  frames.append(read_kline(archive))
+                  archive, _, _ = features.download_checked("klines", "BTCUSDT", day, cache / name)
+                  frames.append(features.read_kline(archive))
                   day += timedelta(days=1)
               frame = pd.concat(frames, ignore_index=True).sort_values("close_time_dt")
               if frame["close_time_dt"].duplicated().any():
