@@ -1,0 +1,183 @@
+name: candidate-05-late-candidate-promotion
+
+on:
+  workflow_run:
+    workflows:
+      - "candidate-05-v45b-hybrid-auction"
+      - "candidate-05-v48b-session-value"
+      - "candidate-05-v49-directional-change"
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-late-candidate-promotion
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-late-promotion
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+          fetch-depth: 0
+      - name: Resolve the best three-week candidate
+        id: resolve
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,math,os
+          specs=[('V45B_RESULT.json','v45b','strategy_v45b_hybrid_auction','CorrectedHybridAuctionStrategy'),('V48B_RESULT.json','v48b','strategy_v48b_session_value','CorrectedSessionValueAuctionStrategy'),('V49_RESULT.json','v49','strategy_v49_directional_change','MultiScaleDirectionalChangeStrategy')]
+          candidates=[]
+          for filename,label,module,cls in specs:
+              path=Path('research/candidate-05')/filename
+              if not path.exists():continue
+              data=json.loads(path.read_text())
+              if data.get('three_week_pass') is not True:continue
+              rows=data.get('rows') or []
+              score=sum(math.log1p(float(row.get('total_return',0.0))) for row in rows[:3]) if rows else -math.inf
+              dd=max((float(row.get('max_drawdown',0.0)) for row in rows[:3]),default=math.inf)
+              candidates.append({'label':label,'module':module,'class':cls,'score':score,'max_drawdown':dd,'source':filename})
+          winner=max(candidates,key=lambda item:(item['score'],-item['max_drawdown'])) if candidates else None
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f"passed={str(winner is not None).lower()}\nlabel={winner['label'] if winner else ''}\nmodule={winner['module'] if winner else ''}\nclass={winner['class'] if winner else ''}\n")
+          Path('artifacts').mkdir(exist_ok=True); Path('artifacts/late-winner.json').write_text(json.dumps({'candidates':candidates,'winner':winner},indent=2,sort_keys=True)); print(json.dumps({'candidates':candidates,'winner':winner},indent=2,sort_keys=True))
+          PY
+      - name: Stop without a three-week winner
+        if: steps.resolve.outputs.passed != 'true'
+        run: echo 'No late candidate has passed all frozen weeks.'
+      - name: Verify and select winner
+        if: steps.resolve.outputs.passed == 'true'
+        shell: bash
+        env:
+          MODULE: ${{ steps.resolve.outputs.module }}
+          CLASS: ${{ steps.resolve.outputs.class }}
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          cp research/candidate-05/strategy.py /tmp/candidate05-strategy.py
+          python - <<'PY'
+          from pathlib import Path
+          import importlib,os,re
+          getattr(importlib.import_module(os.environ['MODULE']),os.environ['CLASS'])
+          p=Path('research/candidate-05/strategy.py'); s=p.read_text(); pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE); m=pattern.search(s)
+          if m is None:raise RuntimeError(f'v26 import not found: {s!r}')
+          exported=m.group(2) or m.group(1); p.write_text(pattern.sub(f"from {os.environ['MODULE']} import {os.environ['CLASS']} as {exported}",s,count=1))
+          PY
+      - name: Build continuous contracts
+        if: steps.resolve.outputs.passed == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          source=json.loads(Path('research/candidate-05/weeks.json').read_text())
+          periods={'/tmp/late-30d.json':('continuous-30d','2024-02-28','2024-03-01','2024-03-30'),'/tmp/late-91d.json':('continuous-91d','2024-02-28','2024-03-01','2024-05-30')}
+          def replace(label,warmup,start,end):
+              changed=False
+              def visit(value):
+                  nonlocal changed
+                  if isinstance(value,dict):return {k:visit(v) for k,v in value.items()}
+                  if isinstance(value,list) and not changed and value and all(isinstance(x,dict) for x in value):
+                      keys=set().union(*(x.keys() for x in value))
+                      if any(k in keys for k in ('start','evaluation_start','eval_start')) and any(k in keys for k in ('end','evaluation_end','eval_end')):
+                          item=dict(value[0])
+                          for key in tuple(item):
+                              low=key.lower()
+                              if 'warmup' in low and ('start' in low or low=='warmup'):item[key]=warmup
+                              elif low in ('start','evaluation_start','eval_start'):item[key]=start
+                              elif low in ('end','evaluation_end','eval_end'):item[key]=end
+                              elif low in ('name','label','stage'):item[key]=label
+                          changed=True;return [item]
+                  if isinstance(value,list):return [visit(x) for x in value]
+                  return value
+              result=visit(source)
+              if not changed:raise RuntimeError('stage list not found')
+              return result
+          for path,args in periods.items():Path(path).write_text(json.dumps(replace(*args),indent=2))
+          PY
+      - name: Run continuous 30d
+        if: steps.resolve.outputs.passed == 'true'
+        id: d30
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/30d"
+          python research/candidate-05/candidate.py pipeline --config research/candidate-05/config.json --weeks /tmp/late-30d.json --cache .cache/candidate-05-late-promotion --output "$ROOT/30d" --max-weeks 1 2>&1 | tee "$ROOT/30d-console.log"
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          files=sorted(Path('artifacts/candidate-05-late-promotion/30d').rglob('metrics.json'))
+          if not files:raise RuntimeError('no 30d metrics')
+          d=json.loads(files[0].read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0);trades=int(v('trades','trade_count',default=0) or 0);wins=int(v('wins','winning_trades',default=0) or 0);active=int(v('active_days','trading_days',default=0) or 0);integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1;passed=integrity and growth>=.01 and trades>=20 and wins>=12 and active>=15
+          out={'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(v('max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'pass':passed};Path('artifacts/candidate-05-late-promotion/30d-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True));print(json.dumps(out,indent=2,sort_keys=True));open(os.environ['GITHUB_OUTPUT'],'a').write(f'passed={str(passed).lower()}\n')
+          PY
+      - name: Run continuous 91d
+        if: steps.d30.outputs.passed == 'true'
+        id: d91
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/91d"
+          python research/candidate-05/candidate.py pipeline --config research/candidate-05/config.json --weeks /tmp/late-91d.json --cache .cache/candidate-05-late-promotion --output "$ROOT/91d" --max-weeks 1 2>&1 | tee "$ROOT/91d-console.log"
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          files=sorted(Path('artifacts/candidate-05-late-promotion/91d').rglob('metrics.json'))
+          if not files:raise RuntimeError('no 91d metrics')
+          d=json.loads(files[0].read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0);trades=int(v('trades','trade_count',default=0) or 0);wins=int(v('wins','winning_trades',default=0) or 0);active=int(v('active_days','trading_days',default=0) or 0);integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1;passed=integrity and growth>=.01 and trades>=60 and wins>=36 and active>=45
+          out={'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(v('max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'pass':passed};Path('artifacts/candidate-05-late-promotion/91d-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True));print(json.dumps(out,indent=2,sort_keys=True));open(os.environ['GITHUB_OUTPUT'],'a').write(f'passed={str(passed).lower()}\n')
+          PY
+      - name: Commit result
+        if: always() && steps.resolve.outputs.passed == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          root=Path('artifacts/candidate-05-late-promotion');winner=json.loads(Path('artifacts/late-winner.json').read_text()).get('winner')
+          def load(name):
+              p=root/name
+              return json.loads(p.read_text()) if p.exists() else None
+          d30=load('30d-assessment.json');d91=load('91d-assessment.json');decision='PROMOTE_TO_SHARED_ACCOUNT_AND_912D' if d91 and d91.get('pass') else 'DISCARD_CONTINUOUS_91D' if d30 and d30.get('pass') else 'DISCARD_CONTINUOUS_30D';out={'schema':'candidate-05-late-promotion-v1','winner':winner,'continuous_30d':d30,'continuous_91d':d91,'decision':decision};Path('research/candidate-05/LATE_PROMOTION_RESULT.json').write_text(json.dumps(out,indent=2,sort_keys=True));print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/LATE_PROMOTION_RESULT.json
+          git commit -m "candidate-05: record late continuous promotion [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+      - name: Restore active strategy
+        if: always() && steps.resolve.outputs.passed == 'true'
+        run: cp /tmp/candidate05-strategy.py research/candidate-05/strategy.py
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.resolve.outputs.passed == 'true'
+        with:
+          name: candidate-05-late-promotion-${{ github.sha }}
+          path: artifacts/candidate-05-late-promotion/**
+          if-no-files-found: warn
+          retention-days: 90
