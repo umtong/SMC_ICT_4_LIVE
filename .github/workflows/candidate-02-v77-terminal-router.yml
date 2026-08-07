@@ -69,7 +69,8 @@ jobs:
             research/candidate-02/v104_nt_backtest.py \
             research/candidate-02/v104_first_week_driver.py \
             research/candidate-02/tests/run_v104_tests.py \
-            research/candidate-02/tests/test_v104_schedule_contract.py
+            research/candidate-02/tests/test_v104_schedule_contract.py \
+            research/candidate-02/v104_acceptance_diagnostics.py
           python research/candidate-02/tests/run_v104_tests.py
 
       - name: Run prospectively locked BTC first week in NautilusTrader
@@ -96,6 +97,16 @@ jobs:
               'baseline_daily_growth': metrics['geometric_daily_growth_after_cost'],
           }, indent=2, sort_keys=True))
           PY
+
+      - name: Diagnose accepted-event displacement bottleneck
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-02/v104_acceptance_diagnostics.py \
+            --config research/candidate-02/v104_base_config.json \
+            --input-root inputs/v104-first-week \
+            --output artifacts-v104-acceptance-diagnostics.json
+          test -s artifacts-v104-acceptance-diagnostics.json
 
       - name: Build compact reproducible evidence
         if: always()
