@@ -1,0 +1,158 @@
+name: candidate-04-v43-no-impact-innovation-ablation
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v43-no-innovation-ablation.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      RESULT_ROOT: artifacts/candidate-04-v43-no-innovation-ablation
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Verify single-component ablation contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/parent_session_liquidity_transfer_compiler.py \
+            research/candidate-04/parent_session_liquidity_transfer_no_innovation_ablation.py \
+            research/candidate-04/nt_declared_causal_target.py \
+            research/candidate-04/nt_rich_signal_strategy.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_parent_session_no_innovation_ablation.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_parent_session_liquidity_transfer_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_declared_causal_target.py' -v
+          echo "ABLATION_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Restore identical low-activity BTC observations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v27-cross-low_activity-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31105658664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Resolve source and run identical BTC week
+        shell: bash
+        run: |
+          set -euo pipefail
+          rich_dir="$(
+            find sources -type f \
+              -path '*candidate-04-v27-cross-low_activity-*/source/rich/data_manifest.json' \
+              -printf '%h\n' | head -n1
+          )"
+          test -n "$rich_dir"
+          mkdir -p "$RESULT_ROOT"
+          python research/candidate-04/run_frozen_btc_route.py \
+            --family v43 \
+            --route full \
+            --candidate candidate-04-v43-no-impact-innovation-ablation \
+            --stage low_activity_single_component_ablation \
+            --compiler research/candidate-04/parent_session_liquidity_transfer_no_innovation_ablation.py \
+            --base-config research/candidate-04/inventory_transfer_config.json \
+            --impact-config research/candidate-04/impact_exhaustion_config.json \
+            --router-config research/candidate-04/auction_activity_router_config.json \
+            --execution-config research/candidate-04/nt_liquidity_config.json \
+            --rich-dir "$rich_dir" \
+            --build-start 2023-08-02 \
+            --build-end 2023-08-10 \
+            --evaluation-start 2023-08-04 \
+            --evaluation-end 2023-08-10 \
+            --cache .cache/candidate-04-v43-no-innovation/low_activity \
+            --output "$RESULT_ROOT/full" \
+            --min-trades 3 \
+            --min-active-days 2 \
+            --min-win-rate 0.50 \
+            --min-geometric-daily 0.0
+
+      - name: Record ablation decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-04-v43-no-innovation-ablation")
+          base = root / "full"
+          summary = json.loads((base / "summary.json").read_text()) if (base / "summary.json").exists() else {}
+          compiler = json.loads((base / "all_signals/summary.json").read_text()) if (base / "all_signals/summary.json").exists() else {}
+          events = json.loads((base / "nautilus/strategy_events.json").read_text()) if (base / "nautilus/strategy_events.json").exists() else []
+          event_counts = {}
+          for event in events:
+              key = str(event.get("event_type"))
+              event_counts[key] = event_counts.get(key, 0) + 1
+          viable = (
+              bool(summary.get("risk_pass"))
+              and float(summary.get("total_return") or 0.0) > 0.0
+              and int(summary.get("trades") or 0) >= 3
+              and int(summary.get("active_days") or 0) >= 2
+              and float(summary.get("win_rate") or 0.0) >= 0.50
+          )
+          if viable:
+              decision = "impact_innovation_component_was_suppressive_rebuild_without_it"
+          elif int(summary.get("trades") or 0) > 0:
+              decision = "discard_v43_ablation_created_insufficient_or_negative_economics"
+          else:
+              decision = "discard_v43_no_structural_path_after_single_component_ablation"
+          evidence = {
+              "candidate": "candidate-04-v43-no-impact-innovation-ablation",
+              "source_commit": os.environ.get("ABLATION_SOURCE_COMMIT"),
+              "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "evaluation": {"symbol": "BTCUSDT", "start": "2023-08-04", "end": "2023-08-10", "calendar_days": 7},
+              "ablated_component": "depth_conditioned_impact_innovation_residual_z_score",
+              "compiler_summary": compiler,
+              "execution_events": event_counts,
+              "summary": summary,
+              "first_week_viable": viable,
+              "decision": decision,
+              "project_target_reached": False,
+              "final_validation_completed": False,
+          }
+          target = Path("research/candidate-04/evidence-v43-no-innovation-ablation.json")
+          target.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          (root / "research_decision.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v43-no-innovation-ablation-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v43-no-innovation-ablation
+            research/candidate-04/evidence-v43-no-innovation-ablation.json
+          if-no-files-found: warn
+          retention-days: 90
