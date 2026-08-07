@@ -1,6 +1,6 @@
 # Candidate 13 evidence audit
 
-**LOGIC_OR_FREQUENCY_FAILURE**
+**LOGIC_FAILURE_NO_EXECUTABLE_PLANS**
 
 - evidence_complete: `True`
 - metric_recalculation_passed: `True`
@@ -11,4 +11,4 @@
 - engine_errors_absent: `True`
 
 ## Reasons
-- the frozen W1 promising gate did not pass
+- the causal state machine produced no executable plans
