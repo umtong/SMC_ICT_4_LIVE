@@ -1,0 +1,129 @@
+name: candidate-07-cost-viable-mit
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/execution_cost_geometry.py"
+      - "research/candidate-07/strategy_event_signal_cost_viable.py"
+      - "research/candidate-07/run_pre_attack_value_cost_viable_mit.py"
+      - "research/candidate-07/validate_execution_invariants.py"
+      - "research/candidate-07/tests/test_execution_cost_geometry.py"
+      - ".github/workflows/candidate-07-cost-viable.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-07-cost-viable-mit
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  btc-week-1-cost-viable-mit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact candidate source
+        uses: actions/checkout@v4
+
+      - name: Verify pinned foundation and causal cost geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-cost-pyc \
+            /opt/smc4/.venv/bin/python -m compileall -q research/candidate-07
+          /opt/smc4/.venv/bin/python -m unittest discover \
+            -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Restore the same checksum-verified W1 data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-pre-attack-value-week1-v1
+          restore-keys: |
+            candidate-07-aggtrade-event-tournament-week1-v2
+            candidate-07-aggtrade-event-tournament-week1-v1
+            candidate-07-aggtrade-resilience-week1-v1
+            candidate-07-positioning-three-weeks-v1
+            candidate-07-positioning-week1-v1
+            candidate-07-flow-week1-v1
+
+      - name: Run frozen BTC Week-1 cost-viable MIT scenario
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/python \
+            research/candidate-07/run_pre_attack_value_cost_viable_mit.py \
+            --config research/candidate-07/config.json \
+            --stage week-1-cost-viable-mit \
+            --start 2025-12-22 \
+            --end 2025-12-29 \
+            --event-warmup-days 1 \
+            --output artifacts/candidate-07/week-1/pre-attack-value-cost-viable-mit \
+            --data-root .research-data/candidate-07
+
+      - name: Enforce execution and accounting invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/python \
+            research/candidate-07/validate_execution_invariants.py \
+            --output artifacts/candidate-07/week-1/pre-attack-value-cost-viable-mit
+
+      - name: Print immutable result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          /opt/smc4/.venv/bin/python - <<'PY'
+          import hashlib
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path(
+              'artifacts/candidate-07/week-1/'
+              'pre-attack-value-cost-viable-mit'
+          )
+          metrics_path = root / 'metrics.json'
+          if not metrics_path.exists():
+              raise SystemExit('COST_VIABLE_METRICS_MISSING')
+          metrics = json.loads(metrics_path.read_text())
+          diagnostic_path = root / 'scenario_diagnostics.json'
+          diagnostics = json.loads(diagnostic_path.read_text())
+          reasons = Counter(
+              str(item.get('reason'))
+              for item in diagnostics.get('observations', ())
+          )
+          invariant_path = root / 'execution_invariants.json'
+          invariants = (
+              json.loads(invariant_path.read_text())
+              if invariant_path.exists() else None
+          )
+          print(json.dumps({
+              'source_commit': '${{ github.sha }}',
+              'scenario': 'unchanged structural target + causal net-positive cost gate + MIT',
+              'metrics': metrics,
+              'diagnostic_reason_counts': dict(sorted(reasons.items())),
+              'execution_invariants': invariants,
+              'metrics_sha256': hashlib.sha256(metrics_path.read_bytes()).hexdigest(),
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Preserve complete evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-cost-viable-mit-week1-${{ github.sha }}
+          path: artifacts/candidate-07/week-1/pre-attack-value-cost-viable-mit
+          retention-days: 14
+          if-no-files-found: error
