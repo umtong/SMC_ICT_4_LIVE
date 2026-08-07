@@ -70,7 +70,10 @@ class RawChunkIntegrityContracts(unittest.TestCase):
 
     def test_malformed_crossed_and_nonpositive_rows_fail_closed(self) -> None:
         malformed = self._raw().copy()
-        malformed.loc[0, "best_bid_qty"] = "bad"
+        # pandas 3.x rejects lossy string assignment into float64 before the loader can inspect it;
+        # use an object-typed fixture to model the raw CSV parser contract explicitly.
+        malformed["best_bid_qty"] = malformed["best_bid_qty"].astype(object)
+        malformed.at[0, "best_bid_qty"] = "bad"
         with self.assertRaisesRegex(BinanceDataError, "malformed numeric"):
             _coerce_ordered_raw_chunk(
                 malformed,
@@ -161,7 +164,9 @@ class RawOpenBucketCarryContracts(unittest.TestCase):
             ),
         )
         extended, _ = aggregate_ordered_raw_quote_chunks([states, future])
-        closed_before_extension = base_result.index[base_result.index <= pd.Timestamp("2023-10-15T00:00:20Z")]
+        closed_before_extension = base_result.index[
+            base_result.index <= pd.Timestamp("2023-10-15T00:00:20Z")
+        ]
         pd.testing.assert_frame_equal(
             base_result.loc[closed_before_extension],
             extended.loc[closed_before_extension],
