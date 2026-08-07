@@ -49,6 +49,15 @@ COOLDOWN_BARS = 15
 _ORIGINAL_WRITE_OUTPUTS = base.write_outputs
 
 
+def leader_thresholds(data: pd.DataFrame) -> dict[str, pd.Series]:
+    return {
+        "return": base.shifted_quantile(data["ret_60s_bps"].abs(), 0.90),
+        "flow": base.shifted_quantile(data["flow_60s"].abs(), 0.75),
+        "efficiency": base.shifted_quantile(data["eff_60s"], 0.70),
+        "oi": base.shifted_positive_median(data["metric_oi_change_15m"]),
+    }
+
+
 def follower_failure_thresholds(data: pd.DataFrame) -> dict[str, pd.Series]:
     return {
         "return": base.shifted_quantile(
@@ -164,7 +173,7 @@ def collect_candidates(
     stop_buffer_atr: float,
 ) -> tuple[list[Any], dict[str, Any]]:
     leader = frames["BTCUSDT"]
-    leader_threshold = base.leader_thresholds(leader)
+    leader_threshold = leader_thresholds(leader)
     follower_threshold = {
         symbol: follower_failure_thresholds(frames[symbol])
         for symbol in base.FOLLOWERS
@@ -173,6 +182,7 @@ def collect_candidates(
         "leader_information_events": 0,
         "leader_events_without_follower_expansion": 0,
         "leader_events_without_failure": 0,
+        "invalid_failure_stop_geometry": 0,
         "cooldown_suppressed": 0,
         "follower_expansions": {symbol: 0 for symbol in base.FOLLOWERS},
         "confirmed_failures": {symbol: 0 for symbol in base.FOLLOWERS},
@@ -185,15 +195,46 @@ def collect_candidates(
         timestamp = leader.index[leader_index]
         if timestamp < evaluation_start or timestamp > evaluation_end:
             continue
-        leader_passed, leader_details = base.leader_event(
-            leader,
-            leader_index,
-            leader_threshold,
+        leader_row = leader.iloc[leader_index]
+        leader_passed, leader_side = base.leader_information_event(
+            leader_row,
+            return_cutoff=float(leader_threshold["return"].iloc[leader_index]),
+            flow_cutoff=float(leader_threshold["flow"].iloc[leader_index]),
+            efficiency_cutoff=float(
+                leader_threshold["efficiency"].iloc[leader_index]
+            ),
+            oi_cutoff=float(leader_threshold["oi"].iloc[leader_index]),
         )
         if not leader_passed:
             continue
         counts["leader_information_events"] += 1
-        leader_side = int(leader_details["leader_side"])
+        leader_details = {
+            "leader_symbol": "BTCUSDT",
+            "leader_event_index": leader_index,
+            "leader_event_time": timestamp.isoformat(),
+            "leader_side": leader_side,
+            "leader_return_60s_bps": float(leader_row["ret_60s_bps"]),
+            "leader_flow_60s": float(leader_row["flow_60s"]),
+            "leader_efficiency_60s": float(leader_row["eff_60s"]),
+            "leader_basis_change_5m_bps": float(
+                leader_row["basis_change_5m"]
+            ),
+            "leader_oi_change_15m": float(
+                leader_row["metric_oi_change_15m"]
+            ),
+            "leader_return_cutoff": float(
+                leader_threshold["return"].iloc[leader_index]
+            ),
+            "leader_flow_cutoff": float(
+                leader_threshold["flow"].iloc[leader_index]
+            ),
+            "leader_efficiency_cutoff": float(
+                leader_threshold["efficiency"].iloc[leader_index]
+            ),
+            "leader_oi_creation_cutoff": float(
+                leader_threshold["oi"].iloc[leader_index]
+            ),
+        }
         candidates: list[Any] = []
         any_expansion = False
 
@@ -232,7 +273,12 @@ def collect_candidates(
                     reversal_side,
                     stop_buffer_atr,
                 )
-                if stop is None:
+                close = float(data["close"].iloc[signal_index])
+                if (
+                    not math.isfinite(stop)
+                    or reversal_side * (close - stop) <= 0.0
+                ):
+                    counts["invalid_failure_stop_geometry"] += 1
                     break
                 counts["confirmed_failures"][symbol] += 1
                 details = {
@@ -309,9 +355,7 @@ def write_outputs(
             {
                 "candidate": CANDIDATE,
                 "scenario": SCENARIO,
-                "rejected_family": (
-                    "same-direction cross-market catch-up V48/V49"
-                ),
+                "rejected_family": "same-direction cross-market catch-up V48/V49",
             }
         )
         summary_path.write_text(
@@ -343,9 +387,7 @@ def write_outputs(
                     "within three completed minutes price crosses the expansion "
                     "open while opposite return, flow and basis align"
                 ),
-                "selection": (
-                    "earliest completed failure, then highest failure notional"
-                ),
+                "selection": "earliest completed failure, then highest failure notional",
                 "stop": "complete follower expansion-to-failure excursion",
                 "target": (
                     "pre-existing causal external liquidity selected before "
