@@ -1,0 +1,143 @@
+name: candidate-05-v47-relative-value
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/relative_value_context.py"
+      - "research/candidate-05/strategy_v47_relative_value.py"
+      - "research/candidate-05/shared_workflow_adapter.py"
+      - "research/candidate-05/shared_workflow_adapter_v2.py"
+      - "research/candidate-05/tests/test_strategy_v47_contract.py"
+      - ".github/workflows/candidate-05-v47-relative-value.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v47-relative-value
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  staged-shared-account:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v47
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify fixed environment and v47 contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest research/candidate-05/tests/test_strategy_v47_contract.py -v
+      - name: Inject v47 into the existing v36 shared variant in this worktree
+        shell: bash
+        run: |
+          cat > research/candidate-05/strategy_v36_cross_asset_repricing_gate.py <<'PY'
+          from strategy_v47_relative_value import RelativeValueDislocationStrategy
+          CrossAssetRepricingGateStrategy = RelativeValueDislocationStrategy
+          CandidateStrategy = RelativeValueDislocationStrategy
+          StrategyClass = RelativeValueDislocationStrategy
+          PY
+      - name: Run frozen shared-account stages sequentially
+        id: stages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          run_stage() {
+            label="$1"; warmup="$2"; start="$3"; end="$4"
+            python research/candidate-05/shared_workflow_adapter_v2.py \
+              --workflow .github/workflows/candidate-05-v36-shared-screen.yml \
+              --output-root "$ROOT" \
+              --label "$label" \
+              --warmup "$warmup" \
+              --start "$start" \
+              --end "$end"
+            LABEL="$label" python - <<'PY'
+          from pathlib import Path
+          import json,os,sys
+          label=os.environ['LABEL']; root=Path('artifacts/candidate-05-v47')/label
+          candidates=[]
+          for diag_path in root.rglob('strategy_diagnostics.json'):
+              try: diag=json.loads(diag_path.read_text())
+              except Exception: continue
+              text=json.dumps(diag)
+              if 'v47_' not in text: continue
+              metrics=list(diag_path.parent.rglob('metrics.json'))
+              if not metrics:
+                  metrics=list(root.rglob('metrics.json'))
+              for path in metrics: candidates.append((path,diag))
+          if not candidates:
+              # Some shared runners place aggregate metrics above each strategy.
+              for path in root.rglob('metrics.json'):
+                  candidates.append((path,{}))
+          if not candidates:
+              raise RuntimeError(f'no shared metrics for {label}')
+          path,diag=candidates[-1]; d=json.loads(path.read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(v('trades','trade_count',default=0) or 0); wins=int(v('wins','winning_trades',default=0) or 0); active=int(v('active_days','trading_days',default=0) or 0); dd=float(v('max_drawdown','maximum_drawdown',default=0) or 0)
+          integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1 and int(d.get('max_global_slot_owners',d.get('max_combined_entry_and_position',1)) or 0)<=1
+          passed=integrity and growth>=.01 and trades>=7 and wins>=4 and active>=4 and dd<=.20
+          out={'label':label,'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':dd,'integrity':integrity,'pass':passed,'metrics_path':str(path),'diagnostics':diag}
+          (Path('artifacts/candidate-05-v47')/f'{label}-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True)); print(json.dumps(out,indent=2,sort_keys=True))
+          if not passed: sys.exit(10)
+          PY
+          }
+          set +e
+          run_stage week-1 2023-07-07 2023-07-09 2023-07-15
+          w1=$?
+          if [ "$w1" -ne 0 ]; then echo "completed=1" >> "$GITHUB_OUTPUT"; echo "passed=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          run_stage week-2 2024-01-13 2024-01-15 2024-01-21
+          w2=$?
+          if [ "$w2" -ne 0 ]; then echo "completed=2" >> "$GITHUB_OUTPUT"; echo "passed=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          run_stage week-3 2023-09-06 2023-09-08 2023-09-14
+          w3=$?
+          set -e
+          if [ "$w3" -eq 0 ]; then echo "completed=3" >> "$GITHUB_OUTPUT"; echo "passed=true" >> "$GITHUB_OUTPUT"; else echo "completed=3" >> "$GITHUB_OUTPUT"; echo "passed=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Commit compact v47 result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          root=Path('artifacts/candidate-05-v47')
+          rows=[json.loads(path.read_text()) for path in sorted(root.glob('week-*-assessment.json'))]
+          passed=len(rows)>=3 and all(row.get('pass') for row in rows[:3])
+          if not rows: decision='IMPLEMENTATION_FAILURE'
+          elif rows[0].get('trades',0)<7: decision='DISCARD_OPPORTUNITY_DENSITY'
+          elif not rows[0].get('pass'): decision='DISCARD_WEEK1'
+          elif not passed: decision='DISCARD_LATER_WEEK_GENERALIZATION'
+          else: decision='PROMOTE_TO_CONTINUOUS_30D'
+          out={'schema':'candidate-05-v47-result-v1','engine':'one shared NautilusTrader BacktestNode account','strategy':'strategy_v47_relative_value:RelativeValueDislocationStrategy','rows':rows,'three_week_pass':passed,'decision':decision}
+          Path('research/candidate-05/V47_RESULT.json').write_text(json.dumps(out,indent=2,sort_keys=True)); print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V47_RESULT.json
+          git commit -m "candidate-05: record v47 shared-account result [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v47-relative-value-${{ github.sha }}
+          path: artifacts/candidate-05-v47/**
+          if-no-files-found: warn
+          retention-days: 90
