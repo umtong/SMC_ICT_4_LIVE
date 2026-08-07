@@ -67,8 +67,8 @@ def build_candidate_strategy(
             account = self.cache.account_for_venue(self.config.instrument_id.venue)
             if account is None:
                 return self.config.starting_nav, self.config.starting_nav
-            total = decimal_value(account.balance_total(usdt))
-            free = decimal_value(account.balance_free(usdt), total) if hasattr(account, "balance_free") else total
+            total = decimal_value(account.balance_total(settlement_currency))
+            free = decimal_value(account.balance_free(settlement_currency), total) if hasattr(account, "balance_free") else total
             return total, free
 
         def _terminal_if_flat(self, ts_ns: int, reason: str) -> None:
