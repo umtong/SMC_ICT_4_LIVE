@@ -36,7 +36,11 @@ def run(command: list[str], *, env: dict[str, str], log: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--family", required=True, choices=("v33", "v34", "v35", "v36"))
+    parser.add_argument(
+        "--family",
+        required=True,
+        choices=("v33", "v34", "v35", "v36", "v37", "v38", "v41"),
+    )
     parser.add_argument("--route", required=True, choices=("full", "continuation", "reversal"))
     parser.add_argument("--candidate", required=True)
     parser.add_argument("--stage", required=True)
