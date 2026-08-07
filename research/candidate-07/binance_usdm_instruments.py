@@ -24,13 +24,14 @@ class ContractGrid:
 
 
 # BTC matches NautilusTrader 1.230.0 TestInstrumentProvider. ETH matches the
-# official CryptoPerpetual ETHUSDT-PERP example. The remaining project symbols
-# are declared for later untouched portability screens; their observed archive
-# grids are validated before use by ``validate_observed_grid``.
+# official CryptoPerpetual ETHUSDT-PERP example. SOL and XRP are frozen to the
+# exact decimal GCD observed across every checksum-verified raw aggTrade in the
+# 2025-12-22..2025-12-29 W1 implementation-contract probe. These grids are not
+# selected from trading outcomes and introduce no maximum quantity or notional.
 CONTRACT_GRIDS = {
     "BTCUSDT": ContractGrid("0.1", "0.001"),
     "ETHUSDT": ContractGrid("0.01", "0.001"),
-    "SOLUSDT": ContractGrid("0.001", "0.1"),
+    "SOLUSDT": ContractGrid("0.01", "0.01"),
     "XRPUSDT": ContractGrid("0.0001", "0.1"),
 }
 
