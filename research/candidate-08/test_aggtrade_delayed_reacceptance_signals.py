@@ -1,4 +1,4 @@
-"""Causal contracts for delayed boundary reacceptance V2."""
+"""Causal contracts for delayed boundary reacceptance V3."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from aggtrade_delayed_reacceptance_signals_v2 import (
+from aggtrade_delayed_reacceptance_signals_v3 import (
     ABLATION_INITIAL_MODE,
     BASE_INITIAL_MODE,
     IMPLEMENTATION_REVISION,
@@ -161,12 +161,31 @@ class DelayedReacceptanceSequenceContracts(unittest.TestCase):
             [event.event_type for event in signal.events],
             [
                 "EXTERNAL_LIQUIDITY_INTERACTION_ARMED",
+                "INITIAL_OUTWARD_RESPONSE_CONFIRMED_NO_ENTRY",
                 "INITIAL_RESPONSE_RECLAIMED",
                 "DELAYED_OUTWARD_REACCEPTANCE_CONFIRMED",
             ],
         )
-        self.assertLess(signal.events[0].event_time_ns, signal.events[1].event_time_ns)
-        self.assertLess(signal.events[1].event_time_ns, signal.events[2].event_time_ns)
+        self.assertEqual(
+            [(event.previous_state, event.next_state) for event in signal.events],
+            [
+                ("IDLE", "INTERACTION_ARMED"),
+                ("INTERACTION_ARMED", "INITIAL_OUTWARD_RESPONSE"),
+                ("INITIAL_OUTWARD_RESPONSE", "BOUNDARY_RECLAIMED"),
+                ("BOUNDARY_RECLAIMED", "CONFIRMED"),
+            ],
+        )
+        self.assertEqual(
+            {event.details["implementation_revision"] for event in signal.events},
+            {IMPLEMENTATION_REVISION},
+        )
+        event_times = [event.event_time_ns for event in signal.events]
+        self.assertEqual(event_times, sorted(event_times))
+        self.assertEqual(
+            signal.details["event_chain_contract"],
+            "IDLE->INTERACTION_ARMED->INITIAL_OUTWARD_RESPONSE"
+            "->BOUNDARY_RECLAIMED->CONFIRMED",
+        )
 
     def test_reacceptance_before_a_full_post_reclaim_window_cannot_trade(self) -> None:
         bars = _base_bars()[:8]
@@ -188,7 +207,7 @@ class DelayedReacceptanceSequenceContracts(unittest.TestCase):
     def test_initial_initiative_ablation_changes_only_the_initial_state_gate(self) -> None:
         bars = _base_bars()
         features = _base_features(initial_state=FlowResponseState.BALANCED_OR_UNRESOLVED)
-        base = build_delayed_reacceptance_signals(
+        base_bundle = build_delayed_reacceptance_signals(
             **_inputs(bars, features),
             initial_mode=BASE_INITIAL_MODE,
         )
@@ -197,16 +216,19 @@ class DelayedReacceptanceSequenceContracts(unittest.TestCase):
             initial_mode=ABLATION_INITIAL_MODE,
         )
 
-        self.assertEqual(_signals(base), [])
+        self.assertEqual(_signals(base_bundle), [])
         diagnostic_signal = _signals(diagnostic)[0]
         self.assertEqual(diagnostic_signal.details["initial_mode"], ABLATION_INITIAL_MODE)
         self.assertEqual(diagnostic_signal.signal_index, 8)
-        self.assertEqual(diagnostic_signal.structural_stop, _signals(
-            build_delayed_reacceptance_signals(
-                **_inputs(bars, _base_features()),
-                initial_mode=BASE_INITIAL_MODE,
-            )
-        )[0].structural_stop)
+        self.assertEqual(
+            diagnostic_signal.structural_stop,
+            _signals(
+                build_delayed_reacceptance_signals(
+                    **_inputs(bars, _base_features()),
+                    initial_mode=BASE_INITIAL_MODE,
+                )
+            )[0].structural_stop,
+        )
 
     def test_unobservable_warmup_rows_are_ignored_without_exception(self) -> None:
         features = _base_features()
