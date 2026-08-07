@@ -6,21 +6,29 @@ archive="$root/archive/v13"
 out="$root/evidence/latest"
 diag="$root/diagnostics/v14-fixed-gate-long"
 
-mkdir -p "$archive/evidence" "$archive/tests_v13"
-cp "$root/config.json" "$archive/config.json"
-cp "$root/config_v13.json" "$archive/config_v13.json"
-cp "$root/state_engine.py" "$archive/state_engine.py"
-cp "$root/state_engine_v13_direct.py" "$archive/state_engine_v13_direct.py"
-cp "$root/nautilus_strategy.py" "$archive/nautilus_strategy.py"
-cp "$root/run.py" "$archive/run.py"
-cp -a "$root/tests_v13/." "$archive/tests_v13/"
-for name in summary.json REPORT.md outcomes.csv trades.csv fills.csv events.jsonl run.json data_manifest.json; do
-  [[ -f "$out/$name" ]] && cp "$out/$name" "$archive/evidence/$name"
-done
+# Preserve the first frozen v13 archive. Re-running v14 must never overwrite it with
+# already-promoted v14 source or later evidence.
+if [[ ! -f "$archive/run.py" || ! -f "$archive/state_engine_v13_direct.py" ]]; then
+  mkdir -p "$archive/evidence" "$archive/tests_v13"
+  cp "$root/config.json" "$archive/config.json"
+  cp "$root/config_v13.json" "$archive/config_v13.json"
+  cp "$root/state_engine.py" "$archive/state_engine.py"
+  cp "$root/state_engine_v13_direct.py" "$archive/state_engine_v13_direct.py"
+  cp "$root/nautilus_strategy.py" "$archive/nautilus_strategy.py"
+  cp "$root/run.py" "$archive/run.py"
+  cp -a "$root/tests_v13/." "$archive/tests_v13/"
+  for name in summary.json REPORT.md outcomes.csv trades.csv fills.csv events.jsonl run.json data_manifest.json; do
+    [[ -f "$out/$name" ]] && cp "$out/$name" "$archive/evidence/$name"
+  done
+fi
 
 cp "$root/state_engine_v14_direct.py" "$root/state_engine.py"
 cp "$root/config_v14.json" "$root/config.json"
-python "$root/apply_v14_run_patch.py"
+# The original result commit already contains the v14 run contract. Apply the
+# structural promotion only when starting from the archived v13 runner.
+if ! grep -q 'def evaluate_long(' "$root/run.py" || ! grep -q '"accepted-extreme-stop"' "$root/run.py"; then
+  python "$root/apply_v14_run_patch.py"
+fi
 python "$root/apply_v14_evidence_fix.py"
 python "$root/apply_v14_account_exhaustion_fix.py"
 cp "$root/tests_v14/test_state_engine.py" "$root/tests/test_state_engine.py"
