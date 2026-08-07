@@ -1,4 +1,4 @@
-name: candidate-02-v95-stage-funnel-r3
+name: candidate-02-v103-endogenous-flow-clock-first-week
 
 on:
   push:
@@ -12,11 +12,11 @@ permissions:
   actions: read
 
 concurrency:
-  group: candidate-02-v95-stage-funnel-r3
+  group: candidate-02-v103-endogenous-flow-clock-first-week
   cancel-in-progress: false
 
 jobs:
-  diagnose-locked-v95:
+  v103-first-week:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     container:
@@ -28,6 +28,7 @@ jobs:
     env:
       PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
       SMC4_PREBUILT_ENV: "1"
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -35,92 +36,63 @@ jobs:
           ref: research/candidate-02
           fetch-depth: 0
 
-      - name: Verify fixed engine and prospectively locked payload
+      - name: Verify v103 prospective lock and fixed NautilusTrader environment
         shell: bash
         run: |
           set -euo pipefail
           smc4 doctor
-          test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "a31b09027333317a04ce65dc3ac5475011746f8ba6942babd923422ad793fdb1"
-          expected="$(cat research/candidate-02/v95_payload_sha256.txt)"
-          actual="$(cat research/candidate-02/v95_mature_swing_breakout_core.py research/candidate-02/v95_nt_backtest.py research/candidate-02/v95_base_config.json research/candidate-02/v95_mature_swing_breakout_lock.json research/candidate-02/v95_design.md | sha256sum | cut -d' ' -f1)"
-          test "$expected" = "b381ce0130b7bb8af394fdb828fed1cd1d42df2ca0b235484a27871d839468d3"
-          test "$actual" = "$expected"
-          python -m py_compile research/candidate-02/v95_mature_swing_breakout_core.py research/candidate-02/v95_nt_backtest.py research/candidate-02/v95_stage_funnel.py
+          python -m py_compile \
+            research/candidate-02/v103_endogenous_flow_clock_core.py \
+            research/candidate-02/v103_nt_backtest.py \
+            research/candidate-02/v103_first_week_driver.py
+          test "$(git hash-object research/candidate-02/v103_endogenous_flow_clock_core.py)" = "ece6aa6bb7bd3e8667f52b4d2669607c4c6fab0e"
+          test "$(git hash-object research/candidate-02/v103_base_config.json)" = "c64d2fdbf50d1d08eba2b6ab2ed8a6c3e6d38959"
 
-      - name: Materialize immutable runner
+      - name: Run prospectively locked BTC first week in NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          cat .candidate-02-v95-runner/payload.part* | base64 --decode > /tmp/v95_first_week_runner.sh
-          test "$(sha256sum /tmp/v95_first_week_runner.sh | cut -d' ' -f1)" = "725db7f6347910f675fdf34a71d1ea34b628854dd574c2b213182c37e698525d"
-          chmod +x /tmp/v95_first_week_runner.sh
-          bash -n /tmp/v95_first_week_runner.sh
-
-      - name: Recreate identical locked NautilusTrader result
-        shell: bash
-        run: |
-          set -euo pipefail
-          set +e
-          bash /tmp/v95_first_week_runner.sh 2>&1 | tee artifacts-v95-funnel-production-replay.log
-          status=${PIPESTATUS[0]}
-          set -e
-          echo "$status" > artifacts-v95-funnel-production-replay-exit-code.txt
-          case "$status" in 0|1|2) ;; *) exit "$status" ;; esac
-          test -f artifacts-v95-first-week-decision.json
-          python - <<'PY'
-          import json
-          status = json.load(open('artifacts-v95-first-week-decision.json'))['status']
-          allowed = {'FIRST_WEEK_REJECT', 'FIRST_WEEK_REJECT_OR_PRECOMMITTED_ABLATION'}
-          if status not in allowed:
-              raise SystemExit(f'unexpected v95 decision status: {status}')
-          print(status)
-          PY
-
-      - name: Count every causal transition
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts/candidate-02-v95-stage-funnel
-          python research/candidate-02/v95_stage_funnel.py --config research/candidate-02/v95_base_config.json --input-root inputs/v95-first-week --output artifacts/candidate-02-v95-stage-funnel/central.json | tee artifacts-v95-stage-funnel-central.log
-          python - <<'PY'
-          import copy, json
-          from pathlib import Path
-          cfg = copy.deepcopy(json.loads(Path('research/candidate-02/v95_base_config.json').read_text()))
-          cfg['candidate'] = 'candidate-02-v95-remove-prior-defense-memory'
-          cfg['scenario']['require_defense_memory'] = False
-          Path('/tmp/v95-no-defense.json').write_text(json.dumps(cfg, indent=2, sort_keys=True) + '\n')
-          PY
-          python research/candidate-02/v95_stage_funnel.py --config /tmp/v95-no-defense.json --input-root inputs/v95-first-week --output artifacts/candidate-02-v95-stage-funnel/remove-defense.json | tee artifacts-v95-stage-funnel-remove-defense.log
+          python research/candidate-02/v103_first_week_driver.py 2>&1 | tee artifacts-v103-first-week-driver.log
+          test -f artifacts-v103-first-week-decision.json
           python - <<'PY'
           import json
           from pathlib import Path
-          c = json.loads(Path('artifacts/candidate-02-v95-stage-funnel/central.json').read_text())
-          a = json.loads(Path('artifacts/candidate-02-v95-stage-funnel/remove-defense.json').read_text())
-          summary = {
-              'candidate': 'candidate-02-v95-mature-defended-swing-common-accepted-breakout',
-              'evaluation_start_utc': '2025-10-06T00:00:00Z',
-              'evaluation_end_utc': '2025-10-13T00:00:00Z',
-              'diagnostic_only': True,
-              'custom_backtest_engine': False,
-              'production_engine': 'NautilusTrader 1.230.0',
-              'central': {'production_signal_count': c['production_signal_count'], 'qualification': c['qualification'], 'scenario': c['scenario']},
-              'remove_defense': {'production_signal_count': a['production_signal_count'], 'qualification': a['qualification'], 'scenario': a['scenario']},
-          }
-          Path('artifacts/candidate-02-v95-stage-funnel/summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
-          print(json.dumps(summary, indent=2, sort_keys=True))
+          d = json.loads(Path('artifacts-v103-first-week-decision.json').read_text())
+          assert d['candidate_family'] == 'candidate-02-v103-endogenous-turnover-clock-order-flow-regimes'
+          assert d['baseline']['performance_engine'] == 'NautilusTrader 1.230.0'
+          assert d['baseline']['custom_backtest_engine'] is False
+          assert float(d['baseline']['risk_fraction']) == 0.03
+          print(json.dumps({
+              'status': d['status'],
+              'next_week_allowed': d['next_week_allowed'],
+              'ablation_passes_weekly_gate': d.get('ablation_passes_weekly_gate'),
+          }, indent=2, sort_keys=True))
           PY
 
-      - name: Upload compact diagnostic evidence
+      - name: Build compact evidence bundle
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p compact-v103
+          cp -f artifacts-v103-*.json compact-v103/ 2>/dev/null || true
+          cp -f artifacts-v103-*.log compact-v103/ 2>/dev/null || true
+          for d in artifacts/candidate-02-v103-*; do
+            test -d "$d" || continue
+            out="compact-v103/$(basename "$d")"
+            mkdir -p "$out"
+            for f in metrics.json trades.jsonl signals.jsonl signals_schedule.json risk_sizing.jsonl account.csv fills.csv orders.csv positions.csv validation_exit_code.txt; do
+              test -f "$d/$f" && cp "$d/$f" "$out/$f"
+            done
+          done
+          find compact-v103 -type f -maxdepth 3 -print | sort
+
+      - name: Upload compact v103 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-02-v95-stage-funnel-r3-${{ github.sha }}
-          path: |
-            artifacts/candidate-02-v95-stage-funnel
-            artifacts-v95-stage-funnel-*.log
-            artifacts-v95-funnel-production-replay*.txt
-            artifacts-v95-funnel-production-replay*.log
-            artifacts-v95-first-week-decision.json
+          name: candidate-02-v103-first-week-${{ github.sha }}
+          path: compact-v103
           if-no-files-found: warn
           retention-days: 30
           compression-level: 9
