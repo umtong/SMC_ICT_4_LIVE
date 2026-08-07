@@ -26,6 +26,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
       SMC4_DATA_ROOT: .cache/candidate-09
+      V14_RUNNER_REVISION: "3"
 
     steps:
       - uses: actions/checkout@v4
@@ -75,8 +76,9 @@ jobs:
           repo=$(dirname "$(dirname "$(dirname "$(realpath research/candidate-09/run.py)")")")
           root="$repo/research/candidate-09"
           tmp=$(mktemp -d)
-          cp -a "$root/evidence/latest" "$tmp/evidence-latest"
-          cp -a "$root/diagnostics/v14-fixed-gate-long" "$tmp/v14-fixed-gate-long"
+          mkdir -p "$tmp/evidence-latest" "$tmp/v14-fixed-gate-long"
+          [[ -d "$root/evidence/latest" ]] && cp -a "$root/evidence/latest/." "$tmp/evidence-latest/"
+          [[ -d "$root/diagnostics/v14-fixed-gate-long" ]] && cp -a "$root/diagnostics/v14-fixed-gate-long/." "$tmp/v14-fixed-gate-long/"
 
           git config --global --add safe.directory "$repo"
           git -C "$repo" config user.name candidate-09-research-bot
@@ -86,9 +88,9 @@ jobs:
           git -C "$repo" clean -fd research/candidate-09
 
           rm -rf "$root/evidence/latest" "$root/diagnostics/v14-fixed-gate-long"
-          mkdir -p "$root/evidence" "$root/diagnostics"
-          cp -a "$tmp/evidence-latest" "$root/evidence/latest"
-          cp -a "$tmp/v14-fixed-gate-long" "$root/diagnostics/v14-fixed-gate-long"
+          mkdir -p "$root/evidence/latest" "$root/diagnostics/v14-fixed-gate-long"
+          cp -a "$tmp/evidence-latest/." "$root/evidence/latest/"
+          cp -a "$tmp/v14-fixed-gate-long/." "$root/diagnostics/v14-fixed-gate-long/"
 
           git -C "$repo" add \
             research/candidate-09/evidence/latest \
