@@ -99,6 +99,13 @@ def prepare_inputs(restored: Path, output: Path) -> None:
         )
 
 
+def copy_compiler_stream(all_signals: Path, signals: Path, symbol: str) -> None:
+    destination = signals / symbol
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in ("signals.json", "summary.json"):
+        (destination / name).write_bytes((all_signals / symbol / name).read_bytes())
+
+
 def candidate_decision(
     *,
     implementation: bool,
@@ -156,6 +163,7 @@ def evidence_payload(
     return {
         "candidate": args.candidate,
         "compiler_script": args.compiler_script,
+        "targets_predeclared": bool(args.targets_predeclared),
         "engine": "NautilusTrader 1.230.0 BacktestNode",
         "source_feature_workflow_run": args.source_feature_run,
         "evaluation": {
@@ -184,6 +192,7 @@ def main() -> None:
     parser.add_argument("--compiler-script", default=DEFAULT_COMPILER)
     parser.add_argument("--candidate", default=DEFAULT_CANDIDATE)
     parser.add_argument("--market-cause", default=DEFAULT_MARKET_CAUSE)
+    parser.add_argument("--targets-predeclared", action="store_true")
     parser.add_argument("--restored-rich", type=Path, required=True)
     parser.add_argument("--source-feature-run", type=int, required=True)
     parser.add_argument("--build-start", required=True)
@@ -241,39 +250,40 @@ def main() -> None:
             log=output / "compiler.log",
             stage=f"compiler_{compiler_path.stem}",
         )
-        btc = signals / "BTCUSDT"
-        btc.mkdir(parents=True, exist_ok=True)
-        for name in ("signals.json", "summary.json"):
-            (btc / name).write_bytes((all_signals / "BTCUSDT" / name).read_bytes())
-        for symbol in FOLLOWERS:
-            run(
-                [
-                    sys.executable,
-                    str(C04 / "causal_target_registry_enricher_for_symbol.py"),
-                    "--signals",
-                    str(all_signals / symbol / "signals.json"),
-                    "--base-config",
-                    str(output / "config" / f"{symbol}.json"),
-                    "--rich-dir",
-                    str(output / "rich" / symbol),
-                    "--kline-dir",
-                    str(cache / "compiler-klines" / symbol),
-                    "--build-start",
-                    args.build_start,
-                    "--build-end",
-                    args.build_end,
-                    "--output-dir",
-                    str(signals / symbol),
-                    "--download-klines",
-                    "--cost-rate",
-                    "0.00075",
-                    "--minimum-net-r",
-                    "1.20",
-                ],
-                env=env,
-                log=output / f"target-{symbol}.log",
-                stage=f"causal_target_{symbol}",
-            )
+        copy_compiler_stream(all_signals, signals, "BTCUSDT")
+        if args.targets_predeclared:
+            for symbol in FOLLOWERS:
+                copy_compiler_stream(all_signals, signals, symbol)
+        else:
+            for symbol in FOLLOWERS:
+                run(
+                    [
+                        sys.executable,
+                        str(C04 / "causal_target_registry_enricher_for_symbol.py"),
+                        "--signals",
+                        str(all_signals / symbol / "signals.json"),
+                        "--base-config",
+                        str(output / "config" / f"{symbol}.json"),
+                        "--rich-dir",
+                        str(output / "rich" / symbol),
+                        "--kline-dir",
+                        str(cache / "compiler-klines" / symbol),
+                        "--build-start",
+                        args.build_start,
+                        "--build-end",
+                        args.build_end,
+                        "--output-dir",
+                        str(signals / symbol),
+                        "--download-klines",
+                        "--cost-rate",
+                        "0.00075",
+                        "--minimum-net-r",
+                        "1.20",
+                    ],
+                    env=env,
+                    log=output / f"target-{symbol}.log",
+                    stage=f"causal_target_{symbol}",
+                )
         run(
             [
                 sys.executable,
