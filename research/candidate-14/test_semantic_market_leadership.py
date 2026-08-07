@@ -122,9 +122,9 @@ class Candidate14SemanticLeadershipTests(unittest.TestCase):
     def test_far_mixed_trailing_auction_fails_closed(self):
         scores = {
             "BTCUSDT": -0.4,
-            "ETHUSDT": -0.1,
+            "ETHUSDT": -0.2,
             "SOLUSDT": 0.3,
-            "XRPUSDT": 0.2,
+            "XRPUSDT": -0.1,
         }
         result = self.classify(self.decision(directional_trend_scores=scores))
         self.assertFalse(result.approved)
