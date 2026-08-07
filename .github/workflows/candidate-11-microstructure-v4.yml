@@ -1,0 +1,105 @@
+name: Candidate 11 BTC microstructure v4
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/run_microstructure_gated_v4.sh"
+      - "research/candidate-11/apply_microstructure_loader_fix.py"
+      - "research/candidate-11/microstructure_v4_trigger.txt"
+      - ".github/workflows/candidate-11-microstructure-v4.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-microstructure-v4-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Run and capture streaming frozen evaluation
+        id: research
+        shell: bash
+        run: |
+          set -u
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git pull --rebase origin research/candidate-11
+          chmod +x research/candidate-11/run_microstructure_gated_v4.sh
+          mkdir -p research/candidate-11/results/MICROSTRUCTURE
+          set +e
+          bash research/candidate-11/run_microstructure_gated_v4.sh > research/candidate-11/results/MICROSTRUCTURE/execution.log 2>&1
+          STATUS=$?
+          set -e
+          python - "$STATUS" <<'PY'
+          import json
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          path = Path("research/candidate-11/results/MICROSTRUCTURE/execution_status.json")
+          path.write_text(json.dumps({
+              "exit_code": int(sys.argv[1]),
+              "completed_at": datetime.now(timezone.utc).isoformat(),
+              "success": int(sys.argv[1]) == 0,
+          }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Publish diagnostic evidence on latest head
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          SNAPSHOT=/tmp/c11-micro-v4
+          rm -rf "$SNAPSHOT"
+          mkdir -p "$SNAPSHOT"
+          for name in MICROSTRUCTURE MICRO_M1 MICRO_M2 MICRO_M3; do
+            if [ -d "research/candidate-11/results/$name" ]; then
+              cp -a "research/candidate-11/results/$name" "$SNAPSHOT/"
+            fi
+          done
+          git reset --hard HEAD
+          git clean -fd research/candidate-11
+          git pull --rebase origin research/candidate-11
+          for name in MICROSTRUCTURE MICRO_M1 MICRO_M2 MICRO_M3; do
+            rm -rf "research/candidate-11/results/$name"
+            if [ -d "$SNAPSHOT/$name" ]; then
+              cp -a "$SNAPSHOT/$name" research/candidate-11/results/
+            fi
+          done
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          for name in MICROSTRUCTURE MICRO_M1 MICRO_M2 MICRO_M3; do
+            if [ -d "research/candidate-11/results/$name" ]; then
+              git add -A "research/candidate-11/results/$name"
+            fi
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record streaming microstructure diagnostics [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi
+
+      - name: Enforce research command result
+        if: always()
+        shell: bash
+        run: |
+          test "${{ steps.research.outputs.status }}" = "0"
