@@ -1,0 +1,195 @@
+name: candidate-05-v36-shared-screen
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/cross_asset_repricing_*.py"
+      - "research/candidate-05/strategy_v36_cross_asset_repricing_gate.py"
+      - "research/candidate-05/shared_account_backtest_v2.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v4.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v5.py"
+      - "research/candidate-05/shared_account_strategy_variants_v2.py"
+      - "research/candidate-05/tests/test_cross_asset_repricing_logic.py"
+      - "research/candidate-05/tests/test_strategy_v36_contract.py"
+      - "research/candidate-05/tests/test_shared_daily_nav_alignment.py"
+      - ".github/workflows/candidate-05-v36-shared-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v36-shared-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  weak-week-and-conditional-30d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v36-shared-screen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Freeze exact control and v36 evidence identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/v26.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_v26:ScenarioValidEntryStrategy",
+            "experiment_role": "EXACT_SHARED_ACCOUNT_CONTROL"
+          }
+          JSON
+          cat > "$ROOT/evidence/v36.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_v36_cross_asset_repricing_gate:SystemicRepricingGateStrategy",
+            "experiment_role": "ONE_VARIABLE_PRIOR_PEER_SYSTEMIC_REPRICING_VETO"
+          }
+          JSON
+
+      - name: Run identical weak week through one-account NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variant in v26 v36; do
+            python research/candidate-05/shared_account_backtest_v2.py \
+              --winner-evidence "$ROOT/evidence/$variant.json" \
+              --build-start 2023-09-06 \
+              --build-end 2023-09-14 \
+              --evaluation-start 2023-09-08 \
+              --evaluation-end 2023-09-14 \
+              --cache ".cache/candidate-05-v36-shared/weak" \
+              --output "$ROOT/weak/$variant" \
+              | tee "$ROOT/weak-$variant-console.json"
+          done
+
+      - name: Classify weak-week controlled experiment
+        id: weak
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          control = json.loads((root / "weak/v26/metrics.json").read_text())
+          candidate = json.loads((root / "weak/v36/metrics.json").read_text())
+          checks = {
+              "control_integrity": bool(control.get("integrity_pass")),
+              "candidate_integrity": bool(candidate.get("integrity_pass")),
+              "candidate_improves_control": candidate.get("total_return", -1.0) > control.get("total_return", -1.0),
+              "geometric_daily_growth": candidate.get("geometric_daily_growth", -1.0) >= 0.01,
+              "trades": candidate.get("trades", 0) >= 7,
+              "wins": candidate.get("wins", 0) >= 4,
+              "active_days": candidate.get("active_days", 0) >= 4,
+              "win_rate": candidate.get("win_rate", 0.0) >= 0.40,
+              "max_drawdown": candidate.get("max_drawdown", 1.0) <= 0.20,
+              "largest_winner_share": candidate.get("largest_winner_share", 1.0) <= 0.55,
+              "actual_peer_gate_exercised": sum(
+                  int(value.get("cross_asset_reversal_evaluations", 0))
+                  for value in candidate.get("strategy_diagnostics", {}).values()
+              ) > 0,
+          }
+          passed = all(checks.values())
+          result = {
+              "classification": "V36_WEAK_WEEK_PASSED" if passed else "V36_WEAK_WEEK_LOGIC_FAILURE",
+              "passed": passed,
+              "checks": checks,
+              "control": control,
+              "candidate": candidate,
+              "delta_total_return": candidate.get("total_return", 0.0) - control.get("total_return", 0.0),
+              "blocked_reversals": sum(
+                  int(value.get("cross_asset_reversal_blocks", 0))
+                  for value in candidate.get("strategy_diagnostics", {}).values()
+              ),
+          }
+          (root / "weak_decision.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"promote={'true' if passed else 'false'}\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run identical continuous 30-day control and v36
+        if: steps.weak.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variant in v26 v36; do
+            python research/candidate-05/shared_account_backtest_v2.py \
+              --winner-evidence "$ROOT/evidence/$variant.json" \
+              --build-start 2024-02-28 \
+              --build-end 2024-03-30 \
+              --evaluation-start 2024-03-01 \
+              --evaluation-end 2024-03-30 \
+              --cache ".cache/candidate-05-v36-shared/30d" \
+              --output "$ROOT/30d/$variant" \
+              | tee "$ROOT/30d-$variant-console.json"
+          done
+
+      - name: Classify 30-day controlled experiment
+        if: steps.weak.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          control = json.loads((root / "30d/v26/metrics.json").read_text())
+          candidate = json.loads((root / "30d/v36/metrics.json").read_text())
+          checks = {
+              "control_integrity": bool(control.get("integrity_pass")),
+              "candidate_integrity": bool(candidate.get("integrity_pass")),
+              "candidate_improves_control": candidate.get("total_return", -1.0) > control.get("total_return", -1.0),
+              "geometric_daily_growth": candidate.get("geometric_daily_growth", -1.0) >= 0.01,
+              "trades": candidate.get("trades", 0) >= 15,
+              "wins": candidate.get("wins", 0) >= 5,
+              "active_days": candidate.get("active_days", 0) >= 10,
+              "largest_winner_share": candidate.get("largest_winner_share", 1.0) <= 0.35,
+              "max_drawdown": candidate.get("max_drawdown", 1.0) <= 0.35,
+          }
+          passed = all(checks.values())
+          result = {
+              "classification": "V36_30D_PASSED" if passed else "V36_30D_LOGIC_FAILURE",
+              "passed": passed,
+              "checks": checks,
+              "control": control,
+              "candidate": candidate,
+              "delta_total_return": candidate.get("total_return", 0.0) - control.get("total_return", 0.0),
+          }
+          (root / "30d_decision.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v36-shared-screen-${{ github.sha }}
+          path: artifacts/candidate-05-v36-shared-screen/**
+          if-no-files-found: error
+          retention-days: 90
