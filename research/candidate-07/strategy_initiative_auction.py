@@ -17,8 +17,9 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
 
     After a structural stop closes an absorption/reclaim, the opposite
     initiative auction owns all later local pools in that reversal direction.
-    The state ends only when the original opposing liquidity is delivered or a
-    confirmed acceptance-continuation plan proves initiative has changed sides.
+    The state ends only when the original opposing liquidity is delivered, a
+    confirmed acceptance-continuation proves initiative changed sides, or an
+    opposite-direction reversal itself structurally fails and transfers control.
     """
 
     def __init__(self, config: Candidate07StrategyConfig):
@@ -98,20 +99,50 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
             or not structural_stop
         ):
             return
+        event_time_ns = int(event.ts_event)
         delivery = self._structural_delivery_price(plan)
-        state = self._initiative_gate.accept_failed_reversal(
+        state, displaced = self._initiative_gate.transfer_on_failed_reversal(
             blocked_reversal_direction=plan.direction,
             opposing_delivery_price=delivery,
             source_scenario_id=plan.scenario_id,
             accepted_source_level=plan.liquidity_level,
-            accepted_at_ns=int(event.ts_event),
+            accepted_at_ns=event_time_ns,
         )
+        if displaced is not None:
+            self._append_manual_event(
+                scenario_id=plan.scenario_id,
+                previous_state="INITIATIVE_AUCTION_ACTIVE",
+                next_state="INITIATIVE_AUCTION_ACTIVE",
+                reason_code="OPPOSITE_FAILED_REVERSAL_TRANSFERS_INITIATIVE",
+                event_time_ns=event_time_ns,
+                reference_price=plan.stop_price,
+                details={
+                    "displaced_source_scenario_id": (
+                        displaced.source_scenario_id
+                    ),
+                    "displaced_blocked_reversal_direction": (
+                        displaced.blocked_reversal_direction.value
+                    ),
+                    "displaced_initiative_direction": (
+                        displaced.initiative_direction.value
+                    ),
+                    "displaced_accepted_source_level": (
+                        displaced.accepted_source_level
+                    ),
+                    "displaced_accepted_at_ns": displaced.accepted_at_ns,
+                    "new_blocked_reversal_direction": plan.direction.value,
+                    "new_initiative_direction": state.initiative_direction.value,
+                    "new_source_scenario_id": plan.scenario_id,
+                    "new_accepted_source_level": plan.liquidity_level,
+                    "state_owner": "INITIATIVE_AUCTION_LEG",
+                },
+            )
         self._append_manual_event(
             scenario_id=plan.scenario_id,
             previous_state=ScenarioState.TERMINAL.value,
             next_state="INITIATIVE_AUCTION_ACTIVE",
             reason_code="ABSORPTION_STOP_CONFIRMS_INITIATIVE_ACCEPTANCE",
-            event_time_ns=int(event.ts_event),
+            event_time_ns=event_time_ns,
             reference_price=delivery,
             details={
                 "blocked_reversal_direction": plan.direction.value,
@@ -120,6 +151,7 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
                 "accepted_source_level": plan.liquidity_level,
                 "opposing_delivery_price": delivery,
                 "delivery_basis": "opposing internal liquidity known at entry",
+                "displaced_opposite_initiative": displaced is not None,
                 "state_owner": "INITIATIVE_AUCTION_LEG",
             },
         )
@@ -143,6 +175,9 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
             event_time_ns=event_time_ns,
             reference_price=plan.entry_reference,
             details={
+                "blocked_reversal_direction": (
+                    state.blocked_reversal_direction.value
+                ),
                 "released_source_scenario_id": state.source_scenario_id,
                 "released_initiative_direction": state.initiative_direction.value,
                 "new_initiative_direction": plan.direction.value,
@@ -160,7 +195,11 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
         if plan is None:
             return False
         closing_order_id = getattr(event, "closing_order_id", None)
-        order = self.cache.order(closing_order_id) if closing_order_id is not None else None
+        order = (
+            self.cache.order(closing_order_id)
+            if closing_order_id is not None
+            else None
+        )
         if order is not None:
             raw_tags = getattr(order, "tags", None) or ()
             tags = {str(tag).upper() for tag in raw_tags}
@@ -187,7 +226,11 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
     @staticmethod
     def _structural_delivery_price(plan: TradePlan) -> float:
         raw_internal: Any = plan.details.get("opposing_internal")
-        candidate = float(raw_internal) if raw_internal is not None else plan.target_price
+        candidate = (
+            float(raw_internal)
+            if raw_internal is not None
+            else plan.target_price
+        )
         if plan.direction is Direction.LONG and candidate <= plan.entry_reference:
             return plan.target_price
         if plan.direction is Direction.SHORT and candidate >= plan.entry_reference:
