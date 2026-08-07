@@ -1,0 +1,192 @@
+name: candidate-03-v17-staged-container
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - ".github/workflows/candidate-03-v17-staged-container.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-03-v17-staged-container
+  cancel-in-progress: false
+
+env:
+  CONFIG: research/candidate-03/nt_lvcfr_v17_config.json
+
+jobs:
+  staged-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Fetch exact branch and verify frozen V17 source
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! command -v git >/dev/null 2>&1; then
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git ca-certificates
+          fi
+          git clone --depth 1 --branch research/candidate-03 \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          test "$(git hash-object research/candidate-03/derive_nt_lvcfr_v17_signals.py)" = "fcc05dd19bbfc621226250743979d341a7194bf7"
+          test "$(git hash-object research/candidate-03/nt_lvcfr_v17_config.json)" = "64c7ef99cc076582ffff59c961208bc09d22cae7"
+          test "$(git hash-object research/candidate-03/nt_lvcfr_strategy.py)" = "e4d00ae0c6fa1d24198c846bccb247baacdc0456"
+          test "$(git hash-object research/candidate-03/run_nt_lvcfr.py)" = "74bb02f1b69ee31ce32ddfa47497bdd9770ac00b"
+          smc4 doctor
+          export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-03"
+          python research/candidate-03/test_nt_lvcfr.py
+          python research/candidate-03/test_nt_lvcfr_trade_proxy.py
+          python research/candidate-03/test_nt_lvcfr_v13.py
+          python research/candidate-03/test_nt_lvcfr_v17.py
+          python research/candidate-03/test_nt_lvcfr_v17_ablation.py
+
+      - name: Run frozen week two and permitted next stage
+        id: staged
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-03"
+
+          run_week() {
+            local week="$1"
+            local prepared="$2"
+            local out="$3"
+            mkdir -p "$prepared" "$out"
+            python research/candidate-03/prepare_nt_lvcfr_trade_proxy.py \
+              --week-start "$week" --output "$prepared" --config "$CONFIG" \
+              2>&1 | tee "$out/preparation.log"
+            cp "$prepared/signals.json" "$prepared/signals-v1.json"
+            python research/candidate-03/derive_nt_lvcfr_v17_signals.py \
+              --prepared-root "$prepared" --output-manifest "$out/v17_signal_manifest.json"
+            cp "$prepared/signals.json" "$out/signals.json"
+            python research/candidate-03/rebuild_nt_lvcfr_trade_proxy_catalog.py \
+              --prepared-root "$prepared" --config "$CONFIG" \
+              2>&1 | tee "$out/catalog_rebuild.log"
+            python research/candidate-03/run_nt_lvcfr.py \
+              --week-start "$week" --prepared-root "$prepared" --output "$out" --config "$CONFIG" \
+              2>&1 | tee "$out/backtest.log"
+            set +e
+            python research/candidate-03/gate_nt_lvcfr.py "$out/metrics.json" \
+              --config "$CONFIG" | tee "$out/gate.json"
+            local gate_status=${PIPESTATUS[0]}
+            set -e
+            echo "$gate_status" > "$out/gate_status.txt"
+            python research/candidate-03/summarize_nt_lvcfr_states.py \
+              --metrics "$out/metrics.json" --episodes "$out/episodes.csv" \
+              --signals "$out/signals.json" --output "$out/state_attribution.json"
+          }
+
+          week2_prepared=artifacts/candidate-03/v17-staged/development-2/prepared
+          week2_out=artifacts/candidate-03/v17-staged/development-2/output
+          run_week 2025-06-23 "$week2_prepared" "$week2_out"
+          week2_status=$(cat "$week2_out/gate_status.txt")
+
+          if [[ "$week2_status" == "0" ]]; then
+            next_stage=validation-3
+            week3_prepared=artifacts/candidate-03/v17-staged/validation-3/prepared
+            week3_out=artifacts/candidate-03/v17-staged/validation-3/output
+            run_week 2022-05-16 "$week3_prepared" "$week3_out"
+            final_status=$(cat "$week3_out/gate_status.txt")
+          else
+            next_stage=expansion-ablation
+            ablation_out=artifacts/candidate-03/v17-staged/expansion-ablation-development-2/output
+            mkdir -p "$ablation_out"
+            cp "$week2_prepared/signals.json" "$week2_prepared/signals-v17-full.json"
+            python research/candidate-03/ablate_nt_lvcfr_v17_expansion.py \
+              --prepared-root "$week2_prepared" --output-manifest "$ablation_out/ablation_manifest.json"
+            cp "$week2_prepared/signals.json" "$ablation_out/signals.json"
+            python research/candidate-03/rebuild_nt_lvcfr_trade_proxy_catalog.py \
+              --prepared-root "$week2_prepared" --config "$CONFIG" \
+              2>&1 | tee "$ablation_out/catalog_rebuild.log"
+            python research/candidate-03/run_nt_lvcfr.py \
+              --week-start 2025-06-23 --prepared-root "$week2_prepared" \
+              --output "$ablation_out" --config "$CONFIG" \
+              2>&1 | tee "$ablation_out/backtest.log"
+            set +e
+            python research/candidate-03/gate_nt_lvcfr.py "$ablation_out/metrics.json" \
+              --config "$CONFIG" | tee "$ablation_out/gate.json"
+            ablation_status=${PIPESTATUS[0]}
+            set -e
+            echo "$ablation_status" > "$ablation_out/gate_status.txt"
+            python research/candidate-03/summarize_nt_lvcfr_states.py \
+              --metrics "$ablation_out/metrics.json" --episodes "$ablation_out/episodes.csv" \
+              --signals "$ablation_out/signals.json" --output "$ablation_out/state_attribution.json"
+            final_status=1
+          fi
+
+          echo "week2_status=$week2_status" >> "$GITHUB_OUTPUT"
+          echo "next_stage=$next_stage" >> "$GITHUB_OUTPUT"
+          echo "final_status=$final_status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit native evidence before enforcing gate
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd repo
+          copy_result() {
+            local src="$1"
+            local dst="$2"
+            [[ -d "$src" ]] || return 0
+            rm -rf "$dst"
+            mkdir -p "$dst"
+            cp "$src"/*.json "$dst"/ 2>/dev/null || true
+            cp "$src"/*.jsonl "$dst"/ 2>/dev/null || true
+            cp "$src"/*.csv "$dst"/ 2>/dev/null || true
+            cp "$src"/*.log "$dst"/ 2>/dev/null || true
+            cp "$src/gate_status.txt" "$dst"/ 2>/dev/null || true
+          }
+          copy_result artifacts/candidate-03/v17-staged/development-2/output \
+            research/candidate-03/results/v17-development-2
+          copy_result artifacts/candidate-03/v17-staged/validation-3/output \
+            research/candidate-03/results/v17-validation-3
+          copy_result artifacts/candidate-03/v17-staged/expansion-ablation-development-2/output \
+            research/candidate-03/results/v17-expansion-ablation-development-2
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('research/candidate-03/results')
+          week2 = json.loads((root / 'v17-development-2/gate.json').read_text())
+          payload = {
+              'candidate': 'candidate-03-nt-lvcfr-v17-dual-inventory-auction',
+              'week2_passed': bool(week2['passed']),
+              'next_stage': '${{ steps.staged.outputs.next_stage }}',
+              'frozen_source_blobs': {
+                  'derive_nt_lvcfr_v17_signals.py': 'fcc05dd19bbfc621226250743979d341a7194bf7',
+                  'nt_lvcfr_v17_config.json': '64c7ef99cc076582ffff59c961208bc09d22cae7',
+                  'nt_lvcfr_strategy.py': 'e4d00ae0c6fa1d24198c846bccb247baacdc0456',
+                  'run_nt_lvcfr.py': '74bb02f1b69ee31ce32ddfa47497bdd9770ac00b',
+              },
+          }
+          if (root / 'v17-validation-3/gate.json').exists():
+              payload['week3_passed'] = bool(json.loads((root / 'v17-validation-3/gate.json').read_text())['passed'])
+          if (root / 'v17-expansion-ablation-development-2/gate.json').exists():
+              payload['expansion_ablation_passed'] = bool(json.loads((root / 'v17-expansion-ablation-development-2/gate.json').read_text())['passed'])
+          (root / 'V17_STAGED_STATUS.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+          PY
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add research/candidate-03/results
+          git commit -m "candidate-03: record staged V17 native evidence"
+          git pull --rebase origin research/candidate-03
+          git push origin HEAD:research/candidate-03
+
+      - name: Enforce staged gate after evidence commit
+        shell: bash
+        run: exit "${{ steps.staged.outputs.final_status }}"
