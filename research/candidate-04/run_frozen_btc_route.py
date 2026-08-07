@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Compile and execute one frozen candidate route through NautilusTrader.
 
-This is process orchestration only.  It invokes an existing completed-data
+This is process orchestration only. It invokes an existing completed-data
 compiler, the explicit scenario-family filter, the exact-target NautilusTrader
-runner and the established evidence summarizer.  It never matches orders or
+runner and the established evidence summarizer. It never matches orders or
 calculates fills, positions, PnL or NAV itself.
 """
 from __future__ import annotations
@@ -39,9 +39,13 @@ def main() -> None:
     parser.add_argument(
         "--family",
         required=True,
-        choices=("v33", "v34", "v35", "v36", "v37", "v38", "v41"),
+        choices=("v33", "v34", "v35", "v36", "v37", "v38", "v41", "v43"),
     )
-    parser.add_argument("--route", required=True, choices=("full", "continuation", "reversal"))
+    parser.add_argument(
+        "--route",
+        required=True,
+        choices=("full", "continuation", "reversal"),
+    )
     parser.add_argument("--candidate", required=True)
     parser.add_argument("--stage", required=True)
     parser.add_argument("--compiler", type=Path, required=True)
