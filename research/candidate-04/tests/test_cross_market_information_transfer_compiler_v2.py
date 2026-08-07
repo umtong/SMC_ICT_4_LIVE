@@ -34,25 +34,29 @@ class AllowedSymbolConfigTests(unittest.TestCase):
         self.assertEqual(config.risk_fraction, 0.03)
         self.assertEqual(config.fee_bps, values["fee_bps"])
         self.assertEqual(config.stop_slippage_bps, values["stop_slippage_bps"])
+        self.assertEqual(
+            config.stress_inventory_quantile,
+            values["stress_inventory_quantile"],
+        )
 
     def test_unknown_symbol_remains_rejected(self) -> None:
         values = self.base_values()
         values["symbol"] = "DOGEUSDT"
-        with self.assertRaises(candidate.base.v22.CandidateError):
+        with self.assertRaises(candidate.CandidateError):
             candidate.load_allowed_symbol_config(self.write(values))
 
     def test_non_symbol_validation_is_not_bypassed(self) -> None:
         values = self.base_values()
         values["symbol"] = "SOLUSDT"
         values["risk_fraction"] = 0.031
-        with self.assertRaises(candidate.base.v22.CandidateError):
+        with self.assertRaises(candidate.CandidateError):
             candidate.load_allowed_symbol_config(self.write(values))
 
     def test_unknown_config_key_remains_rejected(self) -> None:
         values = self.base_values()
         values["symbol"] = "XRPUSDT"
         values["unapproved_parameter"] = 1
-        with self.assertRaises(candidate.base.v22.CandidateError):
+        with self.assertRaises(candidate.CandidateError):
             candidate.load_allowed_symbol_config(self.write(values))
 
 
