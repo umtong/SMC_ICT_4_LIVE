@@ -1,0 +1,220 @@
+name: candidate-05-v50b-actual-order-analog
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/v50_candidate_common.py"
+      - "research/candidate-05/v50_order_capture.py"
+      - "research/candidate-05/strategy_v50b_candidate_recorder.py"
+      - "research/candidate-05/train_v50_analog_model.py"
+      - "research/candidate-05/strategy_v50b_analog_selector.py"
+      - "research/candidate-05/tests/test_strategy_v50b_contract.py"
+      - ".github/workflows/candidate-05-v50b-actual-order-analog.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v50b-actual-order-analog
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  research-and-promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v50b
+      MODEL: artifacts/candidate-05-v50b/v50_model.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify environment and actual-order contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest research/candidate-05/tests/test_strategy_v50b_contract.py -v
+      - name: Build research and promotion periods
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          source=json.loads(Path('research/candidate-05/weeks.json').read_text())
+          periods={'/tmp/v50b-train.json':('v50b-train','2022-12-30','2023-01-01','2023-03-31'),'/tmp/v50b-valid.json':('v50b-validation','2023-03-30','2023-04-01','2023-06-30'),'/tmp/v50b-30d.json':('v50b-continuous-30d','2024-02-28','2024-03-01','2024-03-30'),'/tmp/v50b-91d.json':('v50b-continuous-91d','2024-02-28','2024-03-01','2024-05-30')}
+          def make(label,warmup,start,end):
+              changed=False
+              def visit(value):
+                  nonlocal changed
+                  if isinstance(value,dict):return {key:visit(item) for key,item in value.items()}
+                  if isinstance(value,list) and not changed and value and all(isinstance(item,dict) for item in value):
+                      keys=set().union(*(item.keys() for item in value))
+                      if any(key in keys for key in ('start','evaluation_start','eval_start')) and any(key in keys for key in ('end','evaluation_end','eval_end')):
+                          item=dict(value[0])
+                          for key in tuple(item):
+                              low=key.lower()
+                              if 'warmup' in low and ('start' in low or low=='warmup'):item[key]=warmup
+                              elif low in ('start','evaluation_start','eval_start'):item[key]=start
+                              elif low in ('end','evaluation_end','eval_end'):item[key]=end
+                              elif low in ('name','label','stage'):item[key]=label
+                          changed=True;return [item]
+                  if isinstance(value,list):return [visit(item) for item in value]
+                  return value
+              result=visit(source)
+              if not changed:raise RuntimeError('stage list not found')
+              return result
+          for path,args in periods.items():Path(path).write_text(json.dumps(make(*args),indent=2))
+          PY
+      - name: Select actual-order recorder
+        shell: bash
+        run: |
+          cp research/candidate-05/strategy.py /tmp/candidate05-strategy.py
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('research/candidate-05/strategy.py');s=p.read_text();pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE);m=pattern.search(s)
+          if m is None:raise RuntimeError(f'v26 import not found: {s!r}')
+          exported=m.group(2) or m.group(1);p.write_text(pattern.sub(f'from strategy_v50b_candidate_recorder import ActualOrderCandidateRecorderStrategy as {exported}',s,count=1))
+          PY
+      - name: Record all pre-evaluation candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT/train" "$ROOT/validation"
+          python research/candidate-05/candidate.py pipeline --config research/candidate-05/config.json --weeks /tmp/v50b-train.json --cache .cache/candidate-05-v50b --output "$ROOT/train" --max-weeks 1 2>&1 | tee "$ROOT/train-console.log"
+          python research/candidate-05/candidate.py pipeline --config research/candidate-05/config.json --weeks /tmp/v50b-valid.json --cache .cache/candidate-05-v50b --output "$ROOT/validation" --max-weeks 1 2>&1 | tee "$ROOT/validation-console.log"
+      - name: Train fixed analog model and validate before evaluation
+        id: model
+        shell: bash
+        run: |
+          set +e
+          python research/candidate-05/train_v50_analog_model.py --train-root "$ROOT/train" --validation-root "$ROOT/validation" --cache .cache/candidate-05-v50b-labels --output "$MODEL" 2>&1 | tee "$ROOT/model-console.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ -f "$MODEL" ] && python -c "import json;assert json.load(open('$MODEL'))['validation_pass'] is True";then echo 'passed=true' >> "$GITHUB_OUTPUT";else echo 'passed=false' >> "$GITHUB_OUTPUT";fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Select actual-order analog strategy
+        if: steps.model.outputs.passed == 'true'
+        shell: bash
+        run: |
+          cp "$MODEL" research/candidate-05/v50_model.json
+          cp /tmp/candidate05-strategy.py research/candidate-05/strategy.py
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('research/candidate-05/strategy.py');s=p.read_text();pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE);m=pattern.search(s);exported=m.group(2) or m.group(1);p.write_text(pattern.sub(f'from strategy_v50b_analog_selector import ActualOrderAnalogStrategy as {exported}',s,count=1))
+          PY
+      - name: Run frozen BTC stages
+        if: steps.model.outputs.passed == 'true'
+        id: frozen
+        shell: bash
+        env:
+          CANDIDATE05_V50_MODEL: ${{ github.workspace }}/artifacts/candidate-05-v50b/v50_model.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/frozen"
+          python research/candidate-05/candidate.py pipeline --config research/candidate-05/config.json --weeks research/candidate-05/weeks.json --cache .cache/candidate-05-v50b --output "$ROOT/frozen" --max-weeks 3 2>&1 | tee "$ROOT/frozen-console.log"
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          root=Path('artifacts/candidate-05-v50b/frozen')
+          def v(d,*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          rows=[]
+          for p in sorted(root.rglob('metrics.json')):
+              d=json.loads(p.read_text());growth=float(v(d,'geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0);trades=int(v(d,'trades','trade_count',default=0) or 0);wins=int(v(d,'wins','winning_trades',default=0) or 0);active=int(v(d,'active_days','trading_days',default=0) or 0);dd=float(v(d,'max_drawdown','maximum_drawdown',default=0) or 0);integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1;passed=integrity and growth>=.01 and trades>=7 and wins>=4 and active>=4 and dd<=.20;rows.append({'path':str(p),'growth':growth,'total_return':float(v(d,'total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':dd,'integrity':integrity,'pass':passed})
+          passed=len(rows)>=3 and all(row['pass'] for row in rows[:3]);Path('artifacts/candidate-05-v50b/frozen-assessment.json').write_text(json.dumps({'rows':rows,'pass':passed},indent=2,sort_keys=True));print(json.dumps({'rows':rows,'pass':passed},indent=2,sort_keys=True));open(os.environ['GITHUB_OUTPUT'],'a').write(f'passed={str(passed).lower()}\n')
+          PY
+      - name: Run continuous 30d
+        if: steps.frozen.outputs.passed == 'true'
+        id: d30
+        shell: bash
+        env:
+          CANDIDATE05_V50_MODEL: ${{ github.workspace }}/artifacts/candidate-05-v50b/v50_model.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/30d"
+          python research/candidate-05/candidate.py pipeline --config research/candidate-05/config.json --weeks /tmp/v50b-30d.json --cache .cache/candidate-05-v50b --output "$ROOT/30d" --max-weeks 1 2>&1 | tee "$ROOT/30d-console.log"
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          files=sorted(Path('artifacts/candidate-05-v50b/30d').rglob('metrics.json'))
+          if not files:raise RuntimeError('no 30d metrics')
+          d=json.loads(files[0].read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0);trades=int(v('trades','trade_count',default=0) or 0);wins=int(v('wins','winning_trades',default=0) or 0);active=int(v('active_days','trading_days',default=0) or 0);integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1;passed=integrity and growth>=.01 and trades>=20 and wins>=12 and active>=15;out={'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(v('max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'pass':passed};Path('artifacts/candidate-05-v50b/30d-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True));print(json.dumps(out,indent=2,sort_keys=True));open(os.environ['GITHUB_OUTPUT'],'a').write(f'passed={str(passed).lower()}\n')
+          PY
+      - name: Run continuous 91d
+        if: steps.d30.outputs.passed == 'true'
+        id: d91
+        shell: bash
+        env:
+          CANDIDATE05_V50_MODEL: ${{ github.workspace }}/artifacts/candidate-05-v50b/v50_model.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/91d"
+          python research/candidate-05/candidate.py pipeline --config research/candidate-05/config.json --weeks /tmp/v50b-91d.json --cache .cache/candidate-05-v50b --output "$ROOT/91d" --max-weeks 1 2>&1 | tee "$ROOT/91d-console.log"
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          files=sorted(Path('artifacts/candidate-05-v50b/91d').rglob('metrics.json'))
+          if not files:raise RuntimeError('no 91d metrics')
+          d=json.loads(files[0].read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0);trades=int(v('trades','trade_count',default=0) or 0);wins=int(v('wins','winning_trades',default=0) or 0);active=int(v('active_days','trading_days',default=0) or 0);integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1;passed=integrity and growth>=.01 and trades>=60 and wins>=36 and active>=45;out={'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(v('max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'pass':passed};Path('artifacts/candidate-05-v50b/91d-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True));print(json.dumps(out,indent=2,sort_keys=True));open(os.environ['GITHUB_OUTPUT'],'a').write(f'passed={str(passed).lower()}\n')
+          PY
+      - name: Commit authoritative v50b result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          root=Path('artifacts/candidate-05-v50b')
+          def load(name):
+              p=root/name
+              return json.loads(p.read_text()) if p.exists() else None
+          model=load('v50_model.json');frozen=load('frozen-assessment.json');d30=load('30d-assessment.json');d91=load('91d-assessment.json')
+          if not model or model.get('validation_pass') is not True:decision='DISCARD_PRE_EVALUATION_VALIDATION'
+          elif not frozen or frozen.get('pass') is not True:decision='DISCARD_FROZEN_WEEKS'
+          elif not d30 or d30.get('pass') is not True:decision='DISCARD_CONTINUOUS_30D'
+          elif not d91 or d91.get('pass') is not True:decision='DISCARD_CONTINUOUS_91D'
+          else:decision='PROMOTE_TO_SHARED_ACCOUNT_AND_912D'
+          result={'schema':'candidate-05-v50b-result-v1','engine':'NautilusTrader BacktestNode','strategy':'strategy_v50b_analog_selector:ActualOrderAnalogStrategy','decision':decision,'model_validation':{key:value for key,value in (model or {}).items() if key!='model'},'frozen':frozen,'continuous_30d':d30,'continuous_91d':d91};Path('research/candidate-05/V50B_RESULT.json').write_text(json.dumps(result,indent=2,sort_keys=True));print(json.dumps(result,indent=2,sort_keys=True))
+          if model and model.get('validation_pass') is True:Path('research/candidate-05/v50_model.json').write_text(json.dumps(model,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V50B_RESULT.json
+          if [ -f research/candidate-05/v50_model.json ];then git add research/candidate-05/v50_model.json;fi
+          git commit -m "candidate-05: record v50b actual-order analog result [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+      - name: Restore active strategy
+        if: always()
+        run: cp /tmp/candidate05-strategy.py research/candidate-05/strategy.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v50b-actual-order-analog-${{ github.sha }}
+          path: artifacts/candidate-05-v50b/**
+          if-no-files-found: warn
+          retention-days: 90
