@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from nautilus_trader.backtest.config import BacktestVenueConfig
 
@@ -58,12 +59,22 @@ class FourInstrumentRunConfigTests(unittest.TestCase):
         self.assertEqual(start, "2025-01-01T00:00:00+00:00")
         self.assertEqual(end, "2025-01-02T23:59:59.999999999+00:00")
 
-    def test_v2_uses_trusted_venue_and_four_data_streams(self) -> None:
+    def test_v2_retains_build_warmup_and_post_run_reports(self) -> None:
         config = json.loads(
             Path(candidate.__file__).with_name("nt_liquidity_config.json").read_text()
         )
         candidate._TRUSTED_CONFIG = config
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory() as temp, patch.object(
+            candidate.sys,
+            "argv",
+            [
+                "runner",
+                "--build-start",
+                "2024-12-30",
+                "--build-end",
+                "2025-01-02",
+            ],
+        ):
             run_config = candidate.build_run_config(
                 Path(temp) / "catalog",
                 [],
@@ -73,6 +84,11 @@ class FourInstrumentRunConfigTests(unittest.TestCase):
             )
         self.assertEqual(len(run_config.venues), 1)
         self.assertEqual(len(run_config.data), len(base.SYMBOLS))
+        self.assertFalse(run_config.dispose_on_completion)
+        self.assertTrue(run_config.raise_exception)
+        self.assertIn("2024-12-30", str(run_config.start))
+        self.assertIn("2025-01-02", str(run_config.end))
+        self.assertIn("2024-12-30", str(run_config.data[0].start_time))
         expected = {str(base.instrument_id(symbol)) for symbol in base.SYMBOLS}
         observed = {
             str(getattr(item, "instrument_id", ""))
