@@ -100,6 +100,7 @@ class QuoteResiliencySignalContracts(unittest.TestCase):
             "ask_remove_qty": 0.0,
             "spread_median_ratio": 1.0,
             "quote_resiliency_observable": True,
+            "native_quote_snapshot_observable": True,
         }
         materialized: list[dict[str, float]] = []
         for row in rows:
@@ -409,6 +410,7 @@ class QuoteResiliencySignalContracts(unittest.TestCase):
                     "ask_remove_qty": 1e9,
                     "spread_median_ratio": 1.0,
                     "quote_resiliency_observable": True,
+            "native_quote_snapshot_observable": True,
                 }
                 for _ in range(4)
             ],

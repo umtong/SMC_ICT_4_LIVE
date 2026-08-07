@@ -7,7 +7,10 @@ import unittest
 import pandas as pd
 
 from quote_resiliency_signals import executable_quote_reference
-from quote_resiliency_strategy import fill_adjusted_exit_is_causal
+from quote_resiliency_strategy import (
+    expected_one_tick_entry_fill,
+    fill_adjusted_exit_is_causal,
+)
 
 
 class ExecutableQuoteReferenceContracts(unittest.TestCase):
@@ -44,6 +47,20 @@ class ExecutableQuoteReferenceContracts(unittest.TestCase):
         row = pd.Series({"bid_close": 99.9, "ask_close": 100.1})
         with self.assertRaises(ValueError):
             executable_quote_reference(row, 0)
+
+
+class ExpectedOneTickFillContracts(unittest.TestCase):
+    def test_long_and_short_fill_one_tick_adverse_from_l1(self) -> None:
+        self.assertEqual(expected_one_tick_entry_fill(100.1, 1, 0.1), 100.2)
+        self.assertEqual(expected_one_tick_entry_fill(99.9, -1, 0.1), 99.8)
+
+    def test_invalid_direction_or_nonpositive_inputs_fail_closed(self) -> None:
+        with self.assertRaises(ValueError):
+            expected_one_tick_entry_fill(100.0, 0, 0.1)
+        with self.assertRaises(ValueError):
+            expected_one_tick_entry_fill(0.0, 1, 0.1)
+        with self.assertRaises(ValueError):
+            expected_one_tick_entry_fill(100.0, 1, 0.0)
 
 
 class FillAdjustedExitTimingContracts(unittest.TestCase):

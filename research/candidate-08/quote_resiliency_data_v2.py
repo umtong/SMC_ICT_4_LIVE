@@ -19,7 +19,7 @@ import quote_resiliency_data as base
 from data import BinanceDataError, _sha256_file
 
 
-DATA_REVISION = "BINANCE_USDM_BOOKTICKER_COMPLETED_10S_V2_TRUE_STREAMING"
+DATA_REVISION = "BINANCE_USDM_BOOKTICKER_COMPLETED_10S_V3_NATIVE_L1_SOURCE_TIME"
 QuoteSource = base.QuoteSource
 aggregate_ordered_raw_quote_chunks = base.aggregate_ordered_raw_quote_chunks
 

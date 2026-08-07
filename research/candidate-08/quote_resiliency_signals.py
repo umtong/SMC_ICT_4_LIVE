@@ -164,6 +164,7 @@ def _finite_columns(row: pd.Series, columns: tuple[str, ...]) -> bool:
 def _quote_observable(row: pd.Series) -> bool:
     return (
         bool(row.get("quote_resiliency_observable", False))
+        and bool(row.get("native_quote_snapshot_observable", False))
         and _finite_columns(row, _QUOTE_COLUMNS)
     )
 

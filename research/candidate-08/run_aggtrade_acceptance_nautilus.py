@@ -192,6 +192,20 @@ def _bars_from_ten_second_frame(
     return bars
 
 
+def _quote_ticks_from_ten_second_frame(
+    frame: pd.DataFrame,
+    *,
+    instrument: CryptoPerpetual,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Optional native L1 hook; bar-only candidates return no quote data."""
+
+    return [], {
+        "revision": "NO_NATIVE_QUOTE_EXECUTION",
+        "rows": 0,
+        "source_contract": "BAR_ONLY_BACKWARD_COMPATIBLE_DEFAULT",
+    }
+
+
 def _funding_updates_from_frame(
     frame: pd.DataFrame,
     *,
@@ -496,6 +510,8 @@ def run_window(
 
     bundles: dict[str, AcceptanceSignalBundle] = {}
     all_bars: list[Bar] = []
+    all_quote_ticks: list[Any] = []
+    quote_tick_quality_by_symbol: dict[str, dict[str, Any]] = {}
     all_funding_updates: list[FundingRateUpdate] = []
     all_mark_price_updates: list[MarkPriceUpdate] = []
     funding_observations_by_instrument: dict[str, tuple[FundingObservation, ...]] = {}
@@ -568,10 +584,18 @@ def run_window(
             instrument=instrument,
         )
         all_bars.extend(bars)
+        quote_ticks, quote_tick_quality = _quote_ticks_from_ten_second_frame(
+            ten_second,
+            instrument=instrument,
+        )
+        all_quote_ticks.extend(quote_ticks)
+        quote_tick_quality_by_symbol[symbol] = dict(quote_tick_quality)
         manifests[symbol] = {
             "instrument_id": str(instrument.id),
             "bar_type": str(bar_types[symbol]),
             "ten_second_bars": len(bars),
+            "native_quote_ticks": len(quote_ticks),
+            "native_quote_tick_quality": dict(quote_tick_quality),
             "aggtrade_quality": agg_quality,
             "aggtrade_files": [asdict(source) for source in agg_sources],
             "kline_quality": kline_quality,
@@ -635,9 +659,14 @@ def run_window(
     )
 
     all_bars.sort(key=lambda bar: (int(bar.ts_event), str(bar.bar_type.instrument_id)))
+    all_quote_ticks.sort(key=lambda item: (int(item.ts_event), str(item.instrument_id)))
     all_funding_updates.sort(key=lambda item: (int(item.ts_event), str(item.instrument_id)))
     all_mark_price_updates.sort(key=lambda item: (int(item.ts_event), str(item.instrument_id)))
     native_bars = [bar.to_pyo3() for bar in all_bars]
+    native_quote_ticks = [
+        item.to_pyo3() if hasattr(item, "to_pyo3") else item
+        for item in all_quote_ticks
+    ]
     native_funding_updates = [
         _native_funding_update(update) for update in all_funding_updates
     ]
@@ -647,6 +676,8 @@ def run_window(
         # Keep each homogeneous Nautilus data type in a separate add_data call, then perform one
         # deterministic global sort across bars and funding updates.
         engine.add_data(native_bars, sort=False)
+        if native_quote_ticks:
+            engine.add_data(native_quote_ticks, sort=False)
         engine.add_data(native_mark_price_updates, sort=False)
         engine.add_data(native_funding_updates, sort=False)
         engine.sort_data()
@@ -739,6 +770,12 @@ def run_window(
                 "stats_general": _result_field(result, "stats_general", {}),
             },
             "cost_assumptions": config["cost_assumptions"],
+            "native_quote_execution": {
+                "enabled": bool(native_quote_ticks),
+                "quote_ticks": len(native_quote_ticks),
+                "by_symbol": quote_tick_quality_by_symbol,
+                "data_order_contract": "BAR_CLOSE_THEN_COMPLETION_QUOTE_AT_PLUS_1NS",
+            },
             "venue_runtime": {
                 "default_leverage": config["venue"]["default_leverage"],
                 "liquidation_enabled": config["venue"]["liquidation_enabled"],

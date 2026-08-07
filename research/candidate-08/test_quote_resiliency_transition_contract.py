@@ -114,6 +114,7 @@ class OneScenarioTransitionPerBucketContract(unittest.TestCase):
         data["ask_close"] = data["close"] + 0.1
         data["spread_median_ratio"] = 1.0
         data["quote_resiliency_observable"] = True
+        data["native_quote_snapshot_observable"] = True
 
         bundle = build_quote_resiliency_signals(
             data=data,

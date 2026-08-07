@@ -20,7 +20,7 @@ import quote_resiliency_features as base
 import quote_resiliency_features_v2 as v2
 
 
-IMPLEMENTATION_REVISION = "CAUSAL_QUOTE_RESILIENCY_FEATURES_V3_DUPLICATE_TIMESTAMP_SAFE"
+IMPLEMENTATION_REVISION = "CAUSAL_QUOTE_RESILIENCY_FEATURES_V4_NATIVE_L1_SOURCE_TIME"
 QUOTE_FLOW_COLUMNS = base.QUOTE_FLOW_COLUMNS
 QUOTE_STATE_COLUMNS = base.QUOTE_STATE_COLUMNS
 TRADE_COLUMNS = base.TRADE_COLUMNS
@@ -166,6 +166,8 @@ def aggregate_quote_events(
         raise ValueError("cadence_seconds must be positive")
 
     data = event_rows.copy()
+    # Preserve exact source exchange time as datetime; float nanoseconds lose precision.
+    data["quote_event_time"] = data.index
     data["size_only_changed"] = data["size_changed"] & ~data["price_changed"]
     labels = _bucket_labels(data.index, seconds=cadence_seconds)
     grouped = data.groupby(labels, sort=True)
@@ -196,6 +198,8 @@ def aggregate_quote_events(
         quote_update_count=("best_bid_price", "size"),
         quote_price_change_count=("price_changed", "sum"),
         quote_size_only_change_count=("size_only_changed", "sum"),
+        quote_first_event_time=("quote_event_time", "first"),
+        quote_last_event_time=("quote_event_time", "last"),
     )
     result.index = pd.DatetimeIndex(result.index)
     result.attrs["raw_duplicate_timestamp_events_preserved"] = True
@@ -211,15 +215,63 @@ def build_quote_resiliency_features(
 ) -> pd.DataFrame:
     """Build exact-cadence features using the schema-safe V2 completed-stream join."""
 
+    cfg = config or QuoteResiliencyConfig()
+    cfg.validate()
     result = v2.build_quote_resiliency_features(
         trade_bars=trade_bars,
         quote_buckets=quote_buckets,
         tick=tick,
-        config=config,
+        config=cfg,
     )
+    if "quote_last_event_time" not in result.columns:
+        result["quote_last_event_ns"] = pd.array([pd.NA] * len(result.index), dtype="Int64")
+        result["quote_source_age_ns"] = pd.array([pd.NA] * len(result.index), dtype="Int64")
+        result["native_quote_snapshot_observable"] = False
+    else:
+        last_times = pd.to_datetime(
+            result["quote_last_event_time"],
+            utc=True,
+            errors="coerce",
+        )
+        exact_last_ns = pd.array(
+            [
+                pd.NA if pd.isna(value) else int(value.as_unit("ns").value)
+                for value in last_times
+            ],
+            dtype="Int64",
+        )
+        bucket_ns = result.index.as_unit("ns").asi8
+        exact_age_ns = pd.array(
+            [
+                pd.NA if pd.isna(value) else int(end_ns) - int(value)
+                for end_ns, value in zip(bucket_ns, exact_last_ns, strict=True)
+            ],
+            dtype="Int64",
+        )
+        result["quote_last_event_ns"] = exact_last_ns
+        result["quote_source_age_ns"] = exact_age_ns
+        cadence_ns = int(cfg.cadence_seconds) * 1_000_000_000
+        valid_age = (
+            result["quote_source_age_ns"].notna()
+            & (result["quote_source_age_ns"] > 0)
+            & (result["quote_source_age_ns"] < cadence_ns)
+        )
+        valid_state = (
+            pd.to_numeric(result["bid_close"], errors="coerce").gt(0.0)
+            & pd.to_numeric(result["ask_close"], errors="coerce").gt(0.0)
+            & pd.to_numeric(result["bid_qty_close"], errors="coerce").gt(0.0)
+            & pd.to_numeric(result["ask_qty_close"], errors="coerce").gt(0.0)
+            & pd.to_numeric(result["bid_close"], errors="coerce").le(
+                pd.to_numeric(result["ask_close"], errors="coerce")
+            )
+        )
+        result["native_quote_snapshot_observable"] = (valid_age & valid_state).fillna(False)
     result.attrs["implementation_revision"] = IMPLEMENTATION_REVISION
     result.attrs["raw_quote_timestamp_contract"] = (
         "DUPLICATES_ALLOWED_ORDERED_BY_TRANSACTION_TIME_THEN_UPDATE_ID"
+    )
+    result.attrs["native_quote_snapshot_contract"] = (
+        "LAST_SOURCE_EVENT_STRICTLY_INSIDE_COMPLETED_BUCKET"
     )
     return result
 

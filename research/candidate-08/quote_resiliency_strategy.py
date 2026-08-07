@@ -9,6 +9,7 @@ breakout-acceptance family.
 
 from __future__ import annotations
 
+from decimal import ROUND_CEILING, ROUND_FLOOR
 from typing import Any
 
 from aggtrade_acceptance_risk_v2 import (
@@ -17,10 +18,11 @@ from aggtrade_acceptance_risk_v2 import (
 )
 from aggtrade_acceptance_strategy import OrderSide, OrderType, TimeInForce
 from logic import risk_sized_quantity
+from quote_resiliency_native_quotes import COMPLETION_DELAY_NS
 from quote_resiliency_signals import QuoteResiliencySignal
 
 
-EXECUTION_ADAPTER_REVISION = "QUOTE_RESILIENCY_NATIVE_EXECUTION_LABELS_V2_CAUSAL_FILL_EXIT"
+EXECUTION_ADAPTER_REVISION = "QUOTE_RESILIENCY_NATIVE_EXECUTION_LABELS_V3_QUOTE_CALLBACK_EXACT_FILL"
 
 
 def fill_adjusted_exit_is_causal(
@@ -38,8 +40,172 @@ def fill_adjusted_exit_is_causal(
     )
 
 
+def expected_one_tick_entry_fill(
+    quote_reference: float,
+    direction: int,
+    tick: float,
+) -> float:
+    """Expected market fill under the configured one-tick adverse fill model."""
+
+    if direction not in (-1, 1):
+        raise ValueError("direction must be -1 or +1")
+    if quote_reference <= 0.0 or tick <= 0.0:
+        raise ValueError("quote_reference and tick must be positive")
+    return quote_reference + tick if direction > 0 else quote_reference - tick
+
+
 class QuoteResiliencyExecutionStrategy(RiskCompleteAggTradeAcceptanceStrategy):
     """Use the incumbent native execution mechanics with quote-scenario evidence labels."""
+
+    def on_start(self) -> None:
+        self._quote_ready_signal_times: set[int] = set()
+        self._quote_signal_instruments_seen: dict[int, set[str]] = {}
+        self._completion_quote_by_signal_time: dict[int, dict[str, dict[str, float]]] = {}
+        self.native_quote_submission_events: list[dict[str, Any]] = []
+        super().on_start()
+        for instrument_id in self.instrument_ids:
+            self.subscribe_quote_ticks(instrument_id)
+
+    def on_bar(self, bar: Any) -> None:
+        signal_time_ns = int(bar.ts_event)
+        signals = self.signals_by_time_ns.get(signal_time_ns, ())
+        removed = None
+        if signals and signal_time_ns not in self.processed_signal_times:
+            removed = self.signals_by_time_ns.pop(signal_time_ns, None)
+        try:
+            super().on_bar(bar)
+        finally:
+            if removed is not None:
+                self.signals_by_time_ns[signal_time_ns] = removed
+        if not signals or signal_time_ns in self.processed_signal_times:
+            return
+        seen = self.signal_instruments_seen.setdefault(signal_time_ns, set())
+        seen.add(str(bar.bar_type.instrument_id))
+        required = {signal.instrument_id for signal in signals}
+        if required.issubset(seen):
+            self.signal_instruments_seen.pop(signal_time_ns, None)
+            self._quote_ready_signal_times.add(signal_time_ns)
+
+    def on_quote_tick(self, tick: Any) -> None:
+        quote_time_ns = int(tick.ts_event)
+        signal_time_ns = quote_time_ns - COMPLETION_DELAY_NS
+        if signal_time_ns not in self._quote_ready_signal_times:
+            return
+        signals = self.signals_by_time_ns.get(signal_time_ns, ())
+        if not signals:
+            raise RuntimeError("completion QuoteTick had no frozen signal bundle")
+        instrument_key = str(tick.instrument_id)
+        bid = float(tick.bid_price.as_double())
+        ask = float(tick.ask_price.as_double())
+        bid_size = float(tick.bid_size.as_double())
+        ask_size = float(tick.ask_size.as_double())
+        snapshots = self._completion_quote_by_signal_time.setdefault(signal_time_ns, {})
+        snapshots[instrument_key] = {
+            "bid": bid,
+            "ask": ask,
+            "bid_size": bid_size,
+            "ask_size": ask_size,
+        }
+        for signal in signals:
+            if signal.instrument_id != instrument_key:
+                continue
+            observed_entry_side = ask if signal.direction > 0 else bid
+            instrument = self.instruments[instrument_key]
+            tolerance = 0.5 * float(instrument.price_increment.as_double()) + 1e-12
+            if abs(observed_entry_side - float(signal.entry_reference)) > tolerance:
+                raise RuntimeError(
+                    "completion QuoteTick did not match the signal's executable L1 reference"
+                )
+        seen = self._quote_signal_instruments_seen.setdefault(signal_time_ns, set())
+        seen.add(instrument_key)
+        required = {signal.instrument_id for signal in signals}
+        if not required.issubset(seen):
+            return
+        if signal_time_ns in self.processed_signal_times:
+            raise RuntimeError("quote-completed signal time processed more than once")
+        self.processed_signal_times.add(signal_time_ns)
+        self._quote_ready_signal_times.discard(signal_time_ns)
+        self._quote_signal_instruments_seen.pop(signal_time_ns, None)
+        self.native_quote_submission_events.append(
+            {
+                "signal_time_ns": signal_time_ns,
+                "quote_time_ns": quote_time_ns,
+                "delay_ns": quote_time_ns - signal_time_ns,
+                "required_instruments": sorted(required),
+                "seen_instruments": sorted(seen),
+                "execution_adapter_revision": EXECUTION_ADAPTER_REVISION,
+            }
+        )
+        try:
+            self._process_signal_time(
+                signal_time_ns,
+                observed_time_ns=quote_time_ns,
+            )
+        finally:
+            self._completion_quote_by_signal_time.pop(signal_time_ns, None)
+
+    def _rounded_geometry(
+        self,
+        signal: QuoteResiliencySignal,
+        funding_state: dict[str, float | int],
+    ) -> dict[str, float | int] | None:
+        instrument = self.instruments.get(signal.instrument_id)
+        if instrument is None:
+            raise RuntimeError(f"signal instrument unavailable: {signal.instrument_id}")
+        tick = float(instrument.price_increment.as_double())
+        fee_rate = float(self.config.effective_fee_rate)
+        quote_reference = float(signal.entry_reference)
+        unrounded_fill = expected_one_tick_entry_fill(
+            quote_reference,
+            signal.direction,
+            tick,
+        )
+        entry = float(instrument.make_price(unrounded_fill).as_double())
+        if signal.direction > 0:
+            stop = self._round_price(instrument, signal.structural_stop, ROUND_FLOOR)
+            target = self._round_price(instrument, signal.external_target, ROUND_FLOOR)
+            valid = stop < entry < target
+            gross_gain = target - entry
+        else:
+            stop = self._round_price(instrument, signal.structural_stop, ROUND_CEILING)
+            target = self._round_price(instrument, signal.external_target, ROUND_CEILING)
+            valid = target < entry < stop
+            gross_gain = entry - target
+        if not valid:
+            return None
+        stop_slippage_reserve = max(
+            tick,
+            float(signal.causal_stop_slippage_reserve),
+        )
+        expected_funding_crossings = int(funding_state["expected_funding_crossings"])
+        expected_funding_rate_abs = float(funding_state["expected_funding_rate_abs"])
+        funding_reserve = (
+            expected_funding_crossings * expected_funding_rate_abs * entry
+        )
+        loss = (
+            abs(entry - stop)
+            + fee_rate * (entry + stop)
+            + stop_slippage_reserve
+            + funding_reserve
+        )
+        # Entry slippage is embedded in ``entry``; retain one adverse tick for target execution.
+        gain = gross_gain - fee_rate * (entry + target) - tick
+        if loss <= 0 or gain <= 0:
+            return None
+        return {
+            **funding_state,
+            "entry_quote_reference": quote_reference,
+            "entry_reference": entry,
+            "expected_entry_fill": entry,
+            "stop": stop,
+            "target": target,
+            "expected_loss_per_unit": loss,
+            "entry_slippage_reserve_per_unit": abs(entry - quote_reference),
+            "stop_slippage_reserve_per_unit": stop_slippage_reserve,
+            "expected_gain_per_unit": gain,
+            "net_reward_risk": gain / loss,
+            "expected_funding_reserve_per_unit": funding_reserve,
+        }
 
     def _request_exit(
         self,
@@ -106,6 +272,17 @@ class QuoteResiliencyExecutionStrategy(RiskCompleteAggTradeAcceptanceStrategy):
             )
             return
         quantity = instrument.make_qty(float(quantity_value))
+        snapshot = self._completion_quote_by_signal_time.get(
+            signal.signal_time_ns, {}
+        ).get(signal.instrument_id)
+        if snapshot is None:
+            raise RuntimeError("native completion quote was unavailable at order submission")
+        visible_entry_side_qty = (
+            float(snapshot["ask_size"]) if signal.direction > 0 else float(snapshot["bid_size"])
+        )
+        if visible_entry_side_qty <= 0.0:
+            raise RuntimeError("native completion quote had nonpositive entry-side size")
+        quantity_to_visible_l1_ratio = float(quantity.as_double()) / visible_entry_side_qty
         if instrument.min_quantity is not None and quantity < instrument.min_quantity:
             self._record_skip(
                 signal,
@@ -187,6 +364,13 @@ class QuoteResiliencyExecutionStrategy(RiskCompleteAggTradeAcceptanceStrategy):
             "signal_revision": signal.details.get("signal_revision"),
             "execution_adapter_revision": EXECUTION_ADAPTER_REVISION,
             "risk_accounting_revision": RISK_ACCOUNTING_REVISION,
+            "native_quote_submission_time_ns": int(ts_event_ns),
+            "native_quote_submission_delay_ns": int(ts_event_ns) - int(signal.signal_time_ns),
+            "native_quote_execution_contract": "BAR_CLOSE_THEN_COMPLETION_QUOTE_AT_PLUS_1NS",
+            "entry_quote_reference": geometry["entry_quote_reference"],
+            "expected_entry_fill": geometry["expected_entry_fill"],
+            "visible_entry_side_qty": visible_entry_side_qty,
+            "quantity_to_visible_l1_ratio": quantity_to_visible_l1_ratio,
             "interaction_time_ns": signal.interaction_time_ns,
             "response_time_ns": signal.response_time_ns,
             "retest_time_ns": signal.retest_time_ns,
@@ -201,6 +385,13 @@ class QuoteResiliencyExecutionStrategy(RiskCompleteAggTradeAcceptanceStrategy):
                 "instrument_id": signal.instrument_id,
                 "direction": signal.direction_name,
                 "signal_time_ns": signal.signal_time_ns,
+                "native_quote_submission_time_ns": int(ts_event_ns),
+                "native_quote_submission_delay_ns": int(ts_event_ns) - int(signal.signal_time_ns),
+                "native_quote_execution_contract": "BAR_CLOSE_THEN_COMPLETION_QUOTE_AT_PLUS_1NS",
+                "entry_quote_reference": geometry["entry_quote_reference"],
+                "expected_entry_fill": geometry["expected_entry_fill"],
+                "visible_entry_side_qty": visible_entry_side_qty,
+                "quantity_to_visible_l1_ratio": quantity_to_visible_l1_ratio,
                 "interaction_time_ns": signal.interaction_time_ns,
                 "response_time_ns": signal.response_time_ns,
                 "retest_time_ns": signal.retest_time_ns,
@@ -313,5 +504,6 @@ class QuoteResiliencyExecutionStrategy(RiskCompleteAggTradeAcceptanceStrategy):
 __all__ = [
     "EXECUTION_ADAPTER_REVISION",
     "QuoteResiliencyExecutionStrategy",
+    "expected_one_tick_entry_fill",
     "fill_adjusted_exit_is_causal",
 ]

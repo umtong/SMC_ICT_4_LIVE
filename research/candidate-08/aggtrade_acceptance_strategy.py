@@ -169,23 +169,48 @@ class AggTradeAcceptanceStrategy(Strategy):
         elif self.entry_inflight and ts_event_ns >= self.config.trading_end_ns:
             self._cancel_inflight_entry("EVALUATION_WINDOW_END_BEFORE_ENTRY", ts_event_ns, close)
 
-    def _process_signal_time(self, ts_event_ns: int) -> None:
+    def _process_signal_time(
+        self,
+        ts_event_ns: int,
+        *,
+        observed_time_ns: int | None = None,
+    ) -> None:
+        execution_time_ns = (
+            int(ts_event_ns) if observed_time_ns is None else int(observed_time_ns)
+        )
+        if execution_time_ns < int(ts_event_ns):
+            raise ValueError("signal execution cannot precede signal completion")
         signals = self.signals_by_time_ns.get(ts_event_ns, ())
         if not signals:
             return
         if not (self.config.trading_start_ns <= ts_event_ns < self.config.trading_end_ns):
             for signal in signals:
-                self._record_skip(signal, "OUTSIDE_EVALUATION_WINDOW", ts_event_ns, {})
+                self._record_skip(
+                    signal,
+                    "OUTSIDE_EVALUATION_WINDOW",
+                    execution_time_ns,
+                    {},
+                )
             return
         if not self._globally_available():
             for signal in signals:
-                self._record_skip(signal, "GLOBAL_PORTFOLIO_OR_ORDER_NOT_AVAILABLE", ts_event_ns, {})
+                self._record_skip(
+                    signal,
+                    "GLOBAL_PORTFOLIO_OR_ORDER_NOT_AVAILABLE",
+                    execution_time_ns,
+                    {},
+                )
             return
         evaluations: list[tuple[float, AcceptanceSignal, dict[str, float | int]]] = []
         for signal in signals:
             funding_state = self._funding_cost_state(signal)
             if funding_state is None:
-                self._record_skip(signal, "MISSING_CAUSAL_FUNDING_STATE", ts_event_ns, {})
+                self._record_skip(
+                    signal,
+                    "MISSING_CAUSAL_FUNDING_STATE",
+                    execution_time_ns,
+                    {},
+                )
                 continue
             if float(funding_state["minutes_to_next_funding"]) <= int(
                 self.config.funding_avoidance_minutes
@@ -193,19 +218,24 @@ class AggTradeAcceptanceStrategy(Strategy):
                 self._record_skip(
                     signal,
                     "FUNDING_BOUNDARY_TOO_CLOSE",
-                    ts_event_ns,
+                    execution_time_ns,
                     dict(funding_state),
                 )
                 continue
             geometry = self._rounded_geometry(signal, funding_state)
             if geometry is None:
-                self._record_skip(signal, "INVALID_ROUNDED_OR_COST_AFTER_GEOMETRY", ts_event_ns, {})
+                self._record_skip(
+                    signal,
+                    "INVALID_ROUNDED_OR_COST_AFTER_GEOMETRY",
+                    execution_time_ns,
+                    {},
+                )
                 continue
             if geometry["net_reward_risk"] < float(self.config.minimum_net_reward_risk):
                 self._record_skip(
                     signal,
                     "INSUFFICIENT_COST_AFTER_EXTERNAL_TARGET",
-                    ts_event_ns,
+                    execution_time_ns,
                     geometry,
                 )
                 continue
@@ -227,10 +257,10 @@ class AggTradeAcceptanceStrategy(Strategy):
             self._record_skip(
                 alternate,
                 "LOWER_PRIORITY_SIMULTANEOUS_GLOBAL_SCENARIO",
-                ts_event_ns,
+                execution_time_ns,
                 alternate_geometry,
             )
-        self._submit_signal(selected, geometry, ts_event_ns)
+        self._submit_signal(selected, geometry, execution_time_ns)
 
     def _globally_available(self) -> bool:
         if self.active_signal is not None or self.entry_inflight or self.exit_requested:

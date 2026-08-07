@@ -32,6 +32,10 @@ from quote_resiliency_features_v3 import (
     QuoteResiliencyConfig,
     build_quote_resiliency_features,
 )
+from quote_resiliency_native_quotes import (
+    NATIVE_QUOTE_REVISION,
+    completion_quote_ticks_from_frame,
+)
 from quote_resiliency_signals import (
     CONTINUATION_FAMILY,
     REVERSAL_FAMILY,
@@ -46,7 +50,7 @@ from quote_resiliency_strategy import (
 
 
 CONFIG_IMPLEMENTATION_REVISION = "CAUSAL_EXTERNAL_LIQUIDITY_QUOTE_RESILIENCY_V1"
-RUNNER_REVISION = "QUOTE_RESILIENCY_NATIVE_NAUTILUS_ADAPTER_V1"
+RUNNER_REVISION = "QUOTE_RESILIENCY_NATIVE_NAUTILUS_ADAPTER_V2_QUOTE_TICK_EXECUTION"
 UNCLASSIFIED_FAMILY = "UNCLASSIFIED_QUOTE_RESILIENCY_SCENARIO"
 BASE_ABLATION = "none"
 OFI_ABLATION = "remove_confirmation_quote_ofi_direction_gate"
@@ -92,6 +96,27 @@ def _signal_family(signal: Any) -> str:
     if isinstance(details, Mapping) and details.get("scenario_family"):
         return str(details["scenario_family"])
     return UNCLASSIFIED_FAMILY
+
+
+def _native_quote_ticks_from_frame(
+    frame: pd.DataFrame,
+    *,
+    instrument: Any,
+) -> tuple[list[Any], dict[str, Any]]:
+    ticks, quality = completion_quote_ticks_from_frame(
+        frame,
+        instrument=instrument,
+        cadence_seconds=_feature_config().cadence_seconds,
+    )
+    return ticks, {
+        "revision": quality.revision,
+        "rows": quality.rows,
+        "first_completion_time_ns": quality.first_completion_time_ns,
+        "last_completion_time_ns": quality.last_completion_time_ns,
+        "maximum_source_age_ns": quality.maximum_source_age_ns,
+        "completion_delay_ns": quality.completion_delay_ns,
+        "source_contract": quality.source_contract,
+    }
 
 
 def _build_signals(**kwargs: Any) -> QuoteResiliencySignalBundle:
@@ -151,6 +176,9 @@ def _load_trade_and_quote_features(*args: Any, **kwargs: Any):
         "rows": len(features.index),
         "observable_rows": int(features["quote_resiliency_observable"].sum()),
         "unobservable_rows": int((~features["quote_resiliency_observable"]).sum()),
+        "native_quote_observable_rows": int(
+            features["native_quote_snapshot_observable"].sum()
+        ),
         "quote_quality": quote_quality,
         "quote_files": [
             {
@@ -272,6 +300,7 @@ def _suite_summary(
             "feature_revision": FEATURE_REVISION,
             "data_revision": DATA_REVISION,
             "execution_adapter_revision": EXECUTION_ADAPTER_REVISION,
+            "native_quote_revision": NATIVE_QUOTE_REVISION,
             "risk_accounting_revision": RISK_ACCOUNTING_REVISION,
             "trade_path_diagnostic_revision": DIAGNOSTIC_REVISION,
             "ablation": _ACTIVE_ABLATION,
@@ -339,6 +368,9 @@ execution.runner._build_router_signals = _build_signals
 execution.runner._signal_family = _signal_family
 execution.runner.base_runner.build_acceptance_signals = _build_signals
 execution.runner.base_runner.load_ten_second_aggtrades = _load_trade_and_quote_features
+execution.runner.base_runner._quote_ticks_from_ten_second_frame = (
+    _native_quote_ticks_from_frame
+)
 execution.runner.base_runner.AggTradeAcceptanceStrategy = QuoteResiliencyExecutionStrategy
 execution.runner.base_runner._write_merged_events = _write_merged_events
 execution.runner.base_runner._global_signal_summary = _global_signal_summary

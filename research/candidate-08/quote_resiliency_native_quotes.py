@@ -26,7 +26,7 @@ import pandas as pd
 from nautilus_trader.model.data import QuoteTick
 
 
-NATIVE_QUOTE_REVISION = "CHECKSUM_BOOKTICKER_COMPLETION_QUOTE_TICK_V1"
+NATIVE_QUOTE_REVISION = "CHECKSUM_BOOKTICKER_COMPLETION_QUOTE_TICK_V2_EXACT_SOURCE_TIME"
 COMPLETION_DELAY_NS = 1
 _REQUIRED_COLUMNS = (
     "bid_close",
@@ -54,6 +54,13 @@ def _as_float(row: pd.Series, name: str) -> float:
     if not isfinite(value):
         raise ValueError(f"{name} is not finite")
     return value
+
+
+def _as_int(row: pd.Series, name: str) -> int:
+    value = row[name]
+    if pd.isna(value):
+        raise ValueError(f"{name} is unavailable")
+    return int(value)
 
 
 def completion_quote_ticks_from_frame(
@@ -89,7 +96,7 @@ def completion_quote_ticks_from_frame(
         if not bool(row["native_quote_snapshot_observable"]):
             continue
         bucket_end_ns = int(bucket_end.as_unit("ns").value)
-        source_event_ns = int(_as_float(row, "quote_last_event_ns"))
+        source_event_ns = _as_int(row, "quote_last_event_ns")
         source_age_ns = bucket_end_ns - source_event_ns
         if source_age_ns <= 0 or source_age_ns >= cadence_ns:
             raise ValueError(
