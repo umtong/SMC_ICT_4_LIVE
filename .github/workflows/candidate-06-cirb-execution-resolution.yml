@@ -1,0 +1,219 @@
+name: Candidate 06 CIRB Parent-Frozen 5S Response Resolution
+
+on:
+  push:
+    branches:
+      - research/candidate-06
+    paths:
+      - ".github/workflows/candidate-06-cirb-execution-resolution.yml"
+      - "research/candidate-06/cirb_5s_payload.part-*"
+      - "research/candidate-06/cirb_execution_resolution.py"
+      - "research/candidate-06/cirb_five_second_nautilus.py"
+      - "research/candidate-06/run_cirb_execution_resolution_week.py"
+      - "research/candidate-06/run_cirb_execution_resolution_matrix.py"
+      - "research/candidate-06/test_cirb_execution_resolution.py"
+      - "research/candidate-06/CIRB_EXECUTION_RESOLUTION.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-cirb-execution-resolution
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  parent-frozen-resolution:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize parent-frozen five-second implementation
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if compgen -G "research/candidate-06/cirb_5s_payload.part-*" > /dev/null; then
+            cat research/candidate-06/cirb_5s_payload.part-* | base64 -d > /tmp/candidate06-cirb-5s.tar.gz
+            printf '%s  %s\n' \
+              '7d7b4fb336fda795dd7ef475202129ddaeac4cadb34589c7f6e40e4d82aec136' \
+              '/tmp/candidate06-cirb-5s.tar.gz' | sha256sum -c -
+            tar -xzf /tmp/candidate06-cirb-5s.tar.gz -C research/candidate-06
+            rm -f /tmp/candidate06-cirb-5s.tar.gz
+          else
+            test -s research/candidate-06/cirb_execution_resolution.py
+            test -s research/candidate-06/cirb_five_second_nautilus.py
+            test -s research/candidate-06/run_cirb_execution_resolution_week.py
+            test -s research/candidate-06/run_cirb_execution_resolution_matrix.py
+            test -s research/candidate-06/test_cirb_execution_resolution.py
+            test -s research/candidate-06/CIRB_EXECUTION_RESOLUTION.md
+          fi
+
+      - name: Restore checksum-verified research cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-06
+          key: candidate-06-cirb-5s-${{ runner.os }}-v1
+          restore-keys: |
+            candidate-06-cirb-5s-
+            candidate-06-
+
+      - name: Verify fixed NautilusTrader environment
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(f"NAUTILUS_VERSION={actual}")
+          PY
+
+      - name: Verify causal and executable contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-06/cirb_execution_resolution.py \
+            research/candidate-06/cirb_five_second_nautilus.py \
+            research/candidate-06/run_cirb_execution_resolution_week.py \
+            research/candidate-06/run_cirb_execution_resolution_matrix.py \
+            research/candidate-06/test_cirb_execution_resolution.py
+          python research/candidate-06/test_cirb_execution_resolution.py
+          python research/candidate-06/test_open_interest_metrics_data.py
+          python research/candidate-06/test_open_interest_deleveraging_engine.py
+          python research/candidate-06/test_crowding_inventory_response_engine.py
+          python research/candidate-06/test_signal_submission_timing_contract.py
+          python - <<'PY'
+          import inspect
+          from nautilus_trader.model.data import BarType
+          from cirb_five_second_nautilus import run_cirb_five_second_nautilus_backtest
+          from cirb_execution_resolution import build_child_plans
+
+          bar_type = BarType.from_str(
+              "BTCUSDT-PERP.BINANCE-5-SECOND-LAST-EXTERNAL"
+          )
+          assert "5-SECOND" in str(bar_type)
+          runner = inspect.getsource(run_cirb_five_second_nautilus_backtest)
+          logic = inspect.getsource(build_child_plans)
+          assert "BacktestEngine" in runner
+          assert "engine.add_data(bars)" in runner
+          assert "event_bar_can_trade\": False" in logic
+          assert "minimum_structural_rr" in logic
+          assert "oidb_response_flow_ratio" in logic
+          assert "pnl" not in logic.lower()
+          print("CIRB parent-frozen five-second contracts verified")
+          PY
+
+      - name: Run staged response-resolution experiment
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/cirb-execution-resolution
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts/candidate-06
+          python research/candidate-06/run_cirb_execution_resolution_matrix.py \
+            --output artifacts/candidate-06/cirb-execution-resolution \
+            > artifacts/candidate-06-cirb-execution-resolution.stdout \
+            2> artifacts/candidate-06-cirb-execution-resolution.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Guarantee terminal evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-06/cirb-execution-resolution
+          mkdir -p "$root"
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > "$root/workflow_exit_code.txt"
+          if [ ! -f "$root/summary.json" ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-06/cirb-execution-resolution")
+          payload = {
+              "long_evaluation_authorized": False,
+              "selected": None,
+              "terminal_status": "IMPLEMENTATION_OR_DATA_FAILURE_BEFORE_SUMMARY",
+          }
+          (root / "summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+          cp artifacts/candidate-06-cirb-execution-resolution.stdout \
+            "$root/workflow_stdout.txt" 2>/dev/null || true
+          cp artifacts/candidate-06-cirb-execution-resolution.stderr \
+            "$root/workflow_stderr.txt" 2>/dev/null || true
+
+      - name: Commit deterministic evidence only
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-06/cirb_execution_resolution.py \
+            research/candidate-06/cirb_five_second_nautilus.py \
+            research/candidate-06/run_cirb_execution_resolution_week.py \
+            research/candidate-06/run_cirb_execution_resolution_matrix.py \
+            research/candidate-06/test_cirb_execution_resolution.py \
+            research/candidate-06/CIRB_EXECUTION_RESOLUTION.md
+          git rm -f --ignore-unmatch research/candidate-06/cirb_5s_payload.part-*
+          root=artifacts/candidate-06/cirb-execution-resolution
+          git add -f \
+            "$root/summary.json" \
+            "$root/SUMMARY.md" \
+            "$root/workflow_exit_code.txt" \
+            "$root/workflow_stdout.txt" \
+            "$root/workflow_stderr.txt" 2>/dev/null || true
+          find "$root" -type f \
+            \( -name 'metrics.json' \
+            -o -name 'parent_audit.json' \
+            -o -name 'child_plans.json' \
+            -o -name 'run.json' \
+            -o -name '*data_quality.json' \
+            -o -name 'futures_metrics_quality.json' \
+            -o -name 'errors.log' \) \
+            -print0 | xargs -0 -r git add -f
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record candidate-06 CIRB 5S resolution evidence [candidate-06 evidence]"
+          git pull --rebase origin research/candidate-06
+          git push origin HEAD:research/candidate-06
+
+      - name: Upload complete execution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-cirb-5s-${{ github.sha }}
+          path: artifacts/candidate-06/cirb-execution-resolution
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce staged decision
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          exit "$code"
