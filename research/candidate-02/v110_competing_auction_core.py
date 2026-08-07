@@ -1,9 +1,9 @@
 """Causal competing-auction resolver for candidate-02 v110.
 
-The v107 high-dispersion/low-efficiency auction is only an event detector.  A
+The v107 high-dispersion/low-efficiency auction is only an event detector. A
 trade is emitted only when, after the original reversal confirmation, completed
 one-minute closes resolve the competition in the rotation direction before
-price re-accepts the excursion direction.  NautilusTrader owns all execution,
+price re-accepts the excursion direction. NautilusTrader owns all execution,
 fees, positions and NAV.
 """
 from __future__ import annotations
@@ -73,7 +73,7 @@ def build_rotation_signals(
     end = _normalize(evaluation_end)
 
     # Generate causal auction events without letting the old symmetric target
-    # decide which events exist.  This is detection, not execution.
+    # decide which events exist. This is detection, not execution.
     detector = replace(
         config,
         target_extension=0.0,
@@ -174,7 +174,10 @@ def build_rotation_signals(
             cost_after_reward_risk=rr,
             score=rr + float(event.score),
             max_hold_minutes=config.maximum_holding_minutes,
-            source_feature_available_time_ns=event.observed_time_ns,
+            # The adapter contract defines feature availability as the moment a
+            # scheduled order becomes actionable. The last market observation
+            # actually used by the decision remains resolution_ns below.
+            source_feature_available_time_ns=activation_ns,
             source_max_market_time_ns=resolution_ns,
             details=details,
         )
@@ -188,4 +191,6 @@ def build_rotation_signals(
             raise AssertionError("v110 requires one completed minute after the resolution decision")
         if signal.observed_time_ns - signal.source_max_market_time_ns != NS_MINUTE:
             raise AssertionError("v110 activation delay is not exactly one minute")
+        if signal.source_feature_available_time_ns != signal.observed_time_ns:
+            raise AssertionError("v110 adapter availability contract mismatch")
     return result
