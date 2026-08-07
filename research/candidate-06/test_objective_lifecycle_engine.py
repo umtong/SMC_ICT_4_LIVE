@@ -96,6 +96,42 @@ class ObjectiveLifecycleTests(unittest.TestCase):
         self.assertEqual(engine._objective_ladder[1].kind, "EQUAL_HIGH")
         self.assertEqual(transitions[0].reason_code, "PREEXISTING_UNRESOLVED_OBJECTIVE_BOUND")
 
+    def test_objective_ledger_uses_independent_namespace(self):
+        engine = self.engine()
+        engine._bias = bias("LONG")
+        engine._liquidity_pools = [_LiquidityPool("UPPER", 118.0, 1, 8)]
+        transitions = engine._bind_objective_ladder(
+            bar(10, open_=101.0, high=110.0, low=100.0, close=109.0),
+            engine._bias,
+        )
+        transition = transitions[0]
+        self.assertEqual(transition.scenario_id, "BIAS-1:UOAM-OBJECTIVE")
+        self.assertNotEqual(transition.scenario_id, engine._bias.context_id)
+        self.assertEqual(transition.previous_state, "IDLE")
+        self.assertEqual(transition.next_state, "OBJECTIVE_ACTIVE")
+
+    def test_entry_armed_origin_invalidation_uses_objective_state(self):
+        engine = self.engine()
+        engine._bias = bias("LONG")
+        engine._objective_context_id = "BIAS-1"
+        engine._liquidity_pools = [_LiquidityPool("UPPER", 118.0, 1, 8)]
+        engine._bind_objective_ladder(
+            bar(10, open_=101.0, high=110.0, low=100.0, close=109.0),
+            engine._bias,
+        )
+        engine._current_objective().entry_armed = True
+        step = engine._advance_bias(
+            snap(11, 11, open_=105.0, high=105.5, low=100.5, close=100.8),
+        )
+        resets = [
+            value for value in step.transitions
+            if value.event_type == "UOAM_OBJECTIVE_TRANSITION"
+            and value.reason_code == "UOAM_BOUND_IMPULSE_ORIGIN_REBALANCED"
+        ]
+        self.assertEqual(len(resets), 1)
+        self.assertEqual(resets[0].previous_state, "OBJECTIVE_ENTRY_ARMED")
+        self.assertTrue(resets[0].scenario_id.endswith(":UOAM-OBJECTIVE"))
+
     def test_consumption_advances_ladder_then_ends_context(self):
         engine = self.engine(uoam_use_origin_invalidation=False)
         engine._bias = bias("LONG")

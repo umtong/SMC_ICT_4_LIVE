@@ -76,6 +76,12 @@ class UnresolvedObjectiveLifecycleEngine(HierarchicalMultiLiquidityEngine):
         )
 
     @staticmethod
+    def _objective_scenario_id(context_id: str) -> str:
+        """Return an objective ledger namespace independent of the parent bias."""
+
+        return f"{context_id}:UOAM-OBJECTIVE"
+
+    @staticmethod
     def _objective_transition(
         *,
         scenario_id: str,
@@ -154,8 +160,8 @@ class UnresolvedObjectiveLifecycleEngine(HierarchicalMultiLiquidityEngine):
             self._clear_objectives()
             return (
                 self._objective_transition(
-                    scenario_id=bias.context_id,
-                    previous_state="BIAS_ACTIVE",
+                    scenario_id=self._objective_scenario_id(bias.context_id),
+                    previous_state="IDLE",
                     next_state="RESET",
                     reason="NO_PREEXISTING_UNRESOLVED_OBJECTIVE",
                     reference_price=bar.close,
@@ -193,8 +199,8 @@ class UnresolvedObjectiveLifecycleEngine(HierarchicalMultiLiquidityEngine):
         objective = ladder[0]
         return (
             self._objective_transition(
-                scenario_id=bias.context_id,
-                previous_state="BIAS_ACTIVE",
+                scenario_id=self._objective_scenario_id(bias.context_id),
+                previous_state="IDLE",
                 next_state="OBJECTIVE_ACTIVE",
                 reason="PREEXISTING_UNRESOLVED_OBJECTIVE_BOUND",
                 reference_price=objective.level,
@@ -265,7 +271,7 @@ class UnresolvedObjectiveLifecycleEngine(HierarchicalMultiLiquidityEngine):
         while objective is not None and self._objective_crossed(objective, snapshot):
             transitions.append(
                 self._objective_transition(
-                    scenario_id=bias.context_id,
+                    scenario_id=self._objective_scenario_id(bias.context_id),
                     previous_state=("OBJECTIVE_ENTRY_ARMED" if objective.entry_armed else "OBJECTIVE_ACTIVE"),
                     next_state="OBJECTIVE_CONSUMED",
                     reason="BOUND_OBJECTIVE_CONSUMED",
@@ -290,7 +296,7 @@ class UnresolvedObjectiveLifecycleEngine(HierarchicalMultiLiquidityEngine):
             if objective is not None:
                 transitions.append(
                     self._objective_transition(
-                        scenario_id=bias.context_id,
+                        scenario_id=self._objective_scenario_id(bias.context_id),
                         previous_state="OBJECTIVE_CONSUMED",
                         next_state="OBJECTIVE_ACTIVE",
                         reason="NEXT_PREEXISTING_OBJECTIVE_ACTIVATED",
@@ -324,10 +330,16 @@ class UnresolvedObjectiveLifecycleEngine(HierarchicalMultiLiquidityEngine):
                 else close >= bias.origin
             )
             if origin_lost:
+                objective = self._current_objective()
+                objective_previous_state = (
+                    "OBJECTIVE_ENTRY_ARMED"
+                    if objective is not None and objective.entry_armed
+                    else "OBJECTIVE_ACTIVE"
+                )
                 transitions.append(
                     self._objective_transition(
-                        scenario_id=bias.context_id,
-                        previous_state="OBJECTIVE_ACTIVE",
+                        scenario_id=self._objective_scenario_id(bias.context_id),
+                        previous_state=objective_previous_state,
                         next_state="RESET",
                         reason="UOAM_BOUND_IMPULSE_ORIGIN_REBALANCED",
                         reference_price=bias.origin,
@@ -425,7 +437,7 @@ class UnresolvedObjectiveLifecycleEngine(HierarchicalMultiLiquidityEngine):
         }
         signal: ScenarioSignal = replace(step.signal, family="UOAM", details=details)
         transition = self._objective_transition(
-            scenario_id=bias.context_id,
+            scenario_id=self._objective_scenario_id(bias.context_id),
             previous_state="OBJECTIVE_ACTIVE",
             next_state="OBJECTIVE_ENTRY_ARMED",
             reason="BOUND_OBJECTIVE_ENTRY_ARMED",
