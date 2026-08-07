@@ -13,6 +13,7 @@ from strategy_global_slot_wrappers_v5 import FinalSharedAccountV32Strategy
 from strategy_global_slot_wrappers_v5 import FinalSharedAccountV36Strategy
 from strategy_global_slot_wrappers_v5 import FinalSharedAccountV37Strategy
 from strategy_global_slot_wrappers_v6 import FinalSharedAccountV43Strategy
+from strategy_global_slot_wrappers_v7 import FinalSharedAccountV46Strategy
 
 
 def _variant(name: str, base: type) -> type:
@@ -36,6 +37,7 @@ _BASES = {
     "v36": FinalSharedAccountV36Strategy,
     "v37": FinalSharedAccountV37Strategy,
     "v43": FinalSharedAccountV43Strategy,
+    "v46": FinalSharedAccountV46Strategy,
 }
 
 for _family, _base in _BASES.items():
@@ -54,6 +56,7 @@ WINNER_TO_FAMILY = {
     "strategy_v36_cross_asset_repricing_gate:SystemicRepricingGateStrategy": "v36",
     "strategy_v37_smt_session_divergence:SmtSessionDivergenceStrategy": "v37",
     "strategy_v41_target_reset_participation:TargetResetParticipationStrategy": "v43",
+    "strategy_v46_no_post_retrace_breakaway:NoPostRetraceBreakawayStrategy": "v46",
 }
 
 
