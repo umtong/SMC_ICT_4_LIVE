@@ -15,6 +15,7 @@ from strategy_v30_external_acceptance_retest import ExternalAcceptanceFirstRetes
 from strategy_v31_impact_resiliency_reversal import ImpactResiliencyReversalStrategy
 from strategy_v32_queue_pressure_release import QueuePressureReleaseStrategy
 from strategy_v36_cross_asset_repricing_gate import SystemicRepricingGateMixin
+from strategy_v37_smt_session_divergence import SmtSessionDivergenceStrategy
 
 
 class SharedAccountEntryLifecycleMixin:
@@ -202,6 +203,13 @@ class SharedAccountV36Strategy(
     """Evaluate the peer gate before acquiring the one global entry slot."""
 
 
+class SharedAccountV37Strategy(
+    SharedAccountEntryLifecycleMixin,
+    SmtSessionDivergenceStrategy,
+):
+    """Add SMT session observations while preserving one executable slot."""
+
+
 __all__ = [
     "SharedAccountEntryLifecycleMixin",
     "SharedAccountNoEarlySponsoredStrategy",
@@ -211,4 +219,5 @@ __all__ = [
     "SharedAccountV31Strategy",
     "SharedAccountV32Strategy",
     "SharedAccountV36Strategy",
+    "SharedAccountV37Strategy",
 ]
