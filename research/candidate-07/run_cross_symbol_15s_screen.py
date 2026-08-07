@@ -11,6 +11,7 @@ from typing import Any
 import backtest as base
 import backtest_pre_attack_value as replay
 from binance_usdm_instruments import binance_usdm_perpetual
+from data_aggtrades_seeded import load_aggtrade_1s_bundle_seeded
 from nested_liquidity_sweep_scenario import (
     build_causal_signals as build_fifteen_second_signals,
     discover as discover_fifteen_second,
@@ -30,6 +31,7 @@ def _worker(
     original_discover = local.discover_structural_signals
     original_builder = local.build_causal_signals
     original_provider = replay.TestInstrumentProvider.btcusdt_perp_binance
+    original_loader = replay.load_aggtrade_1s_bundle
     local.discover_structural_signals = (
         lambda *, config, bundle, start, end, require_retest: discover_fifteen_second(
             config=config,
@@ -44,6 +46,7 @@ def _worker(
     replay.TestInstrumentProvider.btcusdt_perp_binance = staticmethod(
         lambda: binance_usdm_perpetual(symbol)
     )
+    replay.load_aggtrade_1s_bundle = load_aggtrade_1s_bundle_seeded
     try:
         metrics = local._run_variant(
             args=args,
@@ -58,6 +61,9 @@ def _worker(
                 "logic_or_parameter_change_from_btc": False,
                 "single_pending_or_open_slot": True,
                 "instrument_definition": "project grid, no arbitrary max notional",
+                "leading_zero_flow_policy": (
+                    "carry last actual pre-window aggregate-trade price with zero flow"
+                ),
             }
         )
         write_json_atomic(
@@ -70,6 +76,7 @@ def _worker(
         replay.TestInstrumentProvider.btcusdt_perp_binance = staticmethod(
             original_provider
         )
+        replay.load_aggtrade_1s_bundle = original_loader
         engine = getattr(local, "_EmptySignalSafeBacktestEngine", None)
         if engine is not None:
             engine.delegate_type = None
