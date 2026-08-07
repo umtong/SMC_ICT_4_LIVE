@@ -1,0 +1,297 @@
+name: candidate-04-v52-common-factor-development
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/v52_trigger.json"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-04-v52-common-factor-development
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      SOURCE_RUN_ID: "31191716971"
+      BUILD_START: 2023-02-25
+      BUILD_END: 2023-03-06
+      SIGNAL_START: 2023-02-27
+      SIGNAL_END_EXCLUSIVE: 2023-03-06
+      NT_END_INCLUSIVE: 2023-03-05
+      ROOT: artifacts/candidate-04-v52-development
+      EVIDENCE: research/candidate-04/evidence-v52-development.json
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Restore the already-completed V51 four-asset observations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v51-rich-*-${{ env.SOURCE_RUN_ID }}
+          path: restored-rich
+          merge-multiple: false
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+
+      - name: Verify source, causality and exact seven-day contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-04/common_factor_accepted_auction_compiler.py \
+            research/candidate-04/tests/test_common_factor_accepted_auction_compiler.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_common_factor_accepted_auction_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_conditional_adverse_fill_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_global_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_multi_asset_risk_evidence.py' -v
+          python - <<'PY'
+          from datetime import date
+          start=date.fromisoformat('2023-02-27')
+          end=date.fromisoformat('2023-03-05')
+          assert (end-start).days+1 == 7
+          PY
+
+      - name: Normalize restored rich streams and configs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT/rich" "$ROOT/config"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          base=json.loads(Path('research/candidate-04/inventory_transfer_config.json').read_text())
+          root=Path(os.environ['ROOT'])/'config'
+          for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'):
+              value=dict(base); value['symbol']=symbol
+              (root/f'{symbol}.json').write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
+          PY
+          for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+            source="$(find restored-rich -type f -path "*${symbol}*/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+            test -n "$source"
+            ln -s "$(realpath "$source")" "$ROOT/rich/$symbol"
+          done
+
+      - name: Compile and execute V52 full common-factor router
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          export C04_BUILD_START="$BUILD_START" C04_BUILD_END="$BUILD_END"
+          export C04_EVALUATION_START="$SIGNAL_START" C04_EVALUATION_END="$SIGNAL_END_EXCLUSIVE"
+          mkdir -p "$ROOT/full/all_signals" "$ROOT/full/signals"
+          python research/candidate-04/common_factor_accepted_auction_compiler.py \
+            --rich-root "$ROOT/rich" \
+            --config-root "$ROOT/config" \
+            --kline-root .cache/candidate-04-v52/compiler-klines \
+            --evaluation-start "$SIGNAL_START" \
+            --evaluation-end "$SIGNAL_END_EXCLUSIVE" \
+            --output "$ROOT/full/all_signals" \
+            > "$ROOT/full/compiler.log"
+          python research/candidate-04/causal_target_registry_enricher.py \
+            --signals "$ROOT/full/all_signals/BTCUSDT/signals.json" \
+            --base-config "$ROOT/config/BTCUSDT.json" \
+            --rich-dir "$ROOT/rich/BTCUSDT" \
+            --kline-dir .cache/candidate-04-v52/target-klines/BTCUSDT \
+            --build-start "$BUILD_START" \
+            --build-end "$BUILD_END" \
+            --output-dir "$ROOT/full/signals/BTCUSDT" \
+            --download-klines \
+            --cost-rate 0.00075 \
+            --minimum-net-r 1.20 \
+            > "$ROOT/full/target.log"
+          for symbol in ETHUSDT SOLUSDT XRPUSDT; do
+            mkdir -p "$ROOT/full/signals/$symbol"
+            cp "$ROOT/full/all_signals/$symbol/signals.json" "$ROOT/full/signals/$symbol/signals.json"
+            cp "$ROOT/full/all_signals/$symbol/summary.json" "$ROOT/full/signals/$symbol/summary.json"
+          done
+          python research/candidate-04/nt_multi_asset_rich_backtest_v44.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --signals-root "$ROOT/full/signals" \
+            --build-start "$BUILD_START" \
+            --build-end "$BUILD_END" \
+            --evaluation-start "$SIGNAL_START" \
+            --evaluation-end "$NT_END_INCLUSIVE" \
+            --cache .cache/candidate-04-v52/nautilus-full \
+            --output "$ROOT/full/nautilus" \
+            --min-trades 5 \
+            --min-active-days 3 \
+            --min-win-rate 0.60 \
+            --min-geometric-daily 0.01 \
+            > "$ROOT/full/nautilus.log" 2>&1
+          test -s "$ROOT/full/nautilus/metrics.json"
+          test -s "$ROOT/full/nautilus/risk_evidence.json"
+
+      - name: Run one precommitted common-factor ablation if full router fails
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          m=json.loads((Path(os.environ['ROOT'])/'full/nautilus/metrics.json').read_text())
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write(f"FULL_PASS={str(bool(m.get('candidate_pass'))).lower()}\n")
+              f.write(f"RUN_ABLATION={str(not bool(m.get('candidate_pass'))).lower()}\n")
+          PY
+          if test "$RUN_ABLATION" != true; then exit 0; fi
+          export C04_BUILD_START="$BUILD_START" C04_BUILD_END="$BUILD_END"
+          export C04_EVALUATION_START="$SIGNAL_START" C04_EVALUATION_END="$SIGNAL_END_EXCLUSIVE"
+          mkdir -p "$ROOT/ablation/all_signals" "$ROOT/ablation/signals"
+          python research/candidate-04/common_factor_accepted_auction_compiler.py \
+            --rich-root "$ROOT/rich" \
+            --config-root "$ROOT/config" \
+            --kline-root .cache/candidate-04-v52/compiler-klines \
+            --evaluation-start "$SIGNAL_START" \
+            --evaluation-end "$SIGNAL_END_EXCLUSIVE" \
+            --output "$ROOT/ablation/all_signals" \
+            --minimum-breadth 0 \
+            --minimum-common-return -1000000 \
+            --minimum-common-flow -1000000 \
+            > "$ROOT/ablation/compiler.log"
+          python research/candidate-04/causal_target_registry_enricher.py \
+            --signals "$ROOT/ablation/all_signals/BTCUSDT/signals.json" \
+            --base-config "$ROOT/config/BTCUSDT.json" \
+            --rich-dir "$ROOT/rich/BTCUSDT" \
+            --kline-dir .cache/candidate-04-v52/target-klines/BTCUSDT \
+            --build-start "$BUILD_START" \
+            --build-end "$BUILD_END" \
+            --output-dir "$ROOT/ablation/signals/BTCUSDT" \
+            --download-klines \
+            --cost-rate 0.00075 \
+            --minimum-net-r 1.20 \
+            > "$ROOT/ablation/target.log"
+          for symbol in ETHUSDT SOLUSDT XRPUSDT; do
+            mkdir -p "$ROOT/ablation/signals/$symbol"
+            cp "$ROOT/ablation/all_signals/$symbol/signals.json" "$ROOT/ablation/signals/$symbol/signals.json"
+            cp "$ROOT/ablation/all_signals/$symbol/summary.json" "$ROOT/ablation/signals/$symbol/summary.json"
+          done
+          python research/candidate-04/nt_multi_asset_rich_backtest_v44.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --signals-root "$ROOT/ablation/signals" \
+            --build-start "$BUILD_START" \
+            --build-end "$BUILD_END" \
+            --evaluation-start "$SIGNAL_START" \
+            --evaluation-end "$NT_END_INCLUSIVE" \
+            --cache .cache/candidate-04-v52/nautilus-ablation \
+            --output "$ROOT/ablation/nautilus" \
+            --min-trades 5 \
+            --min-active-days 3 \
+            --min-win-rate 0.60 \
+            --min-geometric-daily 0.01 \
+            > "$ROOT/ablation/nautilus.log" 2>&1
+          test -s "$ROOT/ablation/nautilus/metrics.json"
+
+      - name: Record exact V52 development decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          def load(path):
+              return json.loads(path.read_text()) if path.exists() else None
+          full_summary=load(root/'full/all_signals/summary.json')
+          full_metrics=load(root/'full/nautilus/metrics.json')
+          full_risk=load(root/'full/nautilus/risk_evidence.json')
+          ablation_summary=load(root/'ablation/all_signals/summary.json')
+          ablation_metrics=load(root/'ablation/nautilus/metrics.json')
+          implementation=bool(full_metrics and full_risk and full_metrics.get('global_entry_pass') and full_metrics.get('risk_pass') and full_risk.get('risk_pass'))
+          full_pass=bool(implementation and full_metrics.get('candidate_pass'))
+          if not implementation:
+              decision='IMPLEMENTATION_FAILURE_FIX_AND_RERUN_IDENTICAL_DEVELOPMENT_WEEK'
+          elif full_pass:
+              decision='PROMOTE_TO_PROSPECTIVE_UNTOUCHED_FIRST_WEEK_LOCK'
+          else:
+              decision='DISCARD_V52_AFTER_SINGLE_COMMON_FACTOR_ABLATION'
+          evidence={
+              'candidate':'candidate-04-v52-common-factor-accepted-auction-continuation',
+              'stage':'rapid_development_screen',
+              'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+              'engine':'NautilusTrader 1.230.0 BacktestNode',
+              'seven_day_contract':{
+                  'signal_start_inclusive':os.environ['SIGNAL_START'],
+                  'signal_end_exclusive':os.environ['SIGNAL_END_EXCLUSIVE'],
+                  'nautilus_end_inclusive':os.environ['NT_END_INCLUSIVE'],
+              },
+              'full_compiler':full_summary,
+              'full_metrics':full_metrics,
+              'full_risk_evidence':full_risk,
+              'single_precommitted_ablation':{
+                  'removed_variable':'cross_sectional_common_factor_acceptance',
+                  'compiler':ablation_summary,
+                  'metrics':ablation_metrics,
+              } if ablation_summary or ablation_metrics else None,
+              'implementation_pass':implementation,
+              'full_router_pass':full_pass,
+              'decision':decision,
+              'prospective_week_allowed':full_pass,
+              'long_evaluation_allowed':False,
+              'project_target_reached':False,
+              'performance_recalculated_outside_nautilus':False,
+          }
+          Path(os.environ['EVIDENCE']).write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          (root/'decision.json').write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(evidence,indent=2,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v52-development-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v52-development
+            research/candidate-04/evidence-v52-development.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Persist V52 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE" 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research(candidate-04): record V52 development evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
