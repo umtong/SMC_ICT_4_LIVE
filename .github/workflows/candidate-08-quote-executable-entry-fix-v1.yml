@@ -1,0 +1,243 @@
+name: candidate-08-quote-executable-entry-fix-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.fix-quote-executable-entry-v1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-quote-executable-entry-fix-v1
+  cancel-in-progress: true
+
+jobs:
+  fix-and-verify:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.fix-quote-executable-entry-v1
+      OUTPUT_DIR: research/candidate-08/evidence/quote-executable-entry-fix-v1
+      LOG: research/candidate-08/evidence/quote-executable-entry-fix-v1/contracts.log
+      STATUS: research/candidate-08/evidence/quote-executable-entry-fix-v1/exit_status.txt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply executable L1 entry and causal forced-exit fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(source: str, old: str, new: str, label: str) -> str:
+              if new in source:
+                  return source
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one anchor, found {count}")
+              return source.replace(old, new, 1)
+
+          # Signal/cost reference: completed executable L1 quote, not the last aggregate trade.
+          path = Path("research/candidate-08/quote_resiliency_signals.py")
+          source = path.read_text(encoding="utf-8")
+          source = source.replace(
+              'SIGNAL_REVISION = "EXTERNAL_LIQUIDITY_QUOTE_RESILIENCY_SIGNALS_V1"',
+              'SIGNAL_REVISION = "EXTERNAL_LIQUIDITY_QUOTE_RESILIENCY_SIGNALS_V2_EXECUTABLE_L1_ENTRY"',
+          )
+          source = replace_once(
+              source,
+              '    "spread_median_ratio",\n)\n\n\ndef _finite_columns',
+              '    "spread_median_ratio",\n    "bid_close",\n    "ask_close",\n)\n\n\ndef executable_quote_reference(row: pd.Series, direction: int) -> float:\n    """Return the completed side-specific L1 price observable at confirmation.\n\n    Scenario confirmation continues to use aggregate-trade close and flow.  Only the expected\n    executable market-entry reference changes: long orders start from the best ask and short orders\n    start from the best bid.  The inherited one-tick adverse fill reserve is then applied once.\n    """\n\n    if direction not in (-1, 1):\n        raise ValueError("direction must be -1 or +1")\n    try:\n        bid = float(row["bid_close"])\n        ask = float(row["ask_close"])\n    except (KeyError, TypeError, ValueError) as exc:\n        raise ValueError("completed executable quote is unavailable") from exc\n    if not isfinite(bid) or not isfinite(ask) or bid <= 0.0 or ask <= 0.0:\n        raise ValueError("completed executable quote is invalid")\n    if bid > ask:\n        raise ValueError("completed executable quote is crossed")\n    return ask if direction > 0 else bid\n\n\ndef _finite_columns',
+              "signal executable quote helper",
+          )
+          source = replace_once(
+              source,
+              '    entry = float(row["close"])\n    if family == REVERSAL_FAMILY:',
+              '    trade_confirmation_close = float(row["close"])\n    try:\n        entry = executable_quote_reference(row, direction)\n    except ValueError as exc:\n        reason = "INVALID_EXECUTABLE_L1_QUOTE"\n        diagnostics[reason] += 1\n        rejected.append(\n            _rejection_record(\n                pending,\n                symbol=symbol,\n                reason=reason,\n                timestamp_ns=timestamp_ns,\n                details={"error": str(exc)},\n            )\n        )\n        return None\n    if family == REVERSAL_FAMILY:',
+              "signal entry reference",
+          )
+          source = replace_once(
+              source,
+              '            "direction": "LONG" if direction > 0 else "SHORT",\n            "aggressive_pressure_ratio":',
+              '            "direction": "LONG" if direction > 0 else "SHORT",\n            "trade_confirmation_close": trade_confirmation_close,\n            "best_bid_close": float(row["bid_close"]),\n            "best_ask_close": float(row["ask_close"]),\n            "executable_entry_reference": entry,\n            "aggressive_pressure_ratio":',
+              "confirmation event execution details",
+          )
+          source = replace_once(
+              source,
+              '            "signal_revision": SIGNAL_REVISION,\n            "outward_direction": pending.outward,',
+              '            "signal_revision": SIGNAL_REVISION,\n            "entry_reference_contract": "COMPLETED_SIDE_SPECIFIC_L1_QUOTE_PLUS_ONE_ADVERSE_TICK_RESERVE",\n            "trade_confirmation_close": trade_confirmation_close,\n            "best_bid_close": float(row["bid_close"]),\n            "best_ask_close": float(row["ask_close"]),\n            "outward_direction": pending.outward,',
+              "signal execution details",
+          )
+          source = replace_once(
+              source,
+              '    "build_quote_resiliency_signals",\n]',
+              '    "build_quote_resiliency_signals",\n    "executable_quote_reference",\n]',
+              "signal export",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          # Native execution guard: a fill-adjusted forced exit is impossible at or before open.
+          path = Path("research/candidate-08/quote_resiliency_strategy.py")
+          source = path.read_text(encoding="utf-8")
+          source = source.replace(
+              'EXECUTION_ADAPTER_REVISION = "QUOTE_RESILIENCY_NATIVE_EXECUTION_LABELS_V1"',
+              'EXECUTION_ADAPTER_REVISION = "QUOTE_RESILIENCY_NATIVE_EXECUTION_LABELS_V2_CAUSAL_FILL_EXIT"',
+          )
+          source = replace_once(
+              source,
+              '\n\nclass QuoteResiliencyExecutionStrategy(RiskCompleteAggTradeAcceptanceStrategy):',
+              '\n\ndef fill_adjusted_exit_is_causal(\n    reason: str,\n    requested_time_ns: int,\n    position_open_time_ns: int | None,\n) -> bool:\n    """Allow fill-adjusted emergency exit only after a native position-open event."""\n\n    if reason != "FILL_ADJUSTED_RISK_BUDGET_EXCEEDED":\n        return True\n    return (\n        position_open_time_ns is not None\n        and int(requested_time_ns) > int(position_open_time_ns)\n    )\n\n\nclass QuoteResiliencyExecutionStrategy(RiskCompleteAggTradeAcceptanceStrategy):',
+              "fill exit helper",
+          )
+          source = replace_once(
+              source,
+              '    def _submit_signal(\n',
+              '    def _request_exit(\n        self,\n        reason: str,\n        ts_event_ns: int,\n        close: float,\n    ) -> None:\n        if not fill_adjusted_exit_is_causal(\n            reason,\n            ts_event_ns,\n            self.position_open_time_ns,\n        ):\n            if reason == "FILL_ADJUSTED_RISK_BUDGET_EXCEEDED":\n                if self.position_open_time_ns is None:\n                    raise RuntimeError(\n                        "fill-adjusted exit requested before POSITION_OPENED evidence"\n                    )\n                # Preserve the pending exit for the first separately completed bar.  This guard\n                # also protects against synchronous native callback nesting at the entry stamp.\n                self._deferred_fill_adjusted_exit_after_ns = int(\n                    self.position_open_time_ns\n                )\n                if self.trade_intents:\n                    intent = self.trade_intents[-1]\n                    intent["premature_fill_adjusted_exit_blocked_count"] = int(\n                        intent.get("premature_fill_adjusted_exit_blocked_count", 0)\n                    ) + 1\n                    intent["last_blocked_fill_adjusted_exit_time_ns"] = int(\n                        ts_event_ns\n                    )\n                    intent["fill_adjusted_exit_guard_revision"] = (\n                        EXECUTION_ADAPTER_REVISION\n                    )\n                return\n        super()._request_exit(reason, ts_event_ns, close)\n\n    def _submit_signal(\n',
+              "strategy forced exit guard",
+          )
+          source = replace_once(
+              source,
+              '    "QuoteResiliencyExecutionStrategy",\n]',
+              '    "QuoteResiliencyExecutionStrategy",\n    "fill_adjusted_exit_is_causal",\n]',
+              "strategy export",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          # Preserve raw callbacks even when strict merged-chain validation rejects the run.
+          path = Path("research/candidate-08/run_quote_resiliency_nautilus.py")
+          source = path.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              '    base_runner = execution.runner.base_runner\n    materialized: list[tuple[Any, int]] = []\n',
+              '    base_runner = execution.runner.base_runner\n    base_runner.write_json_atomic(\n        path.with_name("raw_execution_events.json"),\n        {"events": base_runner._json_safe(execution_events)},\n    )\n    materialized: list[tuple[Any, int]] = []\n',
+              "raw execution event evidence",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          # Existing synthetic state-machine fixtures now expose executable bid/ask closes.
+          path = Path("research/candidate-08/test_quote_resiliency_signals.py")
+          source = path.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              '        return pd.DataFrame([{**defaults, **row} for row in rows], index=index)\n',
+              '        materialized: list[dict[str, float]] = []\n        for row in rows:\n            item = {**defaults, **row}\n            item.setdefault("bid_close", float(item["close"]) - 0.1)\n            item.setdefault("ask_close", float(item["close"]) + 0.1)\n            materialized.append(item)\n        return pd.DataFrame(materialized, index=index)\n',
+              "signal test quote fixture",
+          )
+          source = replace_once(
+              source,
+              '        self.assertEqual(signal.target_id, "day-low-98")\n',
+              '        self.assertEqual(signal.target_id, "day-low-98")\n        self.assertAlmostEqual(signal.entry_reference, 99.5)\n        self.assertAlmostEqual(signal.details["trade_confirmation_close"], 99.6)\n',
+              "short executable entry assertion",
+          )
+          source = replace_once(
+              source,
+              '        self.assertEqual(signal.target_id, "day-high-100")\n',
+              '        self.assertEqual(signal.target_id, "day-high-100")\n        self.assertAlmostEqual(signal.entry_reference, 98.5)\n        self.assertAlmostEqual(signal.details["trade_confirmation_close"], 98.4)\n',
+              "long executable entry assertion",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          path = Path("research/candidate-08/test_quote_resiliency_transition_contract.py")
+          source = path.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              '        data["spread_median_ratio"] = 1.0\n',
+              '        data["bid_close"] = data["close"] - 0.1\n        data["ask_close"] = data["close"] + 0.1\n        data["spread_median_ratio"] = 1.0\n',
+              "transition quote fixture",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          # Diagnostic-only success excludes the intentionally false base-contract flags.
+          path = Path("research/candidate-08/quote_resiliency_stage_decision.py")
+          source = path.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              '        "base_contract_includes_both_flow_response_families",\n        "base_quote_ofi_confirmation_contract",\n',
+              '        "base_contract_includes_both_flow_response_families",\n        "base_contract_not_ablated",\n        "base_quote_ofi_confirmation_contract",\n',
+              "diagnostic base-only exclusions",
+          )
+          path.write_text(source, encoding="utf-8")
+          PY
+
+      - name: Verify pinned environment and controlled implementation corrections
+        id: contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$OUTPUT_DIR"
+          rm -f "$LOG" "$STATUS"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/quote_resiliency_signals.py \
+              research/candidate-08/quote_resiliency_strategy.py \
+              research/candidate-08/run_quote_resiliency_nautilus.py \
+              research/candidate-08/quote_resiliency_stage_decision.py \
+              research/candidate-08/test_quote_resiliency_signals.py \
+              research/candidate-08/test_quote_resiliency_transition_contract.py \
+              research/candidate-08/test_quote_resiliency_execution_price_contract.py \
+              research/candidate-08/test_quote_resiliency_native_adapter.py \
+              research/candidate-08/test_quote_resiliency_stage_decision.py
+            python research/candidate-08/test_quote_resiliency_signals.py -v
+            python research/candidate-08/test_quote_resiliency_transition_contract.py -v
+            python research/candidate-08/test_quote_resiliency_execution_price_contract.py -v
+            python research/candidate-08/test_quote_resiliency_native_adapter.py -v
+            python research/candidate-08/test_quote_resiliency_stage_decision.py -v
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit implementation corrections and evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- \
+            research/candidate-08/quote_resiliency_signals.py \
+            research/candidate-08/quote_resiliency_strategy.py \
+            research/candidate-08/run_quote_resiliency_nautilus.py \
+            research/candidate-08/quote_resiliency_stage_decision.py \
+            research/candidate-08/test_quote_resiliency_signals.py \
+            research/candidate-08/test_quote_resiliency_transition_contract.py \
+            "$OUTPUT_DIR" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: use executable L1 entry and causal risk exit [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce contract status
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS_VALUE: ${{ steps.contracts.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
