@@ -19,26 +19,33 @@ class DirectionalSequentialFlowLogicTest(unittest.TestCase):
             minimum_absolute_flow=0.1,
         )
 
-    def test_opposing_evidence_resets_only_matching_directional_range(self) -> None:
+    def test_opposing_evidence_resets_range_only_when_likelihood_reaches_zero(self) -> None:
         state = DirectionalSequentialFlowState()
         for index in range(3):
             state = self.update(state, 0.2, index).state
         self.assertEqual(state.upward.first_index, 0)
         original_high = state.upward.range_high
 
-        opposed = self.update(state, -0.2, 3)
-        self.assertTrue(opposed.upward_restarted)
-        self.assertEqual(opposed.state.upward.observations, 0)
-        self.assertEqual(opposed.state.downward.first_index, 3)
-        self.assertNotEqual(opposed.state.downward.range_high, original_high)
+        # One contrary observation weakens, but correctly does not erase, the
+        # fixed likelihood ratio. Continue until the upward LLR reaches zero.
+        restarted = False
+        for index in range(3, 6):
+            opposed = self.update(state, -0.2, index)
+            state = opposed.state
+            restarted = restarted or opposed.upward_restarted
+        self.assertTrue(restarted)
+        self.assertEqual(state.upward.observations, 0)
+        self.assertEqual(state.downward.first_index, 3)
+        self.assertNotEqual(state.downward.range_high, original_high)
 
     def test_new_directional_episode_cannot_reuse_old_price_extreme(self) -> None:
         state = DirectionalSequentialFlowState()
         for index in range(3):
             state = self.update(state, 0.2, index, high=200.0, low=100.0).state
-        state = self.update(state, -0.2, 3, high=101.0, low=99.0).state
-        state = self.update(state, 0.2, 4, high=105.0, low=104.0).state
-        self.assertEqual(state.upward.first_index, 4)
+        for index in range(3, 6):
+            state = self.update(state, -0.2, index, high=101.0, low=99.0).state
+        state = self.update(state, 0.2, 6, high=105.0, low=104.0).state
+        self.assertEqual(state.upward.first_index, 6)
         self.assertEqual(state.upward.range_high, 105.0)
         self.assertEqual(state.upward.range_low, 104.0)
 
