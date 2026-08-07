@@ -158,6 +158,11 @@ class LogicConfig:
         if self.min_net_r <= 0:
             raise ValueError("min_net_r must be positive")
 
+    @property
+    def causal_episode_bars(self) -> int:
+        """Bars for which a confirmation remains attributable to its sweep."""
+        return self.internal_tf_bars * self.internal_lookback
+
 
 @dataclass(slots=True)
 class Pool:
@@ -1401,6 +1406,9 @@ class CausalAuctionEngine:
             return None
         if bar.ts_ns > a.pool.trigger_end_ts_ns:
             self._terminal(a, bar, "SESSION_DECISION_WINDOW_EXPIRED")
+            return None
+        if a.elapsed > self.config.causal_episode_bars and bar.ts_ns >= a.pool.trigger_start_ts_ns:
+            self._terminal(a, bar, "CAUSAL_EPISODE_MEMORY_EXPIRED")
             return None
         if a.elapsed > self.config.event_expiry_bars and bar.ts_ns >= a.pool.trigger_start_ts_ns:
             self._terminal(a, bar, "COMPETING_HYPOTHESES_UNRESOLVED")
