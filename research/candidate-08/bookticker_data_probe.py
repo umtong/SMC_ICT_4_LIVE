@@ -9,15 +9,16 @@ before a quote-resiliency scenario is designed.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import date
 from hashlib import sha256
 import json
-from math import isfinite
 from pathlib import Path
 from typing import Any, Iterator
 import zipfile
 
+import numpy as np
 import pandas as pd
 
 from data import BinanceDataError, _download, _sha256_file
@@ -150,6 +151,38 @@ def _read_chunks(path: Path, *, chunksize: int = 500_000) -> tuple[str, Iterator
     return members[0], iterator()
 
 
+def _weighted_quantile(counts: Counter[float], quantile: float) -> float:
+    if not counts:
+        raise BinanceDataError("cannot compute spread quantile from empty counts")
+    total = sum(counts.values())
+    threshold = quantile * max(0, total - 1)
+    cumulative = 0
+    for value, count in sorted(counts.items()):
+        cumulative += count
+        if cumulative - 1 >= threshold:
+            return float(value)
+    return float(max(counts))
+
+
+def _first_rows(chunk: pd.DataFrame, remaining: int) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    if remaining <= 0:
+        return records
+    for row in chunk.head(remaining).itertuples(index=False, name=None):
+        record = dict(zip(BOOK_TICKER_COLUMNS, row, strict=True))
+        records.append(
+            {
+                key: (
+                    int(value)
+                    if key in {"update_id", "transaction_time", "event_time"}
+                    else float(value)
+                )
+                for key, value in record.items()
+            }
+        )
+    return records
+
+
 def probe_bookticker(*, symbol: str, day: date, cache_dir: Path) -> dict[str, Any]:
     path, url, checksum_url = _verified_archive(cache_dir, symbol, day)
     member, chunks = _read_chunks(path)
@@ -169,15 +202,13 @@ def probe_bookticker(*, symbol: str, day: date, cache_dir: Path) -> dict[str, An
     last_transaction_ms: int | None = None
     maximum_gap_ms = 0
     gaps_over_one_second = 0
-    spreads: list[pd.Series] = []
+    spread_counts: Counter[float] = Counter()
     previous: dict[str, float | int] | None = None
-    seen_update_ids: set[int] = set()
 
-    numeric_columns = BOOK_TICKER_COLUMNS
     for chunk in chunks:
-        for column in numeric_columns:
+        for column in BOOK_TICKER_COLUMNS:
             chunk[column] = pd.to_numeric(chunk[column], errors="coerce")
-        invalid_mask = chunk[list(numeric_columns)].isna().any(axis=1)
+        invalid_mask = chunk[list(BOOK_TICKER_COLUMNS)].isna().any(axis=1)
         invalid_numeric += int(invalid_mask.sum())
         chunk = chunk.loc[~invalid_mask].copy()
         if chunk.empty:
@@ -192,63 +223,99 @@ def probe_bookticker(*, symbol: str, day: date, cache_dir: Path) -> dict[str, An
         ):
             chunk[column] = chunk[column].astype("float64")
 
-        crossed_quotes += int((chunk["best_bid_price"] > chunk["best_ask_price"]).sum())
-        nonpositive_qty += int(
-            ((chunk["best_bid_qty"] <= 0.0) | (chunk["best_ask_qty"] <= 0.0)).sum()
-        )
-        event_before_transaction += int(
-            (chunk["event_time"] < chunk["transaction_time"]).sum()
-        )
-        spreads.append(chunk["best_ask_price"] - chunk["best_bid_price"])
+        bid = chunk["best_bid_price"].to_numpy(dtype=np.float64, copy=False)
+        bid_qty = chunk["best_bid_qty"].to_numpy(dtype=np.float64, copy=False)
+        ask = chunk["best_ask_price"].to_numpy(dtype=np.float64, copy=False)
+        ask_qty = chunk["best_ask_qty"].to_numpy(dtype=np.float64, copy=False)
+        update_id = chunk["update_id"].to_numpy(dtype=np.int64, copy=False)
+        transaction_ms = chunk["transaction_time"].to_numpy(dtype=np.int64, copy=False)
+        event_ms = chunk["event_time"].to_numpy(dtype=np.int64, copy=False)
 
-        for record in chunk.to_dict("records"):
-            update_id = int(record["update_id"])
-            transaction_ms = int(record["transaction_time"])
-            if update_id in seen_update_ids:
-                duplicate_update_ids += 1
-            seen_update_ids.add(update_id)
-            if previous is not None:
-                if update_id < int(previous["update_id"]):
-                    nonmonotonic_update_ids += 1
-                previous_ms = int(previous["transaction_time"])
-                if transaction_ms < previous_ms:
-                    nonmonotonic_transaction_times += 1
-                gap_ms = max(0, transaction_ms - previous_ms)
-                maximum_gap_ms = max(maximum_gap_ms, gap_ms)
-                if gap_ms > 1000:
-                    gaps_over_one_second += 1
-                price_changed = (
-                    float(record["best_bid_price"]) != float(previous["best_bid_price"])
-                    or float(record["best_ask_price"]) != float(previous["best_ask_price"])
-                )
-                size_changed = (
-                    float(record["best_bid_qty"]) != float(previous["best_bid_qty"])
-                    or float(record["best_ask_qty"]) != float(previous["best_ask_qty"])
-                )
-                if price_changed:
-                    price_change_events += 1
-                elif size_changed:
-                    size_only_change_events += 1
-                else:
-                    unchanged_events += 1
-            previous = record
-            if first_transaction_ms is None:
-                first_transaction_ms = transaction_ms
-            last_transaction_ms = transaction_ms
-            if len(first_rows) < 5:
-                first_rows.append(
-                    {
-                        key: (int(value) if key in {"update_id", "transaction_time", "event_time"} else float(value))
-                        for key, value in record.items()
-                    }
-                )
+        crossed_quotes += int(np.count_nonzero(bid > ask))
+        nonpositive_qty += int(np.count_nonzero((bid_qty <= 0.0) | (ask_qty <= 0.0)))
+        event_before_transaction += int(np.count_nonzero(event_ms < transaction_ms))
+        rounded_spread = np.round(ask - bid, decimals=12)
+        values, counts = np.unique(rounded_spread, return_counts=True)
+        spread_counts.update(
+            {float(value): int(count) for value, count in zip(values, counts, strict=True)}
+        )
+
+        if previous is None:
+            previous_update = update_id[:-1]
+            current_update = update_id[1:]
+            previous_time = transaction_ms[:-1]
+            current_time = transaction_ms[1:]
+            previous_bid = bid[:-1]
+            current_bid = bid[1:]
+            previous_ask = ask[:-1]
+            current_ask = ask[1:]
+            previous_bid_qty = bid_qty[:-1]
+            current_bid_qty = bid_qty[1:]
+            previous_ask_qty = ask_qty[:-1]
+            current_ask_qty = ask_qty[1:]
+        else:
+            previous_update = np.concatenate(
+                ([int(previous["update_id"])], update_id[:-1])
+            )
+            current_update = update_id
+            previous_time = np.concatenate(
+                ([int(previous["transaction_time"])], transaction_ms[:-1])
+            )
+            current_time = transaction_ms
+            previous_bid = np.concatenate(
+                ([float(previous["best_bid_price"])], bid[:-1])
+            )
+            current_bid = bid
+            previous_ask = np.concatenate(
+                ([float(previous["best_ask_price"])], ask[:-1])
+            )
+            current_ask = ask
+            previous_bid_qty = np.concatenate(
+                ([float(previous["best_bid_qty"])], bid_qty[:-1])
+            )
+            current_bid_qty = bid_qty
+            previous_ask_qty = np.concatenate(
+                ([float(previous["best_ask_qty"])], ask_qty[:-1])
+            )
+            current_ask_qty = ask_qty
+
+        if current_update.size:
+            update_delta = current_update - previous_update
+            duplicate_update_ids += int(np.count_nonzero(update_delta == 0))
+            nonmonotonic_update_ids += int(np.count_nonzero(update_delta < 0))
+            time_delta = current_time - previous_time
+            nonmonotonic_transaction_times += int(np.count_nonzero(time_delta < 0))
+            nonnegative_gap = np.maximum(time_delta, 0)
+            maximum_gap_ms = max(maximum_gap_ms, int(nonnegative_gap.max(initial=0)))
+            gaps_over_one_second += int(np.count_nonzero(nonnegative_gap > 1000))
+
+            price_changed = (current_bid != previous_bid) | (current_ask != previous_ask)
+            size_changed = (
+                (current_bid_qty != previous_bid_qty)
+                | (current_ask_qty != previous_ask_qty)
+            )
+            price_change_events += int(np.count_nonzero(price_changed))
+            size_only_change_events += int(np.count_nonzero(~price_changed & size_changed))
+            unchanged_events += int(np.count_nonzero(~price_changed & ~size_changed))
+
+        if first_transaction_ms is None:
+            first_transaction_ms = int(transaction_ms[0])
+        last_transaction_ms = int(transaction_ms[-1])
+        if len(first_rows) < 5:
+            first_rows.extend(_first_rows(chunk, 5 - len(first_rows)))
+        previous = {
+            "update_id": int(update_id[-1]),
+            "transaction_time": int(transaction_ms[-1]),
+            "best_bid_price": float(bid[-1]),
+            "best_bid_qty": float(bid_qty[-1]),
+            "best_ask_price": float(ask[-1]),
+            "best_ask_qty": float(ask_qty[-1]),
+        }
         rows += len(chunk.index)
 
     if rows == 0 or previous is None or first_transaction_ms is None or last_transaction_ms is None:
         raise BinanceDataError(f"no valid bookTicker rows in {path.name}")
-    spread = pd.concat(spreads, ignore_index=True)
-    finite_spread = spread[spread.map(isfinite)]
-    if finite_spread.empty:
+    if not spread_counts:
         raise BinanceDataError(f"no finite bid-ask spreads in {path.name}")
 
     manifest = SourceManifest(
@@ -270,7 +337,7 @@ def probe_bookticker(*, symbol: str, day: date, cache_dir: Path) -> dict[str, An
             "invalid_numeric_rows": invalid_numeric,
             "crossed_quote_rows": crossed_quotes,
             "nonpositive_quantity_rows": nonpositive_qty,
-            "duplicate_update_id_rows": duplicate_update_ids,
+            "duplicate_adjacent_update_id_rows": duplicate_update_ids,
             "nonmonotonic_update_id_rows": nonmonotonic_update_ids,
             "nonmonotonic_transaction_time_rows": nonmonotonic_transaction_times,
             "event_time_before_transaction_time_rows": event_before_transaction,
@@ -285,11 +352,12 @@ def probe_bookticker(*, symbol: str, day: date, cache_dir: Path) -> dict[str, An
             "unchanged_events": unchanged_events,
         },
         "spread": {
-            "minimum": float(finite_spread.min()),
-            "median": float(finite_spread.median()),
-            "q90": float(finite_spread.quantile(0.90)),
-            "q99": float(finite_spread.quantile(0.99)),
-            "maximum": float(finite_spread.max()),
+            "minimum": float(min(spread_counts)),
+            "median": _weighted_quantile(spread_counts, 0.50),
+            "q90": _weighted_quantile(spread_counts, 0.90),
+            "q99": _weighted_quantile(spread_counts, 0.99),
+            "maximum": float(max(spread_counts)),
+            "distinct_values": len(spread_counts),
         },
         "usable_for_quote_resiliency_research": bool(
             invalid_numeric == 0
@@ -321,9 +389,7 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(args.output.resolve(), result)
     print(json.dumps(result, indent=2, sort_keys=True), flush=True)
-    if not result["usable_for_quote_resiliency_research"]:
-        return 2
-    return 0
+    return 0 if result["usable_for_quote_resiliency_research"] else 2
 
 
 if __name__ == "__main__":
