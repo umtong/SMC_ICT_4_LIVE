@@ -88,6 +88,33 @@ class OpenInterestDeleveragingBifurcationEngine:
             details=dict(details or {}),
         )
 
+    @staticmethod
+    def _entry_scenario_id(wave: _Wave) -> str:
+        return f"{wave.scenario_id}:ENTRY"
+
+    @classmethod
+    def _entry_transition(
+        cls,
+        wave: _Wave,
+        *,
+        reason: str,
+        reference: float,
+        details: Mapping[str, Any],
+    ) -> ScenarioTransition:
+        return ScenarioTransition(
+            scenario_id=cls._entry_scenario_id(wave),
+            event_type="OIDB_ENTRY_TRANSITION",
+            previous_state="IDLE",
+            next_state="ENTRY_ARMED",
+            reason_code=reason,
+            reference_price=reference,
+            details={
+                "context_scenario_id": wave.scenario_id,
+                "branch": wave.branch,
+                **dict(details),
+            },
+        )
+
     def _prune(self, index: int) -> None:
         cutoff = index - int(self.params.get("oidb_history_minutes", 1440))
         while self._drop_history and self._drop_history[0][0] < cutoff:
@@ -272,7 +299,7 @@ class OpenInterestDeleveragingBifurcationEngine:
         wave.state = "EXHAUSTION_REVERSAL_SIGNALLED"
         wave.branch = "REVERSAL"
         wave.signal_index = snapshot.index
-        transition = self._transition(
+        context_transition = self._transition(
             wave,
             "DELEVERAGING_WAVE_OBSERVED",
             wave.state,
@@ -280,8 +307,14 @@ class OpenInterestDeleveragingBifurcationEngine:
             obs.close,
             {"stop": stop, "target": target[0], "target_reason": target[1]},
         )
+        entry_transition = self._entry_transition(
+            wave,
+            reason="DELEVERAGING_EXHAUSTION_ENTRY_ARMED",
+            reference=obs.close,
+            details={"stop": stop, "target": target[0], "target_reason": target[1]},
+        )
         signal = ScenarioSignal(
-            scenario_id=wave.scenario_id,
+            scenario_id=self._entry_scenario_id(wave),
             family="OIDB_R",
             direction=direction,
             observed_ts_ns=obs.ts_ns,
@@ -298,7 +331,7 @@ class OpenInterestDeleveragingBifurcationEngine:
                 "causal_exit_open_position": True,
             },
         )
-        return ScenarioStep(transitions=(transition,), signal=signal)
+        return ScenarioStep(transitions=(context_transition, entry_transition), signal=signal)
 
     def _signal_continuation(self, snapshot: PrimitiveSnapshot, wave: _Wave) -> ScenarioStep:
         obs = snapshot.observation
@@ -321,7 +354,7 @@ class OpenInterestDeleveragingBifurcationEngine:
         wave.state = "PERSISTENCE_CONTINUATION_SIGNALLED"
         wave.branch = "CONTINUATION"
         wave.signal_index = snapshot.index
-        transition = self._transition(
+        context_transition = self._transition(
             wave,
             "DELEVERAGING_WAVE_OBSERVED",
             wave.state,
@@ -329,8 +362,14 @@ class OpenInterestDeleveragingBifurcationEngine:
             obs.close,
             {"stop": stop, "target": target},
         )
+        entry_transition = self._entry_transition(
+            wave,
+            reason="DELEVERAGING_PERSISTENCE_ENTRY_ARMED",
+            reference=obs.close,
+            details={"stop": stop, "target": target},
+        )
         signal = ScenarioSignal(
-            scenario_id=wave.scenario_id,
+            scenario_id=self._entry_scenario_id(wave),
             family="OIDB_C",
             direction=direction,
             observed_ts_ns=obs.ts_ns,
@@ -347,7 +386,7 @@ class OpenInterestDeleveragingBifurcationEngine:
                 "causal_exit_open_position": True,
             },
         )
-        return ScenarioStep(transitions=(transition,), signal=signal)
+        return ScenarioStep(transitions=(context_transition, entry_transition), signal=signal)
 
     def _next_metric_change(self, metric: FuturesMetric | None) -> float | None:
         if metric is None or self._last_metric is None or self._last_metric.open_interest <= 0.0:

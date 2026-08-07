@@ -8,7 +8,7 @@ NautilusTrader.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from hashlib import sha256
 import csv
@@ -137,6 +137,34 @@ def _timestamp_ns(value: str) -> int:
     raise ValueError(f"unsupported metrics timestamp: {value!r}")
 
 
+FIVE_MINUTE_NS = 5 * 60 * 1_000_000_000
+ONE_MINUTE_NS = 60 * 1_000_000_000
+MAX_NOMINAL_TIMESTAMP_OFFSET_NS = 1_000_000_000
+
+
+def _causal_metric_timestamp(source_ts_ns: int) -> tuple[int, int, int]:
+    """Return nominal five-minute slot, causal observable minute and offset.
+
+    Binance has a small number of official metrics rows stamped one second away
+    from the nominal five-minute boundary. The row is never shifted earlier. A
+    non-minute source timestamp becomes observable at the next completed minute.
+    """
+
+    lower = (source_ts_ns // FIVE_MINUTE_NS) * FIVE_MINUTE_NS
+    upper = lower + FIVE_MINUTE_NS
+    nominal = lower if source_ts_ns - lower <= upper - source_ts_ns else upper
+    offset = source_ts_ns - nominal
+    if abs(offset) > MAX_NOMINAL_TIMESTAMP_OFFSET_NS:
+        raise ValueError(
+            f"metrics timestamp too far from five-minute boundary: "
+            f"source={source_ts_ns}, nominal={nominal}, offset_ns={offset}",
+        )
+    observable = ((source_ts_ns + ONE_MINUTE_NS - 1) // ONE_MINUTE_NS) * ONE_MINUTE_NS
+    if observable < source_ts_ns:
+        raise AssertionError("metric observation timestamp moved before source timestamp")
+    return nominal, observable, offset
+
+
 def _read_archive(path: Path) -> list[FuturesMetric]:
     with zipfile.ZipFile(path) as bundle:
         members = [name for name in bundle.namelist() if name.lower().endswith(".csv")]
@@ -188,22 +216,45 @@ def load_dates(
             downloaded[futures[future]] = future.result()
 
     observations: dict[int, FuturesMetric] = {}
+    nominal_slots: dict[int, int] = {}
+    adjustments: list[dict[str, int]] = []
     for day in dates:
         for item in _read_archive(downloaded[day][0]):
-            if item.ts_ns in observations:
-                raise ValueError(f"duplicate metrics timestamp: {item.ts_ns}")
-            observations[item.ts_ns] = item
+            source_ts_ns = item.ts_ns
+            nominal_ts_ns, observable_ts_ns, offset_ns = _causal_metric_timestamp(source_ts_ns)
+            if nominal_ts_ns in nominal_slots:
+                raise ValueError(
+                    f"duplicate nominal metrics slot: nominal={nominal_ts_ns}, "
+                    f"sources=({nominal_slots[nominal_ts_ns]}, {source_ts_ns})",
+                )
+            if observable_ts_ns in observations:
+                raise ValueError(f"duplicate observable metrics timestamp: {observable_ts_ns}")
+            nominal_slots[nominal_ts_ns] = source_ts_ns
+            observations[observable_ts_ns] = replace(item, ts_ns=observable_ts_ns)
+            if offset_ns != 0 or observable_ts_ns != source_ts_ns:
+                adjustments.append(
+                    {
+                        "source_ts_ns": source_ts_ns,
+                        "nominal_ts_ns": nominal_ts_ns,
+                        "observable_ts_ns": observable_ts_ns,
+                        "nominal_offset_ns": offset_ns,
+                        "observation_delay_ns": observable_ts_ns - source_ts_ns,
+                    },
+                )
     observations = dict(sorted(observations.items()))
+    nominal_timestamps = sorted(nominal_slots)
     if not observations:
         raise ValueError(f"no metrics observations for {symbol} over {dates}")
-    timestamps = list(observations)
     gaps = [
         (left, right)
-        for left, right in zip(timestamps, timestamps[1:])
-        if right - left != 5 * 60 * 1_000_000_000
+        for left, right in zip(nominal_timestamps, nominal_timestamps[1:])
+        if right - left != FIVE_MINUTE_NS
     ]
     if gaps:
-        raise ValueError(f"non-five-minute metrics gaps: count={len(gaps)}, first={gaps[:5]}")
+        raise ValueError(f"missing nominal five-minute metrics slots: count={len(gaps)}, first={gaps[:5]}")
+    timestamps = list(observations)
+    if any(right <= left for left, right in zip(timestamps, timestamps[1:])):
+        raise ValueError("observable metrics timestamps are not strictly increasing")
 
     source_files: list[Path] = []
     for day in dates:
@@ -215,9 +266,17 @@ def load_dates(
         "observations": len(observations),
         "first_observed_utc_ns": timestamps[0],
         "last_observed_utc_ns": timestamps[-1],
+        "first_nominal_slot_utc_ns": nominal_timestamps[0],
+        "last_nominal_slot_utc_ns": nominal_timestamps[-1],
         "cadence_minutes": 5,
         "missing_intervals": len(gaps),
-        "timestamp_contract": "published five-minute metric timestamp is used only when its completed snapshot is observable",
+        "timestamp_adjustments": len(adjustments),
+        "max_abs_nominal_offset_ns": max((abs(item["nominal_offset_ns"]) for item in adjustments), default=0),
+        "max_observation_delay_ns": max((item["observation_delay_ns"] for item in adjustments), default=0),
+        "timestamp_contract": (
+            "source timestamp is validated against the nearest five-minute nominal slot; "
+            "a non-minute source timestamp becomes observable only at the next completed minute and is never shifted earlier"
+        ),
         "fields": list(COLUMNS),
     }
     return LoadedFuturesMetrics(
