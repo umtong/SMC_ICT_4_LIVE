@@ -73,7 +73,10 @@ class CalibrationTests(unittest.TestCase):
             self.assertGreater(model.threshold, 1.0)
 
     def test_deterministic_separable_model_calibrates(self) -> None:
-        x = np.linspace(-3.0, 3.0, 160).reshape(-1, 1)
+        # The fixed selection grid tops out at 30% and calibration requires at
+        # least 12 selected samples. Use a calibration tail large enough that
+        # the contract is satisfiable; this changes only the synthetic test.
+        x = np.linspace(-3.0, 3.0, 400).reshape(-1, 1)
         y = (x[:, 0] > 0.0).astype(float)
         first = train_model(x, y)
         second = train_model(x, y)
