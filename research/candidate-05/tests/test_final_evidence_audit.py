@@ -7,7 +7,8 @@ from final_evidence_audit import audit_slot_run
 
 
 class FinalEvidenceAuditTest(unittest.TestCase):
-    def run(self, *, trades: int = 50, slot_overrides=None, **overrides):
+    @staticmethod
+    def make_run(*, trades: int = 50, slot_overrides=None, **overrides):
         slot = {
             "audit_pass": True,
             "max_unfilled_entry_intents_replayed": 1,
@@ -37,11 +38,11 @@ class FinalEvidenceAuditTest(unittest.TestCase):
         return value
 
     def test_slot_positions_must_match_actual_trades(self) -> None:
-        audit = audit_slot_run(self.run(trades=10))
+        audit = audit_slot_run(self.make_run(trades=10))
         self.assertTrue(audit["audit_pass"])
 
         audit = audit_slot_run(
-            self.run(
+            self.make_run(
                 trades=10,
                 slot_overrides={"positions_opened": 9, "positions_closed": 9},
             ),
@@ -51,11 +52,11 @@ class FinalEvidenceAuditTest(unittest.TestCase):
 
     def test_reported_project_pass_requires_replayed_lifecycle_and_gate(self) -> None:
         stages = {
-            "week-3-weak": self.run(trades=8),
-            "week-1": self.run(trades=8),
-            "week-2": self.run(trades=8),
-            "continuous-30d": self.run(trades=20),
-            "continuous-91d": self.run(trades=60),
+            "week-3-weak": self.make_run(trades=8),
+            "week-1": self.make_run(trades=8),
+            "week-2": self.make_run(trades=8),
+            "continuous-30d": self.make_run(trades=20),
+            "continuous-91d": self.make_run(trades=60),
         }
         evidence = {
             "classification": "PROJECT_GOAL_REACHED_ONE_ACCOUNT_FOUR_SYMBOLS",
@@ -69,7 +70,7 @@ class FinalEvidenceAuditTest(unittest.TestCase):
             "AUDITED_PROJECT_GOAL_REACHED_ONE_ACCOUNT_FOUR_SYMBOLS",
         )
 
-        stages["continuous-91d"] = self.run(
+        stages["continuous-91d"] = self.make_run(
             trades=60,
             slot_overrides={"max_entry_intents_plus_positions_replayed": 2},
         )
@@ -82,7 +83,7 @@ class FinalEvidenceAuditTest(unittest.TestCase):
 
     def test_reported_project_pass_cannot_bypass_recomputed_growth_gate(self) -> None:
         stages = {
-            "continuous-91d": self.run(
+            "continuous-91d": self.make_run(
                 trades=60,
                 geometric_daily_growth=0.009,
             ),
