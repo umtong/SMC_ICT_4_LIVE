@@ -41,6 +41,21 @@ class AllowedSymbolConfigTests(unittest.TestCase):
             values["stress_inventory_quantile"],
         )
 
+    def test_saved_original_loader_survives_runtime_adapter_patch(self) -> None:
+        descriptor = candidate.base.v22.Config.__dict__["load"]
+        candidate.base.v22.Config.load = classmethod(
+            lambda cls, path: (_ for _ in ()).throw(
+                AssertionError("runtime adapter called recursively")
+            )
+        )
+        try:
+            values = self.base_values()
+            values["symbol"] = "XRPUSDT"
+            config = candidate.load_allowed_symbol_config(self.write(values))
+        finally:
+            candidate.base.v22.Config.load = descriptor
+        self.assertEqual(config.symbol, "XRPUSDT")
+
     def test_unknown_symbol_remains_rejected(self) -> None:
         values = self.base_values()
         values["symbol"] = "DOGEUSDT"
