@@ -1,0 +1,113 @@
+name: candidate-10-v27-costed-leadership
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/c10_v27_*.py
+      - research/candidate-10/test_c10_v27_overlay.py
+      - .github/workflows/candidate-10-v27-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v27-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CANDIDATE11_COMMIT: f10517d4ccd2a1a8fbd4d31091cbe0e7c3655327
+
+jobs:
+  blind-weeks:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - week_id: V27A
+            week_start: "2023-11-02"
+            variant: full-market-leadership
+          - week_id: V27A
+            week_start: "2023-11-02"
+            variant: ablation-market-leadership-removed
+          - week_id: V27B
+            week_start: "2023-03-16"
+            variant: full-market-leadership
+          - week_id: V27B
+            week_start: "2023-03-16"
+            variant: ablation-market-leadership-removed
+          - week_id: V27C
+            week_start: "2025-01-02"
+            variant: full-market-leadership
+          - week_id: V27C
+            week_start: "2025-01-02"
+            variant: ablation-market-leadership-removed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout candidate-10
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen Candidate 11 source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+
+      - name: Run untouched costed leadership week
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf artifacts/candidate-10-v27/${{ matrix.week_id }}/${{ matrix.variant }}
+          mkdir -p artifacts/candidate-10-v27/${{ matrix.week_id }}/${{ matrix.variant }}
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v27:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v27 /tmp/candidate11-v27-data
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v27
+              cp /workspace/research/candidate-10/c10_v27_overlay.py /tmp/candidate11-v27/
+              cp /workspace/research/candidate-10/c10_v27_patch.py /tmp/candidate11-v27/
+              cp /workspace/research/candidate-10/c10_v27_run.py /tmp/candidate11-v27/
+              cp /workspace/research/candidate-10/test_c10_v27_overlay.py /tmp/candidate11-v27/
+              smc4 doctor
+              python /tmp/candidate11-v27/c10_v27_patch.py \
+                /tmp/candidate11-v27/run_leadership_scdam.py
+              python -m py_compile \
+                /tmp/candidate11-v27/c10_v27_overlay.py \
+                /tmp/candidate11-v27/c10_v27_patch.py \
+                /tmp/candidate11-v27/c10_v27_run.py \
+                /tmp/candidate11-v27/run_leadership_scdam.py
+              python -m unittest \
+                /tmp/candidate11-v27/test_c10_v27_overlay.py -v
+              python /tmp/candidate11-v27/c10_v27_run.py \
+                --candidate11-dir /tmp/candidate11-v27 \
+                --week-start "${{ matrix.week_start }}" \
+                --variant "${{ matrix.variant }}" \
+                --output "/workspace/artifacts/candidate-10-v27/${{ matrix.week_id }}/${{ matrix.variant }}"
+            '
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v27-${{ matrix.week_id }}-${{ matrix.variant }}-${{ github.sha }}
+          path: artifacts/candidate-10-v27/${{ matrix.week_id }}/${{ matrix.variant }}
+          if-no-files-found: warn
+          retention-days: 14
