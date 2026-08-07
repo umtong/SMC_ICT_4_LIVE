@@ -1,0 +1,128 @@
+name: candidate-08-bookticker-probe-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-bookticker-probe-v1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-bookticker-probe-v1
+  cancel-in-progress: true
+
+jobs:
+  data-contract-probe:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.run-bookticker-probe-v1
+      CACHE: /tmp/candidate-08-bookticker-probe-v1
+      OUTPUT: research/candidate-08/evidence/bookticker-probe-v1/BTCUSDT-2024-04-08.json
+      LOG: research/candidate-08/evidence/bookticker-probe-v1/probe.log
+      STATUS: research/candidate-08/evidence/bookticker-probe-v1/probe_exit_status.txt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify pinned environment and parser contracts
+        id: preflight
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$(dirname "$OUTPUT")"
+          rm -f "$LOG" "$STATUS"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/bookticker_data_probe.py \
+              research/candidate-08/bookticker_data_probe_v2.py \
+              research/candidate-08/test_bookticker_data_probe_v2.py
+            python research/candidate-08/test_bookticker_data_probe_v2.py -v
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Restore checksum-verified bookTicker cache
+        if: ${{ steps.preflight.outputs.status == '0' }}
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-bookticker-probe-v1-BTCUSDT-2024-04-08
+          restore-keys: |
+            candidate-08-bookticker-probe-v1-BTCUSDT-
+
+      - name: Probe fixed BTC bookTicker day
+        if: ${{ steps.preflight.outputs.status == '0' }}
+        id: probe
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          python research/candidate-08/bookticker_data_probe_v2.py \
+            --symbol BTCUSDT \
+            --day 2024-04-08 \
+            --cache "$CACHE" \
+            --output "$OUTPUT" \
+            2>&1 | tee -a "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Save checksum-verified bookTicker cache
+        if: ${{ always() && steps.preflight.outputs.status == '0' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-bookticker-probe-v1-BTCUSDT-2024-04-08
+
+      - name: Commit reproducible data-contract evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- "$(dirname "$OUTPUT")" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record bookTicker data-contract evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce probe status
+        if: ${{ always() }}
+        shell: bash
+        env:
+          PREFLIGHT_STATUS: ${{ steps.preflight.outputs.status }}
+          PROBE_STATUS: ${{ steps.probe.outputs.status }}
+        run: |
+          [[ -n "$PREFLIGHT_STATUS" ]]
+          [[ "$PREFLIGHT_STATUS" == "0" ]]
+          [[ -n "$PROBE_STATUS" ]]
+          [[ "$PROBE_STATUS" == "0" ]]
