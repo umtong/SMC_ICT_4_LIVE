@@ -290,10 +290,8 @@ class ComplexSCDAMEngine:
         side: BoundarySide,
         evidence: dict[str, object],
     ) -> None:
-        boundary_key = self._boundary_key(symbol, context, side)
-        if boundary_key in self._consumed_boundaries:
-            raise RuntimeError("consumed boundary cannot start a new episode")
-        self._consumed_boundaries.add(boundary_key)
+        # Boundary consumption occurs at the first trade-through before the
+        # evidence classifier is evaluated. Episode creation cannot re-arm it.
         extreme = bar.high if side == BoundarySide.HIGH else bar.low
         episode = _Episode(
             scenario_id=(
@@ -649,6 +647,24 @@ class ComplexSCDAMEngine:
             high = self._side_trade_through(bar, context, BoundarySide.HIGH, self.config.min_raid_fraction)
             low = self._side_trade_through(bar, context, BoundarySide.LOW, self.config.min_raid_fraction)
             if high and low:
+                # A wide completed bar physically consumed both finite pools,
+                # even though intrabar ordering is unknowable and no scenario
+                # may be approved from it.
+                for ambiguous_side in (BoundarySide.HIGH, BoundarySide.LOW):
+                    key = self._boundary_key(symbol, context, ambiguous_side)
+                    if key not in self._consumed_boundaries:
+                        self._consumed_boundaries.add(key)
+                        self._event(
+                            symbol,
+                            ts_ns,
+                            "SOURCE_BOUNDARY_CONSUMED",
+                            {
+                                "side": ambiguous_side.value,
+                                "source_session": context.source_session,
+                                "target_session": context.target_session,
+                                "classification": "AMBIGUOUS_BOTH_SIDES_RAIDED",
+                            },
+                        )
                 self._skip("AMBIGUOUS_BOTH_SIDES_RAIDED")
                 continue
             for side, crossed in ((BoundarySide.HIGH, high), (BoundarySide.LOW, low)):
@@ -658,6 +674,21 @@ class ComplexSCDAMEngine:
                 if boundary_key in self._consumed_boundaries:
                     self._skip("SOURCE_BOUNDARY_ALREADY_CONSUMED")
                     continue
+                # The first price trade-through consumes the pool before model
+                # classification. Insufficient evidence is terminal for this
+                # source-range side rather than permission to retry later.
+                self._consumed_boundaries.add(boundary_key)
+                self._event(
+                    symbol,
+                    ts_ns,
+                    "SOURCE_BOUNDARY_CONSUMED",
+                    {
+                        "side": side.value,
+                        "source_session": context.source_session,
+                        "target_session": context.target_session,
+                        "classification": "PENDING_COMPLEX_EVIDENCE",
+                    },
+                )
                 evidence = self.market_complex.evaluate(observations, symbol=symbol, side=side)
                 common = {
                     "residual": str(evidence.residual),

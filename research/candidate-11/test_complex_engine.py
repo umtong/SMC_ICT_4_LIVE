@@ -93,6 +93,27 @@ class ComplexEngineTests(unittest.TestCase):
         self.assertEqual(engine.on_snapshot(fresh, next_contexts), [])
         self.assertIn("BTCUSDT", engine._active)
 
+    def test_insufficient_first_touch_still_consumes_boundary(self):
+        engine = ComplexSCDAMEngine(EngineConfig(min_net_r=0.1))
+        self.warm(engine)
+        contexts = {symbol: context() for symbol in SYMBOLS}
+
+        # All peers raid but close back inside. This is neither idiosyncratic
+        # FAR nor broad-close AAC, yet the physical high-side pool is consumed.
+        first = {symbol: bar(symbol, 31, 99, 103, 98, 99, 0.0) for symbol in SYMBOLS}
+        self.assertEqual(engine.on_snapshot(first, contexts), [])
+        self.assertNotIn("BTCUSDT", engine._active)
+
+        # A later idiosyncratic BTC raid may not reuse that same ASIA high.
+        repeated = {symbol: bar(symbol, 32, 95, 99, 94, 95) for symbol in SYMBOLS}
+        repeated["BTCUSDT"] = bar("BTCUSDT", 32, 99, 104, 98, 99, 0.4)
+        self.assertEqual(engine.on_snapshot(repeated, contexts), [])
+        self.assertNotIn("BTCUSDT", engine._active)
+        self.assertGreaterEqual(
+            engine.skip_reasons["SOURCE_BOUNDARY_ALREADY_CONSUMED"],
+            1,
+        )
+
     def test_aac_uses_breadth_and_separate_frozen_impulse(self):
         engine = ComplexSCDAMEngine(
             EngineConfig(min_net_r=0.1, min_displacement_atr=0.05),
