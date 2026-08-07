@@ -25,48 +25,57 @@ permissions:
   contents: write
 
 concurrency:
-  group: candidate-12-${{ github.ref }}-${{ inputs.symbol || 'BTCUSDT' }}-${{ inputs.week || 'W1' }}
+  group: candidate-12-${{ github.ref }}-${{ inputs.symbol || 'BTCUSDT' }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    outputs:
+      committed: ${{ steps.apply.outputs.committed }}
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Apply reviewed candidate update atomically
+        id: apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          UPDATE=research/candidate-12/update-v2.tar.gz
+          if [[ -f "$UPDATE" ]]; then
+            echo "6148e2187a0d742aa10da8e47b23828bcf06f486e0b017979a39e4286b72050e  $UPDATE" | sha256sum -c -
+            tar -xzf "$UPDATE" -C research/candidate-12
+            rm "$UPDATE"
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add research/candidate-12
+            git commit -m "candidate-12: enforce first-touch liquidity lifecycle"
+            git push origin HEAD:research/candidate-12
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   research:
+    needs: materialize
+    if: needs.materialize.outputs.committed == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user root
+    strategy:
+      fail-fast: false
+      matrix:
+        week: [W1, W2, W3]
     env:
       SYMBOL: ${{ inputs.symbol || 'BTCUSDT' }}
-      WEEK: ${{ inputs.week || 'W1' }}
-      OUTPUT: artifacts/candidate-12/${{ inputs.symbol || 'BTCUSDT' }}-${{ inputs.week || 'W1' }}
+      WEEK: ${{ matrix.week }}
+      OUTPUT: artifacts/candidate-12/${{ inputs.symbol || 'BTCUSDT' }}-${{ matrix.week }}
     steps:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
-
-      - name: Materialize reviewed candidate source
-        id: materialize
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! -f research/candidate-12/run.py ]]; then
-            cat research/candidate-12/bootstrap/src.part00 \
-                research/candidate-12/bootstrap/src.part01a \
-                research/candidate-12/bootstrap/src.part01b \
-                research/candidate-12/bootstrap/src.part01c > /tmp/candidate-12-src.tar.gz
-            echo "0f2b1c6f9837292970529f265adff36a2d842c556b39467cdc41c699e87e44f0  /tmp/candidate-12-src.tar.gz" | sha256sum -c -
-            mkdir -p research/candidate-12
-            tar -xzf /tmp/candidate-12-src.tar.gz -C research/candidate-12
-            rm -rf research/candidate-12/bootstrap
-            git config --global --add safe.directory "$GITHUB_WORKSPACE"
-            git -C "$GITHUB_WORKSPACE" config user.name github-actions[bot]
-            git -C "$GITHUB_WORKSPACE" config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git -C "$GITHUB_WORKSPACE" add research/candidate-12
-            git -C "$GITHUB_WORKSPACE" commit -m "candidate-12: materialize reviewed source"
-            git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-12
-            echo "committed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "committed=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Verify prebuilt environment
         run: smc4 doctor
