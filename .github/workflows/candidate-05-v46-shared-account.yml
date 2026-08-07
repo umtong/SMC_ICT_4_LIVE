@@ -1,0 +1,194 @@
+name: candidate-05-v46-shared-four-symbol-account
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v46-shared-account.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v46-shared-four-symbol-account
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  weak-week-and-conditional-30d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v46-shared
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and shared-account contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v45_external_active_inventory_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_breakaway_state_logic.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v46_no_post_retrace_breakaway_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_shared_account_v46_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_global_entry_slot_v4.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_shared_daily_nav_alignment.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_basis_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_reset_logic.py' -v
+
+      - name: Freeze exact v46 strategy identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/v46.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_v46_no_post_retrace_breakaway:NoPostRetraceBreakawayStrategy",
+            "experiment_role": "UNCHANGED_V46_MARKET_LOGIC_UNDER_ONE_SHARED_ACCOUNT"
+          }
+          JSON
+
+      - name: Run weakest preselected week in one-account NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/v46.json" \
+            --build-start 2023-09-06 \
+            --build-end 2023-09-14 \
+            --evaluation-start 2023-09-08 \
+            --evaluation-end 2023-09-14 \
+            --cache .cache/candidate-05-v46-shared/weak \
+            --output "$ROOT/weak" \
+            2>&1 | tee "$ROOT/weak-console.log"
+
+      - name: Classify weakest-week shared-account screen
+        id: weak
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "weak/metrics.json").read_text())
+          checks = {
+              "integrity": bool(metrics.get("integrity_pass")),
+              "positive_total_return": float(metrics.get("total_return", -1.0)) > 0.0,
+              "at_least_two_independent_positions": int(metrics.get("trades", 0)) >= 2,
+              "positive_expectancy": float(metrics.get("expectancy_usdt", 0.0)) > 0.0,
+              "no_liquidation": int(metrics.get("liquidations", 1)) == 0,
+              "max_drawdown_recoverable": float(metrics.get("max_drawdown", 1.0)) <= 0.20,
+          }
+          promote = all(checks.values())
+          result = {
+              "schema": "candidate-05-v46-shared-weak-week-v1",
+              "classification": (
+                  "V46_SHARED_WEAK_WEEK_PASSED"
+                  if promote
+                  else "V46_SHARED_WEAK_WEEK_LOGIC_FAILURE"
+              ),
+              "promote": promote,
+              "checks": checks,
+              "metrics": metrics,
+          }
+          (root / "weak_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"promote={'true' if promote else 'false'}\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run continuous 30-day shared-account validation
+        if: steps.weak.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/v46.json" \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-30 \
+            --cache .cache/candidate-05-v46-shared/30d \
+            --output "$ROOT/30d" \
+            2>&1 | tee "$ROOT/30d-console.log"
+
+      - name: Classify continuous 30-day shared account
+        if: steps.weak.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "30d/metrics.json").read_text())
+          checks = {
+              "integrity": bool(metrics.get("integrity_pass")),
+              "positive_total_return": float(metrics.get("total_return", -1.0)) > 0.0,
+              "positive_expectancy": float(metrics.get("expectancy_usdt", 0.0)) > 0.0,
+              "no_liquidation": int(metrics.get("liquidations", 1)) == 0,
+              "max_drawdown_recoverable": float(metrics.get("max_drawdown", 1.0)) <= 0.35,
+              "not_single_winner_dependent": float(metrics.get("largest_winner_share", 1.0)) <= 0.55,
+          }
+          result = {
+              "schema": "candidate-05-v46-shared-30d-v1",
+              "classification": (
+                  "V46_SHARED_30D_POSITIVE"
+                  if all(checks.values())
+                  else "V46_SHARED_30D_LOGIC_FAILURE"
+              ),
+              "project_growth_goal_reached": (
+                  all(checks.values())
+                  and float(metrics.get("geometric_daily_growth", -1.0)) >= 0.01
+              ),
+              "checks": checks,
+              "metrics": metrics,
+          }
+          (root / "30d_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify authoritative evidence files
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f "$ROOT/weak/metrics.json"; then
+            python -m json.tool "$ROOT/weak/metrics.json"
+            for file in run.json data_manifest.json orders.csv positions.csv account.csv shared_equity_observations.csv global_slot_events.json global_slot_audit.json; do
+              test -s "$ROOT/weak/$file"
+            done
+          fi
+          if test -f "$ROOT/30d/metrics.json"; then
+            python -m json.tool "$ROOT/30d/metrics.json"
+            for file in run.json data_manifest.json orders.csv positions.csv account.csv shared_equity_observations.csv global_slot_events.json global_slot_audit.json; do
+              test -s "$ROOT/30d/$file"
+            done
+          fi
+          find "$ROOT" -name errors.log -type f -print -exec cat {} \;
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v46-shared-${{ github.sha }}
+          path: artifacts/candidate-05-v46-shared/**
+          if-no-files-found: warn
+          retention-days: 90
