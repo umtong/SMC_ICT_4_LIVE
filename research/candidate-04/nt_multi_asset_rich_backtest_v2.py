@@ -9,7 +9,7 @@ AST by ``nt_trusted_execution_factory``.
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 import json
 from pathlib import Path
 import sys
@@ -51,20 +51,38 @@ def _load_config() -> dict[str, Any]:
     return value
 
 
+def calendar_window_iso(
+    start_value: Any,
+    end_value: Any,
+) -> tuple[str, str]:
+    """Return inclusive UTC boundaries for two declared calendar dates."""
+
+    start = pd.Timestamp(start_value, tz="UTC")
+    end = (
+        pd.Timestamp(end_value + timedelta(days=1), tz="UTC")
+        - pd.Timedelta(nanoseconds=1)
+    )
+    if end < start:
+        raise RuntimeError("calendar window end precedes start")
+    return start.isoformat(), end.isoformat()
+
+
 def evaluation_window_iso(
     evaluation_start: Any,
     evaluation_end: Any,
 ) -> tuple[str, str]:
-    """Return inclusive UTC boundaries for the declared calendar dates."""
+    return calendar_window_iso(evaluation_start, evaluation_end)
 
-    start = pd.Timestamp(evaluation_start, tz="UTC")
-    end = (
-        pd.Timestamp(evaluation_end + timedelta(days=1), tz="UTC")
-        - pd.Timedelta(nanoseconds=1)
+
+def build_window_iso() -> tuple[str, str]:
+    start_text = _argument_value("--build-start")
+    end_text = _argument_value("--build-end")
+    if start_text is None or end_text is None:
+        raise RuntimeError("--build-start and --build-end are required")
+    return calendar_window_iso(
+        date.fromisoformat(start_text),
+        date.fromisoformat(end_text),
     )
-    if end < start:
-        raise RuntimeError("evaluation end precedes evaluation start")
-    return start.isoformat(), end.isoformat()
 
 
 def build_run_config(
@@ -78,11 +96,12 @@ def build_run_config(
     del starting_nav, _ignored
     if _TRUSTED_CONFIG is None:
         raise RuntimeError("trusted execution config was not loaded")
+    # Validate the declared evaluation dates, while streaming the full build
+    # interval so precompiled signals retain the same completed-history warmup
+    # as their compiler. Strategy evaluation bounds still prevent warmup trades.
+    evaluation_window_iso(evaluation_start, evaluation_end)
+    start_time, end_time = build_window_iso()
     venue = make_trusted_venue_config(_TRUSTED_CONFIG)
-    start_time, end_time = evaluation_window_iso(
-        evaluation_start,
-        evaluation_end,
-    )
     data = [
         BacktestDataConfig(
             **base.accepted_kwargs(
@@ -105,6 +124,7 @@ def build_run_config(
             {
                 "strategies": strategies,
                 "logging": LoggingConfig(log_level="ERROR"),
+                "run_analysis": True,
             },
         )
     )
@@ -115,6 +135,10 @@ def build_run_config(
                 "engine": engine,
                 "venues": [venue],
                 "data": data,
+                "raise_exception": True,
+                "dispose_on_completion": False,
+                "start": start_time,
+                "end": end_time,
             },
         )
     )
