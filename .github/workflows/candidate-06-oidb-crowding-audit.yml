@@ -1,0 +1,256 @@
+name: Candidate 06 OIDB Crowding-Discharge Audit
+
+on:
+  push:
+    branches: [research/candidate-06]
+    paths:
+      - ".github/workflows/candidate-06-oidb-crowding-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-oidb-crowding-audit
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  audit:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed research environment
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+
+      - name: Reconstruct prior-only crowding state at every OIDB trade
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          from collections import defaultdict
+          from datetime import date
+          import csv
+          import json
+          from math import log
+          from pathlib import Path
+          from statistics import median
+
+          from futures_metrics_data import load_week
+
+          ROOT = Path("artifacts/candidate-06/oidb-crowding-audit")
+          ROOT.mkdir(parents=True, exist_ok=True)
+          DATA = Path(".research-data/candidate-06")
+          SOURCES = (
+              (
+                  "week-1",
+                  date(2024, 2, 26),
+                  Path("artifacts/candidate-06/oidb-first-week/runs/oidb_deleveraging_bifurcation_full/week-1/trades.json"),
+              ),
+              (
+                  "week-2",
+                  date(2024, 9, 23),
+                  Path("artifacts/candidate-06/oidb-first-week/runs/oidb_deleveraging_bifurcation_full/week-2/trades.json"),
+              ),
+          )
+
+          def robust_z(value: float, history: list[float]) -> float | None:
+              if len(history) < 36:
+                  return None
+              center = median(history)
+              mad = median(abs(item - center) for item in history)
+              if mad <= 1e-12:
+                  return 0.0
+              return (value - center) / (1.4826 * mad)
+
+          def safe_log(value: float) -> float:
+              if value <= 0.0:
+                  raise ValueError(f"nonpositive ratio: {value}")
+              return log(value)
+
+          rows: list[dict[str, object]] = []
+          for week_name, week_start, trades_path in SOURCES:
+              if not trades_path.exists():
+                  continue
+              loaded = load_week("BTCUSDT", week_start, DATA)
+              timestamps = list(loaded.observations)
+              position = {ts: index for index, ts in enumerate(timestamps)}
+              trades = json.loads(trades_path.read_text(encoding="utf-8")).get("trades", [])
+              for trade in trades:
+                  context_id = str(trade["scenario_id"]).split(":ENTRY", 1)[0]
+                  event_ts = int(context_id.split("-")[1])
+                  index = position[event_ts]
+                  if index < 1:
+                      raise RuntimeError(f"no prior metric for {context_id}")
+                  metric = loaded.observations[event_ts]
+                  prior = loaded.observations[timestamps[index - 1]]
+                  lookback_ts = timestamps[max(0, index - 288):index]
+                  history = [loaded.observations[ts] for ts in lookback_ts]
+
+                  family = str(trade["family"])
+                  direction = str(trade["direction"])
+                  trade_sign = 1.0 if direction == "LONG" else -1.0
+                  shock_sign = trade_sign if family == "OIDB_C" else -trade_sign
+
+                  top_position_now = safe_log(metric.top_position_long_short)
+                  top_position_prior = safe_log(prior.top_position_long_short)
+                  top_account_now = safe_log(metric.top_account_long_short)
+                  top_account_prior = safe_log(prior.top_account_long_short)
+                  all_account_now = safe_log(metric.all_account_long_short)
+                  all_account_prior = safe_log(prior.all_account_long_short)
+
+                  position_history = [safe_log(item.top_position_long_short) for item in history[:-1]]
+                  top_account_history = [safe_log(item.top_account_long_short) for item in history[:-1]]
+                  all_account_history = [safe_log(item.all_account_long_short) for item in history[:-1]]
+                  position_change_history = [
+                      safe_log(history[i].top_position_long_short)
+                      - safe_log(history[i - 1].top_position_long_short)
+                      for i in range(1, len(history) - 1)
+                  ]
+                  top_account_change_history = [
+                      safe_log(history[i].top_account_long_short)
+                      - safe_log(history[i - 1].top_account_long_short)
+                      for i in range(1, len(history) - 1)
+                  ]
+                  all_account_change_history = [
+                      safe_log(history[i].all_account_long_short)
+                      - safe_log(history[i - 1].all_account_long_short)
+                      for i in range(1, len(history) - 1)
+                  ]
+
+                  position_level_z = robust_z(top_position_prior, position_history)
+                  top_account_level_z = robust_z(top_account_prior, top_account_history)
+                  all_account_level_z = robust_z(all_account_prior, all_account_history)
+                  position_delta = top_position_now - top_position_prior
+                  top_account_delta = top_account_now - top_account_prior
+                  all_account_delta = all_account_now - all_account_prior
+                  position_delta_z = robust_z(position_delta, position_change_history)
+                  top_account_delta_z = robust_z(top_account_delta, top_account_change_history)
+                  all_account_delta_z = robust_z(all_account_delta, all_account_change_history)
+
+                  def aligned(value: float | None, multiplier: float) -> float | None:
+                      return None if value is None else multiplier * value
+
+                  rows.append(
+                      {
+                          "week": week_name,
+                          "context_scenario_id": context_id,
+                          "family": family,
+                          "trade_direction": direction,
+                          "shock_direction": "UP" if shock_sign > 0.0 else "DOWN",
+                          "realized_r": float(trade["realized_r_multiple"]),
+                          "win": float(trade["realized_pnl_after_cost"]) > 0.0,
+                          "outcome": trade["outcome"],
+                          "top_position_prior_log": top_position_prior,
+                          "top_position_level_z": position_level_z,
+                          "top_position_delta_log": position_delta,
+                          "top_position_delta_z": position_delta_z,
+                          "top_account_level_z": top_account_level_z,
+                          "top_account_delta_log": top_account_delta,
+                          "top_account_delta_z": top_account_delta_z,
+                          "all_account_level_z": all_account_level_z,
+                          "all_account_delta_log": all_account_delta,
+                          "all_account_delta_z": all_account_delta_z,
+                          "liquidated_position_crowding_z": aligned(position_level_z, -shock_sign),
+                          "position_discharge_z": aligned(position_delta_z, shock_sign),
+                          "liquidated_top_account_crowding_z": aligned(top_account_level_z, -shock_sign),
+                          "top_account_discharge_z": aligned(top_account_delta_z, shock_sign),
+                          "liquidated_all_account_crowding_z": aligned(all_account_level_z, -shock_sign),
+                          "all_account_discharge_z": aligned(all_account_delta_z, shock_sign),
+                          "position_vs_all_discharge_z": (
+                              None
+                              if position_delta_z is None or all_account_delta_z is None
+                              else shock_sign * (position_delta_z - all_account_delta_z)
+                          ),
+                          "event_open_interest": metric.open_interest,
+                          "event_taker_buy_sell_ratio": metric.taker_buy_sell_ratio,
+                      },
+                  )
+
+          if not rows:
+              raise RuntimeError("no OIDB trade rows were reconstructed")
+
+          fields = list(rows[0])
+          with (ROOT / "trade_crowding_features.csv").open("w", encoding="utf-8", newline="") as stream:
+              writer = csv.DictWriter(stream, fieldnames=fields)
+              writer.writeheader()
+              writer.writerows(rows)
+
+          numeric_fields = [
+              "liquidated_position_crowding_z",
+              "position_discharge_z",
+              "liquidated_top_account_crowding_z",
+              "top_account_discharge_z",
+              "liquidated_all_account_crowding_z",
+              "all_account_discharge_z",
+              "position_vs_all_discharge_z",
+          ]
+          groups: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
+          for row in rows:
+              groups[(str(row["week"]), "winner" if row["win"] else "loser")].append(row)
+              groups[("all", "winner" if row["win"] else "loser")].append(row)
+
+          aggregates: dict[str, object] = {}
+          for (week, outcome), items in groups.items():
+              payload: dict[str, object] = {
+                  "trades": len(items),
+                  "mean_realized_r": sum(float(item["realized_r"]) for item in items) / len(items),
+              }
+              for field in numeric_fields:
+                  values = [float(item[field]) for item in items if item[field] is not None]
+                  payload[f"median_{field}"] = median(values) if values else None
+                  payload[f"positive_share_{field}"] = (
+                      sum(value > 0.0 for value in values) / len(values) if values else None
+                  )
+              aggregates[f"{week}:{outcome}"] = payload
+
+          report = {
+              "method": (
+                  "For each already-executed OIDB trade, reconstruct top-position, top-account and all-account "
+                  "long/short ratio states from the completed event metric. All z-scores use only the prior 24 hours "
+                  "of completed five-minute observations. Positive liquidated-crowding means the pre-shock crowd was "
+                  "on the side forced out; positive discharge means the event ratio moved in the shock direction."
+              ),
+              "rows": rows,
+              "aggregates": aggregates,
+          }
+          (ROOT / "summary.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(aggregates, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit audit evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add -f artifacts/candidate-06/oidb-crowding-audit
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record candidate-06 OIDB crowding audit [candidate-06 evidence]"
+          git pull --rebase origin research/candidate-06
+          git push origin HEAD:research/candidate-06
