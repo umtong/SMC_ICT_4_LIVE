@@ -13,6 +13,7 @@ esac
 smc4 doctor
 python "$CAND/materialize_scdam.py"
 python "$CAND/materialize_portfolio.py"
+python "$CAND/repair_leadership_sweep_timestamp.py"
 python "$CAND/apply_market_leadership.py"
 
 python -m py_compile \
