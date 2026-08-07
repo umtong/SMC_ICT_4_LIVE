@@ -1,0 +1,306 @@
+name: candidate-05-v46-selective-evidence
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/train_v46_evidence_model.py"
+      - "research/candidate-05/train_v46_evidence_model_v2.py"
+      - "research/candidate-05/strategy_v46_selective_evidence.py"
+      - "research/candidate-05/tests/test_strategy_v46_contract.py"
+      - ".github/workflows/candidate-05-v46-selective-evidence.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v46-selective-evidence
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  train-and-promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v46
+      MODEL: artifacts/candidate-05-v46/v46_model.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed environment and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+
+      - name: Build pre-evaluation period contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          source=json.loads(Path('research/candidate-05/weeks.json').read_text())
+          periods={
+              '/tmp/v46-train.json':('v46-train','2022-12-30','2023-01-01','2023-03-31'),
+              '/tmp/v46-valid.json':('v46-validation','2023-03-30','2023-04-01','2023-06-30'),
+              '/tmp/v46-30d.json':('v46-continuous-30d','2024-02-28','2024-03-01','2024-03-30'),
+              '/tmp/v46-91d.json':('v46-continuous-91d','2024-02-28','2024-03-01','2024-05-30'),
+          }
+          def replace(obj,label,warmup,start,end):
+              changed=False
+              def visit(value):
+                  nonlocal changed
+                  if isinstance(value,dict):
+                      return {key:visit(item) for key,item in value.items()}
+                  if isinstance(value,list) and not changed and len(value)>=1 and all(isinstance(x,dict) for x in value):
+                      keys=set().union(*(x.keys() for x in value))
+                      if any(key in keys for key in ('start','evaluation_start','eval_start')) and any(key in keys for key in ('end','evaluation_end','eval_end')):
+                          item=dict(value[0])
+                          for key in tuple(item):
+                              low=key.lower()
+                              if 'warmup' in low and ('start' in low or low=='warmup'):
+                                  item[key]=warmup
+                              elif low in ('start','evaluation_start','eval_start'):
+                                  item[key]=start
+                              elif low in ('end','evaluation_end','eval_end'):
+                                  item[key]=end
+                              elif low in ('name','label','stage'):
+                                  item[key]=label
+                          changed=True
+                          return [item]
+                  if isinstance(value,list):
+                      return [visit(item) for item in value]
+                  return value
+              result=visit(obj)
+              if not changed:
+                  raise RuntimeError('could not locate evaluation-stage list in weeks.json')
+              return result
+          for path,(label,warmup,start,end) in periods.items():
+              Path(path).write_text(json.dumps(replace(source,label,warmup,start,end),indent=2))
+          PY
+
+      - name: Run chronological v26 training period in NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT/train" "$ROOT/validation"
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks /tmp/v46-train.json \
+            --cache .cache/candidate-05-v46 \
+            --output "$ROOT/train" \
+            --max-weeks 1 2>&1 | tee "$ROOT/train-console.log"
+
+      - name: Run later pre-evaluation validation period in NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks /tmp/v46-valid.json \
+            --cache .cache/candidate-05-v46 \
+            --output "$ROOT/validation" \
+            --max-weeks 1 2>&1 | tee "$ROOT/validation-console.log"
+
+      - name: Fit fixed model and apply pre-evaluation promotion gate
+        id: model
+        shell: bash
+        run: |
+          set +e
+          python research/candidate-05/train_v46_evidence_model_v2.py \
+            --train-root "$ROOT/train" \
+            --validation-root "$ROOT/validation" \
+            --output "$MODEL" 2>&1 | tee "$ROOT/model-console.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ -f "$MODEL" ] && python -c "import json;assert json.load(open('$MODEL'))['validation_pass'] is True"; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "trainer_status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Select frozen v46 only after pre-evaluation validation
+        if: steps.model.outputs.passed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-05/strategy.py /tmp/candidate05-strategy.py
+          cp "$MODEL" research/candidate-05/v46_model.json
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('research/candidate-05/strategy.py'); s=p.read_text()
+          pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE)
+          m=pattern.search(s)
+          if m is None: raise RuntimeError(f'v26 import not found: {s!r}')
+          exported=m.group(2) or m.group(1)
+          p.write_text(pattern.sub(f'from strategy_v46_selective_evidence import SelectiveEvidenceStrategy as {exported}',s,count=1))
+          PY
+
+      - name: Run three frozen BTC weeks
+        if: steps.model.outputs.passed == 'true'
+        id: frozen
+        shell: bash
+        env:
+          CANDIDATE05_V46_MODEL: ${{ github.workspace }}/artifacts/candidate-05-v46/v46_model.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/frozen"
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks research/candidate-05/weeks.json \
+            --cache .cache/candidate-05-v46 \
+            --output "$ROOT/frozen" \
+            --max-weeks 3 2>&1 | tee "$ROOT/frozen-console.log"
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          root=Path('artifacts/candidate-05-v46/frozen')
+          def value(d,*names,default=0):
+              for name in names:
+                  if d.get(name) is not None:return d[name]
+              return default
+          rows=[]
+          for p in sorted(root.rglob('metrics.json')):
+              d=json.loads(p.read_text()); growth=float(value(d,'geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(value(d,'trades','trade_count',default=0) or 0); wins=int(value(d,'wins','winning_trades',default=0) or 0); active=int(value(d,'active_days','trading_days',default=0) or 0)
+              integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1
+              rows.append({'path':str(p),'growth':growth,'total_return':float(value(d,'total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(value(d,'max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'pass':integrity and growth>=.01 and trades>=7 and wins>=4 and active>=4})
+          passed=len(rows)>=3 and all(row['pass'] for row in rows[:3])
+          Path('artifacts/candidate-05-v46/frozen-assessment.json').write_text(json.dumps({'rows':rows,'pass':passed},indent=2,sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out: out.write(f'passed={str(passed).lower()}\n')
+          PY
+
+      - name: Run continuous 30 days only after all frozen weeks pass
+        if: steps.frozen.outputs.passed == 'true'
+        id: continuous30
+        shell: bash
+        env:
+          CANDIDATE05_V46_MODEL: ${{ github.workspace }}/artifacts/candidate-05-v46/v46_model.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/continuous-30d"
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks /tmp/v46-30d.json \
+            --cache .cache/candidate-05-v46 \
+            --output "$ROOT/continuous-30d" \
+            --max-weeks 1 2>&1 | tee "$ROOT/continuous-30d-console.log"
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          files=sorted(Path('artifacts/candidate-05-v46/continuous-30d').rglob('metrics.json'))
+          if not files: raise RuntimeError('no 30d metrics')
+          d=json.loads(files[0].read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(v('trades','trade_count',default=0) or 0); wins=int(v('wins','winning_trades',default=0) or 0); active=int(v('active_days','trading_days',default=0) or 0)
+          integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1
+          passed=integrity and growth>=.01 and trades>=20 and wins>=12 and active>=15
+          out={'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(v('max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'pass':passed}
+          Path('artifacts/candidate-05-v46/continuous-30d-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as stream: stream.write(f'passed={str(passed).lower()}\n')
+          PY
+
+      - name: Run continuous 91-day promotion screen
+        if: steps.continuous30.outputs.passed == 'true'
+        id: continuous91
+        shell: bash
+        env:
+          CANDIDATE05_V46_MODEL: ${{ github.workspace }}/artifacts/candidate-05-v46/v46_model.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/continuous-91d"
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks /tmp/v46-91d.json \
+            --cache .cache/candidate-05-v46 \
+            --output "$ROOT/continuous-91d" \
+            --max-weeks 1 2>&1 | tee "$ROOT/continuous-91d-console.log"
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          files=sorted(Path('artifacts/candidate-05-v46/continuous-91d').rglob('metrics.json'))
+          if not files: raise RuntimeError('no 91d metrics')
+          d=json.loads(files[0].read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(v('trades','trade_count',default=0) or 0); wins=int(v('wins','winning_trades',default=0) or 0); active=int(v('active_days','trading_days',default=0) or 0)
+          integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1
+          passed=integrity and growth>=.01 and trades>=60 and wins>=36 and active>=45
+          out={'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(v('max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'pass':passed}
+          Path('artifacts/candidate-05-v46/continuous-91d-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as stream: stream.write(f'passed={str(passed).lower()}\n')
+          PY
+
+      - name: Write and commit authoritative v46 result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          root=Path('artifacts/candidate-05-v46')
+          def load(name):
+              path=root/name
+              return json.loads(path.read_text()) if path.exists() else None
+          model=load('v46_model.json')
+          frozen=load('frozen-assessment.json')
+          d30=load('continuous-30d-assessment.json')
+          d91=load('continuous-91d-assessment.json')
+          if not model or model.get('validation_pass') is not True:
+              decision='DISCARD_PRE_EVALUATION_VALIDATION'
+          elif not frozen or frozen.get('pass') is not True:
+              decision='DISCARD_FROZEN_WEEKS'
+          elif not d30 or d30.get('pass') is not True:
+              decision='DISCARD_CONTINUOUS_30D'
+          elif not d91 or d91.get('pass') is not True:
+              decision='DISCARD_CONTINUOUS_91D'
+          else:
+              decision='PROMOTE_TO_SHARED_ACCOUNT_AND_912D'
+          result={'schema':'candidate-05-v46-authoritative-result-v1','engine':'NautilusTrader BacktestNode','strategy':'strategy_v46_selective_evidence:SelectiveEvidenceStrategy','decision':decision,'model':model,'frozen':frozen,'continuous_30d':d30,'continuous_91d':d91}
+          Path('research/candidate-05/V46_RESULT.json').write_text(json.dumps(result,indent=2,sort_keys=True))
+          if model and model.get('validation_pass') is True:
+              Path('research/candidate-05/v46_model.json').write_text(json.dumps(model,indent=2,sort_keys=True))
+          print(json.dumps(result,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V46_RESULT.json
+          if [ -f research/candidate-05/v46_model.json ]; then git add research/candidate-05/v46_model.json; fi
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-05: record v46 selective evidence result [skip ci]"
+            git pull --rebase origin research/candidate-05
+            git push origin HEAD:research/candidate-05
+          fi
+
+      - name: Restore committed active strategy
+        if: always() && steps.model.outputs.passed == 'true'
+        shell: bash
+        run: cp /tmp/candidate05-strategy.py research/candidate-05/strategy.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v46-selective-evidence-${{ github.sha }}
+          path: artifacts/candidate-05-v46/**
+          if-no-files-found: error
+          retention-days: 90
