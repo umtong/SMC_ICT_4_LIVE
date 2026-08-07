@@ -923,7 +923,7 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=ROOT / "config.json")
-    parser.add_argument("--week", choices=("W1", "W2", "W3", "W4", "W5", "W6"), default="W1")
+    parser.add_argument("--week", choices=("W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9"), default="W1")
     parser.add_argument("--output", type=Path, default=ROOT / "results" / "LEADERSHIP_W1")
     args = parser.parse_args()
     metrics = run(args.config.resolve(), args.week, args.output.resolve())
