@@ -1295,6 +1295,7 @@ class CausalAuctionEngine:
                 "pool_level": a.pool.level,
                 "pool_source": a.pool.source,
                 "range_id": a.pool.range_id,
+                "sweep_ts_ns": a.sweep.ts_ns,
                 "sweep_extreme": a.sweep_extreme,
                 "draw_side": None if a.draw_side is None else a.draw_side.value,
                 "draw_score": a.draw_score,
