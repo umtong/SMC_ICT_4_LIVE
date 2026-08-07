@@ -32,6 +32,11 @@ def _bar(index: int, *, open_: float, high: float, low: float, close: float) -> 
         atr=1.0,
         volume_ratio=1.0,
         trade_ratio=1.0,
+        efficiency_60m=0.0,
+        direction_60m=0,
+        session_key="SYNTHETIC",
+        day_key="1970-01-01",
+        week_key="1970-W01",
     )
 
 
