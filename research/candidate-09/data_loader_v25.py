@@ -285,7 +285,11 @@ def enrich_bars(
     metric_index = 0
     active: MetricSnapshot | None = None
     ordered_metrics = sorted(metrics, key=lambda item: item.available_ns)
-    spot_by_time = {item.ts_ns: item for item in spot_bars}
+    spot_by_time: dict[int, SpotBar] = {}
+    for item in spot_bars:
+        if item.ts_ns in spot_by_time:
+            raise ValueError(f"duplicate spot timestamp: {item.ts_ns}")
+        spot_by_time[item.ts_ns] = item
     for bar in bars:
         while metric_index < len(ordered_metrics) and ordered_metrics[metric_index].available_ns <= bar.ts_ns:
             active = ordered_metrics[metric_index]

@@ -195,6 +195,8 @@ class _PendingDislocation:
     pulse_flow_imbalance: float
     impulse_atr: float
     volume_ratio: float
+    frozen_atr: float
+    frozen_spot_atr: float
     observed_high: float
     observed_low: float
 
@@ -314,6 +316,15 @@ class LiquidityStateEngine:
         source = self._source_auction(source_bars)
         if source.width <= 0.0:
             return None
+        # Freeze all volatility normalization before the positioning pulse.  Using
+        # ``self._atr`` here would let the pulse and metric-availability bars inflate
+        # their own displacement, confirmation and invalidation scales.  The frozen
+        # scale is causal and represents the auction state that existed before the
+        # suspected forced-flow event began.
+        frozen_atr = self._futures_atr(historical, self.config.atr_period)
+        frozen_spot_atr = self._spot_atr(historical, self.config.atr_period)
+        if frozen_atr <= 0.0 or frozen_spot_atr <= 0.0:
+            return None
         pulse_open = pulse_bars[0].open
         pulse_close = pulse_bars[-1].close
         spot_open = pulse_bars[0].spot_open
@@ -325,7 +336,7 @@ class LiquidityStateEngine:
         spot_pulse_high = max(float(item.spot_high) for item in pulse_bars if item.spot_high is not None)
         spot_pulse_low = min(float(item.spot_low) for item in pulse_bars if item.spot_low is not None)
         impulse = pulse_close - pulse_open
-        impulse_atr = abs(impulse) / max(self._atr, 1e-12)
+        impulse_atr = abs(impulse) / max(frozen_atr, 1e-12)
         if impulse_atr < self.config.minimum_impulse_atr:
             return None
         pulse_volume = sum(item.volume for item in pulse_bars)
@@ -365,7 +376,7 @@ class LiquidityStateEngine:
             self.config.basis_dislocation_multiple * basis_scale,
         )
         gap_threshold = self.config.return_gap_multiple * gap_scale
-        buffer = self.config.acceptance_buffer_atr * self._atr
+        buffer = self.config.acceptance_buffer_atr * frozen_atr
         if (
             impulse > 0.0
             and pulse_close >= source.high + buffer
@@ -410,6 +421,8 @@ class LiquidityStateEngine:
             pulse_flow_imbalance=pulse_flow,
             impulse_atr=impulse_atr,
             volume_ratio=volume_ratio,
+            frozen_atr=frozen_atr,
+            frozen_spot_atr=frozen_spot_atr,
             observed_high=max(pulse_high, bar.high),
             observed_low=min(pulse_low, bar.low),
         )
@@ -458,6 +471,38 @@ class LiquidityStateEngine:
             end = start
         return values
 
+    @staticmethod
+    def _futures_atr(bars: Sequence[FlowBar], period: int) -> float:
+        if period <= 0 or len(bars) < period + 1:
+            return 0.0
+        window = bars[-(period + 1):]
+        ranges = [
+            max(
+                current.high - current.low,
+                abs(current.high - previous.close),
+                abs(current.low - previous.close),
+            )
+            for previous, current in zip(window[:-1], window[1:], strict=True)
+        ]
+        return sum(ranges) / len(ranges) if ranges else 0.0
+
+    @staticmethod
+    def _spot_atr(bars: Sequence[FlowBar], period: int) -> float:
+        eligible = [item for item in bars if item.has_spot]
+        if period <= 0 or len(eligible) < period + 1:
+            return 0.0
+        window = eligible[-(period + 1):]
+        ranges: list[float] = []
+        for previous, current in zip(window[:-1], window[1:], strict=True):
+            assert previous.spot_close is not None
+            assert current.spot_high is not None and current.spot_low is not None
+            ranges.append(max(
+                current.spot_high - current.spot_low,
+                abs(current.spot_high - previous.spot_close),
+                abs(current.spot_low - previous.spot_close),
+            ))
+        return sum(ranges) / len(ranges) if ranges else 0.0
+
     def _advance_pending(self, bar: FlowBar, events: list[DiagnosticEvent]) -> Signal | None:
         pending = self._pending
         assert pending is not None
@@ -470,7 +515,11 @@ class LiquidityStateEngine:
             self._expire(pending, bar, "SOURCE_AUCTION_EQUILIBRIUM_REACHED_BEFORE_ENTRY", events)
             return None
         if self._spot_led_reversal_confirmed(pending, bar):
-            signal, reason = self._build_signal(pending, bar, confirmation="basis-contraction-plus-spot-lead-plus-perpetual-counterflow")
+            signal, reason = self._build_signal(
+                pending,
+                bar,
+                confirmation="basis-contraction-plus-spot-lead-plus-perpetual-counterflow",
+            )
             return self._finish(pending, bar, signal, reason, events)
         if elapsed >= self.config.confirmation_timeout_bars:
             self._expire(pending, bar, "SPOT_LED_REVERSAL_DID_NOT_CONFIRM_IN_TIME", events)
@@ -511,11 +560,18 @@ class LiquidityStateEngine:
             spot_lead = bar.spot_close < previous.spot_low and bar.spot_close < bar.spot_open
             spot_not_extending = bar.spot_high <= pending.spot_pulse_high + 0.10 * pending.frozen_spot_atr
             futures_not_extending = bar.high <= pending.pulse_high + 0.10 * pending.frozen_atr
-        return (contracted and toward_fair and perpetual_counterflow and flow_shift
-                and (spot_lead if self.config.require_spot_lead else True)
-                and spot_not_extending and futures_not_extending
-                and futures_body_atr >= minimum_body
-                and (spot_body_atr >= minimum_body if self.config.require_spot_lead else True))
+        spot_lead_ok = spot_lead if self.config.require_spot_lead else True
+        return (
+            contracted
+            and toward_fair
+            and perpetual_counterflow
+            and flow_shift
+            and spot_lead_ok
+            and spot_not_extending
+            and futures_not_extending
+            and futures_body_atr >= minimum_body
+            and (spot_body_atr >= minimum_body if self.config.require_spot_lead else True)
+        )
 
     def _build_signal(
         self,
@@ -526,7 +582,11 @@ class LiquidityStateEngine:
     ) -> tuple[Signal | None, str]:
         target = self._source_target(pending)
         entry = bar.close
-        atr = max(self._atr, 1e-12)
+        # The invalidation buffer uses the same frozen pre-pulse volatility scale as
+        # admission and confirmation.  The stop still lies beyond every observed
+        # perpetual extreme, so this does not weaken the scenario invalidation; it
+        # prevents the liquidation shock from mechanically widening its own stop.
+        atr = max(pending.frozen_atr, 1e-12)
         if pending.direction == "DOWN":
             side = "BUY"
             stop = pending.observed_low - self.config.stop_buffer_atr * atr
@@ -566,6 +626,8 @@ class LiquidityStateEngine:
                 "pulse_flow_imbalance": pending.pulse_flow_imbalance,
                 "impulse_atr": pending.impulse_atr,
                 "pulse_volume_ratio": pending.volume_ratio,
+                "frozen_atr": pending.frozen_atr,
+                "frozen_spot_atr": pending.frozen_spot_atr,
                 "fair_basis": pending.fair_basis,
                 "initial_basis_dislocation": pending.initial_basis_dislocation,
                 "basis_scale": pending.basis_scale,
@@ -620,6 +682,8 @@ class LiquidityStateEngine:
             "pulse_flow_imbalance": pending.pulse_flow_imbalance,
             "impulse_atr": pending.impulse_atr,
             "pulse_volume_ratio": pending.volume_ratio,
+            "frozen_atr": pending.frozen_atr,
+            "frozen_spot_atr": pending.frozen_spot_atr,
             "fair_basis": pending.fair_basis,
             "initial_basis_dislocation": pending.initial_basis_dislocation,
             "basis_scale": pending.basis_scale,
