@@ -1,0 +1,216 @@
+name: candidate-05-v39-v45-master-v2
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v39-v45-master-v2.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v39-v45-master-v2
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  week1:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {label: v39, module: strategy_v39_dual_auction, class: DualAuctionStateStrategy}
+          - {label: v40, module: strategy_v40_auction_router, class: MultiCauseAuctionRouterStrategy}
+          - {label: v41, module: strategy_v41_competing_auction, class: CompetingAuctionStrategy}
+          - {label: v42, module: strategy_v42_external_auction, class: HierarchicalExternalAuctionStrategy}
+          - {label: v43, module: strategy_v43_balance_competition, class: BalanceAuctionCompetitionStrategy}
+          - {label: v44, module: strategy_v44_regime_auction, class: RegimeConditionedAuctionStrategy}
+          - {label: v45b, module: strategy_v45b_hybrid_auction, class: CorrectedHybridAuctionStrategy}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      LABEL: ${{ matrix.label }}
+      MODULE: ${{ matrix.module }}
+      CLASS: ${{ matrix.class }}
+      ROOT: artifacts/master-v2/${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify fixed environment and isolated candidate import
+        id: prepare
+        shell: bash
+        run: |
+          set +e
+          smc4 doctor > "$RUNNER_TEMP/doctor.log" 2>&1
+          doctor=$?
+          python - <<'PY' > "$RUNNER_TEMP/import.log" 2>&1
+          from pathlib import Path
+          import importlib,os,re
+          module=importlib.import_module(os.environ['MODULE'])
+          getattr(module,os.environ['CLASS'])
+          path=Path('research/candidate-05/strategy.py'); source=path.read_text()
+          pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE)
+          match=pattern.search(source)
+          if match is None: raise RuntimeError(f'v26 import not found: {source!r}')
+          exported=match.group(2) or match.group(1)
+          path.write_text(pattern.sub(f"from {os.environ['MODULE']} import {os.environ['CLASS']} as {exported}",source,count=1))
+          PY
+          imported=$?
+          set -e
+          echo "doctor=$doctor" >> "$GITHUB_OUTPUT"
+          echo "imported=$imported" >> "$GITHUB_OUTPUT"
+      - name: Run frozen BTC Week 1 in NautilusTrader
+        if: steps.prepare.outputs.doctor == '0' && steps.prepare.outputs.imported == '0'
+        id: backtest
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$ROOT"
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks research/candidate-05/weeks.json \
+            --cache ".cache/candidate-05-master-v2-${LABEL}" \
+            --output "$ROOT" \
+            --max-weeks 1 2>&1 | tee "$ROOT/console.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Normalize result regardless of failure
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$ROOT"
+          cp "$RUNNER_TEMP/doctor.log" "$ROOT/doctor.log" 2>/dev/null || true
+          cp "$RUNNER_TEMP/import.log" "$ROOT/import.log" 2>/dev/null || true
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          root=Path(os.environ['ROOT']); files=sorted(root.rglob('metrics.json'))
+          def v(d,*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          if not files:
+              out={'label':os.environ['LABEL'],'module':os.environ['MODULE'],'class':os.environ['CLASS'],'available':False,'pass':False,'classification':'IMPLEMENTATION_OR_EXECUTION_FAILURE'}
+          else:
+              d=json.loads(files[0].read_text()); growth=float(v(d,'geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(v(d,'trades','trade_count',default=0) or 0); wins=int(v(d,'wins','winning_trades',default=0) or 0); active=int(v(d,'active_days','trading_days',default=0) or 0); dd=float(v(d,'max_drawdown','maximum_drawdown',default=0) or 0); integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1; passed=integrity and growth>=.01 and trades>=7 and wins>=4 and active>=4 and dd<=.20
+              classification='PASS' if passed else 'INSUFFICIENT_OPPORTUNITIES' if trades<7 else 'NEGATIVE_EXPECTANCY' if growth<=0 else 'PROMOTION_GATE_MISS'
+              out={'label':os.environ['LABEL'],'module':os.environ['MODULE'],'class':os.environ['CLASS'],'available':True,'pass':passed,'classification':classification,'growth':growth,'total_return':float(v(d,'total_return',default=0) or 0),'trades':trades,'wins':wins,'win_rate':wins/trades if trades else 0.0,'active_days':active,'max_drawdown':dd,'integrity':integrity}
+          (root/'normalized_result.json').write_text(json.dumps(out,indent=2,sort_keys=True)); print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: master-v2-${{ matrix.label }}
+          path: artifacts/master-v2/${{ matrix.label }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate-and-promote:
+    needs: week1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 220
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/master-v2-promoted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: master-v2-*
+          path: artifacts/screen
+      - name: Choose a natural Week 1 winner
+        id: choose
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          rows=[json.loads(path.read_text()) for path in Path('artifacts/screen').rglob('normalized_result.json')]
+          passed=[row for row in rows if row.get('pass')]
+          winner=max(passed,key=lambda row:(row['growth'],row['win_rate'],row['trades'],-row['max_drawdown'])) if passed else None
+          decision={'schema':'candidate-05-v39-v45-master-v2-week1','rows':sorted(rows,key=lambda row:row['label']),'winner':winner}
+          Path('artifacts/master-v2-week1.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f"label={winner['label'] if winner else ''}\nmodule={winner['module'] if winner else ''}\nclass={winner['class'] if winner else ''}\n")
+          print(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+      - name: Re-run winner with full contracts and all frozen weeks
+        if: steps.choose.outputs.label != ''
+        id: three
+        shell: bash
+        env:
+          WINNER: ${{ steps.choose.outputs.label }}
+          MODULE: ${{ steps.choose.outputs.module }}
+          CLASS: ${{ steps.choose.outputs.class }}
+        run: |
+          set +e
+          smc4 doctor > "$ROOT-doctor.log" 2>&1
+          python -m compileall -q research/candidate-05 >> "$ROOT-doctor.log" 2>&1
+          python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v >> "$ROOT-doctor.log" 2>&1
+          contracts=$?
+          set -e
+          if [ "$contracts" -ne 0 ]; then echo "contracts=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "contracts=true" >> "$GITHUB_OUTPUT"
+          python - <<'PY'
+          from pathlib import Path
+          import os,re
+          p=Path('research/candidate-05/strategy.py'); s=p.read_text(); pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE); m=pattern.search(s); exported=m.group(2) or m.group(1); p.write_text(pattern.sub(f"from {os.environ['MODULE']} import {os.environ['CLASS']} as {exported}",s,count=1))
+          PY
+          mkdir -p "$ROOT"
+          set +e
+          python research/candidate-05/candidate.py pipeline --config research/candidate-05/config.json --weeks research/candidate-05/weeks.json --cache ".cache/candidate-05-master-v2-three-${WINNER}" --output "$ROOT" --max-weeks 3 2>&1 | tee "$ROOT/console.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Create authoritative master v2 result
+        if: always()
+        shell: bash
+        env:
+          WINNER: ${{ steps.choose.outputs.label }}
+          MODULE: ${{ steps.choose.outputs.module }}
+          CLASS: ${{ steps.choose.outputs.class }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          week=json.loads(Path('artifacts/master-v2-week1.json').read_text())
+          root=Path(os.environ['ROOT'])
+          def v(d,*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          rows=[]
+          for p in sorted(root.rglob('metrics.json')):
+              d=json.loads(p.read_text()); growth=float(v(d,'geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(v(d,'trades','trade_count',default=0) or 0); wins=int(v(d,'wins','winning_trades',default=0) or 0); active=int(v(d,'active_days','trading_days',default=0) or 0); dd=float(v(d,'max_drawdown','maximum_drawdown',default=0) or 0); integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1; passed=integrity and growth>=.01 and trades>=7 and wins>=4 and active>=4 and dd<=.20; rows.append({'path':str(p),'growth':growth,'total_return':float(v(d,'total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':dd,'integrity':integrity,'pass':passed})
+          three_pass=bool(os.environ.get('WINNER')) and len(rows)>=3 and all(row['pass'] for row in rows[:3])
+          result={'schema':'candidate-05-v39-v45-master-v2-result','week1':week,'winner':{'label':os.environ.get('WINNER'),'module':os.environ.get('MODULE'),'class':os.environ.get('CLASS')} if os.environ.get('WINNER') else None,'frozen_rows':rows,'three_week_pass':three_pass,'decision':'PROMOTE_TO_CONTINUOUS_30D' if three_pass else 'DISCARD_ALL_SCREENED_FAMILIES'}
+          Path('research/candidate-05/V39_V45_MASTER_V2_RESULT.json').write_text(json.dumps(result,indent=2,sort_keys=True)); print(json.dumps(result,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V39_V45_MASTER_V2_RESULT.json
+          git commit -m "candidate-05: record isolated master v2 result [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-master-v2-result
+          path: |
+            artifacts/master-v2-week1.json
+            artifacts/master-v2-promoted/**
+          if-no-files-found: warn
+          retention-days: 90
