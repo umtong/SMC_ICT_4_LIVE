@@ -255,7 +255,7 @@ def audit(root: Path, week: str) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("result_dir", type=Path)
-    parser.add_argument("--week", choices=("W1", "W2", "W3", "W4", "W5", "W6", "LONG"), required=True)
+    parser.add_argument("--week", choices=("W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "LONG"), required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = audit(args.result_dir, args.week)
