@@ -1,0 +1,171 @@
+name: candidate-08-intrinsic-repricing-nautilus-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-intrinsic-repricing-nautilus-v1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-intrinsic-repricing-nautilus-v1
+  cancel-in-progress: true
+
+jobs:
+  staged-validation:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.run-intrinsic-repricing-nautilus-v1
+      ROOT: research/candidate-08/evidence/intrinsic-repricing-nautilus-v1
+      CACHE: /tmp/candidate-08-aggtrade-acceptance-data
+      CONFIG: research/candidate-08/config_intrinsic_repricing_btc_v1.json
+      PATTERN: research/candidate-08/config_range_fvg.json
+      RUNNER: research/candidate-08/run_aggtrade_intrinsic_repricing_nautilus.py
+      ORCHESTRATOR: research/candidate-08/run_intrinsic_repricing_staged_validation.py
+      INTRINSIC_REPRICING_CONFIG_PATH: research/candidate-08/config_intrinsic_repricing_btc_v1.json
+      INTRINSIC_REPRICING_PATH_MODE: both_paths
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify pinned environment and intrinsic repricing contracts
+        id: preflight
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT"
+          rm -f \
+            "$ROOT/preflight.log" \
+            "$ROOT/preflight_exit_status.txt" \
+            "$ROOT/staged_runner.log" \
+            "$ROOT/staged_runner_exit_status.txt"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/aggtrade_acceptance_funding.py \
+              research/candidate-08/aggtrade_acceptance_mark_price.py \
+              research/candidate-08/aggtrade_acceptance_signals.py \
+              research/candidate-08/aggtrade_acceptance_strategy.py \
+              research/candidate-08/aggtrade_acceptance_evaluation.py \
+              research/candidate-08/aggtrade_flow_response.py \
+              research/candidate-08/aggtrade_flow_response_auction_signals_v3.py \
+              research/candidate-08/aggtrade_intrinsic_response_clock.py \
+              research/candidate-08/aggtrade_intrinsic_repricing_signals.py \
+              research/candidate-08/flow_response_trade_path_diagnostics_v2.py \
+              research/candidate-08/run_aggtrade_acceptance_nautilus.py \
+              research/candidate-08/run_aggtrade_auction_router_nautilus.py \
+              research/candidate-08/run_aggtrade_flow_response_auction_nautilus.py \
+              research/candidate-08/run_aggtrade_intrinsic_repricing_nautilus.py \
+              research/candidate-08/run_intrinsic_repricing_staged_validation.py \
+              research/candidate-08/intrinsic_repricing_workflow_preflight.py
+            python research/candidate-08/test_aggtrade_orderflow.py -v
+            python research/candidate-08/test_aggtrade_acceptance_pure.py -v
+            python research/candidate-08/test_aggtrade_acceptance_nautilus.py -v
+            python research/candidate-08/test_aggtrade_flow_response.py -v
+            python research/candidate-08/test_aggtrade_flow_response_auction_signals_v3.py -v
+            python research/candidate-08/test_flow_response_trade_path_diagnostics_v2.py -v
+            python research/candidate-08/test_aggtrade_intrinsic_repricing_signals.py -v
+            python research/candidate-08/test_intrinsic_repricing_config_contract.py -v
+            python research/candidate-08/test_aggtrade_intrinsic_repricing_runner.py -v
+            python research/candidate-08/test_run_intrinsic_repricing_staged_validation.py -v
+            python research/candidate-08/intrinsic_repricing_workflow_preflight.py --mode validate
+          ) 2>&1 | tee "$ROOT/preflight.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$ROOT/preflight_exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Restore checksum-verified official-data cache
+        if: ${{ steps.preflight.outputs.status == '0' }}
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-intrinsic-repricing-v1-${{ hashFiles('research/candidate-08/config_intrinsic_repricing_btc_v1.json') }}
+          restore-keys: |
+            candidate-08-intrinsic-repricing-v1-
+            candidate-08-flow-response-v3-
+            candidate-08-flow-response-v2-
+            candidate-08-aggtrade-acceptance-v5-
+
+      - name: Run deterministic staged NautilusTrader protocol
+        if: ${{ steps.preflight.outputs.status == '0' }}
+        id: staged
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          python "$ORCHESTRATOR" \
+            --config "$CONFIG" \
+            --pattern-config "$PATTERN" \
+            --root "$ROOT" \
+            --data-cache "$CACHE" \
+            --runner "$RUNNER" \
+            2>&1 | tee "$ROOT/staged_runner.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$ROOT/staged_runner_exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Record preflight implementation failure
+        if: ${{ always() && steps.preflight.outputs.status != '0' }}
+        shell: bash
+        run: |
+          python research/candidate-08/intrinsic_repricing_workflow_preflight.py \
+            --mode record-failure \
+            --root "$ROOT"
+
+      - name: Save official-data cache
+        if: ${{ always() && steps.preflight.outputs.status == '0' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-intrinsic-repricing-v1-${{ hashFiles('research/candidate-08/config_intrinsic_repricing_btc_v1.json') }}
+
+      - name: Commit reproducible implementation and economic evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- "$ROOT" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record intrinsic repricing Nautilus evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce implementation status
+        if: ${{ always() }}
+        shell: bash
+        env:
+          PREFLIGHT_STATUS: ${{ steps.preflight.outputs.status }}
+          STAGED_STATUS: ${{ steps.staged.outputs.status }}
+        run: |
+          [[ -n "$PREFLIGHT_STATUS" ]]
+          [[ "$PREFLIGHT_STATUS" == "0" ]]
+          [[ -n "$STAGED_STATUS" ]]
+          [[ "$STAGED_STATUS" == "0" ]]
