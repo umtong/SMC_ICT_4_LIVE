@@ -14,8 +14,8 @@ import csv
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from functools import reduce
 import io
+from itertools import chain
 import json
 from math import gcd
 from pathlib import Path
@@ -94,7 +94,7 @@ def _archive_grid(path: Path) -> tuple[DecimalGridAccumulator, DecimalGridAccumu
             except StopIteration:
                 return prices, quantities, rows_seen
             indices, header = _column_indices(first)
-            source: Iterable[list[str]] = reader if header else (row for row in [first, *reader])
+            source: Iterable[list[str]] = reader if header else chain((first,), reader)
             for row in source:
                 if not row:
                     continue
