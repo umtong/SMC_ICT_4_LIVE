@@ -1,0 +1,104 @@
+name: candidate-04-v45b-progressive-untouched-btc
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v45b-progressive-untouched-btc.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      V45B_OUTPUT: artifacts/candidate-04-v45b-progressive-untouched-btc
+      V45B_EVIDENCE: research/candidate-04/evidence-v45b-progressive-untouched-btc.json
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Verify unchanged frozen strategy and progressive research contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/verify_v45_frozen_sources.py \
+            research/candidate-04/run_v45_untouched_btc.py \
+            research/candidate-04/run_v45b_progressive_btc.py
+          python research/candidate-04/verify_v45_frozen_sources.py \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --freeze research/candidate-04/freeze-v45b.json \
+            --output "$V45B_OUTPUT/frozen-source-verification.json"
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_boundary_negotiation_expansion_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_causal_target_registry_enricher.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_declared_causal_target.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_expected_fill_only_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+
+      - name: Open the same three predeclared BTC weeks progressively
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python research/candidate-04/run_v45b_progressive_btc.py \
+            --output-root "$V45B_OUTPUT" \
+            --cache-root .cache/candidate-04-v45b \
+            --evidence "$V45B_EVIDENCE"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v45b-progressive-untouched-btc-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v45b-progressive-untouched-btc
+            research/candidate-04/evidence-v45b-progressive-untouched-btc.json
+            research/candidate-04/freeze-v45b.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist V45b evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add "$V45B_EVIDENCE" 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record V45b progressive BTC evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
