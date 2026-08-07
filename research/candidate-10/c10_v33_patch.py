@@ -23,8 +23,21 @@ def patch(path: Path) -> None:
         text,
         "from c10_v29_overlay import (\n",
         "from c10_v33_overlay import (\n"
+        "    normalize_kline_open_time,\n"
         "    reframe_primary_equilibrium,\n",
         "v33 overlay import",
+    )
+
+    text = replace_once(
+        text,
+        """        frame, flow_repairs = repair_kline_flow_frame(frame, filename)
+        frames.append(frame)
+""",
+        """        frame, flow_repairs = repair_kline_flow_frame(frame, filename)
+        frame = normalize_kline_open_time(frame, filename)
+        frames.append(frame)
+""",
+        "v33 open-time normalization",
     )
 
     text = replace_once(
