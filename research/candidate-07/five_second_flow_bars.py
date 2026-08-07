@@ -147,6 +147,24 @@ def latest_five_second_boundary(
     )
 
 
+def same_wall_clock_second_index(
+    timestamps: np.ndarray,
+    observed_ns: int,
+) -> int | None:
+    """Match bar endpoints by completed UTC second, independent of ns encoding.
+
+    Some verified inputs express a completed bar at ``...999 ms`` while the
+    aggregate-trade clock uses ``...999999999 ns``. They are the same completed
+    wall-clock second and must not become different market observations.
+    """
+    seconds = timestamps.astype("int64") // NS_PER_SECOND
+    observed_second = int(observed_ns) // NS_PER_SECOND
+    index = int(np.searchsorted(seconds, observed_second, side="left"))
+    if index >= len(seconds) or int(seconds[index]) != observed_second:
+        return None
+    return index
+
+
 def entry_second_index(timestamps: np.ndarray, observed_ns: int) -> int | None:
     index = int(np.searchsorted(timestamps, int(observed_ns), side="left"))
     return None if index >= len(timestamps) else index
@@ -154,3 +172,4 @@ def entry_second_index(timestamps: np.ndarray, observed_ns: int) -> int | None:
 
 _prepare_five_second_bars = prepare_five_second_bars
 _latest_five_second_boundary = latest_five_second_boundary
+_same_wall_clock_second_index = same_wall_clock_second_index
