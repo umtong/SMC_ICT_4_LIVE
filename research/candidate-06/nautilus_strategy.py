@@ -12,6 +12,7 @@ from logic import (
     PrimitiveSnapshot,
     ScenarioSignal,
 )
+from causal_context_control import first_matching_reason, signal_exit_contract
 from nautilus_execution import NautilusExecutionMixin
 from nautilus_lifecycle import NautilusLifecycleMixin
 from nautilus_records import NautilusRecordMixin
@@ -104,6 +105,10 @@ def _make_scenario_engine(logic_params: Mapping[str, Any]) -> Any:
         from sequential_impact_persistence_engine import SequentialImpactPersistenceRelayEngine
 
         return SequentialImpactPersistenceRelayEngine(logic_params)
+    if name == "UNRESOLVED_OBJECTIVE_LIFECYCLE":
+        from objective_lifecycle_engine import UnresolvedObjectiveLifecycleEngine
+
+        return UnresolvedObjectiveLifecycleEngine(logic_params)
     if name == "PERIODIC_OPENING_LIQUIDITY_RELAY":
         from periodic_opening_engine import PeriodicOpeningLiquidityRelayEngine
 
@@ -178,10 +183,45 @@ def make_strategy_class():
                 raise RuntimeError(f"instrument not found: {self.config.instrument_id}")
             self.subscribe_bars(self.config.bar_type)
 
+        def _apply_causal_context_control(
+            self,
+            transitions: tuple[Any, ...],
+            snapshot: PrimitiveSnapshot,
+        ) -> None:
+            pending = self._pending_signal
+            if pending is not None:
+                codes, _ = signal_exit_contract(pending)
+                reason = first_matching_reason(transitions, codes)
+                if reason is not None:
+                    self._pending_signal = None
+                    self._pending_created_index = None
+                    self._abstain_signal(
+                        pending,
+                        snapshot,
+                        "CAUSAL_CONTEXT_INVALIDATED_BEFORE_ENTRY",
+                        {"invalidation_reason": reason},
+                    )
+
+            trade = self._active_trade
+            if trade is None or self._exit_inflight:
+                return
+            codes = tuple(trade.get("causal_exit_reason_codes", ()))
+            if not bool(trade.get("causal_exit_open_position", False)):
+                return
+            reason = first_matching_reason(transitions, codes)
+            if reason is None:
+                return
+            trade["forced_exit_reason"] = f"CAUSAL_CONTEXT_INVALIDATION_{reason}"
+            trade["causal_context_invalidation_reason"] = reason
+            self._exit_inflight = True
+            self.cancel_all_orders(self.config.instrument_id)
+            self.close_all_positions(self.config.instrument_id)
+
         def _observe_scenario_without_new_entry(self, snapshot: PrimitiveSnapshot, ts_ns: int) -> None:
-            """Advance clocks and episode state while the global trade slot is occupied."""
+            """Advance clocks and apply only scenario-declared invalidations."""
             step = self._scenario_engine.observe(snapshot, allow_new=False)
             self._record_transitions(step.transitions, ts_ns)
+            self._apply_causal_context_control(step.transitions, snapshot)
 
         def on_bar(self, bar: Bar) -> None:
             self.diagnostics["bars_seen"] += 1
@@ -210,6 +250,8 @@ def make_strategy_class():
 
             if self._pending_signal is not None:
                 self._observe_scenario_without_new_entry(snapshot, ts_ns)
+                if self._pending_signal is None:
+                    return
                 if self._pending_created_index is None or snapshot.index <= self._pending_created_index:
                     return
                 signal = self._pending_signal

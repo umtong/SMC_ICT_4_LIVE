@@ -305,6 +305,13 @@ class NautilusExecutionMixin:
                 "sac_entry_confirmation": confirmation_mode if original_signal.family == "SAC" else None,
                 "failed_acceptance_trap": trap_armed,
                 "favorable_drift_guard_enabled": enforce_drift_guard,
+                "causal_exit_reason_codes": tuple(
+                    str(value)
+                    for value in signal.details.get("causal_exit_reason_codes", ())
+                ),
+                "causal_exit_open_position": bool(
+                    signal.details.get("causal_exit_open_position", False)
+                ),
             }
             self._entry_inflight = True
             self.diagnostics["entries_submitted"] += 1

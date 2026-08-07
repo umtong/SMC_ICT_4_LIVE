@@ -86,7 +86,7 @@ PENDING_PATCH = '''            if self._pending_signal is not None:
 
 ACTIVE_ANCHOR = '''                "failed_acceptance_trap": trap_armed,
                 "favorable_drift_guard_enabled": enforce_drift_guard,
-''
+'''
 ACTIVE_PATCH = '''                "failed_acceptance_trap": trap_armed,
                 "favorable_drift_guard_enabled": enforce_drift_guard,
                 "causal_exit_reason_codes": tuple(
