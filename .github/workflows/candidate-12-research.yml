@@ -1,50 +1,73 @@
-name: candidate-12-materialize-i6
+name: candidate-12-i6-w1-design-gate
 
 on:
   push:
     branches: ["research/candidate-12"]
     paths:
-      - "research/candidate-12/update-i6.part*"
+      - "research/candidate-12/**"
       - ".github/workflows/candidate-12-research.yml"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: candidate-12-i6-w1-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
-  materialize:
+  w1-design-gate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    env:
+      SYMBOL: BTCUSDT
+      WEEK: W1
+      OUTPUT: artifacts/candidate-12/BTCUSDT-W1
     steps:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
 
-      - name: Install reviewed I6 source atomically
+      - name: Verify prebuilt environment
+        run: smc4 doctor
+
+      - name: Compile candidate
+        run: python -m compileall -q research/candidate-12
+
+      - name: Candidate unit tests
+        run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+
+      - name: Run W1 through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          ROOT=research/candidate-12
-          if [[ ! -f "$ROOT/update-i6.part00" ]]; then
-            echo 'I6 source already materialized'
-            exit 0
+          mkdir -p "$OUTPUT"
+          python research/candidate-12/run.py \
+            --symbol "$SYMBOL" \
+            --week "$WEEK" \
+            --output "$OUTPUT" | tee "$OUTPUT.console.json"
+
+      - name: Surface W1 decision evidence
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$OUTPUT/metrics.json" ]]; then
+            echo '=== CANDIDATE_12_I6_W1_METRICS_BEGIN ==='
+            cat "$OUTPUT/metrics.json"
+            echo '=== CANDIDATE_12_I6_W1_METRICS_END ==='
           fi
-          echo "7317ddf5a5a89f434caefb82be12dbdacbbe56877f5ba97f4423d512325bff70  $ROOT/update-i6.part00" | sha256sum -c -
-          echo "121dddf2dc09fa8bcc6f9d37b10e0aab6ff83be143907093e63e05d647dd05ea  $ROOT/update-i6.part01" | sha256sum -c -
-          echo "4bc4e94fa14232528e5e2128f15e42db38d569865f7e87f4b2bb289202a897b5  $ROOT/update-i6.part02" | sha256sum -c -
-          echo "6b49e0d5c01c5d590f8d4a866ea066b7febe8068e68aa5764bd086cc5366fd40  $ROOT/update-i6.part03" | sha256sum -c -
-          cat "$ROOT/update-i6.part00" "$ROOT/update-i6.part01" \
-              "$ROOT/update-i6.part02" "$ROOT/update-i6.part03" > /tmp/candidate-12-i6.b64
-          echo "540b114acfd2e7097a948ea49f11436f8db9113fdf60acb8a9064197036ae9e2  /tmp/candidate-12-i6.b64" | sha256sum -c -
-          base64 -d /tmp/candidate-12-i6.b64 > /tmp/candidate-12-i6.tar.gz
-          echo "78650e7fb7fa9127851d8132f9935cfa52d81fb48974745d804c4f22d9a1a00b  /tmp/candidate-12-i6.tar.gz" | sha256sum -c -
-          rm -rf /tmp/candidate-12-i6
-          mkdir -p /tmp/candidate-12-i6
-          tar -xzf /tmp/candidate-12-i6.tar.gz -C /tmp/candidate-12-i6
-          test -f /tmp/candidate-12-i6/research/candidate-12/logic.py
-          test -f /tmp/candidate-12-i6/research/candidate-12/config.json
-          test -f /tmp/candidate-12-i6/research/candidate-12/test_logic.py
-          cp -a /tmp/candidate-12-i6/research/candidate-12/. "$ROOT/"
-          rm -f "$ROOT"/update-i6.part*
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A research/candidate-12
-          git commit -m "candidate-12: install session-high failed-auction source"
-          git push origin HEAD:research/candidate-12
+          if [[ -f "$OUTPUT/run.json" ]]; then
+            echo '=== CANDIDATE_12_I6_W1_RUN_BEGIN ==='
+            cat "$OUTPUT/run.json"
+            echo '=== CANDIDATE_12_I6_W1_RUN_END ==='
+          fi
+
+      - name: Preserve reproducible W1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-I6-BTCUSDT-W1-${{ github.sha }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: warn
