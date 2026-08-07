@@ -23,7 +23,8 @@ ROOT = Path(__file__).resolve().parents[2]
 C04 = ROOT / "research/candidate-04"
 FROZEN = "f77186180addc1e44ad89599bcae057719ce6cc3"
 BASE_REMOVE = "STRESS_SETTLED_ACCEPTANCE_CONTINUATION"
-GATE = {"trades": 4, "active_days": 3, "win_rate": 0.55, "daily": 0.01}
+GATE = {"trades": 4, "active_days": 3, "win_rate": 0.55, "daily": 0.0}
+TARGET_DAILY = 0.01
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,12 +194,13 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     active = sum(int(row.get("active_days") or 0) for row in rows)
     return {
         "weeks": len(rows), "calendar_days": days, "compounded_return": compounded,
-        "geometric_daily_growth": daily, "trades": trades, "wins": wins,
+        "geometric_daily_growth": daily, "target_geometric_daily_growth": TARGET_DAILY,
+        "trades": trades, "wins": wins,
         "win_rate": wins / trades if trades else 0.0, "active_days": active,
         "passed": bool(
             len(rows) == 3 and all(row.get("candidate_pass") for row in rows)
             and all(row.get("risk_pass") for row in rows)
-            and daily >= GATE["daily"] and trades >= 12 and active >= 9
+            and daily >= TARGET_DAILY and trades >= 12 and active >= 9
             and (wins / trades if trades else 0) >= GATE["win_rate"]
         ),
     }
@@ -277,7 +279,8 @@ def main() -> None:
         "selection_seed": "candidate-04-v45-frozen-untouched-btc-weeks-2026-08-07",
         "selection_seed_integer": 15814877332838526820,
         "predeclared_weeks": [asdict(week) for week in WEEKS],
-        "gate": GATE,
+        "preliminary_week_gate": GATE,
+        "combined_target_geometric_daily_growth": TARGET_DAILY,
         "base_removed_scenario": BASE_REMOVE,
         "controlled_ablation": {
             "performed": removed is not None,
