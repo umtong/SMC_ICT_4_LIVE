@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Index- and symbol-contract-correct V48 compiler entrypoint.
+"""Index-, symbol- and rich-loader-correct V48 compiler entrypoint.
 
 Rich feature frames use completed-minute labels while Nautilus kline frames use
 exchange close timestamps. The base compiler requires positional equality, so
 this wrapper aligns rich labels and applies the same integer positions to each
 Nautilus frame.
 
-The frozen Config loader also contains a BTC-first research guard. For the four
-explicitly allowed experiment symbols, this wrapper passes an otherwise
-identical BTC-symbol JSON through the original loader, then changes only the
-already-validated base symbol. Every unknown-key, risk, cost and regime
-validation therefore remains owned by the original Config.load implementation.
+The frozen Config loader and rich loader also contain BTC-first research guards.
+For the four explicitly allowed experiment symbols, this wrapper sends an
+otherwise identical BTC-symbol JSON through the original Config loader, changes
+only the already-validated base symbol, and reads the symbol-matching rich files
+with the original close-observed contract. No market-state, signal, target,
+risk, cost or execution logic is changed.
 """
 from __future__ import annotations
 
@@ -57,6 +58,47 @@ def load_allowed_symbol_config(path: Path):
 
     actual_base = replace(validated.base, symbol=symbol)
     return replace(validated, base=actual_base)
+
+
+def load_rich_for_symbol(directory: Path, symbol: str) -> pd.DataFrame:
+    if symbol not in base.SYMBOLS:
+        raise CandidateError(
+            f"unsupported cross-market rich symbol: {symbol}"
+        )
+    paths = sorted(directory.glob(f"{symbol}-rich-*.csv.gz"))
+    if not paths:
+        raise CandidateError(f"no {symbol} rich features in {directory}")
+    frame = pd.concat((pd.read_csv(path) for path in paths), ignore_index=True)
+    frame["open_time"] = pd.to_datetime(frame["open_time"], utc=True)
+    frame["observed_time"] = pd.to_datetime(frame["observed_time"], utc=True)
+    frame = frame.set_index("open_time").sort_index()
+    if frame.index.has_duplicates:
+        raise CandidateError("duplicate rich-feature timestamps")
+    expected_observed = frame.index + pd.Timedelta(minutes=1)
+    if not (frame["observed_time"].array == expected_observed.array).all():
+        raise CandidateError("rich features violate the close-observed contract")
+    return frame
+
+
+def load_allowed_symbol_rich(directory: Path) -> pd.DataFrame:
+    symbol = directory.name
+    if symbol not in base.SYMBOLS:
+        candidates = {
+            path.name.split("-rich-", 1)[0]
+            for path in directory.glob("*-rich-*.csv.gz")
+            if "-rich-" in path.name
+        }
+        if len(candidates) != 1:
+            raise CandidateError(
+                f"cannot infer allowed rich symbol in {directory}: {sorted(candidates)}"
+            )
+        symbol = next(iter(candidates))
+    return load_rich_for_symbol(directory, symbol)
+
+
+# rich_signal_compiler_v22b calls this frozen BTC loader internally. Replace only
+# that filename selector inside the V48 process; all preparation remains frozen.
+base.v22.base.load_rich = load_allowed_symbol_rich
 
 
 def load_frames(
