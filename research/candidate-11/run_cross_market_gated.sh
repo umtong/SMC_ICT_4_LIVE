@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 CAND="$ROOT/research/candidate-11"
 PROTOCOL="$CAND/cross_market_protocol.json"
-DECISION="$CAND/results/RESEARCH_DECISION.json"
 SUMMARY="$CAND/results/CROSS_MARKET/summary.json"
 mkdir -p "$(dirname "$SUMMARY")"
 
@@ -12,32 +11,10 @@ if [ ! -s "$PROTOCOL" ]; then
   echo "cross-market protocol must be committed before data access" >&2
   exit 66
 fi
-ACTION=""
-if [ -s "$DECISION" ]; then
-  ACTION="$(python - "$DECISION" <<'PY'
-import json, sys
-print(json.load(open(sys.argv[1], encoding='utf-8')).get('next_action') or '')
-PY
-)"
-fi
-if [ "$ACTION" != "REPLACE_BTC_MICROSTRUCTURE_SUITE_WITH_CROSS_MARKET_CAUSAL_LEADER_FAMILY" ]; then
-  python - "$SUMMARY" "$ACTION" <<'PY'
-import json
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps({
-    'schema': 'candidate-11-cross-market-summary-v1',
-    'status': 'NOT_RUN_PREDECESSOR_EVIDENCE_DID_NOT_AUTHORIZE',
-    'observed_next_action': sys.argv[2],
-    'three_week_gate_passed': False,
-    'success_claim': False,
-}, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-PY
-  exit 0
-fi
 
+# This is an independent alpha family. C1 must not be blocked by the outcome of
+# IRX or BTC-only microstructure families. Only progression from C1 to C2/C3 is
+# performance-gated.
 rm -rf "$CAND/results/CROSS_MARKET" \
        "$CAND/results/CROSS_C1" "$CAND/results/CROSS_C2" "$CAND/results/CROSS_C3"
 mkdir -p "$(dirname "$SUMMARY")"
