@@ -109,9 +109,48 @@ response, then require a separate opposite response for reversal.
 - zero-trade evidence explicitly records the current path-diagnostic revision;
 - the V3 workflow calls the V3 detector, V2 exact-cadence orchestrator, and evidence-only V4 wrapper.
 
-**Current status:** fixed BTC screen-01 NautilusTrader replay is the next authoritative economic
-result.  No performance claim is made until its committed `stage_decision.json` and suite evidence
-exist.
+**Current status:** the family did not provide a sufficiently strong cost-after route, and later
+experiments showed that aggregate trades alone cannot identify whether opposing displayed liquidity
+replenished or withdrew.
+
+### 8. External-liquidity quote resiliency
+
+**Structural hypothesis:** aggressive flow becomes interpretable only after observing the displayed
+liquidity supply response around a completed external level.  A failed auction requires opposing
+replenishment plus reclaim and separate reversal confirmation.  Acceptance continuation requires
+opposing withdrawal, same-side displayed support, a held weaker retest, and separate reacceleration.
+
+**Implementation corrections completed before economic evidence:**
+
+- Binance `bookTicker` updates sharing one transaction millisecond remain distinct ordered events;
+- equal-time event order follows venue update id and an ambiguous regression fails closed;
+- the final unfinished raw ten-second bucket is carried across parser chunks and daily archives;
+- bucket open, close, median spread, event count, and quote OFI are invariant to chunk size;
+- a completed bucket may advance or terminate one pending scenario, but cannot also arm another;
+- CLI-selected configuration is propagated to feature normalization and signal construction, not
+  only to the outer Nautilus suite;
+- reversal and continuation order tags, event chains, stop references, skips, and closed-trade
+  records name the actual quote-resiliency family rather than inherited acceptance labels;
+- the new layer reuses the verified NautilusTrader account, risk, funding, mark-price, liquidation,
+  order, fill, and path-diagnostic stack and creates no substitute backtest engine.
+
+**Research-method improvements:**
+
+- Parser behavior can change the economic meaning of order-flow evidence.  Timestamp duplicates,
+  stable event order, and chunk boundaries are therefore causal contracts, not low-level cleanup.
+- Displayed replenishment is not proof of an iceberg or participant identity.  Use the weaker,
+  directly observable claim and require a later independent confirmation.
+- A top-of-book response cannot represent full depth.  Do not promote a marginal result that depends
+  on L1 execution assumptions; stronger depth sensitivity is a later robustness requirement, not a
+  reason to postpone the first alpha falsification.
+- Configuration-path mismatches can silently test a different hypothesis while producing valid
+  files.  Runtime configuration identity must be tested explicitly.
+- Scenario-family labels are part of evidence correctness.  A profitable fill with the wrong family
+  attribution is not an evaluable result.
+
+**Current status:** all pure feature, streaming-data, state-machine, transition, native-adapter, and
+runtime-config contracts pass in the pinned environment.  The first frozen BTC week is the next
+authoritative economic result; no profitability claim precedes its committed evidence.
 
 ## Current anti-overfitting rules
 
@@ -124,6 +163,8 @@ exist.
 - A diagnostic result is never directly promotable.
 - Preserve continuous path facts rather than converting every observation to a fitted boolean.
 - Do not infer passive absorption from aggregate trades; require order-book data for that claim.
+- Do not infer hidden liquidity or participant identity from top-of-book replenishment.
+- Do not alter quote-response thresholds after seeing the first frozen-week trades.
 
 ## Success and failure reporting requirements
 
