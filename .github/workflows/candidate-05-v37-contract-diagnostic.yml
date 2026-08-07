@@ -1,0 +1,75 @@
+name: candidate-05-v37-contract-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/smt_session_*.py"
+      - "research/candidate-05/strategy_v37_smt_session_divergence.py"
+      - "research/candidate-05/shared_account_backtest_v2.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v4.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v5.py"
+      - "research/candidate-05/shared_account_strategy_variants_v2.py"
+      - "research/candidate-05/tests/test_smt_session_divergence_logic.py"
+      - "research/candidate-05/tests/test_strategy_v37_contract.py"
+      - ".github/workflows/candidate-05-v37-contract-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v37-contract-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v37-contract-diagnostic
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Capture complete fixed-environment and contract result
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$ROOT"
+          {
+            echo "HEAD=$GITHUB_SHA"
+            smc4 doctor
+            doctor_code=$?
+            echo "doctor_exit_code=$doctor_code"
+            python -m compileall -q research/candidate-05
+            compile_code=$?
+            echo "compile_exit_code=$compile_code"
+            python -m unittest discover \
+              -s research/candidate-05/tests \
+              -p 'test_*.py' -v
+            test_code=$?
+            echo "test_exit_code=$test_code"
+            if test "$doctor_code" -eq 0 -a "$compile_code" -eq 0 -a "$test_code" -eq 0; then
+              echo PASS > "$ROOT/status.txt"
+              exit_code=0
+            else
+              echo FAIL > "$ROOT/status.txt"
+              exit_code=1
+            fi
+          } 2>&1 | tee "$ROOT/verification.log"
+          echo "${PIPESTATUS[0]}" > "$ROOT/pipeline_exit_code.txt"
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v37-contract-diagnostic-${{ github.sha }}
+          path: artifacts/candidate-05-v37-contract-diagnostic/**
+          if-no-files-found: error
+          retention-days: 90
