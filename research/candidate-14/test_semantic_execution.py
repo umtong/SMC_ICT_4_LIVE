@@ -20,7 +20,8 @@ class SemanticExecutionBoundaryTests(unittest.TestCase):
         materialized = materialize_runner_source(source)
         self.assertNotIn(OLD_ORDER_BLOCK, materialized)
         self.assertIn(NEW_ORDER_BLOCK, materialized)
-        self.assertEqual(materialized.count("candidate-13-market-parent"), 1)
+        self.assertEqual(materialized.count("candidate-14-unified-parent"), 1)
+        self.assertIn("entry_post_only=bool(plan.entry_post_only)", materialized)
         compile(materialized, "run_leadership_scdam_base.py", "exec")
 
     def test_contract_drift_fails_closed(self):
