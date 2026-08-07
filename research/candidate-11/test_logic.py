@@ -1,93 +1,223 @@
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 import sys
 import unittest
 
-sys.path.insert(0, str(Path(__file__).parent))
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from logic import Auction, BarObs, CausalAuctionEngine, Direction, LogicConfig, Pool, RiskSizer, Scenario, Side, TradePlan
-
-
-def bar(i: int, o: float, h: float, l: float, c: float, flow: float = 0.0, volume: float = 100.0) -> BarObs:
-    buy = volume * (flow + 1.0) / 2.0
-    return BarObs(i * 60_000_000_000, o, h, l, c, volume, buy)
-
-
-class CausalityTests(unittest.TestCase):
-    def test_pivot_not_known_at_visual_pivot(self) -> None:
-        cfg = LogicConfig(atr_period=2, volume_period=2, pivot_wing=1)
-        engine = CausalAuctionEngine(cfg, "BTCUSDT.BINANCE")
-        engine.on_bar(bar(1, 10, 11, 9, 10))
-        engine.on_bar(bar(2, 10, 13, 9, 11))
-        self.assertFalse(any(p.source == "CAUSAL_PIVOT_HIGH" for p in engine.pools))
-        engine.on_bar(bar(3, 11, 12, 10, 11))
-        pool = next(p for p in engine.pools if p.source == "CAUSAL_PIVOT_HIGH")
-        self.assertEqual(pool.candidate_ts_ns, 2 * 60_000_000_000)
-        self.assertEqual(pool.confirmed_ts_ns, 3 * 60_000_000_000)
-        self.assertGreater(pool.confirmed_ts_ns, pool.candidate_ts_ns)
-
-    def test_far_requires_confirmation_before_retrace(self) -> None:
-        # The test isolates scenario ordering. Its synthetic sweep has an
-        # intentionally broad stop, so the unrelated production stop-bound
-        # gate is widened only for this fixture.
-        cfg = LogicConfig(
-            atr_period=2,
-            volume_period=2,
-            pivot_wing=1,
-            min_net_r=0.1,
-            max_stop_atr=3.0,
-        )
-        engine = CausalAuctionEngine(cfg, "BTCUSDT.BINANCE")
-        pool = Pool("p", Side.HIGH, 100.0, "TEST", 1, 2, 0, 100)
-        engine.pools.extend([pool, Pool("target", Side.LOW, 90.0, "TEST", 1, 2, 0, 100)])
-        engine.bars.extend([bar(1, 99, 100, 98, 99), bar(2, 99, 101, 98, 100)])
-        engine._index = 1
-        engine.true_ranges.extend([2.0, 2.0])
-        engine.volumes.extend([100.0, 100.0])
-        engine.active = Auction(pool, bar(2, 99, 101, 98, 99, 0.3), 1, 2.0, 98.0, 101.0, True, False)
-        self.assertIsNone(engine._try_far(engine.active, bar(3, 99, 100, 98.5, 99, -0.2)))
-        self.assertEqual(engine.active.state, "COMPETE")
-        self.assertIsNone(engine._try_far(engine.active, bar(4, 99, 99, 96.5, 97, -0.5)))
-        self.assertEqual(engine.active.state, "RETRACE")
-        plan = engine._try_far(engine.active, bar(5, 97, 98, 96, 97.5, -0.1))
-        self.assertIsNotNone(plan)
-        self.assertEqual(plan.scenario, Scenario.FAR)
-        self.assertEqual(plan.direction, Direction.SHORT)
-
-    def test_global_slot_is_a_hard_invariant(self) -> None:
-        cfg = LogicConfig()
-        engine = CausalAuctionEngine(cfg, "BTCUSDT.BINANCE")
-        pool = Pool("p", Side.LOW, 100.0, "TEST", 1, 2, 0, 100)
-        engine.active = Auction(pool, bar(1, 100, 101, 99, 100), 0, 2.0, 101.0, 99.0, True, False, state="CONFIRMED")
-        plan = TradePlan("p", Scenario.FAR, Direction.LONG, 1, 100.0, 98.0, 105.0, 2.0, 2.2, 4.8, 2.18, "TEST")
-        engine.mark_submitted(plan, Decimal("1"))
-        with self.assertRaises(RuntimeError):
-            engine.mark_submitted(plan, Decimal("1"))
+from logic import (
+    Auction,
+    BarObs,
+    CausalAuctionEngine,
+    Direction,
+    LogicConfig,
+    Pool,
+    RiskSizer,
+    Scenario,
+    Side,
+    StructuralBar,
+    MINUTE_NS,
+)
+from session_engine import RegionalHandoffAuctionEngine, SESSION_SPECS
 
 
-class RiskTests(unittest.TestCase):
-    def test_exact_three_percent_budget_and_increment_floor(self) -> None:
+def bar(ts: int, open_: float, high: float, low: float, close: float, volume: float = 100.0, buy: float = 50.0) -> BarObs:
+    return BarObs(ts, open_, high, low, close, volume, buy)
+
+
+def pool(
+    scenario_id: str,
+    side: Side,
+    level: float,
+    *,
+    range_id: str | None = None,
+    opposite: float | None = None,
+    strength: int = 3,
+    close_location: float = 0.5,
+    signed_flow: float = 0.0,
+) -> Pool:
+    return Pool(
+        scenario_id=scenario_id,
+        side=side,
+        level=level,
+        source="TEST_RANGE",
+        candidate_ts_ns=1,
+        confirmed_ts_ns=2,
+        confirmed_index=0,
+        expiry_index=10_000,
+        range_id=range_id,
+        opposite_level=opposite,
+        strength=strength,
+        range_close_location=close_location,
+        range_signed_flow=signed_flow,
+    )
+
+
+class TestRiskContract(unittest.TestCase):
+    def test_exact_nav_risk_is_floored_not_scaled_by_score(self) -> None:
         decision = RiskSizer(0.03).size(
-            nav=Decimal("100000"), loss_per_unit=Decimal("100"), entry_price=Decimal("50000"),
-            quantity_increment=Decimal("0.001"), min_quantity=Decimal("0.001"),
-            min_notional=Decimal("5"), margin_init=Decimal("0.05"), free_balance=Decimal("100000"),
+            nav=Decimal("100000"),
+            loss_per_unit=Decimal("100"),
+            entry_price=Decimal("60000"),
+            quantity_increment=Decimal("0.001"),
+            min_quantity=Decimal("0.001"),
+            min_notional=Decimal("10"),
+            margin_init=Decimal("0.05"),
+            free_balance=Decimal("100000"),
         )
         self.assertTrue(decision.feasible)
         self.assertEqual(decision.planned_loss_budget, Decimal("3000.00"))
         self.assertEqual(decision.quantity, Decimal("30.00"))
         self.assertLessEqual(decision.expected_total_loss, decision.planned_loss_budget)
 
-    def test_margin_infeasibility_rejects_instead_of_clipping(self) -> None:
+    def test_actual_margin_infeasibility_rejects_instead_of_clipping(self) -> None:
         decision = RiskSizer(0.03).size(
-            nav=Decimal("100000"), loss_per_unit=Decimal("10"), entry_price=Decimal("50000"),
-            quantity_increment=Decimal("0.001"), min_quantity=Decimal("0.001"),
-            min_notional=Decimal("5"), margin_init=Decimal("0.05"), free_balance=Decimal("1000"),
+            nav=Decimal("1000"),
+            loss_per_unit=Decimal("1"),
+            entry_price=Decimal("1000"),
+            quantity_increment=Decimal("0.001"),
+            min_quantity=Decimal("0.001"),
+            min_notional=Decimal("10"),
+            margin_init=Decimal("0.50"),
+            free_balance=Decimal("1000"),
         )
         self.assertFalse(decision.feasible)
         self.assertEqual(decision.reason, "ACTUAL_MARGIN_INFEASIBLE")
         self.assertEqual(decision.quantity, Decimal("0"))
+
+
+class TestCausalPlanContract(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = LogicConfig(min_net_r=1.25, min_stop_atr=0.08, retrace_expiry_bars=12)
+        self.engine = CausalAuctionEngine(self.config, "BTCUSDT-PERP.BINANCE")
+
+    def _auction(self, direction: Direction) -> tuple[Auction, BarObs]:
+        source = pool("P-HIGH", Side.HIGH, 100.0, range_id="R", opposite=80.0)
+        confirmation = bar(100 * MINUTE_NS, 106.0, 112.0, 104.0, 110.0, buy=70.0)
+        auction = Auction(
+            pool=source,
+            sweep=bar(90 * MINUTE_NS, 99.0, 104.0, 98.0, 101.0, buy=70.0),
+            sweep_index=0,
+            atr=10.0,
+            internal_level=98.0,
+            sweep_extreme=104.0,
+            rejection_seed=True,
+            acceptance_seed=True,
+        )
+        auction.scenario = Scenario.FAR
+        auction.direction = direction
+        auction.state = "FAR_CONFIRMED"
+        if direction == Direction.LONG:
+            auction.zone_low, auction.zone_high = 100.0, 105.0
+            auction.stop_price, auction.target_price = 90.0, 135.0
+        else:
+            auction.zone_low, auction.zone_high = 105.0, 110.0
+            auction.stop_price, auction.target_price = 120.0, 75.0
+            confirmation = bar(100 * MINUTE_NS, 104.0, 106.0, 98.0, 100.0, buy=30.0)
+        self.engine.active = auction
+        return auction, confirmation
+
+    def test_long_plan_is_passive_gtd_limit_at_void_edge(self) -> None:
+        auction, confirmation = self._auction(Direction.LONG)
+        plan = self.engine._costed_limit_plan(auction, confirmation, "TEST")
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.expected_entry, 105.0)
+        self.assertEqual(plan.entry_order_type, "LIMIT")
+        self.assertTrue(plan.entry_post_only)
+        self.assertLess(plan.expected_entry, confirmation.close)
+        self.assertEqual(plan.expire_ts_ns, confirmation.ts_ns + 12 * MINUTE_NS)
+        self.assertEqual(plan.details["entry_cost_assumption"], "MAKER")
+        self.assertGreaterEqual(plan.net_r, self.config.min_net_r)
+
+    def test_short_plan_is_passive_at_low_edge(self) -> None:
+        auction, confirmation = self._auction(Direction.SHORT)
+        plan = self.engine._costed_limit_plan(auction, confirmation, "TEST")
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.expected_entry, 105.0)
+        self.assertGreater(plan.expected_entry, confirmation.close)
+
+    def test_plan_occupies_global_slot_until_nautilus_terminal_event(self) -> None:
+        auction, confirmation = self._auction(Direction.LONG)
+        plan = self.engine._costed_limit_plan(auction, confirmation, "TEST")
+        assert plan is not None
+        self.engine.mark_submitted(plan, Decimal("1"))
+        self.assertEqual(self.engine.active_trade_state, "PENDING_ENTRY")
+        self.engine.mark_entry_filled(confirmation.ts_ns + MINUTE_NS)
+        self.assertEqual(self.engine.active_trade_state, "POSITION")
+        self.engine.mark_trade_terminal(confirmation.ts_ns + 2 * MINUTE_NS, "TEST_EXIT")
+        self.assertIsNone(self.engine.active_trade_id)
+
+    def test_insufficient_costed_r_is_terminal_not_tuned(self) -> None:
+        auction, confirmation = self._auction(Direction.LONG)
+        auction.target_price = 108.0
+        plan = self.engine._costed_limit_plan(auction, confirmation, "TEST")
+        self.assertIsNone(plan)
+        self.assertIsNone(self.engine.active)
+        self.assertEqual(self.engine.skips["INSUFFICIENT_COSTED_STRUCTURAL_R"], 1)
+
+
+class TestDrawAndSessionSemantics(unittest.TestCase):
+    def test_source_range_alignment_is_side_relative(self) -> None:
+        engine = CausalAuctionEngine(LogicConfig(), "TEST")
+        high = pool("H", Side.HIGH, 110.0, close_location=0.80, signed_flow=0.10)
+        low = pool("L", Side.LOW, 90.0, close_location=0.80, signed_flow=0.10)
+        self.assertGreater(engine._source_range_side_alignment(high), 0)
+        self.assertLess(engine._source_range_side_alignment(low), 0)
+
+    def test_far_target_ignores_weaker_internal_obstacle(self) -> None:
+        engine = CausalAuctionEngine(LogicConfig(), "TEST")
+        engine._index = 10
+        trigger = pool("TRIGGER", Side.HIGH, 110.0, range_id="R", opposite=80.0, strength=3)
+        paired = pool("PAIRED", Side.LOW, 80.0, range_id="R", opposite=110.0, strength=3)
+        weak = pool("WEAK", Side.LOW, 90.0, strength=2)
+        engine.pools = [trigger, paired, weak]
+        self.assertIs(engine._far_target_pool(trigger, 105.0), paired)
+        strong = pool("STRONG", Side.LOW, 90.0, strength=3)
+        engine.pools.append(strong)
+        self.assertIs(engine._far_target_pool(trigger, 105.0), strong)
+
+    def test_completed_cross_midnight_session_has_future_decision_window(self) -> None:
+        engine = RegionalHandoffAuctionEngine(LogicConfig(), "TEST")
+        spec = next(item for item in SESSION_SPECS if item.label == "ASIA_2000_0000_NY")
+        key = date(2024, 8, 19)
+        structural = StructuralBar(
+            start_ts_ns=1,
+            end_ts_ns=2,
+            open=100.0,
+            high=110.0,
+            low=90.0,
+            close=108.0,
+            volume=1000.0,
+            taker_buy_volume=650.0,
+            high_ts_ns=1,
+            low_ts_ns=1,
+        )
+        engine._sessions[(spec.label, key)] = structural
+        engine._finish_session(spec, key)
+        created = [item for item in engine.pools if item.source == spec.label]
+        self.assertEqual(len(created), 2)
+        expected_start = engine._minute_ns(key + __import__("datetime").timedelta(days=1), 2 * 60)
+        expected_end = engine._minute_ns(key + __import__("datetime").timedelta(days=1), 5 * 60)
+        self.assertTrue(all(item.triggerable for item in created))
+        self.assertTrue(all(item.trigger_start_ts_ns == expected_start for item in created))
+        self.assertTrue(all(item.trigger_end_ts_ns == expected_end for item in created))
+
+
+class TestProductionBoundary(unittest.TestCase):
+    def test_runner_delegates_execution_to_nautilus(self) -> None:
+        source = (ROOT / "run.py").read_text(encoding="utf-8")
+        self.assertIn("entry_order_type=OrderType.LIMIT", source)
+        self.assertIn("time_in_force=TimeInForce.GTD", source)
+        self.assertIn("engine.trader.generate_order_fills_report()", source)
+        self.assertNotIn("def simulate_fill", source)
+        self.assertNotIn("def backtest_loop", source)
 
 
 if __name__ == "__main__":

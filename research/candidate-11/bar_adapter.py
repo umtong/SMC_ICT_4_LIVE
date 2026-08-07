@@ -1,9 +1,8 @@
-"""Candidate 11 market-data adapter for NautilusTrader.
+"""Causal DataFrame-to-Nautilus ``Bar`` adapter for Candidate 11.
 
-The adapter creates official Nautilus ``Bar`` objects directly from a causal
-OHLCV frame.  This avoids a pandas copy-on-write/read-only buffer incompatibility
-inside ``BarDataWrangler`` without replacing any Nautilus clock, order, fill,
-position, fee, margin, or NAV functionality.
+This only materializes official Nautilus model objects. It does not implement a
+clock, matcher, fill model, fee model, position ledger, or NAV calculation.
+Those remain exclusively inside NautilusTrader.
 """
 from __future__ import annotations
 
@@ -11,17 +10,11 @@ from typing import Any
 
 import pandas as pd
 
-
 _BAR_COLUMNS = ("open", "high", "low", "close", "volume")
 
 
 def build_bars(frame: pd.DataFrame, bar_type: Any, instrument: Any) -> list[Any]:
-    """Return timestamp-ordered Nautilus ``Bar`` objects from ``frame``.
-
-    The frame index is interpreted as the time when the completed observation
-    becomes visible.  ``ts_event`` and ``ts_init`` are therefore identical and
-    no artificial look-ahead or ingestion latency is introduced here.
-    """
+    """Build timestamp-ordered Nautilus bars from completed causal observations."""
     from nautilus_trader.model.data import Bar
     from nautilus_trader.model.objects import Price, Quantity
 
@@ -41,11 +34,8 @@ def build_bars(frame: pd.DataFrame, bar_type: Any, instrument: Any) -> list[Any]
     if not pd.notna(matrix).all():
         raise ValueError("bar frame contains non-finite OHLCV values")
 
-    price_precision = int(instrument.price_precision)
-    size_precision = int(instrument.size_precision)
-    price_format = f".{{precision}}f".format(precision=price_precision)
-    size_format = f".{{precision}}f".format(precision=size_precision)
-
+    price_format = f".{int(instrument.price_precision)}f"
+    size_format = f".{int(instrument.size_precision)}f"
     bars: list[Any] = []
     for timestamp, values in zip(frame.index, matrix, strict=True):
         open_, high, low, close, volume = (float(value) for value in values)
