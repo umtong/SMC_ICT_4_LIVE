@@ -10,8 +10,12 @@ is gone; the handoff is observational during that interval.
 """
 from __future__ import annotations
 
+import math
+
+from logic import Pool
 from strategy import LiquidityResponseConfig
 from strategy import PositioningResetInventoryHybridStrategy
+from target_handoff_models import CurrentLiquidityTarget
 from target_handoff_models import PendingTargetExit
 
 
@@ -27,6 +31,7 @@ class UnfilledTargetHandoffStrategy(PositioningResetInventoryHybridStrategy):
             {
                 "unfilled_target_handoff_watches_armed": 0,
                 "unfilled_target_handoff_watch_conflicts": 0,
+                "unfilled_target_handoff_metadata_missing": 0,
             },
         )
 
@@ -43,19 +48,51 @@ class UnfilledTargetHandoffStrategy(PositioningResetInventoryHybridStrategy):
         self,
         row: dict[str, float | int],
     ) -> None:
-        target = self.current_liquidity_target
-        if target is None or not target.target_source.startswith("POOL:"):
-            return
         if self.target_sweep_watch is not None:
             self.diagnostics["unfilled_target_handoff_watch_conflicts"] += 1
             return
 
-        # No synthetic fill or PnL is created. These values only transport the
-        # already frozen target metadata into the observational handoff helper.
+        # Filled-position handoff metadata lives in current_liquidity_target.
+        # A still-resting entry instead owns the same frozen destination through
+        # v26's pending-scenario fields. Read that authoritative state directly
+        # before the cancel lifecycle clears it.
+        target_value = float(self.pending_scenario_target)
+        pool_id = self.pending_scenario_target_pool_id
+        side = int(self.entry_side)
+        scenario_id = self.current_scenario_id
+        if (
+            not math.isfinite(target_value)
+            or target_value <= 0.0
+            or pool_id is None
+            or side not in (-1, 1)
+            or scenario_id is None
+        ):
+            self.diagnostics["unfilled_target_handoff_metadata_missing"] += 1
+            return
+
+        pool = self.active_pools.get(pool_id)
+        if pool is None:
+            pool = Pool(
+                pool_id=pool_id,
+                kind="HIGH" if side > 0 else "LOW",
+                level=target_value,
+                event_time_ns=int(row["ts"]),
+                observed_time_ns=int(row["ts"]),
+                source="UNFILLED_FROZEN_TARGET_SNAPSHOT",
+                strength=1,
+                created_index=self.bar_index,
+            )
+        target = CurrentLiquidityTarget(
+            pool=pool,
+            target=target_value,
+            target_source=f"POOL:{pool_id}",
+            entry_side=side,
+            source_scenario_id=scenario_id,
+        )
         pending = PendingTargetExit(
             target=target,
             event_ts=int(row["ts"]),
-            average_exit=float(target.target),
+            average_exit=target_value,
             realized_pnl=0.0,
         )
         self._arm_target_watch(pending, row)
