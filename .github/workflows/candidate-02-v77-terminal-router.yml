@@ -44,20 +44,49 @@ jobs:
           git config user.email "candidate-02-research@users.noreply.github.com"
           test "$(git branch --show-current)" = "research/candidate-02"
           test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "cbb08f4ed11b02638c30a898444e1d8bc8a1867cfc61036044905866524295b0"
-          git apply --check research/candidate-02/v95_implementation_fix_03.patch
-          git apply research/candidate-02/v95_implementation_fix_03.patch
-          test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "a31b09027333317a04ce65dc3ac5475011746f8ba6942babd923422ad793fdb1"
-          actual="$(cat \
-            research/candidate-02/v95_mature_swing_breakout_core.py \
-            research/candidate-02/v95_nt_backtest.py \
-            research/candidate-02/v95_base_config.json \
-            research/candidate-02/v95_mature_swing_breakout_lock.json \
-            research/candidate-02/v95_design.md | sha256sum | cut -d' ' -f1)"
-          test "$actual" = "b381ce0130b7bb8af394fdb828fed1cd1d42df2ca0b235484a27871d839468d3"
-          printf '%s' "$actual" > research/candidate-02/v95_payload_sha256.txt
+          python - <<'PY'
+          from __future__ import annotations
+          import hashlib,importlib.util
+          from pathlib import Path
+
+          root=Path('research/candidate-02')
+          core=root/'v95_mature_swing_breakout_core.py'
+          prep_path=root/'v95_prepare_before_data.py'
+          spec=importlib.util.spec_from_file_location('v95_prep',prep_path)
+          prep=importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(prep)
+          text=core.read_text(); current=hashlib.sha256(text.encode()).hexdigest()
+          if current==prep.ORIGINAL_SHA:
+              text=prep.apply_fix01(text); current=prep.FIX01_SHA
+          if current==prep.FIX01_SHA:
+              text=prep.apply_fix02(text); current=prep.FINAL_SHA
+          assert current=='60ea90e83b3f1cffb0d816c0cb08ff6c6bf6b160a025c7da5f75d7d83e5598a8'
+          prep.write_records()
+
+          def replace_once(value: str, before: str, after: str) -> str:
+              assert value.count(before)==1, before[:120]
+              return value.replace(before,after)
+
+          text=replace_once(
+              text,
+              '    if result.index.tz is None:\n        result.index = result.index.tz_localize(UTC)\n    else:\n        result.index = result.index.tz_convert(UTC)\n    if result.index.has_duplicates or not result.index.is_monotonic_increasing:\n',
+              '    if result.index.tz is None:\n        result.index = result.index.tz_localize(UTC)\n    else:\n        result.index = result.index.tz_convert(UTC)\n    # pandas may preserve second, millisecond or microsecond resolution.\n    # All scenario timestamps are stored as integer nanoseconds for NautilusTrader,\n    # so normalize the index resolution before any asi8 comparison.\n    if hasattr(result.index, "as_unit"):\n        result.index = result.index.as_unit("ns")\n    if result.index.has_duplicates or not result.index.is_monotonic_increasing:\n',
+          )
+          text=replace_once(
+              text,
+              '    frame = raw[["open", "high", "low", "close"]].copy()\n    frame["atr"] = atr.reindex(frame.index)\n',
+              '    frame = _normalise_index(raw[["open", "high", "low", "close"]])\n    frame["atr"] = atr.reindex(frame.index)\n',
+          )
+          core.write_text(text)
+          final_core=hashlib.sha256(core.read_bytes()).hexdigest()
+          assert final_core=='a31b09027333317a04ce65dc3ac5475011746f8ba6942babd923422ad793fdb1'
+          payload_files=['v95_mature_swing_breakout_core.py','v95_nt_backtest.py','v95_base_config.json','v95_mature_swing_breakout_lock.json','v95_design.md']
+          payload=hashlib.sha256(b''.join((root/name).read_bytes() for name in payload_files)).hexdigest()
+          assert payload=='b381ce0130b7bb8af394fdb828fed1cd1d42df2ca0b235484a27871d839468d3'
+          (root/'v95_payload_sha256.txt').write_text(payload)
+          PY
           git rm -f --ignore-unmatch research/candidate-02/sitecustomize.py
           python -m py_compile research/candidate-02/v95_mature_swing_breakout_core.py research/candidate-02/v95_stage_funnel.py
-          git add research/candidate-02/v95_mature_swing_breakout_core.py research/candidate-02/v95_payload_sha256.txt
+          git add research/candidate-02/v95_mature_swing_breakout_core.py research/candidate-02/v95_payload_sha256.txt research/candidate-02/v95_implementation_fix_01.json research/candidate-02/v95_implementation_fix_02.json
           if ! git diff --cached --quiet; then
             git commit -m "fix(candidate-02): persist verified v95 causal timing repair"
             git push origin HEAD:research/candidate-02
@@ -90,11 +119,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts/candidate-02-v95-stage-funnel
-          python research/candidate-02/v95_stage_funnel.py \
-            --config research/candidate-02/v95_base_config.json \
-            --input-root inputs/v95-first-week \
-            --output artifacts/candidate-02-v95-stage-funnel/central.json \
-            | tee artifacts-v95-stage-funnel-central.log
+          python research/candidate-02/v95_stage_funnel.py --config research/candidate-02/v95_base_config.json --input-root inputs/v95-first-week --output artifacts/candidate-02-v95-stage-funnel/central.json | tee artifacts-v95-stage-funnel-central.log
           python - <<'PY'
           import copy,json
           from pathlib import Path
@@ -103,28 +128,14 @@ jobs:
           cfg['scenario']['require_defense_memory']=False
           Path('/tmp/v95-no-defense.json').write_text(json.dumps(cfg,indent=2,sort_keys=True)+'\n')
           PY
-          python research/candidate-02/v95_stage_funnel.py \
-            --config /tmp/v95-no-defense.json \
-            --input-root inputs/v95-first-week \
-            --output artifacts/candidate-02-v95-stage-funnel/remove-defense.json \
-            | tee artifacts-v95-stage-funnel-remove-defense.log
+          python research/candidate-02/v95_stage_funnel.py --config /tmp/v95-no-defense.json --input-root inputs/v95-first-week --output artifacts/candidate-02-v95-stage-funnel/remove-defense.json | tee artifacts-v95-stage-funnel-remove-defense.log
           python - <<'PY'
           import json
           from pathlib import Path
           c=json.loads(Path('artifacts/candidate-02-v95-stage-funnel/central.json').read_text())
           a=json.loads(Path('artifacts/candidate-02-v95-stage-funnel/remove-defense.json').read_text())
-          assert c['production_signal_count']==0
-          assert a['production_signal_count']==0
-          summary={
-            'candidate':'candidate-02-v95-mature-defended-swing-common-accepted-breakout',
-            'evaluation_start_utc':'2025-10-06T00:00:00Z',
-            'evaluation_end_utc':'2025-10-13T00:00:00Z',
-            'diagnostic_only':True,
-            'custom_backtest_engine':False,
-            'production_engine':'NautilusTrader 1.230.0',
-            'central':{'qualification':c['qualification'],'scenario':c['scenario']},
-            'remove_defense':{'qualification':a['qualification'],'scenario':a['scenario']},
-          }
+          assert c['production_signal_count']==0 and a['production_signal_count']==0
+          summary={'candidate':'candidate-02-v95-mature-defended-swing-common-accepted-breakout','evaluation_start_utc':'2025-10-06T00:00:00Z','evaluation_end_utc':'2025-10-13T00:00:00Z','diagnostic_only':True,'custom_backtest_engine':False,'production_engine':'NautilusTrader 1.230.0','central':{'qualification':c['qualification'],'scenario':c['scenario']},'remove_defense':{'qualification':a['qualification'],'scenario':a['scenario']}}
           Path('artifacts/candidate-02-v95-stage-funnel/summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
           print(json.dumps(summary,indent=2,sort_keys=True))
           PY
