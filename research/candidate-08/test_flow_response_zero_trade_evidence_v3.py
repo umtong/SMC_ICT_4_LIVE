@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import unittest
-from unittest.mock import patch
 
 from aggtrade_flow_response_auction_signals_v3 import (
     ABSORPTION_FAMILY,
@@ -12,28 +10,31 @@ from aggtrade_flow_response_auction_signals_v3 import (
     INITIATIVE_FAMILY,
 )
 from flow_response_trade_path_diagnostics_v2 import DIAGNOSTIC_REVISION
-import run_aggtrade_flow_response_auction_nautilus as runner
+import run_aggtrade_flow_response_auction_nautilus_v4 as runner
 from run_flow_response_staged_validation_v2 import validate_base_summary
 
 
 class ZeroTradeEvidenceContracts(unittest.TestCase):
     def test_wrapper_records_explicit_zero_revision_count(self) -> None:
-        original = runner._original_suite_summary
+        original = runner._ORIGINAL_SUITE_SUMMARY
         try:
-            runner._original_suite_summary = lambda *_args: {
+            runner._ORIGINAL_SUITE_SUMMARY = lambda *_args: {
                 "suite_gate_passed": False,
                 "promotable": True,
                 "closed_trades": 0,
-                "suite_gate_checks": {},
+                "suite_gate_checks": {
+                    "complete_post_run_trade_path_diagnostics": True,
+                },
+                "trade_path_diagnostic_summary": {
+                    "records": 0,
+                    "complete_records": 0,
+                    "diagnostic_revision_counts": {},
+                    "expected_diagnostic_revision": DIAGNOSTIC_REVISION,
+                },
             }
-            with patch.dict(
-                os.environ,
-                {"FLOW_RESPONSE_AUCTION_FAMILY_MODE": "both"},
-                clear=False,
-            ):
-                summary = runner._flow_response_suite_summary({}, "first", [])
+            summary = runner._flow_response_suite_summary_v4({}, "first", [])
         finally:
-            runner._original_suite_summary = original
+            runner._ORIGINAL_SUITE_SUMMARY = original
 
         self.assertFalse(summary["suite_gate_passed"])
         self.assertTrue(
