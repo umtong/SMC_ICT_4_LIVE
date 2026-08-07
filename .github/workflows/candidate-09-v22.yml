@@ -57,9 +57,15 @@ jobs:
         run: |
           set -euo pipefail
           root=research/candidate-09
+          while read -r part digest bytes; do
+            [[ "$part" == part* ]] || continue
+            test "$(wc -c < "$root/v22_bundle/$part")" -eq "$bytes"
+            echo "$digest  $root/v22_bundle/$part" | sha256sum -c -
+          done < "$root/v22_bundle/SHA256"
+          cat "$root"/v22_bundle/part* | base64 -d > /tmp/candidate-09-v22.tar.gz
           expected=$(awk 'NR==1 {print $1}' "$root/v22_bundle/SHA256")
-          echo "$expected  $root/v22_bundle/candidate-09-v22.tar.gz" | sha256sum -c -
-          tar -xzf "$root/v22_bundle/candidate-09-v22.tar.gz" -C "$root"
+          echo "$expected  /tmp/candidate-09-v22.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/candidate-09-v22.tar.gz -C "$root"
 
       - name: Run contracts, pooled gate, and gated long evaluation
         shell: bash
