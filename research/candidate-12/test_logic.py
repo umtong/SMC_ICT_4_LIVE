@@ -113,6 +113,44 @@ class LogicTests(unittest.TestCase):
             sorted(event.observed_time_ns for event in self.engine.events),
         )
 
+    def test_accessed_liquidity_pool_cannot_be_reused(self) -> None:
+        primary = LiquidityPool(
+            "primary", Side.HIGH, 100.0, "PRIOR_4H", 1, 2, 10**18, 0,
+        )
+        secondary = LiquidityPool(
+            "secondary", Side.HIGH, 101.0, "CONFIRMED_15M_PIVOT", 1, 2, 10**18, 0,
+        )
+        self.engine._pools.extend((primary, secondary))
+        self.engine._bar_index = 5
+        self.engine._previous_close = 99.5
+        bar = BarObs(100, 99.5, 101.2, 99.0, 100.5, 100, 60)
+
+        selected = self.engine._eligible_crossed_pool(bar, atr=1.0)
+        self.assertIs(selected, primary)
+        self.assertFalse(secondary.active)
+
+        self.engine._start_probe(primary, bar, relative_volume=1.0)
+        self.assertTrue(primary.claimed)
+        self.engine._terminate_probe(bar.ts_ns, "TEST_TERMINAL")
+        self.assertFalse(primary.active)
+        self.assertEqual(self.engine._crossed_pool_candidates(bar, atr=1.0), [])
+
+    def test_crossed_pool_is_consumed_while_another_scenario_is_active(self) -> None:
+        pool = LiquidityPool(
+            "untracked", Side.LOW, 99.0, "PRIOR_DAY", 1, 2, 10**18, 0,
+        )
+        self.engine._pools.append(pool)
+        self.engine._bar_index = 5
+        self.engine._previous_close = 100.0
+        bar = BarObs(100, 100.0, 100.4, 98.8, 99.3, 100, 40)
+
+        self.engine._consume_untracked_crosses(bar, atr=1.0)
+        self.assertFalse(pool.active)
+        self.assertTrue(any(
+            event.reason_code == "CROSSED_WHILE_ANOTHER_SCENARIO_ACTIVE"
+            for event in self.engine.events
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,13 +11,13 @@ class ScenarioConfirmationMixin:
             if direction is Direction.LONG:
                 candidates = [
                     pool for pool in self._pools
-                    if pool.active and pool.pool_id != excluded_pool_id and pool.side is Side.HIGH and pool.price > entry
+                    if pool.active and not pool.claimed and pool.pool_id != excluded_pool_id and pool.side is Side.HIGH and pool.price > entry
                 ]
                 candidates.sort(key=lambda pool: (pool.price, -pool.observed_time_ns))
             else:
                 candidates = [
                     pool for pool in self._pools
-                    if pool.active and pool.pool_id != excluded_pool_id and pool.side is Side.LOW and pool.price < entry
+                    if pool.active and not pool.claimed and pool.pool_id != excluded_pool_id and pool.side is Side.LOW and pool.price < entry
                 ]
                 candidates.sort(key=lambda pool: (-pool.price, -pool.observed_time_ns))
             for pool in candidates:
@@ -208,6 +208,7 @@ class ScenarioConfirmationMixin:
                     reference_price=plan.expected_entry,
                     details={"net_r": plan.net_r},
                 )
+                self._deactivate_pool(pool, bar.ts_ns, "VALID_SCENARIO_NOT_EXECUTED_SLOT_OCCUPIED")
                 self._confirmation = None
                 return None
 
@@ -248,6 +249,9 @@ class ScenarioConfirmationMixin:
                 reason_code=reason,
                 details={"kind": state.kind.value, "pool_id": state.pool_id},
             )
+            pool = self._pool_by_id(state.pool_id)
+            if pool is not None:
+                self._deactivate_pool(pool, ts_ns, "LIQUIDITY_INTERACTION_TERMINAL")
             self._confirmation = None
 
         def mark_plan_rejected(self, plan: TradePlan, ts_ns: int, reason: str, details: dict[str, Any] | None = None) -> None:

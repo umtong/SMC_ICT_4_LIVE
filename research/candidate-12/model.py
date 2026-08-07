@@ -139,6 +139,7 @@ class LiquidityPool:
     expires_time_ns: int
     formed_bar_index: int
     active: bool = True
+    claimed: bool = False
     touches: int = 0
 
 @dataclass(slots=True)

@@ -21,6 +21,7 @@ class ProbeClassificationMixin:
                 relative_volume=relative_volume,
                 closes_outside=outside,
             )
+            pool.claimed = True
             pool.touches += 1
             self._emit(
                 scenario_id=scenario_id,
@@ -173,4 +174,7 @@ class ProbeClassificationMixin:
                 reason_code=reason,
                 details={"pool_id": probe.pool_id},
             )
+            pool = self._pool_by_id(probe.pool_id)
+            if pool is not None:
+                self._deactivate_pool(pool, ts_ns, "LIQUIDITY_INTERACTION_CLASSIFICATION_FAILED")
             self._probe = None

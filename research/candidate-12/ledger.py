@@ -85,7 +85,7 @@ class LiquidityLedgerMixin:
             merge_distance = self.config.pool_merge_atr * atr
             candidates = [
                 pool for pool in self._pools
-                if pool.active and pool.side is side and abs(pool.price - price) <= merge_distance
+                if pool.active and not pool.claimed and pool.side is side and abs(pool.price - price) <= merge_distance
             ]
             if candidates:
                 # Keep the older causal identity and strengthen it with the fresh
@@ -135,7 +135,7 @@ class LiquidityLedgerMixin:
             self._prune_pool_count(side, observed_time_ns)
 
         def _prune_pool_count(self, side: Side, observed_time_ns: int) -> None:
-            live = [pool for pool in self._pools if pool.active and pool.side is side]
+            live = [pool for pool in self._pools if pool.active and not pool.claimed and pool.side is side]
             overflow = len(live) - self.config.max_pools_per_side
             if overflow <= 0:
                 return
@@ -269,14 +269,18 @@ class LiquidityLedgerMixin:
                     atr=atr,
                 )
 
-        def _eligible_crossed_pool(self, bar: BarObs, atr: float) -> LiquidityPool | None:
+        def _crossed_pool_candidates(self, bar: BarObs, atr: float) -> list[tuple[float, int, LiquidityPool]]:
             previous = self._previous_close
             if previous is None:
-                return None
+                return []
             candidates: list[tuple[float, int, LiquidityPool]] = []
             source_rank = {"PRIOR_DAY": 0, "PRIOR_4H": 1, "CONFIRMED_15M_PIVOT": 2}
             for pool in self._pools:
-                if not pool.active or self._bar_index - pool.formed_bar_index < self.config.min_pool_age_bars:
+                if (
+                    not pool.active
+                    or pool.claimed
+                    or self._bar_index - pool.formed_bar_index < self.config.min_pool_age_bars
+                ):
                     continue
                 if pool.side is Side.HIGH:
                     penetration = (bar.high - pool.price) / atr
@@ -284,11 +288,36 @@ class LiquidityLedgerMixin:
                 else:
                     penetration = (pool.price - bar.low) / atr
                     approached = previous >= pool.price - 0.05 * atr
-                if not approached or penetration < self.config.probe_min_atr or penetration > self.config.probe_max_atr:
+                if not approached or penetration < self.config.probe_min_atr:
                     continue
+                # A violent jump through a level still consumes its liquidity,
+                # but is not a controlled probe suitable for this scenario.
                 distance = abs(pool.price - previous) / atr
                 candidates.append((distance, source_rank.get(pool.source, 9), pool))
+            candidates.sort(key=lambda value: (value[0], value[1], value[2].observed_time_ns))
+            return candidates
+
+        def _consume_untracked_crosses(self, bar: BarObs, atr: float) -> None:
+            for _, _, pool in self._crossed_pool_candidates(bar, atr):
+                self._deactivate_pool(pool, bar.ts_ns, "CROSSED_WHILE_ANOTHER_SCENARIO_ACTIVE")
+
+        def _eligible_crossed_pool(self, bar: BarObs, atr: float) -> LiquidityPool | None:
+            candidates = self._crossed_pool_candidates(bar, atr)
             if not candidates:
                 return None
-            candidates.sort(key=lambda value: (value[0], value[1], value[2].observed_time_ns))
-            return candidates[0][2]
+            selected = candidates[0][2]
+            # All levels penetrated by this completed bar have been accessed.
+            # Keep exactly one causal identity for classification; never leave
+            # unselected crossed pools live for a stale future signal.
+            for _, _, pool in candidates[1:]:
+                self._deactivate_pool(pool, bar.ts_ns, "CROSSED_WITHOUT_PRIMARY_SCENARIO")
+            # A huge gap/impulse is consumed but not classified as a controlled probe.
+            previous = self._previous_close
+            if previous is None:
+                return None
+            penetration = (bar.high - selected.price) / atr if selected.side is Side.HIGH else (selected.price - bar.low) / atr
+            if penetration > self.config.probe_max_atr:
+                self._deactivate_pool(selected, bar.ts_ns, "VIOLENT_CROSS_NOT_CONTROLLED_PROBE")
+                self.skips["VIOLENT_CROSS_NOT_CONTROLLED_PROBE"] += 1
+                return None
+            return selected

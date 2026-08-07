@@ -87,6 +87,9 @@ class CausalLiquidityAuctionEngine(
                             self._start_probe(pool, bar, relative_volume)
                         else:
                             self.skips["LOW_ACTIVITY_POOL_CROSS"] += 1
+                            self._deactivate_pool(pool, bar.ts_ns, "LOW_ACTIVITY_CROSS_CONSUMED_POOL")
+                else:
+                    self._consume_untracked_crosses(bar, atr)
 
             self._volumes.append(bar.volume)
             self._abs_flows.append(abs(bar.signed_flow))
