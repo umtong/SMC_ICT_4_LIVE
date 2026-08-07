@@ -1,0 +1,52 @@
+name: candidate-04-v44-retrigger-after-test-fix
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v44-retrigger.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  retrigger:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Retrigger V44 on the corrected regression contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path(
+              ".github/workflows/candidate-04-v44-causal-target-registry.yml"
+          )
+          text = path.read_text()
+          marker = "# causal-source regression semantics corrected\n"
+          if marker not in text:
+              path.write_text(text.rstrip() + "\n\n" + marker)
+          PY
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add .github/workflows/candidate-04-v44-causal-target-registry.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "rerun V44 after causal source test correction"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
