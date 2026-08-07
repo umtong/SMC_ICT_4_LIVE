@@ -51,6 +51,10 @@ def repair_kline_flow_frame(frame: Any, filename: str) -> tuple[Any, list[dict[s
         | (values["quote_volume"] > values["volume"] * values["high"] * (1.0 + tolerance))
     )
     repairs: list[dict[str, Any]] = []
+    if bool(invalid.any()):
+        # Support both Arrow-backed strings from archive parsing and numeric
+        # frames used by regression tests without coercing valid values.
+        result["volume"] = result["volume"].astype("object")
     for index in result.index[invalid]:
         open_price = float(values["open"].loc[index])
         high = float(values["high"].loc[index])
@@ -71,9 +75,6 @@ def repair_kline_flow_frame(frame: Any, filename: str) -> tuple[Any, list[dict[s
             raise RuntimeError(
                 f"unrepairable kline flow row: {filename}: index={index}",
             )
-        # Daily archives may be backed by Arrow string columns. Preserve the
-        # column representation here; the frozen loader converts it to numeric
-        # after concatenation.
         result.at[index, "volume"] = format(derived_volume, ".12f")
         repairs.append(
             {
