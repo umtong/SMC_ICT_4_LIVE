@@ -166,12 +166,41 @@ class LogicTests(unittest.TestCase):
         self.seed_asia(engine)
         self.form_asia_high_acceptance(engine)
         decision_ts = ts(y, m, d, 6, 20)
-        plan = engine._on_five(bar(decision_ts, 108, 108.2, 105.2, 105.7), True)
+        # The completed close is below the intended buy limit, so the order
+        # is immediately marketable rather than waiting for more selling.
+        plan = engine._on_five(bar(decision_ts, 108, 108.2, 105.2, 105.4), True)
         self.assertIsNotNone(plan)
         assert plan is not None
         self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
         self.assertEqual(plan.expire_ts_ns, decision_ts + 5 * NS_MINUTE)
         self.assertAlmostEqual(plan.expected_entry, 105.5)
+
+    def test_passive_mitigation_cannot_rest_below_completed_close(self) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(config(), "X")
+        self.seed_asia(engine)
+        self.form_asia_high_acceptance(engine)
+        # The bearish mitigation holds the FVG lower edge, but its completed
+        # close remains above the proposed limit.  Filling would therefore
+        # require continuing sell pressure and contradict passive absorption.
+        plan = engine._on_five(
+            bar(ts(y, m, d, 6, 20), 108, 108.2, 105.2, 105.7),
+            True,
+        )
+        self.assertIsNone(plan)
+        self.assertEqual(
+            engine.skips["PASSIVE_LIMIT_NOT_MARKETABLE_AFTER_RETEST"],
+            1,
+        )
+        state = engine._sources[SessionLabel.ASIA]
+        self.assertEqual(state.acceptance_phase, "MONITOR_FAILURE")
+        self.assertTrue(
+            any(
+                event.reason_code
+                == "PROTECTED_BUY_LIMIT_WOULD_REST_INTO_CONTINUING_SELL_PRESSURE"
+                for event in engine.events
+            )
+        )
 
     def test_weak_first_mitigation_can_enable_fresh_asia_reacceptance(self) -> None:
         y, m, d = self.DAY
@@ -192,6 +221,34 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(plan.scenario, ScenarioKind.ASIA_HIGH_REACCEPTANCE)
         self.assertEqual(plan.entry_order, EntryOrder.MARKET)
 
+
+    def test_deep_acceptance_failure_cannot_reuse_destroyed_fvg(self) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(config(), "X")
+        self.seed_asia(engine)
+        self.form_asia_high_acceptance(engine)
+        # A non-marketable passive mitigation is rejected first.
+        self.assertIsNone(
+            engine._on_five(
+                bar(ts(y, m, d, 6, 20), 108, 108.2, 105.2, 105.7),
+                True,
+            )
+        )
+        # Closing back inside below the original FVG lower edge destroys the
+        # imbalance which justified the first acceptance.
+        engine._on_five(bar(ts(y, m, d, 6, 25), 105.7, 106, 103.5, 103.8), True)
+        state = engine._sources[SessionLabel.ASIA]
+        self.assertFalse(state.failed_high_acceptance)
+        self.assertTrue(state.reacceptance_done)
+        self.assertEqual(
+            engine.skips["HIGH_ACCEPTANCE_ORIGINAL_FVG_INVALIDATED"],
+            1,
+        )
+        # Even a later fresh bullish FVG cannot reuse the destroyed acceptance
+        # and its full-range target as a re-acceptance trade.
+        engine._on_five(bar(ts(y, m, d, 6, 30), 103.8, 109, 103.7, 108.5), True)
+        plan = engine._on_five(bar(ts(y, m, d, 6, 35), 108.5, 110, 106.5, 109), True)
+        self.assertIsNone(plan)
 
     def test_fvg_lower_edge_breach_waits_for_fresh_reacceleration_limit(self) -> None:
         y, m, d = self.DAY

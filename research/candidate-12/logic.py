@@ -44,7 +44,7 @@ class SessionLabel(str, Enum):
 
 class EntryOrder(str, Enum):
     MARKET = "MARKET"
-    LIMIT_GTD = "LIMIT_GTD_MARKETABLE_PROTECTED"
+    LIMIT_GTD = "LIMIT_GTD_PROTECTED"
 
 
 class ScenarioKind(str, Enum):
@@ -1609,7 +1609,13 @@ class CausalLiquidityAuctionEngine:
         # creates the only causal prerequisite for an Asia re-acceptance route.
         if bar.close < source.high and state.had_high_acceptance:
             if state.acceptance_phase in ("WAIT_RETEST", "WAIT_REACCELERATION", "MONITOR_FAILURE"):
-                state.failed_high_acceptance = True
+                original_fvg = state.active_fvg
+                reacceptance_eligible = (
+                    source.label is SessionLabel.ASIA
+                    and original_fvg is not None
+                    and bar.close >= original_fvg.lower
+                )
+                state.failed_high_acceptance = reacceptance_eligible
                 state.acceptance_phase = "WATCH"
                 state.outside_high_closes = 0
                 state.active_fvg = None
@@ -1617,16 +1623,37 @@ class CausalLiquidityAuctionEngine:
                 state.acceptance_scenario_id = None
                 state.acceptance_pullback_low = None
                 state.acceptance_peak = None
+                if not reacceptance_eligible:
+                    state.reacceptance_done = True
+                    self.skips["HIGH_ACCEPTANCE_ORIGINAL_FVG_INVALIDATED"] += 1
                 sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE-FAILURE")
                 self._emit(
                     scenario_id=sid,
                     event_type="HIGH_ACCEPTANCE_FAILED_BACK_INSIDE",
                     event_time_ns=bar.ts_ns,
                     observed_time_ns=bar.ts_ns,
-                    next_state="TERMINAL",
-                    reason_code="COMPLETED_CLOSE_RETURNED_INSIDE_SESSION_RANGE",
+                    next_state=(
+                        "WAIT_SHALLOW_REACCEPTANCE"
+                        if reacceptance_eligible
+                        else "TERMINAL"
+                    ),
+                    reason_code=(
+                        "SHALLOW_CLOSE_BACK_INSIDE_PRESERVED_ORIGINAL_FVG"
+                        if reacceptance_eligible
+                        else "CLOSE_BACK_INSIDE_INVALIDATED_ORIGINAL_FVG"
+                    ),
                     reference_price=source.high,
-                    details={"source": source.label.value, "close": bar.close},
+                    details={
+                        "source": source.label.value,
+                        "close": bar.close,
+                        "original_fvg_lower": (
+                            None if original_fvg is None else original_fvg.lower
+                        ),
+                        "original_fvg_upper": (
+                            None if original_fvg is None else original_fvg.upper
+                        ),
+                        "reacceptance_eligible": reacceptance_eligible,
+                    },
                 )
 
         if state.acceptance_phase == "WATCH":
@@ -1774,6 +1801,33 @@ class CausalLiquidityAuctionEngine:
                     },
                 )
                 return None
+
+            # Passive exhaustion is actionable only when the protected buy
+            # limit is marketable at the completed decision close.  A limit
+            # below that close would rest and fill only if selling continues,
+            # converting an absorption hypothesis into adverse selection.
+            if passive and bar.close > state.active_fvg.upper:
+                self.skips["PASSIVE_LIMIT_NOT_MARKETABLE_AFTER_RETEST"] += 1
+                self._emit(
+                    scenario_id=sid,
+                    event_type="PASSIVE_FVG_MITIGATION_REJECTED",
+                    event_time_ns=bar.ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state="MONITOR_FAILURE",
+                    reason_code="PROTECTED_BUY_LIMIT_WOULD_REST_INTO_CONTINUING_SELL_PRESSURE",
+                    reference_price=state.active_fvg.upper,
+                    details={
+                        "source": source.label.value,
+                        "decision_close": bar.close,
+                        "intended_limit": state.active_fvg.upper,
+                        "distance_above_limit": bar.close - state.active_fvg.upper,
+                        "retest_body_atr": bar.body / atr,
+                        "retest_close_location": bar.close_location,
+                        "retest_flow": bar.signed_flow,
+                    },
+                )
+                return None
+
             entry_order = EntryOrder.MARKET if active else EntryOrder.LIMIT_GTD
             plan = self._acceptance_plan(
                 state=state,

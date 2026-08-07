@@ -1,13 +1,13 @@
 {
-  "schema_version": 8,
-  "candidate": "candidate-12-two-sided-causal-session-auction-router",
+  "schema_version": 9,
+  "candidate": "candidate-12-causal-executable-session-auction-router",
   "selection": {
     "seed": 2026080712,
-    "selection_rule": "W1/W2/W4/W5/W6 are exposed design evidence. I8 must re-pass W1 first. Only then may it open W7, frozen before data inspection by Python random.Random(20260808).choice over 2022-01-01..2025-12-24 daily starts at least 21 days from W1-W6; selected W7 is 2025-07-22..2025-07-29 UTC.",
+    "selection_rule": "W1/W2/W4/W5/W6/W7 are exposed design evidence. I9 repairs two W7 causal-execution errors without opening new data: a passive buy limit may execute only when marketable at the completed mitigation close, and a high re-acceptance may reuse the original range objective only when the close back inside preserves the original bullish FVG. I9 must re-pass W1, preserve the W5 marketable-passive winner, and remove the W7 adverse-selection/reused-imbalance losses before any new untouched week is selected.",
     "warmup_days": 4,
     "evaluation_days": 7,
     "design_week": "W1",
-    "confirmation_week": "W7",
+    "confirmation_week": null,
     "weeks": {
       "W1": {
         "start": "2023-06-25",
@@ -42,9 +42,12 @@
       "W2",
       "W4",
       "W5",
-      "W6"
+      "W6",
+      "W7"
     ],
-    "confirmation_seed": 20260808
+    "confirmation_seed": 20260808,
+    "implementation_week": "W5",
+    "diagnosis_week": "W7"
   },
   "symbols": {
     "BTCUSDT": {
@@ -92,7 +95,7 @@
     "margin_maint": "0.025"
   },
   "execution": {
-    "entry_order": "MARKET_AFTER_COMPLETED_CONFIRMATION_OR_ONE_BAR_GTD_PROTECTED_FVG_LIMIT",
+    "entry_order": "MARKET_AFTER_COMPLETED_CONFIRMATION_OR_ONE_BAR_GTD_PROTECTED_LIMIT",
     "take_profit_order": "POST_ONLY_LIMIT_GTC_AT_COMPLETED_RANGE_STRUCTURAL_OBJECTIVE",
     "stop_order": "STOP_MARKET_GTC_AT_CAUSAL_SCENARIO_INVALIDATION",
     "effective_maker_rate": "0.0004",
@@ -102,7 +105,7 @@
     "random_seed": 2026080712,
     "bar_adaptive_high_low_ordering": true,
     "tick_slippage_units_in_risk_budget": 2.0,
-    "note": "NautilusTrader exclusively owns matching, fills, contingent orders, fees, margin, positions, and NAV. Buy-side and sell-side session boundaries have independent causal lifecycles, while the strategy adapter enforces one global pending-entry/open-position slot. Risk sizing reserves taker entry and stop costs even for a potentially marketable protected limit, maker target cost, slippage, market impact, and funding uncertainty."
+    "note": "NautilusTrader exclusively owns matching, fills, contingent orders, fees, margin, positions, and NAV. Buy-side and sell-side session boundaries have independent causal lifecycles, while the strategy adapter enforces one global pending-entry/open-position slot. A passive mitigation limit is submitted only when marketable at the completed decision close; otherwise the setup is classified as continuing sell pressure. Risk sizing reserves taker entry and stop costs for all protected limits, maker target cost, slippage, market impact, and funding uncertainty."
   },
   "logic": {
     "bar_minutes": 5,
