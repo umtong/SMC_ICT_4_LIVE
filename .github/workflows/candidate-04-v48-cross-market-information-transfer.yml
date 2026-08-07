@@ -1,0 +1,288 @@
+name: candidate-04-v48-cross-market-information-transfer
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v48-cross-market-information-transfer.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  features:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      BUILD_START: 2025-07-19
+      BUILD_END: 2025-07-27
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+
+      - name: Build corrected completed-data rich stream
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          root="artifacts/candidate-04-v48-rich/${{ matrix.symbol }}"
+          mkdir -p "$root"
+          python research/candidate-04/rich_features_for_symbol.py \
+            --symbol "${{ matrix.symbol }}" \
+            --start "$BUILD_START" \
+            --end "$BUILD_END" \
+            --cache ".cache/candidate-04-v48-rich/${{ matrix.symbol }}" \
+            --output "$root/rich"
+          test -s "$root/rich/data_manifest.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-v48-rich-${{ matrix.symbol }}-${{ github.run_id }}
+          path: artifacts/candidate-04-v48-rich/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 90
+
+  evaluate:
+    needs: features
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      BUILD_START: 2025-07-19
+      BUILD_END: 2025-07-27
+      EVALUATION_START: 2025-07-21
+      EVALUATION_END: 2025-07-27
+      ROOT: artifacts/candidate-04-v48-cross-market
+      EVIDENCE: research/candidate-04/evidence-v48-cross-market-information-transfer.json
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v48-rich-*-${{ github.run_id }}
+          path: restored-rich
+          merge-multiple: false
+
+      - name: Verify causal sequence and one-account Nautilus contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/cross_market_information_transfer_compiler.py \
+            research/candidate-04/cross_market_information_transfer_compiler_v2.py \
+            research/candidate-04/nt_multi_asset_rich_backtest_v44.py \
+            research/candidate-04/nt_conditional_adverse_fill_risk_sizing.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_cross_market_information_transfer_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_conditional_adverse_fill_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_global_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_multi_asset_risk_evidence.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_trusted_execution_factory.py' -v
+
+      - name: Normalize four observations and compile one global opportunity stream
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT/rich" "$ROOT/config" "$ROOT/all_signals" "$ROOT/signals"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          base = json.loads(Path("research/candidate-04/inventory_transfer_config.json").read_text())
+          root = Path("artifacts/candidate-04-v48-cross-market/config")
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              value = dict(base)
+              value["symbol"] = symbol
+              (root / f"{symbol}.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          PY
+          for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+            source="$(find restored-rich -type f -path "*${symbol}*/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+            test -n "$source"
+            ln -s "$(realpath "$source")" "$ROOT/rich/$symbol"
+          done
+          export C04_BUILD_START="$BUILD_START" C04_BUILD_END="$BUILD_END"
+          export C04_EVALUATION_START="$EVALUATION_START" C04_EVALUATION_END="$EVALUATION_END"
+          python research/candidate-04/cross_market_information_transfer_compiler_v2.py \
+            --rich-root "$ROOT/rich" \
+            --config-root "$ROOT/config" \
+            --kline-root .cache/candidate-04-v48/compiler-klines \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --output "$ROOT/all_signals" \
+            > "$ROOT/compiler.log"
+
+      - name: Attach only pre-existing causal targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT/signals/BTCUSDT"
+          cp "$ROOT/all_signals/BTCUSDT/signals.json" "$ROOT/signals/BTCUSDT/signals.json"
+          cp "$ROOT/all_signals/BTCUSDT/summary.json" "$ROOT/signals/BTCUSDT/summary.json"
+          export C04_BUILD_START="$BUILD_START" C04_BUILD_END="$BUILD_END"
+          export C04_EVALUATION_START="$EVALUATION_START" C04_EVALUATION_END="$EVALUATION_END"
+          for symbol in ETHUSDT SOLUSDT XRPUSDT; do
+            python research/candidate-04/causal_target_registry_enricher.py \
+              --signals "$ROOT/all_signals/$symbol/signals.json" \
+              --base-config "$ROOT/config/$symbol.json" \
+              --rich-dir "$ROOT/rich/$symbol" \
+              --kline-dir ".cache/candidate-04-v48/compiler-klines/$symbol" \
+              --build-start "$BUILD_START" \
+              --build-end "$BUILD_END" \
+              --output-dir "$ROOT/signals/$symbol" \
+              --download-klines \
+              --cost-rate 0.00075 \
+              --minimum-net-r 1.20 \
+              > "$ROOT/target-${symbol}.log"
+          done
+
+      - name: Execute all four streams in one NautilusTrader account
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python research/candidate-04/nt_multi_asset_rich_backtest_v44.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --signals-root "$ROOT/signals" \
+            --build-start "$BUILD_START" \
+            --build-end "$BUILD_END" \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --cache .cache/candidate-04-v48/nautilus \
+            --output "$ROOT/nautilus" \
+            --min-trades 3 \
+            --min-active-days 2 \
+            --min-win-rate 0.50 \
+            --min-geometric-daily 0.0 \
+            > "$ROOT/nautilus.log"
+          test -s "$ROOT/nautilus/metrics.json"
+          test -s "$ROOT/nautilus/risk_evidence.json"
+
+      - name: Record implementation and economic diagnosis
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          compiler_path = root / "all_signals/summary.json"
+          metrics_path = root / "nautilus/metrics.json"
+          risk_path = root / "nautilus/risk_evidence.json"
+          compiler = json.loads(compiler_path.read_text()) if compiler_path.exists() else None
+          metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else None
+          risk = json.loads(risk_path.read_text()) if risk_path.exists() else None
+          target_summaries = {}
+          for symbol in ("ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              path = root / "signals" / symbol / "summary.json"
+              if path.exists(): target_summaries[symbol] = json.loads(path.read_text())
+          implementation_pass = bool(
+              compiler is not None and metrics is not None and risk is not None
+              and metrics.get("global_entry_pass")
+              and metrics.get("risk_pass")
+          )
+          potential = bool(
+              implementation_pass
+              and float(metrics.get("total_return") or 0.0) > 0.0
+              and int(metrics.get("trades") or 0) >= 3
+              and int(metrics.get("active_days") or 0) >= 2
+              and float(metrics.get("win_rate") or 0.0) >= 0.50
+          )
+          if not implementation_pass:
+              decision = "implementation_failure_repair_and_rerun_identical_week"
+          elif potential:
+              decision = "retain_v48_and_open_second_predeclared_four_asset_week"
+          elif int(metrics.get("trades") or 0) == 0:
+              decision = "diagnose_v48_state_bottleneck_then_one_variable_ablation"
+          else:
+              decision = "run_one_core_variable_ablation_on_identical_week_before_discard"
+          evidence = {
+              "candidate": "candidate-04-v48-cross-market-information-transfer",
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "evaluation": {
+                  "build_start": os.environ["BUILD_START"],
+                  "build_end": os.environ["BUILD_END"],
+                  "evaluation_start": os.environ["EVALUATION_START"],
+                  "evaluation_end": os.environ["EVALUATION_END"],
+              },
+              "market_cause": "BTC information event, follower underreaction, independent follower inventory/structure confirmation",
+              "compiler": compiler,
+              "target_summaries": target_summaries,
+              "nautilus_metrics": metrics,
+              "risk_evidence": risk,
+              "implementation_pass": implementation_pass,
+              "positive_first_week_potential": potential,
+              "decision": decision,
+              "project_target_reached": False,
+              "final_validation_completed": False,
+              "performance_recalculated_outside_nautilus": False,
+          }
+          Path(os.environ["EVIDENCE"]).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          (root / "decision.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v48-cross-market-information-transfer-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v48-cross-market
+            research/candidate-04/evidence-v48-cross-market-information-transfer.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist V48 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE" 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record V48 cross-market evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
