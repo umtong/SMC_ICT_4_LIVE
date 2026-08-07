@@ -159,6 +159,7 @@ def _maker_mask(series: pd.Series) -> pd.Series:
 def aggregate_agg_trades(path: Path) -> pd.DataFrame:
     grouped_chunks: list[pd.DataFrame] = []
     grouped_tail_chunks: list[pd.DataFrame] = []
+    grouped_open_chunks: list[pd.DataFrame] = []
     previous_price: float | None = None
 
     for chunk in _agg_reader(path):
@@ -181,6 +182,7 @@ def aggregate_agg_trades(path: Path) -> pd.DataFrame:
                 "minute": timestamp.dt.floor("min"),
                 "second": timestamp.dt.second,
                 "price": price.to_numpy(),
+                "quantity": quantity.to_numpy(),
                 "notional": notional.to_numpy(),
                 "signed_notional": signed,
                 "buy_notional": np.where(maker.to_numpy(), 0.0, notional.to_numpy()),
@@ -194,6 +196,7 @@ def aggregate_agg_trades(path: Path) -> pd.DataFrame:
                 trade_high=("price", "max"),
                 trade_low=("price", "min"),
                 trade_close=("price", "last"),
+                quantity_60s=("quantity", "sum"),
                 notional_60s=("notional", "sum"),
                 signed_notional_60s=("signed_notional", "sum"),
                 buy_notional_60s=("buy_notional", "sum"),
@@ -202,6 +205,15 @@ def aggregate_agg_trades(path: Path) -> pd.DataFrame:
                 path_60s_bps=("path_bps", "sum"),
             ),
         )
+        opening = work[work["second"] < 10]
+        if not opening.empty:
+            grouped_open_chunks.append(
+                opening.groupby("minute", sort=True).agg(
+                    notional_open_10s=("notional", "sum"),
+                    signed_notional_open_10s=("signed_notional", "sum"),
+                    trade_count_open_10s=("price", "size"),
+                ),
+            )
         tail = work[work["second"] >= 45]
         if not tail.empty:
             grouped_tail_chunks.append(
@@ -221,6 +233,7 @@ def aggregate_agg_trades(path: Path) -> pd.DataFrame:
         trade_high=("trade_high", "max"),
         trade_low=("trade_low", "min"),
         trade_close=("trade_close", "last"),
+        quantity_60s=("quantity_60s", "sum"),
         notional_60s=("notional_60s", "sum"),
         signed_notional_60s=("signed_notional_60s", "sum"),
         buy_notional_60s=("buy_notional_60s", "sum"),
@@ -232,7 +245,19 @@ def aggregate_agg_trades(path: Path) -> pd.DataFrame:
         tail = pd.concat(grouped_tail_chunks).sort_index()
         tail = tail.groupby(level=0, sort=True).sum()
         full = full.join(tail, how="left")
-    for column in ("notional_15s", "signed_notional_15s", "trade_count_15s", "path_15s_bps"):
+    if grouped_open_chunks:
+        opening = pd.concat(grouped_open_chunks).sort_index()
+        opening = opening.groupby(level=0, sort=True).sum()
+        full = full.join(opening, how="left")
+    for column in (
+        "notional_15s",
+        "signed_notional_15s",
+        "trade_count_15s",
+        "path_15s_bps",
+        "notional_open_10s",
+        "signed_notional_open_10s",
+        "trade_count_open_10s",
+    ):
         if column not in full:
             full[column] = 0.0
         full[column] = full[column].fillna(0.0)
@@ -279,9 +304,13 @@ def build_features(klines: pd.DataFrame, agg: pd.DataFrame, depth: pd.DataFrame)
 
     flow_denominator = frame["notional_60s"].replace(0.0, np.nan)
     tail_denominator = frame["notional_15s"].replace(0.0, np.nan)
+    opening_denominator = frame["notional_open_10s"].replace(0.0, np.nan)
     frame["flow_60s"] = frame["signed_notional_60s"] / flow_denominator
     frame["flow_15s"] = frame["signed_notional_15s"] / tail_denominator
     frame["flow_15s"] = frame["flow_15s"].fillna(frame["flow_60s"])
+    frame["flow_open_10s"] = frame["signed_notional_open_10s"] / opening_denominator
+    frame["flow_open_10s"] = frame["flow_open_10s"].fillna(0.0)
+    frame["trade_vwap_60s"] = frame["notional_60s"] / frame["quantity_60s"].replace(0.0, np.nan)
     frame["flow_3m"] = (
         frame["signed_notional_60s"].rolling(3, min_periods=3).sum()
         / frame["notional_60s"].rolling(3, min_periods=3).sum().replace(0.0, np.nan)
@@ -296,6 +325,8 @@ def build_features(klines: pd.DataFrame, agg: pd.DataFrame, depth: pd.DataFrame)
 
     past_median = frame["notional_60s"].shift(1).rolling(120, min_periods=60).median()
     frame["notional_burst"] = frame["notional_60s"] / past_median.replace(0.0, np.nan)
+    opening_median = frame["notional_open_10s"].shift(1).rolling(120, min_periods=60).median()
+    frame["notional_open_10s_burst"] = frame["notional_open_10s"] / opening_median.replace(0.0, np.nan)
     past_trade_median = frame["trade_count_60s"].shift(1).rolling(120, min_periods=60).median()
     frame["trade_count_burst"] = frame["trade_count_60s"] / past_trade_median.replace(0.0, np.nan)
 
@@ -319,6 +350,7 @@ def build_features(klines: pd.DataFrame, agg: pd.DataFrame, depth: pd.DataFrame)
     required = [
         "flow_15s",
         "flow_60s",
+        "flow_open_10s",
         "flow_3m",
         "efficiency_60s",
         "notional_burst",
@@ -334,11 +366,16 @@ def build_features(klines: pd.DataFrame, agg: pd.DataFrame, depth: pd.DataFrame)
         "feature_ready",
         "flow_15s",
         "flow_60s",
+        "flow_open_10s",
         "flow_3m",
         "notional_60s",
         "notional_burst",
+        "notional_open_10s",
+        "notional_open_10s_burst",
         "trade_count_60s",
         "trade_count_burst",
+        "trade_count_open_10s",
+        "trade_vwap_60s",
         "ret_60s_bps",
         "path_60s_bps",
         "efficiency_60s",
@@ -410,6 +447,7 @@ def load_range(
             trade_high=("trade_high", "max"),
             trade_low=("trade_low", "min"),
             trade_close=("trade_close", "last"),
+            quantity_60s=("quantity_60s", "sum"),
             notional_60s=("notional_60s", "sum"),
             signed_notional_60s=("signed_notional_60s", "sum"),
             buy_notional_60s=("buy_notional_60s", "sum"),
@@ -420,6 +458,9 @@ def load_range(
             signed_notional_15s=("signed_notional_15s", "sum"),
             trade_count_15s=("trade_count_15s", "sum"),
             path_15s_bps=("path_15s_bps", "sum"),
+            notional_open_10s=("notional_open_10s", "sum"),
+            signed_notional_open_10s=("signed_notional_open_10s", "sum"),
+            trade_count_open_10s=("trade_count_open_10s", "sum"),
         )
     depth = pd.concat(depth_frames).sort_index()
     if depth.index.duplicated().any():
