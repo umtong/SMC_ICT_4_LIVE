@@ -1,0 +1,176 @@
+name: Candidate 06 Pressure-Gated HML
+
+on:
+  push:
+    branches:
+      - research/candidate-06
+    paths:
+      - ".github/workflows/candidate-06-phml.yml"
+      - "research/candidate-06/pressure_state_tracker.py"
+      - "research/candidate-06/pressure_gated_hml_engine.py"
+      - "research/candidate-06/pressure_gated_hml_nautilus_runner.py"
+      - "research/candidate-06/run_pressure_gated_hml_validation.py"
+      - "research/candidate-06/run_pressure_gated_hml_matrix.py"
+      - "research/candidate-06/test_pressure_gated_hml_engine.py"
+      - "research/candidate-06/test_phml_runner_contract.py"
+      - "research/candidate-06/hierarchical_multi_liquidity_engine.py"
+      - "research/candidate-06/hierarchical_pool_engine.py"
+      - "research/candidate-06/hierarchical_sweep_engine.py"
+      - "research/candidate-06/market_data.py"
+      - "research/candidate-06/nautilus_runner.py"
+      - "research/candidate-06/nautilus_strategy.py"
+      - "research/candidate-06/nautilus_execution.py"
+      - "research/candidate-06/nautilus_lifecycle.py"
+      - "research/candidate-06/run_validation.py"
+      - "research/candidate-06/config.json"
+      - "src/smc_ict_4/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-pressure-gated-hml
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  phml-campaign:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed NautilusTrader environment
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(f"NAUTILUS_VERSION={actual}")
+          PY
+
+      - name: Verify PHML causality, exact reference and Nautilus contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-06/pressure_state_tracker.py \
+            research/candidate-06/pressure_gated_hml_engine.py \
+            research/candidate-06/pressure_gated_hml_nautilus_runner.py \
+            research/candidate-06/run_pressure_gated_hml_validation.py \
+            research/candidate-06/run_pressure_gated_hml_matrix.py
+          python research/candidate-06/test_pressure_gated_hml_engine.py
+          python research/candidate-06/test_phml_runner_contract.py
+          python research/candidate-06/test_excursion_diagnostics.py
+          python - <<'PY'
+          import inspect
+          from pressure_gated_hml_engine import PressureGatedHierarchicalEngine
+          from pressure_gated_hml_nautilus_runner import run_pressure_gated_hml_nautilus_backtest
+          from pressure_state_tracker import PressureStateTracker
+          observe = inspect.getsource(PressureGatedHierarchicalEngine.observe)
+          tracker = inspect.getsource(PressureStateTracker.update)
+          runner = inspect.getsource(run_pressure_gated_hml_nautilus_backtest)
+          assert observe.index("self._pressure.update") < observe.index("self._hml.observe")
+          assert tracker.index("history = self.history") < tracker.index("self.history.append")
+          assert "BacktestEngine" in runner
+          assert "engine.add_instrument" in runner
+          assert "engine.add_data" in runner
+          assert "engine.add_strategy" in runner
+          print("PHML prior-only and Nautilus-only contracts verified")
+          PY
+
+      - name: Run first-week matrix and conditional sealed weeks through NautilusTrader
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/phml-first-week
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts
+          python research/candidate-06/run_pressure_gated_hml_matrix.py \
+            --output artifacts/candidate-06/phml-first-week \
+            > artifacts/candidate-06-phml.stdout \
+            2> artifacts/candidate-06-phml.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Guarantee terminal evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-06/phml-first-week
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > artifacts/candidate-06/phml-first-week/workflow_exit_code.txt
+          if [ ! -f artifacts/candidate-06/phml-first-week/summary.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-06/phml-first-week")
+          payload = {
+              "all_three_weeks_passed": False,
+              "long_evaluation_authorized": False,
+              "selected": None,
+              "terminal_status": "IMPLEMENTATION_OR_DATA_FAILURE_BEFORE_SUMMARY",
+          }
+          (root / "summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+          cp artifacts/candidate-06-phml.stdout artifacts/candidate-06/phml-first-week/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-06-phml.stderr artifacts/candidate-06/phml-first-week/workflow_stderr.txt 2>/dev/null || true
+
+      - name: Commit reproducible PHML evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add -f artifacts/candidate-06/phml-first-week
+          if [ -f research/candidate-06/config.phml.locked.json ]; then
+            git add -f research/candidate-06/config.phml.locked.json
+          fi
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record candidate-06 PHML evidence [candidate-06 evidence]"
+          git pull --rebase origin research/candidate-06
+          git push origin HEAD:research/candidate-06
+
+      - name: Upload PHML evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-phml-${{ github.sha }}
+          path: artifacts/candidate-06/phml-first-week
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce staged decision
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          exit "$code"
