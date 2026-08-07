@@ -63,9 +63,12 @@ def _premium_features(frame: pd.DataFrame) -> pd.DataFrame:
     result = result.sort_values("premium_observed_time")
     if result["premium_observed_time"].duplicated().any():
         raise RuntimeError("duplicate premium-index observation timestamps")
-    result["premium_change_1m"] = result["premium_index"].pct_change(1, fill_method=None)
-    result["premium_change_5m"] = result["premium_index"].pct_change(5, fill_method=None)
-    result["premium_change_15m"] = result["premium_index"].pct_change(15, fill_method=None)
+    # Binance premiumIndexKlines already contain a dimensionless premium ratio.
+    # The causal state uses the absolute change in that ratio, not a percentage
+    # change of a value which can cross or approach zero.
+    result["premium_change_1m"] = result["premium_index"].diff(1)
+    result["premium_change_5m"] = result["premium_index"].diff(5)
+    result["premium_change_15m"] = result["premium_index"].diff(15)
     return result[
         [
             "premium_observed_time",
