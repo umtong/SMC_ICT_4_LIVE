@@ -14,33 +14,14 @@ rotation. Internal context, target handoff, PBA, prices, stops, targets, costs,
 """
 from __future__ import annotations
 
-from typing import Any
-
+from external_inventory_wiring_logic import EXTERNAL_POOL_SOURCE
+from external_inventory_wiring_logic import INTERNAL_HYBRID_STATE
+from external_inventory_wiring_logic import external_setup_from_hybrid
 from flow_inflection_logic import choch_flow_state
 from inventory_repricing_logic import inventory_trap_confirmed
 from strategy import LiquidityResponseConfig
 from strategy_base import PendingSetup
 from strategy_v44_context_aligned_internal import ContextAlignedInternalStrategy
-
-
-INTERNAL_HYBRID_STATE = "INTERNAL_INVENTORY_TRAP"
-EXTERNAL_POOL_SOURCE = "CONFIRMED_5M_SWING"
-
-
-def external_setup_from_hybrid(details: dict[str, Any]) -> bool:
-    """Whether a newly armed hybrid setup came from external 5m liquidity.
-
-    ``PositioningResetInventoryHybridStrategy._detect_sweep`` always evaluates
-    the untouched external five-minute pool store first. Only when it produces
-    no setup does it temporarily substitute the independent 1m/3m pool store;
-    those setups are explicitly tagged ``INTERNAL_INVENTORY_TRAP``. Therefore a
-    new setup with the frozen five-minute pool source and without the internal
-    tag is the external branch which must receive the strict inventory gate.
-    """
-    return (
-        details.get("hybrid_state") != INTERNAL_HYBRID_STATE
-        and str(details.get("pool_source", "")) == EXTERNAL_POOL_SOURCE
-    )
 
 
 class ActiveExternalInventoryStrategy(ContextAlignedInternalStrategy):
