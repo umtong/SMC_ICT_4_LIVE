@@ -255,6 +255,12 @@ class TestProductionBoundary(unittest.TestCase):
         self.assertNotIn("def simulate_fill", source)
         self.assertNotIn("def backtest_loop", source)
 
+    def test_gtd_expiry_uses_timezone_aware_datetime(self) -> None:
+        source = (ROOT / "run.py").read_text(encoding="utf-8")
+        self.assertIn("expire_time=datetime.fromtimestamp(", source)
+        self.assertIn("tz=timezone.utc", source)
+        self.assertNotIn("expire_time=plan.expire_ts_ns", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -422,7 +422,7 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
                     quantity=instrument.make_qty(decision.quantity),
                     entry_order_type=OrderType.LIMIT,
                     entry_price=instrument.make_price(plan.expected_entry),
-                    expire_time=plan.expire_ts_ns,
+                    expire_time=datetime.fromtimestamp(plan.expire_ts_ns / 1_000_000_000, tz=timezone.utc),
                     time_in_force=TimeInForce.GTD,
                     entry_post_only=True,
                     tp_order_type=OrderType.LIMIT,
