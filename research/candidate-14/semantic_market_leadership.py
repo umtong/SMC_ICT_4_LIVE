@@ -1,19 +1,16 @@
-"""Candidate 14 development-v2 cross-market auction semantics.
+"""Candidate 14's preserved Candidate 13 cross-market auction core.
 
-Candidate 13's audited semantic decision is the immutable core.  Candidate 14
-adds exactly one non-overlapping state: liquidity-leader catch-up.
+FAR is a moderate counter-trend failed auction. The strongest form requires all
+three peers to reclaim in the proposed direction. A second form admits one
+sub-dominant dissenting peer only when the candidate is a follower, completes a
+top-half local event, contributes an efficient volatility-normalized reclaim,
+and the completed market-wide auction is coherently adverse to the proposed
+reversal.
 
-A dynamic quote-notional leader may lag a proposed reversal while a strict
-majority of peers has already completed the move.  If all peers then move in the
-same direction during the local sweep-to-confirmation event, the leader itself
-prints an efficient volatility-normalized recovery, and it is not the final
-event laggard, the leader has transferred peer price discovery into the deepest
-liquidity venue.  A strong multi-bar path may serve as confirmation even when
-the last one-minute bar is not exceptional.
-
-No trend-resumption, generic originator, generic laggard, quorum relaxation or
-risk scaling is permitted.  Every other decision is byte-for-byte equivalent in
-meaning to Candidate 13's core policy.
+AAC is synchronized accepted repricing in the direction already controlling
+both the candidate's and the market's completed 24-hour auction. Candidate 14
+does not add leader catch-up, generic originator, laggard or trend-resumption
+permission to this core.
 """
 from __future__ import annotations
 
@@ -35,66 +32,6 @@ def _dominant_peer_quorum(decision: LeadershipDecision, sign: float) -> bool:
     if len(aligned) < required:
         return False
     return not dissent or max(dissent) < min(aligned)
-
-
-def _leader_catchup(
-    decision: LeadershipDecision,
-    *,
-    symbol_count: int,
-    severe_adverse_trend_score: float,
-    minimum_event_efficiency: float,
-    minimum_event_displacement: float,
-) -> bool:
-    """Return true only for leader catch-up into prior peer price discovery.
-
-    The strict peer event unanimity is measured from the candidate sweep to its
-    confirmation.  Prior peer leadership is a count identity: more than half of
-    the *other* markets already have positive direction-signed 24-hour drift,
-    while the dynamic liquidity leader itself still has negative drift.  No
-    tunable magnitude threshold is added.
-    """
-    if decision.symbol != decision.leader:
-        return False
-    if decision.candidate_event_move is None or decision.candidate_event_move <= 0.0:
-        return False
-    if decision.event_direction_rank is None or decision.event_direction_rank >= symbol_count:
-        return False
-    if (
-        decision.event_path_efficiency is None
-        or decision.event_path_efficiency < minimum_event_efficiency
-        or decision.event_standardized_displacement is None
-        or decision.event_standardized_displacement < minimum_event_displacement
-    ):
-        return False
-
-    sign = 1.0 if decision.direction == "LONG" else -1.0
-    if not all(sign * float(value) > 0.0 for value in decision.peer_returns.values()):
-        return False
-
-    scores = decision.directional_trend_scores
-    candidate_trend = float(scores[decision.symbol])
-    market_trend = float(median(scores.values()))
-    if candidate_trend >= 0.0 or market_trend >= 0.0:
-        return False
-    if (
-        candidate_trend <= severe_adverse_trend_score
-        and market_trend <= severe_adverse_trend_score
-    ):
-        return False
-
-    peer_scores = [float(value) for symbol, value in scores.items() if symbol != decision.symbol]
-    required_peer_leaders = len(peer_scores) // 2 + 1
-    if sum(value > 0.0 for value in peer_scores) < required_peer_leaders:
-        return False
-
-    # The liquidity leader must truly be in the lagging half before the event,
-    # otherwise this is ordinary core confirmation rather than catch-up.
-    if (
-        decision.trailing_direction_rank is None
-        or decision.trailing_direction_rank <= symbol_count // 2
-    ):
-        return False
-    return True
 
 
 def semantic_decision(
@@ -131,18 +68,8 @@ def semantic_decision(
             return _with(decision, False, "SEMANTIC_FAR_REQUIRES_DOMINANT_PEER_RECLAIM")
         if candidate_move <= 0.0:
             return _with(decision, False, "SEMANTIC_FAR_WITHOUT_LOCAL_RECLAIM")
-
         if impulse < minimum_confirmation_impulse:
-            if _leader_catchup(
-                decision,
-                symbol_count=symbol_count,
-                severe_adverse_trend_score=severe_adverse_trend_score,
-                minimum_event_efficiency=minimum_event_efficiency,
-                minimum_event_displacement=minimum_event_displacement,
-            ):
-                return _with(decision, True, "SEMANTIC_FAR_LIQUIDITY_LEADER_CATCHUP")
             return _with(decision, False, "SEMANTIC_FAR_WEAK_LOCAL_DISPLACEMENT")
-
         if event_rank >= symbol_count:
             return _with(decision, False, "SEMANTIC_FAR_EVENT_LAGGARD")
         if candidate_trend >= 0.0 or market_trend >= 0.0:
@@ -204,9 +131,7 @@ def semantic_decision(
     return _with(decision, False, "SEMANTIC_UNSUPPORTED_SCENARIO")
 
 
-class CorePlusLeaderCatchupGate(MarketLeadershipGate):
-    """Candidate 13 core plus one binary leader-catch-up state."""
-
+class SemanticMarketLeadershipGate(MarketLeadershipGate):
     def decide(
         self,
         *,
@@ -231,7 +156,3 @@ class CorePlusLeaderCatchupGate(MarketLeadershipGate):
             minimum_event_efficiency=self.minimum_idiosyncratic_event_efficiency,
             minimum_event_displacement=self.minimum_idiosyncratic_event_displacement,
         )
-
-
-# Preserve the runner import boundary used by the first development iteration.
-EventPriceDiscoveryTransferGate = CorePlusLeaderCatchupGate

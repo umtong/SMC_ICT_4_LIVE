@@ -26,9 +26,13 @@ LOCKED_FILES = (
     "run_leadership_scdam.py",
     "run_leadership_scdam_base.py",
     "runner_materializer.py",
+    "portfolio_materializer.py",
     "semantic_execution.py",
     "semantic_logic.py",
     "semantic_market_leadership.py",
+    "session_auction_i7.py",
+    "session_auction_bridge.py",
+    "session_i7_config.json",
     "evidence_audit.py",
     "base_config.json",
 )
@@ -96,6 +100,7 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
         }
         for name, record in holdouts.items()
     }
+    config["session_i7"] = load_object(ROOT / "session_i7_config.json")
     config["candidate14_protocol"] = {
         "schema": protocol["schema"],
         "validation_mode": protocol["validation_mode"],
@@ -192,6 +197,7 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
         "final_nav": metrics.get("final_nav"),
         "closed_trade_max_drawdown": metrics.get("closed_trade_max_drawdown"),
         "scenario_counts": metrics.get("scenario_counts", {}),
+        "module_counts": metrics.get("module_counts", {}),
         "leadership_rejection_counts": metrics.get("leadership_rejection_counts", {}),
         "safety_audit_passed": all(
             audit_result.get(key) is True

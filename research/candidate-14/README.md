@@ -1,63 +1,64 @@
-# Candidate 14 — Core Preservation, Leader Catch-up, Displacement Execution
+# Candidate 14 — Combined Cross-Market and Session Auction Portfolio
 
-Candidate 14 uses Candidate 13's audited SCDAM detector, regional liquidity map, exact current-NAV 3% risk sizing, global one-slot allocator and NautilusTrader execution/accounting. It does not alter market data, session ranges, liquidity targets, fees, order accounting or portfolio constraints.
+Candidate 14 runs two economically distinct scenario modules through one NautilusTrader portfolio:
 
-## Development v1 was rejected
+1. **SCDAM core** — Candidate 13's synchronized four-market failed-auction reversal and accepted-auction continuation semantics.
+2. **Session I7** — Candidate 12 I7's frozen BTC Asia/London completed-session rejection, acceptance, reacceptance and protected FVG routes from commit `036c0e8302c3826aa293f6037405a84fc7118ae8`.
 
-The first implementation generalized countertrend reversal into trend resumption, originator transfer, laggard transfer and path-only confirmation, and changed AAC to confirmation-close market execution. It increased closed trades from 4 to 12 but produced 5 wins and 7 losses, only 0.0110% daily geometric growth and a 6.20% weekly trade-path drawdown. That result is preserved in `development-v1-aggregate.json` and `development-v1-RESULT.md`.
+Both modules share one `GlobalCandidateMutex`, one current-NAV exact 3% planned-loss sizer, one margin account and one position/pending-entry slot. They never run separate NAV curves and their returns are not added after the fact.
 
-The failure was logical, not an engine error: all safety audits passed. Generic transfer branches and AAC market execution were removed rather than tuned.
+## Research path
 
-## Development v2 hypothesis
+### Development v1 — rejected
 
-Candidate 13 remains the immutable core. Candidate 14 adds one cross-market state and one execution state.
+Generic trend resumption, originator/laggard transfer, path-only confirmation and AAC immediate execution increased frequency but produced 12 trades with 5 wins and 7 losses. The logic failed despite clean implementation audits. Evidence is retained as `development-v1-aggregate.json` and `development-v1-RESULT.md`.
 
-### 1. Dynamic liquidity-leader catch-up
+### Development v2 — selective but incomplete
 
-```text
-candidate is the dynamic 24-hour quote-notional leader
--> candidate still lags the proposed reversal
--> a strict majority of peers already has positive direction-signed drift
--> all peers move in the proposed direction from candidate sweep to confirmation
--> candidate prints an efficient, volatility-normalized recovery path
--> candidate is not the final event laggard
--> approve LIQUIDITY_LEADER_CATCHUP
-```
+The Candidate 13 core was restored and FAR received a causal displacement-failure execution fallback. The result was 6 trades, 5 wins, 1 loss, 0.9032% daily geometric growth and a 2.456 payoff ratio. Trade-level diagnosis showed:
 
-This is not generic originator or laggard permission. It represents transfer of peer price discovery into the deepest currently observed liquidity venue.
+- the displacement execution converted a previously unfilled W10 plan into a winner;
+- the only liquidity-leader-catch-up trade was the W13 loss.
 
-### 2. Confirmed displacement-failure execution
+Leader catch-up was removed rather than tuned. Evidence is retained as `development-v2-aggregate.json` and `development-v2-RESULT.md`.
 
-Candidate 13 sometimes approves a strong FAR scenario but leaves a passive order at the displacement void because confirmation-close entry with the original sweep-extreme stop does not retain the minimum after-cost R. If price never retraces, the valid move is missed.
+### Development v3 — current
 
-After reclaim, structure shift and displacement are complete, full buffered traversal back through the known displacement void invalidates the immediate continuation. Candidate 14 therefore tests, in order:
+The preserved SCDAM core and displacement execution are combined with the already implemented Candidate 12 I7 session state machine. No Candidate 12 rule was rewritten or fitted to Candidate 14 dates; its source is copied by exact Git blob.
+
+## Scenario independence
 
 ```text
-confirmation-close market + original sweep stop
--> if exact costed R fails:
-confirmation-close market + full-displacement-traversal stop
--> if exact costed R or ATR floor fails:
-unchanged passive void order
+SCDAM core
+  completed regional range
+  -> pre-existing external liquidity traded through
+  -> local reclaim or outside acceptance
+  -> local structure displacement
+  -> synchronized four-market semantic approval
+  -> independent external target
+
+Session I7
+  completed Asia or London range
+  -> boundary raid, acceptance, failed acceptance or FVG mitigation
+  -> route-specific reclaim/MSS/confirmation
+  -> session structural objective
 ```
 
-The independent external target is unchanged. Quantity is still computed from exact current NAV and a maximum planned loss of 3%, including entry/stop fees. AAC remains the original defended-pivot post-only limit because development v1 showed that immediate AAC execution surrendered too much structural reward.
+The modules are alternative scenario branches, not stacked indicators. A same-minute conflict is resolved by the existing deterministic global candidate arbitration before any order is submitted.
 
-## Causal invariant
+## Execution and risk
 
-```text
-completed regional range
--> pre-existing external liquidity traded through
--> reclaim or outside acceptance observed
--> local structure displacement completed
--> independent live external target remains
--> cross-market semantic state approved
--> exact costed price plan
--> NautilusTrader order and account NAV
-```
+- Account NAV is read from Nautilus at each submission.
+- Planned loss budget is `NAV × 3%`.
+- Quantity uses full entry-to-stop price risk plus the route's frozen fee/slippage reserves.
+- SCDAM passive orders remain post-only.
+- I7's one-bar protected FVG limit remains non-post-only because its loss budget reserves taker entry cost and two ticks of slippage.
+- Take profit is post-only limit GTC; stop is stop-market GTC.
+- Pending new entry plus open position is globally limited to one.
 
-## Validation discipline
+## Validation status
 
-W10-W14 are development diagnostics already observed by Candidates 13 and 14. They can identify implementation or mechanism failure but can never support a Candidate 14 success claim. A successful development result must be frozen before newly predeclared, non-overlapping evaluation intervals are run.
+W10-W14 are development diagnostics already exposed in earlier candidates. They can reject implementation or scenario logic but can never establish success. If the combined diagnostic survives, source and protocol are frozen before newly predeclared non-overlapping intervals are evaluated.
 
 ## Reproduction
 
@@ -72,4 +73,4 @@ python research/candidate-14/aggregate.py \
   --output research/candidate-14/aggregate.json
 ```
 
-NautilusTrader is the only backtest and account engine.
+NautilusTrader is the only backtest, execution and account engine.

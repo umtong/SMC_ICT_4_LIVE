@@ -15,8 +15,12 @@ python -m py_compile \
   "$CAND/logic.py" \
   "$CAND/market_leadership.py" \
   "$CAND/session_engine.py" \
+  "$CAND/session_auction_i7.py" \
+  "$CAND/session_auction_bridge.py" \
   "$CAND/semantic_logic.py" \
   "$CAND/semantic_market_leadership.py" \
+  "$CAND/runner_materializer.py" \
+  "$CAND/portfolio_materializer.py" \
   "$CAND/run_leadership_scdam.py" \
   "$CAND/evidence_audit.py" \
   "$CAND/candidate14_runner.py" \
