@@ -1,7 +1,7 @@
 """Immutable causal trade-signal payloads for NautilusTrader replay."""
 from __future__ import annotations
 
-from nautilus_trader.model.data import Data
+from nautilus_trader.core.data import Data
 from nautilus_trader.model.identifiers import ClientId, InstrumentId
 
 
