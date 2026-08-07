@@ -61,7 +61,12 @@ class UnfilledTargetHandoffStrategy(PositioningResetInventoryHybridStrategy):
         self._arm_target_watch(pending, row)
         if self.target_sweep_watch is None:
             return
+        # Mirror the already validated filled-target lifecycle: a completed
+        # target bar may itself contain sponsorship, penetration, reclaim,
+        # replenishment, tail inflection and directional resting depth. The new
+        # pending setup is observational while the old order cancel confirms.
         self._observe_target_watch(row)
+        self._promote_target_watch(row)
         self.diagnostics["unfilled_target_handoff_watches_armed"] += 1
 
 
