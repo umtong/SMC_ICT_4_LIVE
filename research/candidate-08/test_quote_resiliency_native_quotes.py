@@ -11,7 +11,7 @@ from quote_resiliency_native_quotes import (
     NATIVE_QUOTE_REVISION,
     completion_quote_ticks_from_frame,
 )
-from run import _build_instrument
+from run_aggtrade_acceptance_nautilus import _build_instrument
 
 
 class NativeQuoteSnapshotContracts(unittest.TestCase):
