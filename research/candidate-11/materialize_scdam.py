@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Idempotent fail-closed migration for Candidate 11's GTD order contract."""
+"""Idempotent fail-closed migration for Candidate 11's inclusive GTD bar contract."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -36,23 +36,18 @@ def main() -> None:
     changed = int(
         replace_once(
             run_path,
-            "                    expire_time=plan.expire_ts_ns,",
             "                    expire_time=datetime.fromtimestamp(plan.expire_ts_ns / 1_000_000_000, tz=timezone.utc),",
-            "GTD expiration datetime",
+            "                    expire_time=datetime.fromtimestamp(plan.expire_ts_ns / 1_000_000_000, tz=timezone.utc) + timedelta(microseconds=1),",
+            "inclusive GTD final-bar ordering",
         ),
     )
 
     source = test_path.read_text(encoding="utf-8")
-    test_name = "test_gtd_expiry_uses_timezone_aware_datetime"
-    if test_name not in source:
-        anchor = '''        self.assertNotIn("def backtest_loop", source)\n'''
-        addition = '''        self.assertNotIn("def backtest_loop", source)\n\n    def test_gtd_expiry_uses_timezone_aware_datetime(self) -> None:\n        source = (ROOT / "run.py").read_text(encoding="utf-8")\n        self.assertIn("expire_time=datetime.fromtimestamp(", source)\n        self.assertIn("tz=timezone.utc", source)\n        self.assertNotIn("expire_time=plan.expire_ts_ns", source)\n'''
-        if source.count(anchor) != 1:
-            raise SystemExit("GTD contract-test anchor is not unique")
-        test_path.write_text(source.replace(anchor, addition, 1), encoding="utf-8")
-        changed += 1
+    old_test = '''    def test_gtd_expiry_uses_timezone_aware_datetime(self) -> None:\n        source = (ROOT / "run.py").read_text(encoding="utf-8")\n        self.assertIn("expire_time=datetime.fromtimestamp(", source)\n        self.assertIn("tz=timezone.utc", source)\n        self.assertNotIn("expire_time=plan.expire_ts_ns", source)\n'''
+    new_test = '''    def test_gtd_expiry_uses_timezone_aware_datetime(self) -> None:\n        source = (ROOT / "run.py").read_text(encoding="utf-8")\n        self.assertIn("expire_time=datetime.fromtimestamp(", source)\n        self.assertIn("tz=timezone.utc", source)\n        self.assertIn("+ timedelta(microseconds=1)", source)\n        self.assertNotIn("expire_time=plan.expire_ts_ns", source)\n'''
+    changed += int(replace_once(test_path, old_test, new_test, "inclusive GTD contract test"))
 
-    print(f"SCDAM GTD migrations applied: {changed}")
+    print(f"SCDAM inclusive-GTD migrations applied: {changed}")
 
 
 if __name__ == "__main__":
