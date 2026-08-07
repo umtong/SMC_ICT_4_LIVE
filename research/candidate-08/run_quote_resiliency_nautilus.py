@@ -182,6 +182,10 @@ def _write_merged_events(
     """Serialize every causal state transition; reversal and continuation lengths may differ."""
 
     base_runner = execution.runner.base_runner
+    base_runner.write_json_atomic(
+        path.with_name("raw_execution_events.json"),
+        {"events": base_runner._json_safe(execution_events)},
+    )
     materialized: list[tuple[Any, int]] = []
     for signals in signals_by_time_ns.values():
         for signal in signals:

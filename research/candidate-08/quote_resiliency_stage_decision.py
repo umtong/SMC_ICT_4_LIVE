@@ -295,6 +295,7 @@ def classify_ablation(
     excluded = {
         "base_contract_includes_both_auction_families",
         "base_contract_includes_both_flow_response_families",
+        "base_contract_not_ablated",
         "base_quote_ofi_confirmation_contract",
     }
     economic_checks = {

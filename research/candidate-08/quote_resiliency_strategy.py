@@ -20,11 +20,61 @@ from logic import risk_sized_quantity
 from quote_resiliency_signals import QuoteResiliencySignal
 
 
-EXECUTION_ADAPTER_REVISION = "QUOTE_RESILIENCY_NATIVE_EXECUTION_LABELS_V1"
+EXECUTION_ADAPTER_REVISION = "QUOTE_RESILIENCY_NATIVE_EXECUTION_LABELS_V2_CAUSAL_FILL_EXIT"
+
+
+def fill_adjusted_exit_is_causal(
+    reason: str,
+    requested_time_ns: int,
+    position_open_time_ns: int | None,
+) -> bool:
+    """Allow fill-adjusted emergency exit only after a native position-open event."""
+
+    if reason != "FILL_ADJUSTED_RISK_BUDGET_EXCEEDED":
+        return True
+    return (
+        position_open_time_ns is not None
+        and int(requested_time_ns) > int(position_open_time_ns)
+    )
 
 
 class QuoteResiliencyExecutionStrategy(RiskCompleteAggTradeAcceptanceStrategy):
     """Use the incumbent native execution mechanics with quote-scenario evidence labels."""
+
+    def _request_exit(
+        self,
+        reason: str,
+        ts_event_ns: int,
+        close: float,
+    ) -> None:
+        if not fill_adjusted_exit_is_causal(
+            reason,
+            ts_event_ns,
+            self.position_open_time_ns,
+        ):
+            if reason == "FILL_ADJUSTED_RISK_BUDGET_EXCEEDED":
+                if self.position_open_time_ns is None:
+                    raise RuntimeError(
+                        "fill-adjusted exit requested before POSITION_OPENED evidence"
+                    )
+                # Preserve the pending exit for the first separately completed bar.  This guard
+                # also protects against synchronous native callback nesting at the entry stamp.
+                self._deferred_fill_adjusted_exit_after_ns = int(
+                    self.position_open_time_ns
+                )
+                if self.trade_intents:
+                    intent = self.trade_intents[-1]
+                    intent["premature_fill_adjusted_exit_blocked_count"] = int(
+                        intent.get("premature_fill_adjusted_exit_blocked_count", 0)
+                    ) + 1
+                    intent["last_blocked_fill_adjusted_exit_time_ns"] = int(
+                        ts_event_ns
+                    )
+                    intent["fill_adjusted_exit_guard_revision"] = (
+                        EXECUTION_ADAPTER_REVISION
+                    )
+                return
+        super()._request_exit(reason, ts_event_ns, close)
 
     def _submit_signal(
         self,
@@ -263,4 +313,5 @@ class QuoteResiliencyExecutionStrategy(RiskCompleteAggTradeAcceptanceStrategy):
 __all__ = [
     "EXECUTION_ADAPTER_REVISION",
     "QuoteResiliencyExecutionStrategy",
+    "fill_adjusted_exit_is_causal",
 ]

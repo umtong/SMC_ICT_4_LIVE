@@ -28,7 +28,7 @@ from quote_resiliency_features_v3 import QuoteResiliencyConfig
 from range_fvg_logic import ExternalLevel, FiveMinuteBar, LevelKind, SOURCE_RANK
 
 
-SIGNAL_REVISION = "EXTERNAL_LIQUIDITY_QUOTE_RESILIENCY_SIGNALS_V1"
+SIGNAL_REVISION = "EXTERNAL_LIQUIDITY_QUOTE_RESILIENCY_SIGNALS_V2_EXECUTABLE_L1_ENTRY"
 REVERSAL_FAMILY = "QUOTE_REPLENISHED_FAILED_AUCTION_REVERSAL"
 CONTINUATION_FAMILY = "QUOTE_WITHDRAWAL_ACCEPTANCE_CONTINUATION"
 
@@ -127,7 +127,31 @@ _QUOTE_COLUMNS = (
     "ask_add_qty",
     "ask_remove_qty",
     "spread_median_ratio",
+    "bid_close",
+    "ask_close",
 )
+
+
+def executable_quote_reference(row: pd.Series, direction: int) -> float:
+    """Return the completed side-specific L1 price observable at confirmation.
+
+    Scenario confirmation continues to use aggregate-trade close and flow.  Only the expected
+    executable market-entry reference changes: long orders start from the best ask and short orders
+    start from the best bid.  The inherited one-tick adverse fill reserve is then applied once.
+    """
+
+    if direction not in (-1, 1):
+        raise ValueError("direction must be -1 or +1")
+    try:
+        bid = float(row["bid_close"])
+        ask = float(row["ask_close"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("completed executable quote is unavailable") from exc
+    if not isfinite(bid) or not isfinite(ask) or bid <= 0.0 or ask <= 0.0:
+        raise ValueError("completed executable quote is invalid")
+    if bid > ask:
+        raise ValueError("completed executable quote is crossed")
+    return ask if direction > 0 else bid
 
 
 def _finite_columns(row: pd.Series, columns: tuple[str, ...]) -> bool:
@@ -431,7 +455,22 @@ def _emit_signal(
     diagnostics: Counter[str],
     rejected: list[dict[str, Any]],
 ) -> QuoteResiliencySignal | None:
-    entry = float(row["close"])
+    trade_confirmation_close = float(row["close"])
+    try:
+        entry = executable_quote_reference(row, direction)
+    except ValueError as exc:
+        reason = "INVALID_EXECUTABLE_L1_QUOTE"
+        diagnostics[reason] += 1
+        rejected.append(
+            _rejection_record(
+                pending,
+                symbol=symbol,
+                reason=reason,
+                timestamp_ns=timestamp_ns,
+                details={"error": str(exc)},
+            )
+        )
+        return None
     if family == REVERSAL_FAMILY:
         stop_reference = pending.response_low if direction > 0 else pending.response_high
         stop_reference_source = "FULL_SWEEP_RESPONSE_EXTREME"
@@ -521,6 +560,10 @@ def _emit_signal(
         reference_price=entry,
         details={
             "direction": "LONG" if direction > 0 else "SHORT",
+            "trade_confirmation_close": trade_confirmation_close,
+            "best_bid_close": float(row["bid_close"]),
+            "best_ask_close": float(row["ask_close"]),
+            "executable_entry_reference": entry,
             "aggressive_pressure_ratio": float(row["aggressive_pressure_ratio"]),
             "quote_ofi_ratio": float(row["quote_ofi_ratio"]),
             "target_id": target.level_id,
@@ -558,6 +601,10 @@ def _emit_signal(
         events=events,
         details={
             "signal_revision": SIGNAL_REVISION,
+            "entry_reference_contract": "COMPLETED_SIDE_SPECIFIC_L1_QUOTE_PLUS_ONE_ADVERSE_TICK_RESERVE",
+            "trade_confirmation_close": trade_confirmation_close,
+            "best_bid_close": float(row["bid_close"]),
+            "best_ask_close": float(row["ask_close"]),
             "outward_direction": pending.outward,
             "interaction_pressure_abs": pending.interaction_pressure_abs,
             "response_high": pending.response_high,
@@ -974,4 +1021,5 @@ __all__ = [
     "QuoteResiliencySignal",
     "QuoteResiliencySignalBundle",
     "build_quote_resiliency_signals",
+    "executable_quote_reference",
 ]

@@ -110,6 +110,8 @@ class OneScenarioTransitionPerBucketContract(unittest.TestCase):
             "ask_remove_qty",
         ):
             data[column] = 0.0
+        data["bid_close"] = data["close"] - 0.1
+        data["ask_close"] = data["close"] + 0.1
         data["spread_median_ratio"] = 1.0
         data["quote_resiliency_observable"] = True
 

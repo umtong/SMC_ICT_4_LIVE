@@ -101,7 +101,13 @@ class QuoteResiliencySignalContracts(unittest.TestCase):
             "spread_median_ratio": 1.0,
             "quote_resiliency_observable": True,
         }
-        return pd.DataFrame([{**defaults, **row} for row in rows], index=index)
+        materialized: list[dict[str, float]] = []
+        for row in rows:
+            item = {**defaults, **row}
+            item.setdefault("bid_close", float(item["close"]) - 0.1)
+            item.setdefault("ask_close", float(item["close"]) + 0.1)
+            materialized.append(item)
+        return pd.DataFrame(materialized, index=index)
 
     @classmethod
     def _run(
@@ -170,6 +176,8 @@ class QuoteResiliencySignalContracts(unittest.TestCase):
         self.assertEqual(signal.direction_name, "SHORT")
         self.assertEqual(signal.boundary_id, "day-high-100")
         self.assertEqual(signal.target_id, "day-low-98")
+        self.assertAlmostEqual(signal.entry_reference, 99.5)
+        self.assertAlmostEqual(signal.details["trade_confirmation_close"], 99.6)
         self.assertEqual(signal.stop_reference_source, "FULL_SWEEP_RESPONSE_EXTREME")
         self.assertGreater(signal.structural_stop, 100.3)
         self.assertEqual(signal.details["signal_revision"], SIGNAL_REVISION)
@@ -222,6 +230,8 @@ class QuoteResiliencySignalContracts(unittest.TestCase):
         self.assertEqual(signal.direction_name, "LONG")
         self.assertEqual(signal.boundary_id, "day-low-98")
         self.assertEqual(signal.target_id, "day-high-100")
+        self.assertAlmostEqual(signal.entry_reference, 98.5)
+        self.assertAlmostEqual(signal.details["trade_confirmation_close"], 98.4)
         self.assertLess(signal.structural_stop, 97.7)
 
     def test_quote_withdrawal_acceptance_emits_long_continuation_after_separate_retest(self) -> None:
