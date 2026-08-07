@@ -1,0 +1,164 @@
+name: candidate-03-v18-preflight-standalone
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - ".github/workflows/candidate-03-v18-preflight-standalone.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-03-v18-preflight-standalone
+  cancel-in-progress: false
+
+jobs:
+  causal-preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Fetch source into tmp and derive first-week V18 schedule
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import io
+          import json
+          import os
+          import shutil
+          import tarfile
+          import urllib.request
+          from pathlib import Path
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GITHUB_TOKEN']
+          root = Path('/tmp/candidate03-v18-preflight')
+          shutil.rmtree(root, ignore_errors=True)
+          root.mkdir(parents=True)
+          request = urllib.request.Request(
+              f'https://api.github.com/repos/{repository}/tarball/research/candidate-03',
+              headers={
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'User-Agent': 'candidate-03-v18-preflight',
+              },
+          )
+          with urllib.request.urlopen(request, timeout=180) as response:
+              payload = response.read()
+          extract = root / 'extract'
+          extract.mkdir()
+          with tarfile.open(fileobj=io.BytesIO(payload), mode='r:gz') as archive:
+              roots = {Path(member.name).parts[0] for member in archive.getmembers() if Path(member.name).parts}
+              if len(roots) != 1:
+                  raise RuntimeError(f'unexpected roots: {roots}')
+              archive.extractall(extract, filter='data')
+          shutil.move(str(extract / next(iter(roots))), root / 'repo')
+          PY
+          cd /tmp/candidate03-v18-preflight/repo
+          export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONPATH="$PWD/research/candidate-03"
+          python3 research/candidate-03/test_nt_lvcfr_v18.py
+          python3 -m py_compile \
+            research/candidate-03/derive_nt_lvcfr_v18_signals.py \
+            research/candidate-03/prepare_nt_lvcfr_v18.py
+          prepared=/tmp/candidate03-v18-preflight/prepared
+          output=/tmp/candidate03-v18-preflight/output
+          mkdir -p "$prepared" "$output"
+          python3 research/candidate-03/prepare_nt_lvcfr_v18.py \
+            --week-start 2024-01-08 --output "$prepared" \
+            --config research/candidate-03/nt_lvcfr_v18_config.json \
+            2>&1 | tee "$output/preparation.log"
+          cp "$prepared/signals.json" "$prepared/signals-v1.json"
+          python3 research/candidate-03/derive_nt_lvcfr_v18_signals.py \
+            --prepared-root "$prepared" \
+            --output-manifest "$output/v18_signal_manifest.json" \
+            2>&1 | tee "$output/derivation.log"
+          cp "$prepared/signals.json" "$output/signals.json"
+          cp "$prepared/data_manifest.json" "$output/data_manifest.json"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          output = Path('/tmp/candidate03-v18-preflight/output')
+          manifest = json.loads((output / 'v18_signal_manifest.json').read_text())
+          signals = json.loads((output / 'signals.json').read_text())
+          summary = {
+              'candidate': manifest['candidate'],
+              'week_start': '2024-01-08',
+              'engine_status': 'causal_opportunity_preflight_only_no_backtest',
+              'derived_signal_count': len(signals),
+              'minimum_required_episodes': 8,
+              'opportunity_gate_reachable': len(signals) >= 8,
+              'state_counts': manifest['state_counts'],
+              'l1_routing_counts': manifest['l1_routing_counts'],
+              'threshold_policy': manifest['threshold_policy'],
+              'performance_metrics_calculated': False,
+          }
+          (output / 'preflight_summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit detector-only evidence through Git Data API
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GITHUB_TOKEN']
+          branch = 'research/candidate-03'
+          source = Path('/tmp/candidate03-v18-preflight/output')
+
+          def api(method, path, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              request = urllib.request.Request(
+                  f'https://api.github.com/repos/{repository}{path}',
+                  data=data,
+                  method=method,
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'User-Agent': 'candidate-03-v18-preflight',
+                      'Content-Type': 'application/json',
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=180) as response:
+                  raw = response.read()
+              return json.loads(raw.decode()) if raw else None
+
+          ref = api('GET', f'/git/ref/heads/{branch}')
+          parent = ref['object']['sha']
+          parent_commit = api('GET', f'/git/commits/{parent}')
+          entries = []
+          for file in sorted(path for path in source.iterdir() if path.is_file()):
+              blob = api('POST', '/git/blobs', {
+                  'content': base64.b64encode(file.read_bytes()).decode(),
+                  'encoding': 'base64',
+              })
+              entries.append({
+                  'path': f'research/candidate-03/results/v18-preflight-development-1/{file.name}',
+                  'mode': '100644',
+                  'type': 'blob',
+                  'sha': blob['sha'],
+              })
+          tree = api('POST', '/git/trees', {'base_tree': parent_commit['tree']['sha'], 'tree': entries})
+          commit = api('POST', '/git/commits', {
+              'message': 'candidate-03: record V18 first-week causal preflight',
+              'tree': tree['sha'],
+              'parents': [parent],
+          })
+          api('PATCH', f'/git/refs/heads/{branch}', {'sha': commit['sha'], 'force': False})
+          print(json.dumps({'committed_sha': commit['sha']}, indent=2))
+          PY
