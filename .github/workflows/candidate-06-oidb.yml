@@ -105,6 +105,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
           mkdir -p artifacts/candidate-06/oidb-first-week
           code='${{ steps.lab.outputs.exit_code }}'
           if [ -z "$code" ]; then code=1; fi
@@ -125,14 +126,21 @@ jobs:
           fi
           cp artifacts/candidate-06-oidb.stdout artifacts/candidate-06/oidb-first-week/workflow_stdout.txt 2>/dev/null || true
           cp artifacts/candidate-06-oidb.stderr artifacts/candidate-06/oidb-first-week/workflow_stderr.txt 2>/dev/null || true
+          if [ "$code" -ne 0 ]; then
+            echo "--- OIDB MATRIX STDERR ---"
+            tail -n 240 artifacts/candidate-06-oidb.stderr || true
+            echo "--- OIDB TERMINAL SUMMARY ---"
+            cat artifacts/candidate-06/oidb-first-week/summary.json || true
+          fi
 
       - name: Commit reproducible OIDB evidence
         if: always() && github.event_name == 'push'
         run: |
           set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name "candidate-06-research-bot"
           git config user.email "candidate-06-research-bot@users.noreply.github.com"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           for path in \
             research/candidate-06/futures_metrics_data.py \
             research/candidate-06/open_interest_deleveraging_engine.py \
