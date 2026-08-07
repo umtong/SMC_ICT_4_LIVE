@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "candidate": "candidate-12-causal-liquidity-acceptance-rejection",
+  "selection": {
+    "seed": 2026080712,
+    "selection_rule": "Python random.Random(seed) over 2023-01-01 through 2025-12-25; first six starts at least fourteen days apart, frozen before downloading market data",
+    "warmup_days": 4,
+    "evaluation_days": 7,
+    "diagnostic_weeks": ["W1", "W2", "W3"],
+    "untouched_weeks": ["W4", "W5", "W6"],
+    "weeks": {
+      "W1": {"start": "2023-06-25", "end_exclusive": "2023-07-02"},
+      "W2": {"start": "2023-09-24", "end_exclusive": "2023-10-01"},
+      "W3": {"start": "2025-03-31", "end_exclusive": "2025-04-07"},
+      "W4": {"start": "2024-04-14", "end_exclusive": "2024-04-21"},
+      "W5": {"start": "2024-05-14", "end_exclusive": "2024-05-21"},
+      "W6": {"start": "2023-02-08", "end_exclusive": "2023-02-15"}
+    }
+  },
+  "symbols": {
+    "BTCUSDT": {
+      "base_currency": "BTC",
+      "price_precision": 1,
+      "price_increment": "0.1",
+      "size_precision": 3,
+      "size_increment": "0.001",
+      "min_quantity": "0.001",
+      "min_notional": "10"
+    },
+    "ETHUSDT": {
+      "base_currency": "ETH",
+      "price_precision": 2,
+      "price_increment": "0.01",
+      "size_precision": 3,
+      "size_increment": "0.001",
+      "min_quantity": "0.001",
+      "min_notional": "10"
+    },
+    "SOLUSDT": {
+      "base_currency": "SOL",
+      "price_precision": 3,
+      "price_increment": "0.001",
+      "size_precision": 1,
+      "size_increment": "0.1",
+      "min_quantity": "0.1",
+      "min_notional": "5"
+    },
+    "XRPUSDT": {
+      "base_currency": "XRP",
+      "price_precision": 4,
+      "price_increment": "0.0001",
+      "size_precision": 1,
+      "size_increment": "0.1",
+      "min_quantity": "0.1",
+      "min_notional": "5"
+    }
+  },
+  "account": {
+    "starting_nav": "100000",
+    "risk_fraction": 0.03,
+    "default_leverage": "20",
+    "margin_init": "0.05",
+    "margin_maint": "0.025"
+  },
+  "execution": {
+    "entry_order": "MARKET",
+    "take_profit_order": "POST_ONLY_LIMIT_GTC",
+    "stop_order": "STOP_MARKET_GTC",
+    "effective_maker_rate": "0.0004",
+    "effective_taker_rate": "0.0008",
+    "prob_fill_on_limit": 0.35,
+    "prob_slippage": 1.0,
+    "random_seed": 2026080712,
+    "bar_adaptive_high_low_ordering": true,
+    "tick_slippage_units_in_risk_budget": 2.0,
+    "note": "Nautilus owns order matching, contingent lifecycle, fees, margin, positions and NAV. Effective rates deliberately exceed a plain schedule to reserve spread, impact and short-horizon funding uncertainty."
+  },
+  "logic": {
+    "atr_period": 30,
+    "volume_period": 120,
+    "flow_period": 120,
+    "internal_pivot_wing": 2,
+    "external_pivot_wing": 2,
+    "external_tf_minutes": 15,
+    "range_tf_minutes": 240,
+    "pool_expiry_minutes": 4320,
+    "max_pools_per_side": 72,
+    "pool_merge_atr": 0.1,
+    "min_pool_age_bars": 3,
+    "probe_min_atr": 0.025,
+    "probe_max_atr": 1.8,
+    "probe_expiry_bars": 5,
+    "min_probe_relative_volume": 0.65,
+    "rejection_reclaim_atr": 0.015,
+    "rejection_close_location": 0.48,
+    "absorption_flow_min": 0.025,
+    "opposite_flow_min": 0.035,
+    "acceptance_close_atr": 0.025,
+    "acceptance_body_atr": 0.12,
+    "acceptance_close_location": 0.58,
+    "acceptance_flow_min": 0.025,
+    "acceptance_min_closes": 2,
+    "confirmation_expiry_bars": 14,
+    "mss_body_atr": 0.12,
+    "mss_flow_min": 0.025,
+    "mss_close_location": 0.58,
+    "retest_tolerance_atr": 0.18,
+    "retest_hold_atr": 0.0,
+    "reacceleration_body_atr": 0.08,
+    "reacceleration_flow_min": 0.015,
+    "stop_buffer_atr": 0.08,
+    "min_stop_atr": 0.1,
+    "max_stop_atr": 2.2,
+    "min_net_r": 1.05,
+    "max_target_atr": 16.0,
+    "risk_fraction": 0.03,
+    "effective_maker_rate": 0.0004,
+    "effective_taker_rate": 0.0008,
+    "tick_slippage_units": 2.0
+  },
+  "gates": {
+    "diagnostic_promise": {
+      "min_closed_trades": 4,
+      "min_win_rate": 0.5,
+      "min_payoff_ratio": 1.0,
+      "min_daily_geometric_growth": 0.0
+    },
+    "project_target": {
+      "min_closed_trades_per_week": 5,
+      "min_win_rate": 0.65,
+      "min_payoff_ratio": 1.2,
+      "min_daily_geometric_growth": 0.01,
+      "max_closed_trade_drawdown": 0.2,
+      "require_no_liquidation": true
+    }
+  }
+}
