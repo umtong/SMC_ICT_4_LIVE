@@ -7,9 +7,8 @@ import json
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
-BUNDLE_SHA256 = "0fdc3a0421635b8beea41dca5c68f6ff9f910cfe003eb295fb924f6c97cebc66"
+BUNDLE_SHA256 = "9492652cabb57d19cec8f15208d9366be9e0bef87aa7447a8e10dfa515e9e4aa"
 BUNDLE_SCHEMA = "candidate-11-scdam-source-bundle-v1"
-VALIDATION_PROTOCOL = "frozen-W1-first; implementation errors rerun the same interval"
 
 
 def main() -> None:
