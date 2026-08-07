@@ -12,10 +12,47 @@ def patch(path: Path) -> None:
     patch_v28(path)
     text = path.read_text(encoding="utf-8")
     old_import = "from c10_v28_overlay import (\n"
-    new_import = "from c10_v29_overlay import (\n    certify_plan,\n"
+    new_import = (
+        "from c10_v29_overlay import (\n"
+        "    certify_plan,\n"
+        "    repair_kline_flow_frame,\n"
+    )
     if text.count(old_import) != 1:
         raise RuntimeError("v29 overlay import marker is not unique")
     text = text.replace(old_import, new_import, 1)
+
+    old_data = '''        if len(frame.index) not in (1439, 1440, 1441):
+            raise RuntimeError(f"unexpected row count {len(frame.index)} for {filename}")
+        frames.append(frame)
+        manifest.append({
+            "symbol": symbol,
+            "date": cursor.isoformat(),
+            "url": url,
+            "path": str(path),
+            "bytes": path.stat().st_size,
+            "sha256": digest,
+            "rows": len(frame.index),
+        })
+'''
+    new_data = '''        if len(frame.index) not in (1439, 1440, 1441):
+            raise RuntimeError(f"unexpected row count {len(frame.index)} for {filename}")
+        frame, flow_repairs = repair_kline_flow_frame(frame, filename)
+        frames.append(frame)
+        manifest.append({
+            "symbol": symbol,
+            "date": cursor.isoformat(),
+            "url": url,
+            "path": str(path),
+            "bytes": path.stat().st_size,
+            "sha256": digest,
+            "rows": len(frame.index),
+            "flow_repairs": flow_repairs,
+        })
+'''
+    if text.count(old_data) != 1:
+        raise RuntimeError("v29 flow repair marker is not unique")
+    text = text.replace(old_data, new_data, 1)
+
     old_decision = '''                plan.details["market_leadership"] = leadership.to_dict()
                 if not leadership.approved:
 '''
