@@ -97,7 +97,7 @@ def verify_lock() -> tuple[dict[str, Any], dict[str, Any]]:
         ROOT / ".candidate-02-v89/augment_cross_market.py",
     ):
         run([sys.executable, "-m", "py_compile", str(path)])
-    run([sys.executable, "-m", "pytest", "-q", str(CANDIDATE / "tests/test_v104_causality.py"), str(CANDIDATE / "tests/test_v104_activation_adapter.py")])
+    run([sys.executable, str(CANDIDATE / "tests/run_v104_tests.py")])
 
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     config = json.loads(BASE_CONFIG.read_text(encoding="utf-8"))
