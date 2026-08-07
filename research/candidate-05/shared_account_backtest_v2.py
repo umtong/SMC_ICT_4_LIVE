@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Shared-account runner with common timestamp and same-day NAV contracts."""
+"""Shared-account runner with common data and same-day NAV contracts."""
 from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -12,19 +13,28 @@ from timestamp_contract import install as install_timestamp_contract
 from wrangler_contract import install as install_wrangler_contract
 from positioning_contract import install as install_positioning_contract
 
-# The direct shared runner does not pass through candidate.py. Install the same
-# observation contracts before importing the original shared BacktestNode path.
 install_timestamp_contract()
 install_wrangler_contract()
 install_positioning_contract()
 
 import shared_account_backtest as _base
+from backtest import make_instrument as make_contract_instrument
 from cross_asset_repricing_context import reset_shared_cross_asset_context
+from instrument_contracts import instrument_contract
+from nautilus_trader.model.identifiers import InstrumentId
 
 
 PROJECT_SYMBOLS = _base.PROJECT_SYMBOLS
 SharedAccountError = _base.SharedAccountError
 write_json = _base.write_json
+
+
+def make_shared_instrument(config: dict[str, Any]):
+    """Adapt the shared orchestrator to the current frozen instrument contract."""
+    symbol = str(config["symbol"])
+    contract = instrument_contract(symbol)
+    instrument_id = InstrumentId.from_str(contract.instrument_id)
+    return make_contract_instrument(config, contract, instrument_id)
 
 
 def normalize_equity_files(
@@ -98,6 +108,8 @@ def normalize_equity_files(
     return selected, daily_returns, max_drawdown, min_equity
 
 
+# Compatibility repairs only: no strategy, execution, fill or account logic.
+_base.make_instrument = make_shared_instrument
 _base.normalize_equity_files = normalize_equity_files
 
 
