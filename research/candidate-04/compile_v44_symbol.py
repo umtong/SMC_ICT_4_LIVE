@@ -179,7 +179,7 @@ def main() -> None:
         "compiler_summary": json.loads((all_signals / "summary.json").read_text()),
         "core_summary": json.loads((core / "summary.json").read_text()),
         "target_summary": json.loads((signals / "summary.json").read_text()),
-        "performance_calculated": false if False else False,
+        "performance_calculated": False,
         "execution": "deferred to one-account NautilusTrader runner",
     }
     (output / "compile_summary.json").write_text(
