@@ -1,0 +1,105 @@
+name: candidate-05-v50c-final
+
+on:
+  workflow_run:
+    workflows: ["candidate-05-v50c-parallel-analog"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v50c-final
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  shared-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v50c-final
+      CANDIDATE05_V50_MODEL: ${{ github.workspace }}/research/candidate-05/v50_model.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+          fetch-depth: 0
+      - name: Resolve single-symbol 91-day promotion
+        id: resolve
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          p=Path('research/candidate-05/V50C_RESULT.json');data=json.loads(p.read_text()) if p.exists() else {};passed=data.get('decision')=='PROMOTE_TO_SHARED_ACCOUNT_AND_912D' and (data.get('continuous_91d') or {}).get('pass') is True and Path('research/candidate-05/v50_model.json').exists()
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:out.write(f'passed={str(passed).lower()}\n')
+          print(json.dumps(data,indent=2,sort_keys=True))
+          PY
+      - name: Stop without a validated v50c
+        if: steps.resolve.outputs.passed != 'true'
+        run: echo 'v50c did not earn shared-account promotion.'
+      - name: Verify and inject v50c into existing shared Nautilus runner
+        if: steps.resolve.outputs.passed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest research/candidate-05/tests/test_strategy_v50b_contract.py -v
+          cat > research/candidate-05/strategy_v36_cross_asset_repricing_gate.py <<'PY'
+          from strategy_v50c_analog_selector import RobustActualOrderAnalogStrategy
+          CrossAssetRepricingGateStrategy = RobustActualOrderAnalogStrategy
+          CandidateStrategy = RobustActualOrderAnalogStrategy
+          StrategyClass = RobustActualOrderAnalogStrategy
+          PY
+      - name: Run actual one-account four-symbol 91-day transfer
+        if: steps.resolve.outputs.passed == 'true'
+        id: shared91
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_workflow_adapter_v2.py --workflow .github/workflows/candidate-05-v36-shared-screen.yml --output-root "$ROOT" --label shared-91d --warmup 2024-02-28 --start 2024-03-01 --end 2024-05-30
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          root=Path('artifacts/candidate-05-v50c-final/shared-91d');metrics=list(root.rglob('metrics.json'))
+          if not metrics:raise RuntimeError('no shared 91d metrics')
+          def score(path):
+              text=str(path).lower();return (int('control' not in text),int('v36' in text or 'candidate' in text),path.stat().st_size)
+          path=max(metrics,key=score);d=json.loads(path.read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0);trades=int(v('trades','trade_count',default=0) or 0);wins=int(v('wins','winning_trades',default=0) or 0);active=int(v('active_days','trading_days',default=0) or 0);dd=float(v('max_drawdown','maximum_drawdown',default=0) or 0);integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1 and int(d.get('max_global_slot_owners',d.get('max_combined_entry_and_position',1)) or 0)<=1;passed=integrity and growth>=.01 and trades>=60 and wins>=36 and active>=45 and dd<=.35
+          out={'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':dd,'integrity':integrity,'pass':passed,'metrics_path':str(path)};Path('artifacts/candidate-05-v50c-final/shared-91d-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True));print(json.dumps(out,indent=2,sort_keys=True));open(os.environ['GITHUB_OUTPUT'],'a').write(f'passed={str(passed).lower()}\n')
+          PY
+      - name: Commit shared-account promotion result
+        if: always() && steps.resolve.outputs.passed == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          p=Path('artifacts/candidate-05-v50c-final/shared-91d-assessment.json');shared=json.loads(p.read_text()) if p.exists() else None;decision='PROMOTE_TO_FINAL_912D' if shared and shared.get('pass') else 'DISCARD_SHARED_ACCOUNT_91D';out={'schema':'candidate-05-v50c-shared-promotion-v1','shared_91d':shared,'decision':decision};Path('research/candidate-05/V50C_SHARED_RESULT.json').write_text(json.dumps(out,indent=2,sort_keys=True));print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V50C_SHARED_RESULT.json
+          git commit -m "candidate-05: record v50c shared-account result [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.resolve.outputs.passed == 'true'
+        with:
+          name: candidate-05-v50c-shared-${{ github.sha }}
+          path: artifacts/candidate-05-v50c-final/**
+          if-no-files-found: warn
+          retention-days: 90
