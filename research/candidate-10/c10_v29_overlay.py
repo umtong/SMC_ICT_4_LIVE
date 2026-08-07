@@ -71,7 +71,10 @@ def repair_kline_flow_frame(frame: Any, filename: str) -> tuple[Any, list[dict[s
             raise RuntimeError(
                 f"unrepairable kline flow row: {filename}: index={index}",
             )
-        result.at[index, "volume"] = derived_volume
+        # Daily archives may be backed by Arrow string columns. Preserve the
+        # column representation here; the frozen loader converts it to numeric
+        # after concatenation.
+        result.at[index, "volume"] = format(derived_volume, ".12f")
         repairs.append(
             {
                 "filename": filename,
