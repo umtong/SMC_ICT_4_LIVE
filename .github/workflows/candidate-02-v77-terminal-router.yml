@@ -36,104 +36,14 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Materialize and verify the locked v104 source payload
+      - name: Materialize exact locked v104 source before features or performance
         shell: bash
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          python - <<'PY'
-          import hashlib
-          import json
-          import subprocess
-          from pathlib import Path
-
-          manifest = json.loads(Path('.candidate-02-v104/payload_manifest.json').read_text())
-          assert int(manifest['parts']) == 5
-          root = Path('.candidate-02-v104')
-          first_chunks = [root / f'payload.part00.{index:03d}' for index in range(4)]
-          later_parts = [root / f'payload.part{index:02d}' for index in range(1, 5)]
-          assert all(path.is_file() for path in first_chunks + later_parts)
-          first = b''.join(path.read_bytes() for path in first_chunks)
-          assert len(first) == 8000
-          first_blob = hashlib.sha1(b'blob ' + str(len(first)).encode() + b'\0' + first).hexdigest()
-          assert first_blob == '68ba636fe7af708325e3c3a57d5119097a0129b6'
-          encoded = first + b''.join(path.read_bytes() for path in later_parts)
-          assert len(encoded) == int(manifest['base64_chars'])
-          assert hashlib.sha256(encoded).hexdigest() == manifest['base64_sha256']
-          Path('/tmp/v104-payload.b64').write_bytes(encoded)
-          PY
-          base64 --decode /tmp/v104-payload.b64 > /tmp/v104-source.tar.gz
-          test "$(stat -c '%s' /tmp/v104-source.tar.gz)" -eq "$(python -c "import json; print(json.load(open('.candidate-02-v104/payload_manifest.json'))['tar_gz_bytes'])")"
-          test "$(sha256sum /tmp/v104-source.tar.gz | cut -d' ' -f1)" = "$(python -c "import json; print(json.load(open('.candidate-02-v104/payload_manifest.json'))['tar_gz_sha256'])")"
-          tar -tzf /tmp/v104-source.tar.gz | sort > /tmp/v104-tar-members.txt
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          manifest = json.loads(Path('.candidate-02-v104/payload_manifest.json').read_text())
-          actual = [line.strip() for line in Path('/tmp/v104-tar-members.txt').read_text().splitlines() if line.strip()]
-          assert actual == sorted(manifest['files']), (actual, sorted(manifest['files']))
-          PY
-          tar -xzf /tmp/v104-source.tar.gz
-          python - <<'PY'
-          import json
-          import subprocess
-          from pathlib import Path
-          manifest = json.loads(Path('.candidate-02-v104/payload_manifest.json').read_text())
-          for relative, expected in manifest['files'].items():
-              path = Path(relative)
-              assert path.is_file(), relative
-              assert path.stat().st_size == int(expected['bytes']), relative
-              actual = subprocess.check_output(['git', 'hash-object', str(path)], text=True).strip()
-              assert actual == expected['git_blob_sha'], (relative, actual, expected['git_blob_sha'])
-
-          # The original prospective driver used pytest, which is deliberately
-          # absent from the common prebuilt runtime. Patch only that test command
-          # to the controlled standard-library runner before any data access.
-          driver_path = Path('research/candidate-02/v104_first_week_driver.py')
-          driver_text = driver_path.read_text(encoding='utf-8')
-          before = '    run([sys.executable, "-m", "pytest", "-q", str(CANDIDATE / "tests/test_v104_causality.py"), str(CANDIDATE / "tests/test_v104_activation_adapter.py")])'
-          after = '    run([sys.executable, str(CANDIDATE / "tests/run_v104_tests.py")])'
-          assert driver_text.count(before) == 1
-          driver_path.write_text(driver_text.replace(before, after), encoding='utf-8')
-
-          # The payload was prospectively frozen before the registered router
-          # existed. Materialize the exact triggering router, patched driver,
-          # and controlled test-infrastructure blobs into the lock before any
-          # market archive is collected. Scenario/risk/cost/week stay fixed.
-          lock_path = Path('research/candidate-02/v104_external_liquidity_lock.json')
-          lock = json.loads(lock_path.read_text())
-          assert lock['status'] == 'LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
-          assert lock['first_week']['raw_data_status_at_lock'] == 'NOT_COLLECTED_FOR_V104'
-          assert lock['source_git_blob_sha']['router_workflow'] == '9c4289b41a16f39c5ac04a1471167d53f6276c72'
-          assert lock['source_git_blob_sha']['driver'] == 'b9e0fb9da71ebd5f151fd459c750fb3301d605dd'
-          workflow = Path('.github/workflows/candidate-02-v77-terminal-router.yml')
-          router_blob = subprocess.check_output(['git', 'hash-object', str(workflow)], text=True).strip()
-          driver_blob = subprocess.check_output(['git', 'hash-object', str(driver_path)], text=True).strip()
-          lock['source_git_blob_sha']['router_workflow'] = router_blob
-          lock['source_git_blob_sha']['driver'] = driver_blob
-          additions = {
-              'controlled_test_runner': 'research/candidate-02/tests/run_v104_tests.py',
-              'schedule_contract_test': 'research/candidate-02/tests/test_v104_schedule_contract.py',
-          }
-          for key, relative in additions.items():
-              path = Path(relative)
-              assert path.is_file(), relative
-              lock['source_files'][key] = relative
-              lock['source_git_blob_sha'][key] = subprocess.check_output(
-                  ['git', 'hash-object', str(path)], text=True
-              ).strip()
-          lock['source_materialization'] = {
-              'contract': 'payload bytes, archive, extracted sizes, every extracted Git blob, patched driver, router, and controlled test infrastructure are verified before compilation or collection',
-              'driver_test_command_patch_before_market_data': True,
-              'materialization_commit_does_not_retrigger_router': True,
-              'materialized_before_market_data': True,
-              'payload_manifest': '.candidate-02-v104/payload_manifest.json',
-              'payload_parts': int(manifest['parts']),
-          }
-          lock_path.write_text(json.dumps(lock, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-          assert subprocess.check_output(['git', 'hash-object', str(workflow)], text=True).strip() == router_blob
-          PY
+          python -m py_compile research/candidate-02/v104_runtime_materialize.py
+          python research/candidate-02/v104_runtime_materialize.py
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -171,19 +81,19 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          d = json.loads(Path('artifacts-v104-first-week-decision.json').read_text())
-          m = d['baseline']['metrics']
-          assert d['candidate_family'] == 'candidate-02-v104-external-liquidity-common-acceptance-retest'
-          assert m['engine'] == 'NautilusTrader 1.230.0'
-          assert m['custom_backtest_engine'] is False
-          assert float(m['risk_fraction']) == 0.03
-          assert d['long_evaluation_allowed'] is False
+          decision = json.loads(Path('artifacts-v104-first-week-decision.json').read_text())
+          metrics = decision['baseline']['metrics']
+          assert decision['candidate_family'] == 'candidate-02-v104-external-liquidity-common-acceptance-retest'
+          assert metrics['engine'] == 'NautilusTrader 1.230.0'
+          assert metrics['custom_backtest_engine'] is False
+          assert float(metrics['risk_fraction']) == 0.03
+          assert decision['long_evaluation_allowed'] is False
           print(json.dumps({
-              'status': d['status'],
-              'next_week_allowed': d['next_week_allowed'],
-              'baseline_target_met': m['target_met'],
-              'baseline_trades': m['trades'],
-              'baseline_daily_growth': m['geometric_daily_growth_after_cost'],
+              'status': decision['status'],
+              'next_week_allowed': decision['next_week_allowed'],
+              'baseline_target_met': metrics['target_met'],
+              'baseline_trades': metrics['trades'],
+              'baseline_daily_growth': metrics['geometric_daily_growth_after_cost'],
           }, indent=2, sort_keys=True))
           PY
 
@@ -196,16 +106,16 @@ jobs:
           mkdir -p compact-v104
           cp -f artifacts-v104-*.json compact-v104/ 2>/dev/null || true
           cp -f artifacts-v104-*.log compact-v104/ 2>/dev/null || true
-          for d in artifacts/candidate-02-v104-*; do
-            test -d "$d" || continue
-            out="compact-v104/$(basename "$d")"
-            mkdir -p "$out"
-            for f in \
+          for directory in artifacts/candidate-02-v104-*; do
+            test -d "$directory" || continue
+            output="compact-v104/$(basename "$directory")"
+            mkdir -p "$output"
+            for file in \
               metrics.json signal_build_diagnostics.json scenario_attribution.json \
               trade_diagnostics.jsonl trades.jsonl signals.jsonl signals_schedule.json \
               risk_sizing.jsonl account.csv fills.csv orders.csv positions.csv \
               validation_exit_code.txt; do
-              test -f "$d/$f" && cp "$d/$f" "$out/$f"
+              test -f "$directory/$file" && cp "$directory/$file" "$output/$file"
             done
           done
           find inputs/v104-first-week -type f \
@@ -216,8 +126,6 @@ jobs:
       - name: Commit compact v104 evidence if branch is unchanged
         if: success()
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git fetch origin research/candidate-02
