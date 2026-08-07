@@ -1,0 +1,186 @@
+name: Candidate 06 AFIB Staged Campaign
+
+on:
+  push:
+    branches:
+      - research/candidate-06
+    paths:
+      - ".github/workflows/candidate-06-afib-staged.yml"
+      - "research/candidate-06/adaptive_flow_impact_bifurcation_engine.py"
+      - "research/candidate-06/adaptive_flow_impact_nautilus_runner.py"
+      - "research/candidate-06/run_adaptive_flow_impact_validation.py"
+      - "research/candidate-06/run_adaptive_flow_impact_matrix.py"
+      - "research/candidate-06/test_adaptive_flow_impact_bifurcation_engine.py"
+      - "research/candidate-06/AFIB_RESEARCH_BASIS.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-afib-staged
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  research-and-validate:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize AFIB research implementation
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if compgen -G "research/candidate-06/afib_payload.part-*" > /dev/null; then
+            cat research/candidate-06/afib_payload.part-* | base64 -d > /tmp/candidate06-afib.tar.gz
+            printf '%s  %s\n' \
+              'afd656092682c2a62b87f4dda519fb9a82ff0377c67942aa5660836016472627' \
+              '/tmp/candidate06-afib.tar.gz' | sha256sum -c -
+            tar -xzf /tmp/candidate06-afib.tar.gz -C research/candidate-06
+            rm -f /tmp/candidate06-afib.tar.gz
+          else
+            test -s research/candidate-06/adaptive_flow_impact_bifurcation_engine.py
+            test -s research/candidate-06/adaptive_flow_impact_nautilus_runner.py
+            test -s research/candidate-06/run_adaptive_flow_impact_validation.py
+            test -s research/candidate-06/run_adaptive_flow_impact_matrix.py
+            test -s research/candidate-06/test_adaptive_flow_impact_bifurcation_engine.py
+            test -s research/candidate-06/AFIB_RESEARCH_BASIS.md
+          fi
+
+      - name: Verify fixed NautilusTrader environment
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(f"NAUTILUS_VERSION={actual}")
+          PY
+
+      - name: Verify AFIB causal and runner contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-06/adaptive_flow_impact_bifurcation_engine.py \
+            research/candidate-06/adaptive_flow_impact_nautilus_runner.py \
+            research/candidate-06/run_adaptive_flow_impact_validation.py \
+            research/candidate-06/run_adaptive_flow_impact_matrix.py \
+            research/candidate-06/test_adaptive_flow_impact_bifurcation_engine.py
+          python research/candidate-06/test_adaptive_flow_impact_bifurcation_engine.py
+          python - <<'PY'
+          import inspect
+          from adaptive_flow_impact_nautilus_runner import run_adaptive_flow_impact_nautilus_backtest
+          from run_adaptive_flow_impact_matrix import _base, VARIANTS
+
+          source = inspect.getsource(run_adaptive_flow_impact_nautilus_backtest)
+          assert "BacktestEngine" in source
+          assert "AdaptiveFlowImpactBifurcationEngine" in source
+          config = _base({"logic": {}, "execution": {}, "validation": {}, "gate": {}})
+          assert config["logic"]["signal_submission_timing"] == "ON_SIGNAL_CLOSE"
+          assert config["logic"]["afib_minimum_history"] > 0
+          assert len(VARIANTS) == 4
+          print("AFIB Nautilus-only, prior-only, staged contracts verified")
+          PY
+
+      - name: Run AFIB staged BTC campaign through NautilusTrader
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/afib-staged
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts
+          python research/candidate-06/run_adaptive_flow_impact_matrix.py \
+            --output artifacts/candidate-06/afib-staged \
+            > artifacts/candidate-06-afib.stdout \
+            2> artifacts/candidate-06-afib.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Guarantee terminal AFIB evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-06/afib-staged
+          mkdir -p "$root"
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > "$root/workflow_exit_code.txt"
+          if [ ! -f "$root/summary.json" ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-06/afib-staged")
+          payload = {
+              "all_three_weeks_passed": False,
+              "long_evaluation_authorized": False,
+              "selected": None,
+              "terminal_status": "IMPLEMENTATION_OR_DATA_FAILURE_BEFORE_SUMMARY",
+          }
+          (root / "summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+          cp artifacts/candidate-06-afib.stdout "$root/workflow_stdout.txt" 2>/dev/null || true
+          cp artifacts/candidate-06-afib.stderr "$root/workflow_stderr.txt" 2>/dev/null || true
+
+      - name: Commit AFIB implementation and deterministic evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-06/adaptive_flow_impact_bifurcation_engine.py \
+            research/candidate-06/adaptive_flow_impact_nautilus_runner.py \
+            research/candidate-06/run_adaptive_flow_impact_validation.py \
+            research/candidate-06/run_adaptive_flow_impact_matrix.py \
+            research/candidate-06/test_adaptive_flow_impact_bifurcation_engine.py \
+            research/candidate-06/AFIB_RESEARCH_BASIS.md
+          git rm -f --ignore-unmatch research/candidate-06/afib_payload.part-*
+          git add -f artifacts/candidate-06/afib-staged
+          if [ -f research/candidate-06/config.afib.locked.json ]; then
+            git add -f research/candidate-06/config.afib.locked.json
+          fi
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record candidate-06 AFIB evidence [candidate-06 evidence]"
+          git pull --rebase origin research/candidate-06
+          git push origin HEAD:research/candidate-06
+
+      - name: Upload AFIB evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-afib-${{ github.sha }}
+          path: artifacts/candidate-06/afib-staged
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce staged decision
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          exit "$code"
