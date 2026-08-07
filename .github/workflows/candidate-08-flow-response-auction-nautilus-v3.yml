@@ -75,8 +75,8 @@ jobs:
               research/candidate-08/run_aggtrade_flow_response_auction_nautilus.py \
               research/candidate-08/run_aggtrade_flow_response_auction_nautilus_v4.py \
               research/candidate-08/run_flow_response_staged_validation.py \
-              research/candidate-08/run_flow_response_staged_validation_v2.py
-
+              research/candidate-08/run_flow_response_staged_validation_v2.py \
+              research/candidate-08/flow_response_v3_workflow_preflight.py
             python research/candidate-08/test_aggtrade_orderflow.py -v
             python research/candidate-08/test_aggtrade_acceptance.py -v
             python research/candidate-08/test_aggtrade_acceptance_pure.py -v
@@ -87,57 +87,11 @@ jobs:
             python research/candidate-08/test_aggtrade_flow_response_auction_runner_v4.py -v
             python research/candidate-08/test_flow_response_config_contract_v3.py -v
             python research/candidate-08/test_flow_response_trade_path_diagnostics_v2.py -v
+            python research/candidate-08/test_flow_response_zero_trade_evidence_v3.py -v
             python research/candidate-08/test_flow_response_family_ablation_decision.py -v
             python research/candidate-08/test_flow_response_diagnostic_evaluation_v3.py -v
             python research/candidate-08/test_run_flow_response_staged_validation_v2.py -v
-
-            python - <<'PY'
-            import json
-            from dataclasses import asdict
-            from pathlib import Path
-
-            from aggtrade_flow_response import FlowResponseConfig
-            from aggtrade_flow_response_auction_signals_v3 import (
-                IMPLEMENTATION_REVISION,
-                FlowResponseAuctionConfig,
-            )
-            from flow_response_trade_path_diagnostics_v2 import DIAGNOSTIC_REVISION
-            from run_flow_response_staged_validation_v2 import PROTOCOL_REVISION
-            from run_aggtrade_flow_response_auction_nautilus_v4 import (
-                EVIDENCE_WRAPPER_REVISION,
-            )
-
-            root = Path("research/candidate-08")
-            config = json.loads((root / "config_flow_response_auction_btc_v1.json").read_text())
-            detector = (root / "aggtrade_flow_response_auction_signals_v3.py").read_text()
-            wrapper = (root / "run_aggtrade_flow_response_auction_nautilus_v4.py").read_text()
-            orchestrator = (root / "run_flow_response_staged_validation_v2.py").read_text()
-            workflow = Path(
-                ".github/workflows/candidate-08-flow-response-auction-nautilus-v3.yml"
-            ).read_text()
-
-            assert config["implementation_revision"] == IMPLEMENTATION_REVISION
-            assert config["ten_second_cadence_contract"] == "EXACT_CONSECUTIVE_10_SECONDS"
-            assert config["trade_path_diagnostic_revision"] == DIAGNOSTIC_REVISION
-            assert config["flow_response_config"] == asdict(FlowResponseConfig())
-            default_auction = FlowResponseAuctionConfig()
-            assert config["flow_response_auction_config"] == {
-                "interaction_response_windows": default_auction.interaction_response_windows,
-                "reversal_confirmation_windows": default_auction.reversal_confirmation_windows,
-            }
-            assert "validate_exact_ten_second_cadence(data)" in detector
-            assert "EXACT_CONSECUTIVE_10_SECONDS" in detector
-            assert "EXPLICIT_ZERO_TRADE_PATH_REVISION_COUNT_V4" in wrapper
-            assert "BacktestEngine(" not in wrapper
-            assert "risk_sized_quantity(" not in wrapper
-            assert "FLOW_RESPONSE_STAGED_VALIDATION_V2_EXACT_CADENCE" in orchestrator
-            assert PROTOCOL_REVISION == "FLOW_RESPONSE_STAGED_VALIDATION_V2_EXACT_CADENCE"
-            assert EVIDENCE_WRAPPER_REVISION == "EXPLICIT_ZERO_TRADE_PATH_REVISION_COUNT_V4"
-            assert 'runs-on: ubuntu-24.04' in workflow
-            assert 'cancel-in-progress: true' in workflow
-            assert '"risk_fraction": 0.03' in (root / "config_flow_response_auction_btc_v1.json").read_text()
-            assert '"default_leverage": 125' in (root / "config_flow_response_auction_btc_v1.json").read_text()
-            PY
+            python research/candidate-08/flow_response_v3_workflow_preflight.py --mode validate
           ) 2>&1 | tee "$ROOT/preflight.log"
           status=${PIPESTATUS[0]}
           set -e
@@ -180,29 +134,9 @@ jobs:
         if: ${{ always() && steps.preflight.outputs.status != '0' }}
         shell: bash
         run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          root = Path(os.environ["ROOT"])
-          root.mkdir(parents=True, exist_ok=True)
-          payload = {
-              "candidate": "candidate-08-flow-response-auction-btc-nautilus-v1",
-              "protocol_revision": "FLOW_RESPONSE_STAGED_VALIDATION_V2_EXACT_CADENCE",
-              "implementation_revision": "CAUSAL_FLOW_RESPONSE_EXTERNAL_AUCTION_V3_EXACT_TEN_SECOND_CADENCE",
-              "evidence_wrapper_revision": "EXPLICIT_ZERO_TRADE_PATH_REVISION_COUNT_V4",
-              "git_sha": os.environ.get("GITHUB_SHA"),
-              "preflight_runner_status": int(
-                  (root / "preflight_exit_status.txt").read_text().strip()
-              ),
-              "decision": "PREFLIGHT_IMPLEMENTATION_FAILURE",
-          }
-          (root / "stage_decision.json").write_text(
-              json.dumps(payload, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
-          PY
+          python research/candidate-08/flow_response_v3_workflow_preflight.py \
+            --mode record-failure \
+            --root "$ROOT"
 
       - name: Save official-data cache
         if: ${{ always() && steps.preflight.outputs.status == '0' && steps.cache.outputs.cache-hit != 'true' }}
