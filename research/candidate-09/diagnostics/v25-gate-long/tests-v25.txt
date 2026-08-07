@@ -1,0 +1,117 @@
+test_duplicate_spot_timestamp_is_rejected (test_data_loader_v25.V25DataAlignmentContractTest.test_duplicate_spot_timestamp_is_rejected) ... FAIL
+test_metric_and_spot_never_leak_forward_or_fill_internal_gap (test_data_loader_v25.V25DataAlignmentContractTest.test_metric_and_spot_never_leak_forward_or_fill_internal_gap) ... ok
+test_official_paths_keep_spot_and_futures_archives_separate (test_data_loader_v25.V25DataAlignmentContractTest.test_official_paths_keep_spot_and_futures_archives_separate) ... ok
+test_perpetual_spot_and_metric_are_available_only_after_completion (test_data_loader_v25.V25DataAlignmentContractTest.test_perpetual_spot_and_metric_are_available_only_after_completion) ... ok
+test_risk_evaluation_and_numerical_thresholds_remain_frozen (test_run_v25_contract.V25RunnerContractTest.test_risk_evaluation_and_numerical_thresholds_remain_frozen) ... ok
+test_runner_deletes_stale_compact_evidence_before_execution (test_run_v25_contract.V25RunnerContractTest.test_runner_deletes_stale_compact_evidence_before_execution) ... ok
+test_runner_has_exact_single_layer_controls (test_run_v25_contract.V25RunnerContractTest.test_runner_has_exact_single_layer_controls) ... ok
+test_ablation_mapping_changes_only_declared_layers (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_ablation_mapping_changes_only_declared_layers) ... ok
+test_completed_oi_drop_and_perpetual_spot_gap_create_pending_state (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_completed_oi_drop_and_perpetual_spot_gap_create_pending_state) ... ok
+test_metric_availability_bar_is_not_part_of_pulse_and_scales_are_frozen (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_metric_availability_bar_is_not_part_of_pulse_and_scales_are_frozen) ... ERROR
+test_no_spot_lead_removes_only_spot_structure_requirement (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_no_spot_lead_removes_only_spot_structure_requirement) ... ERROR
+test_oi_and_spot_gap_admission_controls_are_independent (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_oi_and_spot_gap_admission_controls_are_independent) ... ok
+test_spot_leads_and_perpetual_counterflow_build_cost_after_buy_to_source_equilibrium (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_spot_leads_and_perpetual_counterflow_build_cost_after_buy_to_source_equilibrium) ... ERROR
+test_target_first_and_timeout_expire_without_chasing (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_target_first_and_timeout_expire_without_chasing) ... ERROR
+test_upside_dislocation_is_symmetric (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_upside_dislocation_is_symmetric) ... ERROR
+
+======================================================================
+ERROR: test_metric_availability_bar_is_not_part_of_pulse_and_scales_are_frozen (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_metric_availability_bar_is_not_part_of_pulse_and_scales_are_frozen)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/tests_v25/test_state_engine_v25.py", line 160, in test_metric_availability_bar_is_not_part_of_pulse_and_scales_are_frozen
+    self.assertAlmostEqual(pending.frozen_atr, engine._futures_atr(historical, engine.config.atr_period))
+                           ^^^^^^^^^^^^^^^^^^
+AttributeError: '_PendingDislocation' object has no attribute 'frozen_atr'
+
+======================================================================
+ERROR: test_no_spot_lead_removes_only_spot_structure_requirement (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_no_spot_lead_removes_only_spot_structure_requirement)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/tests_v25/test_state_engine_v25.py", line 218, in test_no_spot_lead_removes_only_spot_structure_requirement
+    result = baseline.on_bar(bar(
+        261, open_=95.6, high=97.0, low=95.5, close=96.8,
+        spot_ohlc=(99.50, 99.54, 99.45, 99.52),
+        volume=180.0, flow=0.30,
+    ))
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 260, in on_bar
+    signal = self._advance_pending(bar, events)
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 472, in _advance_pending
+    if self._spot_led_reversal_confirmed(pending, bar):
+       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 499, in _spot_led_reversal_confirmed
+    futures_body_atr = abs(bar.close - bar.open) / max(pending.frozen_atr, 1e-12)
+                                                       ^^^^^^^^^^^^^^^^^^
+AttributeError: '_PendingDislocation' object has no attribute 'frozen_atr'
+
+======================================================================
+ERROR: test_spot_leads_and_perpetual_counterflow_build_cost_after_buy_to_source_equilibrium (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_spot_leads_and_perpetual_counterflow_build_cost_after_buy_to_source_equilibrium)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/tests_v25/test_state_engine_v25.py", line 168, in test_spot_leads_and_perpetual_counterflow_build_cost_after_buy_to_source_equilibrium
+    result = engine.on_bar(bar(
+        261, open_=95.6, high=97.0, low=95.5, close=96.8,
+        spot_ohlc=(99.50, 99.85, 99.48, 99.80),
+        volume=180.0, flow=0.30,
+    ))
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 260, in on_bar
+    signal = self._advance_pending(bar, events)
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 472, in _advance_pending
+    if self._spot_led_reversal_confirmed(pending, bar):
+       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 499, in _spot_led_reversal_confirmed
+    futures_body_atr = abs(bar.close - bar.open) / max(pending.frozen_atr, 1e-12)
+                                                       ^^^^^^^^^^^^^^^^^^
+AttributeError: '_PendingDislocation' object has no attribute 'frozen_atr'
+
+======================================================================
+ERROR: test_target_first_and_timeout_expire_without_chasing (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_target_first_and_timeout_expire_without_chasing)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/tests_v25/test_state_engine_v25.py", line 251, in test_target_first_and_timeout_expire_without_chasing
+    last = timeout.on_bar(bar(
+        i, open_=95.5, high=95.8, low=95.3, close=95.6,
+        spot_ohlc=(99.5, 99.6, 99.4, 99.5), flow=-0.05,
+    ))
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 260, in on_bar
+    signal = self._advance_pending(bar, events)
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 472, in _advance_pending
+    if self._spot_led_reversal_confirmed(pending, bar):
+       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 499, in _spot_led_reversal_confirmed
+    futures_body_atr = abs(bar.close - bar.open) / max(pending.frozen_atr, 1e-12)
+                                                       ^^^^^^^^^^^^^^^^^^
+AttributeError: '_PendingDislocation' object has no attribute 'frozen_atr'
+
+======================================================================
+ERROR: test_upside_dislocation_is_symmetric (test_state_engine_v25.V25SpotLedAuctionReversionContractTest.test_upside_dislocation_is_symmetric)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/tests_v25/test_state_engine_v25.py", line 188, in test_upside_dislocation_is_symmetric
+    result = engine.on_bar(bar(
+        261, open_=104.4, high=104.5, low=102.9, close=103.1,
+        spot_ohlc=(100.50, 100.52, 100.10, 100.15),
+        volume=180.0, flow=-0.30,
+    ))
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 260, in on_bar
+    signal = self._advance_pending(bar, events)
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 472, in _advance_pending
+    if self._spot_led_reversal_confirmed(pending, bar):
+       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/state_engine_v25_direct.py", line 499, in _spot_led_reversal_confirmed
+    futures_body_atr = abs(bar.close - bar.open) / max(pending.frozen_atr, 1e-12)
+                                                       ^^^^^^^^^^^^^^^^^^
+AttributeError: '_PendingDislocation' object has no attribute 'frozen_atr'
+
+======================================================================
+FAIL: test_duplicate_spot_timestamp_is_rejected (test_data_loader_v25.V25DataAlignmentContractTest.test_duplicate_spot_timestamp_is_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-09/tests_v25/test_data_loader_v25.py", line 80, in test_duplicate_spot_timestamp_is_rejected
+    with self.assertRaisesRegex(ValueError, "duplicate spot timestamp"):
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 15 tests in 0.047s
+
+FAILED (failures=1, errors=5)
