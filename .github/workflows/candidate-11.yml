@@ -60,6 +60,7 @@ jobs:
           python research/candidate-11/materialize_portfolio.py
           python research/candidate-11/apply_partial_fill_fail_closed.py
           chmod +x research/candidate-11/ci_validate.sh
+          chmod +x research/candidate-11/run_complex_gated.sh
           if [ "${{ github.event_name }}" != "pull_request" ] && [ -n "$(git status --porcelain -- research/candidate-11)" ]; then
             git config user.name "candidate-11-bot"
             git config user.email "candidate-11-bot@users.noreply.github.com"
@@ -83,6 +84,26 @@ jobs:
           fi
           bash research/candidate-11/ci_validate.sh "$WEEK"
 
+      - name: Run synchronized four-market causal-auction candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -s research/candidate-11/complex_validation_week.txt ]; then
+            COMPLEX_WEEK="$(tr -d '[:space:]' < research/candidate-11/complex_validation_week.txt)"
+          else
+            COMPLEX_WEEK=W1
+          fi
+          bash research/candidate-11/run_complex_gated.sh "$COMPLEX_WEEK"
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            git config user.name "candidate-11-bot"
+            git config user.email "candidate-11-bot@users.noreply.github.com"
+            git add -A "research/candidate-11/results_complex/$COMPLEX_WEEK"
+            if ! git diff --cached --quiet; then
+              git commit -m "candidate-11: record synchronized $COMPLEX_WEEK evidence [skip ci]"
+              git push origin HEAD:research/candidate-11
+            fi
+          fi
+
       - name: Publish metrics summary
         if: always()
         shell: bash
@@ -97,9 +118,15 @@ jobs:
               WEEK=W1
             fi
           fi
+          if [ -s research/candidate-11/complex_validation_week.txt ]; then
+            COMPLEX_WEEK="$(tr -d '[:space:]' < research/candidate-11/complex_validation_week.txt)"
+          else
+            COMPLEX_WEEK=W1
+          fi
           for METRICS in \
             "research/candidate-11/results/$WEEK/metrics.json" \
-            "research/candidate-11/results/PORTFOLIO_$WEEK/metrics.json"; do
+            "research/candidate-11/results/PORTFOLIO_$WEEK/metrics.json" \
+            "research/candidate-11/results_complex/$COMPLEX_WEEK/metrics.json"; do
             if [ -s "$METRICS" ]; then
               python - "$METRICS" >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import json
@@ -118,21 +145,25 @@ jobs:
           PY
             fi
           done
-          AUDIT="research/candidate-11/results/PORTFOLIO_$WEEK/evidence_audit.json"
-          if [ -s "$AUDIT" ]; then
-            python - "$AUDIT" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          for AUDIT in \
+            "research/candidate-11/results/PORTFOLIO_$WEEK/evidence_audit.json" \
+            "research/candidate-11/results_complex/$COMPLEX_WEEK/audit.json"; do
+            if [ -s "$AUDIT" ]; then
+              python - "$AUDIT" >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import json
           import sys
           from pathlib import Path
           audit = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
           print("## Independent execution-safety audit")
           for key in (
-              "classification", "risk_budget_passed", "global_slot_passed",
+              "classification", "advance_allowed", "success_claim_allowed",
+              "risk_budget_passed", "global_slot_passed",
               "partial_entry_protection_passed", "no_liquidation_passed",
           ):
               print(f"- **{key}**: `{audit.get(key)}`")
           PY
-          fi
+            fi
+          done
 
       - name: Upload full evidence and tested source
         if: always()
@@ -141,6 +172,7 @@ jobs:
           name: candidate-11-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             research/candidate-11/results/
+            research/candidate-11/results_complex/
             research/candidate-11/*.py
             research/candidate-11/*.json
             research/candidate-11/*.md
