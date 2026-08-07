@@ -41,31 +41,60 @@ jobs:
           python -m unittest discover -s research/candidate-05/tests -p 'test_basis_contract.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_reset_logic.py' -v
 
-      - name: Run three preselected BTC weeks through NautilusTrader
+      - name: Run every preselected BTC week independently through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts
-          python research/candidate-05/v40_active/candidate.py pipeline \
-            --config research/candidate-05/config.json \
-            --weeks research/candidate-05/weeks.json \
-            --cache .cache/candidate-05-v46-three-weeks \
-            --output "$ROOT" \
-            --max-weeks 3 \
-            2>&1 | tee "$ROOT-console.log"
+          mkdir -p "$ROOT"
+          python - <<'PY' > "$ROOT/week-runs.tsv"
+          import json
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          payload = json.loads(Path("research/candidate-05/weeks.json").read_text())
+          warmup = int(payload["warmup_days"])
+          for item in payload["weeks"]:
+              start = date.fromisoformat(item["start"])
+              build_start = start - timedelta(days=warmup)
+              print(
+                  item["name"],
+                  build_start.isoformat(),
+                  item["end"],
+                  item["start"],
+                  item["end"],
+                  sep="\t",
+              )
+          PY
+          while IFS=$'\t' read -r name build_start build_end evaluation_start evaluation_end; do
+            output="$ROOT/$name"
+            mkdir -p "$output"
+            python research/candidate-05/v40_active/candidate.py stage \
+              --config research/candidate-05/config.json \
+              --build-start "$build_start" \
+              --build-end "$build_end" \
+              --evaluation-start "$evaluation_start" \
+              --evaluation-end "$evaluation_end" \
+              --cache ".cache/candidate-05-v46-three-weeks/$name" \
+              --output "$output" \
+              2>&1 | tee "$ROOT-$name-console.log"
+          done < "$ROOT/week-runs.tsv"
 
       - name: Build cross-week decision
         if: always()
         shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
           python - <<'PY'
           import json
           import os
           from pathlib import Path
+
           root = Path(os.environ["ROOT"])
           rows = []
           for path in sorted(root.glob("week-*/metrics.json")):
               value = json.loads(path.read_text())
+              diagnostics = value.get("strategy_diagnostics", {})
               rows.append({
                   "path": str(path),
                   "evaluation_start": value.get("evaluation_start"),
@@ -78,9 +107,22 @@ jobs:
                   "win_rate": value.get("win_rate"),
                   "profit_factor": value.get("profit_factor"),
                   "max_drawdown": value.get("max_drawdown"),
+                  "active_days": value.get("active_days"),
                   "liquidations": value.get("liquidations"),
                   "order_rejections": value.get("order_rejections"),
                   "order_denials": value.get("order_denials"),
+                  "post_retrace_breakaway_invalidations": diagnostics.get(
+                      "post_retrace_breakaway_invalidations",
+                      0,
+                  ),
+                  "external_inventory_quality_pass": diagnostics.get(
+                      "external_inventory_quality_pass",
+                      0,
+                  ),
+                  "external_inventory_quality_rejections": diagnostics.get(
+                      "external_inventory_quality_rejections",
+                      0,
+                  ),
               })
           integrity = len(rows) == 3 and all(
               int(row.get("liquidations") or 0) == 0
@@ -88,19 +130,44 @@ jobs:
               and int(row.get("order_denials") or 0) == 0
               for row in rows
           )
+          aggregate_trades = sum(int(row.get("trades") or 0) for row in rows)
+          aggregate_wins = sum(int(row.get("wins") or 0) for row in rows)
+          aggregate_losses = sum(int(row.get("losses") or 0) for row in rows)
           decision = {
-              "schema": "candidate-05-v46-three-frozen-weeks-v1",
+              "schema": "candidate-05-v46-three-frozen-weeks-v2",
+              "selection_contract": json.loads(
+                  Path("research/candidate-05/weeks.json").read_text(),
+              )["selection"],
               "rows": rows,
               "integrity_pass": integrity,
-              "all_weeks_positive": integrity and all(float(row.get("total_return") or 0.0) > 0.0 for row in rows),
-              "aggregate_trades": sum(int(row.get("trades") or 0) for row in rows),
-              "aggregate_wins": sum(int(row.get("wins") or 0) for row in rows),
+              "all_weeks_positive": integrity and all(
+                  float(row.get("total_return") or 0.0) > 0.0
+                  for row in rows
+              ),
+              "aggregate_trades": aggregate_trades,
+              "aggregate_wins": aggregate_wins,
+              "aggregate_losses": aggregate_losses,
+              "aggregate_win_rate": (
+                  aggregate_wins / aggregate_trades
+                  if aggregate_trades
+                  else 0.0
+              ),
           }
-          (root / "cross_week_decision.json").write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          (root / "cross_week_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n",
+          )
           print(json.dumps(decision, indent=2, sort_keys=True))
           PY
-          if test -f "$ROOT/pipeline_summary.json"; then python -m json.tool "$ROOT/pipeline_summary.json"; fi
-          if test -f "$ROOT/errors.log"; then cat "$ROOT/errors.log"; fi
+          for stage in "$ROOT"/week-*; do
+            test -d "$stage" || continue
+            if test -f "$stage/metrics.json"; then
+              python -m json.tool "$stage/metrics.json"
+              for file in run.json data_manifest.json orders.csv positions.csv account.csv equity.csv scenario_events.jsonl strategy_diagnostics.json; do
+                test -s "$stage/$file"
+              done
+            fi
+            if test -f "$stage/errors.log"; then cat "$stage/errors.log"; fi
+          done
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -108,6 +175,6 @@ jobs:
           name: candidate-05-v46-three-weeks-${{ github.sha }}
           path: |
             artifacts/candidate-05-v46-three-weeks/**
-            artifacts/candidate-05-v46-three-weeks-console.log
+            artifacts/candidate-05-v46-three-weeks-*-console.log
           if-no-files-found: warn
           retention-days: 90
