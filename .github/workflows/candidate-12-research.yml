@@ -1,4 +1,4 @@
-name: candidate-12-w1-design-gate
+name: candidate-12-w2-confirmation-gate
 
 on:
   push:
@@ -12,11 +12,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-w1-${{ github.ref }}-${{ github.sha }}
+  group: candidate-12-w2-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  w1-design-gate:
+  w2-confirmation-gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -24,8 +24,8 @@ jobs:
       options: --user root
     env:
       SYMBOL: BTCUSDT
-      WEEK: W1
-      OUTPUT: artifacts/candidate-12/BTCUSDT-W1
+      WEEK: W2
+      OUTPUT: artifacts/candidate-12/BTCUSDT-W2
     steps:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
@@ -39,7 +39,7 @@ jobs:
       - name: Candidate unit tests
         run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
 
-      - name: Run W1 through NautilusTrader
+      - name: Run W2 through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
@@ -49,25 +49,25 @@ jobs:
             --week "$WEEK" \
             --output "$OUTPUT" | tee "$OUTPUT.console.json"
 
-      - name: Surface W1 decision evidence
+      - name: Surface W2 decision evidence
         if: always()
         shell: bash
         run: |
           if [[ -f "$OUTPUT/metrics.json" ]]; then
-            echo '=== CANDIDATE_12_W1_METRICS_BEGIN ==='
+            echo '=== CANDIDATE_12_W2_METRICS_BEGIN ==='
             cat "$OUTPUT/metrics.json"
-            echo '=== CANDIDATE_12_W1_METRICS_END ==='
+            echo '=== CANDIDATE_12_W2_METRICS_END ==='
           fi
           if [[ -f "$OUTPUT/run.json" ]]; then
-            echo '=== CANDIDATE_12_W1_RUN_BEGIN ==='
+            echo '=== CANDIDATE_12_W2_RUN_BEGIN ==='
             cat "$OUTPUT/run.json"
-            echo '=== CANDIDATE_12_W1_RUN_END ==='
+            echo '=== CANDIDATE_12_W2_RUN_END ==='
           fi
 
-      - name: Preserve reproducible W1 evidence
+      - name: Preserve reproducible W2 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-BTCUSDT-W1-${{ github.sha }}
+          name: candidate-12-BTCUSDT-W2-${{ github.sha }}
           path: ${{ env.OUTPUT }}
           if-no-files-found: warn
