@@ -1,0 +1,153 @@
+name: candidate-07-btc-xrp-exact-episode-audit
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - ".github/workflows/candidate-07-btc-xrp-exact-episode-audit.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-07-btc-xrp-exact-episode-audit
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout corrected source
+        uses: actions/checkout@v4
+
+      - name: Verify foundation and exact episode contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-exact-audit-pyc \
+            /opt/smc4/.venv/bin/python -m compileall -q research/candidate-07
+          /opt/smc4/.venv/bin/python -m unittest discover \
+            -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Restore checksum-verified research cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btc-xrp-exact-w2-audit-v1
+          restore-keys: |
+            candidate-07-btc-xrp-frozen-validation-v1
+            candidate-07-btc-xrp-context-identity-v1
+            candidate-07-btc-xrp-multiclock-portfolio-week1-v1
+            candidate-07-cross-symbol-multiclock-week1-v1
+
+      - name: Replay corrected W2 with one-day context
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/python \
+            research/candidate-07/run_btc_xrp_multiclock_portfolio.py \
+            --config research/candidate-07/config.json \
+            --stage exact-episode-w2-context-1d \
+            --start 2025-07-28 \
+            --end 2025-08-04 \
+            --event-warmup-days 1 \
+            --source-commit "${GITHUB_SHA}" \
+            --output artifacts/candidate-07/exact-episode-audit/one-day \
+            --data-root .research-data/candidate-07
+
+      - name: Replay corrected W2 with three-day context
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/python \
+            research/candidate-07/run_btc_xrp_multiclock_portfolio.py \
+            --config research/candidate-07/config.json \
+            --stage exact-episode-w2-context-3d \
+            --start 2025-07-28 \
+            --end 2025-08-04 \
+            --event-warmup-days 3 \
+            --source-commit "${GITHUB_SHA}" \
+            --output artifacts/candidate-07/exact-episode-audit/three-day \
+            --data-root .research-data/candidate-07
+
+      - name: Compare corrected causal identity and result
+        shell: bash
+        run: |
+          set -euo pipefail
+          /opt/smc4/.venv/bin/python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('artifacts/candidate-07/exact-episode-audit')
+          left = root / 'one-day'
+          right = root / 'three-day'
+          signal_columns = [
+              'scenario_id', 'instrument_id', 'direction',
+              'entry_reference', 'stop_price', 'target_price',
+              'expected_rr', 'source_pool_id',
+              'observed_time_ns', 'delivery_time_ns',
+          ]
+          trade_columns = [
+              'scenario_id', 'instrument_id', 'direction',
+              'opened_ns', 'closed_ns', 'net_pnl', 'net_return_on_nav',
+          ]
+          by_symbol = {}
+          identical = True
+          for symbol in ('BTCUSDT', 'XRPUSDT'):
+              one = pd.read_csv(left / symbol / 'signals.csv')[signal_columns]
+              three = pd.read_csv(right / symbol / 'signals.csv')[signal_columns]
+              same = one.to_dict(orient='records') == three.to_dict(orient='records')
+              identical = identical and same
+              by_symbol[symbol] = {
+                  'identical': same,
+                  'signals': len(three.index),
+              }
+          one_trades = pd.read_csv(left / 'trades.csv')[trade_columns]
+          three_trades = pd.read_csv(right / 'trades.csv')[trade_columns]
+          trade_identity = (
+              one_trades.to_dict(orient='records')
+              == three_trades.to_dict(orient='records')
+          )
+          identical = identical and trade_identity
+          summary = json.loads((right / 'summary.json').read_text())
+          payload = {
+              'source_commit': '${{ github.sha }}',
+              'period': {'start': '2025-07-28', 'end_exclusive': '2025-08-04'},
+              'context_identity': identical,
+              'trade_identity': trade_identity,
+              'by_symbol': by_symbol,
+              'authoritative_summary': summary,
+              'interpretation': (
+                  'CORRECTED_W2_REPRODUCIBLE'
+                  if identical
+                  else 'CORRECTED_W2_CONTEXT_IDENTITY_FAILED'
+              ),
+          }
+          (root / 'audit.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True),
+              encoding='utf-8',
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          if not identical:
+              raise SystemExit('CORRECTED_W2_CONTEXT_IDENTITY_FAILED')
+          PY
+
+      - name: Preserve complete corrected W2 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-btc-xrp-exact-w2-${{ github.sha }}
+          path: artifacts/candidate-07/exact-episode-audit
+          retention-days: 14
+          if-no-files-found: error
