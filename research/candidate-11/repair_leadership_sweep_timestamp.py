@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Persist the initial source-sweep timestamp as immutable auction state."""
+"""Persist immutable auction timestamps and materialize price-discovery approval."""
 from __future__ import annotations
 
 from pathlib import Path
+
+from apply_price_discovery_revision import apply as apply_price_discovery_revision
 
 LEGACY = '                "sweep_ts_ns": a.sweep.ts_ns,\n'
 INDEXED = '                "sweep_ts_ns": self.bars[a.sweep_index].ts_ns,\n'
@@ -59,7 +61,8 @@ def main() -> None:
     root = Path(__file__).resolve().parent
     changed = repair_logic(root / "logic.py")
     changed += repair_materializer(root / "apply_market_leadership.py")
-    print(f"immutable initial-sweep timestamp repairs applied: {changed}")
+    changed += apply_price_discovery_revision(root)
+    print(f"immutable sweep and price-discovery repairs applied: {changed}")
 
 
 if __name__ == "__main__":
