@@ -1,0 +1,110 @@
+name: Candidate 11 IRX holdout reconciler
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/irx_holdout_reconciler_trigger.txt"
+      - ".github/workflows/candidate-11-irx-holdout-reconciler.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: candidate-11-irx-holdout-reconciler-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Wait only when IRX matrix selects a candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import base64
+          import json
+          import os
+          import time
+          from urllib.error import HTTPError
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          repository = os.environ['REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          branch = 'research/candidate-11'
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'candidate-11-irx-holdout-reconciler',
+          }
+
+          def contents(path: str):
+              url = f'https://api.github.com/repos/{repository}/contents/{quote(path)}?ref={quote(branch)}'
+              try:
+                  with urlopen(Request(url, headers=headers), timeout=30) as response:
+                      payload = json.load(response)
+              except HTTPError as exc:
+                  if exc.code == 404:
+                      return None
+                  raise
+              return json.loads(base64.b64decode(payload['content']).decode('utf-8'))
+
+          deadline = time.time() + 105 * 60
+          while True:
+              matrix = contents('research/candidate-11/results/IRX_MATRIX/summary.json')
+              if matrix is not None and matrix.get('selected_variant') is None:
+                  print('IRX matrix selected no eligible candidate; holdout reconciler exits')
+                  raise SystemExit(0)
+              binding = contents('research/candidate-11/irx_holdout_candidate.json')
+              holdout = contents('research/candidate-11/results/IRX_HOLDOUT/summary.json')
+              if binding is not None and holdout is not None:
+                  print(json.dumps({
+                      'selected_variant': binding.get('selected_variant'),
+                      'holdout_gate_passed': holdout.get('holdout_gate_passed'),
+                  }, sort_keys=True))
+                  break
+              if time.time() >= deadline:
+                  raise SystemExit('IRX binding/holdout evidence unavailable before deadline')
+              time.sleep(60)
+          PY
+
+      - name: Freeze continuous interval only after holdout approval
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git fetch origin research/candidate-11
+          git reset --hard origin/research/candidate-11
+          python research/candidate-11/diagnose_research_runs_v2.py
+          python research/candidate-11/research_decision_v2.py
+          python research/candidate-11/freeze_irx_long_protocol.py
+          python research/candidate-11/route_research_next_v2.py
+          for file in \
+            research/candidate-11/results/RESEARCH_DIAGNOSIS.json \
+            research/candidate-11/results/RESEARCH_DECISION.json \
+            research/candidate-11/results/NEXT_ACTION.json \
+            research/candidate-11/irx_long_protocol.json; do
+            if [ -f "$file" ]; then git add "$file"; fi
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: reconcile IRX untouched holdout"
+            git push origin HEAD:research/candidate-11
+          fi
