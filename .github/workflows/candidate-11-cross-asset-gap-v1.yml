@@ -1,0 +1,177 @@
+name: Candidate 11 second-scale cross-asset gap diagnostic
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/cross_asset_gap_v1/**"
+      - ".github/workflows/candidate-11-cross-asset-gap-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-cross-asset-gap-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify environment and frozen mechanism
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          CAND=research/candidate-11/cross_asset_gap_v1
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/src"
+          python -m py_compile "$CAND"/*.py
+          python -m unittest discover -s "$CAND" -p 'test_*.py' -v
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+          import subprocess
+
+          root = Path("research/candidate-11/cross_asset_gap_v1")
+          protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+          assert protocol["validation_mode"] == "mechanism-diagnostic"
+          assert protocol["success_claim"] is False
+          assert protocol["account_return_claim"] is False
+          assert sorted(protocol["weeks"]) == ["G1", "G2", "G3"]
+          actual = subprocess.check_output(
+              ["git", "hash-object", str(root / "diagnose_cross_asset_gap.py")],
+              text=True,
+          ).strip()
+          expected = protocol["locked_source"]["diagnostic_blob"]
+          if actual != expected:
+              raise SystemExit(f"diagnostic source-lock mismatch: {expected} != {actual}")
+          PY
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      matrix:
+        interval: [G1, G2, G3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Run causal second-scale mechanism screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAND=research/candidate-11/cross_asset_gap_v1
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/src"
+          smc4 doctor
+          python "$CAND/diagnose_cross_asset_gap.py" \
+            --protocol "$CAND/protocol.json" \
+            --interval "${{ matrix.interval }}" \
+            --output "$CAND/results/${{ matrix.interval }}"
+      - name: Remove downloaded market archives
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "research/candidate-11/cross_asset_gap_v1/results/${{ matrix.interval }}/data"
+      - name: Transport causal evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate11-cross-gap-${{ matrix.interval }}
+          path: |
+            research/candidate-11/cross_asset_gap_v1/results/${{ matrix.interval }}/summary.json
+            research/candidate-11/cross_asset_gap_v1/results/${{ matrix.interval }}/events.json
+            research/candidate-11/cross_asset_gap_v1/results/${{ matrix.interval }}/data_manifest.json
+          if-no-files-found: warn
+          retention-days: 2
+          compression-level: 0
+
+  aggregate:
+    if: ${{ needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate11-cross-gap-G*
+          path: artifacts
+      - name: Aggregate and persist mechanism evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAND=research/candidate-11/cross_asset_gap_v1
+          rm -rf "$CAND/results"
+          mkdir -p "$CAND/results"
+          for interval in G1 G2 G3; do
+            src="artifacts/candidate11-cross-gap-$interval"
+            test -d "$src"
+            mkdir -p "$CAND/results/$interval"
+            cp -a "$src/." "$CAND/results/$interval/"
+            test -s "$CAND/results/$interval/summary.json"
+            test -s "$CAND/results/$interval/events.json"
+            test -s "$CAND/results/$interval/data_manifest.json"
+          done
+          python "$CAND/aggregate_diagnostic.py" \
+            --results "$CAND/results" \
+            --protocol "$CAND/protocol.json" \
+            --output "$CAND/aggregate.json"
+
+          SNAPSHOT=/tmp/candidate11-cross-gap-evidence
+          rm -rf "$SNAPSHOT"
+          mkdir -p "$SNAPSHOT"
+          cp -a "$CAND/results" "$SNAPSHOT/"
+          cp "$CAND/aggregate.json" "$SNAPSHOT/aggregate.json"
+          cp "$CAND/RESULT.md" "$SNAPSHOT/RESULT.md"
+
+          git fetch origin research/candidate-11
+          latest_head="$(git rev-parse origin/research/candidate-11)"
+          if ! git diff --quiet "$GITHUB_SHA" "$latest_head" -- \
+            "$CAND/diagnose_cross_asset_gap.py" \
+            "$CAND/protocol.json" \
+            "$CAND/test_cross_asset_gap.py" \
+            "$CAND/aggregate_diagnostic.py"; then
+            echo "cross-asset gap mechanism changed during evaluation"
+            exit 1
+          fi
+          git checkout -B research/candidate-11 "$latest_head"
+          rm -rf "$CAND/results"
+          cp -a "$SNAPSHOT/results" "$CAND/results"
+          cp "$SNAPSHOT/aggregate.json" "$CAND/aggregate.json"
+          cp "$SNAPSHOT/RESULT.md" "$CAND/RESULT.md"
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add -A "$CAND/results" "$CAND/aggregate.json" "$CAND/RESULT.md"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record cross-asset gap mechanism evidence [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi
