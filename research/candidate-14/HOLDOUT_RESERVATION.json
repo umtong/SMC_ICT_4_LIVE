@@ -1,0 +1,52 @@
+{
+  "schema": "candidate-14-frozen-holdout-reservation-v2",
+  "created_utc": "2026-08-08",
+  "strategy_source_commit": "dfb180490b141fdafd5b5ac0b52d3dd0b842550d",
+  "diagnostic_evidence_commit": "f859896a7c41792617bbc47b585623a5a9e55946",
+  "timing_statement": "This reservation was committed after the V5 W10-W14 diagnostic evidence was known, but before any H01-H16 market outcome was opened or evaluated. The holdout dates are selected by the deterministic rule below and are not chosen from their performance.",
+  "selection": {
+    "seed": 202608081405,
+    "universe": "Every Monday-start seven-day interval fully inside each calendar quarter from 2022Q1 through 2025Q4.",
+    "method": "For each quarter, list eligible Monday starts, exclude any candidate whose three-day warmup through evaluation end overlaps an exposed Candidate 12 W1-W6 or Candidate 14 W10-W14 evaluation interval, then select one using Python random.Random(seed) consumed in chronological quarter order.",
+    "warmup_days": 3,
+    "evaluation_days": 7,
+    "outcomes_inspected_before_reservation": false,
+    "holdouts": {
+      "H01": {"start": "2022-01-10", "end_exclusive": "2022-01-17", "role": "frozen-2022Q1"},
+      "H02": {"start": "2022-06-06", "end_exclusive": "2022-06-13", "role": "frozen-2022Q2"},
+      "H03": {"start": "2022-07-25", "end_exclusive": "2022-08-01", "role": "frozen-2022Q3"},
+      "H04": {"start": "2022-10-10", "end_exclusive": "2022-10-17", "role": "frozen-2022Q4"},
+      "H05": {"start": "2023-01-02", "end_exclusive": "2023-01-09", "role": "frozen-2023Q1"},
+      "H06": {"start": "2023-04-10", "end_exclusive": "2023-04-17", "role": "frozen-2023Q2"},
+      "H07": {"start": "2023-08-28", "end_exclusive": "2023-09-04", "role": "frozen-2023Q3"},
+      "H08": {"start": "2023-10-30", "end_exclusive": "2023-11-06", "role": "frozen-2023Q4"},
+      "H09": {"start": "2024-02-12", "end_exclusive": "2024-02-19", "role": "frozen-2024Q1"},
+      "H10": {"start": "2024-06-10", "end_exclusive": "2024-06-17", "role": "frozen-2024Q2"},
+      "H11": {"start": "2024-07-15", "end_exclusive": "2024-07-22", "role": "frozen-2024Q3"},
+      "H12": {"start": "2024-11-18", "end_exclusive": "2024-11-25", "role": "frozen-2024Q4"},
+      "H13": {"start": "2025-02-10", "end_exclusive": "2025-02-17", "role": "frozen-2025Q1"},
+      "H14": {"start": "2025-05-05", "end_exclusive": "2025-05-12", "role": "frozen-2025Q2"},
+      "H15": {"start": "2025-08-11", "end_exclusive": "2025-08-18", "role": "frozen-2025Q3"},
+      "H16": {"start": "2025-12-01", "end_exclusive": "2025-12-08", "role": "frozen-2025Q4"}
+    }
+  },
+  "aggregate_gate": {
+    "observed_calendar_days": 112,
+    "minimum_daily_geometric_growth": 0.01,
+    "minimum_closed_trades": 24,
+    "minimum_active_weeks": 12,
+    "minimum_win_rate": 0.8,
+    "minimum_payoff_ratio": 1.2,
+    "maximum_trade_path_drawdown": 0.2,
+    "maximum_positive_log_growth_share_from_one_week": 0.25,
+    "require_all_safety_audits": true,
+    "risk_fraction": 0.03,
+    "global_pending_entry_plus_position_limit": 1
+  },
+  "claim_rules": [
+    "No strategy, threshold, order, cost, risk, target, stop, session route, semantic or arbitration change is permitted after this reservation.",
+    "All 16 intervals must complete under exact candidate, protocol and source provenance.",
+    "Any strategy change invalidates H01-H16 and requires different untouched intervals.",
+    "Passing this non-contiguous holdout is necessary but not sufficient for live readiness; a continuous frozen evaluation must follow."
+  ]
+}
