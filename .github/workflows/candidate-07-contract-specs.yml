@@ -1,0 +1,27 @@
+name: candidate-07-contract-specs
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/probe_binance_contract_specs.py"
+      - ".github/workflows/candidate-07-contract-specs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify environment
+        run: /opt/smc4/.venv/bin/smc4 doctor
+      - name: Fetch official Binance USD-M filters
+        run: /opt/smc4/.venv/bin/python research/candidate-07/probe_binance_contract_specs.py
