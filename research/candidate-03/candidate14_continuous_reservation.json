@@ -1,0 +1,62 @@
+{
+  "schema": "candidate-14-continuous-reservation-v1",
+  "created_utc": "2026-08-08",
+  "candidate": "candidate-14-session-far-price-discovery",
+  "strategy_source_commit": "dfb180490b141fdafd5b5ac0b52d3dd0b842550d",
+  "prerequisite": "candidate-14-frozen-holdout-v1 aggregate gate must pass without any strategy change",
+  "timing_statement": "This continuous interval was committed before H01-H16 outcomes were inspected. No market outcome from C01-C26 was used to select its start, end or gate.",
+  "selection": {
+    "method": "The first 26 complete Monday-start weeks of calendar 2026, yielding one contiguous 182-day interval after every quarterly H01-H16 interval and before the current date.",
+    "warmup_days": 3,
+    "evaluation_days": 7,
+    "continuous_start": "2026-01-05",
+    "continuous_end_exclusive": "2026-07-06",
+    "weeks": {
+      "C01": {"start": "2026-01-05", "end_exclusive": "2026-01-12", "role": "continuous-01"},
+      "C02": {"start": "2026-01-12", "end_exclusive": "2026-01-19", "role": "continuous-02"},
+      "C03": {"start": "2026-01-19", "end_exclusive": "2026-01-26", "role": "continuous-03"},
+      "C04": {"start": "2026-01-26", "end_exclusive": "2026-02-02", "role": "continuous-04"},
+      "C05": {"start": "2026-02-02", "end_exclusive": "2026-02-09", "role": "continuous-05"},
+      "C06": {"start": "2026-02-09", "end_exclusive": "2026-02-16", "role": "continuous-06"},
+      "C07": {"start": "2026-02-16", "end_exclusive": "2026-02-23", "role": "continuous-07"},
+      "C08": {"start": "2026-02-23", "end_exclusive": "2026-03-02", "role": "continuous-08"},
+      "C09": {"start": "2026-03-02", "end_exclusive": "2026-03-09", "role": "continuous-09"},
+      "C10": {"start": "2026-03-09", "end_exclusive": "2026-03-16", "role": "continuous-10"},
+      "C11": {"start": "2026-03-16", "end_exclusive": "2026-03-23", "role": "continuous-11"},
+      "C12": {"start": "2026-03-23", "end_exclusive": "2026-03-30", "role": "continuous-12"},
+      "C13": {"start": "2026-03-30", "end_exclusive": "2026-04-06", "role": "continuous-13"},
+      "C14": {"start": "2026-04-06", "end_exclusive": "2026-04-13", "role": "continuous-14"},
+      "C15": {"start": "2026-04-13", "end_exclusive": "2026-04-20", "role": "continuous-15"},
+      "C16": {"start": "2026-04-20", "end_exclusive": "2026-04-27", "role": "continuous-16"},
+      "C17": {"start": "2026-04-27", "end_exclusive": "2026-05-04", "role": "continuous-17"},
+      "C18": {"start": "2026-05-04", "end_exclusive": "2026-05-11", "role": "continuous-18"},
+      "C19": {"start": "2026-05-11", "end_exclusive": "2026-05-18", "role": "continuous-19"},
+      "C20": {"start": "2026-05-18", "end_exclusive": "2026-05-25", "role": "continuous-20"},
+      "C21": {"start": "2026-05-25", "end_exclusive": "2026-06-01", "role": "continuous-21"},
+      "C22": {"start": "2026-06-01", "end_exclusive": "2026-06-08", "role": "continuous-22"},
+      "C23": {"start": "2026-06-08", "end_exclusive": "2026-06-15", "role": "continuous-23"},
+      "C24": {"start": "2026-06-15", "end_exclusive": "2026-06-22", "role": "continuous-24"},
+      "C25": {"start": "2026-06-22", "end_exclusive": "2026-06-29", "role": "continuous-25"},
+      "C26": {"start": "2026-06-29", "end_exclusive": "2026-07-06", "role": "continuous-26"}
+    }
+  },
+  "aggregate_gate": {
+    "observed_calendar_days": 182,
+    "minimum_daily_geometric_growth": 0.01,
+    "minimum_closed_trades": 39,
+    "minimum_active_weeks": 20,
+    "minimum_win_rate": 0.8,
+    "minimum_payoff_ratio": 1.2,
+    "maximum_trade_path_drawdown": 0.2,
+    "maximum_positive_log_growth_share_from_one_week": 0.1,
+    "require_all_safety_audits": true,
+    "risk_fraction": 0.03,
+    "global_pending_entry_plus_position_limit": 1
+  },
+  "claim_rules": [
+    "No C01-C26 market data may be opened unless the frozen H01-H16 aggregate gate first passes.",
+    "No strategy, threshold, order, target, stop, cost, risk, semantic or arbitration change is permitted between H01-H16 and C01-C26.",
+    "All 26 consecutive weeks must complete with the exact frozen source and one global slot.",
+    "Passing both frozen stages supports the research target but does not guarantee future live profit."
+  ]
+}
