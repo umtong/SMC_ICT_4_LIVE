@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from aggtrade_delayed_reacceptance_signals_v2 import (
+from aggtrade_delayed_reacceptance_signals_v3 import (
     IMPLEMENTATION_REVISION,
     DelayedReacceptanceConfig,
 )
@@ -32,9 +32,12 @@ def validate_static_contract() -> dict[str, Any]:
     detector = (HERE / "aggtrade_delayed_reacceptance_signals.py").read_text(
         encoding="utf-8"
     )
-    safe_detector = (HERE / "aggtrade_delayed_reacceptance_signals_v2.py").read_text(
-        encoding="utf-8"
-    )
+    compatibility_detector = (
+        HERE / "aggtrade_delayed_reacceptance_signals_v2.py"
+    ).read_text(encoding="utf-8")
+    complete_chain_detector = (
+        HERE / "aggtrade_delayed_reacceptance_signals_v3.py"
+    ).read_text(encoding="utf-8")
     runner = (HERE / "run_aggtrade_delayed_reacceptance_nautilus.py").read_text(
         encoding="utf-8"
     )
@@ -72,11 +75,37 @@ def validate_static_contract() -> dict[str, Any]:
             )
         ),
         "safe_observability_revision_present": all(
-            text in safe_detector
+            text in complete_chain_detector
             for text in (
                 "_observable_feature",
                 "LevelKind.HIGH",
                 "LevelKind.LOW",
+            )
+        ),
+        "v2_compatibility_routes_to_v3": all(
+            text in compatibility_detector
+            for text in (
+                "aggtrade_delayed_reacceptance_signals_v3",
+                "IMPLEMENTATION_REVISION",
+                "build_delayed_reacceptance_signals",
+            )
+        ),
+        "complete_event_chain_revision_present": all(
+            text in complete_chain_detector
+            for text in (
+                "INITIAL_OUTWARD_RESPONSE_CONFIRMED_NO_ENTRY",
+                'previous_state="INTERACTION_ARMED"',
+                'next_state="INITIAL_OUTWARD_RESPONSE"',
+                "V3_COMPLETE_EVENT_CHAIN",
+            )
+        ),
+        "variable_length_event_serializer_present": all(
+            text in runner
+            for text in (
+                "def _write_merged_events(",
+                "enumerate(signal.events, start=1)",
+                "base_runner.write_events",
+                "base_runner._write_merged_events = _write_merged_events",
             )
         ),
         "no_custom_engine_or_outcome_in_detector": all(
