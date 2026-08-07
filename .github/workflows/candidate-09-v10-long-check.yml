@@ -108,12 +108,6 @@ jobs:
           done
           git -C "$repo" add research/candidate-09/long_checks/v10-result
           if git -C "$repo" diff --cached --quiet; then exit 0; fi
-          status=$(python - <<'PY'
-import json
-from pathlib import Path
-p=Path('research/candidate-09/long_checks/v10-result/evidence/summary.json')
-print(json.loads(p.read_text()).get('status','IMPLEMENTATION_ERROR') if p.exists() else 'IMPLEMENTATION_ERROR')
-PY
-          )
+          status=$(python -c "import json; from pathlib import Path; p=Path('research/candidate-09/long_checks/v10-result/evidence/summary.json'); print(json.loads(p.read_text()).get('status','IMPLEMENTATION_ERROR') if p.exists() else 'IMPLEMENTATION_ERROR')")
           git -C "$repo" commit -m "candidate-09 v10 long check: ${status}"
           git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
