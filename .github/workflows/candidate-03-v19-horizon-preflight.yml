@@ -1,0 +1,131 @@
+name: candidate-03-v19-horizon-preflight
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - ".github/workflows/candidate-03-v19-horizon-preflight.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-03-v19-horizon-preflight
+  cancel-in-progress: false
+
+jobs:
+  patch-test-preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Check out candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: research/candidate-03
+          fetch-depth: 0
+
+      - name: Apply horizon-matched thresholds and detector warm-up
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONPATH="$PWD/research/candidate-03"
+          python3 research/candidate-03/patch_v19_horizon_matched.py
+          python3 research/candidate-03/test_nt_lvcfr_v19.py
+          git diff --check
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git add \
+            research/candidate-03/derive_nt_lvcfr_v19_signals.py \
+            research/candidate-03/test_nt_lvcfr_v19.py \
+            research/candidate-03/prepare_nt_lvcfr_v19.py \
+            research/candidate-03/run_v19_staged_container.py
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-03: horizon-match V19 causal response thresholds"
+            git pull --rebase origin research/candidate-03
+            git push origin HEAD:research/candidate-03
+          fi
+
+      - name: Derive fully corrected first-week causal schedule
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONPATH="$PWD/research/candidate-03"
+          prepared="$RUNNER_TEMP/candidate-03-v19-horizon/prepared"
+          output="$RUNNER_TEMP/candidate-03-v19-horizon/output"
+          rm -rf "$prepared" "$output"
+          mkdir -p "$prepared" "$output"
+          python3 research/candidate-03/prepare_nt_lvcfr_v19.py \
+            --week-start 2024-01-08 \
+            --output "$prepared" \
+            --config research/candidate-03/nt_lvcfr_v19_config.json \
+            2>&1 | tee "$output/preparation.log"
+          cp "$prepared/signals.json" "$prepared/signals-v1.json"
+          python3 research/candidate-03/derive_nt_lvcfr_v19_signals.py \
+            --prepared-root "$prepared" \
+            --output-manifest "$output/v19_signal_manifest.json" \
+            2>&1 | tee "$output/derivation.log"
+          cp "$prepared/signals.json" "$output/signals.json"
+          cp "$prepared/data_manifest.json" "$output/data_manifest.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output = Path(os.environ['RUNNER_TEMP']) / 'candidate-03-v19-horizon/output'
+          manifest = json.loads((output / 'v19_signal_manifest.json').read_text())
+          signals = json.loads((output / 'signals.json').read_text())
+          summary = {
+              'candidate': manifest['candidate'],
+              'week_start': '2024-01-08',
+              'engine_status': 'causal_opportunity_preflight_only_no_backtest',
+              'implementation_fixes': [
+                  'log_return_progress_and_path_length',
+                  'pre_event_baseline_event_gap_observation_separation',
+                  'horizon_matched_pre_event_rolling_thresholds',
+                  'one_day_detector_warmup',
+              ],
+              'derived_signal_count': len(signals),
+              'minimum_required_episodes': 8,
+              'opportunity_gate_reachable': len(signals) >= 8,
+              'state_counts': manifest['state_counts'],
+              'inventory_regime_counts': manifest['inventory_regime_counts'],
+              'routing_counts': manifest['routing_counts'],
+              'threshold_policy': manifest['threshold_policy'],
+              'baseline_relation': manifest['baseline_relation'],
+              'performance_metrics_calculated': False,
+          }
+          (output / 'preflight_summary.json').write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit fully corrected causal evidence before gating
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/candidate-03-v19-horizon/output"
+          dst=research/candidate-03/results/v19-preflight-development-4
+          rm -rf "$dst"
+          mkdir -p "$dst"
+          cp "$src"/* "$dst"/
+          git add "$dst"
+          git config user.name "candidate-03 research bot"
+          git config user.email "candidate-03@users.noreply.github.com"
+          git commit -m "candidate-03: record horizon-matched V19 causal preflight"
+          git pull --rebase origin research/candidate-03
+          git push origin HEAD:research/candidate-03
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          summary = json.loads(Path(
+              'research/candidate-03/results/v19-preflight-development-4/preflight_summary.json'
+          ).read_text())
+          if not summary['opportunity_gate_reachable']:
+              raise SystemExit('fully corrected V19 opportunity gate is unreachable')
+          PY
