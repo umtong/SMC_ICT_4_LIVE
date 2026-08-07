@@ -22,6 +22,7 @@ from backtest import make_instrument as make_contract_instrument
 from cross_asset_repricing_context import reset_shared_cross_asset_context
 from instrument_contracts import instrument_contract
 from nautilus_trader.model.identifiers import InstrumentId
+from smt_session_context import reset_shared_smt_session_context
 
 
 PROJECT_SYMBOLS = _base.PROJECT_SYMBOLS
@@ -115,6 +116,7 @@ _base.normalize_equity_files = normalize_equity_files
 
 def main() -> None:
     reset_shared_cross_asset_context()
+    reset_shared_smt_session_context()
     _base.main()
 
 
