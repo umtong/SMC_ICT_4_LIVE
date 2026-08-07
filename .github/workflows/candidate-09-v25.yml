@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/candidate-09-v25.yml
       - research/candidate-09/v25_builder/**
+      - research/candidate-09/fix_v25_generated.patch
 
 permissions:
   contents: write
@@ -63,6 +64,9 @@ jobs:
           gzip -dc /tmp/build_v25.py.gz > "$root/build_v25.py"
           echo "4521fd12517f5f6fc84d7fbbe09064f5cb412229fa69443528cd7d26b4935009  $root/build_v25.py" | sha256sum -c -
           python "$root/build_v25.py"
+          (cd "$root" && patch --batch -p0 < fix_v25_generated.patch)
+          echo "a412e26ee1e5a820a92fbdd7188a72540474f37e7d18ff711dfce90eb21426d6  $root/state_engine_v25_direct.py" | sha256sum -c -
+          echo "1f8f98e9e9a0d0f9e6ede18a58d84e36a2e66251be2f747215454ec1739bea4c  $root/data_loader_v25.py" | sha256sum -c -
           cp "$root/state_engine_v25_direct.py" "$root/state_engine.py"
           cp "$root/data_loader_v25.py" "$root/data_loader.py"
           cp "$root/run_v25_direct.py" "$root/run.py"
@@ -84,6 +88,7 @@ jobs:
             research/candidate-09/archive/v24/decision.json
             research/candidate-09/V25_DESIGN.md
             research/candidate-09/build_v25.py
+            research/candidate-09/fix_v25_generated.patch
             research/candidate-09/config_v24.json
             research/candidate-09/config_v25.json
             research/candidate-09/state_engine_v25_direct.py
@@ -135,6 +140,7 @@ jobs:
             research/candidate-09/archive/v24/decision.json \
             research/candidate-09/V25_DESIGN.md \
             research/candidate-09/build_v25.py \
+            research/candidate-09/fix_v25_generated.patch \
             research/candidate-09/config_v24.json \
             research/candidate-09/config_v25.json \
             research/candidate-09/state_engine_v25_direct.py \
