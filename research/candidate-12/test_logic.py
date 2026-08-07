@@ -366,19 +366,63 @@ class LogicTests(unittest.TestCase):
 
     def test_low_acceptance_requires_failed_pullback_near_completed_boundary(self) -> None:
         y, m, d = self.DAY
-        engine = CausalLiquidityAuctionEngine(config(), "X")
+        engine = CausalLiquidityAuctionEngine(
+            config(low_acceptance_mid_projection=1.0),
+            "X",
+        )
         self.seed_asia(engine)
         engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
         engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 91, 92), True)
         engine._on_five(bar(ts(y, m, d, 6, 15), 92, 96.1, 90, 93), True)
         decision_ts = ts(y, m, d, 6, 20)
-        plan = engine._on_five(bar(decision_ts, 93, 95.2, 92.8, 94.8), True)
+        plan = engine._on_five(bar(decision_ts, 93, 95.2, 89.5, 94.8), True)
         self.assertIsNotNone(plan)
         assert plan is not None
         self.assertEqual(plan.scenario, ScenarioKind.ASIA_LOW_ACCEPTANCE)
         self.assertEqual(plan.direction, Direction.SHORT)
         self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
         self.assertEqual(plan.expire_ts_ns, decision_ts + 5 * NS_MINUTE)
+
+    def test_low_acceptance_pullback_requires_post_confirmation_extension(self) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(
+            config(low_acceptance_mid_projection=1.0),
+            "X",
+        )
+        self.seed_asia(engine)
+        engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
+        engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 91, 92), True)
+        engine._on_five(bar(ts(y, m, d, 6, 15), 92, 96.1, 90, 93), True)
+        # A bullish retest which does not trade below the confirmation trough is
+        # only immediate mean reversion, not a failed pullback of an accepted auction.
+        immediate = engine._on_five(
+            bar(ts(y, m, d, 6, 20), 93, 95.2, 92.8, 94.8),
+            True,
+        )
+        self.assertIsNone(immediate)
+        self.assertEqual(
+            engine.skips[
+                "LOW_ACCEPTANCE_PULLBACK_BEFORE_POST_CONFIRMATION_EXTENSION"
+            ],
+            1,
+        )
+        state = engine._sources[SessionLabel.ASIA]
+        self.assertEqual(state.low_acceptance_phase, "WAIT_PULLBACK")
+        self.assertFalse(state.low_acceptance_extension_confirmed)
+        # Once price establishes a new auction low after confirmation, a later
+        # bullish return into the same FVG can be classified as a failed pullback.
+        engine._on_five(bar(ts(y, m, d, 6, 25), 94.8, 95, 88.5, 89), True)
+        plan = engine._on_five(
+            bar(ts(y, m, d, 6, 30), 89, 95.2, 88.8, 94.8),
+            True,
+        )
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertTrue(plan.details["post_confirmation_extension_confirmed"])
+        self.assertAlmostEqual(
+            plan.details["post_confirmation_extension_trough"],
+            88.5,
+        )
 
     def test_low_acceptance_does_not_chase_far_below_boundary(self) -> None:
         y, m, d = self.DAY
@@ -391,7 +435,7 @@ class LogicTests(unittest.TestCase):
         engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 87, 88), True)
         engine._on_five(bar(ts(y, m, d, 6, 15), 88, 91, 86, 87), True)
         self.assertIsNone(
-            engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 86.5, 89.5), True)
+            engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 85.5, 89.5), True)
         )
         self.assertEqual(engine.skips["LOW_ACCEPTANCE_PULLBACK_NOT_STRUCTURAL"], 1)
 
@@ -408,7 +452,7 @@ class LogicTests(unittest.TestCase):
         engine._on_five(bar(ts(y, m, d, 6, 15), 88, 91, 86, 87), True)
         # A bullish pullback is too distant for the completed-session entry.
         self.assertIsNone(
-            engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 86.5, 89.5), True)
+            engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 85.5, 89.5), True)
         )
         state = engine._sources[SessionLabel.ASIA]
         self.assertEqual(state.low_acceptance_phase, "WAIT_LOCAL_REACCELERATION")
@@ -426,7 +470,7 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(plan.direction, Direction.SHORT)
         self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
         self.assertGreater(plan.stop_price, 92.0)
-        self.assertEqual(plan.target_price, 86.0)
+        self.assertEqual(plan.target_price, 85.5)
         self.assertEqual(
             plan.details["target_semantics"],
             "PRIOR_ACCEPTANCE_EXPANSION_LOW",
@@ -442,7 +486,7 @@ class LogicTests(unittest.TestCase):
         engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
         engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 87, 88), True)
         engine._on_five(bar(ts(y, m, d, 6, 15), 88, 91, 86, 87), True)
-        engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 86.5, 89.5), True)
+        engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 85.5, 89.5), True)
         state = engine._sources[SessionLabel.ASIA]
         self.assertEqual(state.low_acceptance_phase, "WAIT_LOCAL_REACCELERATION")
         # Closing back inside the completed range invalidates the continuation

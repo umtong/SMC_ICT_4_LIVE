@@ -1,4 +1,4 @@
-"""Causal completed-session auction router for Candidate 12 I11.
+"""Causal completed-session auction router for Candidate 12 I12.
 
 The engine distinguishes economically different interactions with a completed
 Asia or London dealing range instead of forcing one candle pattern onto every
@@ -432,6 +432,7 @@ class SourceState:
     failed_low_acceptance: bool = False
     low_acceptance_pullback_peak: float | None = None
     low_acceptance_trough: float | None = None
+    low_acceptance_extension_confirmed: bool = False
     low_continuation_pullback_high: float | None = None
     low_continuation_started_index: int | None = None
     low_reacceptance_outside_closes: int = 0
@@ -1206,6 +1207,7 @@ class CausalLiquidityAuctionEngine:
             state.low_acceptance_pullback_peak = bar.high
             state.low_reacceptance_outside_closes = 0
             state.active_bear_fvg = None
+            state.low_acceptance_extension_confirmed = False
             state.low_continuation_pullback_high = None
             state.low_continuation_started_index = None
             sid = state.low_acceptance_scenario_id
@@ -1245,6 +1247,7 @@ class CausalLiquidityAuctionEngine:
                 state.had_low_acceptance = True
                 state.low_acceptance_started_index = self._five_index
                 state.low_acceptance_trough = bar.low
+                state.low_acceptance_extension_confirmed = False
                 state.low_acceptance_phase = (
                     "WAIT_PULLBACK"
                     if source.close_location
@@ -1280,10 +1283,14 @@ class CausalLiquidityAuctionEngine:
         if state.low_acceptance_phase == "WAIT_PULLBACK":
             assert state.active_bear_fvg is not None
             assert state.low_acceptance_started_index is not None
-            state.low_acceptance_trough = min(
-                state.low_acceptance_trough if state.low_acceptance_trough is not None else bar.low,
-                bar.low,
+            prior_trough = (
+                state.low_acceptance_trough
+                if state.low_acceptance_trough is not None
+                else bar.low
             )
+            if bar.low <= prior_trough - self.config.price_increment:
+                state.low_acceptance_extension_confirmed = True
+                state.low_acceptance_trough = bar.low
             if (
                 self._five_index - state.low_acceptance_started_index
                 > self.config.acceptance_retest_expiry_bars
@@ -1296,7 +1303,7 @@ class CausalLiquidityAuctionEngine:
                 or bar.close >= source.low
             ):
                 return None
-            pullback = (
+            pullback_shape = (
                 bar.close > bar.open
                 and bar.body / atr
                 >= self.config.low_acceptance_pullback_body_atr
@@ -1304,7 +1311,31 @@ class CausalLiquidityAuctionEngine:
                 >= self.config.low_acceptance_pullback_min_close_location
                 and bar.high <= state.active_bear_fvg.upper
             )
-            if not pullback:
+            if pullback_shape and not state.low_acceptance_extension_confirmed:
+                self.skips["LOW_ACCEPTANCE_PULLBACK_BEFORE_POST_CONFIRMATION_EXTENSION"] += 1
+                self._emit(
+                    scenario_id=(
+                        state.low_acceptance_scenario_id
+                        or self._next_scenario_id(source.label, "LOW-ACCEPTANCE")
+                    ),
+                    event_type="LOW_ACCEPTANCE_PULLBACK_REJECTED",
+                    event_time_ns=bar.ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state="WAIT_POST_CONFIRMATION_EXTENSION",
+                    reason_code=(
+                        "FAILED_PULLBACK_REQUIRES_A_NEW_AUCTION_LOW_AFTER_ACCEPTANCE_CONFIRMATION"
+                    ),
+                    reference_price=source.low,
+                    details={
+                        "source": source.label.value,
+                        "acceptance_confirmation_trough": prior_trough,
+                        "candidate_pullback_low": bar.low,
+                        "candidate_pullback_high": bar.high,
+                        "candidate_pullback_close": bar.close,
+                    },
+                )
+                return None
+            if not pullback_shape:
                 return None
 
             state.low_acceptance_attempted = True
@@ -1400,6 +1431,12 @@ class CausalLiquidityAuctionEngine:
                     "fvg_formed_ts_ns": fvg.formed_ts_ns,
                     "pullback_high": bar.high,
                     "pullback_close": bar.close,
+                    "post_confirmation_extension_confirmed": (
+                        state.low_acceptance_extension_confirmed
+                    ),
+                    "post_confirmation_extension_trough": (
+                        state.low_acceptance_trough
+                    ),
                     "source_width_atr": source_width_atr,
                     "fvg_width_atr": fvg_width_atr,
                     "entry_distance_atr": entry_distance_atr,
