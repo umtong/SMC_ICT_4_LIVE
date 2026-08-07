@@ -5,7 +5,7 @@ Selection reads dates and source hashes only. It deliberately never imports or
 opens market data, prior trade outcomes, bars, or event files. Candidate starts
 are shuffled once with a committed seed, then the first three seven-day
 intervals whose warmup+evaluation footprints do not overlap any previously
-frozen Candidate 11 protocol interval are selected.
+opened Candidate 11 market-data footprint are selected.
 """
 from __future__ import annotations
 
@@ -21,6 +21,10 @@ RANGE_START = date(2023, 1, 1)
 LAST_START = date(2025, 12, 25)
 WARMUP_DAYS = 3
 EVALUATION_DAYS = 7
+# Existing protocols do not all encode their downloader warmup beside each
+# interval. Expanding every prior interval by seven days on the left is a
+# deliberately conservative superset of all known Candidate 11 warmups.
+PRIOR_OPENED_DATA_BUFFER_DAYS = 7
 OUTPUT_NAME = "holdout_protocol.json"
 STRATEGY_RELATIVE = Path("session_portfolio_v1")
 
@@ -60,9 +64,13 @@ def occupied_footprints(candidate_root: Path, output: Path) -> list[tuple[date, 
     for path in protocol_paths(candidate_root, output):
         payload = json.loads(path.read_text(encoding="utf-8"))
         for begin, finish in iter_date_mappings(payload):
-            # Treat prior evaluation intervals as unavailable. The new holdout
-            # footprint additionally includes its own warmup below.
-            occupied.append((begin, finish, str(path.relative_to(candidate_root))))
+            occupied.append(
+                (
+                    begin - timedelta(days=PRIOR_OPENED_DATA_BUFFER_DAYS),
+                    finish,
+                    str(path.relative_to(candidate_root)),
+                )
+            )
     return occupied
 
 
@@ -161,10 +169,12 @@ def main() -> None:
                 "random.Random(seed).shuffle over every seven-day start from "
                 "2023-01-01 through 2025-12-25; first three starts whose "
                 "three-day-warmup plus seven-day evaluation footprints do not "
-                "overlap any prior Candidate 11 protocol/config interval or each other"
+                "overlap the conservatively expanded prior Candidate 11 opened-data "
+                "footprints or each other"
             ),
             "warmup_days": WARMUP_DAYS,
             "evaluation_days": EVALUATION_DAYS,
+            "prior_opened_data_buffer_days": PRIOR_OPENED_DATA_BUFFER_DAYS,
             "occupied_protocol_files": sorted({source for _, _, source in occupied}),
             "holdouts": {
                 f"H{index + 1}": {
