@@ -1,0 +1,172 @@
+name: candidate-05-v37-smt-shared
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/smt_session_*.py"
+      - "research/candidate-05/strategy_v37_smt_session_divergence.py"
+      - "research/candidate-05/shared_account_backtest_v2.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v4.py"
+      - "research/candidate-05/strategy_global_slot_wrappers_v5.py"
+      - "research/candidate-05/shared_account_strategy_variants_v2.py"
+      - "research/candidate-05/tests/test_smt_session_divergence_logic.py"
+      - "research/candidate-05/tests/test_strategy_v37_contract.py"
+      - ".github/workflows/candidate-05-v37-smt-shared.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v37-smt-shared
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  sequential-shared-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v37-smt-shared
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and SMT contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Run sequential exact-control shared-account screens
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/v26.json" <<'JSON'
+          {"classification":"VALIDATED_BTC_WINNER_RESOLVED","winner":"strategy_v26:ScenarioValidEntryStrategy","experiment_role":"EXACT_SHARED_CONTROL"}
+          JSON
+          cat > "$ROOT/evidence/v37.json" <<'JSON'
+          {"classification":"VALIDATED_BTC_WINNER_RESOLVED","winner":"strategy_v37_smt_session_divergence:SmtSessionDivergenceStrategy","experiment_role":"SMT_SESSION_INCREMENTAL_SCENARIO"}
+          JSON
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          root = Path(os.environ["ROOT"])
+          runner = Path("research/candidate-05/shared_account_backtest_v2.py")
+          stages = [
+              ("week-1", "2023-07-07", "2023-07-15", "2023-07-09", "2023-07-15", 7),
+              ("week-2", "2024-01-13", "2024-01-21", "2024-01-15", "2024-01-21", 7),
+              ("week-3", "2023-09-06", "2023-09-14", "2023-09-08", "2023-09-14", 7),
+              ("continuous-30d", "2024-02-28", "2024-03-30", "2024-03-01", "2024-03-30", 30),
+          ]
+          decisions = []
+          for stage, build_start, build_end, evaluation_start, evaluation_end, days in stages:
+              for variant in ("v26", "v37"):
+                  output = root / stage / variant
+                  output.mkdir(parents=True, exist_ok=True)
+                  command = [
+                      sys.executable, str(runner),
+                      "--winner-evidence", str(root / "evidence" / f"{variant}.json"),
+                      "--build-start", build_start,
+                      "--build-end", build_end,
+                      "--evaluation-start", evaluation_start,
+                      "--evaluation-end", evaluation_end,
+                      "--cache", str(Path(".cache/candidate-05-v37-smt") / stage),
+                      "--output", str(output),
+                  ]
+                  completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  (root / f"{stage}-{variant}-console.log").write_text(completed.stdout or "")
+                  if completed.returncode != 0:
+                      raise SystemExit(f"{stage} {variant} implementation failure: {completed.returncode}")
+
+              control = json.loads((root / stage / "v26" / "metrics.json").read_text())
+              candidate = json.loads((root / stage / "v37" / "metrics.json").read_text())
+              branch = candidate.get("scenario_metrics", {}).get("SMT_SESSION_DIVERGENCE", {})
+              if days == 7:
+                  checks = {
+                      "control_integrity": bool(control.get("integrity_pass")),
+                      "candidate_integrity": bool(candidate.get("integrity_pass")),
+                      "candidate_improves_control": candidate.get("total_return", -1.0) > control.get("total_return", -1.0),
+                      "geometric_daily_growth": candidate.get("geometric_daily_growth", -1.0) >= 0.01,
+                      "trades": candidate.get("trades", 0) >= 7,
+                      "wins": candidate.get("wins", 0) >= 4,
+                      "win_rate": candidate.get("win_rate", 0.0) >= 0.40,
+                      "active_days": candidate.get("active_days", 0) >= 4,
+                      "max_drawdown": candidate.get("max_drawdown", 1.0) <= 0.20,
+                      "largest_winner_share": candidate.get("largest_winner_share", 1.0) <= 0.55,
+                      "incremental_branch_traded": int(branch.get("trades", 0)) >= 1,
+                      "incremental_branch_positive": float(branch.get("net_pnl", 0.0)) > 0.0,
+                  }
+              else:
+                  checks = {
+                      "control_integrity": bool(control.get("integrity_pass")),
+                      "candidate_integrity": bool(candidate.get("integrity_pass")),
+                      "candidate_improves_control": candidate.get("total_return", -1.0) > control.get("total_return", -1.0),
+                      "geometric_daily_growth": candidate.get("geometric_daily_growth", -1.0) >= 0.01,
+                      "trades": candidate.get("trades", 0) >= 15,
+                      "wins": candidate.get("wins", 0) >= 5,
+                      "active_days": candidate.get("active_days", 0) >= 10,
+                      "max_drawdown": candidate.get("max_drawdown", 1.0) <= 0.35,
+                      "largest_winner_share": candidate.get("largest_winner_share", 1.0) <= 0.35,
+                      "incremental_branch_traded": int(branch.get("trades", 0)) >= 3,
+                      "incremental_branch_positive": float(branch.get("net_pnl", 0.0)) > 0.0,
+                  }
+              passed = all(checks.values())
+              decision = {
+                  "stage": stage,
+                  "classification": f"V37_{stage.upper().replace('-', '_')}_{'PASSED' if passed else 'FAILED'}",
+                  "passed": passed,
+                  "checks": checks,
+                  "control": control,
+                  "candidate": candidate,
+                  "incremental_branch": branch,
+                  "delta_total_return": candidate.get("total_return", 0.0) - control.get("total_return", 0.0),
+              }
+              decisions.append(decision)
+              (root / f"{stage}-decision.json").write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+              print(json.dumps(decision, indent=2, sort_keys=True))
+              if not passed:
+                  break
+
+          final = {
+              "classification": "V37_30D_PASSED" if len(decisions) == 4 and decisions[-1]["passed"] else decisions[-1]["classification"],
+              "passed": len(decisions) == 4 and decisions[-1]["passed"],
+              "decisions": decisions,
+              "next_action": (
+                  "Promote to 91-day and 912-day one-account validation"
+                  if len(decisions) == 4 and decisions[-1]["passed"]
+                  else "Record exact failure and perform at most one core-variable ablation before discard"
+              ),
+          }
+          (root / "v37_summary.json").write_text(json.dumps(final, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Print evidence
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$ROOT/v37_summary.json"; then python -m json.tool "$ROOT/v37_summary.json"; fi
+          find "$ROOT" -name '*console.log' -type f -print -exec tail -n 140 {} \;
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v37-smt-shared-${{ github.sha }}
+          path: artifacts/candidate-05-v37-smt-shared/**
+          if-no-files-found: error
+          retention-days: 90
