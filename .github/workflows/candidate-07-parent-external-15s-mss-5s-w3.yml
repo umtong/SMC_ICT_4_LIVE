@@ -1,0 +1,68 @@
+name: candidate-07-parent-external-15s-mss-5s-w3
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - ".github/workflows/candidate-07-parent-external-15s-mss-5s-w3.yml"
+      - "research/candidate-07/parent_external_15s_mss_5s_retest_scenario.py"
+      - "research/candidate-07/run_parent_external_15s_mss_5s_retest_screen.py"
+      - "research/candidate-07/tests/test_parent_external_15s_mss_5s_retest.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify foundation and hybrid contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          python -m unittest discover \
+            -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+
+      - name: Run frozen W3 BTC hybrid screen in NautilusTrader
+        run: >-
+          python research/candidate-07/run_parent_external_15s_mss_5s_retest_screen.py
+          --config research/candidate-07/config.json
+          --start 2024-06-24
+          --end 2024-07-01
+          --symbols BTCUSDT
+          --screen-stage frozen-w3
+          --output artifacts/candidate-07-hybrid-w3
+          --data-root .research-data/candidate-07
+          --event-warmup-days 3
+          --source-commit $GITHUB_SHA
+
+      - name: Print immutable result
+        run: cat artifacts/candidate-07-hybrid-w3/summary.json
+
+      - name: Preserve complete evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-hybrid-w3-${{ github.sha }}
+          path: artifacts/candidate-07-hybrid-w3
+          retention-days: 14
+          if-no-files-found: error
