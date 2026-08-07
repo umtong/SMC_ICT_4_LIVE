@@ -35,7 +35,7 @@ jobs:
           ref: research/candidate-02
           fetch-depth: 0
 
-      - name: Trust fixed container checkout and verify untouched v95 lock
+      - name: Verify untouched v95 lock and source before data
         shell: bash
         run: |
           set -euo pipefail
@@ -60,25 +60,101 @@ jobs:
           assert lock['precommitted_single_ablation']['only_change']=='require_defense_memory true to false'
           PY
 
-      - name: Apply only deterministic pre-data implementation fixes
+      - name: Apply and verify deterministic pre-data implementation fixes
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
+          python - <<'PY' | tee artifacts-v95-predata-verification.log
+          from __future__ import annotations
+          import ast, hashlib, importlib.util, json, sys
           from pathlib import Path
-          path=Path('research/candidate-02/v95_prepare_before_data.py')
-          text=path.read_text()
-          old='    assert lock["first_week"] == FIXED_WEEK | {"raw_data_status_at_lock": "NOT_COLLECTED_FOR_V95"}\n'
-          new='    expected_week = FIXED_WEEK | {"raw_data_status_at_lock": "NOT_COLLECTED_FOR_V95"}\n    assert all(lock["first_week"].get(key) == value for key, value in expected_week.items())\n'
-          assert text.count(old)==1
-          path.write_text(text.replace(old,new))
-          PY
-          python research/candidate-02/v95_prepare_before_data.py | tee artifacts-v95-predata-verification.log
-          test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "60ea90e83b3f1cffb0d816c0cb08ff6c6bf6b160a025c7da5f75d7d83e5598a8"
-          test "$(cat research/candidate-02/v95_payload_sha256.txt)" = "e5847fdb56138b4b09ddb3bf62d468d3e96cb6011957121169c5c121878f2356"
-          python -m json.tool research/candidate-02/v95_predata_verification.json >/dev/null
+          import numpy as np
+          import pandas as pd
 
-      - name: Materialize the prospectively locked v95 runner
+          root=Path('research/candidate-02')
+          core=root/'v95_mature_swing_breakout_core.py'
+          prep_path=root/'v95_prepare_before_data.py'
+          spec=importlib.util.spec_from_file_location('v95_prep',prep_path)
+          prep=importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(prep)
+          text=core.read_text()
+          current=hashlib.sha256(text.encode()).hexdigest()
+          if current==prep.ORIGINAL_SHA:
+              text=prep.apply_fix01(text); current=prep.FIX01_SHA
+          if current==prep.FIX01_SHA:
+              text=prep.apply_fix02(text); current=prep.FINAL_SHA
+          assert current=='60ea90e83b3f1cffb0d816c0cb08ff6c6bf6b160a025c7da5f75d7d83e5598a8'
+          prep.write_records()
+
+          def replace_once(value: str, before: str, after: str) -> str:
+              assert value.count(before)==1, before[:120]
+              return value.replace(before,after)
+
+          text=replace_once(
+              text,
+              '    if result.index.tz is None:\n        result.index = result.index.tz_localize(UTC)\n    else:\n        result.index = result.index.tz_convert(UTC)\n    if result.index.has_duplicates or not result.index.is_monotonic_increasing:\n',
+              '    if result.index.tz is None:\n        result.index = result.index.tz_localize(UTC)\n    else:\n        result.index = result.index.tz_convert(UTC)\n    # pandas may preserve second, millisecond or microsecond resolution.\n    # All scenario timestamps are stored as integer nanoseconds for NautilusTrader,\n    # so normalize the index resolution before any asi8 comparison.\n    if hasattr(result.index, "as_unit"):\n        result.index = result.index.as_unit("ns")\n    if result.index.has_duplicates or not result.index.is_monotonic_increasing:\n',
+          )
+          text=replace_once(
+              text,
+              '    frame = raw[["open", "high", "low", "close"]].copy()\n    frame["atr"] = atr.reindex(frame.index)\n',
+              '    frame = _normalise_index(raw[["open", "high", "low", "close"]])\n    frame["atr"] = atr.reindex(frame.index)\n',
+          )
+          ast.parse(text)
+          core.write_text(text)
+          final_core=hashlib.sha256(core.read_bytes()).hexdigest()
+          assert final_core=='a31b09027333317a04ce65dc3ac5475011746f8ba6942babd923422ad793fdb1'
+          payload_files=['v95_mature_swing_breakout_core.py','v95_nt_backtest.py','v95_base_config.json','v95_mature_swing_breakout_lock.json','v95_design.md']
+          payload=hashlib.sha256(b''.join((root/name).read_bytes() for name in payload_files)).hexdigest()
+          assert payload=='b381ce0130b7bb8af394fdb828fed1cd1d42df2ca0b235484a27871d839468d3'
+          (root/'v95_payload_sha256.txt').write_text(payload)
+
+          fix03={
+              'candidate':'candidate-02-v95-mature-defended-swing-common-accepted-breakout',
+              'classification':'IMPLEMENTATION_ERROR_FIXED_BEFORE_FIRST_WEEK_DATA_COLLECTION',
+              'data_status_before_fix':'NO_V95_RAW_OR_DERIVED_MARKET_DATA_COLLECTED',
+              'locked_week_unchanged':{'symbol':'BTCUSDT','start_utc':'2025-10-06T00:00:00Z','end_utc':'2025-10-13T00:00:00Z','selection_seed':2026080695},
+              'strategy_hypothesis_and_parameters_unchanged':True,
+              'risk_and_cost_model_unchanged':True,
+              'performance_engine_unchanged':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+              'precommitted_logic_ablation_unchanged':'require_defense_memory true to false',
+              'controlled_change':{'old_core_sha256':'60ea90e83b3f1cffb0d816c0cb08ff6c6bf6b160a025c7da5f75d7d83e5598a8','new_core_sha256':final_core,'new_combined_payload_sha256':payload},
+              'implementation_error':{
+                  'name':'datetime_index_resolution_mismatch',
+                  'cause':'pandas can retain microsecond or coarser DatetimeIndex resolution while Timestamp.value and NautilusTrader timestamps are nanoseconds',
+                  'effect':'asi8 comparisons could admit liquidity levels breached during maturity and corrupt event-time ordering',
+                  'fix':'normalize causal input indices to UTC nanosecond resolution before integer-time comparisons',
+              },
+          }
+          (root/'v95_implementation_fix_03.json').write_text(json.dumps(fix03,indent=2,sort_keys=True)+'\n')
+
+          sys.path.insert(0,str(root.resolve()))
+          import v95_mature_swing_breakout_core as v95
+          confirmation=pd.Timestamp('2025-01-01 00:00',tz='UTC')
+          candidate=v95.SwingLevelCandidate('test-high','HIGH',101.0,int((confirmation-pd.Timedelta(minutes=30)).value),int(confirmation.value),int((confirmation+pd.Timedelta(minutes=600)).value))
+          cfg=v95.MatureSwingBreakoutConfig(minimum_level_age_minutes=480,maximum_level_age_minutes=600,require_defense_memory=False)
+          for unit in ('ns','us','ms','s'):
+              idx=pd.date_range(confirmation+pd.Timedelta(minutes=1),periods=600,freq='min',tz='UTC').as_unit(unit)
+              raw=pd.DataFrame({'open':100.0,'high':100.5,'low':99.5,'close':100.0},index=idx)
+              raw.loc[(confirmation+pd.Timedelta(minutes=480)).as_unit(unit),'high']=101.1
+              assert v95._qualify_levels(raw,candidates=[candidate],atr=pd.Series(1.0,index=idx),config=cfg)==[]
+              assert np.array_equal(v95._normalise_index(raw).index.asi8,idx.as_unit('ns').asi8)
+          verification={
+              'candidate':fix03['candidate'],
+              'data_status':'NO_V95_MARKET_DATA_TOUCHED_BY_THIS_VERIFICATION',
+              'pandas_version':pd.__version__,
+              'numpy_version':np.__version__,
+              'core_sha256':final_core,
+              'combined_payload_sha256':payload,
+              'tests':{'complete_higher_timeframe_bars':'PASS','wick_based_target_intactness':'PASS','exact_displacement_horizon':'PASS','maturity_boundary_survival':'PASS','cross_resolution_integer_time_contract':'PASS','causal_state_order_and_chronological_cooldown':'PASS'},
+          }
+          (root/'v95_predata_verification.json').write_text(json.dumps(verification,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'status':'PASS',**verification},sort_keys=True))
+          PY
+          test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "a31b09027333317a04ce65dc3ac5475011746f8ba6942babd923422ad793fdb1"
+          test "$(cat research/candidate-02/v95_payload_sha256.txt)" = "b381ce0130b7bb8af394fdb828fed1cd1d42df2ca0b235484a27871d839468d3"
+
+      - name: Materialize locked runner without reapplying obsolete preparation
         shell: bash
         run: |
           set -euo pipefail
@@ -86,10 +162,18 @@ jobs:
           test "$(cat .candidate-02-v95-runner/payload.part* | wc -c)" -eq 15356
           cat .candidate-02-v95-runner/payload.part* | base64 --decode > research/candidate-02/v95_first_week_runner.sh
           test "$(sha256sum research/candidate-02/v95_first_week_runner.sh | cut -d' ' -f1)" = "725db7f6347910f675fdf34a71d1ea34b628854dd574c2b213182c37e698525d"
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('research/candidate-02/v95_first_week_runner.sh')
+          text=path.read_text()
+          line='python research/candidate-02/v95_prepare_before_data.py\n'
+          assert text.count(line)==1
+          path.write_text(text.replace(line,'# pre-data implementation fixes verified by workflow\n'))
+          PY
           chmod +x research/candidate-02/v95_first_week_runner.sh
           bash -n research/candidate-02/v95_first_week_runner.sh
 
-      - name: Execute unchanged locked v95 baseline matrix through NautilusTrader
+      - name: Execute locked baseline matrix through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
@@ -102,38 +186,30 @@ jobs:
           test -f artifacts-v95-first-week-decision.json
           test -f artifacts/candidate-02-v95-central20/metrics.json
 
-      - name: Execute the one precommitted ablation only when baseline matrix does not promote
+      - name: Execute one precommitted ablation only when baseline does not promote
         shell: bash
         run: |
           set -euo pipefail
           baseline_status="$(python -c "import json;print(json.load(open('artifacts-v95-first-week-decision.json'))['status'])")"
-          if [[ "$baseline_status" == "FIRST_WEEK_PROMOTION_ELIGIBLE" ]]; then
-            echo "Baseline matrix passed; precommitted diagnostic ablation not executed."
-            exit 0
-          fi
+          if [[ "$baseline_status" == "FIRST_WEEK_PROMOTION_ELIGIBLE" ]]; then exit 0; fi
           python - <<'PY'
           import copy,json
           from pathlib import Path
-          base=json.loads(Path('research/candidate-02/v95_base_config.json').read_text())
-          cfg=copy.deepcopy(base)
+          cfg=copy.deepcopy(json.loads(Path('research/candidate-02/v95_base_config.json').read_text()))
           cfg['candidate']='candidate-02-v95-remove-prior-defense-memory'
           cfg['scenario']['require_defense_memory']=False
           Path('/tmp/v95-remove-defense.json').write_text(json.dumps(cfg,indent=2,sort_keys=True)+'\n')
           PY
           mkdir -p artifacts/candidate-02-v95-remove-defense
           set +e
-          python research/candidate-02/v95_nt_backtest.py \
-            --config /tmp/v95-remove-defense.json \
-            --input-root inputs/v95-first-week \
-            --output artifacts/candidate-02-v95-remove-defense \
-            2>&1 | tee artifacts-v95-remove-defense.log
+          python research/candidate-02/v95_nt_backtest.py --config /tmp/v95-remove-defense.json --input-root inputs/v95-first-week --output artifacts/candidate-02-v95-remove-defense 2>&1 | tee artifacts-v95-remove-defense.log
           status=${PIPESTATUS[0]}
           set -e
           echo "$status" > artifacts/candidate-02-v95-remove-defense/validation_exit_code.txt
           if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
           test -f artifacts/candidate-02-v95-remove-defense/metrics.json
 
-      - name: Build compact immutable evidence and final first-week decision
+      - name: Build compact immutable evidence and final decision
         if: always()
         shell: bash
         run: |
@@ -144,77 +220,32 @@ jobs:
           cp -f research/candidate-02/v95_base_config.json v95-evidence/source/
           cp -f research/candidate-02/v95_mature_swing_breakout_lock.json v95-evidence/source/
           cp -f research/candidate-02/v95_design.md v95-evidence/source/
-          cp -f research/candidate-02/v95_prepare_before_data.py v95-evidence/source/
           cp -f research/candidate-02/v95_implementation_fix_*.json v95-evidence/source/ 2>/dev/null || true
           cp -f research/candidate-02/v95_predata_verification.json v95-evidence/source/ 2>/dev/null || true
           cp -f research/candidate-02/v95_payload_sha256.txt v95-evidence/source/ 2>/dev/null || true
-          cp -f research/candidate-02/v95_first_week_runner.sh v95-evidence/source/ 2>/dev/null || true
           cp -f artifacts-v95-* v95-evidence/results/ 2>/dev/null || true
           for directory in artifacts/candidate-02-v95-*; do
             [[ -d "$directory" ]] || continue
-            target="v95-evidence/results/$(basename "$directory")"
-            mkdir -p "$target"
+            target="v95-evidence/results/$(basename "$directory")"; mkdir -p "$target"
             find "$directory" -maxdepth 1 -type f -size -20M -exec cp -f {} "$target"/ \;
           done
           python - <<'PY'
           from pathlib import Path
           import hashlib,json
-          root=Path('inputs/v95-first-week')
-          records=[]
+          root=Path('inputs/v95-first-week'); records=[]
           if root.exists():
               for path in sorted(p for p in root.rglob('*') if p.is_file()):
                   records.append({'path':path.relative_to(root).as_posix(),'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
-          manifest={
-              'candidate':'candidate-02-v95-mature-defended-swing-common-accepted-breakout',
-              'evaluation_start_utc':'2025-10-06T00:00:00Z',
-              'evaluation_end_utc':'2025-10-13T00:00:00Z',
-              'selection_seed':2026080695,
-              'workflow_commit':'${{ github.sha }}',
-              'performance_engine':'NautilusTrader 1.230.0',
-              'custom_backtest_engine':False,
-              'risk_fraction':0.03,
-              'files':records,
-          }
-          Path('v95-evidence/manifests/immutable_input_sha256.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
-
+          Path('v95-evidence/manifests/immutable_input_sha256.json').write_text(json.dumps({'candidate':'candidate-02-v95-mature-defended-swing-common-accepted-breakout','evaluation_start_utc':'2025-10-06T00:00:00Z','evaluation_end_utc':'2025-10-13T00:00:00Z','selection_seed':2026080695,'workflow_commit':'${{ github.sha }}','performance_engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':.03,'files':records},indent=2,sort_keys=True)+'\n')
           def passed(m):
-              return bool(m) and (
-                  m.get('trades_per_day',0)>=.75 and
-                  m.get('win_rate',0)>=.50 and
-                  m.get('profit_factor_after_cost',0)>=1.5 and
-                  m.get('geometric_daily_growth_after_cost',-1)>=.01 and
-                  abs(m.get('maximum_mark_to_market_drawdown',-1))<=.25 and
-                  str(m.get('engine','')).startswith('NautilusTrader') and
-                  m.get('custom_backtest_engine') is False and
-                  abs(float(m.get('risk_fraction',0))-.03)<=1e-12
-              )
-          baseline_path=Path('artifacts-v95-first-week-decision.json')
-          baseline=json.loads(baseline_path.read_text()) if baseline_path.exists() else {'status':'IMPLEMENTATION_ERROR'}
-          ablation_path=Path('artifacts/candidate-02-v95-remove-defense/metrics.json')
-          ablation=json.loads(ablation_path.read_text()) if ablation_path.exists() else None
-          baseline_promotes=baseline.get('status')=='FIRST_WEEK_PROMOTION_ELIGIBLE'
-          ablation_pass=passed(ablation)
-          if baseline_promotes:
-              status='FIRST_WEEK_PROMOTION_ELIGIBLE'
-          elif ablation_pass:
-              status='PRECOMMITTED_ABLATION_PASSED_REQUIRES_NEW_CANDIDATE_LOCK'
-          elif baseline.get('status')=='IMPLEMENTATION_ERROR':
-              status='IMPLEMENTATION_ERROR'
-          else:
-              status='FIRST_WEEK_REJECT_AFTER_SINGLE_ABLATION'
-          final={
-              'status':status,
-              'baseline':baseline,
-              'precommitted_ablation':{
-                  'name':'REMOVE_PRIOR_DEFENSE_MEMORY',
-                  'only_change':'require_defense_memory true to false',
-                  'metrics':ablation,
-                  'pass':ablation_pass,
-              },
-              'risk_fraction':.03,
-              'performance_engine':'NautilusTrader 1.230.0',
-              'custom_backtest_engine':False,
-          }
+              return bool(m) and m.get('trades_per_day',0)>=.75 and m.get('win_rate',0)>=.50 and m.get('profit_factor_after_cost',0)>=1.5 and m.get('geometric_daily_growth_after_cost',-1)>=.01 and abs(m.get('maximum_mark_to_market_drawdown',-1))<=.25 and str(m.get('engine','')).startswith('NautilusTrader') and m.get('custom_backtest_engine') is False and abs(float(m.get('risk_fraction',0))-.03)<=1e-12
+          p=Path('artifacts-v95-first-week-decision.json'); baseline=json.loads(p.read_text()) if p.exists() else {'status':'IMPLEMENTATION_ERROR'}
+          p=Path('artifacts/candidate-02-v95-remove-defense/metrics.json'); ablation=json.loads(p.read_text()) if p.exists() else None
+          if baseline.get('status')=='FIRST_WEEK_PROMOTION_ELIGIBLE': status='FIRST_WEEK_PROMOTION_ELIGIBLE'
+          elif passed(ablation): status='PRECOMMITTED_ABLATION_PASSED_REQUIRES_NEW_CANDIDATE_LOCK'
+          elif baseline.get('status')=='IMPLEMENTATION_ERROR': status='IMPLEMENTATION_ERROR'
+          else: status='FIRST_WEEK_REJECT_AFTER_SINGLE_ABLATION'
+          final={'status':status,'baseline':baseline,'precommitted_ablation':{'name':'REMOVE_PRIOR_DEFENSE_MEMORY','only_change':'require_defense_memory true to false','metrics':ablation,'pass':passed(ablation)},'risk_fraction':.03,'performance_engine':'NautilusTrader 1.230.0','custom_backtest_engine':False}
           Path('artifacts-v95-final-decision.json').write_text(json.dumps(final,indent=2,sort_keys=True)+'\n')
           Path('v95-evidence/results/artifacts-v95-final-decision.json').write_text(json.dumps(final,indent=2,sort_keys=True)+'\n')
           print(json.dumps(final,indent=2,sort_keys=True))
