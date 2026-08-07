@@ -1,11 +1,13 @@
-name: candidate-02-v103-nautilustrader-pr-runner
+name: candidate-02-v103-nautilustrader-branch-runner
 
 on:
-  workflow_dispatch:
-  pull_request:
+  push:
     branches: ["research/candidate-02"]
     paths:
-      - "research/candidate-02/v103_pr_trigger.txt"
+      - ".github/workflows/candidate-02-v77-terminal-router.yml"
+      - "research/candidate-02/v103_*.py"
+      - "research/candidate-02/v103_*.json"
+      - "research/candidate-02/v103_*.md"
 
 permissions:
   contents: read
@@ -13,7 +15,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: candidate-02-v103-nautilustrader-pr-runner
+  group: candidate-02-v103-nautilustrader-branch-runner
   cancel-in-progress: false
 
 jobs:
@@ -36,7 +38,7 @@ jobs:
           ref: research/candidate-02
           fetch-depth: 0
 
-      - name: Verify PR only triggers the prospectively locked v103 branch state
+      - name: Verify unchanged prospectively locked v103 branch state
         shell: bash
         run: |
           set -euo pipefail
@@ -45,11 +47,11 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          lock=json.loads(Path('research/candidate-02/v103_endogenous_flow_clock_lock.json').read_text())
-          assert lock['status']=='LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
-          assert lock['first_week']['raw_data_status_at_lock']=='NOT_COLLECTED_FOR_V103'
-          assert lock['first_week']['start_utc']=='2025-11-17T00:00:00Z'
-          assert float(lock['risk_fraction'])==0.03
+          lock = json.loads(Path('research/candidate-02/v103_endogenous_flow_clock_lock.json').read_text())
+          assert lock['status'] == 'LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['first_week']['raw_data_status_at_lock'] == 'NOT_COLLECTED_FOR_V103'
+          assert lock['first_week']['start_utc'] == '2025-11-17T00:00:00Z'
+          assert float(lock['risk_fraction']) == 0.03
           assert lock['custom_backtest_engine'] is False
           PY
 
@@ -63,7 +65,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-02-v103-first-week-pr-${{ github.sha }}
+          name: candidate-02-v103-first-week-branch-${{ github.sha }}
           path: |
             artifacts/candidate-02-v103-*
             artifacts-v103-*.log
