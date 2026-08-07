@@ -28,6 +28,26 @@ class BinanceUsdmInstrumentTests(unittest.TestCase):
         self.assertEqual(str(instrument.price_increment), "0.01")
         self.assertEqual(str(instrument.size_increment), "0.001")
 
+    def test_sol_matches_verified_w1_raw_trade_grid(self) -> None:
+        instrument = binance_usdm_perpetual("SOLUSDT")
+        self.assertEqual(str(instrument.price_increment), "0.01")
+        self.assertEqual(str(instrument.size_increment), "0.01")
+        validate_observed_grid(
+            symbol="SOLUSDT",
+            prices=[Decimal("119.15"), Decimal("128.74")],
+            quantities=[Decimal("0.01"), Decimal("0.04"), Decimal("101518.71")],
+        )
+
+    def test_xrp_matches_verified_w1_raw_trade_grid(self) -> None:
+        instrument = binance_usdm_perpetual("XRPUSDT")
+        self.assertEqual(str(instrument.price_increment), "0.0001")
+        self.assertEqual(str(instrument.size_increment), "0.1")
+        validate_observed_grid(
+            symbol="XRPUSDT",
+            prices=[Decimal("1.8234"), Decimal("1.9488")],
+            quantities=[Decimal("0.1"), Decimal("2471955.7")],
+        )
+
     def test_project_symbol_grids_are_positive(self) -> None:
         self.assertEqual(set(CONTRACT_GRIDS), {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"})
         for grid in CONTRACT_GRIDS.values():
