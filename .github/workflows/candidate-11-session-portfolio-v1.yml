@@ -1,0 +1,185 @@
+name: Candidate 11 symmetric session portfolio diagnostic
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/session_portfolio_v1/**"
+      - ".github/workflows/candidate-11-session-portfolio-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-session-portfolio-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify environment, frozen sources and semantic contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAND="$GITHUB_WORKSPACE/research/candidate-11/session_portfolio_v1"
+          smc4 doctor
+          export PYTHONPATH="$CAND:$GITHUB_WORKSPACE/src"
+          python -m py_compile "$CAND"/*.py
+          python -m unittest discover -s "$CAND" -p 'test_*.py' -v
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+          import subprocess
+
+          root = Path("research/candidate-11/session_portfolio_v1")
+          protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+          mismatches = []
+          for name, expected in protocol["locked_source"]["blobs"].items():
+              actual = subprocess.check_output(
+                  ["git", "hash-object", str(root / name)], text=True
+              ).strip()
+              if actual != expected:
+                  mismatches.append((name, expected, actual))
+          if mismatches:
+              raise SystemExit(f"source-lock mismatch: {mismatches}")
+          assert protocol["validation_mode"] == "diagnostic"
+          assert protocol["success_claim"] is False
+          assert protocol["execution_lock"]["risk_fraction"] == 0.03
+          assert protocol["execution_lock"]["session_module_symbols"] == [
+              "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"
+          ]
+          PY
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      matrix:
+        week: [W10, W11, W12, W13, W14]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Run frozen multi-session Nautilus diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash research/candidate-11/session_portfolio_v1/run_week.sh "${{ matrix.week }}"
+      - name: Remove downloaded market archives
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/data"
+      - name: Transport auditable evidence to aggregate job
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate11-session-${{ matrix.week }}
+          path: |
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/run.json
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/data_manifest.json
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/metrics.json
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/summary.json
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/audit.json
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/audit.md
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/source_lock.json
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/effective_config.json
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/scenario_events.jsonl
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/submitted_plans.json
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/order_lifecycle.json
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/orders.csv
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/positions.csv
+            research/candidate-11/session_portfolio_v1/results/${{ matrix.week }}/account.csv
+          if-no-files-found: warn
+          retention-days: 2
+          compression-level: 0
+
+  aggregate:
+    if: ${{ needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Download fresh diagnostic evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate11-session-W*
+          path: artifacts
+      - name: Aggregate and persist without overwriting newer strategy code
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAND=research/candidate-11/session_portfolio_v1
+          rm -rf "$CAND/results"
+          mkdir -p "$CAND/results"
+          for week in W10 W11 W12 W13 W14; do
+            src="artifacts/candidate11-session-$week"
+            test -d "$src"
+            mkdir -p "$CAND/results/$week"
+            cp -a "$src/." "$CAND/results/$week/"
+            for file in \
+              run.json data_manifest.json metrics.json summary.json audit.json audit.md \
+              source_lock.json effective_config.json scenario_events.jsonl \
+              submitted_plans.json order_lifecycle.json orders.csv positions.csv account.csv; do
+              test -s "$CAND/results/$week/$file"
+            done
+          done
+
+          python "$CAND/aggregate.py" \
+            --results "$CAND/results" \
+            --protocol "$CAND/protocol.json" \
+            --output "$CAND/aggregate.json"
+
+          SNAPSHOT=/tmp/candidate11-session-evidence
+          rm -rf "$SNAPSHOT"
+          mkdir -p "$SNAPSHOT"
+          cp -a "$CAND/results" "$SNAPSHOT/"
+          cp "$CAND/aggregate.json" "$SNAPSHOT/aggregate.json"
+          cp "$CAND/RESULT.md" "$SNAPSHOT/RESULT.md"
+
+          git fetch origin research/candidate-11
+          latest_head="$(git rev-parse origin/research/candidate-11)"
+          if ! git diff --quiet "$GITHUB_SHA" "$latest_head" -- "$CAND"; then
+            echo "session strategy changed during evaluation; refusing stale evidence commit"
+            exit 1
+          fi
+          git checkout -B research/candidate-11 "$latest_head"
+          rm -rf "$CAND/results"
+          cp -a "$SNAPSHOT/results" "$CAND/results"
+          cp "$SNAPSHOT/aggregate.json" "$CAND/aggregate.json"
+          cp "$SNAPSHOT/RESULT.md" "$CAND/RESULT.md"
+
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add -A "$CAND/results" "$CAND/aggregate.json" "$CAND/RESULT.md"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record symmetric-session Nautilus evidence [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi
