@@ -6,6 +6,9 @@ import os
 import unittest
 from unittest.mock import patch
 
+import pandas as pd
+
+from c10_v33_overlay import normalize_kline_open_time
 from c10_v33_overlay import reframe_primary_equilibrium
 
 
@@ -101,6 +104,23 @@ def logic(*, delivered: bool = False, opposite: float | None = 110.0) -> Logic:
 
 
 class PrimaryEquilibriumContractTest(unittest.TestCase):
+    def test_mixed_archive_timestamps_are_normalized_to_int64(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "open_time": ["1641254400000", 1641254460000],
+                "close": ["1.0", "1.1"],
+            },
+        )
+        normalized = normalize_kline_open_time(
+            frame,
+            "BTCUSDT-1m-2022-01-04.zip",
+        )
+        self.assertEqual(str(normalized["open_time"].dtype), "int64")
+        self.assertEqual(
+            normalized["open_time"].tolist(),
+            [1641254400000, 1641254460000],
+        )
+
     def test_exact_baseline_is_unchanged(self) -> None:
         plan = long_plan()
         with patch.dict(
