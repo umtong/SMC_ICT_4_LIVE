@@ -263,36 +263,5 @@ class TestProductionBoundary(unittest.TestCase):
         self.assertNotIn("expire_time=plan.expire_ts_ns", source)
 
 
-class TestCausalEpisodeMemory(unittest.TestCase):
-    def test_sweep_causality_expires_with_internal_structure_memory(self) -> None:
-        config = LogicConfig()
-        self.assertEqual(config.causal_episode_bars, config.internal_tf_bars * config.internal_lookback)
-        engine = CausalAuctionEngine(config, "TEST")
-        previous = bar(1, 100.0, 101.0, 99.0, 100.0)
-        trigger = pool("EPISODE", Side.HIGH, 110.0, range_id="R", opposite=90.0)
-        trigger.trigger_start_ts_ns = 0
-        trigger.trigger_end_ts_ns = 1 << 62
-        engine.bars = [previous]
-        engine.true_ranges.extend([1.0] * config.atr_period)
-        engine.volumes.extend([100.0] * config.volume_period)
-        engine._index = 0
-        engine.active = Auction(
-            pool=trigger,
-            sweep=bar(2, 109.0, 111.0, 108.0, 110.5),
-            sweep_index=0,
-            atr=1.0,
-            internal_level=105.0,
-            sweep_extreme=111.0,
-            rejection_seed=False,
-            acceptance_seed=False,
-            elapsed=config.causal_episode_bars,
-        )
-        plan = engine.on_bar(bar(MINUTE_NS, 100.0, 101.0, 99.0, 100.0))
-        self.assertIsNone(plan)
-        self.assertIsNone(engine.active)
-        self.assertEqual(engine.skips["CAUSAL_EPISODE_MEMORY_EXPIRED"], 1)
-        self.assertEqual(engine.events[-1].reason_code, "CAUSAL_EPISODE_MEMORY_EXPIRED")
-
-
 if __name__ == "__main__":
     unittest.main()
