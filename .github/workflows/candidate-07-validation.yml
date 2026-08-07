@@ -18,81 +18,57 @@ permissions:
 
 jobs:
   btc-week-1-event-time-tournament:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 180
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
     steps:
-      - name: Configure deterministic amd64 emulation
-        shell: bash
-        run: |
-          set -euo pipefail
-          uname -m
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support
-          sudo update-binfmts --enable qemu-x86_64
-          test -r /proc/sys/fs/binfmt_misc/qemu-x86_64
-          grep -E '^(enabled|interpreter)' /proc/sys/fs/binfmt_misc/qemu-x86_64
-
-      - name: Fetch exact candidate source without marketplace actions
-        shell: bash
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "${GITHUB_SHA}"
-          git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-
-      - name: Pull exact pinned research image
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          image=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-          docker pull --platform linux/amd64 "$image"
+      - name: Checkout exact candidate source
+        uses: actions/checkout@v4
 
       - name: Verify pinned NautilusTrader foundation and causal contracts
         shell: bash
         run: |
           set -euo pipefail
-          image=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-          docker run --rm --platform linux/amd64 \
-            -v "$PWD:/work" -w /work \
-            "$image" /bin/bash -c '
-              set -euo pipefail
-              /opt/smc4/.venv/bin/smc4 doctor
-              PYTHONPYCACHEPREFIX=/tmp/candidate07-pyc \
-                /opt/smc4/.venv/bin/python -m compileall -q research/candidate-07
-              /opt/smc4/.venv/bin/python -m unittest discover -s research/candidate-07/tests -p "test_*.py" -v
-            '
+          /opt/smc4/.venv/bin/smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-pyc \
+            /opt/smc4/.venv/bin/python -m compileall -q research/candidate-07
+          /opt/smc4/.venv/bin/python -m unittest discover \
+            -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-aggtrade-event-tournament-week1-v2
+          restore-keys: |
+            candidate-07-aggtrade-event-tournament-week1-v1
+            candidate-07-aggtrade-resilience-week1-v1
+            candidate-07-positioning-three-weeks-v1
+            candidate-07-positioning-week1-v1
+            candidate-07-flow-week1-v1
 
       - name: Run frozen BTC Week-1 structural tournament once
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p .research-data/candidate-07 artifacts/candidate-07/week-1/event-tournament
-          image=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-          docker run --rm --platform linux/amd64 \
-            -v "$PWD:/work" -w /work \
-            "$image" /bin/bash -c '
-              set -euo pipefail
-              /opt/smc4/.venv/bin/python research/candidate-07/run_aggtrade_tournament.py \
-                --config research/candidate-07/config.json \
-                --start 2025-12-22 \
-                --end 2025-12-29 \
-                --event-warmup-days 1 \
-                --source-commit "'"${GITHUB_SHA}"'" \
-                --output-dir artifacts/candidate-07/week-1/event-tournament \
-                --data-root .research-data/candidate-07
-            '
+          mkdir -p artifacts/candidate-07/week-1/event-tournament
+          /opt/smc4/.venv/bin/python research/candidate-07/run_aggtrade_tournament.py \
+            --config research/candidate-07/config.json \
+            --start 2025-12-22 \
+            --end 2025-12-29 \
+            --event-warmup-days 1 \
+            --source-commit "${GITHUB_SHA}" \
+            --output-dir artifacts/candidate-07/week-1/event-tournament \
+            --data-root .research-data/candidate-07
 
       - name: Print compact immutable result
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
+          /opt/smc4/.venv/bin/python - <<'PY'
           import hashlib
           import json
           from pathlib import Path
