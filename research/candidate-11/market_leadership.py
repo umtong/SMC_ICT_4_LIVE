@@ -12,7 +12,9 @@ explicit:
   move;
 * sweep-to-confirmation returns identify whether that move actually recovered;
 * a volatility-normalized directional-path score rejects counter-trend bounces
-  inside an unresolved market-wide one-sided auction.
+  inside an unresolved market-wide one-sided auction;
+* follower consensus is accepted only when the candidate contributes its own
+  confirmation displacement instead of merely borrowing movement from peers.
 """
 from __future__ import annotations
 
@@ -47,6 +49,7 @@ class LeadershipDecision:
     directional_trend_scores: dict[str, float]
     candidate_event_move: float | None
     peer_event_median: float | None
+    confirmation_impulse: float | None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -63,6 +66,7 @@ class LeadershipDecision:
             "directional_trend_scores": dict(sorted(self.directional_trend_scores.items())),
             "candidate_event_move": self.candidate_event_move,
             "peer_event_median": self.peer_event_median,
+            "confirmation_impulse": self.confirmation_impulse,
         }
 
 
@@ -76,6 +80,8 @@ class MarketLeadershipGate:
         lookback_bars: int = 1440,
         max_history_bars: int | None = None,
         severe_adverse_trend_score: float = -1.5,
+        confirmation_impulse_lookback_bars: int | None = None,
+        minimum_follower_confirmation_impulse: float = 1.0,
     ) -> None:
         if len(symbols) < 3 or len(set(symbols)) != len(symbols):
             raise ValueError("leadership requires at least three unique symbols")
@@ -83,12 +89,33 @@ class MarketLeadershipGate:
             raise ValueError("lookback_bars must be at least two")
         if not isfinite(severe_adverse_trend_score) or severe_adverse_trend_score >= 0:
             raise ValueError("severe_adverse_trend_score must be finite and negative")
-        history_bars = max_history_bars or max(lookback_bars * 2, lookback_bars + 720)
-        if history_bars < lookback_bars:
-            raise ValueError("max_history_bars cannot be shorter than lookback")
+        impulse_lookback = (
+            min(120, max(2, lookback_bars - 1))
+            if confirmation_impulse_lookback_bars is None
+            else int(confirmation_impulse_lookback_bars)
+        )
+        if impulse_lookback < 2:
+            raise ValueError("confirmation impulse lookback must be at least two")
+        if (
+            not isfinite(minimum_follower_confirmation_impulse)
+            or minimum_follower_confirmation_impulse <= 0
+        ):
+            raise ValueError("minimum follower confirmation impulse must be positive")
+        minimum_history = max(lookback_bars, impulse_lookback + 2)
+        history_bars = max_history_bars or max(
+            lookback_bars * 2,
+            lookback_bars + 720,
+            minimum_history,
+        )
+        if history_bars < minimum_history:
+            raise ValueError("max_history_bars cannot cover required causal history")
         self.symbols = tuple(symbols)
         self.lookback_bars = int(lookback_bars)
         self.severe_adverse_trend_score = float(severe_adverse_trend_score)
+        self.confirmation_impulse_lookback_bars = impulse_lookback
+        self.minimum_follower_confirmation_impulse = float(
+            minimum_follower_confirmation_impulse,
+        )
         self._history = {
             symbol: deque(maxlen=int(history_bars))
             for symbol in self.symbols
@@ -175,6 +202,40 @@ class MarketLeadershipGate:
             trend_scores[symbol] = signed_cumulative / max(realized_path, 1e-12)
         return returns, trend_scores
 
+    def _confirmation_impulse(
+        self,
+        symbol: str,
+        confirmation_ts_ns: int,
+        direction: str,
+    ) -> float | None:
+        """Return the confirmation close impulse in units of prior return RMS.
+
+        The current confirmation return is excluded from its own volatility
+        baseline. This keeps the measure causal and prevents a large signal bar
+        from inflating the denominator used to approve itself.
+        """
+        points = [
+            point for point in self._history[symbol]
+            if point.ts_ns <= confirmation_ts_ns
+        ]
+        required = self.confirmation_impulse_lookback_bars + 2
+        if len(points) < required or points[-1].ts_ns != confirmation_ts_ns:
+            return None
+        baseline_points = points[-required:-1]
+        baseline_returns = [
+            log(curr.close / prev.close)
+            for prev, curr in zip(baseline_points, baseline_points[1:])
+        ]
+        if len(baseline_returns) != self.confirmation_impulse_lookback_bars:
+            return None
+        baseline_rms = sqrt(
+            sum(value * value for value in baseline_returns)
+            / len(baseline_returns),
+        )
+        sign = 1.0 if direction == "LONG" else -1.0
+        current_return = sign * log(points[-1].close / points[-2].close)
+        return current_return / max(baseline_rms, 1e-12)
+
     def decide(
         self,
         *,
@@ -200,6 +261,7 @@ class MarketLeadershipGate:
             directional_trend_scores: dict[str, float] | None = None,
             candidate_event_move: float | None = None,
             peer_event_median: float | None = None,
+            confirmation_impulse: float | None = None,
         ) -> LeadershipDecision:
             return LeadershipDecision(
                 approved=approved,
@@ -215,6 +277,7 @@ class MarketLeadershipGate:
                 directional_trend_scores=directional_trend_scores or {},
                 candidate_event_move=candidate_event_move,
                 peer_event_median=peer_event_median,
+                confirmation_impulse=confirmation_impulse,
             )
 
         if confirmation_ts_ns != self._last_batch_ts:
@@ -230,10 +293,24 @@ class MarketLeadershipGate:
 
         candidate_sweep = self._point_at(symbol, sweep_ts_ns)
         candidate_confirmation = self._point_at(symbol, confirmation_ts_ns)
+        confirmation_impulse = self._confirmation_impulse(
+            symbol,
+            confirmation_ts_ns,
+            direction,
+        )
         if candidate_sweep is None or candidate_confirmation is None:
             return decision(
                 False,
                 "MISSING_SYNCHRONIZED_CANDIDATE_SNAPSHOT",
+                leader,
+                directional_returns=directional_returns,
+                directional_trend_scores=trend_scores,
+                confirmation_impulse=confirmation_impulse,
+            )
+        if confirmation_impulse is None:
+            return decision(
+                False,
+                "INSUFFICIENT_CONFIRMATION_IMPULSE_HISTORY",
                 leader,
                 directional_returns=directional_returns,
                 directional_trend_scores=trend_scores,
@@ -253,6 +330,7 @@ class MarketLeadershipGate:
                     peer_returns,
                     directional_returns,
                     trend_scores,
+                    confirmation_impulse=confirmation_impulse,
                 )
             peer_returns[peer] = confirmation.close / sweep.close - 1.0
 
@@ -271,43 +349,21 @@ class MarketLeadershipGate:
         directionally_supported = directional_rank <= top_half_limit
         event_recovered = candidate_move > 0.0 and candidate_move > peer_median
 
+        common = {
+            "peer_returns": peer_returns,
+            "directional_returns": directional_returns,
+            "directional_trend_scores": trend_scores,
+            "candidate_event_move": candidate_move,
+            "peer_event_median": peer_median,
+            "confirmation_impulse": confirmation_impulse,
+        }
+
         if scenario == "AAC":
             if symbol != leader:
-                return decision(
-                    False,
-                    "FOLLOWER_AAC_WITHOUT_LEADERSHIP",
-                    leader,
-                    peer_returns,
-                    directional_returns,
-                    trend_scores,
-                    candidate_move,
-                    peer_median,
-                )
-            # Continuation is a stronger claim than reversal. It must already be
-            # directionally led by the liquidity leader and then outperform the
-            # peer median from sweep to confirmation; either condition alone is
-            # insufficient evidence that the new price area was accepted.
+                return decision(False, "FOLLOWER_AAC_WITHOUT_LEADERSHIP", leader, **common)
             if not (directionally_supported and event_recovered):
-                return decision(
-                    False,
-                    "AAC_WITHOUT_DIRECTIONAL_ACCEPTANCE",
-                    leader,
-                    peer_returns,
-                    directional_returns,
-                    trend_scores,
-                    candidate_move,
-                    peer_median,
-                )
-            return decision(
-                True,
-                "LEADER_AAC_DIRECTIONAL_ACCEPTANCE",
-                leader,
-                peer_returns,
-                directional_returns,
-                trend_scores,
-                candidate_move,
-                peer_median,
-            )
+                return decision(False, "AAC_WITHOUT_DIRECTIONAL_ACCEPTANCE", leader, **common)
+            return decision(True, "LEADER_AAC_DIRECTIONAL_ACCEPTANCE", leader, **common)
 
         if symbol == leader:
             if directionally_supported:
@@ -315,26 +371,8 @@ class MarketLeadershipGate:
             elif event_recovered:
                 reason = "LEADER_EVENT_RECOVERY"
             else:
-                return decision(
-                    False,
-                    "LEADER_DIRECTIONAL_DISAGREEMENT",
-                    leader,
-                    peer_returns,
-                    directional_returns,
-                    trend_scores,
-                    candidate_move,
-                    peer_median,
-                )
-            return decision(
-                True,
-                reason,
-                leader,
-                peer_returns,
-                directional_returns,
-                trend_scores,
-                candidate_move,
-                peer_median,
-            )
+                return decision(False, "LEADER_DIRECTIONAL_DISAGREEMENT", leader, **common)
+            return decision(True, reason, leader, **common)
 
         all_peers_aligned = all(value > 0.0 for value in signed_peer_moves)
         if all_peers_aligned:
@@ -348,22 +386,16 @@ class MarketLeadershipGate:
                     False,
                     "FOLLOWER_FAR_UNRESOLVED_ADVERSE_AUCTION",
                     leader,
-                    peer_returns,
-                    directional_returns,
-                    trend_scores,
-                    candidate_move,
-                    peer_median,
+                    **common,
                 )
-            return decision(
-                True,
-                "FOLLOWER_FAR_UNANIMOUS_PEERS",
-                leader,
-                peer_returns,
-                directional_returns,
-                trend_scores,
-                candidate_move,
-                peer_median,
-            )
+            if confirmation_impulse < self.minimum_follower_confirmation_impulse:
+                return decision(
+                    False,
+                    "FOLLOWER_FAR_WEAK_LOCAL_DISPLACEMENT",
+                    leader,
+                    **common,
+                )
+            return decision(True, "FOLLOWER_FAR_UNANIMOUS_PEERS", leader, **common)
 
         relative_recovery = (
             directionally_supported
@@ -375,19 +407,6 @@ class MarketLeadershipGate:
                 True,
                 "FOLLOWER_FAR_DIRECTIONAL_LEADER_RECOVERY",
                 leader,
-                peer_returns,
-                directional_returns,
-                trend_scores,
-                candidate_move,
-                peer_median,
+                **common,
             )
-        return decision(
-            False,
-            "FOLLOWER_FAR_PEER_DISAGREEMENT",
-            leader,
-            peer_returns,
-            directional_returns,
-            trend_scores,
-            candidate_move,
-            peer_median,
-        )
+        return decision(False, "FOLLOWER_FAR_PEER_DISAGREEMENT", leader, **common)
