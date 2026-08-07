@@ -106,7 +106,7 @@ class ReclaimedPoolRetestTests(unittest.TestCase):
             for item in result["scenarios"]
             if item.get("outcome") == "ENTRY_READY"
         ]
-        self.assertEqual(len(entries), 1)
+        self.assertEqual(len(entries), 1, result)
         self.assertEqual(entries[0]["entry"], 99.0)
         self.assertEqual(entries[0]["target"], 98.0)
         self.assertEqual(entries[0]["path"]["outcome"], "TARGET")
@@ -128,7 +128,7 @@ class ReclaimedPoolRetestTests(unittest.TestCase):
             logic=ReclaimedPoolRetestLogic(),
             require_flow_confirmation=False,
         )
-        self.assertEqual(ablation["summary"]["entry_ready"], 1)
+        self.assertEqual(ablation["summary"]["entry_ready"], 1, ablation)
 
     def test_value_delivery_before_retest_cancels_scenario(self) -> None:
         bars = self._bars(directional_flow=True)
