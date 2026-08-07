@@ -1,4 +1,4 @@
-name: candidate-05-v39-positioning-reset
+name: candidate-05-v40-unfilled-target-handoff
 
 on:
   push:
@@ -9,14 +9,17 @@ on:
       - "research/candidate-05/strategy_v17.py"
       - "research/candidate-05/strategy_v39_positioning_reset.py"
       - "research/candidate-05/strategy.py"
+      - "research/candidate-05/strategy_v40_unfilled_target_handoff.py"
+      - "research/candidate-05/v40_active/strategy.py"
       - "research/candidate-05/candidate.py"
       - "research/candidate-05/tests/test_basis_contract.py"
       - "research/candidate-05/tests/test_positioning_reset_logic.py"
+      - "research/candidate-05/tests/test_strategy_v40_unfilled_target_handoff_contract.py"
       - ".github/workflows/candidate-05-v39-positioning-reset.yml"
   workflow_dispatch:
 
 concurrency:
-  group: candidate-05-v39-positioning-reset
+  group: candidate-05-v40-unfilled-target-handoff
   cancel-in-progress: true
 
 permissions:
@@ -31,9 +34,9 @@ jobs:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
     env:
-      PYTHONPATH: research/candidate-05
+      PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
       PYTHONUNBUFFERED: "1"
-      ROOT: artifacts/candidate-05-v39
+      ROOT: artifacts/candidate-05-v40
     steps:
       - uses: actions/checkout@v4
 
@@ -55,7 +58,7 @@ jobs:
           python research/candidate-05/candidate.py pipeline \
             --config research/candidate-05/config.json \
             --weeks research/candidate-05/weeks.json \
-            --cache .cache/candidate-05-v39 \
+            --cache .cache/candidate-05-v40 \
             --output "$ROOT" \
             --max-weeks 3 \
             2>&1 | tee "$ROOT-console.log"
@@ -86,9 +89,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-05-v39-positioning-reset-${{ github.sha }}
+          name: candidate-05-v40-unfilled-target-handoff-${{ github.sha }}
           path: |
-            artifacts/candidate-05-v39/**
-            artifacts/candidate-05-v39-console.log
+            artifacts/candidate-05-v40/**
+            artifacts/candidate-05-v40-console.log
           if-no-files-found: warn
           retention-days: 90
