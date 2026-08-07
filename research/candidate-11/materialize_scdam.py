@@ -2,12 +2,15 @@
 """Fail-closed materialization and idempotent migrations for Candidate 11."""
 from __future__ import annotations
 
+from base64 import b64decode
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path, PurePosixPath
 import tarfile
 
 
 COMPLEX_ARCHIVE = "complex_runtime.tar.xz"
+COMPLEX_PARTS = tuple(f"complex_runtime.part{i:02d}.b64" for i in range(6))
 COMPLEX_ARCHIVE_SHA256 = "c43e99ed573797c64783c1791480e465ad8e8d8b51b7c4a1c945a0ee1a07076e"
 COMPLEX_FILE_SHA256 = {
     "complex_engine.py": "9837624b72c1b1ef4a37e819d957365a2124c90f8e3ae849c1b5868971ce28f5",
@@ -32,14 +35,22 @@ def _safe_member(name: str) -> bool:
 
 def materialize_complex(root: Path) -> int:
     """Materialize the exact locally contract-tested synchronized market source."""
-    archive_path = root / COMPLEX_ARCHIVE
-    if not archive_path.exists():
+    part_paths = tuple(root / name for name in COMPLEX_PARTS)
+    present = tuple(path.name for path in part_paths if path.exists())
+    if not present:
         missing = [name for name in COMPLEX_FILE_SHA256 if not (root / name).is_file()]
         if missing:
             raise SystemExit(f"synchronized complex source is incomplete: {missing}")
         return 0
+    if present != COMPLEX_PARTS:
+        missing_parts = sorted(set(COMPLEX_PARTS) - set(present))
+        raise SystemExit(f"incomplete synchronized source part set: {missing_parts}")
 
-    payload = archive_path.read_bytes()
+    encoded = "".join(path.read_text(encoding="ascii") for path in part_paths)
+    try:
+        payload = b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise SystemExit(f"invalid synchronized source base64: {exc}") from exc
     actual_archive_hash = sha256(payload).hexdigest()
     if actual_archive_hash != COMPLEX_ARCHIVE_SHA256:
         raise SystemExit(
@@ -48,7 +59,7 @@ def materialize_complex(root: Path) -> int:
         )
 
     try:
-        with tarfile.open(archive_path, mode="r:xz") as archive:
+        with tarfile.open(fileobj=BytesIO(payload), mode="r:xz") as archive:
             members = archive.getmembers()
             names = [member.name for member in members]
             if len(names) != len(set(names)):
@@ -78,7 +89,9 @@ def materialize_complex(root: Path) -> int:
     except tarfile.TarError as exc:
         raise SystemExit(f"invalid synchronized source archive: {exc}") from exc
 
-    archive_path.unlink()
+    for path in part_paths:
+        path.unlink()
+    (root / COMPLEX_ARCHIVE).unlink(missing_ok=True)
     print("materialized synchronized four-market FAR/AAC source")
     return len(COMPLEX_FILE_SHA256)
 
