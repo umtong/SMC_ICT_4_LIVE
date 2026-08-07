@@ -1,0 +1,60 @@
+{
+  "candidate": "candidate-04-v51-asymmetric-liquidity-raid-reversal",
+  "custom_backtest_engine": false,
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "locked_before_market_data": true,
+  "market_hypothesis": "A first BTC traversal of already-known short-term external dealing-range liquidity is a failed auction when at least two of ETH, SOL and XRP reject the analogous directional sweep, BTC returns inside the old range, the futures-index proxy and executed flow reverse together, a pre-sweep internal structure is displaced with an FVG, and a separate later FVG retest holds. The position targets only pre-existing opposite external liquidity.",
+  "parameter_search": false,
+  "risk_contract": {
+    "current_full_account_nav": true,
+    "global_pending_entry_plus_position_limit": 1,
+    "maximum_planned_loss_fraction": 0.03,
+    "score_risk_multiplier": null,
+    "maximum_notional_cap": null
+  },
+  "selection": {
+    "seed": "candidate-04-v51-smt-first-week-2026-08-07",
+    "seed_integer": 10004679007096629063,
+    "first_week": {
+      "build_start": "2023-02-25",
+      "evaluation_start": "2023-02-27",
+      "evaluation_end": "2023-03-06",
+      "status": "LOCKED_UNOPENED"
+    },
+    "second_week": {
+      "evaluation_start": "2023-09-04",
+      "evaluation_end": "2023-09-11",
+      "allowed_only_if": "UNCHANGED_V51_FIRST_WEEK_PASSES"
+    },
+    "third_week": {
+      "evaluation_start": "2024-10-07",
+      "evaluation_end": "2024-10-14",
+      "allowed_only_if": "UNCHANGED_V51_FIRST_AND_SECOND_WEEKS_PASS"
+    }
+  },
+  "state_contract": {
+    "external_liquidity": "pre-event 60-minute completed dealing-range high or low, shifted by one minute",
+    "first_sweep": "BTC alone traverses the known edge by at least 0.02 ATR from an inside previous close",
+    "cross_market_asymmetry": "at least two of ETH, SOL and XRP do not both wick through their analogous edge and accept with a past-only tail directional return",
+    "failed_auction": "BTC closes back inside the swept range within three completed minutes",
+    "confirmation": "opposite flow and return, futures-index proxy agreement, break of the pre-sweep internal boundary, past-only displacement and a directional FVG",
+    "entry": "a separate later FVG retest holds",
+    "invalidation": "beyond the full BTC sweep extreme plus 0.05 ATR",
+    "target": "nearest pre-existing intact opposite external liquidity with at least 1.20R after costs; measured moves prohibited"
+  },
+  "first_week_gate": {
+    "minimum_trades": 5,
+    "minimum_active_days": 3,
+    "minimum_win_rate": 0.60,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_drawdown": 0.20,
+    "maximum_realized_loss_to_entry_nav": 0.0301
+  },
+  "single_precommitted_ablation_if_baseline_fails": {
+    "removed_variable": "cross_market_peer_rejection_requirement",
+    "baseline_minimum_peer_rejections": 2,
+    "ablation_minimum_peer_rejections": 0,
+    "interpretation": "Tests whether cross-market SMT asymmetry is the alpha source or merely a scarcity filter. All other state, cost, risk, target and execution contracts remain unchanged."
+  },
+  "source_lock_status": "LOGIC_CONFIG_WEEK_LOCKED_BEFORE_FIRST_DATA_ACCESS"
+}
