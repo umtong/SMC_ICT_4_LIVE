@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 import unittest
 
 import pandas as pd
@@ -9,22 +8,26 @@ import directional_session_vwap_negotiation_no_efficiency_ablation_compiler as c
 
 
 class NoEfficiencyContextTests(unittest.TestCase):
+    @staticmethod
+    def state(*, side: int, close: float, vwap: float = 100.0, mad: float = 2.0):
+        return candidate.base.parent_base.DirectionalSession(
+            session_start=pd.Timestamp("2025-01-01", tz="UTC"),
+            high=110.0,
+            low=90.0,
+            open=100.0,
+            close=close,
+            vwap=vwap,
+            vwap_mad=mad,
+            efficiency=0.001,
+            past_efficiency_median=0.05,
+            side=side,
+            directional=False,
+        )
+
     def test_vwap_mad_acceptance_remains_required(self) -> None:
         original = candidate._ORIGINAL_CONTEXTS
-        weak_efficiency_but_accepted = SimpleNamespace(
-            side=1,
-            close=103.0,
-            vwap=100.0,
-            vwap_mad=2.0,
-            directional=False,
-        )
-        not_value_accepted = SimpleNamespace(
-            side=1,
-            close=101.0,
-            vwap=100.0,
-            vwap_mad=2.0,
-            directional=False,
-        )
+        weak_efficiency_but_accepted = self.state(side=1, close=103.0)
+        not_value_accepted = self.state(side=1, close=101.0)
         try:
             candidate._ORIGINAL_CONTEXTS = lambda data: {
                 pd.Timestamp("2025-01-01", tz="UTC"): weak_efficiency_but_accepted,
@@ -39,13 +42,7 @@ class NoEfficiencyContextTests(unittest.TestCase):
 
     def test_ablation_does_not_change_side(self) -> None:
         original = candidate._ORIGINAL_CONTEXTS
-        state = SimpleNamespace(
-            side=-1,
-            close=97.0,
-            vwap=100.0,
-            vwap_mad=2.0,
-            directional=False,
-        )
+        state = self.state(side=-1, close=97.0)
         try:
             candidate._ORIGINAL_CONTEXTS = lambda data: {
                 pd.Timestamp("2025-01-01", tz="UTC"): state,
