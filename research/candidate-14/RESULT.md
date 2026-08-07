@@ -1,20 +1,34 @@
-# Candidate 14 evidence status
+# Candidate 14 aggregate result
 
-**NO_FRESH_V3_EVIDENCE**
+**CANDIDATE14_DIAGNOSTIC_GATE_FAILED**
 
-The aggregate created in commit `b339cac7320d86adcb478cfff0fef421a16108b5` is invalidated.
+- validation_mode: `diagnostic`
+- gate_passed: `False`
+- success_claim: `False`
+- daily_geometric_growth: `0.0094850698`
+- pooled_nav_multiple: `1.3915425989`
+- closed_trades: `12`
+- wins / losses: `8 / 4`
+- win_rate: `0.666667`
+- payoff_ratio: `1.9449238022974358`
+- active_weeks: `5 / 5`
+- maximum_weekly_closed_trade_drawdown: `0.0590970455`
+- maximum_positive_log_growth_share_from_one_week: `0.4551692226`
 
-The v3 static job stopped before any market evaluation because one inherited test still expected the old parent-order marker. The aggregate job nevertheless read the already committed development-v2 `results/` directory and relabeled its metrics with the v3 candidate name. The weekly `effective_config.json` files prove that their protocol remained `candidate-14-development-v2-protocol-v1`.
+## Gate checks
+- all_holdouts_complete: `True`
+- all_safety_audits: `True`
+- daily_geometric_growth: `False`
+- closed_trades: `True`
+- active_weeks: `True`
+- win_rate: `False`
+- payoff_ratio: `True`
+- max_drawdown: `True`
+- growth_concentration: `True`
 
-No v3 performance claim is made from those files. Development-v1 and development-v2 evidence remains separately preserved under `development-v1-*` and `development-v2-*`.
-
-A replacement workflow now requires:
-
-- static success;
-- successful evaluation of all W10-W14 matrix jobs;
-- exactly five freshly downloaded evidence artifacts;
-- candidate, protocol schema, validation mode and session-module provenance equality for every interval;
-- all independent safety-audit checks;
-- a current branch SHA before and after aggregation.
-
-Only provenance-verified fresh evidence may replace this status.
+## Weekly evidence
+- W11 (2023-03-20): daily_geo=0.006473, trades=2, W/L=1/1, plans=3, safety=True
+- W12 (2023-06-20): daily_geo=0.015406, trades=3, W/L=3/0, plans=3, safety=True
+- W13 (2024-09-17): daily_geo=0.006919, trades=1, W/L=1/0, plans=1, safety=True
+- W14 (2024-12-31): daily_geo=-0.005343, trades=3, W/L=1/2, plans=3, safety=True
+- W10 (2025-04-14): daily_geo=0.024212, trades=3, W/L=2/1, plans=3, safety=True
