@@ -61,6 +61,28 @@ class InitiativeAuctionGateTests(unittest.TestCase):
         )
         self.assertFalse(gate.is_blocked(Direction.SHORT))
 
+    def test_opposite_failed_reversal_atomically_transfers_initiative(self) -> None:
+        gate = InitiativeAuctionGate()
+        bullish = gate.accept_failed_reversal(
+            blocked_reversal_direction=Direction.SHORT,
+            opposing_delivery_price=90.0,
+            source_scenario_id="failed-short-bullish-acceptance",
+            accepted_source_level=100.0,
+            accepted_at_ns=1,
+        )
+        bearish, displaced = gate.transfer_on_failed_reversal(
+            blocked_reversal_direction=Direction.LONG,
+            opposing_delivery_price=110.0,
+            source_scenario_id="failed-long-bearish-acceptance",
+            accepted_source_level=99.0,
+            accepted_at_ns=2,
+        )
+        self.assertEqual(displaced, bullish)
+        self.assertFalse(gate.is_blocked(Direction.SHORT))
+        self.assertTrue(gate.is_blocked(Direction.LONG))
+        self.assertEqual(gate.state(Direction.LONG), bearish)
+        self.assertEqual(bearish.initiative_direction, Direction.SHORT)
+
     def test_new_failure_replaces_same_leg_direction_with_latest_evidence(self) -> None:
         gate = InitiativeAuctionGate()
         gate.accept_failed_reversal(
