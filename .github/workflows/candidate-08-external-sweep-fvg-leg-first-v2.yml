@@ -1,0 +1,150 @@
+name: candidate-08-external-sweep-fvg-leg-first-v2
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-external-sweep-fvg-leg-first-v2"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-external-sweep-fvg-leg-first-v2
+  cancel-in-progress: true
+
+jobs:
+  first-btc-week:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.run-external-sweep-fvg-leg-first-v2
+      OUTPUT_DIR: research/candidate-08/evidence/external-sweep-fvg-leg-first-v2
+      LOG: research/candidate-08/evidence/external-sweep-fvg-leg-first-v2/workflow.log
+      STATUS: research/candidate-08/evidence/external-sweep-fvg-leg-first-v2/exit_status.txt
+      CACHE_DIR: .cache/candidate-08-quote-resiliency
+      CONFIG: research/candidate-08/config_external_sweep_fvg_leg_btc_v2.json
+      PATTERN_CONFIG: research/candidate-08/config_range_fvg.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore verified market-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/candidate-08-quote-resiliency
+          key: candidate-08-quote-resiliency-data-v1-${{ hashFiles('research/candidate-08/config_quote_resiliency_btc_v1.json') }}
+          restore-keys: |
+            candidate-08-quote-resiliency-data-v1-
+
+      - name: Run leg-state contracts and frozen BTC week
+        id: research
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/external_sweep_fvg_leg_signals_v2.py \
+              research/candidate-08/run_external_sweep_fvg_leg_nautilus_v2.py
+            python research/candidate-08/test_quote_resiliency_features_v3.py -v
+            python research/candidate-08/test_quote_resiliency_data.py -v
+            python research/candidate-08/test_quote_resiliency_execution_price_contract.py -v
+            python research/candidate-08/test_quote_resiliency_native_quotes.py -v
+            python research/candidate-08/test_quote_resiliency_native_adapter.py -v
+            python - <<'PY'
+          from external_sweep_fvg_leg_signals_v2 import ExternalSweepFvgLegConfig
+          config = ExternalSweepFvgLegConfig()
+          config.validate()
+          assert config.maximum_displacement_minutes == 15
+          assert config.maximum_retrace_energy_fraction < 1.0
+          PY
+            python research/candidate-08/run_external_sweep_fvg_leg_nautilus_v2.py \
+              --suite first \
+              --config "$CONFIG" \
+              --pattern-config "$PATTERN_CONFIG" \
+              --output "$OUTPUT_DIR" \
+              --data-cache "$CACHE_DIR"
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          output = Path(os.environ["OUTPUT_DIR"])
+          summary = json.loads((output / "suite_metrics.json").read_text())
+          result = summary["window_results"][0]
+          decision = {
+              "candidate": summary.get("candidate"),
+              "window": result.get("name"),
+              "signals": summary.get("signals", 0),
+              "closed_trades": summary.get("closed_trades", 0),
+              "wins": summary.get("wins", 0),
+              "positive_trade_share": summary.get("positive_trade_share", 0.0),
+              "total_return": result.get("total_return"),
+              "daily_geometric_growth": result.get("daily_geometric_growth"),
+              "first_window_gate_passed": result.get("first_window_gate_passed", False),
+              "suite_gate_passed": summary.get("suite_gate_passed", False),
+              "decision": (
+                  "PROMOTE_TO_TWO_ADDITIONAL_FROZEN_WEEKS"
+                  if result.get("first_window_gate_passed", False)
+                  else "DIAGNOSE_OR_REJECT_ON_FIXED_FIRST_WEEK"
+              ),
+          }
+          (output / "decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit implementation and evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- \
+            research/candidate-08/external_sweep_fvg_leg_signals_v2.py \
+            research/candidate-08/run_external_sweep_fvg_leg_nautilus_v2.py \
+            research/candidate-08/config_external_sweep_fvg_leg_btc_v2.json \
+            "$OUTPUT_DIR" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record external sweep leg first-window evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce reproducible execution
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS_VALUE: ${{ steps.research.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
