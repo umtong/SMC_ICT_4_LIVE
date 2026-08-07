@@ -9,6 +9,12 @@ from statistics import mean
 from typing import Any
 
 
+DATA_SCHEMAS = {
+    "candidate-11-cross-asset-gap-data-v1",
+    "candidate-11-cross-asset-gap-aggtrades-data-v1",
+}
+
+
 def load(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -42,7 +48,7 @@ def main() -> int:
         summary = load(root / "summary.json")
         payload = load(root / "events.json")
         manifest = load(root / "data_manifest.json")
-        if manifest.get("schema") == "candidate-11-cross-asset-gap-data-v1":
+        if manifest.get("schema") in DATA_SCHEMAS:
             manifests += 1
         interval_events = payload.get("events", [])
         if not isinstance(interval_events, list):
