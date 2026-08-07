@@ -642,6 +642,26 @@ def _run_variant(
     original_discover = replay.discover_structural_signals
     original_builder = replay.build_causal_signals
     original_strategy = replay.Candidate07EventSignalStrategy
+    original_engine = replay.BacktestEngine
+
+    class EmptySignalSafeBacktestEngine:
+        """Delegate to Nautilus while allowing a causally empty signal stream."""
+
+        def __init__(self, *engine_args: Any, **engine_kwargs: Any) -> None:
+            self._delegate = original_engine(*engine_args, **engine_kwargs)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._delegate, name)
+
+        def add_data(self, data: Any, *data_args: Any, **data_kwargs: Any) -> Any:
+            try:
+                empty = len(data) == 0
+            except TypeError:
+                empty = False
+            if empty:
+                return None
+            return self._delegate.add_data(data, *data_args, **data_kwargs)
+
     replay.discover_structural_signals = (
         lambda *, config, bundle, start, end: discover_structural_signals(
             config=config,
@@ -653,6 +673,7 @@ def _run_variant(
     )
     replay.build_causal_signals = build_causal_signals
     replay.Candidate07EventSignalStrategy = Candidate07CostViableMITStrategy
+    replay.BacktestEngine = EmptySignalSafeBacktestEngine
     try:
         metrics = replay.run_week(
             config_path=config_path,
@@ -667,6 +688,7 @@ def _run_variant(
         replay.discover_structural_signals = original_discover
         replay.build_causal_signals = original_builder
         replay.Candidate07EventSignalStrategy = original_strategy
+        replay.BacktestEngine = original_engine
     metrics["execution_contract"]["selected_route"] = (
         "global extreme-flow absorption -> opposite recovery -> "
         + ("first event-VWAP retest rejection" if require_retest else "recovery close")
