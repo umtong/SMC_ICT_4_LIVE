@@ -54,61 +54,58 @@ class SemanticLeadershipTests(unittest.TestCase):
         self.assertTrue(result.approved)
         self.assertEqual(result.reason, "SEMANTIC_FAR_MODERATE_COUNTERTREND_UNANIMOUS")
 
-    def test_lrc_requires_persistent_and_event_leadership(self):
-        scores = {symbol: value for symbol, value in zip(SYMBOLS, (0.2, 0.4, 1.8, 0.3), strict=True)}
-        result = self.classify(
-            self.decision(
-                directional_trend_scores=scores,
-                trailing_direction_rank=1,
-                event_direction_rank=1,
-            ),
-        )
+    def test_far_accepts_dominant_peer_quorum_for_strong_follower(self):
+        peers = {"BTCUSDT": -0.004, "ETHUSDT": -0.003, "XRPUSDT": 0.0005}
+        result = self.classify(self.decision(peer_returns=peers))
         self.assertTrue(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_LRC_PERSISTENT_EVENT_LEADER")
+        self.assertEqual(result.reason, "SEMANTIC_FAR_DOMINANT_PEER_QUORUM")
 
-    def test_aligned_reclaim_without_dual_leadership_is_rejected(self):
+    def test_far_rejects_material_dissent(self):
+        peers = {"BTCUSDT": -0.004, "ETHUSDT": -0.003, "XRPUSDT": 0.0045}
+        result = self.classify(self.decision(peer_returns=peers))
+        self.assertFalse(result.approved)
+        self.assertEqual(result.reason, "SEMANTIC_FAR_REQUIRES_DOMINANT_PEER_RECLAIM")
+
+    def test_far_quorum_cannot_validate_liquidity_leader(self):
+        peers = {"ETHUSDT": -0.004, "SOLUSDT": -0.003, "XRPUSDT": 0.0005}
+        result = self.classify(
+            self.decision(symbol="BTCUSDT", peer_returns=peers, event_direction_rank=1),
+        )
+        self.assertFalse(result.approved)
+        self.assertEqual(result.reason, "SEMANTIC_FAR_QUORUM_CANNOT_USE_LIQUIDITY_LEADER")
+
+    def test_far_quorum_requires_efficient_local_path(self):
+        peers = {"BTCUSDT": -0.004, "ETHUSDT": -0.003, "XRPUSDT": 0.0005}
+        result = self.classify(
+            self.decision(peer_returns=peers, event_path_efficiency=0.09),
+        )
+        self.assertFalse(result.approved)
+        self.assertEqual(result.reason, "SEMANTIC_FAR_QUORUM_INEFFICIENT_LOCAL_PATH")
+
+    def test_far_quorum_requires_standardized_local_displacement(self):
+        peers = {"BTCUSDT": -0.004, "ETHUSDT": -0.003, "XRPUSDT": 0.0005}
+        result = self.classify(
+            self.decision(peer_returns=peers, event_standardized_displacement=0.49),
+        )
+        self.assertFalse(result.approved)
+        self.assertEqual(result.reason, "SEMANTIC_FAR_QUORUM_INSUFFICIENT_LOCAL_DISPLACEMENT")
+
+    def test_far_rejects_aligned_trailing_reclaim(self):
         scores = {symbol: 0.5 for symbol in SYMBOLS}
-        result = self.classify(
-            self.decision(
-                directional_trend_scores=scores,
-                trailing_direction_rank=2,
-                event_direction_rank=1,
-            ),
-        )
+        result = self.classify(self.decision(directional_trend_scores=scores))
         self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_RECLAIM_ALIGNED_BUT_NOT_LEADER")
+        self.assertEqual(result.reason, "SEMANTIC_FAR_NOT_COUNTERTREND")
 
-    def test_ldt_requires_candidate_to_finish_after_all_peers(self):
-        result = self.classify(
-            self.decision(
-                event_direction_rank=4,
-                event_standardized_displacement=0.56,
-            ),
-        )
-        self.assertTrue(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_LDT_UNANIMOUS_PEER_LEAD")
-
-    def test_ldt_rejects_weak_final_displacement(self):
-        result = self.classify(
-            self.decision(
-                event_direction_rank=4,
-                event_standardized_displacement=0.49,
-            ),
-        )
+    def test_far_rejects_event_laggard(self):
+        result = self.classify(self.decision(event_direction_rank=4))
         self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_LDT_INSUFFICIENT_LOCAL_DISPLACEMENT")
+        self.assertEqual(result.reason, "SEMANTIC_FAR_EVENT_LAGGARD")
 
     def test_far_rejects_severely_unresolved_countertrend(self):
         scores = {symbol: -2.0 for symbol in SYMBOLS}
         result = self.classify(self.decision(directional_trend_scores=scores))
         self.assertFalse(result.approved)
         self.assertEqual(result.reason, "SEMANTIC_FAR_UNRESOLVED_ADVERSE_AUCTION")
-
-    def test_far_rejects_mixed_peer_path(self):
-        peers = {"BTCUSDT": -0.004, "ETHUSDT": 0.001, "XRPUSDT": -0.002}
-        result = self.classify(self.decision(peer_returns=peers))
-        self.assertFalse(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_FAR_REQUIRES_UNANIMOUS_PEER_RECLAIM")
 
     def test_aac_accepts_aligned_efficient_nonlaggard_move(self):
         scores = {symbol: value for symbol, value in zip(SYMBOLS, (0.10, 0.42, 0.23, 0.40), strict=True)}
