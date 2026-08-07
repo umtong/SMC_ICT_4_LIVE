@@ -26,12 +26,25 @@ def main() -> None:
     assert offset == -1_000_000_000
     assert observable >= minus_one_second
 
+    plus_two_seconds = boundary + 2_000_000_000
+    nominal, observable, offset = _causal_metric_timestamp(plus_two_seconds)
+    assert nominal == boundary
+    assert observable == boundary + ONE_MINUTE_NS
+    assert offset == 2_000_000_000
+    assert observable >= plus_two_seconds
+
+    late_but_unambiguous = boundary + (FIVE_MINUTE_NS // 2) - 1
+    nominal, observable, offset = _causal_metric_timestamp(late_but_unambiguous)
+    assert nominal == boundary
+    assert observable >= late_but_unambiguous
+    assert offset == (FIVE_MINUTE_NS // 2) - 1
+
     try:
-        _causal_metric_timestamp(boundary + 1_000_000_001)
+        _causal_metric_timestamp(boundary + FIVE_MINUTE_NS // 2)
     except ValueError as exc:
-        assert "too far" in str(exc)
+        assert "ambiguous" in str(exc)
     else:
-        raise AssertionError("timestamp outside one-second tolerance must fail")
+        raise AssertionError("half-slot timestamp must fail as ambiguous")
 
     nominal_slots = [
         _causal_metric_timestamp(boundary + FIVE_MINUTE_NS * index + (1_000_000_000 if index == 1 else 0))[0]

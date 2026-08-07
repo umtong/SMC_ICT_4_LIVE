@@ -9,7 +9,7 @@ Selected: `oidb_deleveraging_bifurcation_full`
 |oidb_exhaustion_reversal_only|1|False|False|0.112224%|13|8|61.54%|1.0520075615287416|6.76%|geometric_daily_nav_growth|
 |oidb_without_open_interest_ablation|1|False|False|-8.465051%|61|20|32.79%|0.46493101991026214|46.16%|geometric_daily_nav_growth, win_rate, max_drawdown|
 |oidb_deleveraging_bifurcation_full|2|True|False|-0.467442%|2|0|0.00%|0.0|4.46%|geometric_daily_nav_growth, trade_count, win_rate, positive_trade_count, profit_concentration|
-|oidb_deleveraging_bifurcation_full|3|True|False|0.000000%|None|None|0.00%|None|0.00%||
+|oidb_deleveraging_bifurcation_full|3|True|False|0.932683%|10|7|70.00%|1.696370830826159|9.02%|geometric_daily_nav_growth|
 
 ## Diagnoses
 

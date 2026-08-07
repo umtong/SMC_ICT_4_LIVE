@@ -139,24 +139,25 @@ def _timestamp_ns(value: str) -> int:
 
 FIVE_MINUTE_NS = 5 * 60 * 1_000_000_000
 ONE_MINUTE_NS = 60 * 1_000_000_000
-MAX_NOMINAL_TIMESTAMP_OFFSET_NS = 1_000_000_000
+MAX_NOMINAL_TIMESTAMP_OFFSET_NS = FIVE_MINUTE_NS // 2
 
 
 def _causal_metric_timestamp(source_ts_ns: int) -> tuple[int, int, int]:
     """Return nominal five-minute slot, causal observable minute and offset.
 
-    Binance has a small number of official metrics rows stamped one second away
-    from the nominal five-minute boundary. The row is never shifted earlier. A
-    non-minute source timestamp becomes observable at the next completed minute.
+    Official metrics rows may be published seconds after their nominal slot.
+    The nominal slot is used only to verify that no five-minute observation is
+    missing. The row itself is never shifted earlier and becomes observable at
+    the first completed minute at or after its source timestamp.
     """
 
     lower = (source_ts_ns // FIVE_MINUTE_NS) * FIVE_MINUTE_NS
     upper = lower + FIVE_MINUTE_NS
     nominal = lower if source_ts_ns - lower <= upper - source_ts_ns else upper
     offset = source_ts_ns - nominal
-    if abs(offset) > MAX_NOMINAL_TIMESTAMP_OFFSET_NS:
+    if abs(offset) >= MAX_NOMINAL_TIMESTAMP_OFFSET_NS:
         raise ValueError(
-            f"metrics timestamp too far from five-minute boundary: "
+            f"metrics timestamp is ambiguous between adjacent five-minute slots: "
             f"source={source_ts_ns}, nominal={nominal}, offset_ns={offset}",
         )
     observable = ((source_ts_ns + ONE_MINUTE_NS - 1) // ONE_MINUTE_NS) * ONE_MINUTE_NS
