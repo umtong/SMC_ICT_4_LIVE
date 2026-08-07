@@ -31,7 +31,7 @@ class ReclaimedPoolRetestTests(unittest.TestCase):
         # First post-event retest at index 22 and three completed seconds of
         # rejected-side confirmation.  The value target remains untouched until
         # after the entry observation at index 24.
-        open_[22:25] = np.array([99.0, 99.8, 99.4])
+        open_[22:25] = np.array([100.0, 99.8, 99.4])
         close[22:25] = np.array([99.8, 99.4, 99.0])
         high[22:25] = np.array([100.10, 99.85, 99.45])
         low[22:25] = np.array([98.95, 99.35, 98.95])
