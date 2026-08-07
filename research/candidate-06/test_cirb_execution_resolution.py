@@ -63,6 +63,11 @@ def _parent(*, branch: str = "DISCHARGE", side: str = "SELL") -> FrozenParent:
         event_all_account_ratio=(1.01 if branch == "COUNTER_INVENTORY" and side == "SELL" else (0.99 if side == "SELL" else 1.01)),
         shock_sign=-1.0 if side == "SELL" else 1.0,
         baseline_entry={
+            "reason_code": (
+                "TRAPPED_COUNTER_INVENTORY_CONTINUATION_ENTRY_ARMED"
+                if branch == "COUNTER_INVENTORY"
+                else "CROWD_DISCHARGE_REVERSAL_ENTRY_ARMED"
+            ),
             "reference_price": 101.0,
             "scenario_id": "baseline:ENTRY",
         },

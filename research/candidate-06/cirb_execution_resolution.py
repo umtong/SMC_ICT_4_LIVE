@@ -592,7 +592,7 @@ def build_child_plans(
             signal_branch: str | None = None
 
             if branch == "DISCHARGE":
-                reversal = expected_family == "CIRB_D_R" and (
+                reversal = expected_family == "CIRB_D_R" and ((
                     parent.side == "SELL"
                     and close >= parent.event_mid
                     and flow >= floor
@@ -602,7 +602,7 @@ def build_child_plans(
                     and close <= parent.event_mid
                     and flow <= -floor
                     and location <= 1.0 - reclaim
-                )
+                ))
                 if reversal:
                     direction = "LONG" if parent.side == "SELL" else "SHORT"
                     stop = extreme - buffer_fraction * parent.atr if direction == "LONG" else extreme + buffer_fraction * parent.atr
