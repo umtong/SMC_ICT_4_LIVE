@@ -1,4 +1,4 @@
-# Controlled trigger revision: 2026-08-07T02:45:00Z
+# Controlled trigger revision: 2026-08-07T03:05:00Z
 # Canonical v20 source commit: f3d68f941637f23b40c4e3e29345669600be7f54
 # Canonical v20 source Git blob: 32114dbd1f555e9a417c2774073abf025a15e3c2
 # Patch SHA256: ad93590e75c6c68f0de2daaae1525bc5aa4503afa91795e829e787c58fb1dc6f
@@ -9,6 +9,7 @@ on:
     branches:
       - research/candidate-10
     paths:
+      - research/candidate-10/v20_source.zip
       - research/candidate-10/v20_2_patch.zip
       - research/candidate-10/sitecustomize.py
       - research/candidate-10/EXECUTE_V20_2_GATE.md
@@ -40,7 +41,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Recover and verify canonical source members
+      - name: Materialize and verify v20 source members
         shell: bash
         run: |
           set -euo pipefail
@@ -52,29 +53,38 @@ jobs:
             echo "Canonical source blob mismatch: ${actual_blob} != ${V20_SOURCE_BLOB}" >&2
             exit 1
           fi
-          git cat-file blob "${V20_SOURCE_BLOB}" > .candidate10-runtime/v20_source.zip
+          git cat-file blob "${V20_SOURCE_BLOB}" > .candidate10-runtime/canonical_source.bin
 
           python - <<'PY'
           from __future__ import annotations
 
           from hashlib import sha256
           from pathlib import Path, PurePosixPath
+          import base64
           import binascii
           import json
           import os
           import shutil
           import struct
+          import tempfile
           import zipfile
           import zlib
+
+          REQUIRED_SOURCE = {
+              'c10_liquidation_state.py',
+              'c10_liquidation_strategy.py',
+              'c10_liquidation_research.py',
+              'run_research.py',
+              'test_liquidation_state.py',
+          }
 
           def safe_target(root: Path, name: str) -> Path:
               relative = PurePosixPath(name)
               if relative.is_absolute() or '..' in relative.parts:
-                  raise SystemExit(f'unsafe archive member: {name!r}')
+                  raise ValueError(f'unsafe archive member: {name!r}')
               return root.joinpath(*relative.parts)
 
-          def recover_local_headers(source: Path, destination: Path) -> list[str]:
-              data = source.read_bytes()
+          def recover_local_headers(data: bytes, destination: Path) -> list[str]:
               cursor = 0
               members: list[str] = []
               while cursor + 30 <= len(data) and data[cursor:cursor + 4] == b'PK\x03\x04':
@@ -92,15 +102,15 @@ jobs:
                       extra_length,
                   ) = struct.unpack_from('<IHHHHHIIIHH', data, cursor)
                   if signature != 0x04034B50:
-                      raise SystemExit(f'invalid local header at offset {cursor}')
+                      raise ValueError(f'invalid local header at offset {cursor}')
                   if flags & 0x08:
-                      raise SystemExit(f'data-descriptor member is unsupported at offset {cursor}')
+                      raise ValueError(f'data-descriptor member unsupported at offset {cursor}')
                   name_start = cursor + 30
                   name_end = name_start + name_length
                   data_start = name_end + extra_length
                   data_end = data_start + compressed_size
                   if data_end > len(data):
-                      raise SystemExit(f'truncated member at offset {cursor}')
+                      raise ValueError(f'truncated member at offset {cursor}')
                   name = data[name_start:name_end].decode('utf-8')
                   payload = data[data_start:data_end]
                   if method == 0:
@@ -108,12 +118,12 @@ jobs:
                   elif method == 8:
                       decoded = zlib.decompress(payload, -15)
                   else:
-                      raise SystemExit(f'unsupported compression method {method} for {name}')
+                      raise ValueError(f'unsupported compression method {method} for {name}')
                   if len(decoded) != uncompressed_size:
-                      raise SystemExit(f'uncompressed size mismatch for {name}')
+                      raise ValueError(f'uncompressed size mismatch for {name}')
                   actual_crc = binascii.crc32(decoded) & 0xFFFFFFFF
                   if actual_crc != expected_crc:
-                      raise SystemExit(f'CRC mismatch for {name}')
+                      raise ValueError(f'CRC mismatch for {name}')
                   target = safe_target(destination, name)
                   if name.endswith('/'):
                       target.mkdir(parents=True, exist_ok=True)
@@ -123,59 +133,154 @@ jobs:
                       members.append(name)
                   cursor = data_end
               if not members:
-                  raise SystemExit(f'no recoverable local-file members in {source}')
-              return members
+                  raise ValueError('no recoverable local-file members')
+              return sorted(members)
 
-          def extract_verified(source: Path, destination: Path) -> tuple[str, list[str]]:
-              if zipfile.is_zipfile(source):
-                  with zipfile.ZipFile(source) as archive:
+          def extract_bytes(data: bytes, destination: Path) -> tuple[str, list[str]]:
+              destination.mkdir(parents=True, exist_ok=True)
+              archive_path = destination.parent / f'{destination.name}.candidate.zip'
+              archive_path.write_bytes(data)
+              if zipfile.is_zipfile(archive_path):
+                  with zipfile.ZipFile(archive_path) as archive:
                       bad = archive.testzip()
                       if bad is not None:
-                          raise SystemExit(f'corrupt member in {source}: {bad}')
+                          raise ValueError(f'CRC failure in {bad}')
                       names = sorted(name for name in archive.namelist() if not name.endswith('/'))
                       for name in names:
                           target = safe_target(destination, name)
                           target.parent.mkdir(parents=True, exist_ok=True)
                           target.write_bytes(archive.read(name))
                   return 'central-directory', names
-              return 'local-header-recovery', sorted(recover_local_headers(source, destination))
+              return 'local-header-recovery', recover_local_headers(data, destination)
 
-          source = Path('.candidate10-runtime/v20_source.zip')
+          def transformations(label: str, raw: bytes):
+              yield label + ':raw', raw
+              current = raw
+              for depth in (1, 2):
+                  try:
+                      compact = b''.join(current.split())
+                      decoded = base64.b64decode(compact, validate=True)
+                  except Exception:
+                      break
+                  yield f'{label}:base64-{depth}', decoded
+                  current = decoded
+
+          def hashes(root: Path, names: list[str]) -> dict[str, str]:
+              return {name: sha256((root / name).read_bytes()).hexdigest() for name in names}
+
+          source_inputs = {
+              'tracked': Path('research/candidate-10/v20_source.zip').read_bytes(),
+              'canonical': Path('.candidate10-runtime/canonical_source.bin').read_bytes(),
+          }
+          diagnostics: list[dict[str, object]] = []
+          successes: list[dict[str, object]] = []
+          seen_payloads: set[str] = set()
+
+          for source_label, raw in source_inputs.items():
+              for candidate_label, payload in transformations(source_label, raw):
+                  payload_sha = sha256(payload).hexdigest()
+                  if payload_sha in seen_payloads:
+                      continue
+                  seen_payloads.add(payload_sha)
+                  attempt_root = Path(tempfile.mkdtemp(prefix='candidate10-source-'))
+                  try:
+                      mode, names = extract_bytes(payload, attempt_root)
+                      if set(names) != REQUIRED_SOURCE:
+                          raise ValueError(f'unexpected members: {names}')
+                      member_sha = hashes(attempt_root, names)
+                      successes.append({
+                          'label': candidate_label,
+                          'payload_sha256': payload_sha,
+                          'payload_size': len(payload),
+                          'mode': mode,
+                          'names': names,
+                          'member_sha256': member_sha,
+                          'root': str(attempt_root),
+                      })
+                      diagnostics.append({
+                          'label': candidate_label,
+                          'payload_sha256': payload_sha,
+                          'payload_size': len(payload),
+                          'magic_hex': payload[:16].hex(),
+                          'success': True,
+                          'mode': mode,
+                          'names': names,
+                          'member_sha256': member_sha,
+                      })
+                  except Exception as exc:
+                      diagnostics.append({
+                          'label': candidate_label,
+                          'payload_sha256': payload_sha,
+                          'payload_size': len(payload),
+                          'magic_hex': payload[:16].hex(),
+                          'success': False,
+                          'error': f'{type(exc).__name__}: {exc}',
+                      })
+                      shutil.rmtree(attempt_root, ignore_errors=True)
+
+          if not successes:
+              Path('artifacts/candidate-10-v20-2/source_diagnostics.json').write_text(
+                  json.dumps(diagnostics, indent=2, sort_keys=True) + '\n',
+                  encoding='utf-8',
+              )
+              raise SystemExit('no source representation produced the required verified members')
+
+          content_sets = {
+              json.dumps(item['member_sha256'], sort_keys=True)
+              for item in successes
+          }
+          if len(content_sets) != 1:
+              Path('artifacts/candidate-10-v20-2/source_diagnostics.json').write_text(
+                  json.dumps({'diagnostics': diagnostics, 'successes': successes}, indent=2, sort_keys=True) + '\n',
+                  encoding='utf-8',
+              )
+              raise SystemExit('source representations disagree at member-content level')
+
+          priority = {
+              'tracked:raw': 0,
+              'tracked:base64-1': 1,
+              'tracked:base64-2': 2,
+              'canonical:raw': 3,
+              'canonical:base64-1': 4,
+              'canonical:base64-2': 5,
+          }
+          chosen = min(successes, key=lambda item: priority.get(str(item['label']), 99))
+          chosen_root = Path(str(chosen['root']))
+          for name in chosen['names']:
+              target = safe_target(Path('.candidate10-runtime/source'), str(name))
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(chosen_root / str(name), target)
+
           patch = Path('research/candidate-10/v20_2_patch.zip')
           expected_patch = os.environ['V20_PATCH_SHA256']
           patch_sha = sha256(patch.read_bytes()).hexdigest()
           if patch_sha != expected_patch:
               raise SystemExit(f'{patch} SHA256 mismatch: {patch_sha} != {expected_patch}')
-
-          source_mode, source_members = extract_verified(source, Path('.candidate10-runtime/source'))
-          patch_mode, patch_members = extract_verified(patch, Path('.candidate10-runtime/patch'))
-
-          required_source = {
-              'c10_liquidation_state.py',
-              'c10_liquidation_strategy.py',
-              'c10_liquidation_research.py',
-              'run_research.py',
-              'test_liquidation_state.py',
-          }
-          if set(source_members) != required_source:
-              raise SystemExit(f'unexpected canonical source members: {source_members}')
-
-          def member_hashes(root: Path, names: list[str]) -> dict[str, str]:
-              return {name: sha256((root / name).read_bytes()).hexdigest() for name in names}
+          with zipfile.ZipFile(patch) as archive:
+              bad = archive.testzip()
+              if bad is not None:
+                  raise SystemExit(f'corrupt patch member: {bad}')
+              patch_names = sorted(name for name in archive.namelist() if not name.endswith('/'))
+              for name in patch_names:
+                  target = safe_target(Path('.candidate10-runtime/patch'), name)
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_bytes(archive.read(name))
 
           provenance = {
               'source_commit': os.environ['V20_SOURCE_COMMIT'],
               'source_git_blob': os.environ['V20_SOURCE_BLOB'],
-              'source_raw_sha256': sha256(source.read_bytes()).hexdigest(),
-              'source_size_bytes': source.stat().st_size,
-              'source_extraction_mode': source_mode,
-              'source_members': source_members,
-              'source_member_sha256': member_hashes(Path('.candidate10-runtime/source'), source_members),
+              'chosen_source_representation': chosen['label'],
+              'chosen_payload_sha256': chosen['payload_sha256'],
+              'chosen_payload_size': chosen['payload_size'],
+              'chosen_extraction_mode': chosen['mode'],
+              'source_members': chosen['names'],
+              'source_member_sha256': chosen['member_sha256'],
+              'successful_equivalent_representations': [item['label'] for item in successes],
+              'source_diagnostics': diagnostics,
               'patch_sha256': patch_sha,
               'patch_size_bytes': patch.stat().st_size,
-              'patch_extraction_mode': patch_mode,
-              'patch_members': patch_members,
-              'patch_member_sha256': member_hashes(Path('.candidate10-runtime/patch'), patch_members),
+              'patch_members': patch_names,
+              'patch_member_sha256': hashes(Path('.candidate10-runtime/patch'), patch_names),
           }
           Path('artifacts/candidate-10-v20-2/source_provenance.json').write_text(
               json.dumps(provenance, indent=2, sort_keys=True) + '\n',
