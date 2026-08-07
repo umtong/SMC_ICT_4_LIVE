@@ -1,0 +1,228 @@
+name: candidate-08-qh-session-measured-micro-first-v2
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-qh-session-measured-micro-first-v2"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-qh-session-measured-micro-first-v2
+  cancel-in-progress: true
+
+jobs:
+  first-btc-week:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.run-qh-session-measured-micro-first-v2
+      OUTPUT_DIR: research/candidate-08/evidence/qh-session-measured-micro-first-v2
+      LOG: research/candidate-08/evidence/qh-session-measured-micro-first-v2/workflow.log
+      STATUS: research/candidate-08/evidence/qh-session-measured-micro-first-v2/exit_status.txt
+      CACHE_DIR: .cache/candidate-08-quote-resiliency
+      CONFIG: research/candidate-08/config_qh_session_measured_micro_btc_v2.json
+      PATTERN_CONFIG: research/candidate-08/config_range_fvg.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore verified market-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/candidate-08-quote-resiliency
+          key: candidate-08-quote-resiliency-data-v1-${{ hashFiles('research/candidate-08/config_quote_resiliency_btc_v1.json') }}
+          restore-keys: |
+            candidate-08-quote-resiliency-data-v1-
+
+      - name: Run causal contracts and fixed first BTC week
+        id: research
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/qh_session_measured_micro_signals_v2.py \
+              research/candidate-08/run_qh_session_measured_micro_nautilus_v2.py
+            python research/candidate-08/test_quote_resiliency_features_v3.py -v
+            python research/candidate-08/test_quote_resiliency_data.py -v
+            python research/candidate-08/test_quote_resiliency_execution_price_contract.py -v
+            python research/candidate-08/test_quote_resiliency_native_quotes.py -v
+            python research/candidate-08/test_quote_resiliency_native_adapter.py -v
+            python - <<'PY'
+          import pandas as pd
+
+          from external_sweep_fvg_micro_reaccel_signals_v3 import _frozen_micro_break
+          from qh_session_measured_micro_signals_v2 import (
+              QuarterHourMeasuredMicroConfig,
+              _measured_second_leg_target,
+          )
+
+          config = QuarterHourMeasuredMicroConfig()
+          config.validate()
+          assert config.micro_confirmation_seconds == 180
+          assert config.micro_confirmation_seconds % 10 == 0
+
+          long_target, long_impulse = _measured_second_leg_target(
+              burst_open=100.0,
+              burst_close=102.0,
+              retrace_high=102.2,
+              retrace_low=101.0,
+              direction=1,
+          )
+          short_target, short_impulse = _measured_second_leg_target(
+              burst_open=102.0,
+              burst_close=100.0,
+              retrace_high=101.0,
+              retrace_low=99.8,
+              direction=-1,
+          )
+          assert long_impulse == 2.0 and long_target == 103.0
+          assert short_impulse == 2.0 and short_target == 99.0
+
+          index = pd.date_range("2023-10-20T00:00:10Z", periods=12, freq="10s")
+          frame = pd.DataFrame(
+              {
+                  "high": [100, 101, 103, 102, 101, 102, 104, 103, 102, 200, 201, 202],
+                  "low": [99, 100, 101, 100, 99, 100, 102, 101, 100, 98, 97, 96],
+              },
+              index=index,
+          )
+          end_ns = int(index[8].as_unit("ns").value)
+          frozen = _frozen_micro_break(
+              frame,
+              direction=1,
+              start_time_ns=int(index[0].as_unit("ns").value) - 1,
+              end_time_ns=end_ns,
+              span=2,
+          )
+          changed = frame.copy()
+          changed.loc[index[9]:, "high"] = [1000, 1100, 1200]
+          frozen_after_future_change = _frozen_micro_break(
+              changed,
+              direction=1,
+              start_time_ns=int(index[0].as_unit("ns").value) - 1,
+              end_time_ns=end_ns,
+              span=2,
+          )
+          assert frozen == frozen_after_future_change
+          assert frozen.frozen_time_ns == end_ns
+          PY
+            python research/candidate-08/run_qh_session_measured_micro_nautilus_v2.py \
+              --suite first \
+              --config "$CONFIG" \
+              --pattern-config "$PATTERN_CONFIG" \
+              --output "$OUTPUT_DIR" \
+              --data-cache "$CACHE_DIR"
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output = Path(os.environ["OUTPUT_DIR"])
+          summary = json.loads((output / "suite_metrics.json").read_text())
+          result = summary["window_results"][0]
+          window = output / result["name"]
+          metrics = json.loads((window / "metrics.json").read_text())
+          manifest = json.loads((window / "data_manifest.json").read_text())
+          diagnostics = manifest["assets"]["BTCUSDT"].get("detector_diagnostics", {})
+          signals = int(summary.get("signals", 0))
+          closed = int(summary.get("closed_trades", result.get("closed_trades", 0)))
+          gate = bool(result.get("first_window_gate_passed", False))
+          if gate:
+              decision = "PROMOTE_TO_TWO_ADDITIONAL_OUTCOME_BLIND_FIXED_WEEKS"
+          elif signals < 3 or closed < 3:
+              decision = "REJECT_FINAL_QH_REVISION_INSUFFICIENT_NATURAL_DAYTRADING_OPPORTUNITY"
+          else:
+              decision = "REJECT_FINAL_QH_REVISION_COST_AFTER_FIRST_WEEK_FAILURE"
+          payload = {
+              "candidate": summary.get("candidate"),
+              "window": result.get("name"),
+              "signals": signals,
+              "closed_trades": closed,
+              "wins": int(summary.get("wins", 0)),
+              "positive_trade_share": float(summary.get("positive_trade_share", 0.0)),
+              "total_return": result.get("total_return"),
+              "daily_geometric_growth": result.get("daily_geometric_growth"),
+              "maximum_realized_equity_drawdown": result.get("maximum_realized_equity_drawdown"),
+              "first_window_gate_passed": gate,
+              "suite_gate_passed": bool(summary.get("suite_gate_passed", False)),
+              "execution_failures": int(metrics.get("execution_failures", 0)),
+              "unexpected_or_liquidation_closes": int(metrics.get("unexpected_or_liquidation_closes", 0)),
+              "open_orders_after_run": int(metrics.get("open_orders_after_run", 0)),
+              "open_positions_after_run": int(metrics.get("open_positions_after_run", 0)),
+              "logic_funnel": {
+                  "bursts": int(diagnostics.get("QH_INTENSE_SESSION_ALIGNED_BURST", 0)),
+                  "contracted_retraces": int(diagnostics.get("CONTRACTED_RETRACE", 0)),
+                  "frozen_micro_breaks": int(diagnostics.get("FROZEN_RETRACE_MICRO_BREAK", 0)),
+                  "micro_structure_breaks": int(diagnostics.get("MICRO_STRUCTURE_BREAK", 0)),
+                  "micro_resumptions": int(diagnostics.get("MICRO_RESUMPTION", 0)),
+                  "target_reached_before_entry": int(diagnostics.get("MEASURED_TARGET_REACHED_BEFORE_ENTRY", 0)),
+                  "invalid_target_geometry": int(diagnostics.get("INVALID_COST_AFTER_MEASURED_TARGET_GEOMETRY", 0)),
+                  "insufficient_cost_after_target": int(diagnostics.get("INSUFFICIENT_COST_AFTER_MEASURED_TARGET", 0)),
+                  "signals": int(diagnostics.get("SIGNALS", 0)),
+              },
+              "decision": decision,
+          }
+          (output / "decision.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit source and reproducible evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- \
+            research/candidate-08/qh_session_measured_micro_signals_v2.py \
+            research/candidate-08/run_qh_session_measured_micro_nautilus_v2.py \
+            research/candidate-08/config_qh_session_measured_micro_btc_v2.json \
+            "$OUTPUT_DIR" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record QH measured-micro first-window evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce reproducible execution
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS_VALUE: ${{ steps.research.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
