@@ -260,6 +260,53 @@ def cumulative_features(
     )
 
 
+def rolling_horizon_thresholds(
+    blocks: Sequence[TradeBlock],
+    *,
+    direction: int,
+    baseline_median_gross: float,
+) -> dict[int, dict[str, float]]:
+    """Build causal thresholds from pre-event windows of equal length."""
+    thresholds: dict[int, dict[str, float]] = {}
+    for width in range(2, OBSERVATION_BLOCKS + 1):
+        features = [
+            feature
+            for start in range(0, len(blocks) - width + 1)
+            if (
+                feature := cumulative_features(
+                    blocks[start : start + width],
+                    direction=direction,
+                    baseline_median_gross=baseline_median_gross,
+                )
+            )
+            is not None
+        ]
+        available = len(blocks) - width + 1
+        minimum = max(10, math.ceil(available / 2))
+        if len(features) < minimum:
+            continue
+        thresholds[width] = {
+            "futures_response_q25": quantile(
+                [item.response_score for item in features],
+                0.25,
+            ),
+            "futures_response_q75": quantile(
+                [item.response_score for item in features],
+                0.75,
+            ),
+            "futures_flow_q75": quantile(
+                [item.directional_flow for item in features],
+                0.75,
+            ),
+            "futures_efficiency_q50": quantile(
+                [item.path_efficiency for item in features],
+                0.50,
+            ),
+            "baseline_windows": float(len(features)),
+        }
+    return thresholds
+
+
 def collect_contexts(
     paths: Sequence[Path],
     candidates: Sequence[AuctionCandidate],
@@ -524,6 +571,7 @@ def derive_v19(
         MEASURED_ACCEPTANCE_CONTINUATION: 0,
         "MIXED_NO_TRADE": 0,
         "INSUFFICIENT_CONTEXT": 0,
+        "INSUFFICIENT_HORIZON_BASELINE": 0,
         "ABSORPTION_WITHOUT_CHOCH": 0,
     }
     threshold_rows: list[dict[str, Any]] = []
@@ -540,25 +588,25 @@ def derive_v19(
             continue
         futures_median_gross = median(block.gross_notional for block in futures_valid)
         spot_median_gross = median(block.gross_notional for block in spot_valid)
-        futures_baseline_features = [
-            feature
-            for block in futures_valid
-            if (feature := block_features(block, direction=candidate.direction, baseline_median_gross=futures_median_gross)) is not None
-        ]
-        spot_baseline_features = [
-            feature
-            for block in spot_valid
-            if (feature := block_features(block, direction=candidate.direction, baseline_median_gross=spot_median_gross)) is not None
-        ]
-        if not futures_baseline_features or not spot_baseline_features:
-            routing_counts["INSUFFICIENT_CONTEXT"] += 1
+        horizon_thresholds = rolling_horizon_thresholds(
+            futures_baseline_blocks,
+            direction=candidate.direction,
+            baseline_median_gross=futures_median_gross,
+        )
+        if not horizon_thresholds:
+            routing_counts["INSUFFICIENT_HORIZON_BASELINE"] += 1
             continue
-        thresholds = {
-            "futures_response_q25": quantile([item.response_score for item in futures_baseline_features], 0.25),
-            "futures_response_q75": quantile([item.response_score for item in futures_baseline_features], 0.75),
-            "futures_flow_q75": quantile([item.directional_flow for item in futures_baseline_features], 0.75),
-            "futures_efficiency_q50": quantile([item.path_efficiency for item in futures_baseline_features], 0.50),
-        }
+        threshold_rows.append(
+            {
+                "candidate": candidate.scenario_id,
+                "inventory_regime": candidate.inventory_regime,
+                "thresholds_by_observation_blocks": {
+                    str(width): values
+                    for width, values in horizon_thresholds.items()
+                },
+            }
+        )
+        thresholds = horizon_thresholds[max(horizon_thresholds)]
         outside_run = 0
         terminal: tuple[str, int, FlowFeatures, FlowFeatures] | None = None
         absorption_pending_ns: int | None = None
@@ -586,6 +634,10 @@ def derive_v19(
             )
             if future_features is None or spot_features is None:
                 continue
+            current_thresholds = horizon_thresholds.get(count)
+            if current_thresholds is None:
+                continue
+            thresholds = current_thresholds
             high_response = (
                 future_features.response_score
                 >= max(0.0, thresholds["futures_response_q75"])
@@ -733,13 +785,6 @@ def derive_v19(
                 routing_counts["MIXED_NO_TRADE"] += 1
         else:
             routing_counts["MIXED_NO_TRADE"] += 1
-        threshold_rows.append(
-            {
-                "candidate": candidate.scenario_id,
-                "inventory_regime": candidate.inventory_regime,
-                "thresholds": thresholds,
-            }
-        )
 
     output.sort(key=lambda item: (int(item["confirm_time_ns"]), str(item["scenario_id"])))
     output_signals.parent.mkdir(parents=True, exist_ok=True)
@@ -761,15 +806,20 @@ def derive_v19(
         "routing_counts": routing_counts,
         "state_sequence": [
             "UNIFORM_FUTURES_AND_SPOT_AGGTRADES",
-            "TEN_MINUTE_EVENT_EXCLUDED_BASELINE",
-            "SEQUENTIAL_SIXTY_SECOND_RESPONSE",
+            "TEN_MINUTE_PRE_EVENT_BASELINE",
+            "TEN_MINUTE_INVENTORY_EVENT_EXCLUDED",
+            "HORIZON_MATCHED_SEQUENTIAL_SIXTY_SECOND_RESPONSE",
             "HIGH_RESPONSE_CROSS_MARKET_VACUUM_CONTINUATION",
             "OR_STRONG_CHASE_POOR_RESPONSE_SPOT_DISAGREEMENT",
             "THEN_FULL_EVENT_RANGE_CHOCH_REVERSAL",
             "OR_LATER_FULL_EVENT_RANGE_MEASURED_ACCEPTANCE",
             "NO_TRADE_IF_UNRESOLVED",
         ],
-        "threshold_policy": "candidate-local causal quartiles, three coherent evidence axes, no return-fit search",
+        "threshold_policy": (
+            "candidate-local horizon-matched rolling causal quartiles, "
+            "three coherent evidence axes, no return-fit search"
+        ),
+        "baseline_relation": "TEN_MINUTES_ENDING_AT_EVENT_START",
         "baseline_minutes": BASELINE_MINUTES,
         "block_seconds": BLOCK_SECONDS,
         "observation_seconds": OBSERVATION_SECONDS,

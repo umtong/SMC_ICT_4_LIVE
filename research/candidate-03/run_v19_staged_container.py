@@ -17,10 +17,10 @@ REF = os.environ.get("GITHUB_SHA", "research/candidate-03")
 BASE_PATH = "research/candidate-03/run_v18_staged_container.py"
 CONFIG = Path("research/candidate-03/nt_lvcfr_v19_config.json")
 FROZEN_BLOBS = {
-    "research/candidate-03/derive_nt_lvcfr_v19_signals.py": "d98e563b515d9a2af0cf2cddf19f3210142282e1",
-    "research/candidate-03/prepare_nt_lvcfr_v19.py": "955ebce86895b06549b3243e256835564eb1e1b7",
+    "research/candidate-03/derive_nt_lvcfr_v19_signals.py": "5b2737908fc5dc5d181979adc4a5aa63ed5c56fd",
+    "research/candidate-03/prepare_nt_lvcfr_v19.py": "d9f1946676b661568a224c00c75cc3d73955c367",
     "research/candidate-03/nt_lvcfr_v19_config.json": "651979bbb5458a034c3dd931eef9e33377310b98",
-    "research/candidate-03/test_nt_lvcfr_v19.py": "41fb75f221846ca9a5152b733bb3898a7037ab64",
+    "research/candidate-03/test_nt_lvcfr_v19.py": "9f89910ebeb4fb5bbc8fab0ab4b590f24eca14b8",
     "research/candidate-03/rebuild_nt_lvcfr_trade_proxy_catalog.py": "68267662f5730238b8115ff1928b5a303e585acb",
     "research/candidate-03/nt_lvcfr_trade_proxy.py": "37f34bf4cb86911e631d43b3aa28df4c7a7aff37",
     "research/candidate-03/nt_lvcfr_data.py": "f096b6dfd3944f559983010c03cd61622ee8c977",

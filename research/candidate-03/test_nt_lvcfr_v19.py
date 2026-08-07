@@ -10,6 +10,7 @@ from derive_nt_lvcfr_v19_signals import (
     TradeBlock,
     block_features,
     cumulative_features,
+    rolling_horizon_thresholds,
 )
 from nt_lvcfr_data import CandidateConfig
 
@@ -97,6 +98,36 @@ class V19ExecutedFlowTests(unittest.TestCase):
         }
         self.assertNotIn(999.0, retained_prices)
 
+    def test_horizon_thresholds_use_equal_length_pre_event_windows(self) -> None:
+        blocks = []
+        price = 100.0
+        for index in range(BASELINE_BLOCKS):
+            block = TradeBlock()
+            block.add(price, 1.0, False)
+            price *= 1.0001 if index % 2 == 0 else 0.99995
+            block.add(price, 1.0, index % 3 == 0)
+            blocks.append(block)
+        median_gross = sorted(
+            block.gross_notional for block in blocks
+        )[len(blocks) // 2]
+        thresholds = rolling_horizon_thresholds(
+            blocks,
+            direction=1,
+            baseline_median_gross=median_gross,
+        )
+        self.assertEqual(set(thresholds), set(range(2, 7)))
+        self.assertGreaterEqual(
+            thresholds[6]["baseline_windows"],
+            10.0,
+        )
+        source = Path(__file__).with_name(
+            "derive_nt_lvcfr_v19_signals.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "current_thresholds = horizon_thresholds.get(count)",
+            source,
+        )
+        self.assertNotIn("futures_baseline_features = [", source)
     def test_project_risk_and_native_execution_contract_are_fixed(self) -> None:
         root = Path(__file__).resolve().parent
         config = CandidateConfig.load(root / "nt_lvcfr_v19_config.json")
@@ -112,6 +143,7 @@ class V19ExecutedFlowTests(unittest.TestCase):
         self.assertIn("BacktestNode", runner)
         self.assertIn("futures/um/daily/aggTrades", preparation)
         self.assertIn("spot/daily/aggTrades", preparation)
+        self.assertIn("args.week_start - timedelta(days=1)", preparation)
         self.assertNotIn("simulate_fill", strategy)
         self.assertNotIn("synthetic_nav", strategy)
 

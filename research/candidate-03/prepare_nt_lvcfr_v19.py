@@ -45,7 +45,10 @@ def main() -> int:
     sources = list(base.get("sources", []))
     futures_paths: list[str] = []
     spot_paths: list[str] = []
-    for day in daily_dates(args.week_start, args.week_start + timedelta(days=7)):
+    for day in daily_dates(
+        args.week_start - timedelta(days=1),
+        args.week_start + timedelta(days=7),
+    ):
         stamp = day.isoformat()
         futures = download_verified(
             f"{BINANCE_VISION}/futures/um/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-{stamp}.zip",
@@ -102,6 +105,7 @@ def main() -> int:
             "spot_aggtrade_archives": spot_paths,
             "funding_archives": funding_paths,
             "historical_contract_identical_across_frozen_weeks": True,
+            "detector_warmup_days": 1,
         },
     }
     (output / "data_manifest.json").write_text(
