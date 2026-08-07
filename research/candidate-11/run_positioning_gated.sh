@@ -18,11 +18,13 @@ python "$CAND/materialize_portfolio.py"
 python "$CAND/apply_partial_fill_fail_closed.py"
 python "$CAND/apply_market_leadership.py"
 python "$CAND/repair_leadership_sweep_timestamp.py"
+python "$CAND/patch_evidence_audit_weeks.py"
 python "$CAND/materialize_positioning_auction.py"
 
 python -m py_compile \
   "$CAND/positioning_auction.py" \
-  "$CAND/run_positioning_auction.py"
+  "$CAND/run_positioning_auction.py" \
+  "$CAND/evidence_audit.py"
 python -m unittest discover -s "$CAND" -p 'test_*.py' -v
 
 OUT="$CAND/results/POSITIONING_${WEEK}"
