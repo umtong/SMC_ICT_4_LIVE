@@ -1,0 +1,106 @@
+name: candidate-07-nested-liquidity-sweep-mss-retest
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/nested_liquidity_sweep.py"
+      - "research/candidate-07/nested_liquidity_sweep_scenario.py"
+      - "research/candidate-07/run_nested_liquidity_sweep_mss_retest.py"
+      - "research/candidate-07/tests/test_nested_liquidity_sweep_mss_retest.py"
+      - ".github/workflows/candidate-07-nested-liquidity-sweep-mss-retest.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-07-nested-liquidity-sweep-mss-retest
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  frozen-btc-week-1-nautilus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify foundation and nested liquidity contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-nested-sweep-pyc \
+            /opt/smc4/.venv/bin/python -m compileall -q research/candidate-07
+          /opt/smc4/.venv/bin/python -m unittest discover \
+            -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Restore checksum-verified W1 cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-pre-attack-value-week1-v1
+          restore-keys: |
+            candidate-07-aggtrade-event-tournament-week1-v2
+            candidate-07-aggtrade-event-tournament-week1-v1
+            candidate-07-aggtrade-resilience-week1-v1
+            candidate-07-positioning-three-weeks-v1
+            candidate-07-positioning-week1-v1
+            candidate-07-flow-week1-v1
+
+      - name: Run frozen BTC Week-1 nested source tournament in NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          /opt/smc4/.venv/bin/python \
+            research/candidate-07/run_nested_liquidity_sweep_mss_retest.py \
+            --config research/candidate-07/config.json \
+            --start 2025-12-22 \
+            --end 2025-12-29 \
+            --event-warmup-days 1 \
+            --source-commit "${GITHUB_SHA}" \
+            --output artifacts/candidate-07/week-1/nested-liquidity-sweep-mss-retest \
+            --data-root .research-data/candidate-07
+
+      - name: Print immutable nested-source result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          /opt/smc4/.venv/bin/python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path('artifacts/candidate-07/week-1/nested-liquidity-sweep-mss-retest')
+          summary = root / 'summary.json'
+          if not summary.exists():
+              raise SystemExit('NESTED_SWEEP_MSS_SUMMARY_MISSING')
+          payload = json.loads(summary.read_text())
+          hashes = {
+              str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in sorted(root.rglob('*'))
+              if path.is_file()
+          }
+          print(json.dumps({
+              'source_commit': '${{ github.sha }}',
+              'summary': payload,
+              'sha256': hashes,
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Preserve complete nested-source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-nested-liquidity-sweep-mss-retest-week1-${{ github.sha }}
+          path: artifacts/candidate-07/week-1/nested-liquidity-sweep-mss-retest
+          retention-days: 14
+          if-no-files-found: error
