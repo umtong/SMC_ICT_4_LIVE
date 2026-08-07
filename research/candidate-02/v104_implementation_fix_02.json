@@ -1,0 +1,77 @@
+{
+  "candidate": "candidate-02-v104-external-liquidity-common-acceptance-retest",
+  "classification": "CAUSAL_ACTIVATION_AND_REPRODUCIBILITY_IMPLEMENTATION_ERRORS_FIXED_BEFORE_ANY_V104_MARKET_DATA_COLLECTION",
+  "controlled_verification": {
+    "new_activation_cases_added": [
+      "acceptance close cannot be reused as post-acceptance displacement",
+      "actual activation RR degradation",
+      "actual activation delivery-fraction degradation",
+      "activation-bar stop traversal",
+      "activation-bar target traversal",
+      "activation-bar old-range structural-invalidation traversal",
+      "target expiry before activation",
+      "target confirmed only on activation excluded as future information",
+      "activation delay exactly one completed minute",
+      "adapter delegates only after accepted activation validation",
+      "adapter records and rejects a pre-consumed target",
+      "adapter sizes with exchange-rounded stop and target"
+    ],
+    "same_original_synthetic_cases_rerun": true,
+    "tests_failed": 0,
+    "tests_passed": 18
+  },
+  "custom_backtest_engine": false,
+  "implementation_audit_completed_at_utc": "2026-08-07T07:25:56Z",
+  "implementation_errors": [
+    {
+      "failure": "the signal builder tested delivery fraction and cost-after reward/risk at the decision close, while the inherited execution adapter sized and entered at the later activation close",
+      "fix": "repeat structural geometry, boundary, delivery-fraction and cost-after-RR checks at the actual activation close before order submission",
+      "name": "decision_price_only_economic_validation"
+    },
+    {
+      "failure": "the activation bar's OHLC path had already elapsed before on_bar submitted the order, but only close geometry was checked",
+      "fix": "reject when the activation bar already traversed the structural stop, natural target, or both",
+      "name": "activation_bar_pretraversal"
+    },
+    {
+      "failure": "target expiry was checked only at the decision timestamp and the first attempted repair then allowed eligibility to occur on the future activation bar",
+      "fix": "require eligibility no later than the decision close, require predetermined expiry through activation, and verify both again in the execution adapter",
+      "name": "target_activity_at_decision_not_activation"
+    },
+    {
+      "failure": "configuration allowed delays longer than one minute although the adapter did not track target/stop traversal in intervening bars",
+      "fix": "lock v104 activation delay to exactly one completed minute",
+      "name": "unobserved_multibar_activation_gap"
+    },
+    {
+      "failure": "the final common-acceptance candle could also satisfy the displacement state even though the locked state machine required acceptance to precede displacement",
+      "fix": "begin the exact displacement search on the first completed minute after the acceptance close",
+      "name": "acceptance_close_reused_as_post_acceptance_displacement"
+    },
+    {
+      "failure": "offline registry filtering allowed a target whose eligibility timestamp was the later activation close, while the signal claimed the prior decision close as its maximum market information",
+      "fix": "require target eligibility no later than decision_ns and require its predetermined expiry to cover activation_ns",
+      "name": "target_confirmed_on_activation_future_information"
+    },
+    {
+      "failure": "an activation bar could wick through the old-range invalidation but survive a wider protective stop and still be submitted",
+      "fix": "carry the distinct old-range invalidation into the activation contract and reject any completed activation bar which traversed it",
+      "name": "activation_structural_invalidation_not_enforced"
+    },
+    {
+      "failure": "the inherited adapter sized against unrounded stop and target floats, then converted prices to the instrument increment only when creating orders",
+      "fix": "convert stop and target to executable instrument prices before activation RR validation and current-NAV planned-loss sizing",
+      "name": "exchange_tick_rounding_after_risk_sizing"
+    },
+    {
+      "failure": "the prospective driver reused v53 execution/risk and v75/v89 data transformation files without verifying every exact Git blob",
+      "fix": "add all reused dependencies to source_files/source_git_blob_sha and verify them before collection",
+      "name": "reused_dependency_blobs_not_fully_locked"
+    }
+  ],
+  "locked_week_or_scenario_changed": false,
+  "market_data_status_before_fix": "NOT_COLLECTED_FOR_V104",
+  "performance_engine": "NautilusTrader 1.230.0",
+  "performance_observed_before_fix": false,
+  "risk_cost_target_or_ablation_changed": false
+}
