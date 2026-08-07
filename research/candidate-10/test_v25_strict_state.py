@@ -145,10 +145,11 @@ class V25StrictLifecycleTests(unittest.TestCase):
 
     def test_shelf_finalized_inside_parent_bar_is_also_consumed(self) -> None:
         class InjectingMachine(StrictLiquidityResponseStateMachine):
-            injected = False
+            roll_calls = 0
 
             def _maybe_roll_formation(self, current_bar):  # type: ignore[override]
-                if not self.injected:
+                self.roll_calls += 1
+                if self.roll_calls == 2:
                     self.shelves.append(
                         LiquidityShelf(
                             shelf_id="ROLLED_SUPPLY",
@@ -162,7 +163,6 @@ class V25StrictLifecycleTests(unittest.TestCase):
                             impact_efficiency=0.0,
                         ),
                     )
-                    self.injected = True
 
         helper = LiquidityResponseStateTests()
         machine = InjectingMachine(
