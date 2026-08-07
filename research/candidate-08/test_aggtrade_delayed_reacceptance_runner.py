@@ -6,10 +6,13 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 import os
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from aggtrade_delayed_reacceptance_signals_v2 import (
+from aggtrade_acceptance_signals import AcceptanceLogicEvent
+from aggtrade_delayed_reacceptance_signals_v3 import (
     ABLATION_INITIAL_MODE,
     BASE_INITIAL_MODE,
     DelayedReacceptanceConfig,
@@ -20,6 +23,7 @@ from aggtrade_delayed_reacceptance_signals_v2 import (
 from aggtrade_flow_response import FlowResponseConfig
 from flow_response_trade_path_diagnostics_v2 import DIAGNOSTIC_REVISION
 import run_aggtrade_delayed_reacceptance_nautilus as runner
+from smc_ict_4.event_log import validate_event_file
 
 
 HERE = Path(__file__).resolve().parent
@@ -41,6 +45,28 @@ def _complete_trade(*, pnl: float = 100.0) -> dict:
             "actual_holding_adverse_stop_distance_fraction": 0.2 if pnl > 0 else 1.0,
         },
     }
+
+
+def _logic_event(
+    *,
+    event_type: str,
+    timestamp_ns: int,
+    previous_state: str,
+    next_state: str,
+) -> AcceptanceLogicEvent:
+    return AcceptanceLogicEvent(
+        scenario_id="scenario-1",
+        symbol="BTCUSDT",
+        instrument_id="BTCUSDT-PERP.BINANCE",
+        event_type=event_type,
+        event_time_ns=timestamp_ns,
+        observed_time_ns=timestamp_ns,
+        previous_state=previous_state,
+        next_state=next_state,
+        reason_code=event_type,
+        reference_price=100.0,
+        details={"implementation_revision": IMPLEMENTATION_REVISION},
+    )
 
 
 class DelayedReacceptanceRunnerContracts(unittest.TestCase):
@@ -76,6 +102,10 @@ class DelayedReacceptanceRunnerContracts(unittest.TestCase):
             runner.execution.runner.base_runner.build_acceptance_signals,
             runner._build_signals,
         )
+        self.assertIs(
+            runner.execution.runner.base_runner._write_merged_events,
+            runner._write_merged_events,
+        )
         self.assertEqual(
             runner.execution._original_run_window.__module__,
             "run_aggtrade_acceptance_nautilus",
@@ -90,6 +120,47 @@ class DelayedReacceptanceRunnerContracts(unittest.TestCase):
             "default_leverage=",
         ):
             self.assertNotIn(forbidden, source)
+
+    def test_four_state_logic_chain_serializes_without_gap(self) -> None:
+        events = (
+            _logic_event(
+                event_type="EXTERNAL_LIQUIDITY_INTERACTION_ARMED",
+                timestamp_ns=10,
+                previous_state="IDLE",
+                next_state="INTERACTION_ARMED",
+            ),
+            _logic_event(
+                event_type="INITIAL_OUTWARD_RESPONSE_CONFIRMED_NO_ENTRY",
+                timestamp_ns=20,
+                previous_state="INTERACTION_ARMED",
+                next_state="INITIAL_OUTWARD_RESPONSE",
+            ),
+            _logic_event(
+                event_type="INITIAL_RESPONSE_RECLAIMED",
+                timestamp_ns=30,
+                previous_state="INITIAL_OUTWARD_RESPONSE",
+                next_state="BOUNDARY_RECLAIMED",
+            ),
+            _logic_event(
+                event_type="DELAYED_OUTWARD_REACCEPTANCE_CONFIRMED",
+                timestamp_ns=40,
+                previous_state="BOUNDARY_RECLAIMED",
+                next_state="CONFIRMED",
+            ),
+        )
+        signal = SimpleNamespace(scenario_id="scenario-1", events=events)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "scenario_events.jsonl"
+            count = runner._write_merged_events(
+                path,
+                signals_by_time_ns={40: (signal,)},
+                execution_events=[],
+            )
+            written = validate_event_file(path)
+
+        self.assertEqual(count, 4)
+        self.assertEqual(len(written), 4)
+        self.assertEqual(written[-1].next_state, "CONFIRMED")
 
     def test_initial_mode_defaults_to_base_and_rejects_search(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
@@ -144,6 +215,11 @@ class DelayedReacceptanceRunnerContracts(unittest.TestCase):
         )
         self.assertTrue(
             summary["suite_gate_checks"]["base_initial_initiative_required"]
+        )
+        self.assertEqual(
+            summary["event_chain_contract"],
+            "IDLE->INTERACTION_ARMED->INITIAL_OUTWARD_RESPONSE"
+            "->BOUNDARY_RECLAIMED->CONFIRMED",
         )
 
     def test_diagnostic_initial_mode_is_never_promotable(self) -> None:
