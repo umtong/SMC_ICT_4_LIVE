@@ -1,0 +1,36 @@
+{
+  "candidate": "candidate-02-v104-external-liquidity-common-acceptance-retest",
+  "classification": "REUSED_DATA_TRANSFORMATION_MATERIALIZATION_IMPLEMENTATION_ERROR_FIXED_AFTER_RAW_COLLECTION_BUT_BEFORE_FEATURES_SIGNALS_OR_PERFORMANCE",
+  "workflow_run_id": 31161758381,
+  "materialized_source_sha": "2e85ae1c5374d68ce0629281d11bc128d8cb78c2",
+  "completed_before_failure": {
+    "payload_and_source_blob_verification": true,
+    "smc4_doctor": true,
+    "controlled_tests": "18/18 PASS",
+    "raw_futures_archives_downloaded": true,
+    "raw_manifest_written": true
+  },
+  "not_completed_before_failure": {
+    "feature_matrix_built": false,
+    "spot_cross_market_features_built": false,
+    "scenario_signals_built": false,
+    "nautilustrader_backtest_started": false,
+    "orders_fills_positions_nav_or_pnl_observed": false
+  },
+  "failure": {
+    "component": ".candidate-02-v75/build_features.py materialized for v104",
+    "message": "expected ten daily direct-data archives per source",
+    "cause": "the v75 builder hardcoded ten archives, while v104 prospectively locked ten warmup days plus seven evaluation days and one inclusive exit/end archive, requiring eighteen daily archives per source",
+    "implementation_vs_logic": "archive cardinality is a data-tool parameterization contract and contains no trading direction, target, risk, or performance logic"
+  },
+  "fix": {
+    "method": "during prospective tool materialization, replace the exact v75 ten-archive assertion with expected_archives = warmup_days + 8 and require exactly one controlled source replacement",
+    "same_downloaded_dates": true,
+    "same_feature_definitions": true,
+    "same_market_week": true,
+    "same_scenario_parameters": true,
+    "same_risk_and_cost_model": true,
+    "same_target_and_ablation": true
+  },
+  "custom_backtest_engine": false
+}
