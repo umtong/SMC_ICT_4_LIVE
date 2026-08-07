@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/candidate-03-v30-staged-container.yml"
       - "research/candidate-03/candidate14_frozen_holdout_protocol.json"
+      - "research/candidate-03/patch_candidate14_event_ids.py"
   workflow_dispatch:
 
 permissions:
@@ -15,6 +16,7 @@ permissions:
 env:
   FROZEN_SOURCE_COMMIT: dfb180490b141fdafd5b5ac0b52d3dd0b842550d
   PROTOCOL_REL: research/candidate-03/candidate14_frozen_holdout_protocol.json
+  EVENT_PATCH_REL: research/candidate-03/patch_candidate14_event_ids.py
   RESULT_REL: research/candidate-03/results/candidate14-frozen-holdout
 
 concurrency:
@@ -42,7 +44,7 @@ jobs:
         with:
           ref: ${{ env.FROZEN_SOURCE_COMMIT }}
           path: frozen-source
-      - name: Verify frozen source, environment and semantic contracts
+      - name: Verify frozen source and apply audit-only event ID repair
         shell: bash
         run: |
           set -euo pipefail
@@ -67,6 +69,16 @@ jobs:
               raise SystemExit(f"frozen source blob mismatch: {failures}")
           print(f"verified {len(protocol['locked_source']['blobs'])} exact frozen blobs")
           PY
+          python "orchestrator/$EVENT_PATCH_REL" frozen-source/research/candidate-14/logic.py
+          git -C frozen-source diff --exit-code -- \
+            ':(exclude)research/candidate-14/logic.py' \
+            'research/candidate-14'
+          diff_text="$(git -C frozen-source diff -- research/candidate-14/logic.py)"
+          grep -q 'ambiguous_scenario_id' <<<"$diff_text"
+          grep -q -- '-                "AMBIGUOUS", "AMBIGUOUS_SWEEP"' <<<"$diff_text"
+          grep -q -- '+                ambiguous_scenario_id, "AMBIGUOUS_SWEEP"' <<<"$diff_text"
+          test "$(grep -c '^[-+].*AMBIGUOUS_SWEEP' <<<"$diff_text")" -eq 2
+          sha256sum frozen-source/research/candidate-14/logic.py
           smc4 doctor
           export PYTHONPATH="$GITHUB_WORKSPACE/frozen-source/research/candidate-14:$GITHUB_WORKSPACE/frozen-source/src"
           python -m py_compile frozen-source/research/candidate-14/*.py
@@ -104,6 +116,7 @@ jobs:
           set -euo pipefail
           test "$(git -C frozen-source rev-parse HEAD)" = "$FROZEN_SOURCE_COMMIT"
           cp "orchestrator/$PROTOCOL_REL" frozen-source/research/candidate-14/protocol.json
+          python "orchestrator/$EVENT_PATCH_REL" frozen-source/research/candidate-14/logic.py
           bash frozen-source/research/candidate-14/run_week.sh \
             "${{ matrix.week }}" \
             "$GITHUB_WORKSPACE/evidence/${{ matrix.week }}"
@@ -179,6 +192,7 @@ jobs:
               "no_liquidation_passed",
               "engine_errors_absent",
           )
+          patched_logic_hashes = set()
           for week in sorted(expected):
               folder = root / week
               for name in (
@@ -202,9 +216,15 @@ jobs:
                   raise SystemExit(f"{week}: protocol schema mismatch")
               if lock.get("validation_mode") != "frozen_holdout":
                   raise SystemExit(f"{week}: source lock mode mismatch")
+              for name, expected_blob in protocol["locked_source"]["blobs"].items():
+                  if lock["files"][name]["origin_git_blob"] != expected_blob:
+                      raise SystemExit(f"{week}: origin blob mismatch for {name}")
+              patched_logic_hashes.add(lock["files"]["logic.py"]["sha256"])
               if not all(audit.get(key) is True for key in safety_keys):
                   raise SystemExit(f"{week}: safety audit failed: {audit}")
-          print("all 16 holdouts passed evidence and safety validation")
+          if len(patched_logic_hashes) != 1:
+              raise SystemExit(f"non-identical audit patch across weeks: {patched_logic_hashes}")
+          print(f"all 16 holdouts passed evidence validation; audit logic hash={next(iter(patched_logic_hashes))}")
           PY
           python frozen-source/research/candidate-14/aggregate.py \
             --results "$result_root" \
