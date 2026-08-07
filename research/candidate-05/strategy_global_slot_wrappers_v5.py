@@ -39,6 +39,10 @@ class FinalSharedAccountV36Strategy(_v4.SharedAccountV36Strategy):
     pass
 
 
+class FinalSharedAccountV37Strategy(_v4.SharedAccountV37Strategy):
+    pass
+
+
 __all__ = [
     "FINAL_SHARED_ACCOUNT_ENTRY_COORDINATOR",
     "FinalSharedAccountNoEarlySponsoredStrategy",
@@ -48,4 +52,5 @@ __all__ = [
     "FinalSharedAccountV31Strategy",
     "FinalSharedAccountV32Strategy",
     "FinalSharedAccountV36Strategy",
+    "FinalSharedAccountV37Strategy",
 ]
