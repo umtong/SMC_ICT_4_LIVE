@@ -1,0 +1,25 @@
+name: candidate-03-v19-refreeze
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - ".github/workflows/candidate-03-v19-refreeze.yml"
+      - "research/candidate-03/patch_v19_frozen_hashes.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refreeze:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-03
+          fetch-depth: 1
+      - name: Update controlled V19 frozen identities
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python research/candidate-03/patch_v19_frozen_hashes.py
