@@ -61,7 +61,7 @@ class SemanticLeadershipTests(unittest.TestCase):
         self.assertEqual(result.reason, "SEMANTIC_FAR_DOMINANT_PEER_QUORUM")
 
     def test_far_quorum_rejects_incoherent_completed_auction(self):
-        peers = {"BTCUSDT": -0.004, "ETHUSDT": -0.003, "XRPUSDT": 0.0005}
+        peers = {"BTCUSDT": -0.004, "SOLUSDT": -0.003, "XRPUSDT": 0.0005}
         scores = {
             "BTCUSDT": -0.85,
             "ETHUSDT": -0.69,
@@ -69,7 +69,11 @@ class SemanticLeadershipTests(unittest.TestCase):
             "XRPUSDT": -0.14,
         }
         result = self.classify(
-            self.decision(peer_returns=peers, directional_trend_scores=scores),
+            self.decision(
+                symbol="ETHUSDT",
+                peer_returns=peers,
+                directional_trend_scores=scores,
+            ),
         )
         self.assertFalse(result.approved)
         self.assertEqual(
