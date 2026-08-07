@@ -453,7 +453,10 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
             if self.mutex.state == SlotState.ENTRY_PENDING:
                 if not self.portfolio.is_flat(instrument_id):
                     self.mutex.mark_entry_filled(scenario_id)
-                    self.logic[self.active_symbol].mark_entry_filled(scenario_id, ts_ns)
+                    self.logic[self.active_symbol].mark_entry_filled(
+                        ts_ns,
+                        {"scenario_id": scenario_id, "symbol": self.active_symbol},
+                    )
                     self._capture_events(self.active_symbol)
                     self.lifecycle.append({
                         "type": "GLOBAL_ENTRY_FILLED",
@@ -548,7 +551,11 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
                 self._capture_events(symbol)
                 return
 
-            self.logic[symbol].mark_submitted(plan, self.last_ts_ns)
+            self.logic[symbol].mark_submitted(
+                plan,
+                decision.quantity,
+                {"symbol": symbol, "scenario_id": plan.scenario_id},
+            )
             self._capture_events(symbol)
             self.mutex.mark_entry_submitted(candidate)
             self.active_plan = plan
@@ -581,7 +588,7 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
             plans: list[tuple[TradePlan, Candidate]] = []
             for symbol in SYMBOLS:
                 observation = self.buffer[symbol]
-                plan = self.logic[symbol].update(observation)
+                plan = self.logic[symbol].on_bar(observation)
                 self._capture_events(symbol)
                 if plan is None:
                     continue
