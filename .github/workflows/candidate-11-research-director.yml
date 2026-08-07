@@ -1,0 +1,48 @@
+name: Candidate 11 no-data research director
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/research_director_trigger.txt"
+      - ".github/workflows/candidate-11-research-director.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-11-research-director-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  direct:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout latest candidate evidence
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Apply only evidence-gated promotions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase origin research/candidate-11
+          python research/candidate-11/bind_irx_holdout_candidate.py
+          python research/candidate-11/freeze_irx_long_protocol.py
+          python research/candidate-11/diagnose_research_runs.py
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          for file in \
+            research/candidate-11/irx_holdout_candidate.json \
+            research/candidate-11/irx_long_protocol.json \
+            research/candidate-11/results/RESEARCH_DIAGNOSIS.json; do
+            if [ -f "$file" ]; then git add "$file"; fi
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: apply evidence-gated research promotions"
+            git push origin HEAD:research/candidate-11
+          fi
