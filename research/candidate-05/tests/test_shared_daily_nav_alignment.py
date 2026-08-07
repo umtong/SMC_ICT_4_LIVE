@@ -7,11 +7,19 @@ import unittest
 
 import pandas as pd
 
+import features
+import timestamp_contract
 from shared_account_backtest_v2 import PROJECT_SYMBOLS
 from shared_account_backtest_v2 import normalize_equity_files
 
 
 class SharedDailyNavAlignmentTest(unittest.TestCase):
+    def test_direct_shared_runner_installs_common_string_epoch_contract(self) -> None:
+        self.assertIs(features.read_kline, timestamp_contract.read_kline)
+        values = pd.Series(["1693958400000", "1693958459999"])
+        converted = timestamp_contract.epoch_datetime(values)
+        self.assertEqual(str(converted.iloc[0]), "2023-09-06 00:00:00+00:00")
+
     def test_day_close_uses_last_observation_inside_day_not_next_day_first(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
