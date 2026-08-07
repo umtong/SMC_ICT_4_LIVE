@@ -1,0 +1,127 @@
+name: candidate-12-i10-regression-and-exposed-measurement
+
+on:
+  push:
+    branches: ["research/candidate-12"]
+    paths:
+      - "research/candidate-12/**"
+      - ".github/workflows/candidate-12-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-12-i10-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  regression-and-measurement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    steps:
+      - name: Checkout I10 candidate
+        uses: actions/checkout@v4
+
+      - name: Verify prebuilt environment
+        run: smc4 doctor
+
+      - name: Compile candidate
+        run: python -m compileall -q research/candidate-12
+
+      - name: Run causal unit tests
+        run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+
+      - name: Run W1 W5 W8 W2 W6 through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          for WEEK in W1 W5 W8 W2 W6; do
+            OUTPUT="artifacts/candidate-12/BTCUSDT-${WEEK}"
+            mkdir -p "$OUTPUT"
+            python research/candidate-12/run.py \
+              --symbol BTCUSDT \
+              --week "$WEEK" \
+              --output "$OUTPUT" | tee "$OUTPUT.console.json"
+          done
+
+      - name: Enforce I10 causal regression and expose measurements
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from decimal import Decimal
+          from pathlib import Path
+          import json
+
+          root = Path("artifacts/candidate-12")
+          metrics = {}
+          for week in ("W1", "W5", "W8", "W2", "W6"):
+              path = root / f"BTCUSDT-{week}" / "metrics.json"
+              metrics[week] = json.loads(path.read_text(encoding="utf-8"))
+
+          expected_candidate = "candidate-12-connected-reacceptance-session-auction-router"
+          for week, item in metrics.items():
+              assert item["candidate"] == expected_candidate, (week, item)
+              assert item["week_id"] == week, item
+              assert item["risk_budget_passed"] is True, (week, item)
+              assert item["global_slot_passed"] is True, (week, item)
+              assert item["event_log_valid"] is True, (week, item)
+              assert item["engine_errors"] == [], (week, item)
+              assert item["liquidation_detected"] is False, (week, item)
+
+          w1 = metrics["W1"]
+          assert w1["success_claim"] is True, w1
+          assert w1["closed_trades"] == 6, w1
+          assert w1["wins"] == 6 and w1["losses"] == 0, w1
+          assert Decimal(str(w1["final_nav"])) > Decimal(str(w1["starting_nav"])), w1
+
+          w5 = metrics["W5"]
+          assert w5["success_claim"] is True, w5
+          assert w5["closed_trades"] == 5, w5
+          assert w5["wins"] == 5 and w5["losses"] == 0, w5
+          plans = json.loads(
+              (root / "BTCUSDT-W5" / "submitted_plans.json").read_text(encoding="utf-8")
+          )["plans"]
+          assert any(plan["scenario"] == "ASIA_HIGH_REACCEPTANCE" for plan in plans), plans
+
+          w8 = metrics["W8"]
+          assert w8["submitted_plans"] == 0, w8
+          assert w8["closed_trades"] == 0, w8
+          assert Decimal(str(w8["final_nav"])) == Decimal(str(w8["starting_nav"])), w8
+          assert w8["success_claim"] is False, w8
+          assert (
+              w8.get("skip_reasons", {}).get(
+                  "ASIA_REACCEPTANCE_FVG_DISCONNECTED_FROM_PRESERVED_IMBALANCE", 0
+              ) >= 2
+          ), w8
+
+          summary = {
+              week: {
+                  "closed_trades": item["closed_trades"],
+                  "wins": item["wins"],
+                  "losses": item["losses"],
+                  "final_nav": item["final_nav"],
+                  "net_return": item["net_return"],
+                  "daily_geometric_growth": item["daily_geometric_growth"],
+                  "closed_trade_max_drawdown": item["closed_trade_max_drawdown"],
+                  "scenario_plan_counts": item.get("scenario_plan_counts", {}),
+                  "skip_reasons": item.get("skip_reasons", {}),
+              }
+              for week, item in metrics.items()
+          }
+          output = root / "I10-exposed-measurement.json"
+          output.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Preserve reproducible I10 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-I10-regression-measurement-${{ github.sha }}
+          path: artifacts/candidate-12
+          if-no-files-found: warn
