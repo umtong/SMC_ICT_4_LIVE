@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Artifact-layout adapter for the unchanged V44 staged research.
+"""Artifact-layout and build-range adapter for unchanged V44 research.
 
 Historical V31 artifacts contain the trusted rich stream under
 ``original/source/source/rich`` while newer artifacts may use
 ``original/source/rich``. This adapter discovers the manifest rather than
 encoding another version-specific path, exposes it at the orchestrator's
-standard location, and delegates all research logic unchanged.
+standard location, and forwards the exact weekly build/evaluation boundaries to
+the rich-data loader and NautilusTrader.
 """
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import run_v44_research as base
 
@@ -52,7 +54,37 @@ def discover_source(sources: Path, week: base.Week) -> Path:
     return source
 
 
+_original_run_week = base.run_week
+
+
+def run_week_with_exact_range(
+    week: base.Week,
+    *,
+    sources: Path,
+    output_root: Path,
+    cache_root: Path,
+    env: dict[str, str],
+) -> dict[str, Any]:
+    weekly_env = dict(env)
+    weekly_env.update(
+        {
+            "C04_BUILD_START": week.build_start,
+            "C04_BUILD_END": week.build_end,
+            "C04_EVALUATION_START": week.evaluation_start,
+            "C04_EVALUATION_END": week.evaluation_end,
+        }
+    )
+    return _original_run_week(
+        week,
+        sources=sources,
+        output_root=output_root,
+        cache_root=cache_root,
+        env=weekly_env,
+    )
+
+
 base.find_source = discover_source
+base.run_week = run_week_with_exact_range
 
 if __name__ == "__main__":
     base.main()
