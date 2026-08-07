@@ -208,6 +208,9 @@ def cumulative_features(
     gross = sum(block.gross_notional for block in valid)
     signed = sum(block.signed_notional for block in valid)
     path = sum(block.path_bp for block in valid)
+    for previous, current in zip(valid, valid[1:]):
+        assert previous.last_price is not None and current.first_price is not None
+        path += abs(current.first_price / previous.last_price - 1.0) * 10_000.0
     progress = direction * (last / first - 1.0) * 10_000.0
     flow = direction * signed / gross
     activity = gross / (baseline_median_gross * len(valid))
