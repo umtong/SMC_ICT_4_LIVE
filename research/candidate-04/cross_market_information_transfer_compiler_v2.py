@@ -6,40 +6,57 @@ exchange close timestamps. The base compiler requires positional equality, so
 this wrapper aligns rich labels and applies the same integer positions to each
 Nautilus frame.
 
-The frozen Config class also contains a BTC-first research guard. For the four
-explicitly allowed experiment symbols, this wrapper instantiates the unchanged
-configuration and validates an otherwise identical BTC-symbol clone. Thus every
-risk, cost and structural validation remains active; only the obsolete
-single-symbol research guard is bypassed.
+The frozen Config loader also contains a BTC-first research guard. For the four
+explicitly allowed experiment symbols, this wrapper passes an otherwise
+identical BTC-symbol JSON through the original loader, then changes only the
+already-validated base symbol. Every unknown-key, risk, cost and regime
+validation therefore remains owned by the original Config.load implementation.
 """
 from __future__ import annotations
 
 from dataclasses import replace
 import json
 from pathlib import Path
+import tempfile
 
 import pandas as pd
 
 import cross_market_information_transfer_compiler as base
 
 
+CandidateError = base.v22.v9.CandidateError
+
+
 def load_allowed_symbol_config(path: Path):
     values = json.loads(path.read_text(encoding="utf-8"))
-    if "funding_hours_utc" in values:
-        values["funding_hours_utc"] = tuple(
-            int(value) for value in values["funding_hours_utc"]
+    symbol = str(values.get("symbol", "BTCUSDT"))
+    if symbol not in base.SYMBOLS:
+        raise CandidateError(
+            f"unsupported cross-market experiment symbol: {symbol}"
         )
-    allowed = set(base.v22.Config.__dataclass_fields__)  # type: ignore[attr-defined]
-    unknown = sorted(set(values) - allowed)
-    if unknown:
-        raise base.v22.CandidateError(f"unknown config keys: {unknown}")
-    result = base.v22.Config(**values)
-    if result.symbol not in base.SYMBOLS:
-        raise base.v22.CandidateError(
-            f"unsupported cross-market experiment symbol: {result.symbol}"
-        )
-    replace(result, symbol="BTCUSDT").validate()
-    return result
+
+    validated_values = dict(values)
+    validated_values["symbol"] = "BTCUSDT"
+    handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".json",
+        delete=False,
+        encoding="utf-8",
+    )
+    temporary = Path(handle.name)
+    try:
+        json.dump(validated_values, handle)
+        handle.close()
+        validated = base.v22.Config.load(temporary)
+    finally:
+        try:
+            handle.close()
+        except Exception:
+            pass
+        temporary.unlink(missing_ok=True)
+
+    actual_base = replace(validated.base, symbol=symbol)
+    return replace(validated, base=actual_base)
 
 
 def load_frames(
