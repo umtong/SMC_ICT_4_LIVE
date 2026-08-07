@@ -1,0 +1,316 @@
+{
+  "candidate": "candidate-04-v50b-cross-market-dominant-failure-reversal",
+  "compiler": {
+    "candidate": "candidate-04-v50b-cross-market-dominant-failure-reversal",
+    "compiler": "candidate-04-cross-market-dominant-failure-reversal-v1",
+    "constants": {
+      "cooldown_bars": 15,
+      "failure_bars": 3,
+      "follower_expansion_quantile": 0.75,
+      "threshold_min_periods": 240,
+      "threshold_window": 720
+    },
+    "controlled_change": "replace same-direction follower catch-up with a completed cross-market expansion-failure reversal",
+    "followers": [
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ],
+    "leader": "BTCUSDT",
+    "route_counts": {
+      "confirmed_failures": {
+        "ETHUSDT": 4,
+        "SOLUSDT": 1,
+        "XRPUSDT": 0
+      },
+      "cooldown_suppressed": 0,
+      "follower_expansions": {
+        "ETHUSDT": 33,
+        "SOLUSDT": 19,
+        "XRPUSDT": 14
+      },
+      "invalid_failure_stop_geometry": 0,
+      "leader_events_without_failure": 41,
+      "leader_events_without_follower_expansion": 37,
+      "leader_information_events": 83,
+      "selected_followers": {
+        "ETHUSDT": 4,
+        "SOLUSDT": 1,
+        "XRPUSDT": 0
+      }
+    },
+    "scenario": "CROSS_MARKET_DOMINANT_FOLLOWER_FAILURE_REVERSAL",
+    "scenario_contract": {
+      "execution": "one-account NautilusTrader BacktestNode",
+      "failure": "within three completed minutes price crosses the expansion open while opposite return, flow and basis align",
+      "follower_expansion": "same-minute follower return and flow above own shifted 75th percentiles with basis alignment",
+      "leader": "tail efficient BTC flow and return with basis alignment and material OI creation",
+      "selection": "earliest completed failure, then highest failure notional",
+      "stop": "complete follower expansion-to-failure excursion",
+      "target": "pre-existing causal external liquidity selected before Nautilus submission"
+    },
+    "signals_by_symbol": {
+      "BTCUSDT": 0,
+      "ETHUSDT": 4,
+      "SOLUSDT": 1,
+      "XRPUSDT": 0
+    },
+    "written_signals": 5
+  },
+  "compiler_script": "cross_market_dominant_failure_reversal_compiler.py",
+  "decision": "run_one_core_variable_ablation_on_identical_week_before_discard",
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "evaluation": {
+    "build_end": "2023-10-09",
+    "build_start": "2023-10-01",
+    "evaluation_end": "2023-10-09",
+    "evaluation_start": "2023-10-03"
+  },
+  "final_validation_completed": false,
+  "frozen_source_commit": "bb99980f99c98ff0e6fe4bee58f43549fe7833fd",
+  "implementation_pass": true,
+  "market_cause": "BTC information event, follower tail expansion, opposite displacement larger than the invalidated expansion",
+  "nautilus_metrics": {
+    "active_days": 4,
+    "alpha_checks": {
+      "active_days": true,
+      "geometric_daily": false,
+      "largest_winner_share": false,
+      "max_drawdown": true,
+      "positive_nav": true,
+      "trades": true,
+      "win_rate": false
+    },
+    "calendar_days": 7,
+    "candidate": "candidate-04-four-instrument-global-account",
+    "candidate_pass": false,
+    "daily_returns": {
+      "2023-10-03": 0.0,
+      "2023-10-04": -0.02524063663760001,
+      "2023-10-05": -0.027242346980079768,
+      "2023-10-06": 0.0,
+      "2023-10-07": -0.054828465473532595,
+      "2023-10-08": 0.0,
+      "2023-10-09": 0.0004499195956448876
+    },
+    "data_manifest": "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/artifacts/candidate-04-v50b-validation-week2/nautilus/data_manifest.json",
+    "ending_nav": 89661.92508668,
+    "engine": "NautilusTrader BacktestNode",
+    "execution_contract": "one NautilusTrader account; at most one pending new entry or open position across BTC ETH SOL XRP",
+    "gate_checks": {
+      "active_days": true,
+      "geometric_daily": false,
+      "largest_winner_share": false,
+      "max_drawdown": true,
+      "nautilus_orders": true,
+      "nautilus_positions": true,
+      "positive_nav": true,
+      "realized_loss_within_3pct_nav": true,
+      "trades": false,
+      "win_rate": false
+    },
+    "gate_pass": false,
+    "geometric_daily_growth": -0.015468257830849819,
+    "global_entry_coordinator": {
+      "active_instrument": null,
+      "blocked_entries": 0,
+      "invariant_violations": 0,
+      "live_count": 0,
+      "maximum_live_entries": 1,
+      "pending_instrument": null,
+      "reservations": 5
+    },
+    "global_entry_pass": true,
+    "largest_winner_share": 1.0,
+    "max_drawdown": 0.1199397489311077,
+    "maximum_realized_loss_fraction": 0.02797862794057003,
+    "multi_asset_risk_evidence": {
+      "candidate": "candidate-04-four-instrument-risk-evidence",
+      "entry_nav_source": "per-symbol strategy ENTRY_SUBMITTED evidence",
+      "errors": [],
+      "limit": 0.0301,
+      "matched_entries": 5,
+      "matched_losses": 4,
+      "matched_positions": 5,
+      "maximum_realized_loss_fraction": 0.02797862794057003,
+      "ordering": {
+        "BTCUSDT": "report_order",
+        "ETHUSDT": "instrument_then_ts_opened",
+        "SOLUSDT": "instrument_then_ts_opened",
+        "XRPUSDT": "report_order"
+      },
+      "pass": true,
+      "performance_recalculated": false,
+      "pnl_source": "NautilusTrader positions report",
+      "risk_pass": true
+    },
+    "nautilus_result": {
+      "iterations": 51840,
+      "run_id": "a5754100-6e03-4f0f-88b4-41f6364a4a52",
+      "stats_pnls": {
+        "USDT": {
+          "Avg Loser": -2594.5993571275,
+          "Avg Winner": 40.32251519,
+          "Expectancy": -2067.614982664,
+          "Max Loser": -2655.47327988,
+          "Max Winner": 40.32251519,
+          "Min Loser": -2524.0636637599996,
+          "Min Winner": 40.32251519,
+          "PnL (total)": -10338.07491332,
+          "PnL% (total)": -10.33807491332,
+          "Win Rate": 0.2
+        }
+      },
+      "stats_returns": {
+        "Average (Return)": -0.013357691186945936,
+        "Average Loss (Return)": -0.03577048303040412,
+        "Average Win (Return)": 0.0004499195956448876,
+        "Profit Factor": 0.00419265231673897,
+        "Returns Volatility (252 days)": 0.32633464142940954,
+        "Risk Return Ratio": -0.6497832191370874,
+        "Sharpe Ratio (252 days)": -10.314988823638314,
+        "Sortino Ratio (252 days)": -9.056747564700915
+      },
+      "summary": {
+        "account.BINANCE.balance.USDT.free": "89661.92508668 USDT",
+        "account.BINANCE.balance.USDT.locked": "0.00000000 USDT",
+        "account.BINANCE.balance.USDT.total": "89661.92508668 USDT",
+        "account.BINANCE.base_currency": "USDT",
+        "account.BINANCE.event_count": "38",
+        "account.BINANCE.id": "BINANCE-001",
+        "account.BINANCE.type": "MARGIN",
+        "iterations": "51840",
+        "orders.closed": "16",
+        "orders.emulated": "0",
+        "orders.inflight": "0",
+        "orders.open": "0",
+        "orders.total": "16",
+        "positions.closed": "2",
+        "positions.open": "0",
+        "positions.snapshots": "3",
+        "positions.total": "2",
+        "positions.total_with_snapshots": "5",
+        "total_events": "53",
+        "venues.total": "1"
+      },
+      "total_events": 53,
+      "total_orders": 16,
+      "total_positions": 5
+    },
+    "risk_pass": true,
+    "scenario_metrics": {
+      "CROSS_MARKET_DOMINANT_FOLLOWER_FAILURE_REVERSAL": {
+        "net_pnl": -10338.074913319999,
+        "trades": 5,
+        "wins": 1
+      }
+    },
+    "starting_nav": 100000.0,
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ],
+    "total_return": -0.10338074913320006,
+    "trades": 5,
+    "trusted_single_asset_execution_contract": {
+      "dependency_assignments_ast": [
+        "fee_model = ImportableFeeModelConfig(fee_model_path='nautilus_trader.backtest.models:MakerTakerFeeModel', config_path='nautilus_trader.backtest.config:MakerTakerFeeModelConfig', config={})",
+        "fill_model = ImportableFillModelConfig(fill_model_path='nautilus_trader.backtest.models:FillModel', config_path='nautilus_trader.backtest.config:FillModelConfig', config={'prob_fill_on_limit': 1.0, 'prob_slippage': 1.0, 'random_seed': 440404})",
+        "latency_model = ImportableLatencyModelConfig(latency_model_path='nautilus_trader.backtest.models:LatencyModel', config_path='nautilus_trader.backtest.config:LatencyModelConfig', config={'base_latency_nanos': 100000000, 'insert_latency_nanos': 150000000, 'update_latency_nanos': 100000000, 'cancel_latency_nanos': 100000000})"
+      ],
+      "execution_model_modified": false,
+      "market_or_performance_data_accessed": false,
+      "trusted_source": "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-04/nt_backtest.py",
+      "venue_constructor_ast": "BacktestVenueConfig(name='BINANCE', oms_type='NETTING', account_type='MARGIN', base_currency='USDT', starting_balances=[f\"{int(float(config['starting_nav']))} USDT\"], default_leverage=1.0, book_type='L1_MBP', fill_model=fill_model, latency_model=latency_model, fee_model=fee_model, use_position_ids=True, use_reduce_only=True, support_contingent_orders=True, bar_execution=True, bar_adaptive_high_low_ordering=True, trade_execution=False, liquidation_enabled=True, liquidation_trigger_ratio=1.0)"
+    },
+    "venue_configuration_source": "exact BacktestVenueConfig AST from nt_backtest.py",
+    "win_rate": 0.2,
+    "wins": 1
+  },
+  "performance_recalculated_outside_nautilus": false,
+  "positive_first_week_potential": false,
+  "project_target_reached": false,
+  "risk_evidence": {
+    "candidate": "candidate-04-four-instrument-risk-evidence",
+    "entry_nav_source": "per-symbol strategy ENTRY_SUBMITTED evidence",
+    "errors": [],
+    "limit": 0.0301,
+    "matched_entries": 5,
+    "matched_losses": 4,
+    "matched_positions": 5,
+    "maximum_realized_loss_fraction": 0.02797862794057003,
+    "ordering": {
+      "BTCUSDT": "report_order",
+      "ETHUSDT": "instrument_then_ts_opened",
+      "SOLUSDT": "instrument_then_ts_opened",
+      "XRPUSDT": "report_order"
+    },
+    "pass": true,
+    "performance_recalculated": false,
+    "pnl_source": "NautilusTrader positions report",
+    "risk_pass": true
+  },
+  "runtime_failure": null,
+  "selection_source": "research/candidate-04/nt_validation_weeks.json",
+  "source_feature_workflow_run": 31173131947,
+  "target_summaries": {
+    "ETHUSDT": {
+      "candidate": "candidate-04-v44-causal-target-registry-enrichment",
+      "controlled_change": "entries, directions, stops, scenarios and timing frozen; declare a target only when strict V34 execution registry has none",
+      "counts": {
+        "existing_registry_target": 2,
+        "new_declared_target": 2,
+        "signals": 4
+      },
+      "declared_net_r": {
+        "maximum": 1.9810610381077611,
+        "median": 1.782713978855792,
+        "minimum": 1.5843669196038228
+      },
+      "declared_scenario_counts": {
+        "CROSS_MARKET_DOMINANT_FOLLOWER_FAILURE_REVERSAL": 2
+      },
+      "declared_source_prefix_counts": {
+        "causal": 1,
+        "completed": 1
+      },
+      "future_information_used": false,
+      "measured_move_target_used": false
+    },
+    "SOLUSDT": {
+      "candidate": "candidate-04-v44-causal-target-registry-enrichment",
+      "controlled_change": "entries, directions, stops, scenarios and timing frozen; declare a target only when strict V34 execution registry has none",
+      "counts": {
+        "existing_registry_target": 1,
+        "signals": 1
+      },
+      "declared_net_r": {
+        "maximum": null,
+        "median": null,
+        "minimum": null
+      },
+      "declared_scenario_counts": {},
+      "declared_source_prefix_counts": {},
+      "future_information_used": false,
+      "measured_move_target_used": false
+    },
+    "XRPUSDT": {
+      "candidate": "candidate-04-v44-causal-target-registry-enrichment",
+      "controlled_change": "entries, directions, stops, scenarios and timing frozen; declare a target only when strict V34 execution registry has none",
+      "counts": {},
+      "declared_net_r": {
+        "maximum": null,
+        "median": null,
+        "minimum": null
+      },
+      "declared_scenario_counts": {},
+      "declared_source_prefix_counts": {},
+      "future_information_used": false,
+      "measured_move_target_used": false
+    }
+  },
+  "targets_predeclared": false,
+  "validation_week": "nt-week-1 / second V50b evaluation"
+}
