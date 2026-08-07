@@ -3,9 +3,10 @@
 FAR is a moderate counter-trend failed auction.  The strongest form requires
 all three peers to reclaim in the proposed direction.  A second form admits one
 sub-dominant dissenting peer only when the candidate is a follower, completes a
-top-half local event, and contributes an efficient volatility-normalized
-reclaim of its own.  This treats tiny asynchronous peer noise differently from
-a material market disagreement without weakening the local auction evidence.
+top-half local event, contributes an efficient volatility-normalized reclaim,
+and the completed market-wide auction is coherently adverse to the proposed
+reversal.  This treats tiny asynchronous peer noise differently from a material
+market disagreement without weakening the local auction evidence.
 
 AAC is synchronized accepted repricing in the direction already controlling
 both the candidate's and the market's completed 24-hour auction.
@@ -92,10 +93,16 @@ def semantic_decision(
         if all_peers_aligned:
             return _with(decision, True, "SEMANTIC_FAR_MODERATE_COUNTERTREND_UNANIMOUS")
 
-        # Partial consensus is usable only as information transfer into a
-        # follower.  A quote-notional leader cannot validate itself from a
-        # divided follower set, and a follower must make a strong local move
-        # rather than borrowing the majority move.
+        # Partial event consensus is usable only as information transfer into
+        # a follower from a coherent market-wide prior auction.  If any market
+        # was already trending in the proposed direction, the divided event is
+        # more plausibly rotation than exhaustion of one common auction.
+        if not all(float(value) < 0.0 for value in decision.directional_trend_scores.values()):
+            return _with(
+                decision,
+                False,
+                "SEMANTIC_FAR_QUORUM_REQUIRES_COHERENT_ADVERSE_AUCTION",
+            )
         if decision.symbol == decision.leader:
             return _with(decision, False, "SEMANTIC_FAR_QUORUM_CANNOT_USE_LIQUIDITY_LEADER")
         if event_rank > max(1, symbol_count // 2):
