@@ -15,26 +15,14 @@ import tempfile
 
 
 BASE = Path(__file__).with_name("directional_session_vwap_reclaim_compiler.py")
-OLD = '''        if not all(
-            math.isfinite(value) and value > 0.0
-            for value in (flow, ret, basis)
-        ):
-            counts["reclaim_not_aligned"] += 1
-            break
-'''
-NEW = '''        if not all(
-            math.isfinite(value) and value > 0.0
-            for value in (flow, ret)
-        ):
-            counts["reclaim_not_aligned"] += 1
-            break
-'''
+OLD_GATE = "for value in (flow, ret, basis)"
+NEW_GATE = "for value in (flow, ret)"
 
 
 def transform_source(source: str) -> str:
-    if source.count(OLD) != 1:
-        raise RuntimeError("V46 reclaim-basis source marker is not unique")
-    changed = source.replace(OLD, NEW, 1)
+    if source.count(OLD_GATE) != 1:
+        raise RuntimeError("V46 reclaim-basis gate marker is not unique")
+    changed = source.replace(OLD_GATE, NEW_GATE, 1)
     changed = changed.replace(
         '"compiler": "candidate-04-directional-session-vwap-reclaim-v1",',
         '"compiler": "candidate-04-directional-session-vwap-no-basis-ablation",',
