@@ -1,0 +1,229 @@
+name: candidate-04-v46b-no-basis-ablation
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v46b-no-basis-ablation.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      ROOT: artifacts/candidate-04-v46b-no-basis-ablation
+      EVIDENCE: research/candidate-04/evidence-v46b-no-basis-ablation.json
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Verify one-variable ablation and Nautilus execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/directional_session_vwap_no_basis_ablation_compiler.py \
+            research/candidate-04/nt_backtest_v45_conditional_adverse_fill.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_directional_session_vwap_no_basis_ablation_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_directional_session_vwap_reclaim_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_conditional_adverse_fill_risk_sizing.py' -v
+
+      - name: Restore identical first and second rich observations
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-04-v45b-progressive-untouched-btc-31157625404
+          path: restored-v45b
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31157625404
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run the identical first BTC week
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cat > /tmp/run_v46b_week.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          name="$1" build_start="$2" build_end="$3" eval_start="$4" eval_end="$5"
+          rich="$(find restored-v45b -type f -path "*${name}/rich/data_manifest.json" -printf '%h\n' | head -n1)"
+          test -n "$rich"
+          out="$ROOT/$name"
+          mkdir -p "$out"
+          export C04_BUILD_START="$build_start" C04_BUILD_END="$build_end"
+          export C04_EVALUATION_START="$eval_start" C04_EVALUATION_END="$eval_end"
+          python research/candidate-04/directional_session_vwap_no_basis_ablation_compiler.py \
+            --base-config research/candidate-04/inventory_transfer_config.json \
+            --impact-config research/candidate-04/impact_exhaustion_config.json \
+            --router-config research/candidate-04/auction_activity_router_config.json \
+            --rich-dir "$rich" \
+            --kline-dir ".cache/candidate-04-v46b/compiler/$name" \
+            --evaluation-start "$eval_start" \
+            --evaluation-end "$eval_end" \
+            --output "$out/all_signals" \
+            --download-klines \
+            > "$out/compiler.log"
+          python research/candidate-04/causal_target_registry_enricher.py \
+            --signals "$out/all_signals/signals.json" \
+            --base-config research/candidate-04/inventory_transfer_config.json \
+            --rich-dir "$rich" \
+            --kline-dir ".cache/candidate-04-v46b/enrich/$name" \
+            --build-start "$build_start" \
+            --build-end "$build_end" \
+            --output-dir "$out/signals" \
+            --download-klines \
+            --cost-rate 0.00075 \
+            --minimum-net-r 1.20 \
+            > "$out/enrich.log"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$out/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v45_conditional_adverse_fill.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start "$build_start" \
+            --build-end "$build_end" \
+            --evaluation-start "$eval_start" \
+            --evaluation-end "$eval_end" \
+            --cache ".cache/candidate-04-v46b/nautilus/$name" \
+            --output "$out/nautilus" \
+            > "$out/nautilus.log"
+          python research/candidate-04/summarize_candidate_week.py \
+            --root "$out" \
+            --candidate candidate-04-v46b-no-basis-ablation \
+            --stage "$name" \
+            --min-trades 1 \
+            --min-active-days 1 \
+            --min-win-rate 0.0 \
+            --min-geometric-daily -1.0 \
+            --output "$out/summary.json" \
+            > "$out/summary.log"
+          SH
+          chmod +x /tmp/run_v46b_week.sh
+          /tmp/run_v46b_week.sh \
+            untouched_1_2025_07 2025-07-19 2025-07-27 2025-07-21 2025-07-27
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          item = json.loads((root / "untouched_1_2025_07/summary.json").read_text())
+          positive = bool(
+              item.get("risk_pass")
+              and int(item.get("trades") or 0) >= 1
+              and float(item.get("total_return") or 0.0) > 0.0
+          )
+          (root / "first_gate.txt").write_text("pass\n" if positive else "fail\n")
+          print(json.dumps({"positive": positive, "summary": item}, indent=2))
+          PY
+
+      - name: Confirm only if the first week becomes positive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          if ! grep -qx pass "$ROOT/first_gate.txt"; then
+            echo "basis ablation did not create positive first-week potential"
+            exit 0
+          fi
+          /tmp/run_v46b_week.sh \
+            untouched_2_2024_09 2024-09-21 2024-09-29 2024-09-23 2024-09-29
+
+      - name: Record the V46 ablation decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json, math, os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          rows = []
+          for name in ("untouched_1_2025_07", "untouched_2_2024_09"):
+              summary = root / name / "summary.json"
+              compiler = root / name / "all_signals/summary.json"
+              if summary.exists():
+                  rows.append({
+                      "week": name,
+                      **json.loads(summary.read_text()),
+                      "compiler_summary": json.loads(compiler.read_text()) if compiler.exists() else None,
+                  })
+          returns = [float(row.get("total_return") or 0.0) for row in rows]
+          compounded = math.prod(1.0 + value for value in returns) - 1.0 if rows else 0.0
+          trades = sum(int(row.get("trades") or 0) for row in rows)
+          wins = sum(int(row.get("wins") or 0) for row in rows)
+          if len(rows) < 2:
+              decision = "discard_v46_basis_ablation_no_first_week_path"
+          elif compounded > 0 and trades >= 4 and wins / trades >= 0.5:
+              decision = "retain_v46_basis_ablation_and_open_third_week"
+          else:
+              decision = "discard_v46_after_single_basis_ablation"
+          evidence = {
+              "candidate": "candidate-04-v46b-directional-session-vwap-no-basis",
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "base_candidate": "candidate-04-v46-directional-session-vwap",
+              "base_result": "first week 0 trades; 5 first VWAP retests, 4 without parent reclaim and 1 without counter-flow pullback",
+              "one_variable_ablation": "remove positive five-minute basis change at reclaim; retain session, pullback, price reclaim, flow, return, OI, stop, target and execution",
+              "weeks": rows,
+              "compounded_return": compounded,
+              "trades": trades,
+              "wins": wins,
+              "win_rate": wins / trades if trades else 0.0,
+              "decision": decision,
+              "project_target_reached": False,
+              "final_validation_completed": False,
+              "performance_recalculated_outside_nautilus": False
+          }
+          target = Path(os.environ["EVIDENCE"])
+          target.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          (root / "decision.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v46b-no-basis-ablation-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v46b-no-basis-ablation
+            research/candidate-04/evidence-v46b-no-basis-ablation.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist V46b evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add "$EVIDENCE" 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record V46 reclaim basis ablation"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
