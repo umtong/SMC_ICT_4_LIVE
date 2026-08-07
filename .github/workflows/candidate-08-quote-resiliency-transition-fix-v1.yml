@@ -1,0 +1,126 @@
+name: candidate-08-quote-resiliency-transition-fix-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.fix-quote-resiliency-transition-v1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-quote-resiliency-transition-fix-v1
+  cancel-in-progress: true
+
+jobs:
+  fix-and-verify:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.fix-quote-resiliency-transition-v1
+      OUTPUT_DIR: research/candidate-08/evidence/quote-resiliency-transition-fix-v1
+      LOG: research/candidate-08/evidence/quote-resiliency-transition-fix-v1/contracts.log
+      STATUS: research/candidate-08/evidence/quote-resiliency-transition-fix-v1/exit_status.txt
+      SOURCE: research/candidate-08/quote_resiliency_signals.py
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply one-transition-per-bucket implementation fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-08/quote_resiliency_signals.py")
+          source = path.read_text(encoding="utf-8")
+          first = (
+              "        if pending is not None:\n"
+              "            if position > pending.expiry_position:\n"
+          )
+          first_replacement = (
+              "        handled_pending = pending is not None\n"
+              "        if pending is not None:\n"
+              "            if position > pending.expiry_position:\n"
+          )
+          second = "        if pending is None and interaction is not None:\n"
+          second_replacement = (
+              "        if not handled_pending and pending is None and interaction is not None:\n"
+          )
+          if "handled_pending = pending is not None" not in source:
+              if source.count(first) != 1:
+                  raise SystemExit(f"unexpected pending transition anchor count: {source.count(first)}")
+              source = source.replace(first, first_replacement, 1)
+          if second in source:
+              if source.count(second) != 1:
+                  raise SystemExit(f"unexpected re-arm anchor count: {source.count(second)}")
+              source = source.replace(second, second_replacement, 1)
+          if source.count("if not handled_pending and pending is None and interaction is not None:") != 1:
+              raise SystemExit("one-transition-per-bucket fix was not applied exactly once")
+          path.write_text(source, encoding="utf-8")
+          PY
+
+      - name: Verify pinned environment and all quote state contracts
+        id: contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$OUTPUT_DIR"
+          rm -f "$LOG" "$STATUS"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/quote_resiliency_signals.py \
+              research/candidate-08/test_quote_resiliency_signals.py \
+              research/candidate-08/test_quote_resiliency_transition_contract.py
+            python research/candidate-08/test_quote_resiliency_signals.py -v
+            python research/candidate-08/test_quote_resiliency_transition_contract.py -v
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit implementation fix and evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- "$SOURCE" "$OUTPUT_DIR" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: enforce one scenario transition per bucket [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce contract status
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS_VALUE: ${{ steps.contracts.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
