@@ -1,0 +1,110 @@
+name: candidate-04-v44-causal-target-registry-r4
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v44-causal-target-registry-r4.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      V44_OUTPUT: artifacts/candidate-04-v44-causal-target-registry-r4
+      V44_EVIDENCE: research/candidate-04/evidence-v44-causal-target-registry.json
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Verify target-only contracts and exact weekly range adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/causal_target_registry_enricher.py \
+            research/candidate-04/run_v44_research.py \
+            research/candidate-04/run_v44_research_r3.py \
+            research/candidate-04/nt_declared_causal_target.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v34_expected_fill_only.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_causal_target_registry_enricher.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_declared_causal_target.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_exact_causal_target_risk_sizing.py' -v
+          echo "V44_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Restore frozen V31 signals and rich observations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v31-ablation-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31114267295
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Run staged V44 BTC research through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python research/candidate-04/run_v44_research_r3.py \
+            --sources sources \
+            --output-root "$V44_OUTPUT" \
+            --cache-root .cache/candidate-04-v44-r4 \
+            --evidence "$V44_EVIDENCE"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v44-causal-target-registry-r4-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v44-causal-target-registry-r4
+            research/candidate-04/evidence-v44-causal-target-registry.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist reproducible V44 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add "$V44_EVIDENCE" 2>/dev/null || true
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "record V44 causal target registry evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
