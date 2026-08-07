@@ -1,0 +1,134 @@
+name: candidate-07-source-owned-cascade
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/cascade.py"
+      - "research/candidate-07/strategy_cascade.py"
+      - "research/candidate-07/strategy_failed_continuation.py"
+      - "research/candidate-07/strategy_progress.py"
+      - "research/candidate-07/backtest_source_owned_cascade.py"
+      - "research/candidate-07/candidate_source_owned_cascade.py"
+      - "research/candidate-07/staged_source_owned_cascade.py"
+      - "research/candidate-07/tests/test_cascade.py"
+      - ".github/workflows/candidate-07-source-owned-cascade.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify prebuilt NautilusTrader foundation and causal contracts
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-source-owned-pyc \
+            python -m compileall -q research/candidate-07
+          python -m unittest discover \
+            -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+            candidate-07-btcusdt-week1-v1
+
+      - name: Run frozen weeks and gated 912-day continuous evaluation
+        run: >-
+          python research/candidate-07/staged_source_owned_cascade.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --output artifacts/candidate-07-source-owned
+          --data-root .research-data/candidate-07
+          --max-weeks 3
+          --run-long
+
+      - name: Audit isolated versus continuous scenario identity
+        if: always()
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+          import re
+          import pandas as pd
+
+          root = Path("artifacts/candidate-07-source-owned")
+          long_path = root / "long-evaluation" / "trades.csv"
+          output = {"long_evaluation_present": long_path.exists(), "weeks": {}}
+          if long_path.exists():
+              continuous = pd.read_csv(long_path)
+              continuous["opened_dt"] = pd.to_datetime(
+                  continuous["opened_ns"], unit="ns", utc=True
+              )
+              periods = {
+                  "week-1": ("2025-12-22", "2025-12-29"),
+                  "week-2": ("2025-01-27", "2025-02-03"),
+                  "week-3": ("2024-06-24", "2024-07-01"),
+              }
+              def causal_id(raw: str) -> str:
+                  match = re.match(r"^(c07-\d+)-\d+(.*)$", str(raw))
+                  return str(raw) if match is None else match.group(1) + match.group(2)
+              for label, (start, end) in periods.items():
+                  isolated_path = root / label / "trades.csv"
+                  if not isolated_path.exists():
+                      output["weeks"][label] = {"isolated_present": False}
+                      continue
+                  isolated = pd.read_csv(isolated_path)
+                  bounded = continuous[
+                      (continuous["opened_dt"] >= start)
+                      & (continuous["opened_dt"] < end)
+                  ]
+                  left = {causal_id(item) for item in isolated["scenario_id"]}
+                  right = {causal_id(item) for item in bounded["scenario_id"]}
+                  output["weeks"][label] = {
+                      "isolated_trades": len(isolated),
+                      "continuous_window_trades": len(bounded),
+                      "causal_overlap": len(left & right),
+                      "only_isolated": sorted(left - right),
+                      "only_continuous": sorted(right - left),
+                  }
+          destination = root / "segment_identity.json"
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_text(
+              json.dumps(output, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(destination.read_text(encoding="utf-8"))
+          PY
+
+      - name: Print immutable result
+        if: always()
+        run: |
+          test -f artifacts/candidate-07-source-owned/pipeline_summary.json
+          cat artifacts/candidate-07-source-owned/pipeline_summary.json
+          find artifacts/candidate-07-source-owned -name metrics.json \
+            -print -exec cat {} \;
+          test -f artifacts/candidate-07-source-owned/segment_identity.json
+          cat artifacts/candidate-07-source-owned/segment_identity.json
+
+      - name: Preserve complete source-owned evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-source-owned-cascade-${{ github.sha }}
+          path: artifacts/candidate-07-source-owned
+          retention-days: 14
+          if-no-files-found: error
