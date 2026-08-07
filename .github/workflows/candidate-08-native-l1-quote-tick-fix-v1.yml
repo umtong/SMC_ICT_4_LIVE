@@ -1,0 +1,531 @@
+name: candidate-08-native-l1-quote-tick-fix-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.fix-native-l1-quote-tick-v1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-native-l1-quote-tick-fix-v1
+  cancel-in-progress: true
+
+jobs:
+  fix-and-verify:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.fix-native-l1-quote-tick-v1
+      OUTPUT_DIR: research/candidate-08/evidence/native-l1-quote-tick-fix-v1
+      LOG: research/candidate-08/evidence/native-l1-quote-tick-fix-v1/contracts.log
+      STATUS: research/candidate-08/evidence/native-l1-quote-tick-fix-v1/exit_status.txt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply native L1 quote synchronization and quote-callback execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(source: str, old: str, new: str, label: str) -> str:
+              if new in source:
+                  return source
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one anchor, found {count}")
+              return source.replace(old, new, 1)
+
+          # Preserve exact source exchange times in the completed quote buckets.
+          path = Path("research/candidate-08/quote_resiliency_features_v3.py")
+          source = path.read_text(encoding="utf-8")
+          source = source.replace(
+              'IMPLEMENTATION_REVISION = "CAUSAL_QUOTE_RESILIENCY_FEATURES_V3_DUPLICATE_TIMESTAMP_SAFE"',
+              'IMPLEMENTATION_REVISION = "CAUSAL_QUOTE_RESILIENCY_FEATURES_V4_NATIVE_L1_SOURCE_TIME"',
+          )
+          source = replace_once(
+              source,
+              '    data = event_rows.copy()\n    data["size_only_changed"] = data["size_changed"] & ~data["price_changed"]\n',
+              '    data = event_rows.copy()\n    # A timezone-aware datetime column preserves the exact nanosecond source time through\n    # reindexing; a float nanosecond column would lose integer precision near 1e18.\n    data["quote_event_time"] = data.index\n    data["size_only_changed"] = data["size_changed"] & ~data["price_changed"]\n',
+              "quote source event time",
+          )
+          source = replace_once(
+              source,
+              '        quote_size_only_change_count=("size_only_changed", "sum"),\n    )\n',
+              '        quote_size_only_change_count=("size_only_changed", "sum"),\n        quote_first_event_time=("quote_event_time", "first"),\n        quote_last_event_time=("quote_event_time", "last"),\n    )\n',
+              "quote bucket event times",
+          )
+          old_feature_tail = '''    result = v2.build_quote_resiliency_features(
+        trade_bars=trade_bars,
+        quote_buckets=quote_buckets,
+        tick=tick,
+        config=config,
+    )
+    result.attrs["implementation_revision"] = IMPLEMENTATION_REVISION
+    result.attrs["raw_quote_timestamp_contract"] = (
+        "DUPLICATES_ALLOWED_ORDERED_BY_TRANSACTION_TIME_THEN_UPDATE_ID"
+    )
+    return result
+'''
+          new_feature_tail = '''    cfg = config or QuoteResiliencyConfig()
+    cfg.validate()
+    result = v2.build_quote_resiliency_features(
+        trade_bars=trade_bars,
+        quote_buckets=quote_buckets,
+        tick=tick,
+        config=cfg,
+    )
+    last_times = pd.to_datetime(result.get("quote_last_event_time"), utc=True, errors="coerce")
+    exact_last_ns = pd.array(
+        [pd.NA if pd.isna(value) else int(value.as_unit("ns").value) for value in last_times],
+        dtype="Int64",
+    )
+    bucket_ns = result.index.as_unit("ns").asi8
+    exact_age_ns = pd.array(
+        [
+            pd.NA if pd.isna(value) else int(end_ns) - int(value)
+            for end_ns, value in zip(bucket_ns, exact_last_ns, strict=True)
+        ],
+        dtype="Int64",
+    )
+    result["quote_last_event_ns"] = exact_last_ns
+    result["quote_source_age_ns"] = exact_age_ns
+    cadence_ns = int(cfg.cadence_seconds) * 1_000_000_000
+    valid_age = (
+        result["quote_source_age_ns"].notna()
+        & (result["quote_source_age_ns"] > 0)
+        & (result["quote_source_age_ns"] < cadence_ns)
+    )
+    valid_state = (
+        pd.to_numeric(result["bid_close"], errors="coerce").gt(0.0)
+        & pd.to_numeric(result["ask_close"], errors="coerce").gt(0.0)
+        & pd.to_numeric(result["bid_qty_close"], errors="coerce").gt(0.0)
+        & pd.to_numeric(result["ask_qty_close"], errors="coerce").gt(0.0)
+        & pd.to_numeric(result["bid_close"], errors="coerce").le(
+            pd.to_numeric(result["ask_close"], errors="coerce")
+        )
+    )
+    result["native_quote_snapshot_observable"] = (valid_age & valid_state).fillna(False)
+    result.attrs["implementation_revision"] = IMPLEMENTATION_REVISION
+    result.attrs["raw_quote_timestamp_contract"] = (
+        "DUPLICATES_ALLOWED_ORDERED_BY_TRANSACTION_TIME_THEN_UPDATE_ID"
+    )
+    result.attrs["native_quote_snapshot_contract"] = (
+        "LAST_SOURCE_EVENT_TIME_STRICTLY_INSIDE_COMPLETED_BUCKET"
+    )
+    return result
+'''
+          source = replace_once(
+              source,
+              old_feature_tail,
+              new_feature_tail,
+              "feature source-time derivation",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          # The loader revision records that exact source event times are now retained for native L1.
+          path = Path("research/candidate-08/quote_resiliency_data_v2.py")
+          source = path.read_text(encoding="utf-8")
+          source = source.replace(
+              'DATA_REVISION = "BINANCE_USDM_BOOKTICKER_COMPLETED_10S_V2_TRUE_STREAMING"',
+              'DATA_REVISION = "BINANCE_USDM_BOOKTICKER_COMPLETED_10S_V3_NATIVE_L1_SOURCE_TIME"',
+          )
+          path.write_text(source, encoding="utf-8")
+
+          # Keep nanosecond source timestamps as integers in the native quote adapter.
+          path = Path("research/candidate-08/quote_resiliency_native_quotes.py")
+          source = path.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              'def _as_float(row: pd.Series, name: str) -> float:\n    value = float(row[name])\n    if not isfinite(value):\n        raise ValueError(f"{name} is not finite")\n    return value\n',
+              'def _as_float(row: pd.Series, name: str) -> float:\n    value = float(row[name])\n    if not isfinite(value):\n        raise ValueError(f"{name} is not finite")\n    return value\n\n\ndef _as_int(row: pd.Series, name: str) -> int:\n    value = row[name]\n    if pd.isna(value):\n        raise ValueError(f"{name} is unavailable")\n    return int(value)\n',
+              "exact integer source time helper",
+          )
+          source = replace_once(
+              source,
+              '        source_event_ns = int(_as_float(row, "quote_last_event_ns"))\n',
+              '        source_event_ns = _as_int(row, "quote_last_event_ns")\n',
+              "exact integer source time use",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          # A signal is executable only when its completed L1 snapshot has a valid source event.
+          path = Path("research/candidate-08/quote_resiliency_signals.py")
+          source = path.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              '    return (\n        bool(row.get("quote_resiliency_observable", False))\n        and _finite_columns(row, _QUOTE_COLUMNS)\n    )\n',
+              '    return (\n        bool(row.get("quote_resiliency_observable", False))\n        and bool(row.get("native_quote_snapshot_observable", False))\n        and _finite_columns(row, _QUOTE_COLUMNS)\n    )\n',
+              "native quote observability gate",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          # Backward-compatible hook: incumbent bar-only runners return no QuoteTicks.
+          path = Path("research/candidate-08/run_aggtrade_acceptance_nautilus.py")
+          source = path.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              '    return bars\n\n\ndef _funding_updates_from_frame(\n',
+              '    return bars\n\n\ndef _quote_ticks_from_ten_second_frame(\n    frame: pd.DataFrame,\n    *,\n    instrument: CryptoPerpetual,\n) -> tuple[list[Any], dict[str, Any]]:\n    """Optional native L1 execution hook; bar-only candidates remain unchanged."""\n\n    return [], {\n        "revision": "NO_NATIVE_QUOTE_EXECUTION",\n        "rows": 0,\n        "source_contract": "BAR_ONLY_BACKWARD_COMPATIBLE_DEFAULT",\n    }\n\n\ndef _funding_updates_from_frame(\n',
+              "base native quote hook",
+          )
+          source = replace_once(
+              source,
+              '    all_bars: list[Bar] = []\n    all_funding_updates: list[FundingRateUpdate] = []\n',
+              '    all_bars: list[Bar] = []\n    all_quote_ticks: list[Any] = []\n    quote_tick_quality_by_symbol: dict[str, dict[str, Any]] = {}\n    all_funding_updates: list[FundingRateUpdate] = []\n',
+              "base quote accumulators",
+          )
+          source = replace_once(
+              source,
+              '        all_bars.extend(bars)\n        funding_frame, funding_sources, funding_quality = load_official_funding_rates(\n',
+              '        all_bars.extend(bars)\n        quote_ticks, quote_tick_quality = _quote_ticks_from_ten_second_frame(\n            ten_second,\n            instrument=legacy_instrument,\n        )\n        all_quote_ticks.extend(quote_ticks)\n        quote_tick_quality_by_symbol[symbol] = dict(quote_tick_quality)\n        funding_frame, funding_sources, funding_quality = load_official_funding_rates(\n',
+              "build native quotes per symbol",
+          )
+          source = replace_once(
+              source,
+              '            "bars": len(bars),\n            "funding_updates": len(funding_updates),\n',
+              '            "bars": len(bars),\n            "native_quote_ticks": len(quote_ticks),\n            "native_quote_tick_quality": dict(quote_tick_quality),\n            "funding_updates": len(funding_updates),\n',
+              "quote data manifest",
+          )
+          source = replace_once(
+              source,
+              '    native_mark_price_updates = [\n        update.to_pyo3() for update in all_mark_price_updates\n    ]\n    native_bars = [bar.to_pyo3() for bar in all_bars]\n',
+              '    native_mark_price_updates = [\n        update.to_pyo3() for update in all_mark_price_updates\n    ]\n    native_quote_ticks = [\n        item.to_pyo3() if hasattr(item, "to_pyo3") else item\n        for item in all_quote_ticks\n    ]\n    native_bars = [bar.to_pyo3() for bar in all_bars]\n',
+              "native quote conversion",
+          )
+          source = replace_once(
+              source,
+              '        if native_mark_price_updates:\n            engine.add_data(native_mark_price_updates, None, False, True)\n        engine.add_data(native_bars, None, False, True)\n',
+              '        if native_mark_price_updates:\n            engine.add_data(native_mark_price_updates, None, False, True)\n        if native_quote_ticks:\n            engine.add_data(native_quote_ticks, None, False, True)\n        engine.add_data(native_bars, None, False, True)\n',
+              "native quote engine data",
+          )
+          source = replace_once(
+              source,
+              '            "cost_assumptions": config["cost_assumptions"],\n            "venue_runtime": {\n',
+              '            "cost_assumptions": config["cost_assumptions"],\n            "native_quote_execution": {\n                "enabled": bool(native_quote_ticks),\n                "quote_ticks": len(native_quote_ticks),\n                "by_symbol": quote_tick_quality_by_symbol,\n                "data_order_contract": "BAR_CLOSE_THEN_COMPLETION_QUOTE_AT_PLUS_1NS",\n            },\n            "venue_runtime": {\n',
+              "native quote metrics",
+          )
+          source = replace_once(
+              source,
+              '                    "mark_price_updates": len(all_mark_price_updates),\n                    "actual_funding_settlement_enabled": True,\n',
+              '                    "mark_price_updates": len(all_mark_price_updates),\n                    "native_quote_ticks": len(native_quote_ticks),\n                    "native_quote_execution_enabled": bool(native_quote_ticks),\n                    "native_quote_data_order_contract": "BAR_CLOSE_THEN_COMPLETION_QUOTE_AT_PLUS_1NS",\n                    "actual_funding_settlement_enabled": True,\n',
+              "native quote run manifest",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          # Let the generic signal processor record the later quote callback as observed time.
+          path = Path("research/candidate-08/aggtrade_acceptance_strategy.py")
+          source = path.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              '    def _process_signal_time(self, ts_event_ns: int) -> None:\n        if self.active_signal is not None or self.entry_inflight:\n',
+              '    def _process_signal_time(\n        self,\n        ts_event_ns: int,\n        *,\n        observed_time_ns: int | None = None,\n    ) -> None:\n        execution_time_ns = (\n            int(ts_event_ns) if observed_time_ns is None else int(observed_time_ns)\n        )\n        if execution_time_ns < int(ts_event_ns):\n            raise ValueError("signal execution cannot precede signal completion")\n        if self.active_signal is not None or self.entry_inflight:\n',
+              "signal observed time signature",
+          )
+          source = source.replace(
+              '                    ts_event_ns,\n                    {"active_scenario_id": self.active_signal.scenario_id},\n',
+              '                    execution_time_ns,\n                    {"active_scenario_id": self.active_signal.scenario_id},\n',
+              1,
+          )
+          # Remaining skips and submission in this method use the same later observed timestamp.
+          method_start = source.index("    def _process_signal_time(")
+          method_end = source.index("    def _funding_observation", method_start)
+          method = source[method_start:method_end]
+          method = method.replace(
+              'self._record_skip(signal, "OUTSIDE_EVALUATION_INTERVAL", ts_event_ns, {})',
+              'self._record_skip(signal, "OUTSIDE_EVALUATION_INTERVAL", execution_time_ns, {})',
+          )
+          method = method.replace(
+              '                    ts_event_ns,\n                    {"reason": reason},\n',
+              '                    execution_time_ns,\n                    {"reason": reason},\n',
+          )
+          method = method.replace(
+              '                    ts_event_ns,\n                    {\n                        "entry_reference": signal.entry_reference,\n',
+              '                    execution_time_ns,\n                    {\n                        "entry_reference": signal.entry_reference,\n',
+          )
+          method = method.replace(
+              '            self._submit_signal(selected, selected_geometry, ts_event_ns)',
+              '            self._submit_signal(selected, selected_geometry, execution_time_ns)',
+          )
+          source = source[:method_start] + method + source[method_end:]
+          path.write_text(source, encoding="utf-8")
+
+          # Quote-specific strategy defers all entries to the completion QuoteTick callback.
+          path = Path("research/candidate-08/quote_resiliency_strategy.py")
+          source = path.read_text(encoding="utf-8")
+          source = source.replace(
+              'EXECUTION_ADAPTER_REVISION = "QUOTE_RESILIENCY_NATIVE_EXECUTION_LABELS_V2_CAUSAL_FILL_EXIT"',
+              'EXECUTION_ADAPTER_REVISION = "QUOTE_RESILIENCY_NATIVE_EXECUTION_LABELS_V3_QUOTE_CALLBACK_ENTRY"',
+          )
+          source = replace_once(
+              source,
+              'from quote_resiliency_signals import QuoteResiliencySignal\n',
+              'from quote_resiliency_native_quotes import COMPLETION_DELAY_NS\nfrom quote_resiliency_signals import QuoteResiliencySignal\n',
+              "quote completion delay import",
+          )
+          strategy_methods = '''    def __init__(self, config: Any) -> None:
+        super().__init__(config)
+        self._quote_ready_signal_times: set[int] = set()
+        self._quote_signal_instruments_seen: dict[int, set[str]] = {}
+        self.native_quote_submission_events: list[dict[str, Any]] = []
+
+    def on_start(self) -> None:
+        super().on_start()
+        for instrument_id in self.instrument_ids_by_str.values():
+            self.subscribe_quote_ticks(instrument_id)
+
+    def on_bar(self, bar: Any) -> None:
+        signal_time_ns = int(bar.ts_event)
+        signals = self.signals_by_time_ns.get(signal_time_ns, ())
+        # Reuse all incumbent timeout, stop, target, funding, and deferred-risk-exit handling while
+        # suppressing only same-bar signal submission.  The immutable mapping is restored before
+        # returning from the callback.
+        original = self.signals_by_time_ns
+        if signals:
+            self.signals_by_time_ns = {}
+        try:
+            super().on_bar(bar)
+        finally:
+            self.signals_by_time_ns = original
+        if not signals:
+            return
+        seen = self.signal_instruments_seen.setdefault(signal_time_ns, set())
+        seen.add(str(bar.bar_type.instrument_id))
+        required = {signal.instrument_id for signal in signals}
+        if seen >= required:
+            self._quote_ready_signal_times.add(signal_time_ns)
+
+    def on_quote_tick(self, tick: Any) -> None:
+        quote_time_ns = int(tick.ts_event)
+        signal_time_ns = quote_time_ns - COMPLETION_DELAY_NS
+        if signal_time_ns not in self._quote_ready_signal_times:
+            return
+        signals = self.signals_by_time_ns.get(signal_time_ns, ())
+        if not signals:
+            raise RuntimeError("completion QuoteTick had no frozen signal bundle")
+        seen = self._quote_signal_instruments_seen.setdefault(signal_time_ns, set())
+        seen.add(str(tick.instrument_id))
+        required = {signal.instrument_id for signal in signals}
+        if seen < required:
+            return
+        if signal_time_ns in self.processed_signal_times:
+            raise RuntimeError("quote-completed signal time processed more than once")
+        self.processed_signal_times.add(signal_time_ns)
+        self._quote_ready_signal_times.discard(signal_time_ns)
+        self.native_quote_submission_events.append(
+            {
+                "signal_time_ns": signal_time_ns,
+                "quote_time_ns": quote_time_ns,
+                "delay_ns": quote_time_ns - signal_time_ns,
+                "required_instruments": sorted(required),
+                "seen_instruments": sorted(seen),
+                "execution_adapter_revision": EXECUTION_ADAPTER_REVISION,
+            }
+        )
+        self._process_signal_time(
+            signal_time_ns,
+            observed_time_ns=quote_time_ns,
+        )
+
+'''
+          source = replace_once(
+              source,
+              '    def _request_exit(\n',
+              strategy_methods + '    def _request_exit(\n',
+              "quote callback entry methods",
+          )
+          source = replace_once(
+              source,
+              '            "risk_accounting_revision": RISK_ACCOUNTING_REVISION,\n            "interaction_time_ns": signal.interaction_time_ns,\n',
+              '            "risk_accounting_revision": RISK_ACCOUNTING_REVISION,\n            "native_quote_submission_time_ns": int(ts_event_ns),\n            "native_quote_submission_delay_ns": int(ts_event_ns) - int(signal.signal_time_ns),\n            "native_quote_execution_contract": "BAR_CLOSE_THEN_COMPLETION_QUOTE_AT_PLUS_1NS",\n            "interaction_time_ns": signal.interaction_time_ns,\n',
+              "quote intent execution metadata",
+          )
+          source = replace_once(
+              source,
+              '                "signal_time_ns": signal.signal_time_ns,\n                "interaction_time_ns": signal.interaction_time_ns,\n',
+              '                "signal_time_ns": signal.signal_time_ns,\n                "native_quote_submission_time_ns": int(ts_event_ns),\n                "native_quote_submission_delay_ns": int(ts_event_ns) - int(signal.signal_time_ns),\n                "native_quote_execution_contract": "BAR_CLOSE_THEN_COMPLETION_QUOTE_AT_PLUS_1NS",\n                "interaction_time_ns": signal.interaction_time_ns,\n',
+              "trade intent quote timing",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          # Bind the quote hook and expose revisions in every summary.
+          path = Path("research/candidate-08/run_quote_resiliency_nautilus.py")
+          source = path.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              'from quote_resiliency_features_v3 import (\n',
+              'from quote_resiliency_features_v3 import (\n',
+              "feature import no-op guard",
+          )
+          source = replace_once(
+              source,
+              'from quote_resiliency_signals import (\n',
+              'from quote_resiliency_native_quotes import (\n    NATIVE_QUOTE_REVISION,\n    completion_quote_ticks_from_frame,\n)\nfrom quote_resiliency_signals import (\n',
+              "native quote imports",
+          )
+          source = source.replace(
+              'RUNNER_REVISION = "QUOTE_RESILIENCY_NATIVE_NAUTILUS_ADAPTER_V1"',
+              'RUNNER_REVISION = "QUOTE_RESILIENCY_NATIVE_NAUTILUS_ADAPTER_V2_QUOTE_TICK_EXECUTION"',
+          )
+          native_hook = '''
+def _native_quote_ticks_from_frame(
+    frame: pd.DataFrame,
+    *,
+    instrument: Any,
+) -> tuple[list[Any], dict[str, Any]]:
+    ticks, quality = completion_quote_ticks_from_frame(
+        frame,
+        instrument=instrument,
+        cadence_seconds=_feature_config().cadence_seconds,
+    )
+    return ticks, {
+        "revision": quality.revision,
+        "rows": quality.rows,
+        "first_completion_time_ns": quality.first_completion_time_ns,
+        "last_completion_time_ns": quality.last_completion_time_ns,
+        "maximum_source_age_ns": quality.maximum_source_age_ns,
+        "completion_delay_ns": quality.completion_delay_ns,
+        "source_contract": quality.source_contract,
+    }
+
+'''
+          source = replace_once(
+              source,
+              '\n\ndef _build_signals(**kwargs: Any) -> QuoteResiliencySignalBundle:\n',
+              native_hook + '\ndef _build_signals(**kwargs: Any) -> QuoteResiliencySignalBundle:\n',
+              "native quote hook function",
+          )
+          source = replace_once(
+              source,
+              '    summary["execution_adapter_revision"] = EXECUTION_ADAPTER_REVISION\n',
+              '    summary["execution_adapter_revision"] = EXECUTION_ADAPTER_REVISION\n    summary["native_quote_revision"] = NATIVE_QUOTE_REVISION\n',
+              "global native quote revision",
+          )
+          source = replace_once(
+              source,
+              '            "execution_adapter_revision": EXECUTION_ADAPTER_REVISION,\n            "risk_accounting_revision": RISK_ACCOUNTING_REVISION,\n',
+              '            "execution_adapter_revision": EXECUTION_ADAPTER_REVISION,\n            "native_quote_revision": NATIVE_QUOTE_REVISION,\n            "risk_accounting_revision": RISK_ACCOUNTING_REVISION,\n',
+              "suite native quote revision",
+          )
+          source = replace_once(
+              source,
+              'execution.runner.base_runner.load_ten_second_aggtrades = _load_trade_and_quote_features\n',
+              'execution.runner.base_runner.load_ten_second_aggtrades = _load_trade_and_quote_features\nexecution.runner.base_runner._quote_ticks_from_ten_second_frame = (\n    _native_quote_ticks_from_frame\n)\n',
+              "bind native quote hook",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          # Synthetic detector fixtures explicitly satisfy the native-quote execution gate.
+          path = Path("research/candidate-08/test_quote_resiliency_signals.py")
+          source = path.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              '            "quote_resiliency_observable": True,\n',
+              '            "quote_resiliency_observable": True,\n            "native_quote_snapshot_observable": True,\n',
+              "signal fixture native quote gate",
+          )
+          path.write_text(source, encoding="utf-8")
+
+          path = Path("research/candidate-08/test_quote_resiliency_transition_contract.py")
+          source = path.read_text(encoding="utf-8")
+          source = replace_once(
+              source,
+              '        data["quote_resiliency_observable"] = True\n',
+              '        data["quote_resiliency_observable"] = True\n        data["native_quote_snapshot_observable"] = True\n',
+              "transition fixture native quote gate",
+          )
+          path.write_text(source, encoding="utf-8")
+          PY
+
+      - name: Verify native quote data, callback ordering, and exact fill price
+        id: contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$OUTPUT_DIR"
+          rm -f "$LOG" "$STATUS"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/quote_resiliency_features_v3.py \
+              research/candidate-08/quote_resiliency_data_v2.py \
+              research/candidate-08/quote_resiliency_native_quotes.py \
+              research/candidate-08/quote_resiliency_signals.py \
+              research/candidate-08/quote_resiliency_strategy.py \
+              research/candidate-08/run_quote_resiliency_nautilus.py \
+              research/candidate-08/test_quote_resiliency_native_quotes.py \
+              research/candidate-08/test_quote_resiliency_native_feed_contract.py \
+              research/candidate-08/test_quote_resiliency_native_execution_smoke.py
+            python research/candidate-08/test_quote_resiliency_features_v3.py -v
+            python research/candidate-08/test_quote_resiliency_data.py -v
+            python research/candidate-08/test_quote_resiliency_signals.py -v
+            python research/candidate-08/test_quote_resiliency_transition_contract.py -v
+            python research/candidate-08/test_quote_resiliency_execution_price_contract.py -v
+            python research/candidate-08/test_quote_resiliency_native_quotes.py -v
+            python research/candidate-08/test_quote_resiliency_native_feed_contract.py -v
+            python research/candidate-08/test_quote_resiliency_native_execution_smoke.py -v
+            python research/candidate-08/test_quote_resiliency_native_adapter.py -v
+            python research/candidate-08/test_quote_resiliency_stage_decision.py -v
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit implementation correction and contract evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- \
+            research/candidate-08/quote_resiliency_features_v3.py \
+            research/candidate-08/quote_resiliency_data_v2.py \
+            research/candidate-08/quote_resiliency_native_quotes.py \
+            research/candidate-08/quote_resiliency_signals.py \
+            research/candidate-08/quote_resiliency_strategy.py \
+            research/candidate-08/run_quote_resiliency_nautilus.py \
+            research/candidate-08/run_aggtrade_acceptance_nautilus.py \
+            research/candidate-08/aggtrade_acceptance_strategy.py \
+            research/candidate-08/test_quote_resiliency_signals.py \
+            research/candidate-08/test_quote_resiliency_transition_contract.py \
+            "$OUTPUT_DIR" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: execute entries from native completion QuoteTicks [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce contract status
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS_VALUE: ${{ steps.contracts.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
