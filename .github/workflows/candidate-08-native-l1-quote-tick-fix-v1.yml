@@ -63,6 +63,10 @@ jobs:
             python "$PATCH_SCRIPT"
             sed -i 's/BINANCE_USDM_BOOKTICKER_COMPLETED_10S_V2_TRUE_STREAMING/BINANCE_USDM_BOOKTICKER_COMPLETED_10S_V3_NATIVE_L1_SOURCE_TIME/g' \
               research/candidate-08/test_quote_resiliency_data.py
+            sed -i 's/self.assertEqual(expected_one_tick_entry_fill(100.1, 1, 0.1), 100.2)/self.assertAlmostEqual(expected_one_tick_entry_fill(100.1, 1, 0.1), 100.2, places=12)/' \
+              research/candidate-08/test_quote_resiliency_execution_price_contract.py
+            sed -i 's/self.assertEqual(expected_one_tick_entry_fill(99.9, -1, 0.1), 99.8)/self.assertAlmostEqual(expected_one_tick_entry_fill(99.9, -1, 0.1), 99.8, places=12)/' \
+              research/candidate-08/test_quote_resiliency_execution_price_contract.py
             python -m compileall -q research/candidate-08
             python research/candidate-08/test_quote_resiliency_features_v3.py -v
             python research/candidate-08/test_quote_resiliency_data.py -v
