@@ -1,0 +1,294 @@
+name: candidate-04-v56-prospective
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/v56_prospective_trigger.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-04-v56-prospective
+  cancel-in-progress: false
+
+jobs:
+  sequential-prospective:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      FROZEN_COMMIT: 4daf1f0ecf5b13017b7761eeef005f8d0b163d10
+      ROOT: artifacts/candidate-04-v56-prospective
+      EVIDENCE: research/candidate-04/evidence-v56-prospective.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify frozen source, engine and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          for path in \
+            research/candidate-04/prominence_state_router.py \
+            research/candidate-04/nt_state_preserving_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v56_prominence_state.py \
+            research/candidate-04/freeze-v56.json \
+            research/candidate-04/boundary_negotiation_expansion_compiler.py \
+            research/candidate-04/ablate_compiled_scenario.py \
+            research/candidate-04/causal_target_registry_enricher.py \
+            research/candidate-04/nt_conditional_adverse_fill_risk_sizing.py \
+            research/candidate-04/nt_liquidity_config.json \
+            research/candidate-04/inventory_transfer_config.json \
+            research/candidate-04/impact_exhaustion_config.json \
+            research/candidate-04/auction_activity_router_config.json; do
+            cmp "$path" <(git show "$FROZEN_COMMIT:$path")
+          done
+          python -m py_compile \
+            research/candidate-04/prominence_state_router.py \
+            research/candidate-04/nt_state_preserving_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v56_prominence_state.py \
+            research/candidate-04/boundary_negotiation_expansion_compiler.py \
+            research/candidate-04/causal_target_registry_enricher.py
+          python -m unittest discover -s research/candidate-04/tests -p 'test_prominence_state_router.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_state_preserving_rich_signal_strategy.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_conditional_adverse_fill_risk_sizing.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_boundary_negotiation_expansion_compiler.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_rich_signal_strategy.py' -v
+
+      - name: Execute frozen weeks sequentially through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT"
+
+          run_retry() {
+            local label="$1"; shift
+            for attempt in 1 2 3 4; do
+              if "$@"; then return 0; fi
+              echo "$label failed attempt $attempt" >&2
+              sleep $((attempt * 8))
+            done
+            return 1
+          }
+
+          run_week() {
+            local order="$1" build_start="$2" eval_start="$3" eval_end="$4" build_end="$5"
+            local week="$ROOT/week_$order"
+            mkdir -p "$week"
+            export C04_BUILD_START="$build_start"
+            export C04_BUILD_END="$build_end"
+            export C04_EVALUATION_START="$eval_start"
+            export C04_EVALUATION_END="$eval_end"
+
+            run_retry "rich features week $order" \
+              python research/candidate-04/rich_features_for_symbol.py \
+                --symbol BTCUSDT \
+                --start "$build_start" \
+                --end "$build_end" \
+                --cache ".cache/candidate-04-v56-prospective/week_$order/rich" \
+                --output "$week/rich"
+            test -s "$week/rich/data_manifest.json"
+
+            run_retry "V31 compiler week $order" \
+              python research/candidate-04/boundary_negotiation_expansion_compiler.py \
+                --base-config research/candidate-04/inventory_transfer_config.json \
+                --impact-config research/candidate-04/impact_exhaustion_config.json \
+                --router-config research/candidate-04/auction_activity_router_config.json \
+                --rich-dir "$week/rich" \
+                --kline-dir ".cache/candidate-04-v56-prospective/week_$order/klines" \
+                --evaluation-start "$eval_start" \
+                --evaluation-end "$eval_end" \
+                --output "$week/v31" \
+                --download-klines
+            test -s "$week/v31/signals.json"
+
+            python research/candidate-04/ablate_compiled_scenario.py \
+              --input-signals "$week/v31/signals.json" \
+              --input-summary "$week/v31/summary.json" \
+              --remove STRESS_SETTLED_ACCEPTANCE_CONTINUATION \
+              --candidate candidate-04-v31-no-stress-continuation \
+              --output "$week/ablated"
+
+            run_retry "causal targets week $order" \
+              python research/candidate-04/causal_target_registry_enricher.py \
+                --signals "$week/ablated/signals.json" \
+                --base-config research/candidate-04/inventory_transfer_config.json \
+                --rich-dir "$week/rich" \
+                --kline-dir ".cache/candidate-04-v56-prospective/week_$order/klines" \
+                --build-start "$build_start" \
+                --build-end "$build_end" \
+                --output-dir "$week/v44" \
+                --download-klines \
+                --cost-rate 0.00075 \
+                --minimum-net-r 1.20
+            test -s "$week/v44/signals.json"
+
+            python research/candidate-04/prominence_state_router.py \
+              --signals "$week/v44/signals.json" \
+              --rich-dir "$week/rich" \
+              --output "$week/v56"
+            test -s "$week/v56/signals.json"
+
+            run_retry "Nautilus week $order" env \
+              C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$week/v56/signals.json" \
+              python research/candidate-04/nt_backtest_v56_prominence_state.py \
+                --config research/candidate-04/nt_liquidity_config.json \
+                --build-start "$build_start" \
+                --build-end "$build_end" \
+                --evaluation-start "$eval_start" \
+                --evaluation-end "$eval_end" \
+                --cache ".cache/candidate-04-v56-prospective/week_$order/nautilus" \
+                --output "$week/nautilus"
+            test -s "$week/nautilus/metrics.json"
+            test -e "$week/nautilus/positions.csv"
+            test -s "$week/nautilus/strategy_events.json"
+
+            python research/candidate-04/summarize_candidate_week.py \
+              --root "$week" \
+              --candidate candidate-04-v56-prominence-state-router \
+              --stage "prospective_week_$order" \
+              --min-trades 1 \
+              --min-active-days 1 \
+              --min-win-rate 0.75 \
+              --min-geometric-daily 0.0 \
+              --output "$week/summary.json"
+
+            python - "$week" "$order" "$build_start" "$eval_start" "$eval_end" "$build_end" <<'PY'
+          import json, sys
+          from collections import Counter
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          summary=json.loads((root/'summary.json').read_text())
+          router=json.loads((root/'v56/summary.json').read_text())
+          events=json.loads((root/'nautilus/strategy_events.json').read_text())
+          summary.update({
+              'order':int(sys.argv[2]),
+              'build_start':sys.argv[3],
+              'evaluation_start':sys.argv[4],
+              'evaluation_end':sys.argv[5],
+              'build_end':sys.argv[6],
+              'router':router,
+              'execution_events':dict(Counter(str(x.get('event_type')) for x in events)),
+              'frozen_commit':'4daf1f0ecf5b13017b7761eeef005f8d0b163d10',
+          })
+          summary['progressive_pass']=bool(
+              summary.get('risk_pass')
+              and int(summary.get('trades') or 0)>=1
+              and int(summary.get('wins') or 0)==int(summary.get('trades') or 0)
+              and float(summary.get('total_return') or 0.0)>0.0
+          )
+          (root/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          PY
+          }
+
+          status="RUNNING"
+          completed=0
+          for spec in \
+            "1 2023-05-27 2023-05-29 2023-06-04 2023-06-04" \
+            "2 2024-07-13 2024-07-15 2024-07-21 2024-07-21" \
+            "3 2025-11-08 2025-11-10 2025-11-16 2025-11-16"; do
+            read -r order build_start eval_start eval_end build_end <<< "$spec"
+            run_week "$order" "$build_start" "$eval_start" "$eval_end" "$build_end"
+            completed="$order"
+            if [[ "$(python -c "import json; print(str(json.load(open('$ROOT/week_$order/summary.json'))['progressive_pass']).lower())")" != true ]]; then
+              status="FAILED_WEEK_$order"
+              break
+            fi
+          done
+          if [[ "$completed" == 3 ]]; then status="THREE_WEEKS_COMPLETED"; fi
+          printf '%s\n' "$status" > "$ROOT/status.txt"
+
+      - name: Aggregate prospective evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$(dirname "$EVIDENCE")" "$ROOT"
+          python - <<'PY'
+          import json, math, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          rows=[json.loads(path.read_text()) for path in sorted(root.glob('week_*/summary.json'))]
+          returns=[float(row.get('total_return') or 0.0) for row in rows]
+          compounded=math.prod(1.0+x for x in returns)-1.0 if rows else 0.0
+          days=sum(int(row.get('calendar_days') or 7) for row in rows)
+          daily=(1.0+compounded)**(1.0/days)-1.0 if days and 1.0+compounded>0 else 0.0
+          trades=sum(int(row.get('trades') or 0) for row in rows)
+          wins=sum(int(row.get('wins') or 0) for row in rows)
+          active=sum(int(row.get('active_days') or 0) for row in rows)
+          completed=len(rows)
+          all_pass=completed==3 and all(bool(row.get('progressive_pass')) for row in rows)
+          robust=bool(
+              all_pass and trades>=4 and active>=4
+              and wins/trades>=0.80 and compounded>0.0
+              and all(bool(row.get('risk_pass')) for row in rows)
+          ) if trades else False
+          evidence={
+              'candidate':'candidate-04-v56-prominence-state-router',
+              'stage':'frozen_progressive_prospective_btc',
+              'frozen_commit':os.environ['FROZEN_COMMIT'],
+              'engine':'NautilusTrader 1.230.0 BacktestNode',
+              'weeks':rows,
+              'completed_weeks':completed,
+              'calendar_days':days,
+              'trades':trades,
+              'wins':wins,
+              'win_rate':wins/trades if trades else 0.0,
+              'active_days':active,
+              'compounded_return':compounded,
+              'geometric_daily_growth':daily,
+              'three_week_robust_pass':robust,
+              'multi_asset_screen_allowed':robust,
+              'long_evaluation_allowed':False,
+              'project_target_reached':False,
+              'decision':(
+                  'PROMOTE_V56_TO_FROZEN_FOUR_ASSET_SCREEN' if robust
+                  else f"STOP_V56_AFTER_{completed}_PROSPECTIVE_WEEKS"
+              ),
+          }
+          Path(os.environ['EVIDENCE']).write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          (root/'decision.json').write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(evidence,indent=2,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v56-prospective-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v56-prospective
+            research/candidate-04/evidence-v56-prospective.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist prospective decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research(candidate-04): record V56 prospective evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt*3))
+          done
+          exit 1
