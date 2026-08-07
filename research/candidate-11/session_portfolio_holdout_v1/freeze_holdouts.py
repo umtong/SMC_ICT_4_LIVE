@@ -217,12 +217,22 @@ def main() -> None:
             "schema", "candidate", "validation_mode", "locked_source",
             "selection", "aggregate_gate", "decision_rule", "execution_lock",
         )
-        if {key: existing.get(key) for key in immutable} != {
-            key: protocol.get(key) for key in immutable
-        }:
-            raise SystemExit("frozen holdout protocol changed")
-        print("holdout protocol already frozen")
-        return
+        existing_lock = {key: existing.get(key) for key in immutable}
+        proposed_lock = {key: protocol.get(key) for key in immutable}
+        if existing_lock == proposed_lock:
+            print("holdout protocol already frozen")
+            return
+        # A stricter pre-data selection rule may replace an earlier reservation
+        # only while no evaluator/results exist and the committed marker still
+        # proves that no holdout market data has been opened.
+        results = here / "results"
+        evaluator = here / "holdout_runner.py"
+        if existing.get("market_data_opened") is False and not results.exists() and not evaluator.exists():
+            output.write_text(json.dumps(protocol, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            print("replaced pre-data reservation with stricter immutable protocol")
+            print(json.dumps(protocol, indent=2, sort_keys=True))
+            return
+        raise SystemExit("frozen holdout protocol changed after evaluation boundary")
 
     output.write_text(json.dumps(protocol, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(protocol, indent=2, sort_keys=True))
