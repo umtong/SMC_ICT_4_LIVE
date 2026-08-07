@@ -1,0 +1,120 @@
+name: candidate-01-v39-cross-asset-laggard-quantity-fix-v2
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v39-cross-asset-laggard-quantity-fix-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  corrected-frozen-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v39
+          key: candidate-01-v39-quantity-fix-v2-2023-04-17-${{ runner.os }}-v1
+      - name: Run same primary and control through NautilusTrader
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q research/candidate-01/cross_asset_laggard_v39.py research/candidate-01/cross_asset_laggard_v39_quantity_fix.py research/candidate-01/nautilus_multi_tick_plan_backtest.py tests/test_candidate_01_v39.py
+              python -m unittest discover -s tests -p "test_candidate_01_v39.py" -v
+              rm -rf artifacts/candidate-01-v39-quantity-fix-v2
+              python research/candidate-01/cross_asset_laggard_v39_quantity_fix.py --week 2023-04-17 --variant primary --cache .cache/candidate-01-v39 --output artifacts/candidate-01-v39-quantity-fix-v2/primary --workers 4 > artifacts/candidate-01-v39-primary-v2.log
+              python research/candidate-01/cross_asset_laggard_v39_quantity_fix.py --week 2023-04-17 --variant control --cache .cache/candidate-01-v39 --output artifacts/candidate-01-v39-quantity-fix-v2/control --workers 4 > artifacts/candidate-01-v39-control-v2.log
+            '
+      - name: Freeze decision
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-01-v39-quantity-fix-v2")
+          primary_path = root / "primary/cross_asset_laggard_v39_summary.json"
+          control_path = root / "control/cross_asset_laggard_v39_summary.json"
+          verdict = {
+              "candidate": "v39 cross-asset consensus laggard transfer",
+              "frozen_week": "2023-04-17/2023-04-24 UTC",
+              "advance": False,
+              "reason": "incomplete authoritative evidence",
+          }
+          if primary_path.is_file() and control_path.is_file():
+              primary = json.loads(primary_path.read_text())
+              control = json.loads(control_path.read_text())
+              pm = primary["metrics"]
+              cm = control["metrics"]
+              gates = {
+                  "operational_contract_passed": all((
+                      primary.get("joint_evaluation_minute_gaps") == 0,
+                      control.get("joint_evaluation_minute_gaps") == 0,
+                      bool(pm.get("ended_flat")), bool(cm.get("ended_flat")),
+                      int(pm.get("one_global_entry_gate_violations", 0) or 0) == 0,
+                      int(cm.get("one_global_entry_gate_violations", 0) or 0) == 0,
+                      int(pm.get("protective_order_failures", 0) or 0) == 0,
+                      int(cm.get("protective_order_failures", 0) or 0) == 0,
+                      int(pm.get("liquidation_marker_rows", 0) or 0) == 0,
+                      int(cm.get("liquidation_marker_rows", 0) or 0) == 0,
+                  )),
+                  "minimum_four_closed_trades_met": int(pm.get("closed_positions", 0) or 0) >= 4,
+                  "geometric_daily_one_percent_met": float(pm.get("geometric_mean_daily_return", 0.0) or 0.0) >= 0.01,
+                  "minimum_seventy_five_percent_win_rate_met": pm.get("win_rate") is not None and float(pm["win_rate"]) >= 0.75,
+                  "minimum_profit_factor_1_5_met": pm.get("profit_factor") is not None and float(pm["profit_factor"]) >= 1.5,
+                  "primary_outperformed_control": float(pm.get("total_return", 0.0) or 0.0) > float(cm.get("total_return", 0.0) or 0.0),
+                  "recoverable_drawdown_met": float(pm.get("max_drawdown", 0.0) or 0.0) > -0.20,
+              }
+              verdict = {
+                  "candidate": "v39 cross-asset consensus laggard transfer",
+                  "frozen_week": "2023-04-17/2023-04-24 UTC",
+                  "implementation_repair": "period-correct SOL/XRP quantity metadata only",
+                  "primary_selected_plans": primary["selected_plan_count"],
+                  "control_selected_plans": control["selected_plan_count"],
+                  "primary_metrics": pm,
+                  "control_metrics": cm,
+                  "gates": gates,
+                  "advance": all(gates.values()),
+                  "reason": "all frozen gates passed" if all(gates.values()) else "first-week logical or opportunity gate failed",
+              }
+          root.mkdir(parents=True, exist_ok=True)
+          (root / "candidate_v39_verdict.json").write_text(json.dumps(verdict, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(verdict, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v39-quantity-fix-v2-${{ github.sha }}
+          path: |
+            artifacts/candidate-01-v39-quantity-fix-v2
+            artifacts/candidate-01-v39-primary-v2.log
+            artifacts/candidate-01-v39-control-v2.log
+          if-no-files-found: error
+          retention-days: 30
