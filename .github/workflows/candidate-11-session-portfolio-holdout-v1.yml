@@ -1,0 +1,205 @@
+name: Candidate 11 untouched session portfolio holdout
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/session_portfolio_holdout_v1/holdout_protocol.json"
+      - "research/candidate-11/session_portfolio_holdout_v1/holdout_runner.py"
+      - "research/candidate-11/session_portfolio_holdout_v1/run_holdout.sh"
+      - "research/candidate-11/session_portfolio_holdout_v1/aggregate_holdout.py"
+      - ".github/workflows/candidate-11-session-portfolio-holdout-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-untouched-session-holdout-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify pre-data protocol, source lock and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ROOT="$GITHUB_WORKSPACE"
+          STRATEGY="$ROOT/research/candidate-11/session_portfolio_v1"
+          HOLDOUT="$ROOT/research/candidate-11/session_portfolio_holdout_v1"
+          smc4 doctor
+          export PYTHONPATH="$STRATEGY:$ROOT/src"
+          python -m py_compile "$HOLDOUT/holdout_runner.py" "$HOLDOUT/aggregate_holdout.py"
+          python -m unittest discover -s "$STRATEGY" -p 'test_*.py' -v
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+          import subprocess
+
+          root = Path("research/candidate-11")
+          strategy = root / "session_portfolio_v1"
+          holdout = root / "session_portfolio_holdout_v1"
+          protocol = json.loads((holdout / "holdout_protocol.json").read_text(encoding="utf-8"))
+          assert protocol["validation_mode"] == "holdout"
+          assert protocol["market_data_opened"] is False
+          assert protocol["success_claim"] is False
+          assert protocol["selection"]["prior_opened_data_buffer_days"] == 7
+          assert sorted(protocol["selection"]["holdouts"]) == ["H1", "H2", "H3"]
+          assert protocol["aggregate_gate"]["risk_fraction"] == 0.03
+          assert protocol["aggregate_gate"]["global_pending_entry_plus_position_limit"] == 1
+          mismatches = []
+          for name, expected in protocol["locked_source"]["blobs"].items():
+              actual = subprocess.check_output(
+                  ["git", "hash-object", str(strategy / name)], text=True
+              ).strip()
+              if actual != expected:
+                  mismatches.append((name, expected, actual))
+          if mismatches:
+              raise SystemExit(f"source-lock mismatch before data access: {mismatches}")
+          source_commit = protocol["source_commit_before_market_data"]
+          subprocess.check_call(["git", "merge-base", "--is-ancestor", source_commit, "HEAD"])
+          PY
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      matrix:
+        interval: [H1, H2, H3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Run untouched source-locked Nautilus holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x research/candidate-11/session_portfolio_holdout_v1/run_holdout.sh
+          bash research/candidate-11/session_portfolio_holdout_v1/run_holdout.sh "${{ matrix.interval }}"
+      - name: Remove downloaded market archives
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/data"
+      - name: Transport auditable holdout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate11-untouched-${{ matrix.interval }}
+          path: |
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/run.json
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/data_manifest.json
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/metrics.json
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/summary.json
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/audit.json
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/audit.md
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/source_lock.json
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/effective_config.json
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/scenario_events.jsonl
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/submitted_plans.json
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/order_lifecycle.json
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/orders.csv
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/positions.csv
+            research/candidate-11/session_portfolio_holdout_v1/results/${{ matrix.interval }}/account.csv
+          if-no-files-found: warn
+          retention-days: 2
+          compression-level: 0
+
+  aggregate:
+    if: ${{ needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Download fresh untouched evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate11-untouched-H*
+          path: artifacts
+      - name: Aggregate and persist on latest unchanged strategy head
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOLDOUT=research/candidate-11/session_portfolio_holdout_v1
+          STRATEGY=research/candidate-11/session_portfolio_v1
+          rm -rf "$HOLDOUT/results"
+          mkdir -p "$HOLDOUT/results"
+          for interval in H1 H2 H3; do
+            src="artifacts/candidate11-untouched-$interval"
+            test -d "$src"
+            mkdir -p "$HOLDOUT/results/$interval"
+            cp -a "$src/." "$HOLDOUT/results/$interval/"
+            for file in \
+              run.json data_manifest.json metrics.json summary.json audit.json audit.md \
+              source_lock.json effective_config.json scenario_events.jsonl \
+              submitted_plans.json order_lifecycle.json orders.csv positions.csv account.csv; do
+              test -s "$HOLDOUT/results/$interval/$file"
+            done
+          done
+
+          python "$HOLDOUT/aggregate_holdout.py" \
+            --results "$HOLDOUT/results" \
+            --protocol "$HOLDOUT/holdout_protocol.json" \
+            --output "$HOLDOUT/aggregate.json"
+
+          SNAPSHOT=/tmp/candidate11-untouched-session-evidence
+          rm -rf "$SNAPSHOT"
+          mkdir -p "$SNAPSHOT"
+          cp -a "$HOLDOUT/results" "$SNAPSHOT/"
+          cp "$HOLDOUT/aggregate.json" "$SNAPSHOT/aggregate.json"
+          cp "$HOLDOUT/RESULT.md" "$SNAPSHOT/RESULT.md"
+
+          git fetch origin research/candidate-11
+          latest_head="$(git rev-parse origin/research/candidate-11)"
+          if ! git diff --quiet "$GITHUB_SHA" "$latest_head" -- \
+            "$STRATEGY" \
+            "$HOLDOUT/holdout_protocol.json" \
+            "$HOLDOUT/holdout_runner.py" \
+            "$HOLDOUT/run_holdout.sh" \
+            "$HOLDOUT/aggregate_holdout.py"; then
+            echo "frozen strategy or holdout contract changed during evaluation"
+            exit 1
+          fi
+          git checkout -B research/candidate-11 "$latest_head"
+          rm -rf "$HOLDOUT/results"
+          cp -a "$SNAPSHOT/results" "$HOLDOUT/results"
+          cp "$SNAPSHOT/aggregate.json" "$HOLDOUT/aggregate.json"
+          cp "$SNAPSHOT/RESULT.md" "$HOLDOUT/RESULT.md"
+
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add -A "$HOLDOUT/results" "$HOLDOUT/aggregate.json" "$HOLDOUT/RESULT.md"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record untouched session holdout evidence [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi
