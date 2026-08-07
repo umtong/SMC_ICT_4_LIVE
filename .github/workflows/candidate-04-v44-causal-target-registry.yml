@@ -1,0 +1,299 @@
+name: candidate-04-v44-causal-target-registry
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v44-causal-target-registry.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      RESULT_ROOT: artifacts/candidate-04-v44-causal-target-registry
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Verify target-only controlled change
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/causal_target_registry_enricher.py \
+            research/candidate-04/nt_declared_causal_target.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v34_expected_fill_only.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_causal_target_registry_enricher.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_declared_causal_target.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_exact_causal_target_risk_sizing.py' -v
+          echo "V44_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Restore frozen V31 signal and rich-data evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v31-ablation-*
+          path: sources
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31114267295
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Define staged replay helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/run_v44_week.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          name="$1" build_start="$2" build_end="$3" eval_start="$4" eval_end="$5"
+          source="$(find sources -mindepth 1 -maxdepth 1 -type d -name "candidate-04-v31-ablation-${name}-*" | head -n1)"
+          test -n "$source"
+          signals="$source/ablated/signals/signals.json"
+          rich_dir="$source/original/source/rich"
+          test -s "$signals"
+          test -s "$rich_dir/data_manifest.json"
+          output="$RESULT_ROOT/$name"
+          mkdir -p "$output"
+          python research/candidate-04/causal_target_registry_enricher.py \
+            --signals "$signals" \
+            --base-config research/candidate-04/inventory_transfer_config.json \
+            --rich-dir "$rich_dir" \
+            --kline-dir ".cache/candidate-04-v44/raw/$name" \
+            --build-start "$build_start" \
+            --build-end "$build_end" \
+            --output-dir "$output/signals" \
+            --download-klines \
+            --cost-rate 0.00075 \
+            --minimum-net-r 1.20 \
+            > "$output/enrichment_console.log"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$output/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v34_expected_fill_only.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start "$build_start" \
+            --build-end "$build_end" \
+            --evaluation-start "$eval_start" \
+            --evaluation-end "$eval_end" \
+            --cache ".cache/candidate-04-v44/nautilus/$name" \
+            --output "$output/nautilus" \
+            > "$output/nautilus_console.log"
+          python research/candidate-04/summarize_candidate_week.py \
+            --root "$output" \
+            --candidate candidate-04-v44-causal-target-registry \
+            --stage "$name" \
+            --min-trades 2 \
+            --min-active-days 2 \
+            --min-win-rate 0.50 \
+            --min-geometric-daily 0.0 \
+            --output "$output/summary.json" \
+            > "$output/summary_console.log"
+          SH
+          chmod +x /tmp/run_v44_week.sh
+
+      - name: First BTC week
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RESULT_ROOT"
+          /tmp/run_v44_week.sh \
+            low_activity 2023-08-02 2023-08-10 2023-08-04 2023-08-10
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-04-v44-causal-target-registry")
+          item = json.loads((root / "low_activity/summary.json").read_text())
+          enrich = json.loads((root / "low_activity/signals/summary.json").read_text())
+          viable = (
+              bool(item.get("risk_pass"))
+              and float(item.get("total_return") or 0.0) > 0.0
+              and int(item.get("trades") or 0) >= 2
+              and int(item.get("active_days") or 0) >= 2
+              and float(item.get("win_rate") or 0.0) >= 0.50
+              and int((enrich.get("counts") or {}).get("new_declared_target") or 0) >= 1
+          )
+          (root / "first_week_gate.txt").write_text("pass\n" if viable else "fail\n")
+          print(json.dumps({"viable": viable, "summary": item, "enrichment": enrich}, indent=2, sort_keys=True))
+          PY
+
+      - name: Two additional BTC weeks
+        if: ${{ hashFiles('artifacts/candidate-04-v44-causal-target-registry/first_week_gate.txt') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! grep -qx pass "$RESULT_ROOT/first_week_gate.txt"; then
+            echo "first week did not establish target-registry frequency path"
+            exit 0
+          fi
+          /tmp/run_v44_week.sh \
+            normal_basis 2023-12-16 2023-12-24 2023-12-18 2023-12-24
+          /tmp/run_v44_week.sh \
+            stress_a 2024-08-05 2024-08-13 2024-08-07 2024-08-13
+          python - <<'PY'
+          import json, math
+          from pathlib import Path
+          root = Path("artifacts/candidate-04-v44-causal-target-registry")
+          names = ["low_activity", "normal_basis", "stress_a"]
+          rows = [json.loads((root / name / "summary.json").read_text()) for name in names]
+          returns = [float(row.get("total_return") or 0.0) for row in rows]
+          compounded = math.prod(1.0 + value for value in returns) - 1.0
+          trades = sum(int(row.get("trades") or 0) for row in rows)
+          wins = sum(int(row.get("wins") or 0) for row in rows)
+          active = sum(int(row.get("active_days") or 0) for row in rows)
+          viable = (
+              all(bool(row.get("risk_pass")) for row in rows)
+              and compounded > 0.0
+              and trades >= 6
+              and active >= 5
+              and sum(value > 0.0 for value in returns) >= 2
+              and (wins / trades if trades else 0.0) >= 0.50
+          )
+          payload = {"viable": viable, "compounded_return": compounded, "trades": trades, "wins": wins, "active_days": active, "weekly_returns": dict(zip(names, returns))}
+          (root / "three_week_gate.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+          (root / "three_week_gate.txt").write_text("pass\n" if viable else "fail\n")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Remaining four development weeks
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$RESULT_ROOT/three_week_gate.txt" ]] || \
+             ! grep -qx pass "$RESULT_ROOT/three_week_gate.txt"; then
+            echo "three-week gate did not pass"
+            exit 0
+          fi
+          /tmp/run_v44_week.sh \
+            year_end 2024-12-25 2025-01-02 2024-12-27 2025-01-02
+          /tmp/run_v44_week.sh \
+            autumn 2025-10-18 2025-10-26 2025-10-20 2025-10-26
+          /tmp/run_v44_week.sh \
+            may_2024 2024-05-25 2024-06-02 2024-05-27 2024-06-02
+          /tmp/run_v44_week.sh \
+            failed_untouched_2025_03 2025-03-22 2025-03-30 2025-03-24 2025-03-30
+
+      - name: Aggregate V44 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json, math, os
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-04-v44-causal-target-registry")
+          order = ["low_activity", "normal_basis", "stress_a", "year_end", "autumn", "may_2024", "failed_untouched_2025_03"]
+          rows = []
+          enrichments = {}
+          event_counts = Counter()
+          for name in order:
+              base = root / name
+              if not (base / "summary.json").exists():
+                  continue
+              summary = json.loads((base / "summary.json").read_text())
+              enrichment = json.loads((base / "signals/summary.json").read_text())
+              events = json.loads((base / "nautilus/strategy_events.json").read_text())
+              counts = Counter(str(event.get("event_type")) for event in events)
+              event_counts.update(counts)
+              rows.append({"week": name, **summary, "execution_events": dict(counts)})
+              enrichments[name] = enrichment
+
+          returns = [float(row.get("total_return") or 0.0) for row in rows]
+          compounded = math.prod(1.0 + value for value in returns) - 1.0 if rows else 0.0
+          calendar_days = 7 * len(rows)
+          daily = ((1.0 + compounded) ** (1.0 / calendar_days) - 1.0) if calendar_days and 1.0 + compounded > 0.0 else 0.0
+          trades = sum(int(row.get("trades") or 0) for row in rows)
+          wins = sum(int(row.get("wins") or 0) for row in rows)
+          active = sum(int(row.get("active_days") or 0) for row in rows)
+          declared = sum(int((item.get("counts") or {}).get("new_declared_target") or 0) for item in enrichments.values())
+          baseline = {
+              "calendar_days": 49,
+              "compounded_return": 0.2996350171931126,
+              "geometric_daily_growth": 0.005362971748631429,
+              "trades": 9,
+              "wins": 8,
+              "active_days": 9,
+          }
+          full_matrix = len(rows) == 7
+          improved = (
+              full_matrix
+              and compounded > baseline["compounded_return"]
+              and trades > baseline["trades"]
+              and active > baseline["active_days"]
+              and all(bool(row.get("risk_pass")) for row in rows)
+          )
+          target_rate = full_matrix and daily >= 0.01
+          if not rows:
+              decision = "implementation_failure_no_results"
+          elif not (root / "first_week_gate.txt").exists() or not (root / "first_week_gate.txt").read_text().startswith("pass"):
+              decision = "discard_v44_first_week_target_registry_did_not_create_frequency_path"
+          elif not full_matrix:
+              decision = "discard_v44_confirmation_gate_failed"
+          elif target_rate:
+              decision = "freeze_v44_and_open_long_plus_integrated_four_asset_validation"
+          elif improved:
+              decision = "retain_v44_as_strict_improved_baseline_and_continue_independent_scenario_discovery"
+          else:
+              decision = "discard_v44_no_strict_baseline_improvement"
+          evidence = {
+              "candidate": "candidate-04-v44-causal-target-registry-enrichment",
+              "source_commit": os.environ.get("V44_SOURCE_COMMIT"),
+              "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "controlled_change": "frozen V31/V34 entries, sides, stops, scenarios and timing; only no-target signals may receive active pre-signal liquidity declarations",
+              "weeks": rows,
+              "enrichment": enrichments,
+              "execution_events": dict(event_counts),
+              "calendar_days": calendar_days,
+              "compounded_return": compounded,
+              "geometric_daily_growth": daily,
+              "trades": trades,
+              "wins": wins,
+              "win_rate": wins / trades if trades else 0.0,
+              "active_days": active,
+              "positive_weeks": sum(value > 0.0 for value in returns),
+              "new_declared_targets": declared,
+              "strict_v34_baseline": baseline,
+              "strict_baseline_improved": improved,
+              "development_target_rate_reached": target_rate,
+              "project_target_reached": False,
+              "final_validation_completed": False,
+              "decision": decision,
+          }
+          target = Path("research/candidate-04/evidence-v44-causal-target-registry.json")
+          target.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          (root / "aggregate.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v44-causal-target-registry-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v44-causal-target-registry
+            research/candidate-04/evidence-v44-causal-target-registry.json
+          if-no-files-found: warn
+          retention-days: 90
