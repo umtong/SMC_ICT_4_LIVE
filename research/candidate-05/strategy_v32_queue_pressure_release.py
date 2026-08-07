@@ -70,16 +70,16 @@ class QueuePressureReleaseStrategy(ScenarioValidEntryStrategy):
 
     Three completed one-minute observations must hold a mirror-symmetric 2:1
     top-depth imbalance inside a range no wider than twice the existing v26
-    displacement-body threshold.  No trade is taken from displayed depth alone.
+    displacement-body threshold. No trade is taken from displayed depth alone.
     A completed breakout must also satisfy the existing acceptance flow,
     efficiency, notional-burst, close-location and opposing-depth-withdrawal
-    contracts.  The strategy then waits for the first later completed retest of
+    contracts. The strategy then waits for the first later completed retest of
     the frozen boundary and submits a passive limit only if current tail flow and
     depth still support the release.
 
     The opposite side of the frozen compression defines structural invalidation.
     The target is a still-live opposing liquidity pool selected at breakout time;
-    it is never substituted later.  Costs, 3% current-NAV risk sizing, pending
+    it is never substituted later. Costs, 3% current-NAV risk sizing, pending
     order validity, margin, liquidation and NAV remain v26/Nautilus-owned.
     """
 
@@ -438,7 +438,7 @@ class QueuePressureReleaseStrategy(ScenarioValidEntryStrategy):
             stop=watch.stop,
             atr=self._atr(),
             created_index=watch.created_index,
-            expires_index=watch.expires_index,
+            created_ts=bar.ts,
             details=details,
         )
         submitted = self._submit_price_capped_bracket(
