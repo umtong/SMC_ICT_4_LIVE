@@ -21,6 +21,8 @@ from dataclasses import dataclass, replace
 import os
 from typing import Any
 
+import pandas as pd
+
 from c10_v29_overlay import (  # re-export frozen lower layers
     CostAwareRiskSizer,
     LiveImpactLedger,
@@ -29,6 +31,19 @@ from c10_v29_overlay import (  # re-export frozen lower layers
     certify_plan,
     repair_kline_flow_frame,
 )
+
+
+def normalize_kline_open_time(frame: Any, filename: str) -> Any:
+    """Normalize official archive timestamps after header rows are removed."""
+
+    if "open_time" not in frame.columns:
+        raise RuntimeError(f"missing open_time column: {filename}")
+    result = frame.copy()
+    values = pd.to_numeric(result["open_time"], errors="raise")
+    if values.isna().any():
+        raise RuntimeError(f"missing open_time value after normalization: {filename}")
+    result["open_time"] = values.astype("int64")
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +318,7 @@ __all__ = [
     "build_leadership_gate",
     "certify_plan",
     "equilibrium_target_enabled",
+    "normalize_kline_open_time",
     "reframe_primary_equilibrium",
     "repair_kline_flow_frame",
     "zone_invalidation_enabled",
