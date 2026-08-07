@@ -89,11 +89,15 @@ class BookTickerDataContractTests(unittest.TestCase):
         self.assertEqual(tuple(materialized.columns), base.BOOK_TICKER_COLUMNS)
         self.assertEqual(materialized["update_id"].astype(int).tolist(), [1, 2, 3])
 
-    def test_weighted_quantiles_are_exact_for_discrete_spreads(self) -> None:
+    def test_weighted_quantiles_use_conservative_higher_observation(self) -> None:
         counts = Counter({0.1: 50, 0.2: 40, 0.5: 10})
-        self.assertEqual(base._weighted_quantile(counts, 0.50), 0.1)
-        self.assertEqual(base._weighted_quantile(counts, 0.90), 0.2)
+        # This is an execution-tail data contract.  At an exact empirical boundary the next
+        # observed spread is deliberately selected rather than interpolating or understating risk.
+        self.assertEqual(base._weighted_quantile(counts, 0.00), 0.1)
+        self.assertEqual(base._weighted_quantile(counts, 0.50), 0.2)
+        self.assertEqual(base._weighted_quantile(counts, 0.90), 0.5)
         self.assertEqual(base._weighted_quantile(counts, 0.99), 0.5)
+        self.assertEqual(base._weighted_quantile(counts, 1.00), 0.5)
 
     def test_source_path_and_revision_are_predeclared(self) -> None:
         filename, url, checksum = base._source_urls(
