@@ -35,7 +35,7 @@ class FiveSecondSameBoundaryRetestTests(unittest.TestCase):
                 },
                 {
                     "timestamp_ns": 19_999_999_999,
-                    "open": 100.4,
+                    "open": 100.1,
                     "high": 100.5,
                     "low": 99.9,
                     "close": 100.35,
