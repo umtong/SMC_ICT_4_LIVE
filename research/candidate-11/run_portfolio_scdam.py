@@ -339,8 +339,6 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
     for symbol in SYMBOLS:
         meta = META[symbol]
         instrument_id = InstrumentId(symbol=Symbol(f"{symbol}-PERP"), venue=venue)
-        price_precision = int(meta["price_precision"])
-        size_precision = int(meta["size_precision"])
         instrument = CryptoPerpetual(
             instrument_id=instrument_id,
             raw_symbol=Symbol(symbol),
@@ -348,15 +346,15 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
             quote_currency=USDT,
             settlement_currency=USDT,
             is_inverse=False,
-            price_precision=price_precision,
+            price_precision=int(meta["price_precision"]),
             price_increment=Price.from_str(meta["price_increment"]),
-            size_precision=size_precision,
+            size_precision=int(meta["size_precision"]),
             size_increment=Quantity.from_str(meta["size_increment"]),
-            max_quantity=Quantity.from_str(format(1_000_000_000, f".{size_precision}f")),
+            max_quantity=Quantity.from_str("1000000000"),
             min_quantity=Quantity.from_str(meta["min_qty"]),
             max_notional=None,
-            min_notional=Money(10.0, USDT),
-            max_price=Price.from_str(format(10_000_000, f".{price_precision}f")),
+            min_notional=Money(5, USDT),
+            max_price=Price.from_str("1000000"),
             min_price=Price.from_str(meta["price_increment"]),
             margin_init=Decimal(account_config["margin_init"]),
             margin_maint=Decimal(account_config["margin_maint"]),
@@ -448,48 +446,56 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
             })
 
         def _release_if_terminal(self, ts_ns: int, reason: str) -> None:
-            if not self._all_flat() or self._open_orders() != 0 or self.active_plan is None or self.active_symbol is None:
+            if self.active_plan is None or self.active_symbol is None:
                 return
-            engine = self.logic[self.active_symbol]
-            engine.mark_trade_terminal(ts_ns, reason)
-            self._capture_events(self.active_symbol)
-            try:
-                if self.mutex.state == SlotState.ENTRY_PENDING:
-                    self.mutex.mark_entry_terminal(self.active_plan.scenario_id)
-                elif self.mutex.state == SlotState.POSITION_OPEN:
-                    self.mutex.mark_position_closed(self.active_plan.scenario_id)
-            except Exception as exc:
-                self.errors.append({"type": "MUTEX_RELEASE_ERROR", "message": str(exc), "ts_ns": ts_ns})
-            self.lifecycle.append({
-                "type": "GLOBAL_SLOT_RELEASED",
-                "ts_ns": ts_ns,
-                "reason": reason,
-                "symbol": self.active_symbol,
-                "scenario_id": self.active_plan.scenario_id,
-            })
-            self.active_plan = None
-            self.active_symbol = None
+            scenario_id = self.active_plan.scenario_id
+            instrument_id = instruments[self.active_symbol].id
+            if self.mutex.state == SlotState.ENTRY_PENDING:
+                if not self.portfolio.is_flat(instrument_id):
+                    self.mutex.mark_entry_filled(scenario_id)
+                    self.logic[self.active_symbol].mark_entry_filled(scenario_id, ts_ns)
+                    self._capture_events(self.active_symbol)
+                    self.lifecycle.append({
+                        "type": "GLOBAL_ENTRY_FILLED",
+                        "ts_event": ts_ns,
+                        "scenario_id": scenario_id,
+                        "symbol": self.active_symbol,
+                    })
+                elif self._open_orders() == 0:
+                    self.mutex.mark_entry_terminal(scenario_id)
+                    self.logic[self.active_symbol].mark_trade_terminal(ts_ns, reason)
+                    self._capture_events(self.active_symbol)
+                    self.active_plan = None
+                    self.active_symbol = None
+            elif self.mutex.state == SlotState.POSITION_OPEN:
+                if self._all_flat() and self._open_orders() == 0:
+                    self.mutex.mark_position_closed(scenario_id)
+                    self.logic[self.active_symbol].mark_trade_terminal(ts_ns, reason)
+                    self._capture_events(self.active_symbol)
+                    self.lifecycle.append({
+                        "type": "GLOBAL_POSITION_CLOSED",
+                        "ts_event": ts_ns,
+                        "scenario_id": scenario_id,
+                        "symbol": self.active_symbol,
+                    })
+                    self.active_plan = None
+                    self.active_symbol = None
 
-        def _reject_plan(self, symbol: str, plan: TradePlan, reason: str, details: dict[str, Any] | None = None) -> None:
-            self.logic[symbol].mark_rejected(plan, self.last_ts_ns, reason, details)
-            self._capture_events(symbol)
-            record = {
-                "type": "GLOBAL_CANDIDATE_REJECTED",
-                "reason": reason,
-                "symbol": symbol,
-                "scenario_id": plan.scenario_id,
-                "observed_ts_ns": plan.observed_ts_ns,
-                "net_structural_r": str(plan.net_r),
-                **(details or {}),
-            }
-            self.rejections.append(record)
-            self.lifecycle.append({"ts_ns": self.last_ts_ns, **record})
-
-        def _submit(self, symbol: str, plan: TradePlan) -> None:
-            if self.mutex.state != SlotState.FREE or not self._all_flat() or self._open_orders() != 0:
-                self._reject_plan(symbol, plan, "GLOBAL_SLOT_OCCUPIED")
-                return
+        def _submit(self, plan: TradePlan, candidate: Candidate) -> None:
+            symbol = candidate.symbol
             instrument = instruments[symbol]
+            if self.mutex.state != SlotState.FREE or not self._all_flat() or self._open_orders() > 0:
+                self.logic[symbol].mark_rejected(plan, self.last_ts_ns, "GLOBAL_SLOT_OCCUPIED")
+                self._capture_events(symbol)
+                self.rejections.append({
+                    "type": "GLOBAL_CANDIDATE_REJECTED",
+                    "observed_ts_ns": plan.observed_ts_ns,
+                    "scenario_id": plan.scenario_id,
+                    "symbol": symbol,
+                    "reason": "GLOBAL_SLOT_OCCUPIED",
+                    "net_structural_r": str(plan.net_r),
+                })
+                return
             nav, free_balance = self._account_values()
             decision = self.sizer.size(
                 nav=nav,
@@ -502,10 +508,11 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
                 free_balance=free_balance,
             )
             if not decision.feasible:
-                self._reject_plan(symbol, plan, decision.reason, {
+                self.logic[symbol].mark_rejected(plan, self.last_ts_ns, decision.reason, {
                     "required_margin": str(decision.required_margin),
                     "free_balance": str(free_balance),
                 })
+                self._capture_events(symbol)
                 return
 
             side = OrderSide.BUY if plan.direction == Direction.LONG else OrderSide.SELL
@@ -527,65 +534,31 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
                     sl_trigger_price=instrument.make_price(plan.stop_price),
                     sl_time_in_force=TimeInForce.GTC,
                 )
-            except Exception as exc:
-                record = {
-                    "type": "ORDER_LIST_CREATION_EXCEPTION",
-                    "exception": type(exc).__name__,
-                    "message": str(exc),
-                    "symbol": symbol,
-                    "scenario_id": plan.scenario_id,
-                }
-                self.errors.append(record)
-                self._reject_plan(symbol, plan, record["type"], record)
-                return
-
-            candidate = Candidate(
-                symbol=symbol,
-                scenario_id=plan.scenario_id,
-                observed_ts_ns=plan.observed_ts_ns,
-                net_structural_r=Decimal(str(plan.net_r)),
-                expected_entry=Decimal(str(plan.expected_entry)),
-                expected_loss_per_unit=Decimal(str(plan.loss_per_unit)),
-            )
-            try:
-                self.mutex.mark_entry_submitted(candidate)
-                self.logic[symbol].mark_submitted(plan, decision.quantity, {
-                    "symbol": symbol,
-                    "nav_before": str(nav),
-                    "planned_loss_budget": str(decision.planned_loss_budget),
-                    "expected_total_loss": str(decision.expected_total_loss),
-                })
-                self._capture_events(symbol)
-                self.active_plan = plan
-                self.active_symbol = symbol
                 self.submit_order_list(order_list)
             except Exception as exc:
                 record = {
                     "type": "ORDER_LIST_SUBMISSION_EXCEPTION",
+                    "ts_ns": self.last_ts_ns,
+                    "symbol": symbol,
                     "exception": type(exc).__name__,
                     "message": str(exc),
-                    "symbol": symbol,
-                    "scenario_id": plan.scenario_id,
                 }
                 self.errors.append(record)
-                if self.logic[symbol].active_trade_id is not None:
-                    self.logic[symbol].mark_trade_terminal(self.last_ts_ns, record["type"], record)
-                    self._capture_events(symbol)
-                if self.mutex.state == SlotState.ENTRY_PENDING:
-                    self.mutex.mark_entry_terminal(plan.scenario_id)
-                self.active_plan = None
-                self.active_symbol = None
+                self.logic[symbol].mark_rejected(plan, self.last_ts_ns, record["type"], record)
+                self._capture_events(symbol)
                 return
 
-            record = {
+            self.logic[symbol].mark_submitted(plan, self.last_ts_ns)
+            self._capture_events(symbol)
+            self.mutex.mark_entry_submitted(candidate)
+            self.active_plan = plan
+            self.active_symbol = symbol
+            self.plans.append({
                 "symbol": symbol,
                 "scenario_id": plan.scenario_id,
                 "scenario": plan.scenario.value,
                 "direction": plan.direction.value,
                 "observed_ts_ns": plan.observed_ts_ns,
-                "entry_order_type": plan.entry_order_type,
-                "entry_post_only": plan.entry_post_only,
-                "expire_ts_ns": plan.expire_ts_ns,
                 "entry": plan.expected_entry,
                 "stop": plan.stop_price,
                 "target": plan.target_price,
@@ -596,116 +569,146 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
                 "expected_total_loss": str(decision.expected_total_loss),
                 "required_margin": str(decision.required_margin),
                 "details": plan.details,
-            }
-            self.plans.append(record)
-            self.lifecycle.append({"type": "ENTRY_ORDER_LIST_SUBMITTED", "ts_ns": self.last_ts_ns, **record})
+            })
+            self.lifecycle.append({
+                "type": "GLOBAL_ENTRY_SUBMITTED",
+                "ts_event": self.last_ts_ns,
+                "scenario_id": plan.scenario_id,
+                "symbol": symbol,
+            })
 
-        def _process_batch(self) -> None:
-            if self.buffer_ts is None or len(self.buffer) != len(SYMBOLS):
-                return
-            ts_ns = self.buffer_ts
-            plan_lookup: dict[str, tuple[str, TradePlan]] = {}
+        def _process_batch(self, ts_ns: int) -> None:
+            plans: list[tuple[TradePlan, Candidate]] = []
             for symbol in SYMBOLS:
-                engine = self.logic[symbol]
-                plan = engine.on_bar(
-                    self.buffer[symbol],
-                    allow_entry=self.config.evaluation_start_ns <= ts_ns < self.config.evaluation_end_ns,
-                )
+                observation = self.buffer[symbol]
+                plan = self.logic[symbol].update(observation)
                 self._capture_events(symbol)
                 if plan is None:
                     continue
-                plan_lookup[plan.scenario_id] = (symbol, plan)
-                self.mutex.add(Candidate(
+                if ts_ns < self.config.evaluation_start_ns:
+                    self.logic[symbol].mark_rejected(plan, ts_ns, "OUTSIDE_EVALUATION_WINDOW")
+                    self._capture_events(symbol)
+                    continue
+                candidate = Candidate(
                     symbol=symbol,
                     scenario_id=plan.scenario_id,
                     observed_ts_ns=plan.observed_ts_ns,
                     net_structural_r=Decimal(str(plan.net_r)),
                     expected_entry=Decimal(str(plan.expected_entry)),
                     expected_loss_per_unit=Decimal(str(plan.loss_per_unit)),
-                ))
+                )
+                plans.append((plan, candidate))
 
+            if not plans:
+                return
+            plan_by_id = {plan.scenario_id: (plan, candidate) for plan, candidate in plans}
+            for _, candidate in plans:
+                completed = self.mutex.add(candidate)
+                if completed is not None:
+                    for rejected, reason in completed.rejected:
+                        plan, _ = plan_by_id[rejected.scenario_id]
+                        self.logic[rejected.symbol].mark_rejected(plan, ts_ns, reason)
+                        self._capture_events(rejected.symbol)
+                        self.rejections.append({
+                            "type": "GLOBAL_CANDIDATE_REJECTED",
+                            "observed_ts_ns": plan.observed_ts_ns,
+                            "scenario_id": plan.scenario_id,
+                            "symbol": rejected.symbol,
+                            "reason": reason,
+                            "net_structural_r": str(plan.net_r),
+                        })
             arbitration = self.mutex.flush()
             for rejected, reason in arbitration.rejected:
-                item = plan_lookup.get(rejected.scenario_id)
-                if item is not None:
-                    self._reject_plan(item[0], item[1], reason)
-            if arbitration.winner is None:
-                return
-            winner = plan_lookup.get(arbitration.winner.scenario_id)
-            if winner is not None:
+                plan, _ = plan_by_id[rejected.scenario_id]
+                self.logic[rejected.symbol].mark_rejected(plan, ts_ns, reason)
+                self._capture_events(rejected.symbol)
+                self.rejections.append({
+                    "type": "GLOBAL_CANDIDATE_REJECTED",
+                    "observed_ts_ns": plan.observed_ts_ns,
+                    "scenario_id": plan.scenario_id,
+                    "symbol": rejected.symbol,
+                    "reason": reason,
+                    "net_structural_r": str(plan.net_r),
+                })
+            if arbitration.winner is not None:
+                winner = plan_by_id[arbitration.winner.scenario_id]
                 self._submit(winner[0], winner[1])
 
         def on_bar(self, bar: Bar) -> None:
             self.last_ts_ns = int(bar.ts_event)
-            self._release_if_terminal(self.last_ts_ns, "NAUTILUS_FLAT_NO_WORKING_ORDERS")
+            self._release_if_terminal(self.last_ts_ns, "BAR_TERMINAL_SYNC")
             if self.last_ts_ns >= self.config.evaluation_end_ns:
-                if self._open_orders() > 0:
-                    for instrument_id in self.config.instrument_ids:
-                        self.cancel_all_orders(instrument_id)
-                for instrument_id in self.config.instrument_ids:
-                    if not self.portfolio.is_flat(instrument_id):
-                        self.close_all_positions(instrument_id)
+                if self.buffer_ts is not None and len(self.buffer) == len(SYMBOLS):
+                    self._process_batch(self.buffer_ts)
+                    self.buffer.clear()
+                    self.buffer_ts = None
+                self._flatten()
                 return
-
             symbol = self._symbol(bar)
-            if self.buffer_ts is None:
-                self.buffer_ts = self.last_ts_ns
-            if self.last_ts_ns != self.buffer_ts:
-                self._process_batch()
-                self.buffer.clear()
-                self.buffer_ts = self.last_ts_ns
-            volume, taker = flow[(str(bar.bar_type.instrument_id), self.last_ts_ns)]
-            self.buffer[symbol] = BarObs(
+            key = (str(bar.bar_type.instrument_id), self.last_ts_ns)
+            if key not in flow:
+                self.errors.append({"type": "MISSING_FLOW", "symbol": symbol, "ts_ns": self.last_ts_ns})
+                return
+            volume, taker_buy = flow[key]
+            observation = BarObs(
                 ts_ns=self.last_ts_ns,
                 open=float(str(bar.open)),
                 high=float(str(bar.high)),
                 low=float(str(bar.low)),
                 close=float(str(bar.close)),
                 volume=volume,
-                taker_buy_volume=taker,
+                taker_buy_volume=taker_buy,
             )
+            if self.buffer_ts is None:
+                self.buffer_ts = self.last_ts_ns
+            if self.last_ts_ns != self.buffer_ts:
+                if len(self.buffer) != len(SYMBOLS):
+                    self.errors.append({
+                        "type": "INCOMPLETE_SYNCHRONIZED_BATCH",
+                        "ts_ns": self.buffer_ts,
+                        "symbols": sorted(self.buffer),
+                    })
+                else:
+                    self._process_batch(self.buffer_ts)
+                self.buffer.clear()
+                self.buffer_ts = self.last_ts_ns
+            self.buffer[symbol] = observation
             if len(self.buffer) == len(SYMBOLS):
-                self._process_batch()
+                self._process_batch(self.buffer_ts)
                 self.buffer.clear()
                 self.buffer_ts = None
 
-        def on_order_filled(self, event: Any) -> None:
+        def _flatten(self) -> None:
+            for instrument_id in self.config.instrument_ids:
+                if self.cache.orders_open_count(instrument_id=instrument_id, strategy_id=self.id):
+                    self.cancel_all_orders(instrument_id)
+                if not self.portfolio.is_flat(instrument_id):
+                    self.close_all_positions(instrument_id)
+
+        def on_order_filled(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_FILLED")
-            if self.active_plan is not None and self.active_symbol is not None and self.mutex.state == SlotState.ENTRY_PENDING:
-                try:
-                    self.logic[self.active_symbol].mark_entry_filled(
-                        int(event.ts_event),
-                        {"client_order_id": str(event.client_order_id), "event": str(event)},
-                    )
-                    self._capture_events(self.active_symbol)
-                    self.mutex.mark_entry_filled(self.active_plan.scenario_id)
-                except Exception as exc:
-                    self.errors.append({"type": "ENTRY_FILL_STATE_ERROR", "message": str(exc), "event": str(event)})
-            self._release_if_terminal(int(event.ts_event), "ORDER_FILL_TERMINAL")
+            self._release_if_terminal(int(event.ts_event), "ORDER_FILLED")
 
-        def on_order_expired(self, event: Any) -> None:
+        def on_order_expired(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_EXPIRED")
-            self._release_if_terminal(int(event.ts_event), "GTD_ENTRY_EXPIRED_UNFILLED")
+            self._release_if_terminal(int(event.ts_event), "ENTRY_EXPIRED")
 
-        def on_order_canceled(self, event: Any) -> None:
+        def on_order_canceled(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_CANCELED")
-            self._release_if_terminal(int(event.ts_event), "ORDERS_CANCELED_FLAT")
+            self._release_if_terminal(int(event.ts_event), "ORDER_CANCELED")
 
-        def on_order_denied(self, event: Any) -> None:
+        def on_order_denied(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_DENIED")
             self.errors.append({"type": "ORDER_DENIED", "event": str(event)})
             self._release_if_terminal(int(event.ts_event), "ORDER_DENIED")
 
-        def on_order_rejected(self, event: Any) -> None:
+        def on_order_rejected(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_REJECTED")
             self.errors.append({"type": "ORDER_REJECTED", "event": str(event)})
             self._release_if_terminal(int(event.ts_event), "ORDER_REJECTED")
 
         def on_stop(self) -> None:
-            for instrument_id in self.config.instrument_ids:
-                self.cancel_all_orders(instrument_id)
-                if not self.portfolio.is_flat(instrument_id):
-                    self.close_all_positions(instrument_id)
+            self._flatten()
 
     engine = BacktestEngine(config=BacktestEngineConfig(logging=LoggingConfig(log_level="ERROR")))
     fill_model = FillModel(
@@ -720,7 +723,6 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
         evaluation_end_ns=evaluation_end_ns,
         starting_nav=starting_nav,
     ))
-
     try:
         engine.add_venue(
             venue=venue,
@@ -775,12 +777,23 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
             },
         })
 
+        # Four independent engines are captured in symbol-subscription order.
+        # Normalize the merged ledger by causal observation time before contract
+        # validation; the stable original index preserves same-timestamp
+        # transition order within each scenario.
+        ordered_events = [
+            event
+            for _, event in sorted(
+                enumerate(strategy.events),
+                key=lambda item: (item[1].observed_time_ns, item[0]),
+            )
+        ]
         _write_raw_events(output_dir / "scenario_events.raw.jsonl", strategy.events)
         write_json_atomic(output_dir / "submitted_plans.json", {"plans": strategy.plans})
         write_json_atomic(output_dir / "order_lifecycle.json", {"events": strategy.lifecycle})
         event_log_error: str | None = None
         try:
-            write_events(output_dir / "scenario_events.jsonl", strategy.events)
+            write_events(output_dir / "scenario_events.jsonl", ordered_events)
             metrics["event_log_valid"] = True
             metrics["event_log_error"] = None
         except EventLogError as exc:
