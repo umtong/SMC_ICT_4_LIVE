@@ -57,9 +57,16 @@ jobs:
         run: |
           set -euo pipefail
           root=research/candidate-09
+          while read -r part digest bytes git_blob; do
+            [[ "$part" == part* ]] || continue
+            test "$(wc -c < "$root/v24_bundle/$part")" -eq "$bytes"
+            echo "$digest  $root/v24_bundle/$part" | sha256sum -c -
+            test "$(git hash-object "$root/v24_bundle/$part")" = "$git_blob"
+          done < "$root/v24_bundle/SHA256"
+          cat "$root"/v24_bundle/part* | base64 -d > /tmp/candidate-09-v24.tar.gz
           expected=$(awk 'NR==1 {print $1}' "$root/v24_bundle/SHA256")
-          echo "$expected  $root/v24_bundle/candidate-09-v24.tar.gz" | sha256sum -c -
-          tar -xzf "$root/v24_bundle/candidate-09-v24.tar.gz" -C "$root"
+          echo "$expected  /tmp/candidate-09-v24.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/candidate-09-v24.tar.gz -C "$root"
           cp "$root/state_engine_v24_direct.py" "$root/state_engine.py"
           cp "$root/data_loader_v24.py" "$root/data_loader.py"
           cp "$root/run_v24_direct.py" "$root/run.py"
@@ -118,7 +125,8 @@ jobs:
           cp -a "$tmp/diagnostics/." "$root/diagnostics/v24-gate-long/"
           git -C "$repo" add \
             research/candidate-09/evidence/latest \
-            research/candidate-09/diagnostics/v24-gate-long \
+            research/candidate-09/diagnostics/v24-gate-long
+          for path in \
             research/candidate-09/V24_DESIGN.md \
             research/candidate-09/config_v24.json \
             research/candidate-09/state_engine_v24_direct.py \
@@ -126,7 +134,9 @@ jobs:
             research/candidate-09/run_v24_direct.py \
             research/candidate-09/run_v24_ci.sh \
             research/candidate-09/tests_v24 \
-            research/candidate-09/archive/v23/decision.json
+            research/candidate-09/archive/v23/decision.json; do
+            [[ -e "$repo/$path" ]] && git -C "$repo" add "$path"
+          done
           if git -C "$repo" diff --cached --quiet; then exit 0; fi
           status=$(python -c "import json;print(json.load(open('research/candidate-09/evidence/latest/summary.json')).get('status','UNKNOWN'))")
           git -C "$repo" commit -m "candidate-09 v24: frozen result ${status}"
