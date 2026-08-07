@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
-CAND="$ROOT/research/candidate-13"
+CAND="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$CAND/../.." && pwd)"
 WEEK="${1:?usage: run_week.sh W10}"
 OUT="${2:-$CAND/results/$WEEK}"
 
