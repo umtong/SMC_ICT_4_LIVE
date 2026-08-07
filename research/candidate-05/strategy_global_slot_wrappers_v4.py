@@ -14,6 +14,7 @@ from strategy_v29b_external_displacement_fvg import ExternalDisplacementFvgStrat
 from strategy_v30_external_acceptance_retest import ExternalAcceptanceFirstRetestStrategy
 from strategy_v31_impact_resiliency_reversal import ImpactResiliencyReversalStrategy
 from strategy_v32_queue_pressure_release import QueuePressureReleaseStrategy
+from strategy_v36_cross_asset_repricing_gate import SystemicRepricingGateMixin
 
 
 class SharedAccountEntryLifecycleMixin:
@@ -193,6 +194,14 @@ class SharedAccountV32Strategy(
     pass
 
 
+class SharedAccountV36Strategy(
+    SystemicRepricingGateMixin,
+    SharedAccountEntryLifecycleMixin,
+    ScenarioValidEntryStrategy,
+):
+    """Evaluate the peer gate before acquiring the one global entry slot."""
+
+
 __all__ = [
     "SharedAccountEntryLifecycleMixin",
     "SharedAccountNoEarlySponsoredStrategy",
@@ -201,4 +210,5 @@ __all__ = [
     "SharedAccountV30Strategy",
     "SharedAccountV31Strategy",
     "SharedAccountV32Strategy",
+    "SharedAccountV36Strategy",
 ]
