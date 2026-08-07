@@ -1,0 +1,140 @@
+name: candidate-01-v39-cross-asset-laggard-week
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v39-cross-asset-laggard-week.yml"
+      - "research/candidate-01/cross_asset_laggard_v39.py"
+      - "research/candidate-01/nautilus_multi_tick_plan_backtest.py"
+      - "tests/test_candidate_01_v39.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  frozen-btc-led-four-symbol-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v39
+          key: candidate-01-v39-four-symbol-2023-04-17-2023-04-24-${{ runner.os }}-v1
+      - name: Run frozen primary and single-leader control
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/cross_asset_laggard_v39.py \
+                research/candidate-01/nautilus_multi_tick_plan_backtest.py \
+                tests/test_candidate_01_v39.py
+              python -m unittest discover -s tests -p "test_candidate_01_v39.py" -v
+              rm -rf artifacts/candidate-01-v39-week1
+              python research/candidate-01/cross_asset_laggard_v39.py \
+                --week 2023-04-17 \
+                --variant primary \
+                --cache .cache/candidate-01-v39 \
+                --output artifacts/candidate-01-v39-week1/primary \
+                --workers 4
+              python research/candidate-01/cross_asset_laggard_v39.py \
+                --week 2023-04-17 \
+                --variant control \
+                --cache .cache/candidate-01-v39 \
+                --output artifacts/candidate-01-v39-week1/control \
+                --workers 4
+            '
+      - name: Compare frozen variants without fitting
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-01-v39-week1")
+          primary_path = root / "primary/cross_asset_laggard_v39_summary.json"
+          control_path = root / "control/cross_asset_laggard_v39_summary.json"
+          payload = {
+              "candidate": "v39 cross-asset consensus laggard transfer",
+              "frozen_week": "2023-04-17/2023-04-24 UTC",
+              "frozen_random_seed": 3901,
+              "advance": False,
+              "reason": "incomplete authoritative evidence",
+          }
+          if primary_path.is_file() and control_path.is_file():
+              primary = json.loads(primary_path.read_text())
+              control = json.loads(control_path.read_text())
+              pm = primary["metrics"]
+              cm = control["metrics"]
+              win_rate = pm.get("win_rate")
+              profit_factor = pm.get("profit_factor")
+              operational = all((
+                  primary.get("joint_evaluation_minute_gaps") == 0,
+                  control.get("joint_evaluation_minute_gaps") == 0,
+                  bool(pm.get("ended_flat")),
+                  bool(cm.get("ended_flat")),
+                  int(pm.get("one_global_entry_gate_violations", 0) or 0) == 0,
+                  int(cm.get("one_global_entry_gate_violations", 0) or 0) == 0,
+                  int(pm.get("protective_order_failures", 0) or 0) == 0,
+                  int(cm.get("protective_order_failures", 0) or 0) == 0,
+                  int(pm.get("liquidation_marker_rows", 0) or 0) == 0,
+                  int(cm.get("liquidation_marker_rows", 0) or 0) == 0,
+              ))
+              gates = {
+                  "operational_contract_passed": operational,
+                  "minimum_four_closed_trades_met": int(pm.get("closed_positions", 0) or 0) >= 4,
+                  "geometric_daily_one_percent_met": float(pm.get("geometric_mean_daily_return", 0.0) or 0.0) >= 0.01,
+                  "minimum_seventy_five_percent_win_rate_met": win_rate is not None and float(win_rate) >= 0.75,
+                  "minimum_profit_factor_1_5_met": profit_factor is not None and float(profit_factor) >= 1.5,
+                  "primary_outperformed_single_leader_control": float(pm.get("total_return", 0.0) or 0.0) > float(cm.get("total_return", 0.0) or 0.0),
+                  "recoverable_drawdown_met": float(pm.get("max_drawdown", 0.0) or 0.0) > -0.20,
+              }
+              payload = {
+                  "candidate": "v39 cross-asset consensus laggard transfer",
+                  "frozen_week": "2023-04-17/2023-04-24 UTC",
+                  "frozen_random_seed": 3901,
+                  "primary_selected_plans": primary["selected_plan_count"],
+                  "control_selected_plans": control["selected_plan_count"],
+                  "primary_metrics": pm,
+                  "control_metrics": cm,
+                  "gates": gates,
+                  "advance": all(gates.values()),
+                  "reason": "all frozen first-week gates passed" if all(gates.values()) else "first-week logical or opportunity gate failed",
+              }
+          root.mkdir(parents=True, exist_ok=True)
+          (root / "candidate_v39_verdict.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v39-week1-${{ github.sha }}
+          path: artifacts/candidate-01-v39-week1
+          if-no-files-found: error
+          retention-days: 30
