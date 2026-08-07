@@ -12,9 +12,11 @@ Control
 
 Official futures aggregate trades are represented one-for-one as NautilusTrader
 TradeTicks. NautilusTrader exclusively owns orders, fills, commissions, margin,
-positions, PnL, NAV and reports. ``--rule both`` prepares official data and
-causal plans once, then runs the primary and control through two independent
-NautilusTrader engines using the identical outcome-independent tick stream.
+positions, PnL, NAV and reports. ``--rule both`` launches the primary and
+control as separate Python processes. This is required because NautilusTrader
+1.230.0 owns a process-global Rust logger which cannot be initialized twice in
+one interpreter. Both child runs reuse the same checksum-verified archive cache
+and deterministically rebuild the identical outcome-independent tick stream.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -36,10 +39,14 @@ for item in (HERE, SRC):
     if str(item) not in sys.path:
         sys.path.insert(0, str(item))
 
-from aggtrade_data import AggTrade, AggTradeDownload, download_aggtrade_days
-from calendar_mss_displacement_v23_nautilus_week import execution_trade_windows
-from cross_market_aggtrade_data_v36 import download_spot_aggtrade_days
-from cross_market_failed_auction_v36 import (
+from aggtrade_data import AggTrade, AggTradeDownload, download_aggtrade_days  # noqa: E402
+from calendar_mss_displacement_v23_nautilus_week import (  # noqa: E402
+    execution_trade_windows,
+)
+from cross_market_aggtrade_data_v36 import (  # noqa: E402
+    download_spot_aggtrade_days,
+)
+from cross_market_failed_auction_v36 import (  # noqa: E402
     BALANCE_MINUTES,
     CONFIRMATION_MINUTES,
     MIN_STRUCTURE_WIDTH_FRACTION,
@@ -49,12 +56,12 @@ from cross_market_failed_auction_v36 import (
     build_cross_market_plans,
     build_joint_minutes,
 )
-from data import parse_utc_date
-from directional_change_failed_sweep_week import MAXIMUM_HOLD_NS
-from impact_regime_probe import ScenarioPlan
-from nautilus_plan_backtest import NautilusExecutionConfig
-from nautilus_tick_plan_backtest import run_nautilus_tick_plan_backtest
-from resolved_impact_v17_nautilus_week import atomic_json, load_execution
+from data import parse_utc_date  # noqa: E402
+from directional_change_failed_sweep_week import MAXIMUM_HOLD_NS  # noqa: E402
+from impact_regime_probe import ScenarioPlan  # noqa: E402
+from nautilus_plan_backtest import NautilusExecutionConfig  # noqa: E402
+from nautilus_tick_plan_backtest import run_nautilus_tick_plan_backtest  # noqa: E402
+from resolved_impact_v17_nautilus_week import atomic_json, load_execution  # noqa: E402
 
 PRIMARY_RULE = "spot-unconfirmed-primary"
 CONTROL_RULE = "futures-failure-control"
@@ -89,7 +96,11 @@ def evaluation_plans(
     start_ns: int,
     end_ns: int,
 ) -> list[ScenarioPlan]:
-    return [row for row in rows if start_ns <= int(row.signal_time_ns) < end_ns]
+    return [
+        row
+        for row in rows
+        if start_ns <= int(row.signal_time_ns) < end_ns
+    ]
 
 
 def _joint_rows(minutes: list[Any]) -> list[dict[str, object]]:
@@ -104,7 +115,9 @@ def _joint_rows(minutes: list[Any]) -> list[dict[str, object]]:
                 "futures_low": row.futures.low,
                 "futures_close": row.futures.close,
                 "futures_quote_notional": row.futures.quote_notional,
-                "futures_signed_aggressive_quote": row.futures.signed_aggressive_quote,
+                "futures_signed_aggressive_quote": (
+                    row.futures.signed_aggressive_quote
+                ),
                 "futures_imbalance": row.futures.imbalance,
                 "futures_trade_count": row.futures.trade_count,
                 "futures_first_trade_time_ns": row.futures.first_trade_time_ns,
@@ -308,7 +321,9 @@ def run_rule(
     if rule not in RULES:
         raise ValueError(f"unknown v36 rule: {rule}")
     selected_plans = (
-        prepared.primary_plans if rule == PRIMARY_RULE else prepared.control_plans
+        prepared.primary_plans
+        if rule == PRIMARY_RULE
+        else prepared.control_plans
     )
     output.mkdir(parents=True, exist_ok=True)
     evidence = run_nautilus_tick_plan_backtest(
@@ -382,7 +397,9 @@ def run_rule(
             "trade of each evaluation UTC day for NAV marking"
         ),
         "risk_fraction": prepared.execution.risk_fraction,
-        "all_in_cost_bps_per_side": prepared.execution.all_in_cost_bps_per_side,
+        "all_in_cost_bps_per_side": (
+            prepared.execution.all_in_cost_bps_per_side
+        ),
         "maximum_hold_hours": MAXIMUM_HOLD_NS / 3_600_000_000_000,
         "metrics": evidence.metrics,
         "long_evaluation_run": False,
@@ -392,26 +409,43 @@ def run_rule(
 
 
 def run(args: argparse.Namespace) -> int:
-    prepared = prepare_week(args)
     if args.rule == "both":
         outputs = {
             PRIMARY_RULE: args.output / "primary",
             CONTROL_RULE: args.output / "control",
         }
+        script = Path(__file__).resolve()
+        for rule in RULES:
+            command = [
+                sys.executable,
+                str(script),
+                "--week",
+                args.week,
+                "--rule",
+                rule,
+                "--execution-config",
+                str(args.execution_config),
+                "--cache",
+                str(args.cache),
+                "--output",
+                str(outputs[rule]),
+                "--workers",
+                str(args.workers),
+            ]
+            subprocess.run(command, check=True)
         payloads = {
-            rule: run_rule(prepared, rule=rule, output=output)
+            rule: json.loads((output / SUMMARY).read_text(encoding="utf-8"))
             for rule, output in outputs.items()
         }
         print(
             json.dumps(
                 {
                     "candidate_version": 36,
-                    "mode": "both",
+                    "mode": "both-separate-processes",
                     "week": args.week,
                     "outputs": {rule: str(path) for rule, path in outputs.items()},
                     "metrics": {
-                        rule: payload["metrics"]
-                        for rule, payload in payloads.items()
+                        rule: payload["metrics"] for rule, payload in payloads.items()
                     },
                 },
                 indent=2,
@@ -419,6 +453,7 @@ def run(args: argparse.Namespace) -> int:
             ),
         )
         return 0
+    prepared = prepare_week(args)
     payload = run_rule(prepared, rule=args.rule, output=args.output)
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
