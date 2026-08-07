@@ -26,6 +26,7 @@ import cross_market_information_transfer_compiler as base
 
 
 CandidateError = base.v22.v9.CandidateError
+_ORIGINAL_CONFIG_LOAD = base.v22.Config.load
 
 
 def load_allowed_symbol_config(path: Path):
@@ -48,7 +49,7 @@ def load_allowed_symbol_config(path: Path):
     try:
         json.dump(validated_values, handle)
         handle.close()
-        validated = base.v22.Config.load(temporary)
+        validated = _ORIGINAL_CONFIG_LOAD(temporary)
     finally:
         try:
             handle.close()
