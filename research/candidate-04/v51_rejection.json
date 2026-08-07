@@ -1,0 +1,55 @@
+{
+  "candidate": "candidate-04-v51-asymmetric-liquidity-raid-reversal",
+  "decision": "DISCARDED",
+  "engine": "NautilusTrader 1.230.0 BacktestNode",
+  "evidence_run_id": 31191716971,
+  "first_week": {
+    "signal_interval": "[2023-02-27, 2023-03-06)",
+    "nautilus_calendar_days_reported": 8,
+    "trades": 9,
+    "wins": 2,
+    "win_rate": 0.2222222222222222,
+    "total_return_after_cost": -0.14150444027570008,
+    "geometric_daily_growth_reported": -0.018891006740962224,
+    "profit_factor_after_cost": 0.04779692821254759,
+    "maximum_drawdown": 0.1428718647035726,
+    "maximum_realized_loss_to_entry_nav": 0.029229707188720276,
+    "global_maximum_live_entries": 1,
+    "global_invariant_violations": 0
+  },
+  "single_ablation": {
+    "removed_variable": "cross_market_peer_rejection_requirement",
+    "baseline_peer_rejections": 2,
+    "ablation_peer_rejections": 0,
+    "baseline_compiled_signals": 11,
+    "ablation_compiled_signals": 11,
+    "baseline_trades": 9,
+    "ablation_trades": 9,
+    "baseline_total_return_after_cost": -0.14150444027570008,
+    "ablation_total_return_after_cost": -0.14150444027570008,
+    "conclusion": "The binary SMT peer-rejection condition was neither the alpha source nor a meaningful scarcity filter. Removing it changed no qualified signal or trade."
+  },
+  "failure_classification": {
+    "implementation": false,
+    "risk_or_execution": false,
+    "logic": true,
+    "dominant_failure": "A local range reclaim, opposite MSS, displacement/FVG and later retest did not establish durable failed-auction reversal. Seven of nine positions lost and the only material winner supplied effectively all positive PnL.",
+    "largest_positive_concentration": 0.9990480936410768,
+    "average_loser_usdt": -2476.2935265571427,
+    "average_winner_usdt": 1591.8053291649999
+  },
+  "valid_components_preserved": [
+    "shifted pre-event liquidity boundary",
+    "separate completed displacement and later retest",
+    "pre-existing causal target registry with no measured move",
+    "conditional adverse-fill risk sizing",
+    "one NautilusTrader account and global one-entry invariant",
+    "maximum planned and realized loss within the 3% NAV contract"
+  ],
+  "research_process_correction": {
+    "issue": "The signal compiler used an exclusive end timestamp while the Nautilus calendar runner treated the same date as inclusive, producing an eight-day denominator although no signal traded on the extra day.",
+    "economic_decision_affected": false,
+    "future_contract": "Future workflows declare a signal end-exclusive date and a separate Nautilus last-inclusive date so a random week contains exactly seven calendar days."
+  },
+  "next_hypothesis": "Replace binary leader/follower rejection with a cross-sectional common-order-flow factor. Route common-factor accepted sweeps to continuation and reserve reversal for idiosyncratic impact exhaustion; test the continuation branch first as an independent candidate."
+}
