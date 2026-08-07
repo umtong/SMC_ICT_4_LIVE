@@ -87,20 +87,45 @@ jobs:
               actual = subprocess.check_output(['git', 'hash-object', str(path)], text=True).strip()
               assert actual == expected['git_blob_sha'], (relative, actual, expected['git_blob_sha'])
 
+          # The original prospective driver used pytest, which is deliberately
+          # absent from the common prebuilt runtime. Patch only that test command
+          # to the controlled standard-library runner before any data access.
+          driver_path = Path('research/candidate-02/v104_first_week_driver.py')
+          driver_text = driver_path.read_text(encoding='utf-8')
+          before = '    run([sys.executable, "-m", "pytest", "-q", str(CANDIDATE / "tests/test_v104_causality.py"), str(CANDIDATE / "tests/test_v104_activation_adapter.py")])'
+          after = '    run([sys.executable, str(CANDIDATE / "tests/run_v104_tests.py")])'
+          assert driver_text.count(before) == 1
+          driver_path.write_text(driver_text.replace(before, after), encoding='utf-8')
+
           # The payload was prospectively frozen before the registered router
-          # existed. Materialize the exact triggering router blob into the lock
-          # before any market archive is collected. All scenario/risk/cost/week
-          # fields and every other source blob remain unchanged.
+          # existed. Materialize the exact triggering router, patched driver,
+          # and controlled test-infrastructure blobs into the lock before any
+          # market archive is collected. Scenario/risk/cost/week stay fixed.
           lock_path = Path('research/candidate-02/v104_external_liquidity_lock.json')
           lock = json.loads(lock_path.read_text())
           assert lock['status'] == 'LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
           assert lock['first_week']['raw_data_status_at_lock'] == 'NOT_COLLECTED_FOR_V104'
           assert lock['source_git_blob_sha']['router_workflow'] == '9c4289b41a16f39c5ac04a1471167d53f6276c72'
+          assert lock['source_git_blob_sha']['driver'] == 'b9e0fb9da71ebd5f151fd459c750fb3301d605dd'
           workflow = Path('.github/workflows/candidate-02-v77-terminal-router.yml')
           router_blob = subprocess.check_output(['git', 'hash-object', str(workflow)], text=True).strip()
+          driver_blob = subprocess.check_output(['git', 'hash-object', str(driver_path)], text=True).strip()
           lock['source_git_blob_sha']['router_workflow'] = router_blob
+          lock['source_git_blob_sha']['driver'] = driver_blob
+          additions = {
+              'controlled_test_runner': 'research/candidate-02/tests/run_v104_tests.py',
+              'schedule_contract_test': 'research/candidate-02/tests/test_v104_schedule_contract.py',
+          }
+          for key, relative in additions.items():
+              path = Path(relative)
+              assert path.is_file(), relative
+              lock['source_files'][key] = relative
+              lock['source_git_blob_sha'][key] = subprocess.check_output(
+                  ['git', 'hash-object', str(path)], text=True
+              ).strip()
           lock['source_materialization'] = {
-              'contract': 'payload bytes, archive, extracted sizes, and every extracted Git blob are verified before compilation or collection',
+              'contract': 'payload bytes, archive, extracted sizes, every extracted Git blob, patched driver, router, and controlled test infrastructure are verified before compilation or collection',
+              'driver_test_command_patch_before_market_data': True,
               'materialization_commit_does_not_retrigger_router': True,
               'materialized_before_market_data': True,
               'payload_manifest': '.candidate-02-v104/payload_manifest.json',
@@ -133,7 +158,8 @@ jobs:
             research/candidate-02/v104_nt_strategy.py \
             research/candidate-02/v104_nt_backtest.py \
             research/candidate-02/v104_first_week_driver.py \
-            research/candidate-02/tests/run_v104_tests.py
+            research/candidate-02/tests/run_v104_tests.py \
+            research/candidate-02/tests/test_v104_schedule_contract.py
           python research/candidate-02/tests/run_v104_tests.py
 
       - name: Run prospectively locked BTC first week in NautilusTrader
