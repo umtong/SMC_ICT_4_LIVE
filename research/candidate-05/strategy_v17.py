@@ -36,15 +36,27 @@ class EarlySponsoredChochStrategy(PositionBuildingBalanceAcceptanceStrategy):
             },
         )
 
+    def _early_sponsored_participation_allowed(
+        self,
+        setup: PendingSetup,
+        row: dict[str, float | int],
+        flow_3m: float,
+    ) -> bool:
+        return sponsored_choch_flow_phase_ready(
+            side=setup.side,
+            flow_3m=flow_3m,
+        )
+
     def _submit_entry(
         self,
         setup: PendingSetup,
         row: dict[str, float | int],
     ) -> bool:
         flow_3m = self._feature("flow_3m")
-        if sponsored_choch_flow_phase_ready(
-            side=setup.side,
-            flow_3m=flow_3m,
+        if self._early_sponsored_participation_allowed(
+            setup,
+            row,
+            flow_3m,
         ):
             self.diagnostics["early_sponsored_choch_routed_to_participation"] += 1
             return SponsoredChochParticipationStrategy._submit_entry(self, setup, row)
