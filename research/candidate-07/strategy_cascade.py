@@ -1,4 +1,4 @@
-"""Cascade-aware NautilusTrader strategy for candidate-07."""
+"""Source-owned cascade-aware NautilusTrader strategy for candidate-07."""
 from __future__ import annotations
 
 from typing import Any
@@ -13,14 +13,14 @@ from strategy import Candidate07StrategyConfig
 
 
 class Candidate07Strategy(_BaseCandidate07Strategy):
-    """Add causal failed-absorption memory to the base Nautilus strategy.
+    """Remember a failed absorption only for its swept liquidity source.
 
-    A stop-loss fill proves that price accepted beyond the swept liquidity
-    instead of being absorbed. The strategy therefore rejects another
-    absorption/reclaim reversal in the same direction until a completed market
-    bar reaches the opposing internal-liquidity level which the failed scenario
-    had predicted. A separately confirmed acceptance continuation is not the
-    same reversal thesis and is therefore not blocked by this gate.
+    A stop-loss fill proves that the particular swept pool was accepted instead
+    of absorbed. It does not prove that all later liquidity pools on the same
+    side must also fail. Repeated reversal plans against the exact same source
+    level remain blocked until the original opposing-liquidity objective is
+    delivered; an independently formed source in the same direction remains
+    eligible. Acceptance continuation remains a separate thesis.
     """
 
     def __init__(self, config: Candidate07StrategyConfig):
@@ -41,6 +41,11 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
                     "direction": released.direction.value,
                     "bar_close": close,
                     "blocked_at_ns": released.blocked_at_ns,
+                    "source_key": released.source_key,
+                    "source_liquidity_level": (
+                        released.source_liquidity_level
+                    ),
+                    "state_owner": "FAILED_SOURCE_LIQUIDITY",
                 },
             )
 
@@ -49,22 +54,28 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
         plan = self._pending_plan
         if plan is None or plan.kind is not ScenarioKind.ABSORPTION_RECLAIM:
             return
-        block = self._failed_absorption_gate.state(plan.direction)
+        block = self._failed_absorption_gate.state(
+            plan.direction,
+            plan.liquidity_level,
+        )
         if block is None:
             return
         self._append_manual_event(
             scenario_id=plan.scenario_id,
             previous_state=ScenarioState.ENTRY_READY.value,
             next_state=ScenarioState.INVALIDATED.value,
-            reason_code="FAILED_ABSORPTION_CASCADE_ACTIVE",
+            reason_code="FAILED_ABSORPTION_SOURCE_CASCADE_ACTIVE",
             event_time_ns=int(bar.ts_event),
             reference_price=plan.entry_reference,
             details={
                 "direction": plan.direction.value,
+                "candidate_source_liquidity_level": plan.liquidity_level,
                 "reset_price": block.reset_price,
                 "source_scenario_id": block.source_scenario_id,
+                "source_key": block.source_key,
                 "blocked_at_ns": block.blocked_at_ns,
                 "blocked_kind": ScenarioKind.ABSORPTION_RECLAIM.value,
+                "state_owner": "FAILED_SOURCE_LIQUIDITY",
             },
         )
         self._pending_plan = None
@@ -84,6 +95,7 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
         reset_price = self._structural_reset_price(plan)
         block = self._failed_absorption_gate.block(
             direction=plan.direction,
+            source_liquidity_level=plan.liquidity_level,
             reset_price=reset_price,
             source_scenario_id=plan.scenario_id,
             blocked_at_ns=int(event.ts_event),
@@ -92,14 +104,17 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
             scenario_id=plan.scenario_id,
             previous_state=ScenarioState.TERMINAL.value,
             next_state="CASCADE_LOCKED",
-            reason_code="ABSORPTION_STOP_CONFIRMED_ACCEPTANCE",
+            reason_code="ABSORPTION_STOP_CONFIRMED_SOURCE_ACCEPTANCE",
             event_time_ns=int(event.ts_event),
             reference_price=block.reset_price,
             details={
                 "direction": plan.direction.value,
                 "failed_stop_price": plan.stop_price,
+                "source_liquidity_level": plan.liquidity_level,
+                "source_key": block.source_key,
                 "reset_price": block.reset_price,
                 "reset_basis": "opposing internal liquidity known at entry",
+                "state_owner": "FAILED_SOURCE_LIQUIDITY",
             },
         )
 
