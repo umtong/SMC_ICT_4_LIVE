@@ -1,0 +1,165 @@
+name: candidate-08-quote-resiliency-config-path-fix-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.fix-quote-resiliency-config-path-v1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-quote-resiliency-config-path-fix-v1
+  cancel-in-progress: true
+
+jobs:
+  fix-and-verify:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.fix-quote-resiliency-config-path-v1
+      OUTPUT_DIR: research/candidate-08/evidence/quote-resiliency-config-path-fix-v1
+      LOG: research/candidate-08/evidence/quote-resiliency-config-path-fix-v1/contracts.log
+      STATUS: research/candidate-08/evidence/quote-resiliency-config-path-fix-v1/exit_status.txt
+      SOURCE: research/candidate-08/run_quote_resiliency_nautilus.py
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bind active CLI config to feature and detector loaders
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-08/run_quote_resiliency_nautilus.py")
+          source = path.read_text(encoding="utf-8")
+
+          anchor = "_ACTIVE_ABLATION = BASE_ABLATION\n"
+          replacement = (
+              "_ACTIVE_ABLATION = BASE_ABLATION\n"
+              "_ACTIVE_CONFIG_PATH: Path | None = None\n"
+          )
+          if "_ACTIVE_CONFIG_PATH: Path | None = None" not in source:
+              if source.count(anchor) != 1:
+                  raise SystemExit(f"unexpected active-ablation anchor count: {source.count(anchor)}")
+              source = source.replace(anchor, replacement, 1)
+
+          old_config = (
+              "def _config_path() -> Path:\n"
+              "    return DEFAULT_CONFIG_PATH.resolve()\n"
+          )
+          new_config = (
+              "def _config_path() -> Path:\n"
+              "    return (_ACTIVE_CONFIG_PATH or DEFAULT_CONFIG_PATH).resolve()\n"
+          )
+          if old_config in source:
+              source = source.replace(old_config, new_config, 1)
+          if source.count(new_config) != 1:
+              raise SystemExit("active runtime config path was not bound exactly once")
+
+          old_global = "    global _ACTIVE_ABLATION\n"
+          new_global = "    global _ACTIVE_ABLATION, _ACTIVE_CONFIG_PATH\n"
+          if old_global in source:
+              source = source.replace(old_global, new_global, 1)
+          if source.count(new_global) != 1:
+              raise SystemExit("run_suite global config binding was not applied exactly once")
+
+          old_scope = (
+              "    previous = _ACTIVE_ABLATION\n"
+              "    _ACTIVE_ABLATION = ablation\n"
+              "    try:\n"
+          )
+          new_scope = (
+              "    previous = _ACTIVE_ABLATION\n"
+              "    previous_config_path = _ACTIVE_CONFIG_PATH\n"
+              "    _ACTIVE_ABLATION = ablation\n"
+              "    _ACTIVE_CONFIG_PATH = config_path.resolve()\n"
+              "    try:\n"
+          )
+          if old_scope in source:
+              source = source.replace(old_scope, new_scope, 1)
+          if source.count("_ACTIVE_CONFIG_PATH = config_path.resolve()") != 1:
+              raise SystemExit("active config path suite scope was not applied exactly once")
+
+          old_finally = (
+              "    finally:\n"
+              "        _ACTIVE_ABLATION = previous\n"
+          )
+          new_finally = (
+              "    finally:\n"
+              "        _ACTIVE_ABLATION = previous\n"
+              "        _ACTIVE_CONFIG_PATH = previous_config_path\n"
+          )
+          if old_finally in source:
+              source = source.replace(old_finally, new_finally, 1)
+          if source.count("_ACTIVE_CONFIG_PATH = previous_config_path") != 1:
+              raise SystemExit("active config path restore was not applied exactly once")
+
+          path.write_text(source, encoding="utf-8")
+          PY
+
+      - name: Verify pinned environment and config-path contracts
+        id: contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$OUTPUT_DIR"
+          rm -f "$LOG" "$STATUS"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/run_quote_resiliency_nautilus.py \
+              research/candidate-08/test_quote_resiliency_config_path.py \
+              research/candidate-08/test_quote_resiliency_native_adapter.py
+            python research/candidate-08/test_quote_resiliency_config_path.py -v
+            python research/candidate-08/test_quote_resiliency_native_adapter.py -v
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit implementation fix and evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- "$SOURCE" "$OUTPUT_DIR" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: bind quote runtime config path [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce contract status
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS_VALUE: ${{ steps.contracts.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
