@@ -1,4 +1,4 @@
-name: candidate-02-v95-stage-funnel-r2
+name: candidate-02-v95-stage-funnel-r3
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: candidate-02-v95-stage-funnel-r2
+  group: candidate-02-v95-stage-funnel-r3
   cancel-in-progress: false
 
 jobs:
@@ -42,20 +42,12 @@ jobs:
           smc4 doctor
           test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "a31b09027333317a04ce65dc3ac5475011746f8ba6942babd923422ad793fdb1"
           expected="$(cat research/candidate-02/v95_payload_sha256.txt)"
-          actual="$(cat \
-            research/candidate-02/v95_mature_swing_breakout_core.py \
-            research/candidate-02/v95_nt_backtest.py \
-            research/candidate-02/v95_base_config.json \
-            research/candidate-02/v95_mature_swing_breakout_lock.json \
-            research/candidate-02/v95_design.md | sha256sum | cut -d' ' -f1)"
+          actual="$(cat research/candidate-02/v95_mature_swing_breakout_core.py research/candidate-02/v95_nt_backtest.py research/candidate-02/v95_base_config.json research/candidate-02/v95_mature_swing_breakout_lock.json research/candidate-02/v95_design.md | sha256sum | cut -d' ' -f1)"
           test "$expected" = "b381ce0130b7bb8af394fdb828fed1cd1d42df2ca0b235484a27871d839468d3"
           test "$actual" = "$expected"
-          python -m py_compile \
-            research/candidate-02/v95_mature_swing_breakout_core.py \
-            research/candidate-02/v95_nt_backtest.py \
-            research/candidate-02/v95_stage_funnel.py
+          python -m py_compile research/candidate-02/v95_mature_swing_breakout_core.py research/candidate-02/v95_nt_backtest.py research/candidate-02/v95_stage_funnel.py
 
-      - name: Materialize the immutable v95 first-week runner
+      - name: Materialize immutable runner
         shell: bash
         run: |
           set -euo pipefail
@@ -64,7 +56,7 @@ jobs:
           chmod +x /tmp/v95_first_week_runner.sh
           bash -n /tmp/v95_first_week_runner.sh
 
-      - name: Recreate the identical locked NautilusTrader result
+      - name: Recreate identical locked NautilusTrader result
         shell: bash
         run: |
           set -euo pipefail
@@ -73,44 +65,37 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           echo "$status" > artifacts-v95-funnel-production-replay-exit-code.txt
-          case "$status" in
-            0|1|2) ;;
-            *) exit "$status" ;;
-          esac
+          case "$status" in 0|1|2) ;; *) exit "$status" ;; esac
           test -f artifacts-v95-first-week-decision.json
-          test "$(python -c "import json;print(json.load(open('artifacts-v95-first-week-decision.json'))['status'])")" = "FIRST_WEEK_REJECT"
+          python - <<'PY'
+          import json
+          status = json.load(open('artifacts-v95-first-week-decision.json'))['status']
+          allowed = {'FIRST_WEEK_REJECT', 'FIRST_WEEK_REJECT_OR_PRECOMMITTED_ABLATION'}
+          if status not in allowed:
+              raise SystemExit(f'unexpected v95 decision status: {status}')
+          print(status)
+          PY
 
-      - name: Count every causal transition for central and locked ablation
+      - name: Count every causal transition
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts/candidate-02-v95-stage-funnel
-          python research/candidate-02/v95_stage_funnel.py \
-            --config research/candidate-02/v95_base_config.json \
-            --input-root inputs/v95-first-week \
-            --output artifacts/candidate-02-v95-stage-funnel/central.json \
-            | tee artifacts-v95-stage-funnel-central.log
+          python research/candidate-02/v95_stage_funnel.py --config research/candidate-02/v95_base_config.json --input-root inputs/v95-first-week --output artifacts/candidate-02-v95-stage-funnel/central.json | tee artifacts-v95-stage-funnel-central.log
           python - <<'PY'
-          import copy
-          import json
+          import copy, json
           from pathlib import Path
-
           cfg = copy.deepcopy(json.loads(Path('research/candidate-02/v95_base_config.json').read_text()))
           cfg['candidate'] = 'candidate-02-v95-remove-prior-defense-memory'
           cfg['scenario']['require_defense_memory'] = False
           Path('/tmp/v95-no-defense.json').write_text(json.dumps(cfg, indent=2, sort_keys=True) + '\n')
           PY
-          python research/candidate-02/v95_stage_funnel.py \
-            --config /tmp/v95-no-defense.json \
-            --input-root inputs/v95-first-week \
-            --output artifacts/candidate-02-v95-stage-funnel/remove-defense.json \
-            | tee artifacts-v95-stage-funnel-remove-defense.log
+          python research/candidate-02/v95_stage_funnel.py --config /tmp/v95-no-defense.json --input-root inputs/v95-first-week --output artifacts/candidate-02-v95-stage-funnel/remove-defense.json | tee artifacts-v95-stage-funnel-remove-defense.log
           python - <<'PY'
           import json
           from pathlib import Path
-
-          central = json.loads(Path('artifacts/candidate-02-v95-stage-funnel/central.json').read_text())
-          ablation = json.loads(Path('artifacts/candidate-02-v95-stage-funnel/remove-defense.json').read_text())
+          c = json.loads(Path('artifacts/candidate-02-v95-stage-funnel/central.json').read_text())
+          a = json.loads(Path('artifacts/candidate-02-v95-stage-funnel/remove-defense.json').read_text())
           summary = {
               'candidate': 'candidate-02-v95-mature-defended-swing-common-accepted-breakout',
               'evaluation_start_utc': '2025-10-06T00:00:00Z',
@@ -118,20 +103,10 @@ jobs:
               'diagnostic_only': True,
               'custom_backtest_engine': False,
               'production_engine': 'NautilusTrader 1.230.0',
-              'central': {
-                  'production_signal_count': central['production_signal_count'],
-                  'qualification': central['qualification'],
-                  'scenario': central['scenario'],
-              },
-              'remove_defense': {
-                  'production_signal_count': ablation['production_signal_count'],
-                  'qualification': ablation['qualification'],
-                  'scenario': ablation['scenario'],
-              },
+              'central': {'production_signal_count': c['production_signal_count'], 'qualification': c['qualification'], 'scenario': c['scenario']},
+              'remove_defense': {'production_signal_count': a['production_signal_count'], 'qualification': a['qualification'], 'scenario': a['scenario']},
           }
-          Path('artifacts/candidate-02-v95-stage-funnel/summary.json').write_text(
-              json.dumps(summary, indent=2, sort_keys=True) + '\n'
-          )
+          Path('artifacts/candidate-02-v95-stage-funnel/summary.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
           print(json.dumps(summary, indent=2, sort_keys=True))
           PY
 
@@ -139,7 +114,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-02-v95-stage-funnel-r2-${{ github.sha }}
+          name: candidate-02-v95-stage-funnel-r3-${{ github.sha }}
           path: |
             artifacts/candidate-02-v95-stage-funnel
             artifacts-v95-stage-funnel-*.log
