@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 import shared_account_backtest as _base
+from cross_asset_repricing_context import reset_shared_cross_asset_context
 
 
 PROJECT_SYMBOLS = _base.PROJECT_SYMBOLS
@@ -87,13 +88,11 @@ def normalize_equity_files(
     return selected, daily_returns, max_drawdown, min_equity
 
 
-# Patch only the reporting calculation. Market replay, orders, fills, fees,
-# positions, margin, liquidation and NAV remain owned by the original
-# NautilusTrader BacktestNode implementation.
 _base.normalize_equity_files = normalize_equity_files
 
 
 def main() -> None:
+    reset_shared_cross_asset_context()
     _base.main()
 
 
