@@ -1,0 +1,107 @@
+name: candidate-12-research
+
+on:
+  push:
+    branches: ["research/candidate-12"]
+    paths:
+      - "research/candidate-12/**"
+      - ".github/workflows/candidate-12-research.yml"
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: Instrument
+        required: true
+        default: BTCUSDT
+        type: choice
+        options: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+      week:
+        description: Frozen evaluation week
+        required: true
+        default: W1
+        type: choice
+        options: [W1, W2, W3, W4, W5, W6]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-12-${{ github.ref }}-${{ inputs.symbol || 'BTCUSDT' }}-${{ inputs.week || 'W1' }}
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    env:
+      SYMBOL: ${{ inputs.symbol || 'BTCUSDT' }}
+      WEEK: ${{ inputs.week || 'W1' }}
+      OUTPUT: artifacts/candidate-12/${{ inputs.symbol || 'BTCUSDT' }}-${{ inputs.week || 'W1' }}
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Materialize reviewed candidate source
+        id: materialize
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f research/candidate-12/run.py ]]; then
+            cat research/candidate-12/bootstrap/src.part00 \
+                research/candidate-12/bootstrap/src.part01a \
+                research/candidate-12/bootstrap/src.part01b \
+                research/candidate-12/bootstrap/src.part01c > /tmp/candidate-12-src.tar.gz
+            echo "0f2b1c6f9837292970529f265adff36a2d842c556b39467cdc41c699e87e44f0  /tmp/candidate-12-src.tar.gz" | sha256sum -c -
+            mkdir -p research/candidate-12
+            tar -xzf /tmp/candidate-12-src.tar.gz -C research/candidate-12
+            rm -rf research/candidate-12/bootstrap
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add research/candidate-12
+            git commit -m "candidate-12: materialize reviewed source"
+            git push origin HEAD:research/candidate-12
+            echo "committed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify prebuilt environment
+        run: smc4 doctor
+
+      - name: Compile candidate
+        run: python -m compileall -q research/candidate-12
+
+      - name: Candidate unit tests
+        run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+
+      - name: Run frozen NautilusTrader evaluation
+        run: |
+          mkdir -p "$OUTPUT"
+          python research/candidate-12/run.py \
+            --symbol "$SYMBOL" \
+            --week "$WEEK" \
+            --output "$OUTPUT" | tee "$OUTPUT.console.json"
+
+      - name: Surface decision evidence
+        if: always()
+        run: |
+          if [[ -f "$OUTPUT/metrics.json" ]]; then
+            echo '=== CANDIDATE_12_METRICS_BEGIN ==='
+            cat "$OUTPUT/metrics.json"
+            echo '=== CANDIDATE_12_METRICS_END ==='
+          fi
+          if [[ -f "$OUTPUT/run.json" ]]; then
+            echo '=== CANDIDATE_12_RUN_BEGIN ==='
+            cat "$OUTPUT/run.json"
+            echo '=== CANDIDATE_12_RUN_END ==='
+          fi
+
+      - name: Preserve reproducible evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-${{ env.SYMBOL }}-${{ env.WEEK }}-${{ github.sha }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: error
