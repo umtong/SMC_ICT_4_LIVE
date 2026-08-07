@@ -1,6 +1,6 @@
 # Candidate 11 evidence audit
 
-**EXECUTION_FAILURE_NO_CLOSED_TRADES**
+**LOGIC_FAILURE_NO_EXECUTABLE_PLANS**
 
 - advance_allowed: `False`
 - success_claim_allowed: `False`
@@ -12,4 +12,4 @@
 - no_liquidation_passed: `True`
 
 ## Reasons
-- plans were submitted but Nautilus reported no closed trades
+- the causal state machine produced no executable plans
