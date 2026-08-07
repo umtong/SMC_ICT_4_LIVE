@@ -5,8 +5,8 @@ current-NAV three-percent sizing rule.  It repairs infrastructure boundaries exp
 predeclared delayed-reacceptance ablation:
 
 * fill-adjusted expected loss retains the causal stop-slippage reserve used at signal time;
-* a fill-adjusted breach is acted on only after the native POSITION_OPENED callback, preserving the
-  real event order before the forced exit; and
+* a fill-adjusted breach preserves native POSITION_OPENED ordering and exits only on the next
+  completed ten-second bar, never at the entry timestamp; and
 * evidence-complete entry/stop slippage tails are candidate execution-risk failures, not Python or
   NautilusTrader implementation failures.
 """
@@ -21,7 +21,7 @@ from aggtrade_acceptance_strategy import AggTradeAcceptanceStrategy
 from smc_ict_4.manifest import write_json_atomic
 
 
-RISK_ACCOUNTING_REVISION = "FILL_ADJUSTED_CAUSAL_STOP_RESERVE_V3_POSITION_OPEN_ORDERING"
+RISK_ACCOUNTING_REVISION = "FILL_ADJUSTED_CAUSAL_STOP_RESERVE_V4_NEXT_COMPLETED_BAR_EXIT"
 FILL_ADJUSTED_BREACH_CLASSIFICATION = "ENTRY_FILL_SLIPPAGE_RISK_CONTRACT_FAILURE"
 REALIZED_BREACH_CLASSIFICATION = "REALIZED_STOP_SLIPPAGE_TAIL_RISK_CONTRACT_FAILURE"
 
@@ -32,7 +32,7 @@ _REALIZED_ERROR = "realized loss exceeded the signal-time 3% shared-NAV budget"
 
 
 class RiskCompleteAggTradeAcceptanceStrategy(AggTradeAcceptanceStrategy):
-    """Preserve the signal-time stop reserve and force exit in native callback order."""
+    """Preserve the signal-time stop reserve and force exit in causal native callback order."""
 
     def on_order_filled(self, event: Any) -> None:
         order_id = str(event.client_order_id)
@@ -110,11 +110,62 @@ class RiskCompleteAggTradeAcceptanceStrategy(AggTradeAcceptanceStrategy):
             }
         )
         if self.active_instrument_id is not None:
-            # Do not emit EXIT_REQUESTED from inside OrderFilled.  Nautilus has updated the
-            # portfolio, but POSITION_OPENED has not yet reached the strategy.  Cancel contingent
-            # children now; the inherited on_position_opened callback sees the violation flag,
-            # records POSITION_OPENED first, then requests the forced exit in causal event order.
+            # The portfolio has been updated, but the strategy has not yet received POSITION_OPENED.
+            # Cancel contingent children now.  The actual market exit is deferred until the first
+            # separately completed ten-second bar after POSITION_OPENED.
             self.cancel_all_orders(self.active_instrument_id)
+
+    def on_position_opened(self, event: Any) -> None:
+        violation = bool(self.fill_adjusted_risk_violation)
+        if violation:
+            # Suppress the inherited same-timestamp forced exit.  It still records POSITION_OPENED
+            # normally; then the violation is restored and scheduled for a strictly later bar.
+            self.fill_adjusted_risk_violation = False
+        super().on_position_opened(event)
+        if violation:
+            self.fill_adjusted_risk_violation = True
+            self._deferred_fill_adjusted_exit_after_ns = int(event.ts_event)
+            if self.trade_intents:
+                self.trade_intents[-1]["fill_adjusted_forced_exit_not_before_ns"] = (
+                    int(event.ts_event) + 1
+                )
+                self.trade_intents[-1]["fill_adjusted_exit_timing_contract"] = (
+                    "FIRST_COMPLETED_TEN_SECOND_BAR_STRICTLY_AFTER_POSITION_OPEN"
+                )
+
+    def on_bar(self, bar: Any) -> None:
+        super().on_bar(bar)
+        pending_after_ns = getattr(
+            self,
+            "_deferred_fill_adjusted_exit_after_ns",
+            None,
+        )
+        if pending_after_ns is None or int(bar.ts_event) <= int(pending_after_ns):
+            return
+        if self.active_instrument_id is None:
+            self._deferred_fill_adjusted_exit_after_ns = None
+            return
+        if self.portfolio.is_flat(self.active_instrument_id):
+            self._deferred_fill_adjusted_exit_after_ns = None
+            return
+        if self.exit_requested:
+            self._deferred_fill_adjusted_exit_after_ns = None
+            return
+        close = (
+            float(bar.close.as_double())
+            if hasattr(bar.close, "as_double")
+            else float(bar.close)
+        )
+        self._deferred_fill_adjusted_exit_after_ns = None
+        self._request_exit(
+            "FILL_ADJUSTED_RISK_BUDGET_EXCEEDED",
+            int(bar.ts_event),
+            close,
+        )
+
+    def on_position_closed(self, event: Any) -> None:
+        self._deferred_fill_adjusted_exit_after_ns = None
+        super().on_position_closed(event)
 
 
 def _clean_execution_risk_breach(
