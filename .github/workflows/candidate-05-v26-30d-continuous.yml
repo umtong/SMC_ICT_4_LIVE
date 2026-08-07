@@ -1,17 +1,21 @@
-name: candidate-05-v45-btc-30d-external-active
+name: candidate-05-v46-btc-30d-no-post-retrace-breakaway
 
 on:
   push:
     branches: ["research/candidate-05"]
     paths:
+      - "research/candidate-05/breakaway_state_logic.py"
       - "research/candidate-05/strategy_v45_external_active_inventory.py"
+      - "research/candidate-05/strategy_v46_no_post_retrace_breakaway.py"
+      - "research/candidate-05/tests/test_breakaway_state_logic.py"
       - "research/candidate-05/tests/test_strategy_v45_external_active_inventory_contract.py"
+      - "research/candidate-05/tests/test_strategy_v46_no_post_retrace_breakaway_contract.py"
       - "research/candidate-05/v40_active/strategy.py"
       - ".github/workflows/candidate-05-v26-30d-continuous.yml"
   workflow_dispatch:
 
 concurrency:
-  group: candidate-05-v45-btc-30d-external-active
+  group: candidate-05-v46-btc-30d-no-post-retrace-breakaway
   cancel-in-progress: true
 
 permissions:
@@ -31,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify fixed environment and v45 contracts
+      - name: Verify fixed environment and v46 contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -41,6 +45,8 @@ jobs:
           python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v40_unfilled_target_handoff_contract.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v44_context_aligned_internal_contract.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v45_external_active_inventory_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_breakaway_state_logic.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v46_no_post_retrace_breakaway_contract.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_basis_contract.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_reset_logic.py' -v
 
@@ -48,7 +54,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root=artifacts/candidate-05-v45-btc-30d
+          root=artifacts/candidate-05-v46-btc-30d
           mkdir -p "$root"
           python research/candidate-05/v40_active/candidate.py stage \
             --config research/candidate-05/config.json \
@@ -56,23 +62,24 @@ jobs:
             --build-end 2024-03-30 \
             --evaluation-start 2024-03-01 \
             --evaluation-end 2024-03-30 \
-            --cache .cache/candidate-05-v45-btc-30d \
+            --cache .cache/candidate-05-v46-btc-30d \
             --output "$root" \
             2>&1 | tee "$root/console.log"
 
-      - name: Build controlled ablation summary
+      - name: Build controlled transition-repair summary
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          root=artifacts/candidate-05-v45-btc-30d
+          root=artifacts/candidate-05-v46-btc-30d
           if test -f "$root/metrics.json"; then
             python -m json.tool "$root/metrics.json"
             python - <<'PY'
           import json
           from pathlib import Path
-          root = Path("artifacts/candidate-05-v45-btc-30d")
+          root = Path("artifacts/candidate-05-v46-btc-30d")
           metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = metrics.get("strategy_diagnostics", {})
           checks = {
               "positive_nav": metrics.get("ending_nav", 0.0) > 0.0,
               "no_liquidation": metrics.get("liquidations", 0) == 0,
@@ -80,9 +87,10 @@ jobs:
               "no_order_denials": metrics.get("order_denials", 0) == 0,
               "single_entry_intent": metrics.get("max_simultaneous_entry_intents", 0) <= 1,
               "single_position": metrics.get("max_open_positions_observed", 0) <= 1,
+              "transition_repair_exercised": diagnostics.get("post_retrace_breakaway_invalidations", 0) > 0,
           }
           summary = {
-              "classification": "V45_EXTERNAL_ACTIVE_ABLATION",
+              "classification": "V46_NO_POST_RETRACE_BREAKAWAY",
               "checks": checks,
               "metrics": metrics,
           }
@@ -100,7 +108,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-05-v45-btc-30d-${{ github.sha }}
-          path: artifacts/candidate-05-v45-btc-30d/**
+          name: candidate-05-v46-btc-30d-${{ github.sha }}
+          path: artifacts/candidate-05-v46-btc-30d/**
           if-no-files-found: warn
           retention-days: 90
