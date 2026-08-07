@@ -69,9 +69,17 @@ class FlowResponseV4EvidenceContracts(unittest.TestCase):
         )
 
     def test_native_execution_entrypoint_is_still_the_verified_base_runner(self) -> None:
+        # The V3 wrapper deliberately rebinds ``base_runner.run_window`` only to capture the exact
+        # official replay frame for post-run diagnostics.  The function it delegates to remains the
+        # verified native Nautilus implementation, and the wrapper itself owns no engine or order
+        # construction.
         self.assertEqual(
-            runner.base.runner.base_runner.run_window.__module__,
+            runner.base._original_run_window.__module__,
             "run_aggtrade_acceptance_nautilus",
+        )
+        self.assertIs(
+            runner.base.runner.base_runner.run_window,
+            runner.base._flow_response_run_window,
         )
         self.assertIs(
             runner.base.runner.base_runner._suite_summary,
