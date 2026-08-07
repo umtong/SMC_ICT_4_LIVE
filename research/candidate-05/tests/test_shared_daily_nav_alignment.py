@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ import pandas as pd
 import features
 import timestamp_contract
 from shared_account_backtest_v2 import PROJECT_SYMBOLS
+from shared_account_backtest_v2 import make_shared_instrument
 from shared_account_backtest_v2 import normalize_equity_files
 
 
@@ -19,6 +21,20 @@ class SharedDailyNavAlignmentTest(unittest.TestCase):
         values = pd.Series(["1693958400000", "1693958459999"])
         converted = timestamp_contract.epoch_datetime(values)
         self.assertEqual(str(converted.iloc[0]), "2023-09-06 00:00:00+00:00")
+
+    def test_shared_instrument_adapter_preserves_frozen_contract_identity(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for symbol, filename in {
+            "BTCUSDT": "config.json",
+            "ETHUSDT": "config_eth.json",
+            "SOLUSDT": "config_sol.json",
+            "XRPUSDT": "config_xrp.json",
+        }.items():
+            config = json.loads((root / filename).read_text(encoding="utf-8"))
+            instrument = make_shared_instrument(config)
+            self.assertEqual(str(instrument.id), f"{symbol}-PERP.BINANCE")
+            self.assertGreater(instrument.price_increment.as_double(), 0.0)
+            self.assertGreater(instrument.size_increment.as_double(), 0.0)
 
     def test_day_close_uses_last_observation_inside_day_not_next_day_first(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -42,8 +58,6 @@ class SharedDailyNavAlignmentTest(unittest.TestCase):
                 starting_nav=100.0,
                 ending_nav=90.0,
             )
-            # Stable symbol ordering makes XRP the final same-timestamp shared
-            # observation. The day-one close is 113, not next-day 90.
             self.assertAlmostEqual(daily["2024-03-01"], 0.13)
             self.assertAlmostEqual(daily["2024-03-02"], 90.0 / 113.0 - 1.0)
 
