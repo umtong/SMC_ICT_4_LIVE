@@ -13,7 +13,7 @@ permissions:
 jobs:
   export-liquidation-reference:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 25
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -27,6 +27,7 @@ jobs:
           set -euo pipefail
           smc4 doctor
           python - <<'PY'
+          from concurrent.futures import ThreadPoolExecutor, as_completed
           from datetime import date, timedelta
           from hashlib import sha256
           from pathlib import Path
@@ -45,9 +46,13 @@ jobs:
                       h.update(block)
               return h.hexdigest()
 
-          def checked(url: str, target: Path) -> bool:
-              target.parent.mkdir(parents=True, exist_ok=True)
+          def checked(item: dict[str, str]) -> tuple[dict[str, str], bool]:
+              period, symbol, stamp = item["period"], item["symbol"], item["day"]
+              name = f"{symbol}-liquidationSnapshot-{stamp}.zip"
+              target = root / period / symbol / name
               checksum = target.with_name(target.name + ".CHECKSUM")
+              target.parent.mkdir(parents=True, exist_ok=True)
+              url = f"{base}/{symbol}/{name}"
               try:
                   urllib.request.urlretrieve(url, target)
                   urllib.request.urlretrieve(url + ".CHECKSUM", checksum)
@@ -55,13 +60,13 @@ jobs:
                   if exc.code == 404:
                       target.unlink(missing_ok=True)
                       checksum.unlink(missing_ok=True)
-                      return False
+                      return item, False
                   raise
               expected = checksum.read_text(encoding="utf-8").split()[0].lower()
               actual = digest(target)
               if actual != expected:
                   raise RuntimeError(f"checksum mismatch: {target}")
-              return True
+              return item, True
 
           symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
           periods = {
@@ -70,25 +75,31 @@ jobs:
               "week_3": (date(2023, 9, 6), date(2023, 9, 14), symbols),
               "btc_30d": (date(2024, 2, 28), date(2024, 3, 30), ("BTCUSDT",)),
           }
-          present = []
-          missing = []
+          requests: list[dict[str, str]] = []
           for period, (start, end, period_symbols) in periods.items():
               for symbol in period_symbols:
                   day = start
                   while day <= end:
-                      stamp = day.isoformat()
-                      name = f"{symbol}-liquidationSnapshot-{stamp}.zip"
-                      target = root / period / symbol / name
-                      url = f"{base}/{symbol}/{name}"
-                      item = {"period": period, "symbol": symbol, "day": stamp}
-                      (present if checked(url, target) else missing).append(item)
+                      requests.append({"period": period, "symbol": symbol, "day": day.isoformat()})
                       day += timedelta(days=1)
+
+          present: list[dict[str, str]] = []
+          missing: list[dict[str, str]] = []
+          with ThreadPoolExecutor(max_workers=16) as pool:
+              futures = [pool.submit(checked, item) for item in requests]
+              for future in as_completed(futures):
+                  item, exists = future.result()
+                  (present if exists else missing).append(item)
+
+          present.sort(key=lambda x: (x["period"], x["symbol"], x["day"]))
+          missing.sort(key=lambda x: (x["period"], x["symbol"], x["day"]))
           (root / "availability.json").write_text(
               json.dumps({"present": present, "missing": missing}, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
           )
           if not present:
               raise RuntimeError("no historical liquidation reference files available")
+          print(json.dumps({"present": len(present), "missing": len(missing)}, sort_keys=True))
           PY
       - uses: actions/upload-artifact@v4
         with:
