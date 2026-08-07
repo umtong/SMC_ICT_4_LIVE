@@ -57,10 +57,11 @@ DEFAULT_CONFIG_PATH = (
 DEFAULT_PATTERN_CONFIG = Path(__file__).resolve().parent / "config_range_fvg.json"
 
 _ACTIVE_ABLATION = BASE_ABLATION
+_ACTIVE_CONFIG_PATH: Path | None = None
 
 
 def _config_path() -> Path:
-    return DEFAULT_CONFIG_PATH.resolve()
+    return (_ACTIVE_CONFIG_PATH or DEFAULT_CONFIG_PATH).resolve()
 
 
 def _load_payload() -> dict[str, Any]:
@@ -353,11 +354,13 @@ def run_suite(
     reuse_first_dir: Path | None = None,
     ablation: str = BASE_ABLATION,
 ) -> dict[str, Any]:
-    global _ACTIVE_ABLATION
+    global _ACTIVE_ABLATION, _ACTIVE_CONFIG_PATH
     if ablation not in ABLATIONS:
         raise ValueError(f"unsupported quote-resiliency ablation: {ablation!r}")
     previous = _ACTIVE_ABLATION
+    previous_config_path = _ACTIVE_CONFIG_PATH
     _ACTIVE_ABLATION = ablation
+    _ACTIVE_CONFIG_PATH = config_path.resolve()
     try:
         return execution.runner.base_runner.run_suite(
             config_path=config_path,
@@ -370,6 +373,7 @@ def run_suite(
         )
     finally:
         _ACTIVE_ABLATION = previous
+        _ACTIVE_CONFIG_PATH = previous_config_path
 
 
 def main() -> int:
