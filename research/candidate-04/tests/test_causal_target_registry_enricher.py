@@ -135,7 +135,7 @@ class EnrichmentTests(RegistryFixture):
             enriched[0]["details"],
         )
 
-    def test_old_untouched_completed_day_high_enriches_missing_target(self) -> None:
+    def test_old_untouched_completed_calendar_high_enriches_missing_target(self) -> None:
         data = self.data(rows=3000)
         data.iloc[100, data.columns.get_loc("high")] = 130.0
         signal_index = 2500
@@ -160,7 +160,12 @@ class EnrichmentTests(RegistryFixture):
         self.assertEqual(details["causal_target_reference"], 130.0)
         self.assertTrue(
             details["causal_target_source"].startswith(
-                "completed_previous_day_"
+                (
+                    "completed_parent_session_",
+                    "completed_previous_day_",
+                    "completed_previous_week_",
+                    "causal_pivot_pool_",
+                )
             )
         )
         self.assertLess(
