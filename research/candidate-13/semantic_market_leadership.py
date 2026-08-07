@@ -1,10 +1,11 @@
 """Mutually exclusive cross-market semantics for Candidate 13.
 
 FAR is a moderate counter-trend failed auction with unanimous peer reclaim.
-AAC is synchronized accepted repricing: every peer participates, the candidate
-has its own efficient volatility-normalized displacement, and it is not the
-last market to move.  Quote-notional leadership or rank one is not required;
-that would confuse persistent price discovery with a single-minute race.
+AAC is synchronized accepted repricing in the direction already controlling
+both the candidate's and the market's completed 24-hour auction.  This makes
+the two states mutually exclusive instead of allowing a counter-trend break to
+be called continuation merely because peers moved during the confirmation
+window.
 """
 from __future__ import annotations
 
@@ -56,6 +57,8 @@ def semantic_decision(
             return _with(decision, False, "SEMANTIC_FAR_WEAK_LOCAL_DISPLACEMENT")
         if decision.event_direction_rank >= symbol_count:
             return _with(decision, False, "SEMANTIC_FAR_EVENT_LAGGARD")
+        # FAR is a reversal of the completed auction, not continuation with a
+        # different local detector label.
         if candidate_trend >= 0.0 or market_trend >= 0.0:
             return _with(decision, False, "SEMANTIC_FAR_NOT_COUNTERTREND")
         if (
@@ -84,12 +87,12 @@ def semantic_decision(
             or decision.event_standardized_displacement < minimum_event_displacement
         ):
             return _with(decision, False, "SEMANTIC_AAC_INSUFFICIENT_EVENT_DISPLACEMENT")
-        if (
-            candidate_trend <= severe_adverse_trend_score
-            and market_trend <= severe_adverse_trend_score
-        ):
-            return _with(decision, False, "SEMANTIC_AAC_UNRESOLVED_ADVERSE_AUCTION")
-        return _with(decision, True, "SEMANTIC_AAC_SYNCHRONIZED_NONLAGGARD")
+        # Acceptance continuation must agree with both the candidate's and the
+        # cross-market completed trailing auction.  Counter-trend acceptance is
+        # a separate, unproven hypothesis and fails closed.
+        if candidate_trend <= 0.0 or market_trend <= 0.0:
+            return _with(decision, False, "SEMANTIC_AAC_REQUIRES_ALIGNED_TRAILING_AUCTION")
+        return _with(decision, True, "SEMANTIC_AAC_ALIGNED_SYNCHRONIZED_NONLAGGARD")
 
     return _with(decision, False, "SEMANTIC_UNSUPPORTED_SCENARIO")
 

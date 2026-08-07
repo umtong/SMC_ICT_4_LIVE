@@ -6,6 +6,9 @@ from market_leadership import LeadershipDecision
 from semantic_market_leadership import semantic_decision
 
 
+SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+
+
 class SemanticLeadershipTests(unittest.TestCase):
     def decision(self, **updates):
         base = dict(
@@ -18,12 +21,7 @@ class SemanticLeadershipTests(unittest.TestCase):
             sweep_ts_ns=1,
             confirmation_ts_ns=2,
             peer_returns={"BTCUSDT": -0.004, "ETHUSDT": -0.003, "XRPUSDT": -0.002},
-            directional_returns={
-                "BTCUSDT": -0.01,
-                "ETHUSDT": -0.01,
-                "SOLUSDT": -0.02,
-                "XRPUSDT": -0.01,
-            },
+            directional_returns={symbol: -0.01 for symbol in SYMBOLS},
             directional_trend_scores={
                 "BTCUSDT": -1.19,
                 "ETHUSDT": -0.15,
@@ -57,13 +55,13 @@ class SemanticLeadershipTests(unittest.TestCase):
         self.assertEqual(result.reason, "SEMANTIC_FAR_MODERATE_COUNTERTREND_UNANIMOUS")
 
     def test_far_rejects_trend_following_state(self):
-        scores = {symbol: value + 2.0 for symbol, value in self.decision().directional_trend_scores.items()}
+        scores = {symbol: 0.5 for symbol in SYMBOLS}
         result = self.classify(self.decision(directional_trend_scores=scores))
         self.assertFalse(result.approved)
         self.assertEqual(result.reason, "SEMANTIC_FAR_NOT_COUNTERTREND")
 
     def test_far_rejects_severely_unresolved_countertrend(self):
-        scores = {symbol: -2.0 for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")}
+        scores = {symbol: -2.0 for symbol in SYMBOLS}
         result = self.classify(self.decision(directional_trend_scores=scores))
         self.assertFalse(result.approved)
         self.assertEqual(result.reason, "SEMANTIC_FAR_UNRESOLVED_ADVERSE_AUCTION")
@@ -74,21 +72,42 @@ class SemanticLeadershipTests(unittest.TestCase):
         self.assertFalse(result.approved)
         self.assertEqual(result.reason, "SEMANTIC_FAR_REQUIRES_UNANIMOUS_PEER_RECLAIM")
 
-    def test_aac_accepts_own_efficient_nonlaggard_move(self):
-        result = self.classify(self.decision(scenario="AAC", event_direction_rank=3))
+    def test_aac_accepts_aligned_efficient_nonlaggard_move(self):
+        scores = {symbol: value for symbol, value in zip(SYMBOLS, (0.10, 0.42, 0.23, 0.40), strict=True)}
+        result = self.classify(
+            self.decision(
+                scenario="AAC",
+                event_direction_rank=3,
+                directional_trend_scores=scores,
+            ),
+        )
         self.assertTrue(result.approved)
-        self.assertEqual(result.reason, "SEMANTIC_AAC_SYNCHRONIZED_NONLAGGARD")
+        self.assertEqual(result.reason, "SEMANTIC_AAC_ALIGNED_SYNCHRONIZED_NONLAGGARD")
+
+    def test_aac_rejects_countertrend_attempted_acceptance(self):
+        result = self.classify(self.decision(scenario="AAC", event_direction_rank=1))
+        self.assertFalse(result.approved)
+        self.assertEqual(result.reason, "SEMANTIC_AAC_REQUIRES_ALIGNED_TRAILING_AUCTION")
 
     def test_aac_rejects_last_mover(self):
-        result = self.classify(self.decision(scenario="AAC", event_direction_rank=4))
+        scores = {symbol: 0.5 for symbol in SYMBOLS}
+        result = self.classify(
+            self.decision(
+                scenario="AAC",
+                event_direction_rank=4,
+                directional_trend_scores=scores,
+            ),
+        )
         self.assertFalse(result.approved)
         self.assertEqual(result.reason, "SEMANTIC_AAC_EVENT_LAGGARD")
 
     def test_aac_rejects_inefficient_borrowed_peer_move(self):
+        scores = {symbol: 0.5 for symbol in SYMBOLS}
         result = self.classify(
             self.decision(
                 scenario="AAC",
                 event_direction_rank=2,
+                directional_trend_scores=scores,
                 event_path_efficiency=0.077,
                 event_standardized_displacement=0.67,
             ),

@@ -1,16 +1,16 @@
 """Candidate 13 structural execution semantics.
 
-A failed auction and an accepted auction have different invalidations.  FAR is
-invalidated beyond the raid extreme and therefore retains the inherited plan.
-AAC is invalidated only when price is reaccepted through the original external
-liquidity boundary; a local defended pullback may be raided without negating the
-larger accepted repricing.
+FAR and AAC carry different execution hazards.
 
-AAC therefore rests at the already-known defended pullback pivot, protects
-beyond the source boundary, and remains live for twelve completed structure
-bars.  FAR keeps its price logic but receives the same structure-bar time unit
-correction.  No target, fee, risk fraction, leverage, position cap or fill rule
-is changed.
+* FAR has already reclaimed the raid, shifted local structure and displaced in
+  the same direction as all peers.  When the confirmation close still offers
+  the configured after-cost structural R, it enters immediately with a
+  Nautilus MARKET parent; otherwise the inherited passive void order remains.
+* AAC rests at the already-known defended pullback pivot and is invalidated only
+  by reacceptance through the original external-liquidity boundary.
+
+Targets, exact 3% NAV sizing, global position arbitration, fees, stop-market
+children and Nautilus accounting are unchanged.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from logic import (
     Scenario,
     TradePlan,
 )
+from semantic_execution import MARKET_ENTRY_SENTINEL_NS
 
 
 BASE_COSTED_LIMIT_PLAN = CausalAuctionEngine._costed_limit_plan
@@ -49,6 +50,28 @@ def aac_boundary_prices(
     return entry, stop
 
 
+def costed_market_economics(
+    *,
+    direction: Direction,
+    entry: float,
+    stop: float,
+    target: float,
+    taker_rate: float,
+    target_maker_rate: float,
+) -> tuple[float, float, float, float]:
+    """Return risk, after-cost loss, after-cost gain and net structural R."""
+    if direction == Direction.LONG:
+        risk = entry - stop
+        gross_gain = target - entry
+    else:
+        risk = stop - entry
+        gross_gain = entry - target
+    loss = risk + entry * taker_rate + stop * taker_rate
+    net_gain = gross_gain - entry * taker_rate - target * target_maker_rate
+    net_r = net_gain / loss if loss > 0.0 else float("-inf")
+    return risk, loss, net_gain, net_r
+
+
 def _structure_expiry(self: CausalAuctionEngine, confirmation_ts_ns: int) -> tuple[int, int]:
     minutes = self.config.retrace_expiry_bars * self.config.internal_tf_bars
     return confirmation_ts_ns + minutes * MINUTE_NS, minutes
@@ -57,8 +80,7 @@ def _structure_expiry(self: CausalAuctionEngine, confirmation_ts_ns: int) -> tup
 def _amend_last_plan_event(
     self: CausalAuctionEngine,
     scenario_id: str,
-    expire_ts_ns: int,
-    structural_minutes: int,
+    updates: dict[str, object],
 ) -> None:
     for event in reversed(self.events):
         if getattr(event, "scenario_id", None) != scenario_id:
@@ -67,32 +89,107 @@ def _amend_last_plan_event(
             continue
         details = getattr(event, "details", None)
         if isinstance(details, dict):
-            details["expire_ts_ns"] = expire_ts_ns
-            details["entry_expiry_structure_minutes"] = structural_minutes
+            details.update(updates)
         break
 
 
-def semantic_costed_limit_plan(
+def _far_plan(
     self: CausalAuctionEngine,
     a: Auction,
     confirmation_bar: BarObs,
     reason: str,
 ) -> TradePlan | None:
-    if a.scenario != Scenario.AAC:
-        inherited = BASE_COSTED_LIMIT_PLAN(self, a, confirmation_bar, reason)
-        if inherited is None:
-            return None
-        expire_ts_ns, structural_minutes = _structure_expiry(self, confirmation_bar.ts_ns)
-        details = dict(inherited.details)
-        details["entry_expiry_structure_minutes"] = structural_minutes
-        plan = replace(
-            inherited,
-            expire_ts_ns=expire_ts_ns,
+    inherited = BASE_COSTED_LIMIT_PLAN(self, a, confirmation_bar, reason)
+    if inherited is None:
+        return None
+
+    expire_ts_ns, structural_minutes = _structure_expiry(self, confirmation_bar.ts_ns)
+    passive_details = dict(inherited.details)
+    passive_details["entry_expiry_structure_minutes"] = structural_minutes
+    passive = replace(
+        inherited,
+        expire_ts_ns=expire_ts_ns,
+        details=passive_details,
+    )
+
+    entry = confirmation_bar.close
+    risk, loss, net_gain, net_r = costed_market_economics(
+        direction=a.direction,
+        entry=entry,
+        stop=inherited.stop_price,
+        target=inherited.target_price,
+        taker_rate=self.config.effective_taker_rate,
+        target_maker_rate=self.config.effective_maker_rate,
+    )
+    causal_order = (
+        inherited.stop_price < entry < inherited.target_price
+        if a.direction == Direction.LONG
+        else inherited.target_price < entry < inherited.stop_price
+    )
+    immediate = (
+        causal_order
+        and risk > 0.0
+        and risk / a.atr >= self.config.min_stop_atr
+        and net_gain > 0.0
+        and net_r >= self.config.min_net_r
+    )
+
+    if immediate:
+        details = dict(passive.details)
+        details.update(
+            {
+                "original_passive_entry": inherited.expected_entry,
+                "entry_model": "CONFIRMED_RECLAIM_DISPLACEMENT_MARKET",
+                "entry_cost_assumption": "TAKER",
+                "entry_expiry_structure_minutes": 0,
+                "market_parent_sentinel_ns": MARKET_ENTRY_SENTINEL_NS,
+            },
+        )
+        market = replace(
+            passive,
+            expected_entry=entry,
+            loss_per_unit=loss,
+            gain_per_unit=net_gain,
+            net_r=net_r,
+            reason_code="FAR_CONFIRMED_RECLAIM_DISPLACEMENT_MARKET",
+            expire_ts_ns=MARKET_ENTRY_SENTINEL_NS,
+            entry_order_type="MARKET",
+            entry_post_only=False,
             details=details,
         )
-        _amend_last_plan_event(self, plan.scenario_id, expire_ts_ns, structural_minutes)
-        return plan
+        _amend_last_plan_event(
+            self,
+            market.scenario_id,
+            {
+                "execution_reclassified": True,
+                "entry_order_type": "MARKET",
+                "entry_post_only": False,
+                "expected_entry": entry,
+                "original_passive_entry": inherited.expected_entry,
+                "net_r": net_r,
+                "entry_cost_assumption": "TAKER",
+                "expire_ts_ns": MARKET_ENTRY_SENTINEL_NS,
+            },
+        )
+        return market
 
+    _amend_last_plan_event(
+        self,
+        passive.scenario_id,
+        {
+            "expire_ts_ns": expire_ts_ns,
+            "entry_expiry_structure_minutes": structural_minutes,
+            "market_entry_rejected_net_r": net_r,
+        },
+    )
+    return passive
+
+
+def _aac_plan(
+    self: CausalAuctionEngine,
+    a: Auction,
+    confirmation_bar: BarObs,
+) -> TradePlan | None:
     assert a.direction is not None and a.scenario is not None
     assert a.target_price is not None
     if a.pullback_extreme is None:
@@ -205,6 +302,19 @@ def semantic_costed_limit_plan(
     )
     a.state = "PENDING_ENTRY"
     return plan
+
+
+def semantic_costed_limit_plan(
+    self: CausalAuctionEngine,
+    a: Auction,
+    confirmation_bar: BarObs,
+    reason: str,
+) -> TradePlan | None:
+    if a.scenario == Scenario.FAR:
+        return _far_plan(self, a, confirmation_bar, reason)
+    if a.scenario == Scenario.AAC:
+        return _aac_plan(self, a, confirmation_bar)
+    return BASE_COSTED_LIMIT_PLAN(self, a, confirmation_bar, reason)
 
 
 def install() -> None:
