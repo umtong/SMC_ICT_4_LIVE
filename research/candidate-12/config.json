@@ -1,14 +1,14 @@
 {
-  "schema_version": 3,
-  "candidate": "candidate-12-ny-london-buy-side-raid-reversal",
+  "schema_version": 4,
+  "candidate": "candidate-12-completed-london-range-auction",
   "selection": {
     "seed": 2026080712,
-    "selection_rule": "Frozen seven-day starts selected before candidate-12 market inspection; W1 is the only design gate until it meets frequency, post-cost growth, win-rate, and payoff requirements",
+    "selection_rule": "Frozen seven-day starts selected before candidate-12 market inspection; after W2 diagnosed I4, I5 returns to W1 and can advance only to previously untouched W4",
     "warmup_days": 4,
     "evaluation_days": 7,
     "design_week": "W1",
-    "confirmation_weeks": ["W2", "W3"],
-    "untouched_weeks": ["W4", "W5", "W6"],
+    "diagnostic_week": "W2",
+    "confirmation_week": "W4",
     "weeks": {
       "W1": {"start": "2023-06-25", "end_exclusive": "2023-07-02"},
       "W2": {"start": "2023-09-24", "end_exclusive": "2023-10-01"},
@@ -32,9 +32,9 @@
     "margin_maint": "0.025"
   },
   "execution": {
-    "entry_order": "LIMIT_GTD_MARKETABLE_PROTECTED_AT_LONDON_HIGH",
-    "take_profit_order": "POST_ONLY_LIMIT_GTC_AT_LONDON_DISCOUNT_OBJECTIVE",
-    "stop_order": "STOP_MARKET_GTC_BEYOND_OBSERVED_RAID_EXTREME",
+    "entry_order": "MARKET_AFTER_COMPLETED_CAUSAL_CONFIRMATION",
+    "take_profit_order": "POST_ONLY_LIMIT_GTC_AT_STRUCTURAL_RANGE_OBJECTIVE",
+    "stop_order": "STOP_MARKET_GTC_AT_SCENARIO_INVALIDATION",
     "effective_maker_rate": "0.0004",
     "effective_taker_rate": "0.0008",
     "prob_fill_on_limit": 0.35,
@@ -42,7 +42,7 @@
     "random_seed": 2026080712,
     "bar_adaptive_high_low_ordering": true,
     "tick_slippage_units_in_risk_budget": 2.0,
-    "note": "NautilusTrader exclusively owns fills, contingent orders, fees, margin, positions, and NAV. The entry limit may be marketable, so risk sizing reserves taker entry cost. Effective rates reserve spread, impact, and funding uncertainty."
+    "note": "NautilusTrader exclusively owns fills, contingent orders, fees, margin, positions, and NAV. Risk sizing reserves taker entry and stop costs, maker target cost, slippage, and market impact/funding uncertainty."
   },
   "logic": {
     "bar_minutes": 5,
@@ -52,12 +52,15 @@
     "ny_end_minute": 1080,
     "reclaim_max_bars": 3,
     "confirmation_bars": 1,
-    "entry_expiry_minutes": 15,
-    "sweep_min_ticks": 1,
+    "high_reclaim_displacement_atr": 1.0,
+    "acceptance_displacement_atr": 1.0,
+    "acceptance_close_location": 0.65,
+    "low_acceptance_deep_discount": 0.25,
     "stop_buffer_atr": 0.8,
-    "target_range_fraction": 0.6,
+    "rejection_target_fraction": 0.6,
+    "acceptance_range_projection": 1.0,
     "max_stop_atr": 5.0,
-    "min_net_r": 0.5,
+    "min_net_r": 0.65,
     "risk_fraction": 0.03,
     "effective_maker_rate": 0.0004,
     "effective_taker_rate": 0.0008,

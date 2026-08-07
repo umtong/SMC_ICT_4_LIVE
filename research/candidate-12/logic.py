@@ -1,21 +1,24 @@
-"""Causal New-York raid of completed London buy-side liquidity.
+"""Causal completed-London-range auction state machine.
 
-Candidate 12 deliberately models one economic scenario only:
+One completed London range can resolve through four mutually exclusive paths:
 
-    completed London range -> New-York raid above London high -> completed
-    close back inside -> one full confirmation bar -> protected sell limit at
-    the raided boundary -> invalidation beyond the observed raid extreme ->
-    structural objective inside the completed London dealing range.
+* low-side raid rejected in London discount -> long to the opposite boundary;
+* high-side raid rejected by upper-range context or forceful reclaim -> short
+  into the completed range;
+* weak high-side rejection fails and price accepts above the raid extreme ->
+  long one completed-range projection;
+* a deep-discount London low is accepted below its raid extreme -> short one
+  completed-range projection.
 
-The state machine only emits trade plans. NautilusTrader remains the sole
-matching, fill, fee, margin, position, and account-NAV authority.
+The module emits causal trade plans only. NautilusTrader remains the only
+matching, fill, fee, margin, position and account-NAV authority.
 """
 from __future__ import annotations
 
 from collections import Counter, deque
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 from enum import Enum
 import math
 from typing import Any, Deque
@@ -31,8 +34,16 @@ class Direction(str, Enum):
     SHORT = "SHORT"
 
 
+class BoundarySide(str, Enum):
+    HIGH = "HIGH"
+    LOW = "LOW"
+
+
 class ScenarioKind(str, Enum):
-    NY_LONDON_HIGH_RAID = "NY_LONDON_HIGH_RAID"
+    LONDON_HIGH_REJECTION = "LONDON_HIGH_REJECTION"
+    LONDON_LOW_REJECTION = "LONDON_LOW_REJECTION"
+    LONDON_HIGH_ACCEPTANCE = "LONDON_HIGH_ACCEPTANCE"
+    LONDON_LOW_ACCEPTANCE = "LONDON_LOW_ACCEPTANCE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,12 +79,15 @@ class LogicConfig:
     ny_end_minute: int = 1080
     reclaim_max_bars: int = 3
     confirmation_bars: int = 1
-    entry_expiry_minutes: int = 15
-    sweep_min_ticks: int = 1
+    high_reclaim_displacement_atr: float = 1.0
+    acceptance_displacement_atr: float = 1.0
+    acceptance_close_location: float = 0.65
+    low_acceptance_deep_discount: float = 0.25
     stop_buffer_atr: float = 0.80
-    target_range_fraction: float = 0.60
+    rejection_target_fraction: float = 0.60
+    acceptance_range_projection: float = 1.0
     max_stop_atr: float = 5.0
-    min_net_r: float = 0.50
+    min_net_r: float = 0.65
     risk_fraction: float = 0.03
     effective_maker_rate: float = 0.0004
     effective_taker_rate: float = 0.0008
@@ -81,25 +95,24 @@ class LogicConfig:
     price_increment: float = 0.1
 
     def __post_init__(self) -> None:
-        for name in (
-            "bar_minutes", "atr_period", "reclaim_max_bars", "confirmation_bars",
-            "entry_expiry_minutes", "sweep_min_ticks",
-        ):
+        for name in ("bar_minutes", "atr_period", "reclaim_max_bars", "confirmation_bars"):
             if int(getattr(self, name)) <= 0:
                 raise ValueError(f"{name} must be positive")
         if not 0 < self.risk_fraction <= 0.03:
             raise ValueError("risk_fraction must be within (0, 0.03]")
-        if not 0.5 <= self.target_range_fraction <= 0.618:
-            raise ValueError("target_range_fraction must stay in the equilibrium-to-discount band")
+        if not 0.5 <= self.rejection_target_fraction <= 0.618:
+            raise ValueError("rejection target must remain equilibrium-to-discount")
+        if not 0 < self.low_acceptance_deep_discount < 0.5:
+            raise ValueError("deep-discount boundary must be below equilibrium")
+        if not 0.5 < self.acceptance_close_location < 1:
+            raise ValueError("acceptance close location must be upper-range")
         if self.stop_buffer_atr <= 0 or self.max_stop_atr <= self.stop_buffer_atr:
             raise ValueError("invalid stop-distance bounds")
         if self.price_increment <= 0:
             raise ValueError("price_increment must be positive")
-        if not 0 <= self.min_net_r:
+        if self.min_net_r < 0:
             raise ValueError("min_net_r cannot be negative")
-        if not (
-            0 <= self.london_start_minute < self.london_end_minute < self.ny_end_minute <= 1440
-        ):
+        if not (0 <= self.london_start_minute < self.london_end_minute < self.ny_end_minute <= 1440):
             raise ValueError("invalid session boundaries")
 
 
@@ -115,7 +128,6 @@ class TradePlan:
     loss_per_unit: float
     expected_profit_per_unit: float
     net_r: float
-    expire_ts_ns: int
     details: dict[str, Any]
 
 
@@ -130,7 +142,7 @@ class SizeDecision:
 
 
 class RiskSizer:
-    """Exact current-NAV loss-budget sizing, with margin only as feasibility."""
+    """Exact current-NAV loss-budget sizing; margin is only feasibility."""
 
     def __init__(self, risk_fraction: float) -> None:
         fraction = Decimal(str(risk_fraction))
@@ -171,9 +183,7 @@ class RiskSizer:
             return SizeDecision(False, quantity, budget, expected, zero, "RISK_BUDGET_EXCEEDED")
         required_margin = notional * margin_init
         if required_margin > free_balance:
-            return SizeDecision(
-                False, quantity, budget, expected, required_margin, "INSUFFICIENT_MARGIN"
-            )
+            return SizeDecision(False, quantity, budget, expected, required_margin, "INSUFFICIENT_MARGIN")
         return SizeDecision(True, quantity, budget, expected, required_margin, "OK")
 
 
@@ -187,22 +197,42 @@ class FiveBar:
     volume: float
     taker_buy_volume: float
 
+    @property
+    def body(self) -> float:
+        return abs(self.close - self.open)
+
+    @property
+    def range(self) -> float:
+        return self.high - self.low
+
+    @property
+    def close_location(self) -> float:
+        if self.range <= 0:
+            return 0.5
+        return (self.close - self.low) / self.range
+
 
 @dataclass(frozen=True, slots=True)
 class LondonRange:
     day_bucket: int
     high: float
     low: float
+    close: float
     observed_ts_ns: int
 
     @property
     def width(self) -> float:
         return self.high - self.low
 
+    @property
+    def close_location(self) -> float:
+        return (self.close - self.low) / self.width
+
 
 @dataclass(slots=True)
-class RaidEpisode:
+class BoundaryEpisode:
     scenario_id: str
+    side: BoundarySide
     source: LondonRange
     sweep_index: int
     sweep_ts_ns: int
@@ -210,12 +240,13 @@ class RaidEpisode:
     phase: str = "WAIT_RECLAIM"
     reclaim_index: int | None = None
     reclaim_ts_ns: int | None = None
+    reclaim_bar: FiveBar | None = None
     atr_at_reclaim: float | None = None
     confirm_index: int | None = None
 
 
 class CausalLiquidityAuctionEngine:
-    """One-plan-per-weekday London-high raid/reclaim state machine."""
+    """Completed-range rejection/acceptance state machine."""
 
     def __init__(self, config: LogicConfig, instrument_id: str) -> None:
         self.config = config
@@ -232,10 +263,11 @@ class CausalLiquidityAuctionEngine:
         self._day_bucket: int | None = None
         self._london_high = -math.inf
         self._london_low = math.inf
+        self._london_close: float | None = None
         self._london: LondonRange | None = None
         self._ranges: list[LondonRange] = []
-        self._episode: RaidEpisode | None = None
-        self._day_done = False
+        self._episodes: dict[BoundarySide, BoundaryEpisode] = {}
+        self._done_sides: set[BoundarySide] = set()
         self._scenario_counter = 0
 
     @property
@@ -273,11 +305,7 @@ class CausalLiquidityAuctionEngine:
                 previous_state=previous_state,
                 next_state=next_state,
                 reason_code=reason_code,
-                reference_price=(
-                    None
-                    if reference_price is None
-                    else f"{reference_price:.12f}".rstrip("0").rstrip(".")
-                ),
+                reference_price=(None if reference_price is None else f"{reference_price:.12f}".rstrip("0").rstrip(".")),
                 details=details or {},
             )
         )
@@ -304,25 +332,27 @@ class CausalLiquidityAuctionEngine:
         day_bucket = (bar.ts_ns - 1) // NS_DAY
         if self._day_bucket == day_bucket:
             return
-        if self._episode is not None:
-            self._terminate_episode(bar.ts_ns, "DAY_ROLLOVER")
+        for side in tuple(self._episodes):
+            self._terminate(side, bar.ts_ns, "DAY_ROLLOVER")
         self._day_bucket = day_bucket
         self._london_high = -math.inf
         self._london_low = math.inf
+        self._london_close = None
         self._london = None
-        self._episode = None
-        self._day_done = False
+        self._episodes.clear()
+        self._done_sides.clear()
 
     def _freeze_london(self, bar: FiveBar) -> None:
         if self._day_bucket is None or not math.isfinite(self._london_high) or not math.isfinite(self._london_low):
             return
-        if self._london_high <= self._london_low:
+        if self._london_high <= self._london_low or self._london_close is None:
             self.skips["INVALID_LONDON_RANGE"] += 1
             return
         self._london = LondonRange(
             day_bucket=self._day_bucket,
             high=self._london_high,
             low=self._london_low,
+            close=self._london_close,
             observed_ts_ns=bar.ts_ns,
         )
         self._ranges.append(self._london)
@@ -338,44 +368,97 @@ class CausalLiquidityAuctionEngine:
             details={
                 "high": self._london.high,
                 "low": self._london.low,
+                "close": self._london.close,
                 "width": self._london.width,
+                "close_location": self._london.close_location,
                 "weekday": self._weekday(self._day_bucket),
             },
         )
 
-    def _start_raid(self, bar: FiveBar, atr: float) -> None:
+    def _start_episode(self, side: BoundarySide, bar: FiveBar, atr: float) -> None:
         assert self._london is not None
         self._scenario_counter += 1
-        scenario_id = f"{self.instrument_id}-NY-LH-RAID-{self._scenario_counter:06d}"
-        self._episode = RaidEpisode(
+        scenario_id = f"{self.instrument_id}-LONDON-{side.value}-{self._scenario_counter:06d}"
+        extreme = bar.high if side is BoundarySide.HIGH else bar.low
+        episode = BoundaryEpisode(
             scenario_id=scenario_id,
+            side=side,
             source=self._london,
             sweep_index=self._five_index,
             sweep_ts_ns=bar.ts_ns,
-            extreme=bar.high,
+            extreme=extreme,
         )
-        self.scenario_counts[ScenarioKind.NY_LONDON_HIGH_RAID.value] += 1
+        self._episodes[side] = episode
+        self.scenario_counts[f"LONDON_{side.value}_AUCTION"] += 1
+        boundary = self._london.high if side is BoundarySide.HIGH else self._london.low
         self._emit(
             scenario_id=scenario_id,
-            event_type="LONDON_HIGH_RAID_DETECTED",
+            event_type="LONDON_BOUNDARY_RAID_DETECTED",
             event_time_ns=bar.ts_ns,
             observed_time_ns=bar.ts_ns,
             next_state="WAIT_RECLAIM",
-            reason_code="NEW_YORK_TRADED_ABOVE_COMPLETED_LONDON_HIGH",
-            reference_price=self._london.high,
+            reason_code=f"NEW_YORK_TRADED_BEYOND_COMPLETED_LONDON_{side.value}",
+            reference_price=boundary,
             details={
+                "side": side.value,
                 "london_high": self._london.high,
                 "london_low": self._london.low,
-                "raid_high": bar.high,
-                "penetration_atr": (bar.high - self._london.high) / atr,
+                "london_close_location": self._london.close_location,
+                "raid_extreme": extreme,
+                "penetration_atr": abs(extreme - boundary) / atr,
             },
         )
 
-    def _terminate_episode(self, ts_ns: int, reason: str) -> None:
-        episode = self._episode
+    def _mark_reclaim(self, episode: BoundaryEpisode, bar: FiveBar, atr: float) -> None:
+        episode.phase = "WAIT_CONFIRM"
+        episode.reclaim_index = self._five_index
+        episode.reclaim_ts_ns = bar.ts_ns
+        episode.reclaim_bar = bar
+        episode.atr_at_reclaim = atr
+        episode.confirm_index = self._five_index + self.config.confirmation_bars
+        boundary = episode.source.high if episode.side is BoundarySide.HIGH else episode.source.low
+        self._emit(
+            scenario_id=episode.scenario_id,
+            event_type="BOUNDARY_RECLAIM_OBSERVED",
+            event_time_ns=episode.sweep_ts_ns,
+            observed_time_ns=bar.ts_ns,
+            next_state="WAIT_CONFIRM",
+            reason_code="COMPLETED_BAR_CLOSED_BACK_INSIDE_LONDON_RANGE",
+            reference_price=boundary,
+            details={
+                "side": episode.side.value,
+                "raid_extreme": episode.extreme,
+                "bars_from_sweep": self._five_index - episode.sweep_index,
+                "atr_at_reclaim": atr,
+                "reclaim_body_atr": bar.body / atr,
+                "reclaim_direction": "UP" if bar.close > bar.open else "DOWN",
+            },
+        )
+
+    def _wait_acceptance(self, episode: BoundaryEpisode, bar: FiveBar, reason: str) -> None:
+        episode.phase = "WAIT_ACCEPT"
+        boundary = episode.source.high if episode.side is BoundarySide.HIGH else episode.source.low
+        self._emit(
+            scenario_id=episode.scenario_id,
+            event_type="REJECTION_NOT_CONFIRMED",
+            event_time_ns=episode.sweep_ts_ns,
+            observed_time_ns=bar.ts_ns,
+            next_state="WAIT_ACCEPT",
+            reason_code=reason,
+            reference_price=boundary,
+            details={
+                "side": episode.side.value,
+                "raid_extreme": episode.extreme,
+                "london_close_location": episode.source.close_location,
+            },
+        )
+
+    def _terminate(self, side: BoundarySide, ts_ns: int, reason: str) -> None:
+        episode = self._episodes.pop(side, None)
         if episode is None:
             return
         self.skips[reason] += 1
+        boundary = episode.source.high if side is BoundarySide.HIGH else episode.source.low
         self._emit(
             scenario_id=episode.scenario_id,
             event_type="SCENARIO_INVALIDATED",
@@ -383,43 +466,62 @@ class CausalLiquidityAuctionEngine:
             observed_time_ns=ts_ns,
             next_state="TERMINAL",
             reason_code=reason,
-            reference_price=episode.source.high,
+            reference_price=boundary,
             details={"phase": episode.phase, "raid_extreme": episode.extreme},
         )
-        self._episode = None
-        self._day_done = True
+        self._done_sides.add(side)
 
-    def _costed_plan(self, episode: RaidEpisode, bar: FiveBar) -> TradePlan | None:
-        atr = episode.atr_at_reclaim
-        if atr is None or atr <= 0:
-            self.skips["ATR_UNAVAILABLE_AT_RECLAIM"] += 1
-            return None
-        source = episode.source
+    def _round_price(self, value: float, rounding: str) -> float:
         increment = Decimal(str(self.config.price_increment))
+        mode = ROUND_CEILING if rounding == "CEIL" else ROUND_DOWN
+        units = (Decimal(str(value)) / increment).to_integral_value(rounding=mode)
+        return float(units * increment)
 
-        def ceil_tick(value: float) -> float:
-            units = (Decimal(str(value)) / increment).to_integral_value(rounding=ROUND_CEILING)
-            return float(units * increment)
-
-        entry = ceil_tick(source.high)
-        # Round stop away from the position and target toward entry so sizing
-        # never benefits from price-precision rounding.
-        stop = ceil_tick(episode.extreme + self.config.stop_buffer_atr * atr)
-        target = ceil_tick(source.high - self.config.target_range_fraction * source.width)
-        stop_distance = stop - entry
-        if stop_distance <= 0 or stop_distance > self.config.max_stop_atr * atr:
+    def _build_plan(
+        self,
+        *,
+        episode: BoundaryEpisode,
+        bar: FiveBar,
+        atr: float,
+        scenario: ScenarioKind,
+        direction: Direction,
+        stop_raw: float,
+        target_raw: float,
+        reason: str,
+    ) -> TradePlan | None:
+        # A structural objective is invalid once the completed decision bar has
+        # already traded through it.  Entering afterward would reuse consumed
+        # liquidity and manufacture reward from a target which is no longer live.
+        if direction is Direction.LONG and bar.high >= target_raw:
+            self.skips["STRUCTURAL_TARGET_REACHED_BEFORE_DECISION"] += 1
+            return None
+        if direction is Direction.SHORT and bar.low <= target_raw:
+            self.skips["STRUCTURAL_TARGET_REACHED_BEFORE_DECISION"] += 1
+            return None
+        if direction is Direction.LONG:
+            entry = self._round_price(bar.close, "CEIL")
+            stop = self._round_price(stop_raw, "FLOOR")
+            target = self._round_price(target_raw, "FLOOR")
+            structural_loss = entry - stop
+            structural_profit = target - entry
+        else:
+            entry = self._round_price(bar.close, "FLOOR")
+            stop = self._round_price(stop_raw, "CEIL")
+            target = self._round_price(target_raw, "CEIL")
+            structural_loss = stop - entry
+            structural_profit = entry - target
+        if structural_loss <= 0 or structural_loss > self.config.max_stop_atr * atr:
             self.skips["INVALID_STRUCTURAL_STOP"] += 1
             return None
-        if not source.low < target < entry:
+        if structural_profit <= 0:
             self.skips["INVALID_STRUCTURAL_TARGET"] += 1
             return None
-        # A protected sell limit can be marketable; reserve taker entry cost.
         entry_cost = entry * self.config.effective_taker_rate
         stop_cost = stop * self.config.effective_taker_rate
         target_cost = target * self.config.effective_maker_rate
         slippage = self.config.tick_slippage_units * self.config.price_increment
-        loss_per_unit = stop_distance + entry_cost + stop_cost + slippage
-        expected_profit = entry - target - entry_cost - target_cost - slippage
+        loss_per_unit = structural_loss + entry_cost + stop_cost + slippage
+        expected_profit = structural_profit - entry_cost - target_cost - slippage
         if loss_per_unit <= 0 or expected_profit <= 0:
             self.skips["NON_POSITIVE_COSTED_EXPECTANCY"] += 1
             return None
@@ -429,8 +531,8 @@ class CausalLiquidityAuctionEngine:
             return None
         return TradePlan(
             scenario_id=episode.scenario_id,
-            scenario=ScenarioKind.NY_LONDON_HIGH_RAID,
-            direction=Direction.SHORT,
+            scenario=scenario,
+            direction=direction,
             observed_ts_ns=bar.ts_ns,
             expected_entry=entry,
             stop_price=stop,
@@ -438,76 +540,32 @@ class CausalLiquidityAuctionEngine:
             loss_per_unit=loss_per_unit,
             expected_profit_per_unit=expected_profit,
             net_r=net_r,
-            expire_ts_ns=bar.ts_ns + self.config.entry_expiry_minutes * NS_MINUTE,
             details={
                 "source": "COMPLETED_LONDON_RANGE",
-                "london_high": source.high,
-                "london_low": source.low,
-                "london_width": source.width,
+                "side": episode.side.value,
+                "london_high": episode.source.high,
+                "london_low": episode.source.low,
+                "london_close": episode.source.close,
+                "london_close_location": episode.source.close_location,
+                "london_width": episode.source.width,
                 "raid_extreme": episode.extreme,
                 "sweep_ts_ns": episode.sweep_ts_ns,
                 "reclaim_ts_ns": episode.reclaim_ts_ns,
-                "confirmation_ts_ns": bar.ts_ns,
-                "atr_at_reclaim": atr,
-                "stop_buffer_atr": self.config.stop_buffer_atr,
-                "target_range_fraction": self.config.target_range_fraction,
+                "decision_ts_ns": bar.ts_ns,
+                "decision_atr": atr,
                 "entry_cost_per_unit": entry_cost,
                 "stop_cost_per_unit": stop_cost,
                 "target_cost_per_unit": target_cost,
                 "slippage_allowance_per_unit": slippage,
-                "entry_semantics": "SELL_LIMIT_GTD_MARKETABLE_PROTECTED",
+                "decision_reason": reason,
+                "entry_semantics": "MARKET_AFTER_COMPLETED_CAUSAL_CONFIRMATION",
             },
         )
 
-    def _advance_episode(self, bar: FiveBar, atr: float, allow_entry: bool) -> TradePlan | None:
-        episode = self._episode
-        if episode is None:
-            return None
-        source = episode.source
-        minute = self._minute_of_day(bar.ts_ns)
-        if minute > self.config.ny_end_minute:
-            self._terminate_episode(bar.ts_ns, "NEW_YORK_WINDOW_EXPIRED")
-            return None
-
-        if episode.phase == "WAIT_RECLAIM":
-            episode.extreme = max(episode.extreme, bar.high)
-            age = self._five_index - episode.sweep_index
-            if bar.close < source.high:
-                episode.phase = "WAIT_CONFIRM"
-                episode.reclaim_index = self._five_index
-                episode.reclaim_ts_ns = bar.ts_ns
-                episode.atr_at_reclaim = atr
-                episode.confirm_index = self._five_index + self.config.confirmation_bars
-                self._emit(
-                    scenario_id=episode.scenario_id,
-                    event_type="RAID_RECLAIM_CONFIRMED",
-                    event_time_ns=episode.sweep_ts_ns,
-                    observed_time_ns=bar.ts_ns,
-                    next_state="WAIT_CONFIRM",
-                    reason_code="COMPLETED_BAR_CLOSED_BACK_INSIDE_LONDON_RANGE",
-                    reference_price=source.high,
-                    details={
-                        "raid_extreme": episode.extreme,
-                        "bars_from_sweep": age,
-                        "atr_at_reclaim": atr,
-                    },
-                )
-                return None
-            if age >= self.config.reclaim_max_bars:
-                self._terminate_episode(bar.ts_ns, "RAID_NOT_RECLAIMED_IN_TIME")
-            return None
-
-        assert episode.confirm_index is not None
-        if self._five_index < episode.confirm_index:
-            return None
-        prospective_stop = episode.extreme + self.config.stop_buffer_atr * float(episode.atr_at_reclaim)
-        if bar.high >= prospective_stop:
-            self._terminate_episode(bar.ts_ns, "CONFIRMATION_TRADED_THROUGH_INVALIDATION")
-            return None
-        plan = self._costed_plan(episode, bar)
-        if plan is None:
-            self._terminate_episode(bar.ts_ns, "COSTED_PLAN_REJECTED")
-            return None
+    def _emit_plan(self, episode: BoundaryEpisode, bar: FiveBar, plan: TradePlan, allow_entry: bool) -> TradePlan | None:
+        side = episode.side
+        self._episodes.pop(side, None)
+        self._done_sides.add(side)
         if not allow_entry:
             self.skips["OUTSIDE_EVALUATION_WINDOW"] += 1
             self._emit(
@@ -518,10 +576,8 @@ class CausalLiquidityAuctionEngine:
                 next_state="TERMINAL",
                 reason_code="OUTSIDE_EVALUATION_WINDOW",
                 reference_price=plan.expected_entry,
-                details={"net_r": plan.net_r},
+                details={"scenario": plan.scenario.value, "net_r": plan.net_r},
             )
-            self._episode = None
-            self._day_done = True
             return None
         self._emit(
             scenario_id=episode.scenario_id,
@@ -529,20 +585,131 @@ class CausalLiquidityAuctionEngine:
             event_time_ns=bar.ts_ns,
             observed_time_ns=bar.ts_ns,
             next_state="PLAN_EMITTED",
-            reason_code="RAID_RECLAIM_CONFIRMATION_AND_COSTED_RANGE_OBJECTIVE_VALID",
+            reason_code="COSTED_CAUSAL_AUCTION_PLAN_VALID",
             reference_price=plan.expected_entry,
             details={
+                "scenario": plan.scenario.value,
                 "direction": plan.direction.value,
                 "entry": plan.expected_entry,
                 "stop": plan.stop_price,
                 "target": plan.target_price,
-                "expire_ts_ns": plan.expire_ts_ns,
                 "net_r": plan.net_r,
             },
         )
-        self._episode = None
-        self._day_done = True
         return plan
+
+    def _advance_episode(self, side: BoundarySide, bar: FiveBar, atr: float, allow_entry: bool) -> TradePlan | None:
+        episode = self._episodes.get(side)
+        if episode is None:
+            return None
+        source = episode.source
+        minute = self._minute_of_day(bar.ts_ns)
+        if minute > self.config.ny_end_minute:
+            self._terminate(side, bar.ts_ns, "NEW_YORK_WINDOW_EXPIRED")
+            return None
+
+        if episode.phase == "WAIT_RECLAIM":
+            if side is BoundarySide.HIGH:
+                episode.extreme = max(episode.extreme, bar.high)
+                reclaimed = bar.close < source.high
+            else:
+                episode.extreme = min(episode.extreme, bar.low)
+                reclaimed = bar.close > source.low
+            if reclaimed:
+                self._mark_reclaim(episode, bar, atr)
+                return None
+            if self._five_index - episode.sweep_index >= self.config.reclaim_max_bars:
+                self._wait_acceptance(episode, bar, "BOUNDARY_NOT_RECLAIMED_IN_TIME")
+            return None
+
+        if episode.phase == "WAIT_CONFIRM":
+            assert episode.confirm_index is not None
+            if self._five_index < episode.confirm_index:
+                return None
+            assert episode.reclaim_bar is not None and episode.atr_at_reclaim is not None
+            reclaim = episode.reclaim_bar
+            reclaim_atr = episode.atr_at_reclaim
+            if side is BoundarySide.HIGH:
+                upper_context = source.close_location >= 0.5
+                forceful_reclaim = reclaim.body / reclaim_atr >= self.config.high_reclaim_displacement_atr
+                invalidation = episode.extreme + self.config.stop_buffer_atr * reclaim_atr
+                if (upper_context or forceful_reclaim) and bar.high < invalidation:
+                    plan = self._build_plan(
+                        episode=episode,
+                        bar=bar,
+                        atr=reclaim_atr,
+                        scenario=ScenarioKind.LONDON_HIGH_REJECTION,
+                        direction=Direction.SHORT,
+                        stop_raw=invalidation,
+                        target_raw=source.high - self.config.rejection_target_fraction * source.width,
+                        reason="UPPER_RANGE_CONTEXT_OR_FORCEFUL_RECLAIM",
+                    )
+                    if plan is not None:
+                        return self._emit_plan(episode, bar, plan, allow_entry)
+                self._wait_acceptance(episode, bar, "WEAK_HIGH_RECLAIM_REQUIRES_ACCEPTANCE_DECISION")
+                return None
+
+            discount_context = source.close_location < 0.5
+            bullish_reclaim = reclaim.close > reclaim.open
+            held_inside = bar.close > source.low
+            invalidation = episode.extreme - self.config.stop_buffer_atr * reclaim_atr
+            if discount_context and bullish_reclaim and held_inside and bar.low > invalidation:
+                plan = self._build_plan(
+                    episode=episode,
+                    bar=bar,
+                    atr=reclaim_atr,
+                    scenario=ScenarioKind.LONDON_LOW_REJECTION,
+                    direction=Direction.LONG,
+                    stop_raw=invalidation,
+                    target_raw=source.high,
+                    reason="DISCOUNT_LOW_RAID_RECLAIM_HELD_TO_OPPOSITE_BOUNDARY",
+                )
+                if plan is not None:
+                    return self._emit_plan(episode, bar, plan, allow_entry)
+            self._wait_acceptance(episode, bar, "LOW_RECLAIM_NOT_HELD_OR_NOT_IN_DISCOUNT")
+            return None
+
+        if side is BoundarySide.HIGH:
+            if (
+                bar.close > episode.extreme
+                and bar.body / atr >= self.config.acceptance_displacement_atr
+                and bar.close_location >= self.config.acceptance_close_location
+            ):
+                plan = self._build_plan(
+                    episode=episode,
+                    bar=bar,
+                    atr=atr,
+                    scenario=ScenarioKind.LONDON_HIGH_ACCEPTANCE,
+                    direction=Direction.LONG,
+                    stop_raw=source.high - self.config.stop_buffer_atr * atr,
+                    target_raw=source.high + self.config.acceptance_range_projection * source.width,
+                    reason="DISPLACEMENT_CLOSE_ABOVE_RAID_EXTREME",
+                )
+                if plan is not None:
+                    return self._emit_plan(episode, bar, plan, allow_entry)
+            return None
+
+        if source.close_location > self.config.low_acceptance_deep_discount:
+            self._terminate(side, bar.ts_ns, "LOW_ACCEPTANCE_REQUIRES_DEEP_DISCOUNT_LONDON_CLOSE")
+            return None
+        if (
+            bar.close < episode.extreme
+            and bar.body / atr >= self.config.acceptance_displacement_atr
+            and bar.close_location <= 1.0 - self.config.acceptance_close_location
+        ):
+            plan = self._build_plan(
+                episode=episode,
+                bar=bar,
+                atr=atr,
+                scenario=ScenarioKind.LONDON_LOW_ACCEPTANCE,
+                direction=Direction.SHORT,
+                stop_raw=source.low + self.config.stop_buffer_atr * atr,
+                target_raw=source.low - self.config.acceptance_range_projection * source.width,
+                reason="DEEP_DISCOUNT_DISPLACEMENT_CLOSE_BELOW_RAID_EXTREME",
+            )
+            if plan is not None:
+                return self._emit_plan(episode, bar, plan, allow_entry)
+        return None
 
     def _on_five(self, bar: FiveBar, allow_entry: bool) -> TradePlan | None:
         self._five_index += 1
@@ -563,6 +730,7 @@ class CausalLiquidityAuctionEngine:
         if self.config.london_start_minute < minute <= self.config.london_end_minute:
             self._london_high = max(self._london_high, bar.high)
             self._london_low = min(self._london_low, bar.low)
+            self._london_close = bar.close
             if minute == self.config.london_end_minute:
                 self._freeze_london(bar)
             return None
@@ -574,25 +742,38 @@ class CausalLiquidityAuctionEngine:
             or self._weekday(self._day_bucket) >= 5
             or minute <= self.config.london_end_minute
             or minute > self.config.ny_end_minute
-            or self._day_done
         ):
             return None
 
-        if self._episode is None:
-            threshold = self._london.high + self.config.sweep_min_ticks * self.config.price_increment
-            if bar.high >= threshold:
-                self._start_raid(bar, atr)
-                return self._advance_episode(bar, atr, allow_entry)
-            return None
-        return self._advance_episode(bar, atr, allow_entry)
+        plan: TradePlan | None = None
+        for side in (BoundarySide.LOW, BoundarySide.HIGH):
+            if side in self._done_sides:
+                continue
+            episode = self._episodes.get(side)
+            if episode is None:
+                crossed = (
+                    bar.high >= self._london.high + self.config.price_increment
+                    if side is BoundarySide.HIGH
+                    else bar.low <= self._london.low - self.config.price_increment
+                )
+                if crossed:
+                    self._start_episode(side, bar, atr)
+                    episode = self._episodes[side]
+                    reclaimed = bar.close < self._london.high if side is BoundarySide.HIGH else bar.close > self._london.low
+                    if reclaimed:
+                        self._mark_reclaim(episode, bar, atr)
+                continue
+            candidate = self._advance_episode(side, bar, atr, allow_entry)
+            if candidate is not None and plan is None:
+                plan = candidate
+        return plan
 
     def on_bar(self, bar: BarObs, *, allow_entry: bool = True) -> TradePlan | None:
         self._minute_parts.append(bar)
         boundary = self.config.bar_minutes * NS_MINUTE
         if bar.ts_ns % boundary != 0:
             return None
-        expected_parts = self.config.bar_minutes
-        if len(self._minute_parts) != expected_parts:
+        if len(self._minute_parts) != self.config.bar_minutes:
             self.skips["INCOMPLETE_AGGREGATION_BUCKET"] += 1
             self._minute_parts.clear()
             return None
@@ -600,13 +781,7 @@ class CausalLiquidityAuctionEngine:
         self._minute_parts.clear()
         return self._on_five(five, allow_entry)
 
-    def mark_plan_rejected(
-        self,
-        plan: TradePlan,
-        ts_ns: int,
-        reason: str,
-        details: dict[str, Any] | None = None,
-    ) -> None:
+    def mark_plan_rejected(self, plan: TradePlan, ts_ns: int, reason: str, details: dict[str, Any] | None = None) -> None:
         self.skips[reason] += 1
         self._emit(
             scenario_id=plan.scenario_id,
@@ -626,18 +801,12 @@ class CausalLiquidityAuctionEngine:
             event_time_ns=ts_ns,
             observed_time_ns=ts_ns,
             next_state="SUBMITTED",
-            reason_code="NAUTILUS_LIMIT_BRACKET_SUBMITTED",
+            reason_code="NAUTILUS_MARKET_BRACKET_SUBMITTED",
             reference_price=plan.expected_entry,
             details=details,
         )
 
-    def mark_trade_terminal(
-        self,
-        plan: TradePlan,
-        ts_ns: int,
-        reason: str,
-        details: dict[str, Any] | None = None,
-    ) -> None:
+    def mark_trade_terminal(self, plan: TradePlan, ts_ns: int, reason: str, details: dict[str, Any] | None = None) -> None:
         self._emit(
             scenario_id=plan.scenario_id,
             event_type="TRADE_TERMINAL",
@@ -651,6 +820,6 @@ class CausalLiquidityAuctionEngine:
 
 
 __all__ = [
-    "BarObs", "CausalLiquidityAuctionEngine", "Direction", "FiveBar", "LogicConfig",
-    "RiskSizer", "ScenarioKind", "SizeDecision", "TradePlan",
+    "BarObs", "BoundarySide", "CausalLiquidityAuctionEngine", "Direction", "FiveBar",
+    "LogicConfig", "RiskSizer", "ScenarioKind", "SizeDecision", "TradePlan",
 ]

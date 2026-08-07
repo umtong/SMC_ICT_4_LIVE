@@ -2,57 +2,20 @@
 
 Only NautilusTrader account-NAV output is performance evidence. Pure state replay is diagnostic and never a success claim.
 
-## I0–I2 — CLAR liquidity acceptance/rejection
+## I3 — symmetric session auction: rejected at W1
 
-The original CLAR family failed W1: two trades, zero wins, final NAV about 94,092 USDT. A first-touch lifecycle repair removed a causality defect but did not create economic edge. Running W2/W3 after W1 had already failed was inefficient and is not repeated.
+Workflow `31182807014`, job `92879958481`, commit `ec2cb5c0a139adb2520df325f737dc46749f41ac`: 9 trades, 0 wins, final NAV 77,719.27061424 USDT, daily geometric growth −3.53689321%. W2/W3 were not run.
 
-## I3 — symmetric session auction
+## I4 — London-high raid reversal
 
-**Authoritative W1:** workflow `31182807014`, job `92879958481`, commit `ec2cb5c0a139adb2520df325f737dc46749f41ac`.
+W1 passed at commit `be3a8fcc1517e8f8d52ed45acbedd848deef3689`, workflow `31185042882`, job `92887348615`: 5 trades, 5 wins, final NAV 120,444.47572152 USDT, daily geometric growth +2.69303368%, no liquidation or risk-budget breach.
 
-| Measure | Result |
-|---|---:|
-| Starting NAV | 100,000 USDT |
-| Ending NAV | 77,719.27061424 USDT |
-| Net return | -22.28072939% |
-| Daily geometric growth | -3.53689321% |
-| Closed trades | 9 |
-| Winners / losers | 0 / 9 |
-| Liquidation | No |
-| 3% risk-budget breach | No |
+Sequential W2 confirmation failed at commit `4a6e08a9eb15b07193fdf720d3769c19301f957e`, workflow `31185251437`, job `92888057236`: 2 closed trades, 0 wins, final NAV 94,587.05266912 USDT, daily geometric growth −0.79184233%. W3 was not run.
 
-The family was rejected immediately; W2/W3 were not run. Frequency was not the bottleneck. The economic error was that entries arrived after the impulse and placed stops around shallow pullbacks instead of beyond scenario invalidation. Normal boundary retests therefore stopped every trade. Treating high-side and low-side interactions symmetrically was unsupported.
+Both W2 losses came from weak reclaims: reclaim bodies were 0.72 and 0.28 ATR, after which price displaced above the raid extremes. The old logic forced a short instead of classifying boundary acceptance. A third W2 high-rejection plan had strong upper-range context, missed its resting boundary entry, and then reached its structural target.
 
-## I4 — New-York raid of completed London buy-side liquidity
+## I5 — completed-range rejection/acceptance bifurcation
 
-I4 replaced the failed family rather than adding filters. The only executable sequence is:
+I5 replaces the forced-reversal rule with mutually exclusive completed-auction outcomes. Rejection uses market entry only after causal confirmation; weak rejection remains flat until price either accepts beyond the raid extreme or expires. Low-side rejection and deep-discount low acceptance use the same completed London range and structural objectives.
 
-```text
-completed 06:00–12:00 UTC London range
-→ weekday New-York trade above London high
-→ completed five-minute close back inside within three bars
-→ one additional completed confirmation bar
-→ 15-minute protected sell limit at London high
-→ stop beyond the observed raid extreme plus ATR buffer
-→ structural objective 60% through the completed London range
-```
-
-### W1 design gate — passed
-
-**Authoritative evidence:** commit `be3a8fcc1517e8f8d52ed45acbedd848deef3689`, workflow `31185042882`, job `92887348615`.
-
-| Measure | Result |
-|---|---:|
-| Starting NAV | 100,000 USDT |
-| Ending NAV | 120,444.47572152 USDT |
-| Net return | +20.44447572% |
-| Daily geometric growth | +2.69303368% |
-| Closed trades | 5 |
-| Winners / losers | 5 / 0 |
-| Win rate | 100% |
-| Closed-trade drawdown | 0% |
-| Liquidation | No |
-| 3% risk-budget breach | No |
-| Event chronology error | No |
-
-All five entries and all five structural targets were executed by NautilusTrader. Three resting entries filled as maker orders; two marketable protected limits filled as taker orders, while sizing had reserved taker entry cost for every trade. W1 passed both the diagnostic and project target gates. This is sufficient to advance to W2 alone; W3 remains unexecuted until W2 is judged.
+W2 is now diagnostic because it informed I5. W3 is not used. The validation order is reset to W1 first, followed only by previously untouched W4 if W1 passes. State replay before execution produced five W1 plans and five W2 diagnostic plans; all ten targets preceded their invalidations, but these are not performance evidence.

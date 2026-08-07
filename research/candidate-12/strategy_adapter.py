@@ -1,7 +1,6 @@
-"""NautilusTrader adapter for Candidate 12 causal limit-entry plans."""
+"""NautilusTrader adapter for Candidate 12 causal market-entry plans."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -121,14 +120,7 @@ def build_candidate_strategy(
                     instrument_id=self.config.instrument_id,
                     order_side=side,
                     quantity=instrument.make_qty(decision.quantity),
-                    entry_order_type=OrderType.LIMIT,
-                    entry_price=instrument.make_price(plan.expected_entry),
-                    time_in_force=TimeInForce.GTD,
-                    expire_time=(
-                        datetime.fromtimestamp(plan.expire_ts_ns / 1_000_000_000, tz=timezone.utc)
-                        + timedelta(microseconds=1)
-                    ),
-                    entry_post_only=False,
+                    entry_order_type=OrderType.MARKET,
                     tp_order_type=OrderType.LIMIT,
                     tp_price=instrument.make_price(plan.target_price),
                     tp_time_in_force=TimeInForce.GTC,
@@ -154,9 +146,7 @@ def build_candidate_strategy(
                 "scenario": plan.scenario.value,
                 "direction": plan.direction.value,
                 "observed_ts_ns": plan.observed_ts_ns,
-                "entry_order_type": "LIMIT_GTD_MARKETABLE_PROTECTED",
-                "entry_post_only": False,
-                "expire_ts_ns": plan.expire_ts_ns,
+                "entry_order_type": "MARKET_AFTER_COMPLETED_CAUSAL_CONFIRMATION",
                 "entry": plan.expected_entry,
                 "stop": plan.stop_price,
                 "target": plan.target_price,
@@ -201,8 +191,10 @@ def build_candidate_strategy(
                 volume=source_volume,
                 taker_buy_volume=taker_buy,
             )
-            allow_entry = self.last_ts_ns >= self.config.evaluation_start_ns
-            plan = self.logic.on_bar(observation, allow_entry=allow_entry)
+            plan = self.logic.on_bar(
+                observation,
+                allow_entry=self.last_ts_ns >= self.config.evaluation_start_ns,
+            )
             if plan is not None:
                 self._submit_plan(plan)
 
@@ -221,7 +213,7 @@ def build_candidate_strategy(
 
         def on_order_expired(self, event: Any) -> None:
             self._record_order_event(event, "ORDER_EXPIRED")
-            self._terminal_if_flat(int(event.ts_event), "GTD_ENTRY_EXPIRED_UNFILLED")
+            self._terminal_if_flat(int(event.ts_event), "ORDER_EXPIRED_FLAT")
 
         def on_order_canceled(self, event: Any) -> None:
             self._record_order_event(event, "ORDER_CANCELED")
