@@ -13,7 +13,8 @@ A generation is never promoted because it:
 - wins on one hand-selected event;
 - reaches the target before realistic costs;
 - produces a favorable aggregate result dominated by one market cascade;
-- passes unit tests without a clean NautilusTrader replay.
+- passes unit tests without a clean NautilusTrader replay;
+- reports wins, concentration or risk budgets before all declared costs.
 
 ## 2. Research order
 
@@ -54,9 +55,9 @@ Required response:
 
 ### 3.2 Measurement defect
 
-A measurement defect leaves orders intact but makes the verdict unreliable. Examples include post-hoc cost subtraction, coarse drawdown sampling, mislabeled gross PnL, or unreported event concentration.
+A measurement defect leaves orders intact but makes the verdict unreliable. Examples include post-hoc cost subtraction, coarse drawdown sampling, mislabeled gross PnL, win counts computed before modeled impact, risk budgets based on an optimistic NAV, or unreported event concentration.
 
-It is handled like an implementation defect. The same trades must be remeasured before a logic decision.
+It is handled like an implementation defect. The same logic and evaluation week must be remeasured before a logic decision. Historical results remain diagnostics only until the cost ledger, risk budgets and final conservative NAV reconcile exactly.
 
 ### 3.3 Logic defect
 
@@ -67,7 +68,8 @@ A logic defect remains after a clean implementation replay. Examples:
 - no cost-qualified target path;
 - confirmation that removes every opportunity;
 - alpha present only in the exact ablation;
-- target or invalidation unrelated to the causal event.
+- target or invalidation unrelated to the causal event;
+- distinct participant states, such as leverage clearing and new-position building, mapped to the same directional scenario without subsequent auction confirmation.
 
 Required response:
 
@@ -108,11 +110,12 @@ If an archive timestamp may denote the beginning rather than the publication/end
 
 The full and ablation variants must share:
 
-- market object and state sequence;
+- market object and state sequence except for the one declared causal variable;
 - source and target pools;
 - data and timestamps;
 - entry, stop, target, and expiry;
-- costs and impact;
+- fees, slippage and size-dependent impact;
+- the same fill-time conservative cost ledger;
 - whole-NAV 3% risk calculation;
 - execution lifecycle;
 - seed and evaluation period.
@@ -129,12 +132,31 @@ Planned loss per unit includes:
 - size-dependent market impact;
 - funding when the scenario can span a funding event.
 
-Quantity and impact are solved together. Expected costs are debited from a conservative NAV ledger when fills occur, and that ledger becomes the basis for every later 3% risk budget. No arbitrary nominal cap, strategy score multiplier, or unrelated leverage ceiling is added.
+Quantity and impact are solved together. NautilusTrader remains authoritative for fills, exchange commissions, positions and raw account NAV. Any declared cost not posted by the engine is debited in a conservative side ledger at the actual fill timestamp. That all-cost NAV becomes the basis for every later 3% risk budget. No arbitrary nominal cap, strategy score multiplier, or unrelated leverage ceiling is added.
 
-The report must preserve both:
+For each trade, the evidence must prove:
 
-- Nautilus engine NAV and commissions;
-- conservative all-cost NAV used for promotion.
+```text
+conservative NAV before entry
+= current whole-account Nautilus NAV
+− all prior modeled cost debits
+
+planned loss budget
+= conservative NAV before entry × 3%
+
+planned loss after quantity rounding
+≤ planned loss budget
+```
+
+The final report must reconcile:
+
+- Nautilus engine NAV and exchange commissions;
+- every entry- and exit-time modeled-cost debit;
+- conservative all-cost NAV used for promotion;
+- per-trade conservative start/end NAV;
+- daily and intraday conservative drawdown.
+
+Wins, losses, scenario contribution and profit concentration used for promotion are computed from all-cost trade PnL. Engine-only versions may be retained for diagnosis but cannot drive a pass.
 
 ## 8. Promotion and discard gates
 
@@ -143,11 +165,12 @@ The report must preserve both:
 The first preselected BTC week is an efficient logic screen, not proof of the project target. Promotion requires at minimum:
 
 - clean implementation and zero causal violations;
+- zero live cost-ledger or risk-budget reconciliation violations;
 - enough distinct source events to estimate repeatability;
 - positive conservative cost-after expectancy;
-- more than a few wins from distinct source events;
-- no single event cluster dominating profit;
-- a recoverable drawdown path;
+- more than a few all-cost wins from distinct source events;
+- no single event cluster dominating all-cost profit;
+- a recoverable conservative drawdown path;
 - full variant causally outperforming its exact ablation.
 
 ### Additional BTC weeks
@@ -182,9 +205,12 @@ Do not spend another generation on a candidate when any of these holds:
 | v2–v2.3 | causal structural confirmation reduced a losing fill but collapsed to zero opportunity | right-confirmed structure and retrace location versus scenario distinction | confirmation success is not trading-system success |
 | v3–v3.2 | signed flow improved selection, but micro targets were too small and entries too sparse | executed flow and multi-scale destinations | separate trigger scale from destination scale |
 | v4 | one cascade became many trades; event bars degenerated; gross expectancy was negative | same-side flow reduced damage; raw-tick protection worked | one-event-one-scenario identity and stress impact are mandatory |
-| v20.0 | source archive was corrupt before strategy execution | immutable source manifest | source SHA and ZIP integrity are pre-execution gates |
+| v20.0 | source archive was corrupt before strategy execution | immutable source manifest | source SHA and archive integrity are pre-execution gates |
 | v20.1 | impact was initially a post-run adjustment, so later sizing could use optimistic NAV | square-root participation cost model | all modeled costs must enter the live conservative ledger |
-| v20.2 | current controlled implementation under evaluation | pending clean evidence | no logic verdict until the identical-week implementation rerun completes |
+| v21 | exact OI variant produced no trade and no-OI produced one loss; internal pivot targets were too short | liquidation auction detector and one-source-event identity | trigger scale and destination scale must be structurally distinct |
+| v22 | external session targets restored eight opportunities, but accepted `CLEARING` breaks were treated as continuation; seven clearing trades lost | completed 8h extremes are viable external destinations | distinguish participant-state meaning before assigning direction |
+| v22 erratum | prior modeled impact was omitted from later 3% NAV sizing; the only raw-engine winner was negative after impact | raw Nautilus and conservative ledgers can coexist | debit non-engine costs at actual fills and make all promotion statistics cost-after |
+| v23 | OI-semantic clearing-reclaim reversal under controlled rerun | pending clean evidence | no logic verdict until live cost-ledger reconciliation passes |
 
 ## 11. Required terminal record
 
@@ -196,6 +222,7 @@ Every completed generation must leave:
 - scenario/event transition logs;
 - trades linked to source pool/event identity;
 - engine and conservative NAV curves;
+- entry/exit modeled-cost events and per-trade risk-budget reconciliation;
 - implementation, measurement, or logic classification;
 - dominant failure driver;
 - useful retained component;
