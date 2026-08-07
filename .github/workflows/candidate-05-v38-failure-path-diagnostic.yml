@@ -9,9 +9,11 @@ on:
       - "research/candidate-05/v38_failure_path_diagnostic.py"
       - "research/candidate-05/v38_failure_path_diagnostic_v2.py"
       - "research/candidate-05/v38_failure_path_cascade.py"
+      - "research/candidate-05/v38_failure_path_cascade_v2.py"
       - "research/candidate-05/tests/test_failed_reversal_continuation_logic.py"
       - "research/candidate-05/tests/test_v38_failure_path_diagnostic_v2.py"
       - "research/candidate-05/tests/test_v38_failure_path_cascade.py"
+      - "research/candidate-05/tests/test_v38_failure_path_cascade_v2.py"
       - "research/candidate-05/V38B_RESULT.md"
       - ".github/workflows/candidate-05-v38-failure-path-diagnostic.yml"
   workflow_dispatch:
@@ -53,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
-          python research/candidate-05/v38_failure_path_cascade.py \
+          python research/candidate-05/v38_failure_path_cascade_v2.py \
             --cases research/candidate-05/v38_trade_cases.json \
             --config research/candidate-05/config.json \
             --cache .cache/candidate-05-v38-failure-path \
@@ -71,6 +73,7 @@ jobs:
           path = Path("artifacts/candidate-05-v38-failure-path-diagnostic/v38_failure_path_diagnostic.json")
           payload = json.loads(path.read_text())
           assert payload["schema"] == "candidate-05-v38-failure-path-component-cascade-v1"
+          assert payload["schema_repair"] == "LABEL_ONLY_NO_MARKET_OBSERVATION_OR_PREDICATE_CHANGED"
           assert payload["method"]["engine"] == "OBSERVATIONAL_COMPLETED_BAR_DIAGNOSTIC_ONLY"
           assert payload["method"]["creates_orders_or_pnl"] is False
           assert len(payload["cases"]) == 11
