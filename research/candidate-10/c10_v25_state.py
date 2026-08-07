@@ -1,8 +1,9 @@
 """Liquidity-shelf and top-of-book response state machine for candidate 10 v25.
 
 The detector creates shelves from completed trade-flow auctions without quote
-features.  The full trading scenario then requires causal top-of-book OFI and
+features. The full trading scenario then requires causal top-of-book OFI and
 replenishment evidence; the exact ablation removes only that quote response.
+Every true shelf cross consumes the shelf, even when the cross is not tradable.
 """
 from __future__ import annotations
 
@@ -318,19 +319,18 @@ class LiquidityResponseStateMachine:
             else max(candidates, key=lambda shelf: shelf.price)
         )
 
-    def _crossed_shelves(
+    def _price_crossed_shelves(
         self,
         bar: LiquidityResponseBar,
+        *,
         previous_mid: float,
-        move_direction: int,
     ) -> list[LiquidityShelf]:
+        """Return every preexisting shelf truly crossed by this completed bar."""
         crossed: list[LiquidityShelf] = []
         for shelf in self.shelves:
-            if not shelf.active or shelf.reserved or shelf.side != move_direction:
+            if not shelf.active or shelf.reserved or shelf.created_ns >= bar.ts_ns:
                 continue
-            if shelf.created_ns >= bar.ts_ns:
-                continue
-            if move_direction > 0:
+            if shelf.side > 0:
                 crossed_now = (
                     previous_mid <= shelf.price
                     and bar.mid_high >= shelf.price + shelf.zone
@@ -344,29 +344,81 @@ class LiquidityResponseStateMachine:
                 crossed.append(shelf)
         return crossed
 
+    @staticmethod
+    def _consume_shelves(shelves: Iterable[LiquidityShelf]) -> None:
+        for shelf in shelves:
+            shelf.active = False
+            shelf.reserved = False
+
     def _detect_interaction(
         self,
         bar: LiquidityResponseBar,
         features: dict[str, float],
     ) -> tuple[list[LiquidityResponseTransition], LiquidityResponsePlan | None]:
-        if not self.recent_bars or bar.trade_count <= 0:
-            return [], None
-        signed = bar.signed_trade_quote
-        move_direction = _sign(signed)
-        if (
-            not move_direction
-            or abs(signed) < features["interaction_flow_floor"]
-        ):
+        if not self.recent_bars:
             return [], None
         previous_mid = self.recent_bars[-1].mid_close
-        crossed = self._crossed_shelves(
+        all_crossed = self._price_crossed_shelves(
             bar,
             previous_mid=previous_mid,
-            move_direction=move_direction,
         )
-        if not crossed:
+        if not all_crossed:
             return [], None
-        source_ids = {shelf.shelf_id for shelf in crossed}
+
+        self.event_sequence += 1
+        scenario_id = f"{self.instrument_id}:LRA:{self.event_sequence:08d}"
+        source_ids = {shelf.shelf_id for shelf in all_crossed}
+        sides = {shelf.side for shelf in all_crossed}
+        signed = bar.signed_trade_quote
+        move_direction = _sign(signed)
+        aligned_aggressive_cross = bool(
+            bar.trade_count > 0
+            and move_direction
+            and abs(signed) >= features["interaction_flow_floor"]
+            and len(sides) == 1
+            and move_direction == next(iter(sides))
+        )
+
+        if len(sides) > 1:
+            self._consume_shelves(all_crossed)
+            self.counters["AMBIGUOUS_TWO_SIDED_SHELF_CROSS"] += 1
+            return [
+                self._transition(
+                    scenario_id=scenario_id,
+                    bar=bar,
+                    event_type="LIQUIDITY_RESPONSE_INTERACTION_REJECTED",
+                    previous_state="NEUTRAL",
+                    next_state="AMBIGUOUS_CONSUMED",
+                    reason_code="BOTH_SIDES_TRUE_CROSS_PATH_ORDER_UNKNOWN",
+                    reference_price=bar.mid_close,
+                    details={"source_ids": sorted(source_ids)},
+                ),
+            ], None
+
+        if not aligned_aggressive_cross:
+            self._consume_shelves(all_crossed)
+            self.counters["NONTRADABLE_TRUE_CROSS_CONSUMED"] += len(all_crossed)
+            return [
+                self._transition(
+                    scenario_id=scenario_id,
+                    bar=bar,
+                    event_type="LIQUIDITY_RESPONSE_INTERACTION_REJECTED",
+                    previous_state="NEUTRAL",
+                    next_state="NONTRADABLE_CROSS_CONSUMED",
+                    reason_code="TRUE_CROSS_WITHOUT_ALIGNED_AGGRESSIVE_FLOW",
+                    reference_price=bar.mid_close,
+                    details={
+                        "source_ids": sorted(source_ids),
+                        "shelf_side": next(iter(sides)),
+                        "signed_trade_quote": signed,
+                        "interaction_flow_floor": features[
+                            "interaction_flow_floor"
+                        ],
+                    },
+                ),
+            ], None
+
+        crossed = all_crossed
         source = (
             max(crossed, key=lambda shelf: shelf.price)
             if move_direction > 0
@@ -381,12 +433,8 @@ class LiquidityResponseStateMachine:
         )
         for shelf in crossed:
             shelf.reserved = True
-        self.event_sequence += 1
-        scenario_id = f"{self.instrument_id}:LRA:{self.event_sequence:08d}"
         if target is None:
-            for shelf in crossed:
-                shelf.active = False
-                shelf.reserved = False
+            self._consume_shelves(crossed)
             self.counters["INTERACTION_WITHOUT_PREEXISTING_TARGET"] += 1
             return [
                 self._transition(
