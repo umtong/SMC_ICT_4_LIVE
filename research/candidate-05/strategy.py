@@ -1,5 +1,5 @@
-"""Candidate 05 active v39: positioning-reset reversal participation."""
+"""Candidate 05 v39 ablation: positioning reset without path efficiency."""
 from strategy_base import LiquidityResponseConfig
-from strategy_v39_positioning_reset import PositioningResetReversalStrategy as LiquidityResponseStrategy
+from strategy_v39_no_path_ablation import PositioningResetNoPathAblationStrategy as LiquidityResponseStrategy
 
 __all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]
