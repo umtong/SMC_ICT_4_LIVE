@@ -12,6 +12,10 @@ import aggregate_candidate16_failed_far as base
 NEW_KIND = "FAILED_FAR_STRICT_EXTERNAL_ACCEPTANCE_CONTINUATION"
 
 
+def payoff_text(value: object) -> str:
+    return "n/a" if value is None else f"{float(value):.3f}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
@@ -76,8 +80,6 @@ def main() -> int:
     overall = payload["candidate17_overall"]
     state = payload["failed_far_state"]
     reference = payload["candidate16_reference"]
-    payoff = overall.get("payoff_ratio")
-    state_payoff = state.get("payoff_ratio")
     lines = [
         "# Candidate 17 strict external target development",
         "",
@@ -89,14 +91,13 @@ def main() -> int:
             f"| Candidate 16 | {reference['daily_geometric_growth']:.6%} | "
             f"{reference['nav_multiple']:.6f} | {reference['trades']} | "
             f"{reference['wins']}/{reference['losses']} | {reference['win_rate']:.2%} | "
-            f"{reference['active_weeks']} | "
-            f"{'n/a' if reference['payoff_ratio'] is None else f'{reference['payoff_ratio']:.3f}'} |"
+            f"{reference['active_weeks']} | {payoff_text(reference['payoff_ratio'])} |"
         ),
         (
             f"| Candidate 17 | {overall['daily_geometric_growth']:.6%} | "
             f"{overall['nav_multiple']:.6f} | {overall['trades']} | "
             f"{overall['wins']}/{overall['losses']} | {overall['win_rate']:.2%} | "
-            f"{overall['active_weeks']} | {'n/a' if payoff is None else f'{payoff:.3f}'} |"
+            f"{overall['active_weeks']} | {payoff_text(overall.get('payoff_ratio'))} |"
         ),
         "",
         "## Incremental strict-target failed-FAR state",
@@ -105,7 +106,7 @@ def main() -> int:
         f"- Wins/losses: {state['wins']}/{state['losses']}",
         f"- Win rate: {state['win_rate']:.2%}",
         f"- Net PnL: {state['net_pnl']:.2f} USDT",
-        f"- Payoff: {'n/a' if state_payoff is None else f'{state_payoff:.3f}'}",
+        f"- Payoff: {payoff_text(state.get('payoff_ratio'))}",
         f"- Decision: `{payload['decision']}`",
     ]
     args.output.with_name("RESULT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
