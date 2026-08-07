@@ -92,7 +92,10 @@ class NestedLiquiditySweepMSSRetestTests(unittest.TestCase):
     def test_signal_has_no_future_path_and_is_delivered_after_retest(self) -> None:
         observed = 44_999_999_999
         report = {
-            "summary": {"source_timeframes": ["15S", "30S", "1M"]},
+            "summary": {
+                "require_retest": True,
+                "source_timeframes": ["15S", "30S", "1M"],
+            },
             "scenarios": [
                 {
                     "scenario_id": "nested-1",
