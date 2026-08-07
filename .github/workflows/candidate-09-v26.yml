@@ -1,0 +1,130 @@
+name: Candidate 09 v26 spot-led perpetual catch-up
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths:
+      - .github/workflows/candidate-09-v26.yml
+      - research/candidate-09/v26_bundle/**
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v26-spot-led-perpetual-catch-up
+  cancel-in-progress: true
+
+jobs:
+  test-gate-and-long-if-qualified:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: ${{ github.workspace }}/research/candidate-09:${{ github.workspace }}/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-futures-spot-flow-v1
+          restore-keys: |
+            candidate-09-binance-vision-v2
+            candidate-09-binance-vision-v1
+
+      - name: Materialize frozen common NautilusTrader infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09
+          cat "$root"/v18_bundle/part* > /tmp/candidate-09-v18-bundle.tar.gz
+          expected=$(awk 'NR==1 {print $1}' "$root/v18_bundle/SHA256")
+          echo "$expected  /tmp/candidate-09-v18-bundle.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/candidate-09-v18-bundle.tar.gz -C "$root"
+
+      - name: Materialize and activate frozen v26 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          root=research/candidate-09
+          parts="$root/v26_bundle"
+          while read -r part digest bytes git_blob; do
+            [[ "$part" == part* ]] || continue
+            test "$(wc -c < "$parts/$part")" -eq "$bytes"
+            echo "$digest  $parts/$part" | sha256sum -c -
+            test "$(git hash-object "$parts/$part")" = "$git_blob"
+          done < "$parts/SHA256"
+          cat "$parts"/part* | base64 -d > /tmp/candidate-09-v26.tar.gz
+          expected=$(awk '$1=="archive" {print $2}' "$parts/SHA256")
+          expected_bytes=$(awk '$1=="archive" {print $3}' "$parts/SHA256")
+          test "$(wc -c < /tmp/candidate-09-v26.tar.gz)" -eq "$expected_bytes"
+          echo "$expected  /tmp/candidate-09-v26.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/candidate-09-v26.tar.gz -C "$root"
+          cp "$root/state_engine_v26_direct.py" "$root/state_engine.py"
+          cp "$root/data_loader_v26.py" "$root/data_loader.py"
+          cp "$root/run_v26_direct.py" "$root/run.py"
+          cp "$root/config_v26.json" "$root/config.json"
+
+      - name: Run contracts, pooled gate, and gated long evaluation
+        shell: bash
+        run: bash research/candidate-09/run_v26_ci.sh
+
+      - name: Preserve exact v26 source and full evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v26-${{ github.run_id }}
+          path: |
+            research/candidate-09/evidence/latest
+            research/candidate-09/diagnostics/v26-gate-long
+            research/candidate-09/archive/v10-long
+            research/candidate-09/V26_DESIGN.md
+            research/candidate-09/config_v26.json
+            research/candidate-09/state_engine_v26_direct.py
+            research/candidate-09/data_loader_v26.py
+            research/candidate-09/run_v26_direct.py
+            research/candidate-09/nautilus_strategy.py
+            research/candidate-09/run_v26_ci.sh
+            research/candidate-09/tests
+            research/candidate-09/tests_v26
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit compact v26 evidence only
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_WORKSPACE"
+          root="$repo/research/candidate-09"
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/evidence" "$tmp/diagnostics"
+          for name in summary.json REPORT.md outcomes.csv trades.csv fills.csv run.json data_manifest.json event_summary.json trade_summary.json compact_manifest.json; do
+            [[ -f "$root/evidence/latest/$name" ]] && cp "$root/evidence/latest/$name" "$tmp/evidence/$name"
+          done
+          [[ -d "$root/diagnostics/v26-gate-long" ]] && cp -a "$root/diagnostics/v26-gate-long/." "$tmp/diagnostics/"
+          git config --global --add safe.directory "$repo"
+          git -C "$repo" config user.name candidate-09-research-bot
+          git -C "$repo" config user.email candidate-09-research-bot@users.noreply.github.com
+          git -C "$repo" fetch origin "$GITHUB_REF_NAME"
+          git -C "$repo" reset --hard "origin/$GITHUB_REF_NAME"
+          rm -rf "$root/evidence/latest" "$root/diagnostics/v26-gate-long"
+          mkdir -p "$root/evidence/latest" "$root/diagnostics/v26-gate-long"
+          cp -a "$tmp/evidence/." "$root/evidence/latest/"
+          cp -a "$tmp/diagnostics/." "$root/diagnostics/v26-gate-long/"
+          git -C "$repo" add research/candidate-09/evidence/latest research/candidate-09/diagnostics/v26-gate-long
+          if git -C "$repo" diff --cached --quiet; then exit 0; fi
+          status=$(python -c "import json; from pathlib import Path; p=Path('research/candidate-09/evidence/latest/summary.json'); print(json.loads(p.read_text()).get('status','IMPLEMENTATION_ERROR') if p.exists() else 'IMPLEMENTATION_ERROR')")
+          git -C "$repo" commit -m "candidate-09 v26: frozen result ${status}"
+          git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
