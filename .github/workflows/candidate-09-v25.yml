@@ -1,0 +1,153 @@
+name: Candidate 09 v25 spot-led liquidation auction reversion
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths:
+      - .github/workflows/candidate-09-v25.yml
+      - research/candidate-09/v25_builder/**
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v25-spot-led-liquidation-auction-reversion
+  cancel-in-progress: true
+
+jobs:
+  test-gate-and-long-if-qualified:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: ${{ github.workspace }}/research/candidate-09:${{ github.workspace }}/src
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-futures-spot-metrics-v1
+          restore-keys: |
+            candidate-09-binance-vision-futures-index-metrics-v1
+            candidate-09-binance-vision-kline-metrics-v1
+            candidate-09-binance-vision-v2
+
+      - name: Materialize frozen common NautilusTrader infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09
+          cat "$root"/v18_bundle/part* > /tmp/candidate-09-v18-bundle.tar.gz
+          expected=$(awk 'NR==1 {print $1}' "$root/v18_bundle/SHA256")
+          echo "$expected  /tmp/candidate-09-v18-bundle.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/candidate-09-v18-bundle.tar.gz -C "$root"
+
+      - name: Reconstruct, build, and activate frozen v25 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09
+          cat "$root"/v25_builder/part* | base64 -d > /tmp/build_v25.py.gz
+          echo "13b309d20cd52911cc733c4ef040f227683444ad25622a4112803758f23c69d9  /tmp/build_v25.py.gz" | sha256sum -c -
+          gzip -dc /tmp/build_v25.py.gz > "$root/build_v25.py"
+          echo "4521fd12517f5f6fc84d7fbbe09064f5cb412229fa69443528cd7d26b4935009  $root/build_v25.py" | sha256sum -c -
+          python "$root/build_v25.py"
+          echo "59c9cecfd25ce719367cd87e0bf0911c8b3e0201cf79dee6b37644df4a756b72  $root/state_engine_v25_direct.py" | sha256sum -c -
+          echo "1f8f98e9e9a0d0f9e6ede18a58d84e36a2e66251be2f747215454ec1739bea4c  $root/data_loader_v25.py" | sha256sum -c -
+          echo "0d9d5695430205f47d68b467250f4024591fd6dbeed0c1a2a3ad1ac72dae6d60  $root/run_v25_direct.py" | sha256sum -c -
+          echo "4bfcda4195f19260fa9a8daad551e302d65afa2214ac53444893c6c43ce6cab9  $root/config_v25.json" | sha256sum -c -
+          cp "$root/state_engine_v25_direct.py" "$root/state_engine.py"
+          cp "$root/data_loader_v25.py" "$root/data_loader.py"
+          cp "$root/run_v25_direct.py" "$root/run.py"
+          cp "$root/config_v25.json" "$root/config.json"
+          chmod +x "$root/run_v25_ci.sh"
+
+      - name: Run contracts, pooled gate, and gated long evaluation
+        shell: bash
+        run: bash research/candidate-09/run_v25_ci.sh
+
+      - name: Preserve exact v25 source and full evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v25-${{ github.run_id }}
+          path: |
+            research/candidate-09/evidence/latest
+            research/candidate-09/diagnostics/v25-gate-long
+            research/candidate-09/archive/v24/decision.json
+            research/candidate-09/V25_DESIGN.md
+            research/candidate-09/build_v25.py
+            research/candidate-09/config_v24.json
+            research/candidate-09/config_v25.json
+            research/candidate-09/state_engine_v25_direct.py
+            research/candidate-09/data_loader_v25.py
+            research/candidate-09/run_v25_direct.py
+            research/candidate-09/nautilus_strategy.py
+            research/candidate-09/run_v25_ci.sh
+            research/candidate-09/tests_v25
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit compact v25 evidence and exact source
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=$(dirname "$(dirname "$(dirname "$(realpath research/candidate-09/run.py)")")")
+          root="$repo/research/candidate-09"
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/evidence" "$tmp/diagnostics" "$tmp/source/tests_v25" "$tmp/source/archive/v24"
+          for name in summary.json REPORT.md outcomes.csv trades.csv fills.csv run.json \
+                      data_manifest.json event_summary.json trade_summary.json compact_manifest.json; do
+            [[ -f "$root/evidence/latest/$name" ]] && cp "$root/evidence/latest/$name" "$tmp/evidence/$name"
+          done
+          [[ -d "$root/diagnostics/v25-gate-long" ]] && cp -a "$root/diagnostics/v25-gate-long/." "$tmp/diagnostics/"
+          for name in V25_DESIGN.md build_v25.py config_v24.json config_v25.json state_engine_v25_direct.py \
+                      data_loader_v25.py run_v25_direct.py nautilus_strategy.py run_v25_ci.sh; do
+            [[ -f "$root/$name" ]] && cp "$root/$name" "$tmp/source/$name"
+          done
+          [[ -d "$root/tests_v25" ]] && cp -a "$root/tests_v25/." "$tmp/source/tests_v25/"
+          [[ -f "$root/archive/v24/decision.json" ]] && cp "$root/archive/v24/decision.json" "$tmp/source/archive/v24/decision.json"
+          find "$tmp" -type f -size +95M -print -quit | grep -q . && {
+            echo 'compact evidence unexpectedly contains a file larger than 95 MB' >&2
+            exit 1
+          }
+          git config --global --add safe.directory "$repo"
+          git -C "$repo" config user.name candidate-09-research-bot
+          git -C "$repo" config user.email candidate-09-research-bot@users.noreply.github.com
+          git -C "$repo" fetch origin "$GITHUB_REF_NAME"
+          git -C "$repo" reset --hard "origin/$GITHUB_REF_NAME"
+          rm -rf "$root/evidence/latest" "$root/diagnostics/v25-gate-long" "$root/tests_v25" "$root/archive/v24"
+          mkdir -p "$root/evidence/latest" "$root/diagnostics/v25-gate-long" "$root/tests_v25" "$root/archive/v24"
+          cp -a "$tmp/evidence/." "$root/evidence/latest/"
+          cp -a "$tmp/diagnostics/." "$root/diagnostics/v25-gate-long/"
+          cp -a "$tmp/source/." "$root/"
+          git -C "$repo" add \
+            research/candidate-09/evidence/latest \
+            research/candidate-09/diagnostics/v25-gate-long \
+            research/candidate-09/archive/v24/decision.json \
+            research/candidate-09/V25_DESIGN.md \
+            research/candidate-09/build_v25.py \
+            research/candidate-09/config_v24.json \
+            research/candidate-09/config_v25.json \
+            research/candidate-09/state_engine_v25_direct.py \
+            research/candidate-09/data_loader_v25.py \
+            research/candidate-09/run_v25_direct.py \
+            research/candidate-09/nautilus_strategy.py \
+            research/candidate-09/run_v25_ci.sh \
+            research/candidate-09/tests_v25
+          if git -C "$repo" diff --cached --quiet; then exit 0; fi
+          status=$(python -c "import json;print(json.load(open('research/candidate-09/evidence/latest/summary.json')).get('status','UNKNOWN'))")
+          git -C "$repo" commit -m "candidate-09 v25: frozen result ${status}"
+          git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
