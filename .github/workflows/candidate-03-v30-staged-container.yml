@@ -1,76 +1,186 @@
-name: candidate-03-candidate15-aggregate-recovery
+name: candidate-03-candidate16-failed-far-development
 
 on:
   push:
     branches: ["research/candidate-03"]
     paths:
       - ".github/workflows/candidate-03-v30-staged-container.yml"
-      - "research/candidate-03/compare_candidate15_far_execution.py"
+      - "research/candidate-03/candidate16_failed_far.py"
+      - "research/candidate-03/test_candidate16_failed_far.py"
+      - "research/candidate-03/patch_candidate14_event_ids.py"
+      - "research/candidate-03/patch_candidate15_far_execution.py"
+      - "research/candidate-03/patch_candidate16_runner_install.py"
+      - "research/candidate-03/patch_candidate16_native_exit_reason.py"
+      - "research/candidate-03/aggregate_candidate16_failed_far.py"
   workflow_dispatch:
 
 permissions:
-  actions: read
   contents: write
+  packages: read
 
 env:
-  SOURCE_RUN_ID: "31211433447"
-  RESULT_REL: research/candidate-03/results/candidate15-far-execution-development
+  FROZEN_SOURCE_COMMIT: dfb180490b141fdafd5b5ac0b52d3dd0b842550d
+  RESULT_REL: research/candidate-03/results/candidate16-failed-far-development
 
 concurrency:
-  group: candidate-03-candidate15-aggregate-recovery
+  group: candidate-03-candidate16-failed-far-development
   cancel-in-progress: true
 
 jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", path: orchestrator}
+      - uses: actions/checkout@v4
+        with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
+      - name: Verify source and install Candidate 16 state
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          test "$(git -C frozen-source rev-parse HEAD)" = "$FROZEN_SOURCE_COMMIT"
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          p=json.loads(Path("orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json").read_text())
+          bad=[]
+          for name, expected in p["locked_source"]["blobs"].items():
+              actual=subprocess.check_output(["git","-C","frozen-source","hash-object",str(Path("research/candidate-14")/name)],text=True).strip()
+              if actual != expected: bad.append((name, expected, actual))
+          if bad: raise SystemExit(f"frozen source mismatch: {bad}")
+          print(f"verified {len(p['locked_source']['blobs'])} origin blobs")
+          PY
+          cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate16_failed_far.py frozen-source/research/candidate-14/
+          python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
+          python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
+          python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate16_native_exit_reason.py frozen-source/research/candidate-14/run_leadership_scdam_base.py
+          git -C frozen-source diff --exit-code -- \
+            ':(exclude)research/candidate-14/logic.py' \
+            ':(exclude)research/candidate-14/semantic_logic.py' \
+            ':(exclude)research/candidate-14/run_leadership_scdam.py' \
+            ':(exclude)research/candidate-14/run_leadership_scdam_base.py' \
+            'research/candidate-14'
+          grep -q 'candidate15_execution_variant.*SWEEP_MARKET' frozen-source/research/candidate-14/semantic_logic.py
+          grep -q '_install_candidate16_failed_far' frozen-source/research/candidate-14/run_leadership_scdam.py
+          grep -q 'STOP_MARKET_FILLED' frozen-source/research/candidate-14/run_leadership_scdam_base.py
+          export PYTHONPATH="$GITHUB_WORKSPACE/frozen-source/research/candidate-14:$GITHUB_WORKSPACE/frozen-source/src"
+          python -m py_compile frozen-source/research/candidate-14/*.py
+          python -m unittest discover -s frozen-source/research/candidate-14 -p 'test_*.py' -v
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        week: [H01, H02, H03, H04, H05, H06, H07, H08, H09, H10, H11, H12, H13, H14, H15, H16]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", path: orchestrator}
+      - uses: actions/checkout@v4
+        with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
+      - name: Install identical Candidate 16 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
+          python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
+          python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
+          python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate16_native_exit_reason.py frozen-source/research/candidate-14/run_leadership_scdam_base.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path("orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json").read_text())
+          p["schema"]="candidate-16-failed-far-continuation-development-v1"
+          p["candidate"]="candidate-16-failed-far-acceptance-continuation"
+          p["validation_mode"]="development_replay"
+          p["selection"]["seed"]=202608081616
+          p["claim_rules"]=[
+              "Development replay only; success_claim is false.",
+              "The new state starts only after a real fully-closing Nautilus STOP_MARKET fill of a sweep-invalidated FAR.",
+              "Original detectors, targets, fees, exact 3% NAV loss budget and one global slot remain unchanged.",
+              "Any structural survivor must be source-frozen before different untouched intervals are opened.",
+          ]
+          Path("frozen-source/research/candidate-14/protocol.json").write_text(json.dumps(p,indent=2,sort_keys=True)+"\n")
+          PY
+      - name: Run Candidate 16 ${{ matrix.week }} through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/evidence/${{ matrix.week }}"
+          bash frozen-source/research/candidate-14/run_week.sh "${{ matrix.week }}" "$out"
+          rm -rf "$out/data"
+          for f in metrics.json summary.json audit.json source_lock.json effective_config.json submitted_plans.json order_lifecycle.json scenario_events.jsonl positions.csv account.csv; do test -s "$out/$f"; done
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate16-${{ matrix.week }}
+          path: evidence/${{ matrix.week }}/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
   aggregate:
+    if: ${{ always() && needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Checkout current candidate branch
-        uses: actions/checkout@v4
-        with:
-          ref: research/candidate-03
-          fetch-depth: 0
-          path: orchestrator
-      - name: Download the 32 successful native evidence artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: candidate15-*
-          path: downloaded
-          run-id: ${{ env.SOURCE_RUN_ID }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compare and persist execution variants
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-03, fetch-depth: 0, path: orchestrator}
+      - uses: actions/download-artifact@v4
+        with: {pattern: "candidate16-H*", path: downloaded}
+      - name: Attribute states and persist decision
         shell: bash
         run: |
           set -euo pipefail
           root="orchestrator/$RESULT_REL"
-          rm -rf "$root"
-          mkdir -p "$root"
-          for variant in SWEEP_MARKET PASSIVE_RETEST; do
-            for week in H01 H02 H03 H04 H05 H06 H07 H08 H09 H10 H11 H12 H13 H14 H15 H16; do
-              src="downloaded/candidate15-$variant-$week"
-              test -d "$src"
-              mkdir -p "$root/$variant/$week"
-              cp -a "$src/." "$root/$variant/$week/"
-            done
+          rm -rf "$root"; mkdir -p "$root"
+          for week in H01 H02 H03 H04 H05 H06 H07 H08 H09 H10 H11 H12 H13 H14 H15 H16; do
+            src="downloaded/candidate16-$week"; test -d "$src"
+            mkdir -p "$root/$week"; cp -a "$src/." "$root/$week/"
           done
-          python orchestrator/research/candidate-03/compare_candidate15_far_execution.py \
+          python orchestrator/research/candidate-03/aggregate_candidate16_failed_far.py \
             --root "$root" \
             --baseline orchestrator/research/candidate-03/results/candidate14-frozen-holdout/aggregate.json \
-            --output "$root/comparison.json"
+            --candidate15 orchestrator/research/candidate-03/results/candidate15-far-execution-development/comparison.json \
+            --output "$root/aggregate.json"
           git -C orchestrator config user.name candidate-03-development-bot
           git -C orchestrator config user.email candidate-03-development-bot@users.noreply.github.com
           git -C orchestrator add "$RESULT_REL"
-          git -C orchestrator commit -m "candidate-03: record Candidate 15 FAR execution development [skip ci]"
-          git -C orchestrator fetch origin research/candidate-03
-          git -C orchestrator rebase origin/research/candidate-03
-          git -C orchestrator push origin HEAD:research/candidate-03
-      - name: Upload comparison
-        if: always()
+          if git -C orchestrator diff --cached --quiet; then
+            echo "aggregate evidence already current"
+          else
+            git -C orchestrator commit -m "candidate-03: record Candidate 16 failed-FAR development [skip ci]"
+            git -C orchestrator fetch origin research/candidate-03
+            git -C orchestrator rebase origin/research/candidate-03
+            git -C orchestrator push origin HEAD:research/candidate-03
+          fi
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate15-far-execution-comparison-${{ github.run_id }}
+          name: candidate16-failed-far-aggregate-${{ github.run_id }}
           path: |
-            orchestrator/research/candidate-03/results/candidate15-far-execution-development/comparison.json
-            orchestrator/research/candidate-03/results/candidate15-far-execution-development/RESULT.md
+            orchestrator/research/candidate-03/results/candidate16-failed-far-development/aggregate.json
+            orchestrator/research/candidate-03/results/candidate16-failed-far-development/RESULT.md
           if-no-files-found: warn
           retention-days: 30
