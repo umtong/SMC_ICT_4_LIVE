@@ -23,7 +23,7 @@ class TailAdverseExpectationTests(unittest.TestCase):
         return rows
 
     def test_q95_reserves_more_than_conditional_mean_for_adverse_tail(self) -> None:
-        adverse_changes = [-2.0] * 90 + [-20.0] * 10
+        adverse_changes = [-2.0] * 180 + [-20.0] * 20
         rows = self.rows(adverse_changes)
         conditional, count = causal_conditional_adverse_entry_deterioration(
             rows,
@@ -31,6 +31,7 @@ class TailAdverseExpectationTests(unittest.TestCase):
         )
         tail, tail_count = causal_tail_adverse_entry_deterioration(rows, side=-1)
         self.assertEqual(count, tail_count)
+        self.assertEqual(count, 200)
         self.assertTrue(math.isfinite(tail))
         self.assertGreater(tail, conditional)
         self.assertAlmostEqual(tail, 20.0)
