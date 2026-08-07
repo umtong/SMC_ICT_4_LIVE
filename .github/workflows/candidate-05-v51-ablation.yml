@@ -1,0 +1,168 @@
+name: candidate-05-v51-ablation
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/strategy_v51a_fade_only.py"
+      - ".github/workflows/candidate-05-v51-ablation.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v51-ablation
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  week1:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {label: dual, module: strategy_v51_rolling_value, class: RollingValueAuctionStrategy}
+          - {label: fade-only, module: strategy_v51a_fade_only, class: RollingValueFadeOnlyStrategy}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      LABEL: ${{ matrix.label }}
+      MODULE: ${{ matrix.module }}
+      CLASS: ${{ matrix.class }}
+      ROOT: artifacts/v51-ablation/${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select variant
+        shell: bash
+        run: |
+          smc4 doctor
+          python - <<'PY'
+          from pathlib import Path
+          import importlib,os,re
+          getattr(importlib.import_module(os.environ['MODULE']),os.environ['CLASS'])
+          p=Path('research/candidate-05/strategy.py');s=p.read_text();pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE);m=pattern.search(s)
+          if m is None:raise RuntimeError(f'v26 import not found: {s!r}')
+          exported=m.group(2) or m.group(1);p.write_text(pattern.sub(f"from {os.environ['MODULE']} import {os.environ['CLASS']} as {exported}",s,count=1))
+          PY
+      - name: Run Week 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-05/candidate.py pipeline --config research/candidate-05/config.json --weeks research/candidate-05/weeks.json --cache ".cache/candidate-05-v51-${LABEL}" --output "$ROOT" --max-weeks 1 2>&1 | tee "$ROOT/console.log"
+      - name: Normalize
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$ROOT"
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          root=Path(os.environ['ROOT']);files=sorted(root.rglob('metrics.json'))
+          def v(d,*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          if not files:out={'label':os.environ['LABEL'],'module':os.environ['MODULE'],'class':os.environ['CLASS'],'available':False,'pass':False}
+          else:
+              d=json.loads(files[0].read_text());growth=float(v(d,'geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0);trades=int(v(d,'trades','trade_count',default=0) or 0);wins=int(v(d,'wins','winning_trades',default=0) or 0);active=int(v(d,'active_days','trading_days',default=0) or 0);dd=float(v(d,'max_drawdown','maximum_drawdown',default=0) or 0);integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1;passed=integrity and growth>=.01 and trades>=7 and wins>=4 and active>=4 and dd<=.20;out={'label':os.environ['LABEL'],'module':os.environ['MODULE'],'class':os.environ['CLASS'],'available':True,'pass':passed,'growth':growth,'total_return':float(v(d,'total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':dd,'integrity':integrity}
+          (root/'result.json').write_text(json.dumps(out,indent=2,sort_keys=True));print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v51-${{ matrix.label }}
+          path: artifacts/v51-ablation/${{ matrix.label }}/**
+          if-no-files-found: error
+          retention-days: 30
+
+  decide-and-promote:
+    needs: week1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/v51-ablation-promoted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v51-*
+          path: artifacts/results
+      - name: Choose controlled winner
+        id: choose
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          rows=[json.loads(path.read_text()) for path in Path('artifacts/results').rglob('result.json')]
+          valid=[row for row in rows if row.get('available')]
+          passed=[row for row in valid if row.get('pass')]
+          winner=max(passed,key=lambda row:(row['growth'],row['wins'],row['trades'],-row['max_drawdown'])) if passed else None
+          out={'rows':rows,'winner':winner,'ablation_improved':next((r for r in rows if r['label']=='fade-only'),{}).get('growth',-999)>next((r for r in rows if r['label']=='dual'),{}).get('growth',-999)}
+          Path('artifacts/v51-ablation-week1.json').write_text(json.dumps(out,indent=2,sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as stream:
+              stream.write(f"label={winner['label'] if winner else ''}\nmodule={winner['module'] if winner else ''}\nclass={winner['class'] if winner else ''}\n")
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+      - name: Run remaining frozen stages for winner
+        if: steps.choose.outputs.label != ''
+        shell: bash
+        env:
+          MODULE: ${{ steps.choose.outputs.module }}
+          CLASS: ${{ steps.choose.outputs.class }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os,re
+          p=Path('research/candidate-05/strategy.py');s=p.read_text();pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE);m=pattern.search(s);exported=m.group(2) or m.group(1);p.write_text(pattern.sub(f"from {os.environ['MODULE']} import {os.environ['CLASS']} as {exported}",s,count=1))
+          PY
+          mkdir -p "$ROOT"
+          python research/candidate-05/candidate.py pipeline --config research/candidate-05/config.json --weeks research/candidate-05/weeks.json --cache .cache/candidate-05-v51-promoted --output "$ROOT" --max-weeks 3 2>&1 | tee "$ROOT/console.log"
+      - name: Commit decision
+        if: always()
+        shell: bash
+        env:
+          LABEL: ${{ steps.choose.outputs.label }}
+          MODULE: ${{ steps.choose.outputs.module }}
+          CLASS: ${{ steps.choose.outputs.class }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          week=json.loads(Path('artifacts/v51-ablation-week1.json').read_text());root=Path('artifacts/v51-ablation-promoted')
+          def v(d,*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          rows=[]
+          for p in sorted(root.rglob('metrics.json')):
+              d=json.loads(p.read_text());growth=float(v(d,'geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0);trades=int(v(d,'trades','trade_count',default=0) or 0);wins=int(v(d,'wins','winning_trades',default=0) or 0);active=int(v(d,'active_days','trading_days',default=0) or 0);dd=float(v(d,'max_drawdown','maximum_drawdown',default=0) or 0);integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1;passed=integrity and growth>=.01 and trades>=7 and wins>=4 and active>=4 and dd<=.20;rows.append({'path':str(p),'growth':growth,'total_return':float(v(d,'total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':dd,'integrity':integrity,'pass':passed})
+          three=bool(os.environ.get('LABEL')) and len(rows)>=3 and all(row['pass'] for row in rows[:3]);out={'schema':'candidate-05-v51-ablation-result-v1','week1':week,'winner':{'label':os.environ.get('LABEL'),'module':os.environ.get('MODULE'),'class':os.environ.get('CLASS')} if os.environ.get('LABEL') else None,'rows':rows,'three_week_pass':three,'decision':'PROMOTE_TO_CONTINUOUS_30D' if three else 'DISCARD_ROLLING_VALUE_FAMILY'};Path('research/candidate-05/V51_ABLATION_RESULT.json').write_text(json.dumps(out,indent=2,sort_keys=True));print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V51_ABLATION_RESULT.json
+          git commit -m "candidate-05: record v51 controlled ablation [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v51-ablation-promoted
+          path: artifacts/v51-ablation-promoted/**
+          if-no-files-found: warn
+          retention-days: 90
