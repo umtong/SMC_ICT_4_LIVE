@@ -9,6 +9,10 @@ from typing import Any, Mapping
 import pandas as pd
 
 from event_signal_data import CausalTradeSignal
+from exact_timestamp_context import (
+    completed_second_label,
+    exact_local_bar_timestamps,
+)
 from nautilus_trader.model.identifiers import InstrumentId
 import run_local_liquidity_sweep_mss_retest as local
 from multiclock_sweep_mss_scenario import (
@@ -23,10 +27,16 @@ _BASE_SIGNAL_BUILDER = local.build_causal_signals
 
 
 def episode_key(item: Mapping[str, Any]) -> tuple[str, int, str]:
-    """Identify one source-liquidity episode independently of execution clock."""
+    """Identify one physical source-liquidity episode across clock encodings.
+
+    The same completed 15-second source bar can appear as the final nanosecond of
+    one wall-clock second on one path and as the exact next-second boundary after
+    a pandas float coercion on another. Episode ownership therefore uses the
+    causal completed-second label, while exact timestamps remain in the payload.
+    """
     return (
         str(item["source_pool_id"]),
-        int(item["sweep"]["timestamp_ns"]),
+        completed_second_label(int(item["sweep"]["timestamp_ns"])),
         str(item["direction"]),
     )
 
@@ -42,6 +52,7 @@ def select_first_retests(
     confirmation from the other clock cannot resurrect the same sweep.
     """
     grouped: dict[tuple[str, int, str], list[dict[str, Any]]] = defaultdict(list)
+    source_labels: dict[tuple[str, str], set[int]] = defaultdict(set)
     candidate_counts: Counter[str] = Counter()
     for execution_timeframe, report in (
         ("5S", five_report),
@@ -53,16 +64,35 @@ def select_first_retests(
             item = deepcopy(dict(raw))
             item["execution_timeframe"] = execution_timeframe
             item["structural_family"] = "15S_sweep_multiclock_first_retest"
-            grouped[episode_key(item)].append(item)
+            key = episode_key(item)
+            grouped[key].append(item)
+            source_labels[(key[0], key[2])].add(key[1])
             candidate_counts[execution_timeframe] += 1
+
+    inconsistent_sources = {
+        f"{source_pool_id}:{direction}": sorted(labels)
+        for (source_pool_id, direction), labels in source_labels.items()
+        if len(labels) > 1
+    }
+    if inconsistent_sources:
+        raise RuntimeError(
+            "one consumed source pool produced multiple physical sweep seconds: "
+            + json.dumps(inconsistent_sources, sort_keys=True)
+        )
 
     selected: list[dict[str, Any]] = []
     chosen_counts: Counter[str] = Counter()
     discarded_counts: Counter[str] = Counter()
     duplicate_episodes = 0
+    endpoint_precision_collisions = 0
     for key, candidates in grouped.items():
         if len(candidates) > 1:
             duplicate_episodes += 1
+        raw_sweep_timestamps = sorted(
+            {int(item["sweep"]["timestamp_ns"]) for item in candidates}
+        )
+        if len(raw_sweep_timestamps) > 1:
+            endpoint_precision_collisions += 1
         chosen = min(
             candidates,
             key=lambda item: (
@@ -73,8 +103,10 @@ def select_first_retests(
         )
         chosen["episode_key"] = {
             "source_pool_id": key[0],
-            "sweep_timestamp_ns": key[1],
+            "completed_sweep_second": key[1],
             "direction": key[2],
+            "sweep_timestamp_ns": int(chosen["sweep"]["timestamp_ns"]),
+            "candidate_sweep_timestamps_ns": raw_sweep_timestamps,
         }
         chosen["episode_selection"] = "FIRST_COMPLETED_VALID_RETEST"
         selected.append(chosen)
@@ -93,11 +125,16 @@ def select_first_retests(
         "candidate_counts": dict(sorted(candidate_counts.items())),
         "source_episodes": len(grouped),
         "duplicate_clock_episodes": duplicate_episodes,
+        "endpoint_precision_collisions": endpoint_precision_collisions,
         "selected_counts": dict(sorted(chosen_counts.items())),
         "discarded_later_confirmation_counts": dict(
             sorted(discarded_counts.items())
         ),
         "selection_rule": "first completed valid retest consumes the source episode",
+        "episode_identity": (
+            "source pool + completed wall-clock second + direction; exact "
+            "nanoseconds retained as evidence"
+        ),
         "future_information": False,
     }
     return selected, diagnostics
@@ -120,14 +157,15 @@ def discover_ensemble(
         end=end,
         require_retest=True,
     )
-    _, upstream_15, selected_15, contract_15 = discover_fifteen_second(
-        config=config,
-        bundle=bundle,
-        start=start,
-        end=end,
-        require_retest=True,
-        include_higher_sources=False,
-    )
+    with exact_local_bar_timestamps():
+        _, upstream_15, selected_15, contract_15 = discover_fifteen_second(
+            config=config,
+            bundle=bundle,
+            start=start,
+            end=end,
+            require_retest=True,
+            include_higher_sources=False,
+        )
     scenarios, selection = select_first_retests(selected_5, selected_15)
     active_days = sorted(
         {
@@ -161,6 +199,8 @@ def discover_ensemble(
         "source_timeframe": "15S",
         "execution_timeframes": ["5S", "15S"],
         "episode_arbitration": selection["selection_rule"],
+        "episode_identity": selection["episode_identity"],
+        "exact_fifteen_second_timestamps": True,
         "five_second_contract": contract_5,
         "fifteen_second_contract": contract_15,
         "selected_summary": summary,
