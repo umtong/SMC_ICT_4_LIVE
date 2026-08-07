@@ -90,6 +90,15 @@ jobs:
         run: |
           set -euo pipefail
           bash research/candidate-13/run_independent_week.sh "${{ matrix.week }}"
+      - name: Upload raw bars for one-shot independent path diagnostics
+        if: contains(github.event.head_commit.message, '[raw-independent]')
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate13-independent-raw-${{ matrix.week }}
+          path: research/candidate-13/independent/results/${{ matrix.week }}/data
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
       - name: Remove downloaded market archives from evidence payload
         if: always()
         shell: bash
