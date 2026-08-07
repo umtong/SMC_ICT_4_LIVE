@@ -259,6 +259,7 @@ class TestProductionBoundary(unittest.TestCase):
         source = (ROOT / "run.py").read_text(encoding="utf-8")
         self.assertIn("expire_time=datetime.fromtimestamp(", source)
         self.assertIn("tz=timezone.utc", source)
+        self.assertIn("+ timedelta(microseconds=1)", source)
         self.assertNotIn("expire_time=plan.expire_ts_ns", source)
 
 
