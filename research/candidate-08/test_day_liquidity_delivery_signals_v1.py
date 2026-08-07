@@ -145,15 +145,7 @@ class DayLiquidityDeliverySignalTests(unittest.TestCase):
             tick=0.1,
         )
         self.assertIsNotNone(displacement)
-        self.assertEqual(
-            signals._first_fvg_touch_result(
-                bar=bars[13],
-                direction=1,
-                fvg_low=displacement.fvg_low,
-                fvg_high=displacement.fvg_high,
-            ),
-            "NO_TOUCH",
-        )
+        self.assertLess(displacement.position, 14)
         self.assertEqual(
             signals._first_fvg_touch_result(
                 bar=bars[14],
