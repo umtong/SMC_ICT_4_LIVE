@@ -109,18 +109,17 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
             accepted_at_ns=event_time_ns,
         )
         if displaced is not None:
+            # The old auction owns its own state chain. Close that chain under
+            # its original scenario before activating the new scenario below.
             self._append_manual_event(
-                scenario_id=plan.scenario_id,
+                scenario_id=displaced.source_scenario_id,
                 previous_state="INITIATIVE_AUCTION_ACTIVE",
-                next_state="INITIATIVE_AUCTION_ACTIVE",
+                next_state=ScenarioState.IDLE.value,
                 reason_code="OPPOSITE_FAILED_REVERSAL_TRANSFERS_INITIATIVE",
                 event_time_ns=event_time_ns,
                 reference_price=plan.stop_price,
                 details={
-                    "displaced_source_scenario_id": (
-                        displaced.source_scenario_id
-                    ),
-                    "displaced_blocked_reversal_direction": (
+                    "blocked_reversal_direction": (
                         displaced.blocked_reversal_direction.value
                     ),
                     "displaced_initiative_direction": (
@@ -167,10 +166,12 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
         state = self._initiative_gate.observe_counter_acceptance(plan.direction)
         if state is None:
             return
+        # The acceptance plan keeps its own ENTRY_READY/order chain. The old
+        # initiative state is released under the scenario which created it.
         self._append_manual_event(
-            scenario_id=plan.scenario_id,
+            scenario_id=state.source_scenario_id,
             previous_state="INITIATIVE_AUCTION_ACTIVE",
-            next_state=ScenarioState.CONFIRMED.value,
+            next_state=ScenarioState.IDLE.value,
             reason_code="COUNTER_ACCEPTANCE_TRANSFERS_INITIATIVE",
             event_time_ns=event_time_ns,
             reference_price=plan.entry_reference,
@@ -178,8 +179,8 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
                 "blocked_reversal_direction": (
                     state.blocked_reversal_direction.value
                 ),
-                "released_source_scenario_id": state.source_scenario_id,
                 "released_initiative_direction": state.initiative_direction.value,
+                "counter_acceptance_scenario_id": plan.scenario_id,
                 "new_initiative_direction": plan.direction.value,
                 "accepted_source_level": state.accepted_source_level,
                 "opposing_delivery_price": state.opposing_delivery_price,
