@@ -36,7 +36,7 @@ jobs:
           fetch-depth: 0
           ref: research/candidate-11
 
-      - name: Run only when decision-v2 authorizes
+      - name: Run frozen independent balance-acceptance screen
         id: research
         shell: bash
         run: |
@@ -45,8 +45,9 @@ jobs:
           git pull --rebase origin research/candidate-11
           chmod +x research/candidate-11/run_microstructure_v3_gated_v2.sh
           mkdir -p research/candidate-11/results/MICROSTRUCTURE_V3
+          TRACE=research/candidate-11/results/MICROSTRUCTURE_V3/execution.txt
           set +e
-          bash research/candidate-11/run_microstructure_v3_gated_v2.sh > research/candidate-11/results/MICROSTRUCTURE_V3/execution.log 2>&1
+          bash research/candidate-11/run_microstructure_v3_gated_v2.sh > "$TRACE" 2>&1
           STATUS=$?
           set -e
           python - "$STATUS" <<'PY'
@@ -61,6 +62,10 @@ jobs:
               "success": int(sys.argv[1]) == 0,
           }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
+          if [ "$STATUS" -ne 0 ]; then
+            echo "--- balance-acceptance execution failure ---"
+            cat "$TRACE"
+          fi
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
       - name: Publish evidence on latest head
@@ -93,7 +98,7 @@ jobs:
             fi
           done
           if ! git diff --cached --quiet; then
-            git commit -m "candidate-11: record decision-v2 balance-acceptance evidence [skip ci]"
+            git commit -m "candidate-11: record isolated balance-acceptance evidence [skip ci]"
             git push origin HEAD:research/candidate-11
           fi
 
