@@ -1,0 +1,32 @@
+{
+  "schema": "candidate-14-holdout-infrastructure-patch-v1",
+  "created_utc": "2026-08-08",
+  "classification": "AUDIT_IDENTITY_ONLY_NO_ALPHA_CHANGE",
+  "triggering_failure": {
+    "workflow_run": 31208708935,
+    "failed_interval": "H04",
+    "exception": "EventLogError",
+    "message": "scenario 'AMBIGUOUS' state chain broke: expected previous_state='TERMINAL', got 'ARMED'"
+  },
+  "root_cause": "Independent both-sides-swept diagnostic events reused the literal scenario_id AMBIGUOUS, so the event-ledger validator joined unrelated terminal chains. The Nautilus run and strategy decision process had already completed; the failure occurred while validating the merged research event ledger.",
+  "frozen_preimage": {
+    "strategy_commit": "dfb180490b141fdafd5b5ac0b52d3dd0b842550d",
+    "logic_git_blob": "08ac6c0119c2e83039c864ff3a0aff06d6a75c75",
+    "original_statement": "self._event(\"AMBIGUOUS\", \"AMBIGUOUS_SWEEP\", ...)"
+  },
+  "transformation": {
+    "patch_file": "research/candidate-03/patch_candidate14_event_ids.py",
+    "new_statement": "ambiguous_scenario_id = f\"{self.instrument_id}-AMBIGUOUS-{bar.ts_ns}\"",
+    "purpose": "Give each diagnostic-only ambiguous sweep a deterministic causal identity.",
+    "allowed_diff": "One local identifier assignment and replacement of the literal diagnostic scenario_id argument.",
+    "workflow_enforcement": "Verify all 17 original blobs before patching; reject any diff outside logic.py; require the exact one-block diff; require the same patched logic SHA in all intervals."
+  },
+  "non_effects": [
+    "No detector condition changed.",
+    "No liquidity pool, auction state, FAR/AAC confirmation, market leadership or arbitration rule changed.",
+    "No candidate plan, direction, entry, stop, target, expiry or cost assumption changed.",
+    "No risk quantity, 3% loss budget, global slot, order type, fill model or NautilusTrader accounting changed.",
+    "No market outcome was used to define the transformation."
+  ],
+  "claim_treatment": "The exact origin blobs remain recorded in every source_lock. The patched runtime SHA is separately required to be identical across H01-H16 and any subsequent continuous frozen evaluation."
+}
