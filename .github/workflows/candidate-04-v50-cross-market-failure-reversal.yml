@@ -1,0 +1,110 @@
+name: candidate-04-v50-cross-market-failure-reversal
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v50-cross-market-failure-reversal.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      ROOT: artifacts/candidate-04-v50-cross-market-failure-reversal
+      EVIDENCE: research/candidate-04/evidence-v50-cross-market-failure-reversal.json
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v48-rich-*-31161557908
+          path: restored-rich
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31161557908
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Verify failed-expansion state and trusted execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/cross_market_information_transfer_compiler.py \
+            research/candidate-04/cross_market_information_transfer_compiler_v2.py \
+            research/candidate-04/cross_market_follower_failure_reversal_compiler.py \
+            research/candidate-04/run_v48_cross_market_evaluation.py \
+            research/candidate-04/nt_multi_asset_rich_backtest_v44.py
+          python -m unittest discover -s research/candidate-04/tests -p 'test_cross_market_information_transfer_compiler.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_cross_market_information_transfer_compiler_v2.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_cross_market_follower_failure_reversal_compiler.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_conditional_adverse_fill_risk_sizing.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_causal_risk_sizing.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_multi_asset_risk_evidence.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_multi_asset_rich_backtest_v44.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_trusted_execution_factory.py' -v
+
+      - name: Execute the identical unopened week in one NautilusTrader account
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python research/candidate-04/run_v48_cross_market_evaluation.py \
+            --compiler-script cross_market_follower_failure_reversal_compiler.py \
+            --candidate candidate-04-v50-cross-market-follower-failure-reversal \
+            --market-cause "BTC information event, follower tail expansion, completed opposite-flow and basis failure through the event open" \
+            --restored-rich restored-rich \
+            --source-feature-run 31161557908 \
+            --build-start 2025-07-19 \
+            --build-end 2025-07-27 \
+            --evaluation-start 2025-07-21 \
+            --evaluation-end 2025-07-27 \
+            --cache .cache/candidate-04-v50 \
+            --output "$ROOT" \
+            --evidence "$EVIDENCE"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v50-cross-market-failure-reversal-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v50-cross-market-failure-reversal
+            research/candidate-04/evidence-v50-cross-market-failure-reversal.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist V50 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE" 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record V50 cross-market failure reversal evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
