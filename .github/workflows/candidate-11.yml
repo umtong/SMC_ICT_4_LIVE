@@ -58,6 +58,7 @@ jobs:
           python research/candidate-11/apply_boundary_consumption.py
           python research/candidate-11/revert_rejected_episode_horizon.py
           python research/candidate-11/materialize_portfolio.py
+          python research/candidate-11/apply_partial_fill_fail_closed.py
           chmod +x research/candidate-11/ci_validate.sh
           if [ "${{ github.event_name }}" != "pull_request" ] && [ -n "$(git status --porcelain -- research/candidate-11)" ]; then
             git config user.name "candidate-11-bot"
@@ -110,13 +111,28 @@ jobs:
               "week_id", "daily_geometric_growth", "closed_trades", "win_rate",
               "payoff_ratio", "closed_trade_max_drawdown", "submitted_plans",
               "scenario_counts", "symbol_counts", "global_slot_overlap_count",
-              "liquidation_detected", "promising_gate_passed",
-              "complete_gate_passed", "success_claim",
+              "partial_entry_fail_closed_count", "liquidation_detected",
+              "promising_gate_passed", "complete_gate_passed", "success_claim",
           ):
               print(f"- **{key}**: `{metrics.get(key)}`")
           PY
             fi
           done
+          AUDIT="research/candidate-11/results/PORTFOLIO_$WEEK/evidence_audit.json"
+          if [ -s "$AUDIT" ]; then
+            python - "$AUDIT" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          audit = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print("## Independent execution-safety audit")
+          for key in (
+              "classification", "risk_budget_passed", "global_slot_passed",
+              "partial_entry_protection_passed", "no_liquidation_passed",
+          ):
+              print(f"- **{key}**: `{audit.get(key)}`")
+          PY
+          fi
 
       - name: Upload full evidence and tested source
         if: always()
