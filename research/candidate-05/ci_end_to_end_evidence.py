@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 
+FINAL_SHARED_PASS = "PROJECT_ONE_ACCOUNT_FOUR_SYMBOL_LONG_2024_2026H1_GATE_PASSED"
+
+
 def read_text(path: Path, default: str) -> str:
     return path.read_text(encoding="utf-8", errors="replace").strip() if path.exists() else default
 
@@ -96,20 +99,24 @@ def finalize_btc(
         }
     write(summary_path, summary)
     write(winner_path, winner)
-    lines = [
-        "# Candidate 05 Exact-Control BTC Research v3",
-        "",
-        f"- Classification: `{summary.get('classification')}`",
-        f"- Winner: `{summary.get('winner')}`",
-        f"- Verification: `{summary.get('verification_status')}`",
-        f"- Research process: `{summary.get('research_process_status')}`",
-        "",
-        "## Next action",
-        "",
-        str(summary.get("next_action")),
-        "",
-    ]
-    summary_path.with_suffix(".md").write_text("\n".join(lines), encoding="utf-8")
+    summary_path.with_suffix(".md").write_text(
+        "\n".join(
+            [
+                "# Candidate 05 Exact-Control BTC Research v3",
+                "",
+                f"- Classification: `{summary.get('classification')}`",
+                f"- Winner: `{summary.get('winner')}`",
+                f"- Verification: `{summary.get('verification_status')}`",
+                f"- Research process: `{summary.get('research_process_status')}`",
+                "",
+                "## Next action",
+                "",
+                str(summary.get("next_action")),
+                "",
+            ],
+        ),
+        encoding="utf-8",
+    )
     return summary, winner
 
 
@@ -163,7 +170,7 @@ def combine(
     source_commit: str,
     workflow_run_id: str,
 ) -> dict[str, Any]:
-    if shared.get("classification") == "PROJECT_ONE_ACCOUNT_FOUR_SYMBOL_91D_GATE_PASSED":
+    if shared.get("classification") == FINAL_SHARED_PASS:
         classification = "PROJECT_GOAL_REACHED_ONE_ACCOUNT_FOUR_SYMBOLS"
         winner = shared.get("winner")
         next_action = shared.get("next_action")
@@ -176,7 +183,7 @@ def combine(
         winner = None
         next_action = shared.get("next_action")
     result = {
-        "schema": "candidate-05-end-to-end-research-v3",
+        "schema": "candidate-05-end-to-end-research-v4",
         "source_commit": source_commit,
         "workflow_run_id": workflow_run_id,
         "classification": classification,
@@ -192,17 +199,23 @@ def combine(
             "risk_fraction": 0.03,
             "global_constraint": "unfilled new-entry intents plus open positions <= 1",
             "whole_period_geometric_daily_growth_goal": 0.01,
+            "final_evaluation_start": "2024-01-01",
+            "final_evaluation_end": "2026-06-30",
+            "final_calendar_days": 912,
+            "ninety_one_days_is_promotion_only": True,
         },
     }
     write(output, result)
     lines = [
-        "# Candidate 05 End-to-End Research v3",
+        "# Candidate 05 End-to-End Research",
         "",
         f"- Final classification: `{result.get('classification')}`",
         f"- Final winner: `{result.get('winner')}`",
         f"- BTC classification: `{btc_summary.get('classification')}`",
         f"- BTC winner state: `{btc_winner.get('classification')}`",
         f"- Shared-account classification: `{shared.get('classification')}`",
+        "",
+        "A 91-day result is a promotion screen only. Project success requires the 912-day 2024-01-01 through 2026-06-30 shared-account result.",
         "",
         "## Next action",
         "",

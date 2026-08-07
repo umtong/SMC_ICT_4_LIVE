@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 import unittest
 
+from shared_account_research import LONG_MIN_ACTIVE_DAYS
+from shared_account_research import LONG_MIN_TRADES
+from shared_account_research import LONG_MIN_WINS
 from shared_account_research import classify_30d
 from shared_account_research import classify_91d
+from shared_account_research import classify_long
 from shared_account_research import classify_three_weeks
 
 
@@ -25,9 +30,22 @@ class SharedAccountResearchGateTest(unittest.TestCase):
             "active_days": 12,
             "largest_winner_share": 0.20,
             "global_slot_audit": {"audit_pass": True},
+            "daily_returns": {},
         }
         value.update(overrides)
         return value
+
+    @staticmethod
+    def long_daily_returns(*, positive_months: int = 18):
+        values = {}
+        start = date(2024, 1, 1)
+        end = date(2026, 6, 30)
+        current = start
+        while current <= end:
+            month_index = (current.year - 2024) * 12 + current.month - 1
+            values[str(current)] = 0.0005 if month_index < positive_months else -0.0001
+            current += timedelta(days=1)
+        return values
 
     def test_three_week_gate_uses_whole_compound_not_each_week_one_percent(self) -> None:
         runs = [
@@ -48,10 +66,7 @@ class SharedAccountResearchGateTest(unittest.TestCase):
         ]
         decision = classify_three_weeks(runs)
         self.assertFalse(decision["passed"])
-        self.assertEqual(
-            decision["classification"],
-            "LOGIC_OR_ROBUSTNESS_FAILURE_SHARED_THREE_WEEKS",
-        )
+        self.assertEqual(decision["classification"], "LOGIC_OR_ROBUSTNESS_FAILURE_SHARED_THREE_WEEKS")
 
     def test_30d_gate_requires_goal_and_trade_density(self) -> None:
         run = self.make_run(
@@ -62,15 +77,13 @@ class SharedAccountResearchGateTest(unittest.TestCase):
             active_days=11,
             largest_winner_share=0.30,
         )
-        decision = classify_30d(run)
-        self.assertTrue(decision["passed"])
-
+        self.assertTrue(classify_30d(run)["passed"])
         run["trades"] = 10
         decision = classify_30d(run)
         self.assertFalse(decision["passed"])
         self.assertFalse(decision["checks"]["trades"])
 
-    def test_91d_final_gate_requires_slot_audit_and_dispersion(self) -> None:
+    def test_91d_is_promotion_not_project_completion(self) -> None:
         run = self.make_run(
             stage={"calendar_days": 91},
             geometric_daily_growth=0.012,
@@ -84,25 +97,49 @@ class SharedAccountResearchGateTest(unittest.TestCase):
         )
         decision = classify_91d(run)
         self.assertTrue(decision["passed"])
+        self.assertEqual(decision["classification"], "SHARED_ACCOUNT_91D_PROMOTION_PASSED")
+        self.assertTrue(decision["project_goal_not_yet_reached"])
+
+    def test_long_gate_requires_exact_2024_through_2026h1_and_dispersion(self) -> None:
+        run = self.make_run(
+            stage={
+                "calendar_days": 912,
+                "evaluation_start": "2024-01-01",
+                "evaluation_end": "2026-06-30",
+            },
+            geometric_daily_growth=0.012,
+            trades=LONG_MIN_TRADES,
+            wins=LONG_MIN_WINS,
+            win_rate=0.40,
+            active_days=LONG_MIN_ACTIVE_DAYS,
+            largest_winner_share=0.08,
+            max_drawdown=0.25,
+            global_slot_audit={"audit_pass": True},
+            daily_returns=self.long_daily_returns(positive_months=18),
+        )
+        decision = classify_long(run)
+        self.assertTrue(decision["passed"])
         self.assertEqual(
             decision["classification"],
-            "PROJECT_ONE_ACCOUNT_FOUR_SYMBOL_91D_GATE_PASSED",
+            "PROJECT_ONE_ACCOUNT_FOUR_SYMBOL_LONG_2024_2026H1_GATE_PASSED",
         )
 
-        run["global_slot_audit"] = {"audit_pass": False}
-        decision = classify_91d(run)
+        run["stage"] = {
+            "calendar_days": 91,
+            "evaluation_start": "2024-03-01",
+            "evaluation_end": "2024-05-30",
+        }
+        decision = classify_long(run)
         self.assertFalse(decision["passed"])
-        self.assertFalse(decision["checks"]["global_slot_audit"])
+        self.assertFalse(decision["checks"]["calendar_days_912"])
 
     def test_integrity_failure_is_implementation_not_logic(self) -> None:
         run = self.make_run(available=True, integrity_pass=False)
+        self.assertEqual(classify_30d(run)["classification"], "IMPLEMENTATION_OR_EVIDENCE_ERROR_SHARED_30D")
+        self.assertEqual(classify_91d(run)["classification"], "IMPLEMENTATION_OR_EVIDENCE_ERROR_SHARED_91D")
         self.assertEqual(
-            classify_30d(run)["classification"],
-            "IMPLEMENTATION_OR_EVIDENCE_ERROR_SHARED_30D",
-        )
-        self.assertEqual(
-            classify_91d(run)["classification"],
-            "IMPLEMENTATION_OR_EVIDENCE_ERROR_SHARED_91D",
+            classify_long(run)["classification"],
+            "IMPLEMENTATION_OR_EVIDENCE_ERROR_SHARED_LONG_2024_2026H1",
         )
 
 
