@@ -1,0 +1,84 @@
+name: candidate-05-v38-failure-path-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/v38_trade_cases.json"
+      - "research/candidate-05/failed_reversal_continuation_logic.py"
+      - "research/candidate-05/v38_failure_path_diagnostic.py"
+      - "research/candidate-05/tests/test_failed_reversal_continuation_logic.py"
+      - "research/candidate-05/tests/test_v38_failure_path_diagnostic.py"
+      - "research/candidate-05/V38B_RESULT.md"
+      - ".github/workflows/candidate-05-v38-failure-path-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v38-failure-path-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  observational-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v38-failure-path-diagnostic
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and observation contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Observe post-reversal continuation sequence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-05/v38_failure_path_diagnostic.py \
+            --cases research/candidate-05/v38_trade_cases.json \
+            --config research/candidate-05/config.json \
+            --cache .cache/candidate-05-v38-failure-path \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify diagnostic is observational only
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$ROOT/v38_failure_path_diagnostic.json"; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("artifacts/candidate-05-v38-failure-path-diagnostic/v38_failure_path_diagnostic.json")
+          payload = json.loads(path.read_text())
+          assert payload["method"]["engine"] == "OBSERVATIONAL_COMPLETED_BAR_DIAGNOSTIC_ONLY"
+          assert payload["method"]["creates_orders_or_pnl"] is False
+          assert len(payload["cases"]) == 11
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+          fi
+          if test -f "$ROOT/console.log"; then tail -n 300 "$ROOT/console.log"; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v38-failure-path-diagnostic-${{ github.sha }}
+          path: artifacts/candidate-05-v38-failure-path-diagnostic/**
+          if-no-files-found: error
+          retention-days: 90
