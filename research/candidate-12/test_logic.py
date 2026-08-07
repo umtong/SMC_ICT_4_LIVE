@@ -40,6 +40,11 @@ def config(**kwargs: object) -> LogicConfig:
         "reacceptance_displacement_body_atr": 0.2,
         "active_retest_body_atr": 0.1,
         "passive_retest_body_atr": 0.2,
+        "delayed_rejection_fvg_body_atr": 0.2,
+        "low_acceptance_displacement_body_atr": 0.2,
+        "low_acceptance_pullback_body_atr": 0.1,
+        "low_acceptance_fvg_min_atr": 0.05,
+        "low_reacceptance_body_atr": 0.2,
     }
     values.update(kwargs)
     return LogicConfig(**values)
@@ -214,7 +219,7 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(plan.details["target_semantics"], "PRIOR_ACCEPTANCE_EXPANSION_HIGH")
         self.assertAlmostEqual(plan.target_price, 115.0)
 
-    def test_completed_source_cannot_emit_second_trade_plan(self) -> None:
+    def test_opposite_boundaries_have_independent_causal_lifecycles(self) -> None:
         y, m, d = self.DAY
         engine = CausalLiquidityAuctionEngine(config(), "X")
         self.seed_asia(engine)
@@ -222,12 +227,17 @@ class LogicTests(unittest.TestCase):
         first = engine._on_five(bar(ts(y, m, d, 6, 10), 103, 103.5, 99.5, 100), True)
         self.assertIsNotNone(first)
         state = engine._sources[SessionLabel.ASIA]
-        self.assertTrue(state.trade_plan_emitted)
-        # A later opposite-boundary interaction from the same completed range is consumed.
+        self.assertTrue(state.high_plan_emitted)
+        self.assertFalse(state.low_plan_emitted)
+        # Buy-side and sell-side liquidity are distinct causal boundaries.
         self.assertIsNone(
-            engine._on_five(bar(ts(y, m, d, 6, 15), 96, 97, 90, 96), True)
+            engine._on_five(bar(ts(y, m, d, 6, 15), 89, 98, 88, 97), True)
         )
-        self.assertIsNone(state.low_rejection)
+        second = engine._on_five(bar(ts(y, m, d, 6, 20), 96, 100, 95, 99), True)
+        self.assertIsNotNone(second)
+        assert second is not None
+        self.assertEqual(second.scenario, ScenarioKind.ASIA_LOW_REJECTION)
+        self.assertTrue(state.low_plan_emitted)
 
     def test_london_failed_acceptance_cannot_use_asia_reacceptance_route(self) -> None:
         y, m, d = self.DAY
@@ -244,6 +254,74 @@ class LogicTests(unittest.TestCase):
             event.details.get("route") == "FAILED_FIRST_ACCEPTANCE_THEN_FRESH_ASIA_REACCEPTANCE"
             for event in engine.events
         ))
+
+    def test_delayed_asia_high_rejection_uses_one_bar_fvg_limit(self) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(config(), "X")
+        self.seed_asia(engine)
+        # Raid and strong reclaim, but the immediate next bar is not displacement.
+        engine._on_five(bar(ts(y, m, d, 6, 5), 107, 108, 101, 104), True)
+        engine._on_five(bar(ts(y, m, d, 6, 10), 104, 104.5, 102.5, 103.8), True)
+        # Later bearish displacement creates a causal FVG while the raid extreme holds.
+        engine._on_five(bar(ts(y, m, d, 6, 15), 103.8, 104, 102, 103), True)
+        engine._on_five(bar(ts(y, m, d, 6, 20), 103, 103.2, 98, 99), True)
+        decision_ts = ts(y, m, d, 6, 25)
+        plan = engine._on_five(bar(decision_ts, 99.8, 101, 99.2, 99.5), True)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.scenario, ScenarioKind.ASIA_HIGH_DELAYED_REJECTION)
+        self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
+        self.assertEqual(plan.expire_ts_ns, decision_ts + 5 * NS_MINUTE)
+
+    def test_low_acceptance_requires_failed_pullback_near_completed_boundary(self) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(config(), "X")
+        self.seed_asia(engine)
+        engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
+        engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 91, 92), True)
+        engine._on_five(bar(ts(y, m, d, 6, 15), 92, 96.1, 90, 93), True)
+        decision_ts = ts(y, m, d, 6, 20)
+        plan = engine._on_five(bar(decision_ts, 93, 95.2, 92.8, 94.8), True)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.scenario, ScenarioKind.ASIA_LOW_ACCEPTANCE)
+        self.assertEqual(plan.direction, Direction.SHORT)
+        self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
+        self.assertEqual(plan.expire_ts_ns, decision_ts + 5 * NS_MINUTE)
+
+    def test_low_acceptance_does_not_chase_far_below_boundary(self) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(
+            config(low_acceptance_max_entry_distance_atr=0.1),
+            "X",
+        )
+        self.seed_asia(engine)
+        engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
+        engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 87, 88), True)
+        engine._on_five(bar(ts(y, m, d, 6, 15), 88, 91, 86, 87), True)
+        self.assertIsNone(
+            engine._on_five(bar(ts(y, m, d, 6, 20), 87, 90, 86.5, 89.5), True)
+        )
+        self.assertEqual(engine.skips["LOW_ACCEPTANCE_PULLBACK_NOT_STRUCTURAL"], 1)
+
+    def test_failed_premium_low_acceptance_can_reaccept_bearishly(self) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(config(), "X")
+        # Complete Asia at premium: high 105, low 95, close 103.
+        engine._on_five(bar(ts(y, m, d, 0, 5), 100, 101, 99, 100), True)
+        engine._on_five(bar(ts(y, m, d, 0, 10), 100, 102, 98, 100), True)
+        engine._on_five(bar(ts(y, m, d, 6, 0), 100, 105, 95, 103), True)
+        engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
+        engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 91, 92), True)
+        engine._on_five(bar(ts(y, m, d, 6, 15), 92, 96.1, 90, 93), True)
+        # Initial downside acceptance fails back inside.
+        engine._on_five(bar(ts(y, m, d, 6, 20), 93, 97, 92, 96), True)
+        engine._on_five(bar(ts(y, m, d, 6, 25), 96, 96, 93, 94), True)
+        plan = engine._on_five(bar(ts(y, m, d, 6, 30), 94, 95, 89.5, 90), True)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.scenario, ScenarioKind.ASIA_LOW_REACCEPTANCE)
+        self.assertEqual(plan.entry_order, EntryOrder.MARKET)
 
     def test_target_consumed_before_decision_is_rejected(self) -> None:
         y, m, d = self.DAY

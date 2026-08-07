@@ -1,4 +1,4 @@
-"""Causal completed-session auction router for Candidate 12 I7.
+"""Causal completed-session auction router for Candidate 12 I8.
 
 The engine distinguishes economically different interactions with a completed
 Asia or London dealing range instead of forcing one candle pattern onto every
@@ -7,7 +7,10 @@ crossing:
 * premium-side buy-side raid -> failed auction rejection;
 * sell-side raid -> bullish rejection only after an explicit reclaim and MSS;
 * sustained buy-side acceptance -> bullish FVG mitigation and continuation;
-* Asia high acceptance which fails back inside -> one fresh FVG re-acceptance.
+* Asia high acceptance which fails back inside -> one fresh FVG re-acceptance;
+* sell-side acceptance -> bearish FVG, failed pullback, and protected continuation;
+* failed sell-side acceptance -> Asia bearish re-acceptance;
+* strong Asia high reclaim without immediate follow-through -> delayed bearish FVG mitigation.
 
 Every decision uses completed five-minute observations only.  The module emits
 trade plans; NautilusTrader remains the sole matching, fill, fee, margin,
@@ -52,6 +55,10 @@ class ScenarioKind(str, Enum):
     ASIA_HIGH_ACCEPTANCE = "ASIA_HIGH_ACCEPTANCE"
     LONDON_HIGH_ACCEPTANCE = "LONDON_HIGH_ACCEPTANCE"
     ASIA_HIGH_REACCEPTANCE = "ASIA_HIGH_REACCEPTANCE"
+    ASIA_HIGH_DELAYED_REJECTION = "ASIA_HIGH_DELAYED_REJECTION"
+    ASIA_LOW_ACCEPTANCE = "ASIA_LOW_ACCEPTANCE"
+    LONDON_LOW_ACCEPTANCE = "LONDON_LOW_ACCEPTANCE"
+    ASIA_LOW_REACCEPTANCE = "ASIA_LOW_REACCEPTANCE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +102,28 @@ class LogicConfig:
     asia_high_min_pre_raid_location: float = 0.25
     low_confirmation_body_atr: float = 0.50
     low_confirmation_min_close_location: float = 0.65
+    delayed_rejection_expiry_bars: int = 8
+    delayed_rejection_fvg_body_atr: float = 0.80
+    delayed_rejection_fvg_max_close_location: float = 0.35
+    delayed_rejection_fvg_max_boundary_distance_atr: float = 1.50
+
+    low_acceptance_displacement_body_atr: float = 0.80
+    low_acceptance_displacement_max_close_location: float = 0.60
+    low_acceptance_pullback_body_atr: float = 0.30
+    low_acceptance_pullback_min_close_location: float = 0.70
+    low_acceptance_fvg_min_atr: float = 0.20
+    low_acceptance_max_source_width_atr: float = 10.0
+    low_acceptance_max_entry_distance_atr: float = 0.50
+    low_acceptance_entry_buffer_atr: float = 0.10
+    low_acceptance_stop_buffer_atr: float = 0.20
+    low_acceptance_discount_close_cutoff: float = 0.35
+    low_acceptance_premium_close_cutoff: float = 0.65
+    low_acceptance_discount_projection: float = 1.00
+    low_acceptance_mid_projection: float = 0.50
+    low_reacceptance_body_atr: float = 0.60
+    low_reacceptance_max_close_location: float = 0.35
+    low_reacceptance_stop_buffer_atr: float = 0.20
+    low_reacceptance_projection: float = 0.60
 
     acceptance_closes: int = 2
     acceptance_displacement_body_atr: float = 0.80
@@ -127,6 +156,7 @@ class LogicConfig:
         positive_ints = (
             "bar_minutes", "atr_period", "reclaim_max_bars", "confirmation_bars",
             "acceptance_closes", "acceptance_retest_expiry_bars", "limit_entry_expiry_bars",
+            "delayed_rejection_expiry_bars",
         )
         for name in positive_ints:
             if int(getattr(self, name)) <= 0:
@@ -139,6 +169,11 @@ class LogicConfig:
             "reacceptance_displacement_body_atr", "active_retest_body_atr",
             "passive_retest_body_atr", "rejection_stop_buffer_atr",
             "fvg_stop_buffer_atr", "max_stop_atr",
+            "delayed_rejection_fvg_body_atr", "low_acceptance_displacement_body_atr",
+            "low_acceptance_pullback_body_atr", "low_acceptance_fvg_min_atr",
+            "low_acceptance_max_source_width_atr", "low_acceptance_max_entry_distance_atr",
+            "low_acceptance_entry_buffer_atr", "low_acceptance_stop_buffer_atr",
+            "low_reacceptance_body_atr", "low_reacceptance_stop_buffer_atr",
         ):
             if float(getattr(self, name)) <= 0:
                 raise ValueError(f"{name} must be positive")
@@ -162,6 +197,24 @@ class LogicConfig:
             raise ValueError("acceptance projections must be positive")
         if self.reacceptance_projection <= 0:
             raise ValueError("reacceptance projection must be positive")
+        if not 0 < self.delayed_rejection_fvg_max_close_location < 0.5:
+            raise ValueError("delayed rejection FVG must close in lower half")
+        if self.delayed_rejection_fvg_max_boundary_distance_atr <= 0:
+            raise ValueError("delayed rejection boundary distance must be positive")
+        if not 0 < self.low_acceptance_displacement_max_close_location < 1:
+            raise ValueError("invalid low-acceptance displacement location")
+        if not 0.5 < self.low_acceptance_pullback_min_close_location < 1:
+            raise ValueError("low-acceptance pullback must close in upper half")
+        if not 0 < self.low_acceptance_discount_close_cutoff < self.low_acceptance_premium_close_cutoff < 1:
+            raise ValueError("invalid low-acceptance source close cutoffs")
+        if not 0 < self.low_reacceptance_max_close_location < 0.5:
+            raise ValueError("low reacceptance must close in lower half")
+        if min(
+            self.low_acceptance_discount_projection,
+            self.low_acceptance_mid_projection,
+            self.low_reacceptance_projection,
+        ) <= 0:
+            raise ValueError("low-side projections must be positive")
         if self.max_stop_atr <= max(self.rejection_stop_buffer_atr, self.fvg_stop_buffer_atr):
             raise ValueError("max stop must exceed route buffers")
         if self.min_net_r < 0:
@@ -326,6 +379,16 @@ class BullFVG:
     displacement_close_location: float
 
 
+@dataclass(frozen=True, slots=True)
+class BearFVG:
+    lower: float
+    upper: float
+    formed_index: int
+    formed_ts_ns: int
+    displacement_body_atr: float
+    displacement_close_location: float
+
+
 @dataclass(slots=True)
 class _RangeBuilder:
     high: float = -math.inf
@@ -338,6 +401,8 @@ class SourceState:
     source: SessionRange
     min_since_activity_open: float = math.inf
     trade_plan_emitted: bool = False
+    high_plan_emitted: bool = False
+    low_plan_emitted: bool = False
     high_rejection: RaidEpisode | None = None
     high_rejection_done: bool = False
     low_rejection: RaidEpisode | None = None
@@ -353,6 +418,18 @@ class SourceState:
     had_high_acceptance: bool = False
     failed_high_acceptance: bool = False
     reacceptance_done: bool = False
+
+    outside_low_closes: int = 0
+    active_bear_fvg: BearFVG | None = None
+    low_acceptance_phase: str = "WATCH"
+    low_acceptance_started_index: int | None = None
+    low_acceptance_scenario_id: str | None = None
+    low_acceptance_attempted: bool = False
+    had_low_acceptance: bool = False
+    failed_low_acceptance: bool = False
+    low_acceptance_pullback_peak: float | None = None
+    low_reacceptance_outside_closes: int = 0
+    low_reacceptance_done: bool = False
 
 
 class CausalLiquidityAuctionEngine:
@@ -723,11 +800,37 @@ class CausalLiquidityAuctionEngine:
             state.low_rejection = None
             state.low_rejection_done = True
 
+    def _fresh_bear_fvg_general(self, bar: FiveBar) -> BearFVG | None:
+        if len(self._bars) < 2 or len(self._bar_atrs) < 2:
+            return None
+        first = self._bars[-2]
+        displacement = self._bars[-1]
+        displacement_atr = self._bar_atrs[-1]
+        if displacement_atr is None or displacement_atr <= 0:
+            return None
+        if not (
+            bar.high < first.low
+            and displacement.close < displacement.open
+            and displacement.body / displacement_atr
+            >= self.config.delayed_rejection_fvg_body_atr
+            and displacement.close_location
+            <= self.config.delayed_rejection_fvg_max_close_location
+        ):
+            return None
+        return BearFVG(
+            lower=bar.high,
+            upper=first.low,
+            formed_index=self._five_index,
+            formed_ts_ns=bar.ts_ns,
+            displacement_body_atr=displacement.body / displacement_atr,
+            displacement_close_location=displacement.close_location,
+        )
+
     def _advance_high_rejection(
         self, state: SourceState, bar: FiveBar, atr: float, allow_entry: bool
     ) -> TradePlan | None:
         source = state.source
-        if state.trade_plan_emitted:
+        if state.high_plan_emitted:
             return None
         if state.high_rejection_done:
             return None
@@ -772,6 +875,93 @@ class CausalLiquidityAuctionEngine:
                 self._invalidate_raid(state, "HIGH", bar, "HIGH_BOUNDARY_ACCEPTED_NOT_RECLAIMED")
             return None
 
+        if episode.phase == "WAIT_DELAYED_FVG":
+            assert episode.reclaim_index is not None
+            assert episode.reclaim_bar is not None and episode.atr_at_reclaim is not None
+            reclaim_atr = episode.atr_at_reclaim
+            invalidation = (
+                episode.extreme
+                + self.config.rejection_stop_buffer_atr * reclaim_atr
+            )
+            if bar.high >= invalidation or bar.close > source.high:
+                self._invalidate_raid(
+                    state,
+                    "HIGH",
+                    bar,
+                    "DELAYED_HIGH_REJECTION_INVALIDATED",
+                )
+                return None
+            if (
+                self._five_index - episode.reclaim_index
+                > self.config.delayed_rejection_expiry_bars
+            ):
+                self._invalidate_raid(
+                    state,
+                    "HIGH",
+                    bar,
+                    "DELAYED_HIGH_REJECTION_EXPIRED",
+                )
+                return None
+            fresh = self._fresh_bear_fvg_general(bar)
+            if fresh is None or bar.close >= source.high:
+                return None
+            boundary_distance = (source.high - fresh.upper) / atr
+            if (
+                fresh.upper > source.high + self.config.price_increment
+                or boundary_distance
+                > self.config.delayed_rejection_fvg_max_boundary_distance_atr
+            ):
+                self.skips["DELAYED_REJECTION_FVG_NOT_NEAR_SOURCE"] += 1
+                return None
+            target = (
+                source.high
+                - self.config.rejection_target_fraction * source.width
+            )
+            plan = self._costed_plan(
+                scenario_id=episode.scenario_id,
+                scenario=ScenarioKind.ASIA_HIGH_DELAYED_REJECTION,
+                direction=Direction.SHORT,
+                entry_order=EntryOrder.LIMIT_GTD,
+                observed_ts_ns=bar.ts_ns,
+                bar=bar,
+                atr=reclaim_atr,
+                entry_raw=fresh.upper,
+                stop_raw=invalidation,
+                target_raw=target,
+                expire_ts_ns=(
+                    bar.ts_ns
+                    + self.config.limit_entry_expiry_bars
+                    * self.config.bar_minutes
+                    * NS_MINUTE
+                ),
+                details={
+                    "source": source.label.value,
+                    "route": "DELAYED_BUY_SIDE_FAILED_AUCTION_FVG_MITIGATION",
+                    "session_high": source.high,
+                    "session_low": source.low,
+                    "session_width": source.width,
+                    "raid_extreme": episode.extreme,
+                    "sweep_ts_ns": episode.sweep_ts_ns,
+                    "reclaim_ts_ns": episode.reclaim_ts_ns,
+                    "fvg_lower": fresh.lower,
+                    "fvg_upper": fresh.upper,
+                    "fvg_formed_ts_ns": fresh.formed_ts_ns,
+                    "boundary_distance_atr": boundary_distance,
+                    "target_semantics": "COMPLETED_RANGE_DISCOUNT_OBJECTIVE",
+                },
+            )
+            state.high_rejection = None
+            state.high_rejection_done = True
+            if plan is None:
+                self.skips["DELAYED_HIGH_REJECTION_COSTED_PLAN_REJECTED"] += 1
+                return None
+            self.scenario_counts[
+                ScenarioKind.ASIA_HIGH_DELAYED_REJECTION.value
+            ] += 1
+            state.high_plan_emitted = True
+            state.trade_plan_emitted = True
+            return self._emit_plan(plan, allow_entry)
+
         assert episode.confirm_index is not None
         if self._five_index < episode.confirm_index:
             return None
@@ -792,7 +982,23 @@ class CausalLiquidityAuctionEngine:
                 and bar.close_location <= self.config.asia_high_confirmation_max_close_location
             )
             if not confirmed:
-                self._invalidate_raid(state, "HIGH", bar, "ASIA_HIGH_REJECTION_LACKED_CONFIRMATION")
+                episode.phase = "WAIT_DELAYED_FVG"
+                self.skips["ASIA_HIGH_REJECTION_IMMEDIATE_CONFIRMATION_ABSENT"] += 1
+                self._emit(
+                    scenario_id=episode.scenario_id,
+                    event_type="IMMEDIATE_REJECTION_CONFIRMATION_ABSENT",
+                    event_time_ns=bar.ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state="WAIT_DELAYED_FVG",
+                    reason_code="RAID_EXTREME_DEFENDED_BUT_NEXT_BAR_LACKED_DISPLACEMENT",
+                    reference_price=source.high,
+                    details={
+                        "source": source.label.value,
+                        "decision_body_atr": bar.body / atr,
+                        "decision_close_location": bar.close_location,
+                        "delayed_expiry_bars": self.config.delayed_rejection_expiry_bars,
+                    },
+                )
                 return None
         scenario = (
             ScenarioKind.ASIA_HIGH_REJECTION
@@ -832,6 +1038,7 @@ class CausalLiquidityAuctionEngine:
         if plan is None:
             self.skips["HIGH_REJECTION_COSTED_PLAN_REJECTED"] += 1
             return None
+        state.high_plan_emitted = True
         state.trade_plan_emitted = True
         return self._emit_plan(plan, allow_entry)
 
@@ -839,7 +1046,7 @@ class CausalLiquidityAuctionEngine:
         self, state: SourceState, bar: FiveBar, atr: float, allow_entry: bool
     ) -> TradePlan | None:
         source = state.source
-        if state.trade_plan_emitted:
+        if state.low_plan_emitted:
             return None
         if state.low_rejection_done:
             return None
@@ -928,8 +1135,342 @@ class CausalLiquidityAuctionEngine:
         if plan is None:
             self.skips["LOW_REJECTION_COSTED_PLAN_REJECTED"] += 1
             return None
+        state.low_plan_emitted = True
         state.trade_plan_emitted = True
         return self._emit_plan(plan, allow_entry)
+
+    def _fresh_bear_fvg(
+        self,
+        source: SessionRange,
+        bar: FiveBar,
+        atr: float,
+    ) -> BearFVG | None:
+        if len(self._bars) < 2 or len(self._bar_atrs) < 2:
+            return None
+        first = self._bars[-2]
+        displacement = self._bars[-1]
+        displacement_atr = self._bar_atrs[-1]
+        if displacement_atr is None or displacement_atr <= 0:
+            return None
+        if not (
+            bar.high < first.low
+            and displacement.close < displacement.open
+            and displacement.close < source.low
+            and bar.close < source.low
+            and displacement.body / displacement_atr
+            >= self.config.low_acceptance_displacement_body_atr
+            and displacement.close_location
+            <= self.config.low_acceptance_displacement_max_close_location
+            and bar.high
+            <= source.low + self.config.fvg_boundary_tolerance_atr * atr
+        ):
+            return None
+        return BearFVG(
+            lower=bar.high,
+            upper=first.low,
+            formed_index=self._five_index,
+            formed_ts_ns=bar.ts_ns,
+            displacement_body_atr=displacement.body / displacement_atr,
+            displacement_close_location=displacement.close_location,
+        )
+
+    def _advance_low_acceptance(
+        self,
+        state: SourceState,
+        bar: FiveBar,
+        atr: float,
+        allow_entry: bool,
+    ) -> TradePlan | None:
+        source = state.source
+        if state.low_plan_emitted:
+            return None
+
+        if (
+            state.had_low_acceptance
+            and state.low_acceptance_phase
+            in ("WAIT_PULLBACK", "MONITOR_FAILURE")
+            and bar.close >= source.low
+        ):
+            state.failed_low_acceptance = True
+            state.low_acceptance_phase = "WAIT_REACCEPT"
+            state.low_acceptance_pullback_peak = bar.high
+            state.low_reacceptance_outside_closes = 0
+            state.active_bear_fvg = None
+            sid = state.low_acceptance_scenario_id
+            if sid is None:
+                sid = self._next_scenario_id(source.label, "LOW-ACCEPTANCE-FAILURE")
+            self._emit(
+                scenario_id=sid,
+                event_type="LOW_ACCEPTANCE_FAILED_BACK_INSIDE",
+                event_time_ns=bar.ts_ns,
+                observed_time_ns=bar.ts_ns,
+                next_state="WAIT_REACCEPT",
+                reason_code="COMPLETED_CLOSE_RETURNED_INSIDE_SESSION_RANGE",
+                reference_price=source.low,
+                details={
+                    "source": source.label.value,
+                    "close": bar.close,
+                    "pullback_peak": bar.high,
+                },
+            )
+
+        if state.low_acceptance_phase == "WATCH":
+            if bar.close < source.low:
+                state.outside_low_closes += 1
+            else:
+                state.outside_low_closes = 0
+            fresh = self._fresh_bear_fvg(source, bar, atr)
+            if (
+                not state.low_acceptance_attempted
+                and fresh is not None
+            ):
+                state.active_bear_fvg = fresh
+            if (
+                not state.low_acceptance_attempted
+                and state.active_bear_fvg is not None
+                and state.outside_low_closes >= self.config.acceptance_closes
+            ):
+                state.had_low_acceptance = True
+                state.low_acceptance_started_index = self._five_index
+                state.low_acceptance_phase = (
+                    "WAIT_PULLBACK"
+                    if source.close_location
+                    <= self.config.low_acceptance_premium_close_cutoff
+                    else "MONITOR_FAILURE"
+                )
+                sid = self._next_scenario_id(source.label, "LOW-ACCEPTANCE")
+                state.low_acceptance_scenario_id = sid
+                self.scenario_counts[
+                    f"{source.label.value}_LOW_ACCEPTANCE"
+                ] += 1
+                self._emit(
+                    scenario_id=sid,
+                    event_type="SESSION_LOW_ACCEPTANCE_CONFIRMED",
+                    event_time_ns=state.active_bear_fvg.formed_ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state=state.low_acceptance_phase,
+                    reason_code="MULTI_CLOSE_DISPLACEMENT_CREATED_BEARISH_FVG_BELOW_RANGE",
+                    reference_price=source.low,
+                    details={
+                        "source": source.label.value,
+                        "source_close_location": source.close_location,
+                        "outside_closes": state.outside_low_closes,
+                        "fvg_lower": state.active_bear_fvg.lower,
+                        "fvg_upper": state.active_bear_fvg.upper,
+                        "displacement_body_atr": (
+                            state.active_bear_fvg.displacement_body_atr
+                        ),
+                    },
+                )
+            return None
+
+        if state.low_acceptance_phase == "WAIT_PULLBACK":
+            assert state.active_bear_fvg is not None
+            assert state.low_acceptance_started_index is not None
+            if (
+                self._five_index - state.low_acceptance_started_index
+                > self.config.acceptance_retest_expiry_bars
+            ):
+                state.low_acceptance_phase = "MONITOR_FAILURE"
+                self.skips["LOW_ACCEPTANCE_PULLBACK_EXPIRED"] += 1
+                return None
+            if (
+                bar.ts_ns <= state.active_bear_fvg.formed_ts_ns
+                or bar.close >= source.low
+            ):
+                return None
+            pullback = (
+                bar.close > bar.open
+                and bar.body / atr
+                >= self.config.low_acceptance_pullback_body_atr
+                and bar.close_location
+                >= self.config.low_acceptance_pullback_min_close_location
+                and bar.high <= state.active_bear_fvg.upper
+            )
+            if not pullback:
+                return None
+
+            state.low_acceptance_attempted = True
+            state.low_acceptance_phase = "MONITOR_FAILURE"
+            fvg = state.active_bear_fvg
+            entry_raw = min(
+                fvg.lower,
+                bar.high + self.config.low_acceptance_entry_buffer_atr * atr,
+            )
+            source_width_atr = source.width / atr
+            fvg_width_atr = (fvg.upper - fvg.lower) / atr
+            entry_distance_atr = (source.low - entry_raw) / atr
+            structurally_eligible = (
+                source_width_atr
+                <= self.config.low_acceptance_max_source_width_atr
+                and fvg_width_atr >= self.config.low_acceptance_fvg_min_atr
+                and entry_distance_atr
+                <= self.config.low_acceptance_max_entry_distance_atr
+            )
+            if not structurally_eligible:
+                self.skips["LOW_ACCEPTANCE_PULLBACK_NOT_STRUCTURAL"] += 1
+                self._emit(
+                    scenario_id=state.low_acceptance_scenario_id
+                    or self._next_scenario_id(source.label, "LOW-ACCEPTANCE"),
+                    event_type="LOW_ACCEPTANCE_PULLBACK_REJECTED",
+                    event_time_ns=bar.ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state="MONITOR_FAILURE",
+                    reason_code="SOURCE_WIDTH_FVG_OR_ENTRY_DISTANCE_NOT_STRUCTURAL",
+                    reference_price=entry_raw,
+                    details={
+                        "source": source.label.value,
+                        "source_width_atr": source_width_atr,
+                        "fvg_width_atr": fvg_width_atr,
+                        "entry_distance_atr": entry_distance_atr,
+                    },
+                )
+                return None
+
+            projection = (
+                self.config.low_acceptance_discount_projection
+                if source.close_location
+                <= self.config.low_acceptance_discount_close_cutoff
+                else self.config.low_acceptance_mid_projection
+            )
+            scenario = (
+                ScenarioKind.ASIA_LOW_ACCEPTANCE
+                if source.label is SessionLabel.ASIA
+                else ScenarioKind.LONDON_LOW_ACCEPTANCE
+            )
+            target = source.low - projection * source.width
+            plan = self._costed_plan(
+                scenario_id=state.low_acceptance_scenario_id
+                or self._next_scenario_id(source.label, "LOW-ACCEPTANCE"),
+                scenario=scenario,
+                direction=Direction.SHORT,
+                entry_order=EntryOrder.LIMIT_GTD,
+                observed_ts_ns=bar.ts_ns,
+                bar=bar,
+                atr=atr,
+                entry_raw=entry_raw,
+                stop_raw=(
+                    fvg.upper
+                    + self.config.low_acceptance_stop_buffer_atr * atr
+                ),
+                target_raw=target,
+                expire_ts_ns=(
+                    bar.ts_ns
+                    + self.config.limit_entry_expiry_bars
+                    * self.config.bar_minutes
+                    * NS_MINUTE
+                ),
+                details={
+                    "source": source.label.value,
+                    "route": "SELL_SIDE_ACCEPTANCE_FAILED_PULLBACK_LIMIT",
+                    "session_high": source.high,
+                    "session_low": source.low,
+                    "session_width": source.width,
+                    "source_close_location": source.close_location,
+                    "fvg_lower": fvg.lower,
+                    "fvg_upper": fvg.upper,
+                    "fvg_formed_ts_ns": fvg.formed_ts_ns,
+                    "pullback_high": bar.high,
+                    "pullback_close": bar.close,
+                    "source_width_atr": source_width_atr,
+                    "fvg_width_atr": fvg_width_atr,
+                    "entry_distance_atr": entry_distance_atr,
+                    "target_projection": projection,
+                    "target_semantics": "COMPLETED_RANGE_DOWNSIDE_PROJECTION",
+                },
+            )
+            if plan is None:
+                self.skips["LOW_ACCEPTANCE_COSTED_PLAN_REJECTED"] += 1
+                return None
+            self.scenario_counts[scenario.value] += 1
+            state.low_plan_emitted = True
+            state.trade_plan_emitted = True
+            return self._emit_plan(plan, allow_entry)
+
+        if state.low_acceptance_phase == "WAIT_REACCEPT":
+            if (
+                source.label is not SessionLabel.ASIA
+                or source.close_location
+                < self.config.low_acceptance_premium_close_cutoff
+                or state.low_reacceptance_done
+            ):
+                return None
+            if bar.close >= source.low:
+                state.low_acceptance_pullback_peak = max(
+                    state.low_acceptance_pullback_peak or bar.high,
+                    bar.high,
+                )
+                state.low_reacceptance_outside_closes = 0
+                return None
+            state.low_reacceptance_outside_closes += 1
+            previous = self._bars[-1] if self._bars else None
+            confirmed = (
+                state.low_reacceptance_outside_closes
+                >= self.config.acceptance_closes
+                and previous is not None
+                and bar.close < bar.open
+                and bar.body / atr
+                >= self.config.low_reacceptance_body_atr
+                and bar.close_location
+                <= self.config.low_reacceptance_max_close_location
+                and bar.close < previous.low
+            )
+            if not confirmed:
+                return None
+            state.low_reacceptance_done = True
+            pullback_peak = state.low_acceptance_pullback_peak
+            if pullback_peak is None:
+                self.skips["LOW_REACCEPTANCE_MISSING_PULLBACK_PEAK"] += 1
+                return None
+            target = (
+                source.low
+                - self.config.low_reacceptance_projection * source.width
+            )
+            scenario_id = self._next_scenario_id(
+                source.label,
+                "LOW-REACCEPTANCE",
+            )
+            plan = self._costed_plan(
+                scenario_id=scenario_id,
+                scenario=ScenarioKind.ASIA_LOW_REACCEPTANCE,
+                direction=Direction.SHORT,
+                entry_order=EntryOrder.MARKET,
+                observed_ts_ns=bar.ts_ns,
+                bar=bar,
+                atr=atr,
+                entry_raw=bar.close,
+                stop_raw=(
+                    pullback_peak
+                    + self.config.low_reacceptance_stop_buffer_atr * atr
+                ),
+                target_raw=target,
+                expire_ts_ns=None,
+                details={
+                    "source": source.label.value,
+                    "route": "FAILED_LOW_ACCEPTANCE_THEN_BEARISH_ASIA_REACCEPTANCE",
+                    "session_high": source.high,
+                    "session_low": source.low,
+                    "session_width": source.width,
+                    "source_close_location": source.close_location,
+                    "pullback_peak": pullback_peak,
+                    "outside_closes": state.low_reacceptance_outside_closes,
+                    "decision_body_atr": bar.body / atr,
+                    "decision_close_location": bar.close_location,
+                    "decision_flow": bar.signed_flow,
+                    "target_semantics": "SIXTY_PERCENT_COMPLETED_RANGE_DOWNSIDE_PROJECTION",
+                },
+            )
+            if plan is None:
+                self.skips["LOW_REACCEPTANCE_COSTED_PLAN_REJECTED"] += 1
+                return None
+            self.scenario_counts[
+                ScenarioKind.ASIA_LOW_REACCEPTANCE.value
+            ] += 1
+            state.low_plan_emitted = True
+            state.trade_plan_emitted = True
+            return self._emit_plan(plan, allow_entry)
+
+        return None
 
     def _fresh_bull_fvg(self, source: SessionRange, bar: FiveBar, atr: float) -> BullFVG | None:
         if len(self._bars) < 2 or len(self._bar_atrs) < 2:
@@ -1062,7 +1603,7 @@ class CausalLiquidityAuctionEngine:
         self, state: SourceState, bar: FiveBar, atr: float, allow_entry: bool
     ) -> TradePlan | None:
         source = state.source
-        if state.trade_plan_emitted:
+        if state.high_plan_emitted:
             return None
         # A completed close back inside terminates the current acceptance and
         # creates the only causal prerequisite for an Asia re-acceptance route.
@@ -1110,6 +1651,7 @@ class CausalLiquidityAuctionEngine:
                     self.skips["ASIA_REACCEPTANCE_COSTED_PLAN_REJECTED"] += 1
                     return None
                 self.scenario_counts[ScenarioKind.ASIA_HIGH_REACCEPTANCE.value] += 1
+                state.high_plan_emitted = True
                 state.trade_plan_emitted = True
                 return self._emit_plan(plan, allow_entry)
 
@@ -1244,6 +1786,7 @@ class CausalLiquidityAuctionEngine:
             if plan is None:
                 self.skips["HIGH_ACCEPTANCE_COSTED_PLAN_REJECTED"] += 1
                 return None
+            state.high_plan_emitted = True
             state.trade_plan_emitted = True
             return self._emit_plan(plan, allow_entry)
 
@@ -1305,6 +1848,7 @@ class CausalLiquidityAuctionEngine:
             if plan is None:
                 self.skips["ACCEPTANCE_REACCELERATION_COSTED_PLAN_REJECTED"] += 1
                 return None
+            state.high_plan_emitted = True
             state.trade_plan_emitted = True
             return self._emit_plan(plan, allow_entry)
 
@@ -1349,6 +1893,11 @@ class CausalLiquidityAuctionEngine:
 
                 route_allow = allow_entry and plan is None
                 candidate = self._advance_high_acceptance(state, bar, atr, route_allow)
+                if candidate is not None and plan is None:
+                    plan = candidate
+
+                route_allow = allow_entry and plan is None
+                candidate = self._advance_low_acceptance(state, bar, atr, route_allow)
                 if candidate is not None and plan is None:
                     plan = candidate
         self._bars.append(bar)

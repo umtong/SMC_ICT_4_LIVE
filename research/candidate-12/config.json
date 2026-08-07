@@ -1,29 +1,88 @@
 {
-  "schema_version": 7,
-  "candidate": "candidate-12-causal-session-auction-router",
+  "schema_version": 8,
+  "candidate": "candidate-12-two-sided-causal-session-auction-router",
   "selection": {
     "seed": 2026080712,
-    "selection_rule": "Frozen seven-day starts selected before candidate-12 market inspection. I7 uses exposed W1/W2/W4/W5 only for causal design diagnosis, must re-pass W1 first, then re-pass W5 implementation evidence, and may advance only to previously untouched W6 confirmation.",
+    "selection_rule": "W1/W2/W4/W5/W6 are exposed design evidence. I8 must re-pass W1 first. Only then may it open W7, frozen before data inspection by Python random.Random(20260808).choice over 2022-01-01..2025-12-24 daily starts at least 21 days from W1-W6; selected W7 is 2025-07-22..2025-07-29 UTC.",
     "warmup_days": 4,
     "evaluation_days": 7,
     "design_week": "W1",
-    "implementation_week": "W5",
-    "diagnostic_weeks": ["W2", "W4"],
-    "confirmation_week": "W6",
+    "confirmation_week": "W7",
     "weeks": {
-      "W1": {"start": "2023-06-25", "end_exclusive": "2023-07-02"},
-      "W2": {"start": "2023-09-24", "end_exclusive": "2023-10-01"},
-      "W3": {"start": "2025-03-31", "end_exclusive": "2025-04-07"},
-      "W4": {"start": "2024-04-14", "end_exclusive": "2024-04-21"},
-      "W5": {"start": "2024-05-14", "end_exclusive": "2024-05-21"},
-      "W6": {"start": "2023-02-08", "end_exclusive": "2023-02-15"}
-    }
+      "W1": {
+        "start": "2023-06-25",
+        "end_exclusive": "2023-07-02"
+      },
+      "W2": {
+        "start": "2023-09-24",
+        "end_exclusive": "2023-10-01"
+      },
+      "W3": {
+        "start": "2025-03-31",
+        "end_exclusive": "2025-04-07"
+      },
+      "W4": {
+        "start": "2024-04-14",
+        "end_exclusive": "2024-04-21"
+      },
+      "W5": {
+        "start": "2024-05-14",
+        "end_exclusive": "2024-05-21"
+      },
+      "W6": {
+        "start": "2023-02-08",
+        "end_exclusive": "2023-02-15"
+      },
+      "W7": {
+        "start": "2025-07-22",
+        "end_exclusive": "2025-07-29"
+      }
+    },
+    "development_weeks": [
+      "W2",
+      "W4",
+      "W5",
+      "W6"
+    ],
+    "confirmation_seed": 20260808
   },
   "symbols": {
-    "BTCUSDT": {"base_currency": "BTC", "price_precision": 1, "price_increment": "0.1", "size_precision": 3, "size_increment": "0.001", "min_quantity": "0.001", "min_notional": "10"},
-    "ETHUSDT": {"base_currency": "ETH", "price_precision": 2, "price_increment": "0.01", "size_precision": 3, "size_increment": "0.001", "min_quantity": "0.001", "min_notional": "10"},
-    "SOLUSDT": {"base_currency": "SOL", "price_precision": 3, "price_increment": "0.001", "size_precision": 1, "size_increment": "0.1", "min_quantity": "0.1", "min_notional": "5"},
-    "XRPUSDT": {"base_currency": "XRP", "price_precision": 4, "price_increment": "0.0001", "size_precision": 1, "size_increment": "0.1", "min_quantity": "0.1", "min_notional": "5"}
+    "BTCUSDT": {
+      "base_currency": "BTC",
+      "price_precision": 1,
+      "price_increment": "0.1",
+      "size_precision": 3,
+      "size_increment": "0.001",
+      "min_quantity": "0.001",
+      "min_notional": "10"
+    },
+    "ETHUSDT": {
+      "base_currency": "ETH",
+      "price_precision": 2,
+      "price_increment": "0.01",
+      "size_precision": 3,
+      "size_increment": "0.001",
+      "min_quantity": "0.001",
+      "min_notional": "10"
+    },
+    "SOLUSDT": {
+      "base_currency": "SOL",
+      "price_precision": 3,
+      "price_increment": "0.001",
+      "size_precision": 1,
+      "size_increment": "0.1",
+      "min_quantity": "0.1",
+      "min_notional": "5"
+    },
+    "XRPUSDT": {
+      "base_currency": "XRP",
+      "price_precision": 4,
+      "price_increment": "0.0001",
+      "size_precision": 1,
+      "size_increment": "0.1",
+      "min_quantity": "0.1",
+      "min_notional": "5"
+    }
   },
   "account": {
     "starting_nav": "100000",
@@ -43,7 +102,7 @@
     "random_seed": 2026080712,
     "bar_adaptive_high_low_ordering": true,
     "tick_slippage_units_in_risk_budget": 2.0,
-    "note": "NautilusTrader exclusively owns matching, fills, contingent orders, fees, margin, positions, and NAV. Risk sizing reserves taker entry and stop costs even for a potentially marketable protected limit, maker target cost, slippage, market impact, and funding uncertainty."
+    "note": "NautilusTrader exclusively owns matching, fills, contingent orders, fees, margin, positions, and NAV. Buy-side and sell-side session boundaries have independent causal lifecycles, while the strategy adapter enforces one global pending-entry/open-position slot. Risk sizing reserves taker entry and stop costs even for a potentially marketable protected limit, maker target cost, slippage, market impact, and funding uncertainty."
   },
   "logic": {
     "bar_minutes": 5,
@@ -82,7 +141,28 @@
     "risk_fraction": 0.03,
     "effective_maker_rate": 0.0004,
     "effective_taker_rate": 0.0008,
-    "tick_slippage_units": 2.0
+    "tick_slippage_units": 2.0,
+    "delayed_rejection_expiry_bars": 8,
+    "delayed_rejection_fvg_body_atr": 0.8,
+    "delayed_rejection_fvg_max_close_location": 0.35,
+    "delayed_rejection_fvg_max_boundary_distance_atr": 1.5,
+    "low_acceptance_displacement_body_atr": 0.8,
+    "low_acceptance_displacement_max_close_location": 0.6,
+    "low_acceptance_pullback_body_atr": 0.3,
+    "low_acceptance_pullback_min_close_location": 0.7,
+    "low_acceptance_fvg_min_atr": 0.2,
+    "low_acceptance_max_source_width_atr": 10.0,
+    "low_acceptance_max_entry_distance_atr": 0.5,
+    "low_acceptance_entry_buffer_atr": 0.1,
+    "low_acceptance_stop_buffer_atr": 0.2,
+    "low_acceptance_discount_close_cutoff": 0.35,
+    "low_acceptance_premium_close_cutoff": 0.65,
+    "low_acceptance_discount_projection": 1.0,
+    "low_acceptance_mid_projection": 0.5,
+    "low_reacceptance_body_atr": 0.6,
+    "low_reacceptance_max_close_location": 0.35,
+    "low_reacceptance_stop_buffer_atr": 0.2,
+    "low_reacceptance_projection": 0.6
   },
   "gates": {
     "diagnostic_promise": {
