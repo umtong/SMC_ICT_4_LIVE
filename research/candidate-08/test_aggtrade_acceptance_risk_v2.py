@@ -45,13 +45,21 @@ class RiskAccountingContracts(unittest.TestCase):
         self.assertIn("float(signal.causal_stop_slippage_reserve)", source)
         self.assertIn('intent["stop_slippage_reserve_per_unit"]', source)
         self.assertIn('intent["fill_adjusted_expected_stop_loss"]', source)
-        self.assertIn("the inherited on_position_opened callback", source)
+        self.assertIn(
+            "FIRST_COMPLETED_TEN_SECOND_BAR_STRICTLY_AFTER_POSITION_OPEN",
+            source,
+        )
         fill_handler = source[
-            source.index("def on_order_filled") : source.index(
-                "def _clean_execution_risk_breach"
-            )
+            source.index("def on_order_filled") : source.index("def on_position_opened")
         ]
+        position_handler = source[
+            source.index("def on_position_opened") : source.index("def on_bar")
+        ]
+        bar_handler = source[source.index("def on_bar") : source.index("def on_position_closed")]
         self.assertNotIn("self._request_exit(", fill_handler)
+        self.assertNotIn("self._request_exit(", position_handler)
+        self.assertIn("int(bar.ts_event) <= int(pending_after_ns)", bar_handler)
+        self.assertIn("self._request_exit(", bar_handler)
         self.assertNotIn("risk_multiplier", source)
         self.assertNotIn("maximum_notional", source)
 
