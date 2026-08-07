@@ -1,0 +1,140 @@
+{
+  "candidate": "candidate-01 v37 quarter-hour algorithmic auction continuation",
+  "candidate_version": 37,
+  "protocol_frozen_at_utc": "2026-08-07T03:45:00Z",
+  "research_question": "Does a cost-resolved first-ten-second displacement at a standardized quarter-hour boundary, followed by completed one-minute acceptance outside a prior two-sided dealing range, continue toward the nearest causally confirmed unswept external five-minute swing liquidity more reliably than the identical event at ordinary five-minute boundaries?",
+  "economic_logic": {
+    "liquidity_formation": "The immediately preceding 15 completed UTC minutes must form a two-sided dealing range with at least two completed-close midpoint crossings and width of at least four per-side cost units.",
+    "algorithmic_clock": "The source paper documents concentration of trade count, dollar volume, volatility and directional order-flow information in the first ten seconds of quarter-hour boundaries on Binance perpetual futures. The clock is treated as a structural coordination mechanism, not a profitable signal by itself.",
+    "liquidity_collection": "The first ten seconds must open inside the frozen range and close at least one 7-bp all-in per-side cost beyond one boundary with aligned aggressive flow.",
+    "acceptance": "The entire boundary minute must close beyond the same cost-resolved boundary with aligned aggregate aggressive flow. Entry waits until the first later official futures TradeTick.",
+    "destination": "The nearest causally confirmed, still-unswept five-minute swing liquidity level beyond the signal-minute extreme, searched only in the prior 72 hours.",
+    "invalidation": "Completed reacceptance through dealing-range equilibrium; the fixed protective stop is one 7-bp cost buffer beyond the frozen midpoint.",
+    "cost_constraint": "The paper does not establish an immediately tradable edge and its average ten-second effect is smaller than round-trip costs. Therefore the candidate does not trade clock activity without cost-resolved displacement, minute acceptance and an external liquidity destination. NautilusTrader retains the existing cost-dominated and net-reward-risk gates."
+  },
+  "pattern_scenario_separation": {
+    "pattern_detector": "detect_clock_auction_pattern emits only the frozen dealing range, first-ten-second displacement and completed-minute acceptance observation.",
+    "scenario_router": "route_pattern finds a confirmed unswept external swing, maps midpoint invalidation and external destination, and labels quarter-hour versus ordinary five-minute clock class.",
+    "execution": "run_nautilus_tick_plan_backtest receives completed plans and official aggregate trades represented one-for-one as TradeTicks; NautilusTrader exclusively owns orders, fills, commissions, margin, positions, PnL and NAV."
+  },
+  "data_contract": {
+    "source": "Official Binance Vision daily BTCUSDT USD-M futures aggTrades archives",
+    "integrity": "Every ZIP must match its published SHA-256 CHECKSUM before parsing.",
+    "timestamp_normalization": "Exchange timestamps are normalized to nanoseconds by the existing authoritative aggTrade adapter.",
+    "clock": "Exact UTC minute and ten-second boundaries. The impulse is [minute start, +10 seconds); the scenario is not available until the complete boundary minute ends.",
+    "execution_stream": "Official aggregate trades are represented one-for-one as NautilusTrader TradeTicks."
+  },
+  "frozen_parameters": {
+    "balance_minutes": 15,
+    "minimum_midpoint_crosses": 2,
+    "minimum_balance_width_fraction": 0.0028,
+    "minimum_balance_width_basis": "Four times 7 bps; not PnL fitted.",
+    "impulse_seconds": 10,
+    "minimum_displacement_fraction": 0.0007,
+    "minimum_displacement_basis": "One frozen all-in per-side cost; not PnL fitted.",
+    "liquidity_swing_bar_minutes": 5,
+    "liquidity_swing_radius_bars": 2,
+    "liquidity_lookback_hours": 72,
+    "risk_fraction_current_nav": 0.03,
+    "all_in_cost_bps_per_side": 7.0,
+    "maximum_hold_hours": 4.0,
+    "global_pending_entry_plus_position_limit": 1
+  },
+  "primary": {
+    "rule": "quarter-hour-clock-primary",
+    "clock_minutes_of_hour": [0, 15, 30, 45]
+  },
+  "single_ablation": {
+    "rule": "ordinary-five-minute-clock-control",
+    "clock_minutes_of_hour": [5, 10, 20, 25, 35, 40, 50, 55],
+    "removed_variable": "Quarter-hour clock salience only.",
+    "held_identical": [
+      "dealing-range definition",
+      "first-ten-second displacement",
+      "completed-minute acceptance",
+      "aggressive-flow direction",
+      "external-liquidity target ledger",
+      "midpoint invalidation",
+      "entry",
+      "risk",
+      "cost",
+      "maximum hold",
+      "execution engine"
+    ]
+  },
+  "week_selection": {
+    "pool": "Every UTC Monday from 2020-01-06 through 2025-12-29 inclusive with official BTCUSDT USD-M archive eligibility.",
+    "excluded_recent_candidate_weeks": [
+      "2020-11-23",
+      "2021-10-04",
+      "2022-11-28",
+      "2024-02-26",
+      "2025-05-12",
+      "2025-11-24",
+      "2024-01-01",
+      "2021-03-01",
+      "2022-01-24"
+    ],
+    "seed": "candidate-01-v37-quarter-hour-auction",
+    "algorithm": "For every eligible Monday compute SHA256(seed + '|' + ISO-date), sort lexicographically by full digest, and take the first three.",
+    "frozen_weeks": [
+      "2021-06-14",
+      "2020-08-17",
+      "2025-05-05"
+    ],
+    "staging": "Run week 1 only. Week 2 opens only after the unchanged primary weekly gate and quarter-hour/control discrimination comparison advance. Week 3 opens only after the unchanged week-2 gate and discrimination comparison advance."
+  },
+  "weekly_gate": {
+    "operational": [
+      "NautilusTrader authoritative execution",
+      "ended flat",
+      "zero global-entry-gate violations",
+      "zero protective-order failures",
+      "zero liquidation markers",
+      "seven daily NAV marks",
+      "checksum, exact-clock, swing-confirmation and causality assertions"
+    ],
+    "full_pass": {
+      "closed_positions_min": 7,
+      "win_rate_min": 0.45,
+      "total_return_strictly_positive": true,
+      "geometric_daily_return_min": 0.01,
+      "profit_factor_min": 1.2,
+      "max_drawdown_greater_than": -0.2
+    },
+    "promising_but_not_complete": {
+      "closed_positions_min": 7,
+      "win_rate_min": 0.45,
+      "total_return_strictly_positive": true,
+      "geometric_daily_return_min": 0.0075,
+      "profit_factor_min": 1.1,
+      "max_drawdown_greater_than": -0.15
+    },
+    "ablation_discrimination_required": "Primary must have at least seven trades and strictly improve win rate, total return, geometric daily return, profit factor and maximum drawdown over the ordinary-five-minute control."
+  },
+  "long_evaluation_policy": "Closed until all three frozen BTC weeks advance unchanged. ETHUSDT, SOLUSDT and XRPUSDT remain closed until BTC demonstrates repeatable post-cost alpha.",
+  "research_basis": [
+    {
+      "type": "current_primary_research",
+      "source": "Kim and Hansen, The Quarter-Hour Effect: Periodic Algorithmic Trading and Return Predictability in Cryptocurrency Futures, arXiv:2607.09426 (2026)",
+      "supported_point": "Binance perpetual futures show first-ten-second quarter-hour bursts and directional order-flow information for later returns."
+    },
+    {
+      "type": "market_microstructure",
+      "source": "Cont, Kukanov and Stoikov, The Price Impact of Order Book Events, Journal of Financial Econometrics (2014)",
+      "supported_point": "Directional aggressive-flow imbalance is required alongside price displacement."
+    },
+    {
+      "type": "official_data_documentation",
+      "source": "binance/binance-public-data",
+      "supported_point": "USD-M aggTrades schemas, daily archives and per-file checksums."
+    }
+  ],
+  "prohibited_adaptations_after_week_1": [
+    "Changing any clock, range, displacement, swing, stop, target, hold, risk or cost parameter because of week-1 PnL",
+    "Adding session, volatility, direction or score filters to rescue the candidate",
+    "Replacing the external-liquidity target with an arbitrary fixed reward-risk target",
+    "Changing the selected weeks",
+    "Running a long period after a failed first-week gate"
+  ]
+}
