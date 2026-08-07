@@ -8,7 +8,7 @@ Selected: none
 
 |variant|week|eligible|gate|geom/day|trades|wins|win rate|PF|max DD|failures|
 |---|---:|---|---|---:|---:|---:|---:|---:|---:|---|
-|adom_defense_origin_limit|1|True|False|-2.509694%|11|1|9.09%|0.35764757171456135|18.25%|geometric_daily_nav_growth, win_rate, positive_trade_count, profit_concentration, no_runtime_errors|
+|adom_defense_origin_limit|1|True|False|-2.509694%|11|1|9.09%|0.35764757171456135|18.25%|geometric_daily_nav_growth, win_rate, positive_trade_count, profit_concentration|
 |adom_market_after_defense_reference|1|False|False|0.940899%|5|2|40.00%|1.6830733587475866|10.07%|geometric_daily_nav_growth, trade_count, win_rate, positive_trade_count, profit_concentration|
 
 ## Reference regression
