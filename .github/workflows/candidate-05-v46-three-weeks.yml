@@ -1,0 +1,113 @@
+name: candidate-05-v46-three-frozen-btc-weeks
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v46-three-weeks.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v46-three-frozen-btc-weeks
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  frozen-weeks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v46-three-weeks
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and v46 contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v45_external_active_inventory_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_breakaway_state_logic.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v46_no_post_retrace_breakaway_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_basis_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_reset_logic.py' -v
+
+      - name: Run three preselected BTC weeks through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          python research/candidate-05/v40_active/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks research/candidate-05/weeks.json \
+            --cache .cache/candidate-05-v46-three-weeks \
+            --output "$ROOT" \
+            --max-weeks 3 \
+            2>&1 | tee "$ROOT-console.log"
+
+      - name: Build cross-week decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          rows = []
+          for path in sorted(root.glob("week-*/metrics.json")):
+              value = json.loads(path.read_text())
+              rows.append({
+                  "path": str(path),
+                  "evaluation_start": value.get("evaluation_start"),
+                  "evaluation_end": value.get("evaluation_end"),
+                  "total_return": value.get("total_return"),
+                  "geometric_daily_growth": value.get("geometric_daily_growth"),
+                  "trades": value.get("trades"),
+                  "wins": value.get("wins"),
+                  "losses": value.get("losses"),
+                  "win_rate": value.get("win_rate"),
+                  "profit_factor": value.get("profit_factor"),
+                  "max_drawdown": value.get("max_drawdown"),
+                  "liquidations": value.get("liquidations"),
+                  "order_rejections": value.get("order_rejections"),
+                  "order_denials": value.get("order_denials"),
+              })
+          integrity = len(rows) == 3 and all(
+              int(row.get("liquidations") or 0) == 0
+              and int(row.get("order_rejections") or 0) == 0
+              and int(row.get("order_denials") or 0) == 0
+              for row in rows
+          )
+          decision = {
+              "schema": "candidate-05-v46-three-frozen-weeks-v1",
+              "rows": rows,
+              "integrity_pass": integrity,
+              "all_weeks_positive": integrity and all(float(row.get("total_return") or 0.0) > 0.0 for row in rows),
+              "aggregate_trades": sum(int(row.get("trades") or 0) for row in rows),
+              "aggregate_wins": sum(int(row.get("wins") or 0) for row in rows),
+          }
+          (root / "cross_week_decision.json").write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          if test -f "$ROOT/pipeline_summary.json"; then python -m json.tool "$ROOT/pipeline_summary.json"; fi
+          if test -f "$ROOT/errors.log"; then cat "$ROOT/errors.log"; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v46-three-weeks-${{ github.sha }}
+          path: |
+            artifacts/candidate-05-v46-three-weeks/**
+            artifacts/candidate-05-v46-three-weeks-console.log
+          if-no-files-found: warn
+          retention-days: 90
