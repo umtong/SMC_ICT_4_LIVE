@@ -1,0 +1,220 @@
+name: candidate-05-final-controller
+
+on:
+  workflow_run:
+    workflows:
+      - "candidate-05-master-v2-promotion"
+      - "candidate-05-v46-selective-evidence"
+      - "candidate-05-v47-promotion"
+      - "candidate-05-late-candidate-promotion"
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-final-controller
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  final-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-final-controller
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+          fetch-depth: 0
+
+      - name: Resolve the strongest 91-day BTC/shared candidate
+        id: resolve
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,math,os
+          root=Path('research/candidate-05')
+          candidates=[]
+          def add(label,module,cls,result,shared_91=False,model=None):
+              d91=(result or {}).get('continuous_91d') or {}
+              if d91.get('pass') is not True:return
+              candidates.append({'label':label,'module':module,'class':cls,'growth':float(d91.get('growth',0.0)),'max_drawdown':float(d91.get('max_drawdown',math.inf)),'shared_91_already':shared_91,'model':model,'source':result})
+          p=root/'MASTER_V2_PROMOTION_RESULT.json'
+          if p.exists():
+              data=json.loads(p.read_text());w=data.get('winner') or {};add(w.get('label','master'),w.get('module',''),w.get('class',''),data,False)
+          p=root/'V46_RESULT.json'
+          if p.exists():
+              data=json.loads(p.read_text());add('v46','strategy_v46_selective_evidence','SelectiveEvidenceStrategy',data,False,str(root/'v46_model.json'))
+          p=root/'V47_PROMOTION_RESULT.json'
+          if p.exists():
+              data=json.loads(p.read_text());add('v47','strategy_v47_relative_value','RelativeValueDislocationStrategy',data,True)
+          p=root/'LATE_PROMOTION_RESULT.json'
+          if p.exists():
+              data=json.loads(p.read_text());w=data.get('winner') or {};add(w.get('label','late'),w.get('module',''),w.get('class',''),data,False)
+          winner=max(candidates,key=lambda item:(item['growth'],-item['max_drawdown'])) if candidates else None
+          Path('artifacts').mkdir(exist_ok=True);Path('artifacts/final-resolved-winner.json').write_text(json.dumps({'candidates':candidates,'winner':winner},indent=2,sort_keys=True))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write(f"passed={str(winner is not None).lower()}\nlabel={winner['label'] if winner else ''}\nmodule={winner['module'] if winner else ''}\nclass={winner['class'] if winner else ''}\nshared={str(winner['shared_91_already']).lower() if winner else 'false'}\nmodel={winner.get('model') or '' if winner else ''}\n")
+          print(json.dumps({'candidates':candidates,'winner':winner},indent=2,sort_keys=True))
+          PY
+
+      - name: Stop when no 91-day candidate has earned promotion
+        if: steps.resolve.outputs.passed != 'true'
+        run: echo 'No candidate has passed the 91-day promotion gate.'
+
+      - name: Verify and inject winner into existing shared-account runner
+        if: steps.resolve.outputs.passed == 'true'
+        shell: bash
+        env:
+          MODULE: ${{ steps.resolve.outputs.module }}
+          CLASS: ${{ steps.resolve.outputs.class }}
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python - <<'PY'
+          from pathlib import Path
+          import importlib,os
+          module=importlib.import_module(os.environ['MODULE']);cls=getattr(module,os.environ['CLASS'])
+          Path('research/candidate-05/strategy_v36_cross_asset_repricing_gate.py').write_text(
+              f"from {os.environ['MODULE']} import {os.environ['CLASS']}\n"
+              f"CrossAssetRepricingGateStrategy = {os.environ['CLASS']}\n"
+              f"CandidateStrategy = {os.environ['CLASS']}\n"
+              f"StrategyClass = {os.environ['CLASS']}\n",
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Run actual one-account four-symbol 91-day transfer
+        if: steps.resolve.outputs.passed == 'true' && steps.resolve.outputs.shared != 'true'
+        id: shared91
+        shell: bash
+        env:
+          CANDIDATE05_V46_MODEL: ${{ github.workspace }}/research/candidate-05/v46_model.json
+          WINNER_PREFIX: ${{ steps.resolve.outputs.label }}
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_workflow_adapter_v2.py \
+            --workflow .github/workflows/candidate-05-v36-shared-screen.yml \
+            --output-root "$ROOT" \
+            --label shared-91d \
+            --warmup 2024-02-28 \
+            --start 2024-03-01 \
+            --end 2024-05-30
+          python - <<'PY'
+          from pathlib import Path
+          import json,os
+          root=Path('artifacts/candidate-05-final-controller/shared-91d');prefix=os.environ['WINNER_PREFIX'].lower();metrics=list(root.rglob('metrics.json'))
+          if not metrics:raise RuntimeError('no shared 91d metrics')
+          def score(path):
+              text=str(path).lower();return (int('v36' in text or 'candidate' in text),int('control' not in text),path.stat().st_size)
+          path=max(metrics,key=score);d=json.loads(path.read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0);trades=int(v('trades','trade_count',default=0) or 0);wins=int(v('wins','winning_trades',default=0) or 0);active=int(v('active_days','trading_days',default=0) or 0);dd=float(v('max_drawdown','maximum_drawdown',default=0) or 0);integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1 and int(d.get('max_global_slot_owners',d.get('max_combined_entry_and_position',1)) or 0)<=1;passed=integrity and growth>=.01 and trades>=60 and wins>=36 and active>=45 and dd<=.35
+          out={'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':dd,'integrity':integrity,'pass':passed,'metrics_path':str(path)};Path('artifacts/candidate-05-final-controller/shared-91d-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True));print(json.dumps(out,indent=2,sort_keys=True));open(os.environ['GITHUB_OUTPUT'],'a').write(f'passed={str(passed).lower()}\n')
+          PY
+
+      - name: Accept existing shared v47 91-day proof
+        if: steps.resolve.outputs.passed == 'true' && steps.resolve.outputs.shared == 'true'
+        id: shared91existing
+        shell: bash
+        run: echo 'passed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Run final 2024-01-01 through 2026-06-30 shared-account evaluation
+        if: steps.resolve.outputs.passed == 'true' && (steps.shared91.outputs.passed == 'true' || steps.shared91existing.outputs.passed == 'true')
+        id: final912
+        shell: bash
+        env:
+          CANDIDATE05_V46_MODEL: ${{ github.workspace }}/research/candidate-05/v46_model.json
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_workflow_adapter_v2.py \
+            --workflow .github/workflows/candidate-05-v36-shared-screen.yml \
+            --output-root "$ROOT" \
+            --label final-912d \
+            --warmup 2023-12-30 \
+            --start 2024-01-01 \
+            --end 2026-06-30
+          python - <<'PY'
+          from pathlib import Path
+          import json,math,os
+          import pandas as pd
+          root=Path('artifacts/candidate-05-final-controller/final-912d');metrics=list(root.rglob('metrics.json'))
+          if not metrics:raise RuntimeError('no final shared metrics')
+          def path_score(path):
+              text=str(path).lower();return (int('v36' in text or 'candidate' in text),int('control' not in text),path.stat().st_size)
+          path=max(metrics,key=path_score);d=json.loads(path.read_text())
+          def v(*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          growth=float(v('geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0);trades=int(v('trades','trade_count',default=0) or 0);wins=int(v('wins','winning_trades',default=0) or 0);active=int(v('active_days','trading_days',default=0) or 0);dd=float(v('max_drawdown','maximum_drawdown',default=0) or 0)
+          position_files=list(path.parent.rglob('positions.csv')) or list(root.rglob('positions.csv'));pnls=[]
+          for csv in position_files:
+              try:frame=pd.read_csv(csv)
+              except:continue
+              columns=[column for column in frame.columns if 'pnl' in str(column).lower() and 'unreal' not in str(column).lower()]
+              if columns:pnls.extend(pd.to_numeric(frame[columns[0]],errors='coerce').dropna().astype(float).tolist())
+          gross=sum(value for value in pnls if value>0.0);largest=max((value for value in pnls if value>0.0),default=0.0);largest_share=largest/gross if gross>0.0 else 1.0
+          positive_months=0;months=0
+          equity_files=list(path.parent.rglob('equity.csv')) or list(root.rglob('equity.csv'))
+          for csv in equity_files[:1]:
+              try:frame=pd.read_csv(csv)
+              except:continue
+              time_cols=[column for column in frame.columns if any(token in str(column).lower() for token in ('time','timestamp','ts_event','date'))];nav_cols=[column for column in frame.columns if any(token in str(column).lower() for token in ('nav','equity','balance'))]
+              if not time_cols or not nav_cols:continue
+              ts=pd.to_datetime(frame[time_cols[0]],utc=True,errors='coerce');nav=pd.to_numeric(frame[nav_cols[0]],errors='coerce');series=pd.Series(nav.values,index=ts).dropna().sort_index();monthly=series.resample('ME').last().pct_change().dropna();months=len(monthly);positive_months=int((monthly>0.0).sum())
+          integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1 and int(d.get('max_global_slot_owners',d.get('max_combined_entry_and_position',1)) or 0)<=1
+          passed=integrity and growth>=.01 and trades>=600 and wins>=360 and active>=450 and dd<=.35 and largest_share<=.10 and (months==0 or (months>=29 and positive_months>=18))
+          out={'evaluation_start':'2024-01-01','evaluation_end':'2026-06-30','calendar_days':912,'growth':growth,'total_return':float(v('total_return',default=0) or 0),'trades':trades,'wins':wins,'win_rate':wins/trades if trades else 0.0,'active_days':active,'max_drawdown':dd,'largest_winner_share':largest_share,'months_observed':months,'positive_months':positive_months,'integrity':integrity,'pass':passed,'metrics_path':str(path)};Path('artifacts/candidate-05-final-controller/final-912d-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True));print(json.dumps(out,indent=2,sort_keys=True));open(os.environ['GITHUB_OUTPUT'],'a').write(f'passed={str(passed).lower()}\n')
+          PY
+
+      - name: Commit final verdict and activate only a fully validated winner
+        if: always() && steps.resolve.outputs.passed == 'true'
+        shell: bash
+        env:
+          LABEL: ${{ steps.resolve.outputs.label }}
+          MODULE: ${{ steps.resolve.outputs.module }}
+          CLASS: ${{ steps.resolve.outputs.class }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,os,re
+          root=Path('artifacts/candidate-05-final-controller')
+          def load(name):
+              p=root/name
+              return json.loads(p.read_text()) if p.exists() else None
+          resolved=json.loads(Path('artifacts/final-resolved-winner.json').read_text());shared=load('shared-91d-assessment.json');final=load('final-912d-assessment.json');passed=bool(final and final.get('pass'))
+          result={'schema':'candidate-05-final-controller-v1','winner':resolved.get('winner'),'shared_91d':shared,'final_912d':final,'decision':'AUDITED_PROJECT_GOAL_REACHED_ONE_ACCOUNT_FOUR_SYMBOLS' if passed else 'PROJECT_GOAL_NOT_REACHED'};Path('research/candidate-05/FINAL_VALIDATION_RESULT.json').write_text(json.dumps(result,indent=2,sort_keys=True))
+          if passed:
+              p=Path('research/candidate-05/strategy.py');s=p.read_text();pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE);m=pattern.search(s)
+              if m is None:raise RuntimeError(f'active v26 import not found: {s!r}')
+              exported=m.group(2) or m.group(1);p.write_text(pattern.sub(f"from {os.environ['MODULE']} import {os.environ['CLASS']} as {exported}",s,count=1))
+          print(json.dumps(result,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/FINAL_VALIDATION_RESULT.json research/candidate-05/strategy.py
+          git commit -m "candidate-05: record final shared-account verdict"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.resolve.outputs.passed == 'true'
+        with:
+          name: candidate-05-final-controller-${{ github.sha }}
+          path: artifacts/candidate-05-final-controller/**
+          if-no-files-found: warn
+          retention-days: 90
