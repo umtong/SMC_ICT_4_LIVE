@@ -1,0 +1,209 @@
+name: candidate-04-v45c-risk-repair-and-ablation
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v45c-risk-repair-and-ablation.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      ROOT: artifacts/candidate-04-v45c-risk-repair-and-ablation
+      EVIDENCE: research/candidate-04/evidence-v45c-risk-repair-and-ablation.json
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Verify isolated implementation repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/nt_conditional_adverse_fill_risk_sizing.py \
+            research/candidate-04/nt_backtest_v45_conditional_adverse_fill.py \
+            research/candidate-04/ablate_compiled_scenario.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_conditional_adverse_fill_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_causal_risk_sizing.py' -v
+
+      - name: Restore identical frozen V45b week-two signals
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-04-v45b-progressive-untouched-btc-31157625404
+          path: restored-v45b
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31157625404
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Re-run identical week with repaired sizing and one logic ablation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          signals="$(find restored-v45b -type f -path '*untouched_2_2024_09/routes/full/signals/signals.json' | head -n1)"
+          summary="$(find restored-v45b -type f -path '*untouched_2_2024_09/routes/full/signals/summary.json' | head -n1)"
+          test -s "$signals"
+          test -s "$summary"
+          mkdir -p "$ROOT/full/signals" "$ROOT/ablation/signals"
+          cp "$signals" "$ROOT/full/signals/signals.json"
+          cp "$summary" "$ROOT/full/signals/summary.json"
+
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$ROOT/full/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v45_conditional_adverse_fill.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start 2024-09-21 \
+            --build-end 2024-09-29 \
+            --evaluation-start 2024-09-23 \
+            --evaluation-end 2024-09-29 \
+            --cache .cache/candidate-04-v45c/full \
+            --output "$ROOT/full/nautilus" \
+            > "$ROOT/full/nautilus.log"
+          python research/candidate-04/summarize_candidate_week.py \
+            --root "$ROOT/full" \
+            --candidate candidate-04-v45c-conditional-adverse-fill \
+            --stage identical-week-two-full \
+            --min-trades 3 \
+            --min-active-days 2 \
+            --min-win-rate 0.50 \
+            --min-geometric-daily 0.0 \
+            --output "$ROOT/full/summary.json" \
+            > "$ROOT/full/summary.log"
+
+          python research/candidate-04/ablate_compiled_scenario.py \
+            --input-signals "$ROOT/full/signals/signals.json" \
+            --input-summary "$ROOT/full/signals/summary.json" \
+            --remove NON_CLIMACTIC_PARENT_AUCTION_RESUMPTION \
+            --candidate candidate-04-v45c-one-scenario-ablation \
+            --output "$ROOT/ablation/signals" \
+            > "$ROOT/ablation/filter.log"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$ROOT/ablation/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v45_conditional_adverse_fill.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start 2024-09-21 \
+            --build-end 2024-09-29 \
+            --evaluation-start 2024-09-23 \
+            --evaluation-end 2024-09-29 \
+            --cache .cache/candidate-04-v45c/ablation \
+            --output "$ROOT/ablation/nautilus" \
+            > "$ROOT/ablation/nautilus.log"
+          python research/candidate-04/summarize_candidate_week.py \
+            --root "$ROOT/ablation" \
+            --candidate candidate-04-v45c-one-scenario-ablation \
+            --stage identical-week-two-ablation \
+            --min-trades 1 \
+            --min-active-days 1 \
+            --min-win-rate 0.50 \
+            --min-geometric-daily 0.0 \
+            --output "$ROOT/ablation/summary.json" \
+            > "$ROOT/ablation/summary.log"
+
+      - name: Record implementation and logic decisions separately
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          full_path = root / "full/summary.json"
+          ablation_path = root / "ablation/summary.json"
+          full = json.loads(full_path.read_text()) if full_path.exists() else None
+          ablation = json.loads(ablation_path.read_text()) if ablation_path.exists() else None
+          implementation_repaired = bool(full and full.get("risk_pass"))
+          logic_failed = bool(
+              implementation_repaired
+              and full
+              and float(full.get("total_return") or 0.0) <= 0.0
+              and ablation
+              and float(ablation.get("total_return") or 0.0) <= 0.0
+          )
+          evidence = {
+              "candidate": "candidate-04-v45c-risk-repair-and-ablation",
+              "engine": "NautilusTrader 1.230.0 BacktestNode",
+              "source_workflow_run": 31157625404,
+              "identical_evaluation_week": {
+                  "build_start": "2024-09-21",
+                  "build_end": "2024-09-29",
+                  "evaluation_start": "2024-09-23",
+                  "evaluation_end": "2024-09-29"
+              },
+              "implementation_change": "unconditional mean adverse entry delay replaced by conditional mean given adverse delay; no strategy, target, stop, cost, risk fraction or order change",
+              "full_repaired": full,
+              "one_variable_ablation": {
+                  "removed_scenario": "NON_CLIMACTIC_PARENT_AUCTION_RESUMPTION",
+                  "unchanged": "all other signals, timing, targets, stops, costs, risk, data and Nautilus execution",
+                  "result": ablation
+              },
+              "implementation_error_repaired": implementation_repaired,
+              "logic_error_after_repair": logic_failed,
+              "largest_negative_factor": "NON_CLIMACTIC_PARENT_AUCTION_RESUMPTION" if full else None,
+              "decision": (
+                  "discard_v45_after_repaired_full_and_single_ablation_remain_negative"
+                  if logic_failed else
+                  "implementation_repair_or_logic_diagnosis_incomplete"
+              ),
+              "project_target_reached": False,
+              "final_validation_completed": False,
+              "performance_recalculated_outside_nautilus": False
+          }
+          target = Path(os.environ["EVIDENCE"])
+          target.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          (root / "decision.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v45c-risk-repair-and-ablation-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v45c-risk-repair-and-ablation
+            research/candidate-04/evidence-v45c-risk-repair-and-ablation.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist V45c evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add "$EVIDENCE" 2>/dev/null || true
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record V45 risk repair and logic ablation"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
