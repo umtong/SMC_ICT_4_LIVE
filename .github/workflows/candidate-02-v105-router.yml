@@ -1,0 +1,169 @@
+name: candidate-02-v105-auction-state-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v105_trigger.json"
+
+permissions:
+  contents: write
+  packages: read
+  actions: read
+
+concurrency:
+  group: candidate-02-v105-auction-state-first-week
+  cancel-in-progress: false
+
+jobs:
+  v105-first-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Materialize exact locked v105 source before market data
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          smc4 doctor
+          sed -i 's/: true,/: True,/g' research/candidate-02/v105_runtime_materialize.py
+          python -m py_compile research/candidate-02/v105_runtime_materialize.py
+          python research/candidate-02/v105_runtime_materialize.py
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            research/candidate-02/v105_runtime_materialize.py \
+            research/candidate-02/v105_first_week_driver.py \
+            research/candidate-02/v105_auction_state_lock.json
+          if ! git diff --cached --quiet; then
+            git commit -m "research(candidate-02): materialize locked v105 source"
+            git push origin HEAD:research/candidate-02
+          fi
+          echo "V105_SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Verify v105 causality and exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$V105_SOURCE_SHA"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v105_auction_state_core.py \
+            research/candidate-02/v105_nt_strategy.py \
+            research/candidate-02/v105_nt_backtest.py \
+            research/candidate-02/v105_first_week_driver.py \
+            research/candidate-02/v105_runtime_materialize.py \
+            research/candidate-02/tests/run_v105_tests.py \
+            research/candidate-02/tests/test_v105_logic.py
+          python research/candidate-02/v105_runtime_materialize.py --verify
+          python research/candidate-02/tests/run_v105_tests.py
+
+      - name: Run prospectively locked BTC first week in NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-02/v105_first_week_driver.py 2>&1 | tee artifacts-v105-first-week-driver.log
+          test -f artifacts-v105-first-week-decision.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          decision = json.loads(Path('artifacts-v105-first-week-decision.json').read_text())
+          metrics = decision['baseline']['metrics']
+          assert decision['candidate_family'] == 'candidate-02-v105-auction-state-continuation-reversal'
+          assert metrics['engine'] == 'NautilusTrader 1.230.0'
+          assert metrics['custom_backtest_engine'] is False
+          assert float(metrics['risk_fraction']) == 0.03
+          assert decision['long_evaluation_allowed'] is False
+          print(json.dumps({
+              'status': decision['status'],
+              'next_week_allowed': decision['next_week_allowed'],
+              'target_met': metrics['target_met'],
+              'trades': metrics['trades'],
+              'trades_per_day': metrics['trades_per_day'],
+              'win_rate': metrics['win_rate'],
+              'profit_factor_after_cost': metrics['profit_factor_after_cost'],
+              'geometric_daily_growth_after_cost': metrics['geometric_daily_growth_after_cost'],
+              'maximum_mark_to_market_drawdown': metrics['maximum_mark_to_market_drawdown'],
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Build compact v105 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf compact-v105
+          mkdir -p compact-v105
+          cp -f artifacts-v105-*.json compact-v105/ 2>/dev/null || true
+          cp -f artifacts-v105-*.log compact-v105/ 2>/dev/null || true
+          for directory in artifacts/candidate-02-v105-*; do
+            test -d "$directory" || continue
+            output="compact-v105/$(basename "$directory")"
+            mkdir -p "$output"
+            for file in \
+              metrics.json signal_build_diagnostics.json scenario_attribution.json \
+              trade_diagnostics.jsonl trades.jsonl signals.jsonl signals_schedule.json \
+              risk_sizing.jsonl account.csv fills.csv orders.csv positions.csv \
+              validation_exit_code.txt; do
+              test -f "$directory/$file" && cp "$directory/$file" "$output/$file"
+            done
+          done
+          find inputs/v105-first-week -type f \
+            \( -name '*manifest*.json' -o -name 'STATUS_*' \) \
+            -exec cp --parents '{}' compact-v105/ \; 2>/dev/null || true
+          find compact-v105 -type f -maxdepth 8 -print | sort
+
+      - name: Commit compact v105 evidence if branch is unchanged
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-02
+          if test "$(git rev-parse origin/research/candidate-02)" != "$V105_SOURCE_SHA"; then
+            echo "Branch moved; evidence remains in the workflow artifact only."
+            exit 0
+          fi
+          destination="research/candidate-02/results/v105_first_week/$V105_SOURCE_SHA"
+          rm -rf "$destination"
+          mkdir -p "$destination"
+          cp -a compact-v105/. "$destination/"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$destination"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "research(candidate-02): record locked v105 first-week evidence"
+          git push origin HEAD:research/candidate-02
+
+      - name: Upload complete v105 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v105-first-week-${{ github.sha }}
+          path: |
+            compact-v105
+            artifacts/candidate-02-v105-*
+            artifacts-v105-*.json
+            artifacts-v105-*.log
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 9
