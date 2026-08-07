@@ -9,9 +9,9 @@ class DirectionalSessionNoBasisAblationTests(unittest.TestCase):
     def test_only_reclaim_basis_gate_is_removed(self) -> None:
         source = candidate.BASE.read_text(encoding="utf-8")
         changed = candidate.transform_source(source)
-        self.assertIn(candidate.OLD, source)
-        self.assertNotIn(candidate.OLD, changed)
-        self.assertIn(candidate.NEW, changed)
+        self.assertIn(candidate.OLD_GATE, source)
+        self.assertNotIn(candidate.OLD_GATE, changed)
+        self.assertIn(candidate.NEW_GATE, changed)
         self.assertEqual(
             source.count("basis = parent.side * float(candidate[\"basis_change_5m\"])") ,
             changed.count("basis = parent.side * float(candidate[\"basis_change_5m\"])") ,
