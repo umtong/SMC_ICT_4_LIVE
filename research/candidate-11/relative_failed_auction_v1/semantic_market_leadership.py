@@ -1,22 +1,20 @@
-"""Candidate 14 cross-market semantics for SCDAM and completed sessions.
+"""Cross-market semantics for isolated relative failed-auction reversion.
 
-The ordinary SCDAM FAR/AAC policy is the preserved Candidate 13 core.  Session
-I7 plans have already completed a route-specific five-minute rejection,
-acceptance, MSS or FVG confirmation before this module is called.  Candidate 14
-therefore uses a distinct FAR admission function for those completed session
-plans: the final one-minute impulse is not required a second time, but the
-entire causal path must be efficient, volatility-normalized, unanimously
-supported by peers and in the top half of event price discovery.
+The ordinary SCDAM FAR/AAC policy remains available as an unchanged reference,
+but the RFAR portfolio never submits those plans.  Its only admissible setup is
+a completed I7 failed-session auction whose local raid, reclaim, MSS/FVG and
+costed entry geometry already exist before this module is called.
 
-A session failed auction may be either:
+The market distinction is categorical rather than fitted:
 
-* counter-trend transfer after a completed session liquidity raid; or
-* trend resumption after that raid fails against the already controlling
-  synchronized auction.
+* broad transfer: most peers also move in the proposed reversal direction;
+* local liquidity repair: most peers do not confirm that reversal while the
+  raided instrument itself leads a clean, displaced move back toward value.
 
-Both roles use existing measurements and categorical ranks only.  No new fitted
-threshold, route whitelist, risk multiplier or SCDAM relaxation is introduced.
-Session AAC remains exactly the preserved SCDAM AAC semantic rule.
+Only the second state is admitted.  Existing efficiency, standardized
+ displacement, severe-adverse-trend and event-rank measurements are reused
+without changing their thresholds.  No route whitelist, score, risk multiplier
+or symbol-specific parameter is introduced.
 """
 from __future__ import annotations
 
@@ -38,6 +36,19 @@ def _complete(decision: LeadershipDecision, symbol_count: int) -> bool:
         and decision.confirmation_impulse is not None
         and decision.trailing_direction_rank is not None
         and decision.event_direction_rank is not None
+    )
+
+
+def _session_complete(decision: LeadershipDecision, symbol_count: int) -> bool:
+    """Require only measurements used by the completed-route RFAR decision."""
+    return (
+        len(decision.peer_returns) == symbol_count - 1
+        and len(decision.directional_trend_scores) == symbol_count
+        and decision.symbol in decision.directional_trend_scores
+        and decision.candidate_event_move is not None
+        and decision.event_direction_rank is not None
+        and decision.event_path_efficiency is not None
+        and decision.event_standardized_displacement is not None
     )
 
 
@@ -150,66 +161,54 @@ def session_semantic_decision(
     minimum_event_efficiency: float,
     minimum_event_displacement: float,
 ) -> LeadershipDecision:
-    """Evaluate an already-complete I7 session plan against four-market state.
+    """Admit only completed I7 FARs that repair local, not broad, dislocation.
 
-    AAC is deliberately unchanged.  FAR first receives the unchanged core
-    decision.  Only a core rejection may enter the I7-specific substitution,
-    where the full route confirmation replaces the final one-minute impulse.
+    The I7 state machine has already supplied the terminal confirmation, so the
+    final one-minute impulse is deliberately not retested here.  Peers are
+    signed into the proposed reversal direction.  With three peers, at least
+    two must be non-positive: the median peer did not follow the local repair.
     """
-    core = semantic_decision(
-        decision,
-        symbol_count=symbol_count,
-        severe_adverse_trend_score=severe_adverse_trend_score,
-        minimum_confirmation_impulse=minimum_confirmation_impulse,
-        minimum_event_efficiency=minimum_event_efficiency,
-        minimum_event_displacement=minimum_event_displacement,
-    )
-    if core.approved or decision.scenario != "FAR":
-        return core
-    if not _complete(decision, symbol_count):
-        return core
+    del minimum_confirmation_impulse
+    if decision.scenario != "FAR":
+        return _with(decision, False, "RELATIVE_FAR_I7_ONLY")
+    if not _session_complete(decision, symbol_count):
+        return _with(decision, False, decision.reason)
 
     sign = 1.0 if decision.direction == "LONG" else -1.0
-    if not all(sign * float(value) > 0.0 for value in decision.peer_returns.values()):
-        return _with(decision, False, "SEMANTIC_FAR_I7_REQUIRES_UNANIMOUS_PEER_TRANSFER")
-    if float(decision.candidate_event_move or 0.0) <= 0.0:
-        return _with(decision, False, "SEMANTIC_FAR_I7_WITHOUT_LOCAL_DIRECTIONAL_MOVE")
-    if (
-        decision.event_path_efficiency is None
-        or decision.event_path_efficiency < minimum_event_efficiency
-    ):
-        return _with(decision, False, "SEMANTIC_FAR_I7_INEFFICIENT_CAUSAL_PATH")
-    if (
-        decision.event_standardized_displacement is None
-        or decision.event_standardized_displacement < minimum_event_displacement
-    ):
-        return _with(decision, False, "SEMANTIC_FAR_I7_INSUFFICIENT_CAUSAL_DISPLACEMENT")
+    signed_peers = [sign * float(value) for value in decision.peer_returns.values()]
+    required_nonconfirming = len(signed_peers) // 2 + 1
+    nonconfirming = sum(value <= 0.0 for value in signed_peers)
+    if nonconfirming < required_nonconfirming:
+        return _with(
+            decision,
+            False,
+            "RELATIVE_FAR_I7_REQUIRES_MAJORITY_PEER_NONCONFIRMATION",
+        )
+
+    if float(decision.candidate_event_move) <= 0.0:
+        return _with(decision, False, "RELATIVE_FAR_I7_WITHOUT_LOCAL_REPAIR")
+    if float(decision.event_path_efficiency) < minimum_event_efficiency:
+        return _with(decision, False, "RELATIVE_FAR_I7_INEFFICIENT_LOCAL_REPAIR")
+    if float(decision.event_standardized_displacement) < minimum_event_displacement:
+        return _with(decision, False, "RELATIVE_FAR_I7_INSUFFICIENT_LOCAL_DISPLACEMENT")
 
     top_half = max(1, (symbol_count + 1) // 2)
-    event_rank = int(decision.event_direction_rank)
-    trailing_rank = int(decision.trailing_direction_rank)
-    if event_rank > top_half:
-        return _with(decision, False, "SEMANTIC_FAR_I7_EVENT_NOT_TOP_HALF")
+    if int(decision.event_direction_rank) > top_half:
+        return _with(decision, False, "RELATIVE_FAR_I7_LOCAL_REPAIR_NOT_TOP_HALF")
 
     candidate_trend = float(decision.directional_trend_scores[decision.symbol])
     market_trend = float(median(decision.directional_trend_scores.values()))
-    countertrend = candidate_trend < 0.0 and market_trend < 0.0
-    trend_resumption = candidate_trend > 0.0 and market_trend > 0.0
+    if (
+        candidate_trend <= severe_adverse_trend_score
+        and market_trend <= severe_adverse_trend_score
+    ):
+        return _with(decision, False, "RELATIVE_FAR_I7_UNRESOLVED_SEVERE_ADVERSE_AUCTION")
 
-    if countertrend:
-        if (
-            candidate_trend <= severe_adverse_trend_score
-            and market_trend <= severe_adverse_trend_score
-        ):
-            return _with(decision, False, "SEMANTIC_FAR_I7_UNRESOLVED_ADVERSE_AUCTION")
-        return _with(decision, True, "SEMANTIC_FAR_I7_COUNTERTREND_TRANSFER")
-
-    if trend_resumption:
-        if trailing_rank > top_half:
-            return _with(decision, False, "SEMANTIC_FAR_I7_TREND_RESUMPTION_NOT_TOP_HALF")
-        return _with(decision, True, "SEMANTIC_FAR_I7_TREND_RESUMPTION")
-
-    return _with(decision, False, "SEMANTIC_FAR_I7_MIXED_TRAILING_AUCTION")
+    return _with(
+        decision,
+        True,
+        "RELATIVE_FAR_I7_MAJORITY_PEER_NONCONFIRMATION",
+    )
 
 
 class SemanticMarketLeadershipGate(MarketLeadershipGate):
