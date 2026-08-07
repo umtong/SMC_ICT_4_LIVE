@@ -1,27 +1,14 @@
-name: candidate-05-v41-target-reset-participation
+name: candidate-05-v41-week3-generalization
 
 on:
   push:
     branches: ["research/candidate-05"]
     paths:
-      - "research/candidate-05/basis_contract.py"
-      - "research/candidate-05/positioning_reset_logic.py"
-      - "research/candidate-05/strategy_v17.py"
-      - "research/candidate-05/strategy_v39_positioning_reset.py"
-      - "research/candidate-05/strategy.py"
-      - "research/candidate-05/strategy_v40_unfilled_target_handoff.py"
-      - "research/candidate-05/strategy_v41_target_reset_participation.py"
-      - "research/candidate-05/v40_active/strategy.py"
-      - "research/candidate-05/v40_active/candidate.py"
-      - "research/candidate-05/candidate.py"
-      - "research/candidate-05/tests/test_basis_contract.py"
-      - "research/candidate-05/tests/test_positioning_reset_logic.py"
-      - "research/candidate-05/tests/test_strategy_v40_unfilled_target_handoff_contract.py"
       - ".github/workflows/candidate-05-v39-positioning-reset.yml"
   workflow_dispatch:
 
 concurrency:
-  group: candidate-05-v41-target-reset-participation
+  group: candidate-05-v41-week3-generalization
   cancel-in-progress: true
 
 permissions:
@@ -29,16 +16,16 @@ permissions:
   packages: read
 
 jobs:
-  frozen-btc-gates:
+  frozen-week3:
     runs-on: ubuntu-24.04
-    timeout-minutes: 110
+    timeout-minutes: 70
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
     env:
       PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
       PYTHONUNBUFFERED: "1"
-      ROOT: artifacts/candidate-05-v41
+      ROOT: artifacts/candidate-05-v41-week3
     steps:
       - uses: actions/checkout@v4
 
@@ -52,48 +39,44 @@ jobs:
             -s research/candidate-05/tests \
             -p 'test_*.py' -v
 
-      - name: Run frozen BTC gates through NautilusTrader
+      - name: Run the third preselected BTC week through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts
-          python research/candidate-05/v40_active/candidate.py pipeline \
+          mkdir -p "$ROOT"
+          python research/candidate-05/v40_active/candidate.py stage \
             --config research/candidate-05/config.json \
-            --weeks research/candidate-05/weeks.json \
-            --cache .cache/candidate-05-v41 \
+            --build-start 2023-09-06 \
+            --build-end 2023-09-14 \
+            --evaluation-start 2023-09-08 \
+            --evaluation-end 2023-09-14 \
+            --cache .cache/candidate-05-v41-week3 \
             --output "$ROOT" \
-            --max-weeks 3 \
             2>&1 | tee "$ROOT-console.log"
 
       - name: Verify and print authoritative evidence
         if: always()
         shell: bash
         run: |
-          if test -f "$ROOT/pipeline_summary.json"; then
-            python -m json.tool "$ROOT/pipeline_summary.json"
+          if test -f "$ROOT/metrics.json"; then
+            python -m json.tool "$ROOT/metrics.json"
+            test -s "$ROOT/run.json"
+            test -s "$ROOT/data_manifest.json"
+            test -s "$ROOT/orders.csv"
+            test -s "$ROOT/positions.csv"
+            test -s "$ROOT/account.csv"
+            test -s "$ROOT/equity.csv"
+            test -s "$ROOT/scenario_events.jsonl"
+            test -s "$ROOT/strategy_diagnostics.json"
           fi
-          for stage in "$ROOT"/week-*; do
-            test -d "$stage" || continue
-            if test -f "$stage/metrics.json"; then
-              python -m json.tool "$stage/metrics.json"
-              test -s "$stage/run.json"
-              test -s "$stage/data_manifest.json"
-              test -s "$stage/orders.csv"
-              test -s "$stage/positions.csv"
-              test -s "$stage/account.csv"
-              test -s "$stage/equity.csv"
-              test -s "$stage/scenario_events.jsonl"
-              test -s "$stage/strategy_diagnostics.json"
-            fi
-            if test -f "$stage/errors.log"; then cat "$stage/errors.log"; fi
-          done
+          if test -f "$ROOT/errors.log"; then cat "$ROOT/errors.log"; fi
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-05-v41-target-reset-participation-${{ github.sha }}
+          name: candidate-05-v41-week3-${{ github.sha }}
           path: |
-            artifacts/candidate-05-v41/**
-            artifacts/candidate-05-v41-console.log
+            artifacts/candidate-05-v41-week3/**
+            artifacts/candidate-05-v41-week3-console.log
           if-no-files-found: warn
           retention-days: 90
