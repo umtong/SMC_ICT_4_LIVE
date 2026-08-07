@@ -129,10 +129,10 @@ def update_lock() -> None:
     lock["source_files"] = {key: str(path.relative_to(ROOT)) for key, path in paths.items()}
     lock["source_git_blob_sha"] = {key: git_blob(path) for key, path in paths.items()}
     lock["source_materialization"] = {
-        "driver_derived_from_locked_v104_orchestration": true,
-        "driver_materialized_before_market_data": true,
-        "equal_swing_ablation_removed_to_prioritize_central_system": true,
-        "materialization_commit_does_not_retrigger_router": true,
+        "driver_derived_from_locked_v104_orchestration": True,
+        "driver_materialized_before_market_data": True,
+        "equal_swing_ablation_removed_to_prioritize_central_system": True,
+        "materialization_commit_does_not_retrigger_router": True,
         "trigger_commit": os.environ.get("GITHUB_SHA"),
     }
     LOCK_PATH.write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n", encoding="utf-8")
