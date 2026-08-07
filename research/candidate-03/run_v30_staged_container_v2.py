@@ -38,8 +38,12 @@ def load_controller() -> types.ModuleType:
     return module
 
 
-controller = load_controller()
-base = controller.base
+wrapper = load_controller()
+# run_v30_staged_container.py wraps the V29 controller in its own module. The
+# executable controller is therefore the nested `controller`, while base is
+# exposed by the wrapper for repository/runtime operations.
+controller = wrapper.controller
+base = wrapper.base
 
 
 def verify_runtime() -> str:
