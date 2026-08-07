@@ -1,0 +1,107 @@
+{
+  "schema": "candidate-11-relative-failed-auction-diagnostic-v1",
+  "candidate": "candidate-11-relative-failed-auction-reversion",
+  "created_utc": "2026-08-08",
+  "validation_mode": "diagnostic",
+  "success_claim": false,
+  "research_question": "Does a fully completed local I7 failed-session auction become tradeable specifically when the raided market leads an efficient displaced repair but the peer majority does not confirm the proposed reversal?",
+  "hypothesis": {
+    "economic_cause": "A session raid can be market-wide repricing or instrument-local liquidity collection. When most peers do not follow the proposed reversal but the raided instrument itself has already reclaimed, displaced, formed the required MSS/FVG and leads the event return, the remaining move is local excess repair rather than broad directional transfer.",
+    "local_state_machine": "Byte-identical I7 raid, reclaim, MSS/FVG, first executable entry, invalidation, target and costed-R rules on BTCUSDT, ETHUSDT, SOLUSDT and XRPUSDT.",
+    "cross_market_state": "FAR only; at least two of three signed peer event returns are non-positive, local signed event move is positive, event rank is in the top half, and existing path-efficiency and standardized-displacement thresholds pass.",
+    "trend_invalidation": "Reject only when both the local and median market directional trend scores are at or below the unchanged severe-adverse threshold.",
+    "candidate_isolation": "Ordinary SCDAM, I7 AAC and peer-majority transfer FAR are observed and explicitly rejected before global arbitration.",
+    "risk_and_execution": "One GlobalCandidateMutex, one NautilusTrader account, exact current-NAV 3% planned-loss sizing, one pending-entry-or-position slot, unchanged fees, slippage budget, stop and target semantics.",
+    "forbidden_changes": "No alpha threshold relaxation, fitted peer magnitude, score multiplier, route whitelist, symbol-specific parameter, nominal cap, leverage cap or risk scaling."
+  },
+  "diagnostic_lineage": {
+    "all_intervals_previously_opened": true,
+    "claim_ineligible": true,
+    "purpose": "Mechanism and opportunity diagnosis only. A pass authorizes a fresh pre-data holdout; it is not a success claim.",
+    "parent_candidate": "candidate-11-multi-session-price-discovery",
+    "parent_diagnostic_evidence_commit": "0e3122096d1c74683c974b4f90bc3b94b6e60c98",
+    "parent_holdout_evidence_commit": "586797225eebfd68515f9b8bb996ac61c69d988c",
+    "parent_holdout_failure": {
+      "calendar_days": 21,
+      "daily_geometric_growth": -0.0007767013505924902,
+      "closed_trades": 3,
+      "wins": 1,
+      "losses": 2,
+      "failure_modes": [
+        "peer-unanimity rejected most completed session FARs",
+        "the only untouched unanimous I7 FAR trade lost",
+        "ordinary SCDAM supplied the other holdout trades and obscured the session hypothesis"
+      ]
+    },
+    "controlled_change": "Invert the session market distinction from unanimous reversal transfer to majority peer nonconfirmation, retain only completed I7 FAR, and remove every other trading module from the candidate set."
+  },
+  "locked_source": {
+    "origin_branch": "research/candidate-11@586797225eebfd68515f9b8bb996ac61c69d988c + isolated RFAR semantics",
+    "blobs": {
+      "bar_adapter.py": "c2ce386a42956c22039f0bf7490cf9493ab51003",
+      "global_allocator.py": "6dcc95a4f02a0613ad7c72ff0b738cee4b640fc4",
+      "logic.py": "08ac6c0119c2e83039c864ff3a0aff06d6a75c75",
+      "market_leadership.py": "272b1aee7468cbbd6b79a4bc6c8e421e93df6bf0",
+      "session_engine.py": "21180b2397f0ee63c887079764df1ee94e426a03",
+      "run_leadership_scdam.py": "edab9fc25791d49e564925bbf0d86146460d7ae4",
+      "run_leadership_scdam_base.py": "e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f",
+      "runner_materializer.py": "7455c41ffa88f68e814256e37aa8a01d06af3bcd",
+      "portfolio_materializer.py": "76db5c7cb845854fe9c64e7e0f9631ffbfee5268",
+      "semantic_execution.py": "a463710a65b0f85b290bb1424c350f720d394925",
+      "semantic_logic.py": "055e64acbb1c414ca80ef385b415827ba2eacc5f",
+      "semantic_market_leadership.py": "10796f541e83bb5b3d172b39aa03ac6c25e344ff",
+      "session_auction_i7.py": "4bee42001707b26f89df09ab6080e118afb3a106",
+      "session_auction_bridge.py": "b6a089a3ea6cb88f82b07b8738ab430c409e0036",
+      "session_i7_config.json": "a5183552aa637bea29cbb15bc65530ab38f9b644",
+      "evidence_audit.py": "990dd8986246a7dac8d5c619ef930ffd54ba430e",
+      "base_config.json": "050b5b9413c22e4fc2ef247cc2b272657ff66f38"
+    }
+  },
+  "selection": {
+    "seed": 2026080821,
+    "method": "Controlled diagnostic reuse of eight already-opened intervals selected before this RFAR hypothesis. No interval is eligible for a success claim or later threshold adjustment.",
+    "warmup_days": 3,
+    "evaluation_days": 7,
+    "holdouts": {
+      "D1": {"start": "2025-04-14", "end_exclusive": "2025-04-21", "role": "opened-diagnostic-W10"},
+      "D2": {"start": "2023-03-20", "end_exclusive": "2023-03-27", "role": "opened-diagnostic-W11"},
+      "D3": {"start": "2023-06-20", "end_exclusive": "2023-06-27", "role": "opened-diagnostic-W12"},
+      "D4": {"start": "2024-09-17", "end_exclusive": "2024-09-24", "role": "opened-diagnostic-W13"},
+      "D5": {"start": "2024-12-31", "end_exclusive": "2025-01-07", "role": "opened-diagnostic-W14"},
+      "D6": {"start": "2023-03-06", "end_exclusive": "2023-03-13", "role": "opened-diagnostic-H1"},
+      "D7": {"start": "2023-09-08", "end_exclusive": "2023-09-15", "role": "opened-diagnostic-H2"},
+      "D8": {"start": "2024-04-14", "end_exclusive": "2024-04-21", "role": "opened-diagnostic-H3"}
+    }
+  },
+  "aggregate_gate": {
+    "observed_calendar_days": 56,
+    "minimum_daily_geometric_growth": 0.01,
+    "minimum_closed_trades": 10,
+    "minimum_active_weeks": 5,
+    "minimum_win_rate": 0.7,
+    "minimum_payoff_ratio": 1.2,
+    "maximum_trade_path_drawdown": 0.2,
+    "maximum_positive_log_growth_share_from_one_week": 0.5,
+    "require_all_safety_audits": true,
+    "risk_fraction": 0.03,
+    "global_pending_entry_plus_position_limit": 1
+  },
+  "decision_rule": {
+    "diagnostic_pass": "Every aggregate gate passes without changing the source blobs or any alpha threshold.",
+    "on_pass": "Freeze fresh non-overlapping intervals before opening their market data, then run the unchanged RFAR variant in NautilusTrader.",
+    "on_fail": "Reject RFAR. Do not tune peer counts, ranks, efficiency, displacement, trend, session or symbol conditions on D1-D8."
+  },
+  "execution_lock": {
+    "engine": "NautilusTrader",
+    "starting_nav": "100000",
+    "effective_maker_rate": "0.0004",
+    "effective_taker_rate": "0.0008",
+    "session_tick_slippage_units_in_loss_budget": 2.0,
+    "take_profit_order": "POST_ONLY_LIMIT_GTC",
+    "stop_order": "STOP_MARKET_GTC",
+    "risk_fraction": 0.03,
+    "global_pending_entry_plus_position_limit": 1,
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "active_module": "SESSION_I7_FAR_RELATIVE_PEER_NONCONFIRMATION"
+  }
+}
