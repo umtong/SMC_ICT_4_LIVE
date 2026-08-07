@@ -18,4 +18,25 @@ Both W2 losses came from weak reclaims: reclaim bodies were 0.72 and 0.28 ATR, a
 
 I5 replaces the forced-reversal rule with mutually exclusive completed-auction outcomes. Rejection uses market entry only after causal confirmation; weak rejection remains flat until price either accepts beyond the raid extreme or expires. Low-side rejection and deep-discount low acceptance use the same completed London range and structural objectives.
 
-W2 is now diagnostic because it informed I5. W3 is not used. The validation order is reset to W1 first, followed only by previously untouched W4 if W1 passes. State replay before execution produced five W1 plans and five W2 diagnostic plans; all ten targets preceded their invalidations, but these are not performance evidence.
+W2 is diagnostic because it informed I5. W3 is not used. The validation order was reset to W1 first, followed only by previously untouched W4 after a W1 pass.
+
+### I5 W1 design gate — passed
+
+Authoritative evidence: commit `5b8c2689dfc755c59c9d583ba238b57d8d536b27`, workflow `31188233176`, job `92898142209`.
+
+| Measure | Result |
+|---|---:|
+| Starting NAV | 100,000 USDT |
+| Ending NAV | 118,126.23511324 USDT |
+| Net return | +18.12623511% |
+| Daily geometric growth | +2.40830892% |
+| Closed trades | 5 |
+| Winners / losers | 5 / 0 |
+| Win rate | 100% |
+| Closed-trade drawdown | 0% |
+| Liquidation | No |
+| Risk-budget breach | No |
+| Global-slot violation | No |
+| Event chronology error | No |
+
+All five executed plans were `LONDON_HIGH_REJECTION`. The W1 gate passed frequency, win-rate, post-cost growth, risk, liquidation, global-slot, and event-order requirements. This justifies exactly one next action: untouched W4 confirmation. W2 is not rerun and W3 remains unused.
