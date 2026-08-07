@@ -22,7 +22,7 @@ def patch_logic(root: Path) -> int:
                 "sweep_extreme": a.sweep_extreme,
 '''
     new = '''                "range_id": a.pool.range_id,
-                "sweep_ts_ns": a.sweep.ts_ns,
+                "sweep_ts_ns": (a.initial_sweep_ts_ns if a.initial_sweep_ts_ns is not None else a.sweep.ts_ns),
                 "sweep_extreme": a.sweep_extreme,
 '''
     updated = replace_once(source, old, new, "plan sweep timestamp")

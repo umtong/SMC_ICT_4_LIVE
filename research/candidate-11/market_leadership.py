@@ -50,6 +50,10 @@ class LeadershipDecision:
     candidate_event_move: float | None
     peer_event_median: float | None
     confirmation_impulse: float | None
+    trailing_direction_rank: int | None
+    event_direction_rank: int | None
+    event_path_efficiency: float | None
+    event_standardized_displacement: float | None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -67,6 +71,10 @@ class LeadershipDecision:
             "candidate_event_move": self.candidate_event_move,
             "peer_event_median": self.peer_event_median,
             "confirmation_impulse": self.confirmation_impulse,
+            "trailing_direction_rank": self.trailing_direction_rank,
+            "event_direction_rank": self.event_direction_rank,
+            "event_path_efficiency": self.event_path_efficiency,
+            "event_standardized_displacement": self.event_standardized_displacement,
         }
 
 
@@ -82,6 +90,8 @@ class MarketLeadershipGate:
         severe_adverse_trend_score: float = -1.5,
         confirmation_impulse_lookback_bars: int | None = None,
         minimum_follower_confirmation_impulse: float = 1.0,
+        minimum_idiosyncratic_event_efficiency: float = 0.10,
+        minimum_idiosyncratic_event_displacement: float = 0.50,
     ) -> None:
         if len(symbols) < 3 or len(set(symbols)) != len(symbols):
             raise ValueError("leadership requires at least three unique symbols")
@@ -101,6 +111,16 @@ class MarketLeadershipGate:
             or minimum_follower_confirmation_impulse <= 0
         ):
             raise ValueError("minimum follower confirmation impulse must be positive")
+        if (
+            not isfinite(minimum_idiosyncratic_event_efficiency)
+            or not 0 < minimum_idiosyncratic_event_efficiency <= 1
+        ):
+            raise ValueError("idiosyncratic event efficiency must be in (0, 1]")
+        if (
+            not isfinite(minimum_idiosyncratic_event_displacement)
+            or minimum_idiosyncratic_event_displacement <= 0
+        ):
+            raise ValueError("idiosyncratic event displacement must be positive")
         minimum_history = max(lookback_bars, impulse_lookback + 2)
         history_bars = max_history_bars or max(
             lookback_bars * 2,
@@ -115,6 +135,12 @@ class MarketLeadershipGate:
         self.confirmation_impulse_lookback_bars = impulse_lookback
         self.minimum_follower_confirmation_impulse = float(
             minimum_follower_confirmation_impulse,
+        )
+        self.minimum_idiosyncratic_event_efficiency = float(
+            minimum_idiosyncratic_event_efficiency,
+        )
+        self.minimum_idiosyncratic_event_displacement = float(
+            minimum_idiosyncratic_event_displacement,
         )
         self._history = {
             symbol: deque(maxlen=int(history_bars))
@@ -236,6 +262,48 @@ class MarketLeadershipGate:
         current_return = sign * log(points[-1].close / points[-2].close)
         return current_return / max(baseline_rms, 1e-12)
 
+    def _event_recovery_state(
+        self,
+        symbol: str,
+        sweep_ts_ns: int,
+        confirmation_ts_ns: int,
+        direction: str,
+    ) -> tuple[float, float] | None:
+        """Return path efficiency and pre-event-volatility displacement."""
+        points = list(self._history[symbol])
+        event = [
+            point for point in points
+            if sweep_ts_ns <= point.ts_ns <= confirmation_ts_ns
+        ]
+        if (
+            len(event) < 2
+            or event[0].ts_ns != sweep_ts_ns
+            or event[-1].ts_ns != confirmation_ts_ns
+        ):
+            return None
+        event_returns = [
+            log(curr.close / prev.close)
+            for prev, curr in zip(event, event[1:])
+        ]
+        sign = 1.0 if direction == "LONG" else -1.0
+        signed_net = sign * log(event[-1].close / event[0].close)
+        efficiency = signed_net / max(sum(abs(x) for x in event_returns), 1e-12)
+        prior = [point for point in points if point.ts_ns < sweep_ts_ns]
+        required = self.confirmation_impulse_lookback_bars + 1
+        if len(prior) < required:
+            return None
+        prior = prior[-required:]
+        prior_returns = [
+            log(curr.close / prev.close)
+            for prev, curr in zip(prior, prior[1:])
+        ]
+        baseline_rms = sqrt(sum(x * x for x in prior_returns) / len(prior_returns))
+        standardized = signed_net / max(
+            baseline_rms * sqrt(len(event_returns)),
+            1e-12,
+        )
+        return efficiency, standardized
+
     def decide(
         self,
         *,
@@ -262,6 +330,10 @@ class MarketLeadershipGate:
             candidate_event_move: float | None = None,
             peer_event_median: float | None = None,
             confirmation_impulse: float | None = None,
+            trailing_direction_rank: int | None = None,
+            event_direction_rank: int | None = None,
+            event_path_efficiency: float | None = None,
+            event_standardized_displacement: float | None = None,
         ) -> LeadershipDecision:
             return LeadershipDecision(
                 approved=approved,
@@ -278,6 +350,10 @@ class MarketLeadershipGate:
                 candidate_event_move=candidate_event_move,
                 peer_event_median=peer_event_median,
                 confirmation_impulse=confirmation_impulse,
+                trailing_direction_rank=trailing_direction_rank,
+                event_direction_rank=event_direction_rank,
+                event_path_efficiency=event_path_efficiency,
+                event_standardized_displacement=event_standardized_displacement,
             )
 
         if confirmation_ts_ns != self._last_batch_ts:
@@ -345,6 +421,12 @@ class MarketLeadershipGate:
             for peer, value in directional_returns.items()
             if peer != symbol
         )
+        event_rank = 1 + sum(value > candidate_move for value in signed_peer_moves)
+        event_state = self._event_recovery_state(
+            symbol, sweep_ts_ns, confirmation_ts_ns, direction,
+        )
+        event_efficiency = None if event_state is None else event_state[0]
+        event_displacement = None if event_state is None else event_state[1]
         top_half_limit = max(1, (len(self.symbols) + 1) // 2)
         directionally_supported = directional_rank <= top_half_limit
         event_recovered = candidate_move > 0.0 and candidate_move > peer_median
@@ -356,20 +438,31 @@ class MarketLeadershipGate:
             "candidate_event_move": candidate_move,
             "peer_event_median": peer_median,
             "confirmation_impulse": confirmation_impulse,
+            "trailing_direction_rank": directional_rank,
+            "event_direction_rank": event_rank,
+            "event_path_efficiency": event_efficiency,
+            "event_standardized_displacement": event_displacement,
         }
 
         if scenario == "AAC":
             if symbol != leader:
                 return decision(False, "FOLLOWER_AAC_WITHOUT_LEADERSHIP", leader, **common)
-            if not (directionally_supported and event_recovered):
-                return decision(False, "AAC_WITHOUT_DIRECTIONAL_ACCEPTANCE", leader, **common)
-            return decision(True, "LEADER_AAC_DIRECTIONAL_ACCEPTANCE", leader, **common)
+            if not event_recovered:
+                return decision(False, "AAC_WITHOUT_EVENT_ACCEPTANCE", leader, **common)
+            return decision(True, "LEADER_AAC_EVENT_ACCEPTANCE", leader, **common)
 
         if symbol == leader:
             if directionally_supported:
                 reason = "LEADER_DIRECTIONAL_ALIGNMENT"
-            elif event_recovered:
+            elif event_recovered and directional_rank < len(self.symbols):
                 reason = "LEADER_EVENT_RECOVERY"
+            elif event_recovered:
+                return decision(
+                    False,
+                    "LEADER_EVENT_RECOVERY_WITHOUT_DIRECTIONAL_SUPPORT",
+                    leader,
+                    **common,
+                )
             else:
                 return decision(False, "LEADER_DIRECTIONAL_DISAGREEMENT", leader, **common)
             return decision(True, reason, leader, **common)
@@ -395,6 +488,8 @@ class MarketLeadershipGate:
                     leader,
                     **common,
                 )
+            if event_rank == len(self.symbols):
+                return decision(False, "FOLLOWER_FAR_EVENT_LAGGARD", leader, **common)
             return decision(True, "FOLLOWER_FAR_UNANIMOUS_PEERS", leader, **common)
 
         relative_recovery = (
@@ -406,6 +501,22 @@ class MarketLeadershipGate:
             return decision(
                 True,
                 "FOLLOWER_FAR_DIRECTIONAL_LEADER_RECOVERY",
+                leader,
+                **common,
+            )
+        idiosyncratic_price_discovery = (
+            directional_rank == 1
+            and event_rank == 1
+            and candidate_move > 0.0
+            and event_efficiency is not None
+            and event_efficiency >= self.minimum_idiosyncratic_event_efficiency
+            and event_displacement is not None
+            and event_displacement >= self.minimum_idiosyncratic_event_displacement
+        )
+        if idiosyncratic_price_discovery:
+            return decision(
+                True,
+                "FOLLOWER_FAR_IDIOSYNCRATIC_PRICE_DISCOVERY",
                 leader,
                 **common,
             )

@@ -62,7 +62,7 @@ class MarketLeadershipGateTests(unittest.TestCase):
             confirmation_ts_ns=confirmation_ts,
         )
         self.assertTrue(approved.approved)
-        self.assertEqual(approved.reason, "LEADER_AAC_DIRECTIONAL_ACCEPTANCE")
+        self.assertEqual(approved.reason, "LEADER_AAC_EVENT_ACCEPTANCE")
 
         gate2 = MarketLeadershipGate(
             self.SYMBOLS,
@@ -110,7 +110,7 @@ class MarketLeadershipGateTests(unittest.TestCase):
             confirmation_ts_ns=rejected_ts,
         )
         self.assertFalse(rejected.approved)
-        self.assertEqual(rejected.reason, "AAC_WITHOUT_DIRECTIONAL_ACCEPTANCE")
+        self.assertEqual(rejected.reason, "AAC_WITHOUT_EVENT_ACCEPTANCE")
 
     def test_notional_leader_cannot_bypass_directional_evidence(self):
         closes = {

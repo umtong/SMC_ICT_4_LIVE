@@ -251,6 +251,7 @@ class Auction:
     crossed_pool_ids: list[str] = field(default_factory=list)
     last_crossed_level: float | None = None
     cascade_count: int = 0
+    initial_sweep_ts_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -848,6 +849,7 @@ class CausalAuctionEngine:
             sweep=bar,
             sweep_index=self._index,
             atr=atr,
+            initial_sweep_ts_ns=bar.ts_ns,
             internal_level=internal,
             sweep_extreme=extreme,
             rejection_seed=rejection_seed,
@@ -1295,7 +1297,7 @@ class CausalAuctionEngine:
                 "pool_level": a.pool.level,
                 "pool_source": a.pool.source,
                 "range_id": a.pool.range_id,
-                "sweep_ts_ns": a.sweep.ts_ns,
+                "sweep_ts_ns": (a.initial_sweep_ts_ns if a.initial_sweep_ts_ns is not None else a.sweep.ts_ns),
                 "sweep_extreme": a.sweep_extreme,
                 "draw_side": None if a.draw_side is None else a.draw_side.value,
                 "draw_score": a.draw_score,
