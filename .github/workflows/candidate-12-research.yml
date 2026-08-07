@@ -1,53 +1,73 @@
-name: candidate-12-materialize-i5
+name: candidate-12-i5-w1-design-gate
 
 on:
   push:
     branches: ["research/candidate-12"]
     paths:
-      - "research/candidate-12/update-i5.part*"
+      - "research/candidate-12/**"
       - ".github/workflows/candidate-12-research.yml"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: candidate-12-i5-w1-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
-  materialize:
+  w1-design-gate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    env:
+      SYMBOL: BTCUSDT
+      WEEK: W1
+      OUTPUT: artifacts/candidate-12/BTCUSDT-W1
     steps:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
 
-      - name: Install reviewed I5 source atomically
+      - name: Verify prebuilt environment
+        run: smc4 doctor
+
+      - name: Compile candidate
+        run: python -m compileall -q research/candidate-12
+
+      - name: Candidate unit tests
+        run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+
+      - name: Run W1 through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          ROOT=research/candidate-12
-          if [[ ! -f "$ROOT/update-i5.part00" ]]; then
-            echo 'I5 source already materialized'
-            exit 0
+          mkdir -p "$OUTPUT"
+          python research/candidate-12/run.py \
+            --symbol "$SYMBOL" \
+            --week "$WEEK" \
+            --output "$OUTPUT" | tee "$OUTPUT.console.json"
+
+      - name: Surface W1 decision evidence
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$OUTPUT/metrics.json" ]]; then
+            echo '=== CANDIDATE_12_I5_W1_METRICS_BEGIN ==='
+            cat "$OUTPUT/metrics.json"
+            echo '=== CANDIDATE_12_I5_W1_METRICS_END ==='
           fi
-          echo "172da70419eb79ef6ef6e44708109c1b7a98e11a3944e6a030b2aafa5453469d  $ROOT/update-i5.part00" | sha256sum -c -
-          echo "0672dd9598a28e36b1221602bb8bf1536a957e7fb4faf8653eef71d76c45af19  $ROOT/update-i5.part01" | sha256sum -c -
-          echo "6d4b907ab9f9ebbd826e20db9653a190c079608ac26456f5019b2cb2dec2cf21  $ROOT/update-i5.part02" | sha256sum -c -
-          echo "a0ba9451ff09bb1b53993b43d30a5d89f40abc68c43c9630f3b6b05a010c51f3  $ROOT/update-i5.part03" | sha256sum -c -
-          echo "cc3d82badb63b8898179770a0bed8b17f2b62ca3b80b0d9c1c5df304d58ce2c5  $ROOT/update-i5.part04" | sha256sum -c -
-          cat "$ROOT/update-i5.part00" "$ROOT/update-i5.part01" \
-              "$ROOT/update-i5.part02" "$ROOT/update-i5.part03" \
-              "$ROOT/update-i5.part04" > /tmp/candidate-12-i5.b64
-          echo "e288e26fd22c406dad1e9342eba5985e5267677d432b2de368401d58c4c29ca7  /tmp/candidate-12-i5.b64" | sha256sum -c -
-          base64 -d /tmp/candidate-12-i5.b64 > /tmp/candidate-12-i5.tar.gz
-          echo "9539b7cc67859da431a15691f9d9a22df35e880146cfe0d61687bd85e276d52f  /tmp/candidate-12-i5.tar.gz" | sha256sum -c -
-          rm -rf /tmp/candidate-12-i5
-          mkdir -p /tmp/candidate-12-i5
-          tar -xzf /tmp/candidate-12-i5.tar.gz -C /tmp/candidate-12-i5
-          test -f /tmp/candidate-12-i5/research/candidate-12/logic.py
-          test -f /tmp/candidate-12-i5/research/candidate-12/strategy_adapter.py
-          test -f /tmp/candidate-12-i5/research/candidate-12/config.json
-          test -f /tmp/candidate-12-i5/research/candidate-12/test_logic.py
-          cp -a /tmp/candidate-12-i5/research/candidate-12/. "$ROOT/"
-          rm -f "$ROOT"/update-i5.part*
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A research/candidate-12
-          git commit -m "candidate-12: install completed-range auction source"
-          git push origin HEAD:research/candidate-12
+          if [[ -f "$OUTPUT/run.json" ]]; then
+            echo '=== CANDIDATE_12_I5_W1_RUN_BEGIN ==='
+            cat "$OUTPUT/run.json"
+            echo '=== CANDIDATE_12_I5_W1_RUN_END ==='
+          fi
+
+      - name: Preserve reproducible W1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-I5-BTCUSDT-W1-${{ github.sha }}
+          path: ${{ env.OUTPUT }}
+          if-no-files-found: warn
