@@ -1,0 +1,176 @@
+name: candidate-08-bookticker-catalog-probe-v2
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-bookticker-catalog-probe-v2"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-bookticker-catalog-probe-v2
+  cancel-in-progress: true
+
+jobs:
+  catalog-and-selected-day:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.run-bookticker-catalog-probe-v2
+      ROOT: research/candidate-08/evidence/bookticker-catalog-probe-v2
+      CATALOG: research/candidate-08/evidence/bookticker-catalog-probe-v2/catalog.json
+      SELECTED_DAY: research/candidate-08/evidence/bookticker-catalog-probe-v2/selected-first-day.json
+      LOG: research/candidate-08/evidence/bookticker-catalog-probe-v2/probe.log
+      PREFLIGHT_STATUS_PATH: research/candidate-08/evidence/bookticker-catalog-probe-v2/preflight_exit_status.txt
+      CATALOG_STATUS_PATH: research/candidate-08/evidence/bookticker-catalog-probe-v2/catalog_exit_status.txt
+      DAY_STATUS_PATH: research/candidate-08/evidence/bookticker-catalog-probe-v2/selected_day_exit_status.txt
+      CACHE: /tmp/candidate-08-bookticker-catalog-probe-v2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify pinned environment and catalog contracts
+        id: preflight
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT"
+          rm -f \
+            "$LOG" \
+            "$PREFLIGHT_STATUS_PATH" \
+            "$CATALOG_STATUS_PATH" \
+            "$DAY_STATUS_PATH" \
+            "$CATALOG" \
+            "$SELECTED_DAY"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/bookticker_data_probe.py \
+              research/candidate-08/bookticker_data_probe_v2.py \
+              research/candidate-08/bookticker_catalog_probe.py \
+              research/candidate-08/test_bookticker_data_probe_v2.py \
+              research/candidate-08/test_bookticker_catalog_probe.py
+            python research/candidate-08/test_bookticker_data_probe_v2.py -v
+            python research/candidate-08/test_bookticker_catalog_probe.py -v
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$PREFLIGHT_STATUS_PATH"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Freeze official catalog and outcome-blind weeks
+        if: ${{ steps.preflight.outputs.status == '0' }}
+        id: catalog
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          python research/candidate-08/bookticker_catalog_probe.py \
+            --symbol BTCUSDT \
+            --seed 8811 \
+            --output "$CATALOG" \
+            2>&1 | tee -a "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$CATALOG_STATUS_PATH"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          if [[ "$status" == "0" ]]; then
+            day=$(python - "$CATALOG" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print(payload["research_use"]["selected_first_day_probe"])
+          PY
+            )
+            printf 'selected_day=%s\n' "$day" >> "$GITHUB_OUTPUT"
+            printf 'selected first probe day: %s\n' "$day" | tee -a "$LOG"
+          fi
+
+      - name: Restore checksum-verified selected-day cache
+        if: ${{ steps.catalog.outputs.status == '0' }}
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-bookticker-catalog-v2-BTCUSDT-seed8811
+          restore-keys: |
+            candidate-08-bookticker-catalog-v2-BTCUSDT-
+
+      - name: Probe the first frozen BTC day
+        if: ${{ steps.catalog.outputs.status == '0' }}
+        id: day
+        shell: bash
+        env:
+          FROZEN_DAY: ${{ steps.catalog.outputs.selected_day }}
+        run: |
+          set -o pipefail
+          set +e
+          python research/candidate-08/bookticker_data_probe_v2.py \
+            --symbol BTCUSDT \
+            --day "$FROZEN_DAY" \
+            --cache "$CACHE" \
+            --output "$SELECTED_DAY" \
+            2>&1 | tee -a "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$DAY_STATUS_PATH"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Save checksum-verified selected-day cache
+        if: ${{ always() && steps.catalog.outputs.status == '0' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-08-bookticker-catalog-v2-BTCUSDT-seed8811
+
+      - name: Commit immutable catalog and selected-day evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- "$ROOT" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: freeze bookTicker catalog evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce catalog and selected-day status
+        if: ${{ always() }}
+        shell: bash
+        env:
+          PREFLIGHT_STATUS: ${{ steps.preflight.outputs.status }}
+          CATALOG_STATUS: ${{ steps.catalog.outputs.status }}
+          DAY_STATUS: ${{ steps.day.outputs.status }}
+        run: |
+          [[ -n "$PREFLIGHT_STATUS" ]]
+          [[ "$PREFLIGHT_STATUS" == "0" ]]
+          [[ -n "$CATALOG_STATUS" ]]
+          [[ "$CATALOG_STATUS" == "0" ]]
+          [[ -n "$DAY_STATUS" ]]
+          [[ "$DAY_STATUS" == "0" ]]
