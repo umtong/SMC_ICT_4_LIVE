@@ -23,8 +23,6 @@ jobs:
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
-    env:
-      PYTHONPATH: ${{ github.workspace }}/src:${{ github.workspace }}/research/candidate-07
     steps:
       - name: Checkout exact candidate source
         uses: actions/checkout@v4
@@ -33,6 +31,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
           /opt/smc4/.venv/bin/smc4 doctor
           PYTHONPYCACHEPREFIX=/tmp/candidate07-pyc \
             /opt/smc4/.venv/bin/python -m compileall -q research/candidate-07
@@ -55,6 +54,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
           mkdir -p artifacts/candidate-07/week-1/event-tournament
           /opt/smc4/.venv/bin/python research/candidate-07/run_aggtrade_tournament.py \
             --config research/candidate-07/config.json \
@@ -70,6 +70,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
           /opt/smc4/.venv/bin/python - <<'PY'
           import hashlib
           import json
