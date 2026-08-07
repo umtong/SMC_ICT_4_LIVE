@@ -143,6 +143,76 @@ class V25StrictLifecycleTests(unittest.TestCase):
             ),
         )
 
+    def test_shelf_finalized_inside_parent_bar_is_also_consumed(self) -> None:
+        class InjectingMachine(StrictLiquidityResponseStateMachine):
+            injected = False
+
+            def _maybe_roll_formation(self, current_bar):  # type: ignore[override]
+                if not self.injected:
+                    self.shelves.append(
+                        LiquidityShelf(
+                            shelf_id="ROLLED_SUPPLY",
+                            side=1,
+                            price=101.0,
+                            zone=0.1,
+                            created_ns=current_bar.ts_ns - 1,
+                            formation_start_ns=1,
+                            formation_end_ns=current_bar.ts_ns - 1,
+                            flow_dominance=0.8,
+                            impact_efficiency=0.0,
+                        ),
+                    )
+                    self.injected = True
+
+        helper = LiquidityResponseStateTests()
+        machine = InjectingMachine(
+            helper.params(quote=True),
+            tick_size=0.1,
+            instrument_id="BTCUSDT-PERP.BINANCE",
+        )
+        for value in (10.0, 10.0, 10.0, 10.0):
+            machine.abs_trade_quote_history.append(value)
+            machine.abs_ofi_history.append(1.0)
+            machine.range_history.append(0.1)
+            machine.spread_history.append(0.1)
+            machine.depth_history.append(2.0)
+            machine.notional_history.append(10_000.0)
+        machine.formation_abs_flow.append(10.0)
+        machine.formation_efficiency.append(0.001)
+        machine.formation_dominance.append(0.5)
+        helper.add_shelves(machine)
+        helper.seed_approach(machine)
+        machine.sequence = 9
+        self.start_probe(machine)
+
+        events, plan = machine.on_bar(
+            bar(
+                11,
+                mid=101.1,
+                high=101.2,
+                low=100.9,
+                total_quote=100.0,
+                buy_quote=100.0,
+                ofi=10.0,
+            ),
+        )
+        self.assertIsNone(plan)
+        rolled = next(
+            shelf for shelf in machine.shelves
+            if shelf.shelf_id == "ROLLED_SUPPLY"
+        )
+        self.assertFalse(rolled.active)
+        self.assertTrue(
+            any(
+                bool(
+                    event.details.get(
+                        "newly_finalized_before_current_bar_decision",
+                    ),
+                )
+                for event in events
+            ),
+        )
+
     def test_target_touched_before_confirmation_is_consumed(self) -> None:
         machine = self.machine(quote=True)
         self.add_base_shelves(machine)
