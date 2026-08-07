@@ -29,10 +29,10 @@ QH_CONTEXT_MAX_AGE_BARS = 75
 QH_CONTEXT_ACCEPTED_DISTANCE_ATR = 0.50
 QH_CONTEXT_INVALIDATION_ATR = 0.20
 
-INTERNAL_PENETRATION_ATR_MIN = 0.20
-# Controlled v42 ablation: internal raids require the same material final-flow
-# reversal as external inventory traps. Penetration, depth, VWAP, CHoCH, target,
-# risk, cost and execution contracts remain unchanged.
+# Controlled v43 ablation: a lower-timeframe pool must still be penetrated by a
+# full third of current ATR before its rejection can represent a real liquidity
+# transfer. Tail, depth, VWAP, CHoCH, target, risk and execution are unchanged.
+INTERNAL_PENETRATION_ATR_MIN = EXTERNAL_PENETRATION_ATR_MIN
 INTERNAL_TAIL_IMPROVEMENT_MIN = EXTERNAL_TAIL_IMPROVEMENT_MIN
 INTERNAL_DIRECTIONAL_DEPTH_MIN = 0.10
 
