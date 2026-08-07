@@ -1,0 +1,76 @@
+name: candidate-05-v35b-exact-control
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/directional_sequential_flow_logic.py"
+      - "research/candidate-05/strategy_v35b_directional_sequential_flow.py"
+      - "research/candidate-05/tests/test_directional_sequential_flow_logic.py"
+      - ".github/workflows/candidate-05-v35b-exact-control.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v35b-exact-control
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  controlled-btc-research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v35b-exact-control
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and directional-window contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Rerun identical v35 hypothesis after implementation repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-05/controlled_candidate_research.py \
+            --name v35b_directional_sequential_flow \
+            --strategy-module strategy_v35b_directional_sequential_flow \
+            --strategy-class DirectionalSequentialFlowRegimeStrategy \
+            --branch SEQUENTIAL_FLOW_REGIME_RELEASE \
+            --output "$ROOT/runs" \
+            --cache .cache/candidate-05-v35b-exact-control \
+            --summary "$ROOT/v35b_summary.json" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify authoritative evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f "$ROOT/v35b_summary.json"; then
+            python -m json.tool "$ROOT/v35b_summary.json"
+          fi
+          if test -f "$ROOT/console.log"; then tail -n 500 "$ROOT/console.log"; fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v35b-exact-control-${{ github.sha }}
+          path: artifacts/candidate-05-v35b-exact-control/**
+          if-no-files-found: error
+          retention-days: 90
