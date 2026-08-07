@@ -70,6 +70,55 @@ class InventoryRepricingLogicTest(unittest.TestCase):
             ),
         )
 
+    def test_internal_inventory_trap_requires_material_tail_reversal(self) -> None:
+        base = dict(
+            side=1,
+            penetration_atr=0.70,
+            flow_60s=-0.18,
+            depth_imbalance=0.17,
+            close=101.0,
+            trade_vwap=100.5,
+            external_or_clustered=False,
+        )
+        self.assertFalse(
+            inventory_trap_confirmed(
+                **base,
+                flow_15s=0.22,
+            ),
+        )
+        self.assertTrue(
+            inventory_trap_confirmed(
+                **base,
+                flow_15s=0.40,
+            ),
+        )
+        self.assertFalse(
+            inventory_trap_confirmed(
+                **{
+                    **base,
+                    "side": -1,
+                    "flow_15s": -0.40,
+                    "flow_60s": 0.18,
+                    "depth_imbalance": -0.17,
+                    "close": 99.0,
+                    "trade_vwap": 99.5,
+                },
+            ),
+        )
+        self.assertTrue(
+            inventory_trap_confirmed(
+                **{
+                    **base,
+                    "side": -1,
+                    "flow_15s": -0.40,
+                    "flow_60s": 0.11,
+                    "depth_imbalance": -0.17,
+                    "close": 99.0,
+                    "trade_vwap": 99.5,
+                },
+            ),
+        )
+
     def test_internal_sweep_needs_accepted_aged_context(self) -> None:
         self.assertFalse(
             quarter_internal_sweep_eligible(
