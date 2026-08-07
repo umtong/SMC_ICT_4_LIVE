@@ -58,6 +58,7 @@ def _base(raw: Mapping[str, Any]) -> dict[str, Any]:
     config["logic"].update(
         {
             "engine": "AUCTION_IMBALANCE_MIGRATION_DISCOVERY",
+            "signal_submission_timing": "ON_SIGNAL_CLOSE",
             "aimd_profile_period_minutes": 15,
             "aimd_value_area_fraction": 0.70,
             "aimd_poc_shift_atr": 0.15,

@@ -263,8 +263,30 @@ def make_strategy_class():
             step = self._scenario_engine.observe(snapshot, allow_new=True)
             self._record_transitions(step.transitions, ts_ns)
             if step.signal is not None:
-                self._pending_signal = step.signal
-                self._pending_created_index = snapshot.index
                 self.diagnostics["signals_armed"] += 1
+                timing = str(
+                    self._logic_params.get(
+                        "signal_submission_timing",
+                        "NEXT_COMPLETED_BAR",
+                    ),
+                ).upper()
+                timing_counts = self.diagnostics.setdefault(
+                    "signal_submission_timing_counts",
+                    {},
+                )
+                timing_counts[timing] = int(timing_counts.get(timing, 0)) + 1
+                if timing == "ON_SIGNAL_CLOSE":
+                    # The scenario signal is created only after this completed
+                    # bar is observable. Nautilus processes a market order
+                    # submitted from on_bar against the current bar close; it
+                    # cannot use the completed bar's high/low path retroactively.
+                    self._attempt_entry(step.signal, snapshot)
+                elif timing == "NEXT_COMPLETED_BAR":
+                    self._pending_signal = step.signal
+                    self._pending_created_index = snapshot.index
+                else:
+                    raise ValueError(
+                        f"unsupported signal_submission_timing: {timing}",
+                    )
 
     return LRBStrategyConfig, LRBStrategy
