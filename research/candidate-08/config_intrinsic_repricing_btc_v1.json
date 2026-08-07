@@ -1,0 +1,119 @@
+{
+  "candidate": "candidate-08-intrinsic-repricing-btc-nautilus-v1",
+  "description": "BTC-first activity-time repricing continuation after completed external liquidity",
+  "implementation_revision": "CAUSAL_INTRINSIC_REPRICING_CONTINUATION_V1",
+  "ten_second_cadence_contract": "EXACT_CONSECUTIVE_10_SECONDS",
+  "trade_path_diagnostic_revision": "POST_RUN_STRUCTURAL_PATH_COMPLETE_HORIZON_V2",
+  "random_seed": 8810,
+  "starting_nav_usdt": 100000.0,
+  "risk_fraction": 0.03,
+  "effective_fee_rate_per_fill": 0.0006,
+  "minimum_net_reward_risk": 1.2,
+  "maximum_hold_minutes": 240,
+  "funding_avoidance_minutes": 5,
+  "assets": {
+    "BTCUSDT": {
+      "instrument_id": "BTCUSDT-PERP.BINANCE",
+      "base_currency": "BTC",
+      "price_precision": 1,
+      "size_precision": 3,
+      "tick_size": "0.1",
+      "size_increment": "0.001",
+      "min_quantity": "0.001"
+    }
+  },
+  "cost_assumptions": {
+    "maker_fee_rate": 0.0006,
+    "taker_fee_rate": 0.0006,
+    "one_tick_slippage_probability": 1.0,
+    "latency_ms": {
+      "base": 0,
+      "insert": 0,
+      "update": 0,
+      "cancel": 0
+    },
+    "rationale": "Every fill is charged 6 bp. Entry reserves one adverse tick; stop execution reserves the shifted 99th percentile of completed ten-second true range over the preceding hour. NautilusTrader separately settles checksum-verified official funding and applies native liquidation.",
+    "actual_funding_settlement": "checksum-verified Binance Vision monthly fundingRate archives",
+    "stop_market_slippage_reserve": "Shifted prior-60-minute ten-second true-range Q99, minimum one tick; independent of direction, path, target and outcome."
+  },
+  "venue": {
+    "default_leverage": 125,
+    "bar_adaptive_high_low_ordering": true,
+    "liquidation_enabled": true,
+    "liquidation_trigger_ratio": 1.0,
+    "liquidation_cancel_open_orders": true,
+    "runtime_liquidation_switch_supported": true
+  },
+  "pattern_source_config": "config_range_fvg.json",
+  "flow_response_config": {
+    "impact_lookback_bars": 360,
+    "minimum_history_bars": 90,
+    "response_window_bars": 3,
+    "pressure_quantile": 0.9,
+    "noise_quantile": 0.99,
+    "minimum_flow_consistency": 0.6666666666666666,
+    "initiative_progress_noise": 1.0,
+    "initiative_retention": 0.5,
+    "absorption_minimum_excursion_noise": 0.5,
+    "absorption_maximum_progress_noise": 0.5,
+    "absorption_maximum_retention": 0.5
+  },
+  "intrinsic_repricing_config": {
+    "maximum_event_bars": 9
+  },
+  "suites": {
+    "first": [
+      {
+        "name": "screen-01",
+        "start": "2024-04-08T00:00:00Z",
+        "end": "2024-04-15T00:00:00Z"
+      }
+    ],
+    "screen": [
+      {
+        "name": "screen-01",
+        "start": "2024-04-08T00:00:00Z",
+        "end": "2024-04-15T00:00:00Z"
+      },
+      {
+        "name": "screen-02",
+        "start": "2025-06-09T00:00:00Z",
+        "end": "2025-06-16T00:00:00Z"
+      },
+      {
+        "name": "screen-03",
+        "start": "2025-09-29T00:00:00Z",
+        "end": "2025-10-06T00:00:00Z"
+      }
+    ]
+  },
+  "first_window_gate": {
+    "minimum_closed_trades": 3,
+    "cost_after_total_return_positive": true,
+    "no_execution_failures": true,
+    "no_residual_exposure": true
+  },
+  "screen_gate": {
+    "minimum_closed_trades_per_week": 3,
+    "all_three_cost_after_positive": true,
+    "minimum_positive_trade_share": 0.45,
+    "maximum_single_positive_pnl_share": 0.5,
+    "combined_daily_geometric_growth": 0.01,
+    "no_execution_failures": true,
+    "no_residual_exposure": true
+  },
+  "validation_protocol": {
+    "pattern_detector": "Already-completed 4-hour/day/week external-liquidity inventory remains independent from the intrinsic response scenario.",
+    "activity_clock": "Each event freezes the shifted prior-distribution activity budget at its first bucket and completes when cumulative absolute normalized aggressive activity reaches that budget, with a maximum of nine exact ten-second buckets.",
+    "initial_displacement": "The first strictly post-interaction intrinsic event must be outward initiative response and finish outside the interacted boundary.",
+    "direct_persistence": "A separate second intrinsic event must be same-direction initiative response, remain outside the boundary and extend beyond the first event close.",
+    "reprice_resumption": "Alternatively a separate opposite-flow intrinsic event must touch and hold the boundary, followed by a third outward initiative event which breaks the reprice-event extreme.",
+    "entry": "Market OUO bracket after the completed persistence or resumption event.",
+    "sizing": "Current full shared USDT NAV times 3 percent divided by expected entry-to-stop loss including both 6 bp fill charges, one adverse entry tick, causal Q99 stop reserve and causal funding reserve; no nominal cap or score multiplier.",
+    "stop": "Observed intrinsic reprice-event extreme or held completed boundary, whichever is farther, plus the existing ATR structural buffer and minimum distance.",
+    "target": "Nearest active completed external level in the scenario direction; no fitted R fallback.",
+    "global_selection": "At any timestamp only the highest causal cost-after net reward-risk signal is eligible; while any order or position exists the account is unavailable.",
+    "promotion": "The fixed first BTC week must pass before the remaining two fixed BTC weeks; all three must pass unchanged before multiasset or long evaluation.",
+    "path_ablation": "After a clean logic failure, exactly one diagnostic path removal is allowed only when both entry paths traded independently and one is cost-after positive while the other is negative. Diagnostic evidence is never directly promotable."
+  }
+}
