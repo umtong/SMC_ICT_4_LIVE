@@ -9,8 +9,8 @@ PREVIOUS=""
 PREVIOUS_ADVANCE_ALLOWED=true
 
 case "$WEEK" in
-  W1|W2|W3|W4|W5|W6) ;;
-  *) echo "week must be W1 through W6" >&2; exit 64 ;;
+  W1|W2|W3|W4|W5|W6|W7|W8|W9) ;;
+  *) echo "week must be W1 through W9" >&2; exit 64 ;;
 esac
 
 smc4 doctor
@@ -27,10 +27,17 @@ python -m py_compile \
 python -m unittest discover -s "$CAND" -p 'test_*.py' -v
 
 # Advancement controls success claims, not whether independent evidence may be
-# collected. W5/W6 therefore still run when the preceding weekly frequency
-# gate fails, but the resulting metrics are explicitly sealed as diagnostic.
-if [[ "$WEEK" == "W5" || "$WEEK" == "W6" ]]; then
-  if [[ "$WEEK" == "W5" ]]; then PREVIOUS="W4"; else PREVIOUS="W5"; fi
+# collected. Post-screening intervals always execute, but remain sealed as
+# diagnostic evidence when the preceding weekly frequency gate did not approve
+# promotion. This prevents a frequency gate from blocking falsification.
+case "$WEEK" in
+  W5) PREVIOUS="W4" ;;
+  W6) PREVIOUS="W5" ;;
+  W7) PREVIOUS="W6" ;;
+  W8) PREVIOUS="W7" ;;
+  W9) PREVIOUS="W8" ;;
+esac
+if [[ -n "$PREVIOUS" ]]; then
   PREVIOUS_AUDIT="$CAND/results/LEADERSHIP_${PREVIOUS}/audit.json"
   test -s "$PREVIOUS_AUDIT"
   if ! python - "$PREVIOUS_AUDIT" <<'PY'
@@ -49,10 +56,25 @@ fi
 OUT="$CAND/results/LEADERSHIP_${WEEK}"
 rm -rf "$OUT"
 mkdir -p "$OUT"
-python "$CAND/run_leadership_scdam.py" \
-  --config "$CAND/config.json" \
-  --week "$WEEK" \
-  --output "$OUT"
+# Import run() directly so frozen intervals added to config do not require a
+# second CLI allow-list. The same Nautilus engine, strategy and execution model
+# remain in force.
+python - "$CAND" "$CAND/config.json" "$WEEK" "$OUT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+candidate_dir = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(candidate_dir))
+from run_leadership_scdam import run
+
+metrics = run(
+    Path(sys.argv[2]).resolve(),
+    sys.argv[3],
+    Path(sys.argv[4]).resolve(),
+)
+print(json.dumps(metrics, indent=2, sort_keys=True, default=str))
+PY
 
 for file in \
   run.json data_manifest.json metrics.json scenario_events.jsonl \
@@ -78,10 +100,44 @@ temporary.replace(path)
 PY
 fi
 
-python "$CAND/evidence_audit.py" \
-  "$OUT" \
-  --week "$WEEK" \
-  --output "$OUT/audit.json"
+# Call the auditor as a library so W7-W9 remain ordinary named holdouts rather
+# than being mislabeled as a generic LONG run.
+python - "$CAND" "$OUT" "$WEEK" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+candidate_dir = Path(sys.argv[1]).resolve()
+result_dir = Path(sys.argv[2]).resolve()
+week = sys.argv[3]
+sys.path.insert(0, str(candidate_dir))
+from evidence_audit import audit
+
+result = audit(result_dir, week)
+output = result_dir / "audit.json"
+output.write_text(
+    json.dumps(result, indent=2, sort_keys=True, default=str) + "\n",
+    encoding="utf-8",
+)
+lines = ["# Candidate 11 evidence audit", "", f"**{result['classification']}**", ""]
+for key in (
+    "advance_allowed",
+    "success_claim_allowed",
+    "evidence_complete",
+    "metric_recalculation_passed",
+    "risk_budget_passed",
+    "global_slot_passed",
+    "partial_entry_protection_passed",
+    "no_liquidation_passed",
+):
+    lines.append(f"- {key}: `{result[key]}`")
+lines.extend(("", "## Reasons"))
+lines.extend(f"- {reason}" for reason in result["reasons"])
+(result_dir / "audit.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+print(json.dumps(result, indent=2, sort_keys=True, default=str))
+if result["classification"] == "IMPLEMENTATION_OR_EVIDENCE_FAILURE":
+    raise SystemExit(2)
+PY
 
 python - "$OUT/metrics.json" "$OUT/audit.json" <<'PY'
 import json
