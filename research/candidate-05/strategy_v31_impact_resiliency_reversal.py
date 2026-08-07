@@ -26,7 +26,7 @@ class ImpactResiliencyReversalStrategy(ExternalDisplacementFvgStrategyV2):
     """Add an impact-decay reversal after a causally accepted external shock.
 
     A completed four-hour external high or low must first be broken with the
-    unchanged Candidate 05 acceptance contract.  The strategy then observes,
+    unchanged Candidate 05 acceptance contract. The strategy then observes,
     without occupying the execution slot, whether the shock is absorbed:
 
     * price closes back through the broken level and the shock midpoint;
@@ -37,11 +37,11 @@ class ImpactResiliencyReversalStrategy(ExternalDisplacementFvgStrategyV2):
     * the side of the book depleted by the shock replenishes by at least the
       existing depth-refill threshold.
 
-    No order is submitted on that failure bar.  The strategy waits for the first
+    No order is submitted on that failure bar. The strategy waits for the first
     later return to the failed external level, requires current reversal flow and
-    depth, and places a passive limit at the level.  The stop is beyond the
+    depth, and places a passive limit at the level. The stop is beyond the
     original shock extreme; the target must be a still-live opposing liquidity
-    pool.  Costs, 3% current-NAV risk sizing, pending-order validity and all
+    pool. Costs, 3% current-NAV risk sizing, pending-order validity and all
     execution/accounting remain inherited from v26 and NautilusTrader.
     """
 
@@ -76,8 +76,6 @@ class ImpactResiliencyReversalStrategy(ExternalDisplacementFvgStrategyV2):
             return
         self.diagnostics["impact_resiliency_observation_bars"] += 1
 
-        # A new close farther outside the level before failure confirmation means
-        # the accepted shock is still being discovered rather than absorbed.
         if (
             self.bar_index > watch.breakout_index + 1
             and failed_break_reaccepted(
@@ -86,8 +84,6 @@ class ImpactResiliencyReversalStrategy(ExternalDisplacementFvgStrategyV2):
                 close=bar.close,
             )
         ):
-            # Continue observing within the existing four-bar confirmation
-            # horizon; do not call this a reversal merely because one bar paused.
             if self.bar_index > watch.formation_expires_index:
                 self.diagnostics["impact_resiliency_reaccepted_before_failure"] += 1
                 self._close_external_watch(
@@ -315,7 +311,7 @@ class ImpactResiliencyReversalStrategy(ExternalDisplacementFvgStrategyV2):
             stop=stop,
             atr=atr,
             created_index=watch.breakout_index,
-            expires_index=watch.retest_expires_index,
+            created_ts=bar.ts,
             details=details,
         )
         submitted = self._submit_price_capped_bracket(
