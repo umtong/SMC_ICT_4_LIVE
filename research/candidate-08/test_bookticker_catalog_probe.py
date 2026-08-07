@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
-from tempfile import TemporaryDirectory
 import unittest
 from urllib.parse import parse_qs, urlparse
 
@@ -113,10 +112,7 @@ class BookTickerCatalogContracts(unittest.TestCase):
             [start + timedelta(days=offset) for offset in range(4)],
         )
         days.remove(start + timedelta(days=4))
-        self.assertEqual(
-            _contiguous_week_starts(days),
-            [start + timedelta(days=5), start + timedelta(days=6), start + timedelta(days=7), start + timedelta(days=8), start + timedelta(days=9)] if False else [],
-        )
+        self.assertEqual(_contiguous_week_starts(days), [])
 
     def test_seeded_selection_is_reproducible_and_outcome_blind(self) -> None:
         symbol = "BTCUSDT"
@@ -165,6 +161,16 @@ class BookTickerCatalogContracts(unittest.TestCase):
         for offset in (0, 1, 2, 4, 5, 6, 8, 9):
             objects.extend(_catalog_pair(symbol, start + timedelta(days=offset)))
         with self.assertRaisesRegex(BinanceDataError, "no contiguous seven-day"):
+            build_catalog_evidence(symbol=symbol, seed=8811, objects=objects)
+
+    def test_duplicate_catalog_key_is_rejected(self) -> None:
+        symbol = "BTCUSDT"
+        start = date(2025, 1, 1)
+        objects: list[CatalogObject] = []
+        for offset in range(7):
+            objects.extend(_catalog_pair(symbol, start + timedelta(days=offset)))
+        objects.append(objects[0])
+        with self.assertRaisesRegex(BinanceDataError, "duplicate object keys"):
             build_catalog_evidence(symbol=symbol, seed=8811, objects=objects)
 
     def test_catalog_source_contains_no_strategy_or_backtest(self) -> None:
