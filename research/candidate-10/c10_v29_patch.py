@@ -12,7 +12,7 @@ def patch(path: Path) -> None:
     patch_v28(path)
     text = path.read_text(encoding="utf-8")
     old_import = "from c10_v28_overlay import (\n"
-    new_import = "from c10_v29_overlay import (\n"
+    new_import = "from c10_v29_overlay import (\n    certify_plan,\n"
     if text.count(old_import) != 1:
         raise RuntimeError("v29 overlay import marker is not unique")
     text = text.replace(old_import, new_import, 1)
