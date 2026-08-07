@@ -5,16 +5,20 @@ or change the project risk fraction.  It is a binary approval layer applied to
 already-complete SCDAM plans.  Leadership is recomputed from trailing completed
 one-minute quote notional and is therefore not hard-coded to a symbol.
 
-A leader may express an idiosyncratic FAR or AAC.  A follower FAR is approved
-only when every peer market has moved in the proposed reversal direction from
-the source sweep to plan confirmation.  Follower AAC abstains because accepted
-price discovery should originate in the current notional leader.
+A notional leader may express an idiosyncratic FAR or AAC. A follower FAR is
+approved either when every peer market confirms the reversal, or when the
+candidate was in the directional top half over the trailing causal window and
+then outperforms the peer median from sweep to confirmation. The second path
+captures a relative-strength liquidity grab without weakening the first path.
+Follower AAC abstains because accepted price discovery should originate in the
+current notional leader.
 """
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
 from math import isfinite
+from statistics import median
 from typing import Mapping
 
 MINUTE_NS = 60_000_000_000
@@ -38,6 +42,7 @@ class LeadershipDecision:
     sweep_ts_ns: int
     confirmation_ts_ns: int
     peer_returns: dict[str, float]
+    directional_returns: dict[str, float]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -50,6 +55,7 @@ class LeadershipDecision:
             "sweep_ts_ns": self.sweep_ts_ns,
             "confirmation_ts_ns": self.confirmation_ts_ns,
             "peer_returns": dict(sorted(self.peer_returns.items())),
+            "directional_returns": dict(sorted(self.directional_returns.items())),
         }
 
 
@@ -124,6 +130,25 @@ class MarketLeadershipGate:
         # Deterministic lexical tie-break only; leadership is never hard-coded.
         return sorted(self.symbols, key=lambda symbol: (-totals[symbol], symbol))[0]
 
+    def _directional_returns_at(
+        self,
+        ts_ns: int,
+        direction: str,
+    ) -> dict[str, float] | None:
+        """Return causal trailing returns signed into the proposed direction."""
+        sign = 1.0 if direction == "LONG" else -1.0
+        start_exclusive = ts_ns - self.lookback_bars * MINUTE_NS
+        returns: dict[str, float] = {}
+        for symbol in self.symbols:
+            sample = [
+                point for point in self._history[symbol]
+                if start_exclusive < point.ts_ns <= ts_ns
+            ]
+            if len(sample) < self.lookback_bars or sample[-1].ts_ns != ts_ns:
+                return None
+            returns[symbol] = sign * (sample[-1].close / sample[0].close - 1.0)
+        return returns
+
     def decide(
         self,
         *,
@@ -145,6 +170,7 @@ class MarketLeadershipGate:
             reason: str,
             leader: str | None,
             peer_returns: dict[str, float] | None = None,
+            directional_returns: dict[str, float] | None = None,
         ) -> LeadershipDecision:
             return LeadershipDecision(
                 approved=approved,
@@ -156,6 +182,7 @@ class MarketLeadershipGate:
                 sweep_ts_ns=int(sweep_ts_ns),
                 confirmation_ts_ns=int(confirmation_ts_ns),
                 peer_returns=peer_returns or {},
+                directional_returns=directional_returns or {},
             )
 
         if confirmation_ts_ns != self._last_batch_ts:
@@ -164,28 +191,86 @@ class MarketLeadershipGate:
             return decision(False, "INVALID_SWEEP_CONFIRMATION_ORDER", None)
 
         leader = self._leader_at(sweep_ts_ns)
-        if leader is None:
+        directional_returns = self._directional_returns_at(sweep_ts_ns, direction)
+        if leader is None or directional_returns is None:
             return decision(False, "INSUFFICIENT_LEADERSHIP_HISTORY", None)
         if symbol == leader:
-            return decision(True, "LEADER_PRICE_DISCOVERY", leader)
+            return decision(
+                True,
+                "LEADER_PRICE_DISCOVERY",
+                leader,
+                directional_returns=directional_returns,
+            )
         if scenario == "AAC":
-            return decision(False, "FOLLOWER_AAC_WITHOUT_LEADERSHIP", leader)
+            return decision(
+                False,
+                "FOLLOWER_AAC_WITHOUT_LEADERSHIP",
+                leader,
+                directional_returns=directional_returns,
+            )
 
         peer_returns: dict[str, float] = {}
+        candidate_sweep = self._point_at(symbol, sweep_ts_ns)
+        candidate_confirmation = self._point_at(symbol, confirmation_ts_ns)
+        if candidate_sweep is None or candidate_confirmation is None:
+            return decision(
+                False,
+                "MISSING_SYNCHRONIZED_CANDIDATE_SNAPSHOT",
+                leader,
+                directional_returns=directional_returns,
+            )
         for peer in self.symbols:
             if peer == symbol:
                 continue
             sweep = self._point_at(peer, sweep_ts_ns)
             confirmation = self._point_at(peer, confirmation_ts_ns)
             if sweep is None or confirmation is None:
-                return decision(False, "MISSING_SYNCHRONIZED_PEER_SNAPSHOT", leader, peer_returns)
+                return decision(
+                    False,
+                    "MISSING_SYNCHRONIZED_PEER_SNAPSHOT",
+                    leader,
+                    peer_returns,
+                    directional_returns,
+                )
             peer_returns[peer] = confirmation.close / sweep.close - 1.0
 
-        aligned = (
-            all(value > 0.0 for value in peer_returns.values())
-            if direction == "LONG"
-            else all(value < 0.0 for value in peer_returns.values())
+        sign = 1.0 if direction == "LONG" else -1.0
+        signed_peer_moves = [sign * value for value in peer_returns.values()]
+        if all(value > 0.0 for value in signed_peer_moves):
+            return decision(
+                True,
+                "FOLLOWER_FAR_UNANIMOUS_PEERS",
+                leader,
+                peer_returns,
+                directional_returns,
+            )
+
+        candidate_move = sign * (
+            candidate_confirmation.close / candidate_sweep.close - 1.0
         )
-        if not aligned:
-            return decision(False, "FOLLOWER_FAR_PEER_DISAGREEMENT", leader, peer_returns)
-        return decision(True, "FOLLOWER_FAR_UNANIMOUS_PEERS", leader, peer_returns)
+        directional_rank = 1 + sum(
+            value > directional_returns[symbol]
+            for peer, value in directional_returns.items()
+            if peer != symbol
+        )
+        top_half_limit = max(1, (len(self.symbols) + 1) // 2)
+        relative_recovery = (
+            directional_rank <= top_half_limit
+            and candidate_move > 0.0
+            and candidate_move > median(signed_peer_moves)
+        )
+        if relative_recovery:
+            return decision(
+                True,
+                "FOLLOWER_FAR_DIRECTIONAL_LEADER_RECOVERY",
+                leader,
+                peer_returns,
+                directional_returns,
+            )
+        return decision(
+            False,
+            "FOLLOWER_FAR_PEER_DISAGREEMENT",
+            leader,
+            peer_returns,
+            directional_returns,
+        )

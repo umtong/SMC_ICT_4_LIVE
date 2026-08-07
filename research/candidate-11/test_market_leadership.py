@@ -93,8 +93,130 @@ class MarketLeadershipGateTests(unittest.TestCase):
             {
                 "BTCUSDT": 101.0,
                 "ETHUSDT": 102.0,
-                "SOLUSDT": 103.0,
+                "SOLUSDT": 100.5,
                 "XRPUSDT": 99.0,
+            },
+            {symbol: 1000.0 for symbol in self.SYMBOLS},
+        )
+        result = gate.decide(
+            symbol="SOLUSDT",
+            scenario="FAR",
+            direction="LONG",
+            sweep_ts_ns=sweep_ts,
+            confirmation_ts_ns=confirmation_ts,
+        )
+        self.assertFalse(result.approved)
+        self.assertEqual(result.reason, "FOLLOWER_FAR_PEER_DISAGREEMENT")
+
+    def test_directional_leader_recovery_approves_mixed_peer_far(self) -> None:
+        gate = MarketLeadershipGate(self.SYMBOLS, lookback_bars=3, max_history_bars=12)
+        notionals = {
+            "BTCUSDT": 1000.0,
+            "ETHUSDT": 5000.0,
+            "SOLUSDT": 900.0,
+            "XRPUSDT": 800.0,
+        }
+        self._batch(
+            gate,
+            1,
+            {symbol: 100.0 for symbol in self.SYMBOLS},
+            notionals,
+        )
+        self._batch(
+            gate,
+            2,
+            {
+                "BTCUSDT": 100.5,
+                "ETHUSDT": 100.0,
+                "SOLUSDT": 102.0,
+                "XRPUSDT": 99.5,
+            },
+            notionals,
+        )
+        sweep_ts = self._batch(
+            gate,
+            3,
+            {
+                "BTCUSDT": 101.0,
+                "ETHUSDT": 100.0,
+                "SOLUSDT": 104.0,
+                "XRPUSDT": 99.0,
+            },
+            notionals,
+        )
+        confirmation_ts = self._batch(
+            gate,
+            4,
+            {
+                "BTCUSDT": 102.0,
+                "ETHUSDT": 99.5,
+                "SOLUSDT": 105.5,
+                "XRPUSDT": 100.0,
+            },
+            {symbol: 1000.0 for symbol in self.SYMBOLS},
+        )
+        result = gate.decide(
+            symbol="SOLUSDT",
+            scenario="FAR",
+            direction="LONG",
+            sweep_ts_ns=sweep_ts,
+            confirmation_ts_ns=confirmation_ts,
+        )
+        self.assertTrue(result.approved)
+        self.assertEqual(result.reason, "FOLLOWER_FAR_DIRECTIONAL_LEADER_RECOVERY")
+        self.assertGreater(
+            result.directional_returns["SOLUSDT"],
+            max(
+                value
+                for peer, value in result.directional_returns.items()
+                if peer != "SOLUSDT"
+            ),
+        )
+
+    def test_directional_leader_without_recovery_still_abstains(self) -> None:
+        gate = MarketLeadershipGate(self.SYMBOLS, lookback_bars=3, max_history_bars=12)
+        notionals = {
+            "BTCUSDT": 1000.0,
+            "ETHUSDT": 5000.0,
+            "SOLUSDT": 900.0,
+            "XRPUSDT": 800.0,
+        }
+        self._batch(
+            gate,
+            1,
+            {symbol: 100.0 for symbol in self.SYMBOLS},
+            notionals,
+        )
+        self._batch(
+            gate,
+            2,
+            {
+                "BTCUSDT": 100.5,
+                "ETHUSDT": 100.0,
+                "SOLUSDT": 102.0,
+                "XRPUSDT": 99.5,
+            },
+            notionals,
+        )
+        sweep_ts = self._batch(
+            gate,
+            3,
+            {
+                "BTCUSDT": 101.0,
+                "ETHUSDT": 100.0,
+                "SOLUSDT": 104.0,
+                "XRPUSDT": 99.0,
+            },
+            notionals,
+        )
+        confirmation_ts = self._batch(
+            gate,
+            4,
+            {
+                "BTCUSDT": 102.0,
+                "ETHUSDT": 99.5,
+                "SOLUSDT": 103.0,
+                "XRPUSDT": 100.0,
             },
             {symbol: 1000.0 for symbol in self.SYMBOLS},
         )
