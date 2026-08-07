@@ -1,0 +1,180 @@
+{
+  "arbitrary_leverage_cap": null,
+  "candidate_family": "candidate-02-v104-external-liquidity-common-acceptance-retest",
+  "central_level_families": [
+    "PREVIOUS_DAY",
+    "PREVIOUS_WEEK",
+    "MATURE_SWING",
+    "EQUAL_SWING_CLUSTER"
+  ],
+  "custom_backtest_engine": false,
+  "execution_contract": {
+    "activation_bar_stop_or_target_pretraversal_rejected": true,
+    "activation_bar_structural_invalidation_rejected": true,
+    "activation_delay_minutes": 1,
+    "actual_activation_cost_after_rr_revalidated": true,
+    "actual_activation_delivery_fraction_revalidated": true,
+    "actual_activation_price_used_for_sizing": true,
+    "decision_and_activation_are_separate_states": true,
+    "exchange_price_increment_applied_before_sizing": true,
+    "locked_cost_model_must_match_execution_config": true,
+    "planned_loss_includes": [
+      "entry_to_stop_distance",
+      "entry_fee",
+      "stop_fee",
+      "entry_slippage",
+      "stop_slippage",
+      "market_impact",
+      "funding_allowance"
+    ],
+    "same_confirmation_close_fill_forbidden": true,
+    "target_must_be_known_by_decision": true,
+    "target_must_remain_active_at_activation": true
+  },
+  "first_week": {
+    "end_utc": "2025-12-15T00:00:00Z",
+    "raw_data_status_at_lock": "NOT_COLLECTED_FOR_V104",
+    "selection_seed": 20260807104,
+    "start_utc": "2025-12-08T00:00:00Z",
+    "symbol": "BTCUSDT"
+  },
+  "first_week_pass_gates": {
+    "flat_at_end": true,
+    "maximum_mark_to_market_drawdown": 0.25,
+    "maximum_planned_loss_to_budget": 1.000000001,
+    "minimum_geometric_daily_nav_growth_after_cost": 0.01,
+    "minimum_profit_factor_after_cost": 1.5,
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.5
+  },
+  "global_pending_entry_plus_position_limit": 1,
+  "implementation_audit_completed_at_utc": "2026-08-07T07:25:56Z",
+  "implementation_fix_records": [
+    "research/candidate-02/v104_implementation_fix_01.json",
+    "research/candidate-02/v104_implementation_fix_02.json"
+  ],
+  "known_failure_conditions": [
+    "both-side external liquidity is consumed in the same minute",
+    "the breach is mostly basis expansion without spot acceptance",
+    "acceptance does not precede a strictly later causal displacement/FVG",
+    "the retest returns through the old-range invalidation",
+    "the nearest natural external target was not known by the decision close",
+    "the nearest natural external target expires before activation or was already traversed",
+    "entry occurs beyond the first half of boundary-to-target delivery",
+    "the nearest target cannot cover the locked cost-after-risk floor at executable prices",
+    "the activation bar traversed structural invalidation, exchange-rounded stop, or target",
+    "activation price has moved through the planned geometry",
+    "opportunity density remains below the first-week gate"
+  ],
+  "locked_at_utc": "2026-08-07T00:00:00Z",
+  "market_hypothesis": "A first traversal of already-known external liquidity becomes a continuation opportunity only when spot and perpetual markets accept beyond the old boundary, a post-acceptance displacement leaves a causal imbalance, a later retest defends both the imbalance and boundary, and a still-intact nearest external-liquidity objective remains economically reachable from the first half of the new delivery range.",
+  "maximum_notional_cap": null,
+  "performance_engine": "NautilusTrader 1.230.0",
+  "prebuilt_environment": {
+    "container_image": "ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469",
+    "doctor_command": "smc4 doctor",
+    "installation_or_engine_redevelopment_allowed": false
+  },
+  "preselected_later_weeks": [
+    {
+      "allowed_only_after": "CENTRAL_FIRST_WEEK_BASELINE_PASSES_ALL_GATES",
+      "end_utc": "2025-02-10T00:00:00Z",
+      "selection_seed": 20260807105,
+      "start_utc": "2025-02-03T00:00:00Z"
+    },
+    {
+      "allowed_only_after": "CENTRAL_FIRST_AND_SECOND_WEEK_BASELINES_PASS_ALL_GATES",
+      "end_utc": "2024-07-22T00:00:00Z",
+      "selection_seed": 20260807106,
+      "start_utc": "2024-07-15T00:00:00Z"
+    }
+  ],
+  "project_target_met_at_lock": false,
+  "promotion_rules": {
+    "ablation_can_promote": false,
+    "long_evaluation": "CENTRAL_BASELINE_MUST_PASS_ALL_THREE_PROSPECTIVE_WEEKS",
+    "second_week": "CENTRAL_BASELINE_ONLY_MUST_PASS_EVERY_FIRST_WEEK_GATE",
+    "third_week": "CENTRAL_BASELINE_MUST_PASS_FIRST_AND_SECOND_WEEKS"
+  },
+  "quantity_basis": "current full NautilusTrader account NAV",
+  "risk_fraction": 0.03,
+  "score_risk_multiplier": null,
+  "selection_algorithm": {
+    "excluded_previously_used_weeks": [
+      "2025-10-06",
+      "2025-11-17"
+    ],
+    "market_data_inspected_before_lock": false,
+    "method": "Python random.Random(seed).choice over the sorted remaining Monday list",
+    "population": "UTC Mondays from 2024-01-01 through 2025-12-29"
+  },
+  "single_ablation": {
+    "all_other_scenario_logic_unchanged": true,
+    "removed_level_family": "EQUAL_SWING_CLUSTER",
+    "retrospective_promotion_allowed": false,
+    "run_only_if_baseline_fails": true,
+    "week_risk_costs_and_engine_unchanged": true
+  },
+  "source_files": {
+    "activation_adapter_tests": "research/candidate-02/tests/test_v104_activation_adapter.py",
+    "base_config": "research/candidate-02/v104_base_config.json",
+    "causality_tests": "research/candidate-02/tests/test_v104_causality.py",
+    "core": "research/candidate-02/v104_external_liquidity_core.py",
+    "dependency_core_risk": "research/candidate-02/core.py",
+    "dependency_v53_nt_backtest": "research/candidate-02/v53_nt_backtest.py",
+    "dependency_v53_nt_core": "research/candidate-02/v53_nt_core.py",
+    "dependency_v53_nt_strategy": "research/candidate-02/v53_nt_strategy.py",
+    "dependency_v75_build_features": ".candidate-02-v75/build_features.py",
+    "dependency_v75_collect": ".candidate-02-v75/collect_first_week.py",
+    "dependency_v89_augment_cross_market": ".candidate-02-v89/augment_cross_market.py",
+    "dependency_v89_collect_spot": ".candidate-02-v89/collect_spot.py",
+    "design": "research/candidate-02/v104_design.md",
+    "driver": "research/candidate-02/v104_first_week_driver.py",
+    "execution_plumbing": "research/candidate-02/v104_execution_plumbing.md",
+    "implementation_fix_01": "research/candidate-02/v104_implementation_fix_01.json",
+    "implementation_fix_02": "research/candidate-02/v104_implementation_fix_02.json",
+    "method": "research/candidate-02/research_method_v104.md",
+    "nt_backtest": "research/candidate-02/v104_nt_backtest.py",
+    "nt_strategy": "research/candidate-02/v104_nt_strategy.py",
+    "router_workflow": ".github/workflows/candidate-02-v77-terminal-router.yml",
+    "test_conftest": "research/candidate-02/tests/conftest.py",
+    "v103_decision": "research/candidate-02/v103_discard_decision.json",
+    "week_selection_code": "research/candidate-02/v104_week_selection.py",
+    "week_selection_result": "research/candidate-02/v104_week_selection.json"
+  },
+  "source_git_blob_sha": {
+    "activation_adapter_tests": "b4d01de98c7324d0e77ff23cae645102be2d60dc",
+    "base_config": "dfa5d8072e546cdb6c5edd653be47f5d9f9e9844",
+    "causality_tests": "a19fa872d7f0fe269888c416d0f94f4e3c705e04",
+    "core": "0b3522211eb1e91a5f91ff43a7ae6ad8d9189a40",
+    "dependency_core_risk": "76883eb95acdb9ab4870de0c26127fc3ddc82e90",
+    "dependency_v53_nt_backtest": "2a96e3055b4c6f4c0ad6a8793de1c0dee829902b",
+    "dependency_v53_nt_core": "afde0fce7d7d29255988395dc24ff30450b9f3a0",
+    "dependency_v53_nt_strategy": "0db7f1f53c0861a24c365fe205b007a58f2dcd81",
+    "dependency_v75_build_features": "44c20c3236ac5901a528fa1389c1c6e29b7f0ea1",
+    "dependency_v75_collect": "baee715b4647adbc82e7bcaf97262d6e2650bca8",
+    "dependency_v89_augment_cross_market": "c4b3e550f1015b6f6e85ba881d20be8432d21e5c",
+    "dependency_v89_collect_spot": "5f6cf762448d0971991ea8a4dd44f78ea084e490",
+    "design": "b5ee1e9d9d5c2118641c53f05293ea49abf6983e",
+    "driver": "b9e0fb9da71ebd5f151fd459c750fb3301d605dd",
+    "execution_plumbing": "33b684c44be6b175436f78c4c958034e939b91d3",
+    "implementation_fix_01": "f8c754941849ca3de63f7bd50922dd93e8724bbf",
+    "implementation_fix_02": "9bbf510e00e2fc422a6deb69631457f4cea0d3c8",
+    "method": "68533722cfb5617def79cf93809869fc9264839d",
+    "nt_backtest": "0b9a31169b47bc047289bdda04157820fc94c20b",
+    "nt_strategy": "60fc6081572bf880d833a27de55db79b50bdd06d",
+    "router_workflow": "ea1fb466ee6c5d2f0930522c14db876b02ab3812",
+    "test_conftest": "75897d067a1c95881a8134afd39c3509c28fc161",
+    "v103_decision": "1e58e3dcfb524d082c476e53af62c04c259618ee",
+    "week_selection_code": "21e0514d5ffd3a0b6cdc89b705e9cd666a7fce83",
+    "week_selection_result": "01292c8c9e98ee784c26ad1bed746f176865f69f"
+  },
+  "source_materialization": {
+    "contract": "payload bytes, archive, extracted sizes, and every extracted Git blob are verified before compilation or collection",
+    "materialization_commit_does_not_retrigger_router": true,
+    "materialized_before_market_data": true,
+    "payload_manifest": ".candidate-02-v104/payload_manifest.json",
+    "payload_parts": 5
+  },
+  "status": "LOCKED_BEFORE_FIRST_WEEK_COLLECTION"
+}
