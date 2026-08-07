@@ -44,7 +44,7 @@ class FailedAuctionConfig(RotationConfig):
         return cls(**data)
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        RotationConfig.__post_init__(self)
         if not self.auction_windows_5m or any(value < 6 for value in self.auction_windows_5m):
             raise ValueError("v106 auction windows must contain at least six 5-minute bars")
         if tuple(sorted(set(self.auction_windows_5m))) != self.auction_windows_5m:
