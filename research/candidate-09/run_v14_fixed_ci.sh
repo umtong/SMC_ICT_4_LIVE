@@ -22,13 +22,17 @@ cp "$root/state_engine_v14_direct.py" "$root/state_engine.py"
 cp "$root/config_v14.json" "$root/config.json"
 python "$root/apply_v14_run_patch.py"
 python "$root/apply_v14_evidence_fix.py"
+python "$root/apply_v14_account_exhaustion_fix.py"
 cp "$root/tests_v14/test_state_engine.py" "$root/tests/test_state_engine.py"
 cp "$root/tests_v14/test_run_gate.py" "$root/tests/test_run_gate.py"
 cp "$root/tests_v14/test_evidence_contract.py" "$root/tests/test_evidence_contract.py"
+cp "$root/tests_v14/test_account_exhaustion_contract.py" "$root/tests/test_account_exhaustion_contract.py"
 
 cmp -s "$root/state_engine.py" "$root/state_engine_v14_direct.py"
 cmp -s "$root/config.json" "$root/config_v14.json"
 grep -q 'evidence_details_for_output' "$root/run.py"
+grep -q 'sizing_infeasible_signal_count' "$root/run.py"
+grep -q 'sizing_failure_reason' "$root/nautilus_strategy.py"
 
 rm -rf "$out" "$diag"
 mkdir -p "$out" "$diag"
@@ -40,9 +44,11 @@ sha256sum \
   "$root/config_v14.json" \
   "$root/apply_v14_run_patch.py" \
   "$root/apply_v14_evidence_fix.py" \
+  "$root/apply_v14_account_exhaustion_fix.py" \
   "$root/tests_v14/test_state_engine.py" \
   "$root/tests_v14/test_run_gate.py" \
-  "$root/tests_v14/test_evidence_contract.py" > "$diag/source_sha256.txt"
+  "$root/tests_v14/test_evidence_contract.py" \
+  "$root/tests_v14/test_account_exhaustion_contract.py" > "$diag/source_sha256.txt"
 
 set +e
 smc4 doctor > "$diag/doctor.log" 2>&1; doctor=$?
@@ -77,14 +83,20 @@ diag = root / 'diagnostics/v14-fixed-gate-long'
 out = root / 'evidence/latest'
 codes = {key.lower(): int(os.environ[key]) for key in ('DOCTOR', 'COMPILE', 'TESTS', 'GATE')}
 failure = next((name for name, value in codes.items() if value != 0), None)
+summary = {}
+if (out / 'summary.json').exists():
+    summary = json.loads((out / 'summary.json').read_text())
 payload = {
     'candidate_generation': 'v14-consistent-failed-boundary-invalidation',
     'classification': 'IMPLEMENTATION_ERROR' if failure else 'EXECUTED',
+    'economic_status': summary.get('status'),
     'codes': codes,
     'first_failure': failure,
     'controlled_fix': [
         'run tests from candidate root rather than relying on ambient import paths',
         'persist long-BTC baseline trades, fills, and events alongside fixed-week baseline evidence',
+        'record minimum-quantity signal infeasibility separately from true cost-floor account exhaustion',
+        'continue the native run after known economic infeasibility and re-raise every unrecognized sizing error',
     ],
     'economic_logic_changed': False,
     'fixed_weeks_preserved': True,

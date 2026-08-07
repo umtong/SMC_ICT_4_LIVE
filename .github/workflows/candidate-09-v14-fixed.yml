@@ -10,8 +10,8 @@ permissions:
   packages: read
 
 concurrency:
-  group: candidate-09-v14-fixed-gate-long
-  cancel-in-progress: false
+  group: candidate-09-v14-fixed-account-exhaustion
+  cancel-in-progress: true
 
 jobs:
   activate-test-evaluate:
@@ -60,24 +60,40 @@ jobs:
             research/candidate-09/run.py
             research/candidate-09/apply_v14_run_patch.py
             research/candidate-09/apply_v14_evidence_fix.py
+            research/candidate-09/apply_v14_account_exhaustion_fix.py
             research/candidate-09/run_v14_fixed_ci.sh
             research/candidate-09/tests
             research/candidate-09/tests_v14
           if-no-files-found: error
           retention-days: 30
 
-      - name: Commit exact fixed v14 result
+      - name: Commit exact fixed v14 evidence without generated-source conflicts
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           repo=$(dirname "$(dirname "$(dirname "$(realpath research/candidate-09/run.py)")")")
+          root="$repo/research/candidate-09"
+          tmp=$(mktemp -d)
+          cp -a "$root/evidence/latest" "$tmp/evidence-latest"
+          cp -a "$root/diagnostics/v14-fixed-gate-long" "$tmp/v14-fixed-gate-long"
+
           git config --global --add safe.directory "$repo"
           git -C "$repo" config user.name candidate-09-research-bot
           git -C "$repo" config user.email candidate-09-research-bot@users.noreply.github.com
-          git -C "$repo" add -A research/candidate-09
+          git -C "$repo" fetch origin "$GITHUB_REF_NAME"
+          git -C "$repo" reset --hard "origin/$GITHUB_REF_NAME"
+          git -C "$repo" clean -fd research/candidate-09
+
+          rm -rf "$root/evidence/latest" "$root/diagnostics/v14-fixed-gate-long"
+          mkdir -p "$root/evidence" "$root/diagnostics"
+          cp -a "$tmp/evidence-latest" "$root/evidence/latest"
+          cp -a "$tmp/v14-fixed-gate-long" "$root/diagnostics/v14-fixed-gate-long"
+
+          git -C "$repo" add \
+            research/candidate-09/evidence/latest \
+            research/candidate-09/diagnostics/v14-fixed-gate-long
           if git -C "$repo" diff --cached --quiet; then exit 0; fi
           status=$(python -c "import json;print(json.load(open('research/candidate-09/evidence/latest/summary.json')).get('status','UNKNOWN'))")
-          git -C "$repo" commit -m "candidate-09 v14: complete evidence result ${status}"
-          git -C "$repo" pull --rebase origin "${GITHUB_REF_NAME}"
+          git -C "$repo" commit -m "candidate-09 v14: complete long result ${status}"
           git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
