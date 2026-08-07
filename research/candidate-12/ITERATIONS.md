@@ -52,19 +52,31 @@ Changes were deliberately confined to causal state lifetime; economic thresholds
 | W2 | 97,452.21189 | -2.54778811% | -0.36796599% | 1 | 0 | 1 |
 | W3 | 87,620.61100 | -12.37938900% | -1.87251787% | 6 | 1 | 5 |
 
-I1 fixed the causality defect but failed economically in all three diagnostic weeks. All nine submitted trades were acceptance scenarios sourced from isolated `CONFIRMED_15M_PIVOT` levels. A local internal pivot was therefore being promoted to external liquidity without higher-timeframe evidence. This is a scenario-logic error rather than a fill-engine or accounting failure.
+I1 fixed the causality defect but failed economically. Running W2/W3 after the decisive W1 failure was itself an inefficient validation decision; those results are retained only as historical negative evidence and are not the protocol going forward.
 
-## I2 — external acceptance auction only
+All nine submitted trades were acceptance scenarios sourced from isolated `CONFIRMED_15M_PIVOT` levels. A local internal pivot was therefore being promoted to external liquidity without higher-timeframe evidence. This is a scenario-logic error rather than a fill-engine or accounting failure.
+
+## I2 — external acceptance auction diagnostic
 
 **Staged by:** `226cdab5098f9796a7d1cb916244fa62ac33bb66`
 
-I2 changes the scenario ontology rather than tuning the losing thresholds.
+I2 changed the scenario ontology rather than tuning the losing thresholds.
 
-- Executable source liquidity must be a causally available prior four-hour boundary or prior UTC-day boundary. Repeated fifteen-minute pivots remain internal structure and targets; they do not become external merely through another touch.
-- A nearby fifteen-minute pool may inherit an external source only when a higher-timeframe boundary independently arrives at the same price region.
-- Acceptance requires at least 1.25 ATR excursion beyond the source, a delayed retest, continued acceptance, and reacceleration. A decisive reclaim through the boundary invalidates the setup.
-- Structural stop placement follows the retest extreme and requires stop distance to dominate modeled round-trip friction by at least 0.50.
-- One-minute taker-buy volume cannot demonstrate passive quote replenishment. Rejection events remain diagnostic only and are terminalized as `REJECTION_REQUIRES_ORDER_BOOK_REPLENISHMENT_EVIDENCE`; no rejection order is submitted without order-book evidence.
-- Fifteen regression tests cover source hierarchy, first-touch lifetime, acceptance invalidation, excursion, retest delay, friction feasibility, chronology, structural target selection, and exact 3% NAV loss sizing.
+- Executable source liquidity was restricted to a causally available prior four-hour boundary or prior UTC-day boundary.
+- Rejection execution was prohibited because one-minute taker-buy volume cannot demonstrate passive quote replenishment.
+- Acceptance required excursion, delayed retest, continued acceptance, reacceleration, friction-dominating structural stop distance, and a live structural target.
 
-A non-authoritative W1 state replay emitted one higher-timeframe acceptance plan, removed both known internal-pivot losses, and observed the planned target later in the bar stream. This is only a diagnostic promise. The pending W1–W3 NautilusTrader matrix decides whether the promise survives fills, fees, slippage, margin, and account NAV accounting.
+A non-authoritative W1 state replay emitted only one plan. That is not a structural path to the required day-trading opportunity rate, so I2 did not advance to Nautilus W2/W3 evaluation.
+
+## I3 — W1-only completed-session auction replacement
+
+The research protocol is corrected: W1 alone separates implementation faults from economic-logic failure. No confirmation week or long evaluation runs until W1 simultaneously meets frequency, post-cost growth, payoff, and win-rate requirements.
+
+The prior candidate was replaced by two explicit causal scenarios built from completed Asia and London ranges:
+
+1. failed auction: boundary sweep, close back inside, MSS displacement, pullback, reacceleration;
+2. accepted auction: sustained closes outside, retest of the accepted boundary or displacement mean threshold, reacceleration.
+
+Targets are pre-existing session/prior-day liquidity or a measured completed-session expansion. Stops remain beyond the causal pullback or sweep, and all plans must pass full costed structural R before Nautilus submission.
+
+A local causal W1 opportunity replay emitted nine plans before order-slot and portfolio interaction. This justifies exactly one authoritative W1 NautilusTrader run; it is not performance evidence.
