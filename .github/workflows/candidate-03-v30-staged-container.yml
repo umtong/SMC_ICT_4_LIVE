@@ -49,7 +49,6 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C frozen-source rev-parse HEAD)" = "$FROZEN_SOURCE_COMMIT"
-          cp "orchestrator/$PROTOCOL_REL" frozen-source/research/candidate-14/protocol.json
           python - <<'PY'
           from __future__ import annotations
           import json
@@ -79,6 +78,7 @@ jobs:
           grep -q -- '+                ambiguous_scenario_id, "AMBIGUOUS_SWEEP"' <<<"$diff_text"
           test "$(grep -c '^[-+].*AMBIGUOUS_SWEEP' <<<"$diff_text")" -eq 2
           sha256sum frozen-source/research/candidate-14/logic.py
+          cp "orchestrator/$PROTOCOL_REL" frozen-source/research/candidate-14/protocol.json
           smc4 doctor
           export PYTHONPATH="$GITHUB_WORKSPACE/frozen-source/research/candidate-14:$GITHUB_WORKSPACE/frozen-source/src"
           python -m py_compile frozen-source/research/candidate-14/*.py
