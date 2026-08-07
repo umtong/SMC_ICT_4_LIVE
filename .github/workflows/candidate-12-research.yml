@@ -17,7 +17,7 @@ jobs:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
 
-      - name: Apply reviewed W1-only candidate atomically
+      - name: Apply reviewed W1-only source atomically
         shell: bash
         run: |
           set -euo pipefail
@@ -26,16 +26,19 @@ jobs:
               "$ROOT/update-v3.part02" "$ROOT/update-v3.part03" \
             | base64 -d > /tmp/candidate-12-update-v3.tar.gz
           echo "9fe8448c08c0325bd9b0507c98357625b4103bca70b40421391153f2bf554b15  /tmp/candidate-12-update-v3.tar.gz" | sha256sum -c -
+          rm -rf /tmp/candidate-12-update-v3
+          mkdir -p /tmp/candidate-12-update-v3
+          tar -xzf /tmp/candidate-12-update-v3.tar.gz -C /tmp/candidate-12-update-v3
           rm -f \
             "$ROOT/.upload-test" \
             "$ROOT/confirmation.py" \
             "$ROOT/ledger.py" \
             "$ROOT/model.py" \
             "$ROOT/probe.py"
-          tar -xzf /tmp/candidate-12-update-v3.tar.gz -C .
+          cp -a /tmp/candidate-12-update-v3/research/candidate-12/. "$ROOT/"
           rm -f "$ROOT"/update-v3.part*
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A .github/workflows/candidate-12-research.yml research/candidate-12
-          git commit -m "candidate-12: replace CLAR with W1-only session auction"
+          git add -A research/candidate-12
+          git commit -m "candidate-12: replace CLAR with W1-only session auction source"
           git push origin HEAD:research/candidate-12
