@@ -1,5 +1,6 @@
-# Controlled trigger revision: 2026-08-07T02:12:00Z
-# Source SHA256: b481befeb701cedc13536f7924b3207cc46912aeb4ec4d688fee294db514dec7
+# Controlled trigger revision: 2026-08-07T02:30:00Z
+# Canonical v20 source commit: f3d68f941637f23b40c4e3e29345669600be7f54
+# Canonical v20 source Git blob: 32114dbd1f555e9a417c2774073abf025a15e3c2
 # Patch SHA256: ad93590e75c6c68f0de2daaae1525bc5aa4503afa91795e829e787c58fb1dc6f
 name: candidate-10-v20-2-live-impact
 
@@ -8,10 +9,10 @@ on:
     branches:
       - research/candidate-10
     paths:
-      - research/candidate-10/v20_source.zip
       - research/candidate-10/v20_2_patch.zip
       - research/candidate-10/sitecustomize.py
       - research/candidate-10/EXECUTE_V20_2_GATE.md
+      - research/candidate-10/V20_SOURCE_PROVENANCE.md
       - .github/workflows/candidate-10-v20-1-slim-container.yml
   workflow_dispatch:
 
@@ -25,51 +26,74 @@ concurrency:
 
 env:
   RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  V20_SOURCE_COMMIT: f3d68f941637f23b40c4e3e29345669600be7f54
+  V20_SOURCE_BLOB: 32114dbd1f555e9a417c2774073abf025a15e3c2
+  V20_PATCH_SHA256: ad93590e75c6c68f0de2daaae1525bc5aa4503afa91795e829e787c58fb1dc6f
 
 jobs:
   gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - name: Checkout candidate branch on host runner
+      - name: Checkout candidate branch with source history
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Verify immutable source archives on host
+      - name: Restore and verify canonical source lineage
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p .candidate10-runtime artifacts/candidate-10-v20-2
+
+          actual_blob="$(git rev-parse "${V20_SOURCE_COMMIT}:research/candidate-10/v20_source.zip")"
+          if [[ "${actual_blob}" != "${V20_SOURCE_BLOB}" ]]; then
+            echo "Canonical source blob mismatch: ${actual_blob} != ${V20_SOURCE_BLOB}" >&2
+            exit 1
+          fi
+
+          git cat-file blob "${V20_SOURCE_BLOB}" > .candidate10-runtime/v20_source.zip
+
           python - <<'PY'
           from hashlib import sha256
           from pathlib import Path
+          import json
+          import os
           import zipfile
 
-          inputs = [
-              (
-                  Path("research/candidate-10/v20_source.zip"),
-                  "b481befeb701cedc13536f7924b3207cc46912aeb4ec4d688fee294db514dec7",
-              ),
-              (
-                  Path("research/candidate-10/v20_2_patch.zip"),
-                  "ad93590e75c6c68f0de2daaae1525bc5aa4503afa91795e829e787c58fb1dc6f",
-              ),
-          ]
-          for source, expected in inputs:
-              actual = sha256(source.read_bytes()).hexdigest()
-              if actual != expected:
-                  raise SystemExit(f"{source} SHA256 mismatch: {actual} != {expected}")
-              with zipfile.ZipFile(source) as archive:
+          source = Path('.candidate10-runtime/v20_source.zip')
+          patch = Path('research/candidate-10/v20_2_patch.zip')
+          expected_patch = os.environ['V20_PATCH_SHA256']
+
+          patch_sha = sha256(patch.read_bytes()).hexdigest()
+          if patch_sha != expected_patch:
+              raise SystemExit(f'{patch} SHA256 mismatch: {patch_sha} != {expected_patch}')
+
+          members = {}
+          for item in (source, patch):
+              with zipfile.ZipFile(item) as archive:
                   bad = archive.testzip()
                   if bad is not None:
-                      raise SystemExit(f"corrupt member in {source}: {bad}")
-              print(f"VERIFIED={source}:{actual}")
+                      raise SystemExit(f'corrupt member in {item}: {bad}')
+                  members[str(item)] = sorted(archive.namelist())
+
+          provenance = {
+              'source_commit': os.environ['V20_SOURCE_COMMIT'],
+              'source_git_blob': os.environ['V20_SOURCE_BLOB'],
+              'source_raw_sha256': sha256(source.read_bytes()).hexdigest(),
+              'source_size_bytes': source.stat().st_size,
+              'patch_sha256': patch_sha,
+              'patch_size_bytes': patch.stat().st_size,
+              'archive_members': members,
+          }
+          Path('artifacts/candidate-10-v20-2/source_provenance.json').write_text(
+              json.dumps(provenance, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          print(json.dumps(provenance, sort_keys=True))
           PY
 
-      - name: Prepare mounted artifact directory
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts/candidate-10-v20-2
-          chmod -R a+rwx artifacts
+          chmod -R a+rwx artifacts .candidate10-runtime
 
       - name: Run controlled BTC gate in pinned NautilusTrader image
         shell: bash
@@ -90,7 +114,7 @@ jobs:
               set -euo pipefail
               rm -rf /tmp/candidate10-v20 /tmp/candidate10-v20-patch /tmp/candidate-10-v20-2-data
               mkdir -p /tmp/candidate10-v20 /tmp/candidate10-v20-patch /workspace/artifacts/candidate-10-v20-2
-              python -c "import zipfile; zipfile.ZipFile(\"research/candidate-10/v20_source.zip\").extractall(\"/tmp/candidate10-v20\"); zipfile.ZipFile(\"research/candidate-10/v20_2_patch.zip\").extractall(\"/tmp/candidate10-v20-patch\")"
+              python -c "import zipfile; zipfile.ZipFile(\".candidate10-runtime/v20_source.zip\").extractall(\"/tmp/candidate10-v20\"); zipfile.ZipFile(\"research/candidate-10/v20_2_patch.zip\").extractall(\"/tmp/candidate10-v20-patch\")"
               smc4 doctor
               python -m py_compile /tmp/candidate10-v20/*.py /tmp/candidate10-v20-patch/*.py
               python -m unittest discover -s /tmp/candidate10-v20 -p "test_*.py" -v
