@@ -1,0 +1,99 @@
+name: candidate-10-v25-research
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/c10_v25_*.py
+      - research/candidate-10/run_v25.py
+      - research/candidate-10/test_v25_*.py
+      - .github/workflows/candidate-10-v25-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v25-research-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Materialize verified execution base
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .candidate10-v25-runtime artifacts/candidate-10-v25
+          mkdir -p .candidate10-v25-runtime/source artifacts/candidate-10-v25
+          python research/candidate-10/v21_source_manifest.py \
+            --parts-dir research/candidate-10/v21_source_parts \
+            --destination .candidate10-v25-runtime/source \
+            --provenance artifacts/candidate-10-v25/base_source_provenance.json
+          chmod -R a+rwx .candidate10-v25-runtime artifacts
+
+      - name: Run liquidity-response experiment in pinned NautilusTrader image
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate10-v25:/tmp/candidate10-v21-patch:/tmp/candidate10-v21:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate10-v21 /tmp/candidate10-v21-patch /tmp/candidate10-v25 /tmp/candidate-10-v25-data
+              mkdir -p /tmp/candidate10-v21 /tmp/candidate10-v21-patch /tmp/candidate10-v25 /workspace/artifacts/candidate-10-v25
+              cp -a /workspace/.candidate10-v25-runtime/source/. /tmp/candidate10-v21/
+              cp -a /workspace/research/candidate-10/v20_1_patch/. /tmp/candidate10-v21-patch/
+              cp /workspace/research/candidate-10/c10_live_cost_math.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/c10_live_cost_ledger.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/test_c10_live_cost_math.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/c10_v24_model.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/c10_v24_state.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/c10_v24_strategy.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/c10_v24_research.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/c10_v25_model.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/c10_v25_state.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/c10_v25_strategy.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/c10_v25_research.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/run_v25.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/test_v25_state.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/test_v25_research.py /tmp/candidate10-v25/
+              cp /workspace/research/candidate-10/test_v25_install_order.py /tmp/candidate10-v25/
+              smc4 doctor
+              python -m py_compile /tmp/candidate10-v21/*.py /tmp/candidate10-v21-patch/*.py /tmp/candidate10-v25/*.py
+              python -m unittest discover -s /tmp/candidate10-v21 -p "test_*.py" -v
+              python -m unittest discover -s /tmp/candidate10-v21-patch -p "test_*.py" -v
+              python -m unittest discover -s /tmp/candidate10-v25 -p "test_v25_*.py" -v
+              python /tmp/candidate10-v25/run_v25.py \
+                --phase auto \
+                --output /workspace/artifacts/candidate-10-v25 \
+                --data-root /tmp/candidate-10-v25-data
+            '
+
+      - name: Upload reproducible v25 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v25-${{ github.sha }}
+          path: artifacts/candidate-10-v25
+          if-no-files-found: warn
+          retention-days: 14
