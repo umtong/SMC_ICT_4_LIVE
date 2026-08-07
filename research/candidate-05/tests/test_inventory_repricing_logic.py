@@ -71,7 +71,7 @@ class InventoryRepricingLogicTest(unittest.TestCase):
         )
 
     def test_internal_inventory_trap_requires_material_tail_reversal(self) -> None:
-        base = dict(
+        long_base = dict(
             side=1,
             penetration_atr=0.70,
             flow_60s=-0.18,
@@ -82,39 +82,37 @@ class InventoryRepricingLogicTest(unittest.TestCase):
         )
         self.assertFalse(
             inventory_trap_confirmed(
-                **base,
+                **long_base,
                 flow_15s=0.22,
             ),
         )
         self.assertTrue(
             inventory_trap_confirmed(
-                **base,
+                **long_base,
                 flow_15s=0.40,
             ),
         )
+        short_base = dict(
+            side=-1,
+            penetration_atr=0.70,
+            flow_60s=0.18,
+            depth_imbalance=-0.17,
+            close=99.0,
+            trade_vwap=99.5,
+            external_or_clustered=False,
+        )
         self.assertFalse(
             inventory_trap_confirmed(
-                **{
-                    **base,
-                    "side": -1,
-                    "flow_15s": -0.40,
-                    "flow_60s": 0.18,
-                    "depth_imbalance": -0.17,
-                    "close": 99.0,
-                    "trade_vwap": 99.5,
-                },
+                **short_base,
+                flow_15s=-0.20,
             ),
         )
         self.assertTrue(
             inventory_trap_confirmed(
                 **{
-                    **base,
-                    "side": -1,
+                    **short_base,
                     "flow_15s": -0.40,
                     "flow_60s": 0.11,
-                    "depth_imbalance": -0.17,
-                    "close": 99.0,
-                    "trade_vwap": 99.5,
                 },
             ),
         )
