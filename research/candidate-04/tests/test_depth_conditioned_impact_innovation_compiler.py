@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import unittest
 
 import pandas as pd
@@ -97,7 +96,7 @@ class PressureTests(DepthImpactFixture):
 
 class ModelTests(DepthImpactFixture):
     def test_current_bucket_is_excluded_from_its_impact_model(self) -> None:
-        data = self.data()
+        data = self.data(rows=700)
         history = [
             self.bucket(
                 index,
