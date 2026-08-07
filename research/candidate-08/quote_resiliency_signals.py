@@ -677,6 +677,7 @@ def build_quote_resiliency_signals(
                 pending = None
             continue
 
+        handled_pending = pending is not None
         if pending is not None:
             if position > pending.expiry_position:
                 reason = "SCENARIO_SEQUENCE_TIMEOUT"
@@ -902,7 +903,7 @@ def build_quote_resiliency_signals(
 
         # A newly crossed level is never armed on the same bucket used to advance an existing
         # sequence.  This preserves one causal scenario at a time and prevents event aliasing.
-        if pending is None and interaction is not None:
+        if not handled_pending and pending is None and interaction is not None:
             boundary, outward = interaction
             outward_pressure = outward * float(row["aggressive_pressure_ratio"])
             if outward_pressure < float(cfg.minimum_outward_pressure_ratio):
