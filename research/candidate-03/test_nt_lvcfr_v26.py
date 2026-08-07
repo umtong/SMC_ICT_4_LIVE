@@ -72,11 +72,11 @@ class FailedReversalTrapTests(unittest.TestCase):
     def test_failed_bullish_gap_retest_confirms_bearish_continuation(self) -> None:
         futures = [
             bar(0, open_=99.6, high=100.4, low=99.4, close=99.7, flow=-0.10),
-            bar(1, open_=99.7, high=100.7, low=99.5, close=99.8, flow=-0.35),
+            bar(1, open_=100.2, high=100.7, low=99.5, close=99.8, flow=-0.35),
         ]
         spot = [
             bar(0, open_=99.6, high=100.4, low=99.4, close=99.7, flow=-0.05),
-            bar(1, open_=99.7, high=100.7, low=99.5, close=99.8, flow=-0.20),
+            bar(1, open_=100.2, high=100.7, low=99.5, close=99.8, flow=-0.20),
         ]
         index, confirmed, touches = find_failed_gap_retest(
             futures,
