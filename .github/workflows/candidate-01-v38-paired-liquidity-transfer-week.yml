@@ -1,0 +1,85 @@
+name: candidate-01-v38-paired-liquidity-transfer-week
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v38-paired-liquidity-transfer-week.yml"
+      - "research/candidate-01/paired_liquidity_transfer_v38.py"
+      - "research/candidate-01/paired_liquidity_transfer_v38_nautilus_week.py"
+      - "tests/test_candidate_01_v38.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  btc-week-1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v38-week1
+          key: candidate-01-v38-BTCUSDT-2023-10-21-2023-11-07-${{ runner.os }}-v1
+      - name: Run frozen BTC week through NautilusTrader
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/paired_liquidity_transfer_v38.py \
+                research/candidate-01/paired_liquidity_transfer_v38_nautilus_week.py \
+                tests/test_candidate_01_v38.py
+              python -m unittest discover -s tests -p "test_candidate_01_v38.py" -v
+              rm -rf artifacts/candidate-01-v38-week1
+              python research/candidate-01/paired_liquidity_transfer_v38_nautilus_week.py \
+                --week 2023-10-30 \
+                --week-rank 1 \
+                --cache .cache/candidate-01-v38-week1 \
+                --output artifacts/candidate-01-v38-week1 \
+                --workers 4
+            '
+      - name: Show decision summary
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("artifacts/candidate-01-v38-week1/paired_liquidity_transfer_v38_summary.json")
+          payload = json.loads(path.read_text())
+          print(json.dumps({
+              "week": payload["evaluation_start_utc"],
+              "plans": payload["selected_plan_count"],
+              "primary": payload["primary_metrics"],
+              "control": payload["market_control_metrics"],
+              "decision": payload["decision"],
+          }, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v38-week1-${{ github.sha }}
+          path: artifacts/candidate-01-v38-week1
+          if-no-files-found: error
+          retention-days: 30
