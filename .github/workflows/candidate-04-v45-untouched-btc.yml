@@ -1,0 +1,129 @@
+name: candidate-04-v45-frozen-v44-untouched-btc
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v45-untouched-btc.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      V45_OUTPUT: artifacts/candidate-04-v45-frozen-v44-untouched-btc
+      V45_EVIDENCE: research/candidate-04/evidence-v45-frozen-v44-untouched-btc.json
+      FROZEN_SOURCE_COMMIT: f77186180addc1e44ad89599bcae057719ce6cc3
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+
+      - name: Verify frozen causal and Nautilus contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          protected=(
+            research/candidate-04/boundary_negotiation_expansion_compiler.py
+            research/candidate-04/rich_signal_compiler_v29.py
+            research/candidate-04/rich_signal_compiler_v28.py
+            research/candidate-04/two_stage_auction_resolution_compiler.py
+            research/candidate-04/ablate_compiled_scenario.py
+            research/candidate-04/causal_target_registry_enricher.py
+            research/candidate-04/nt_declared_causal_target.py
+            research/candidate-04/nt_rich_signal_strategy.py
+            research/candidate-04/nt_backtest_v34_expected_fill_only.py
+            research/candidate-04/nt_expected_fill_only_risk_sizing.py
+            research/candidate-04/nt_expected_fill_risk_sizing.py
+            research/candidate-04/nt_causal_risk_sizing.py
+            research/candidate-04/rich_features.py
+            research/candidate-04/rich_features_v2.py
+            research/candidate-04/inventory_transfer_config.json
+            research/candidate-04/impact_exhaustion_config.json
+            research/candidate-04/auction_activity_router_config.json
+            research/candidate-04/nt_liquidity_config.json
+          )
+          git diff --exit-code "$FROZEN_SOURCE_COMMIT" -- "${protected[@]}"
+          python -m compileall -q \
+            research/candidate-04/run_v45_untouched_btc.py \
+            research/candidate-04/boundary_negotiation_expansion_compiler.py \
+            research/candidate-04/ablate_compiled_scenario.py \
+            research/candidate-04/causal_target_registry_enricher.py \
+            research/candidate-04/nt_declared_causal_target.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v34_expected_fill_only.py \
+            research/candidate-04/rich_features_v2.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_boundary_negotiation_expansion_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_causal_target_registry_enricher.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_declared_causal_target.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_expected_fill_only_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+
+      - name: Run frozen sequential BTC gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python research/candidate-04/run_v45_untouched_btc.py \
+            --output-root "$V45_OUTPUT" \
+            --cache-root .cache/candidate-04-v45 \
+            --evidence "$V45_EVIDENCE"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v45-frozen-v44-untouched-btc-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v45-frozen-v44-untouched-btc
+            research/candidate-04/evidence-v45-frozen-v44-untouched-btc.json
+            research/candidate-04/freeze-v45.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist reproducible V45 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "candidate-04-research-bot"
+          git config user.email "candidate-04-research-bot@users.noreply.github.com"
+          git add "$V45_EVIDENCE" 2>/dev/null || true
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "record V45 untouched BTC evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && \
+               git push origin HEAD:research/candidate-04; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
