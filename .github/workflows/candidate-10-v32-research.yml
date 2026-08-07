@@ -1,0 +1,158 @@
+name: candidate-10-v32-funded-equilibrium
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/c10_v32_*.py
+      - research/candidate-10/test_c10_v32_overlay.py
+      - .github/workflows/candidate-10-v32-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v32-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CANDIDATE11_COMMIT: f10517d4ccd2a1a8fbd4d31091cbe0e7c3655327
+
+jobs:
+  weeks:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - week_id: CONTROL_MIDPOINT_LOSSES
+            week_start: "2023-04-11"
+            evidence_class: controlled_risk_transfer
+          - week_id: CONTROL_MIDPOINT_WINNERS
+            week_start: "2025-01-25"
+            evidence_class: controlled_runner_preservation
+          - week_id: CONTROL_HIGH_EFFICIENCY_WINNERS
+            week_start: "2024-12-07"
+            evidence_class: controlled_runner_preservation
+          - week_id: CONTROL_NO_MIDPOINT_LOSSES
+            week_start: "2023-10-20"
+            evidence_class: controlled_failure_boundary
+          - week_id: CONTROL_V31_MIXED
+            week_start: "2025-05-10"
+            evidence_class: controlled_risk_transfer
+          - week_id: NEW_V32A
+            week_start: "2024-09-12"
+            evidence_class: untouched_holdout
+          - week_id: NEW_V32B
+            week_start: "2023-01-21"
+            evidence_class: untouched_holdout
+          - week_id: NEW_V32C
+            week_start: "2025-07-07"
+            evidence_class: untouched_holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout candidate-10
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen Candidate 11 source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+
+      - name: Run funded-partial exact ablation
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ROOT="artifacts/candidate-10-v32/${{ matrix.week_id }}"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v32:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v32
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v32
+              for file in \
+                c10_v27_overlay.py c10_v27_patch.py \
+                c10_v28_overlay.py c10_v28_patch.py \
+                c10_v29_overlay.py c10_v29_patch.py \
+                c10_v30_overlay.py c10_v30_patch.py \
+                c10_v32_overlay.py c10_v32_patch.py c10_v32_run.py \
+                test_c10_v27_overlay.py test_c10_v28_overlay.py \
+                test_c10_v29_overlay.py test_c10_v30_overlay.py \
+                test_c10_v32_overlay.py; do
+                cp "/workspace/research/candidate-10/${file}" /tmp/candidate11-v32/
+              done
+              smc4 doctor
+              python /tmp/candidate11-v32/c10_v32_patch.py \
+                /tmp/candidate11-v32/run_leadership_scdam.py
+              python -m py_compile \
+                /tmp/candidate11-v32/c10_v27_overlay.py \
+                /tmp/candidate11-v32/c10_v27_patch.py \
+                /tmp/candidate11-v32/c10_v28_overlay.py \
+                /tmp/candidate11-v32/c10_v28_patch.py \
+                /tmp/candidate11-v32/c10_v29_overlay.py \
+                /tmp/candidate11-v32/c10_v29_patch.py \
+                /tmp/candidate11-v32/c10_v30_overlay.py \
+                /tmp/candidate11-v32/c10_v30_patch.py \
+                /tmp/candidate11-v32/c10_v32_overlay.py \
+                /tmp/candidate11-v32/c10_v32_patch.py \
+                /tmp/candidate11-v32/c10_v32_run.py \
+                /tmp/candidate11-v32/run_leadership_scdam.py
+              python -m unittest discover \
+                -s /tmp/candidate11-v32 \
+                -p "test_c10_v*_overlay.py" \
+                -v
+
+              BASE="/workspace/artifacts/candidate-10-v32/${{ matrix.week_id }}"
+              python /tmp/candidate11-v32/c10_v32_run.py \
+                --candidate11-dir /tmp/candidate11-v32 \
+                --week-start "${{ matrix.week_start }}" \
+                --variant baseline-far-only \
+                --output "${BASE}/baseline-far-only"
+
+              mkdir -p "${BASE}/funded-partial-equilibrium/data"
+              cp -al "${BASE}/baseline-far-only/data/." \
+                "${BASE}/funded-partial-equilibrium/data/"
+
+              python /tmp/candidate11-v32/c10_v32_run.py \
+                --candidate11-dir /tmp/candidate11-v32 \
+                --week-start "${{ matrix.week_start }}" \
+                --variant funded-partial-equilibrium \
+                --output "${BASE}/funded-partial-equilibrium"
+            '
+
+      - name: Record evidence class
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts/candidate-10-v32/${{ matrix.week_id }}
+          printf '%s\n' '${{ matrix.evidence_class }}' > \
+            artifacts/candidate-10-v32/${{ matrix.week_id }}/evidence_class.txt
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v32-${{ matrix.week_id }}-${{ github.sha }}
+          path: artifacts/candidate-10-v32/${{ matrix.week_id }}
+          if-no-files-found: warn
+          retention-days: 14
