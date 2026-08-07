@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed materializer for the four-market independent SCDAM runner."""
+"""Fail-closed materializer and API migration for the four-market SCDAM runner."""
 from __future__ import annotations
 
 from base64 import b64decode
@@ -22,6 +22,55 @@ def _safe(name: str) -> bool:
     return not pure.is_absolute() and ".." not in pure.parts and len(pure.parts) == 1
 
 
+def _replace_once(path: Path, old: str, new: str, label: str) -> int:
+    source = path.read_text(encoding="utf-8")
+    if new in source:
+        return 0
+    count = source.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected one migration anchor, found {count}")
+    path.write_text(source.replace(old, new, 1), encoding="utf-8")
+    return 1
+
+
+def _migrate_runner(root: Path) -> int:
+    """Keep the frozen portfolio logic aligned with the current causal-engine API.
+
+    These replacements change no detector threshold, session definition, cost
+    assumption, risk rate, or arbitration rule. They only route the portfolio
+    adapter through the same public methods already used by the single-market
+    Nautilus runner.
+    """
+    path = root / "run_portfolio_scdam.py"
+    changed = 0
+    changed += _replace_once(
+        path,
+        "                plan = self.logic[symbol].update(observation)",
+        "                plan = self.logic[symbol].on_bar(observation)",
+        "portfolio detector callback",
+    )
+    changed += _replace_once(
+        path,
+        "                    self.logic[self.active_symbol].mark_entry_filled(scenario_id, ts_ns)",
+        "                    self.logic[self.active_symbol].mark_entry_filled(\n"
+        "                        ts_ns,\n"
+        "                        {\"scenario_id\": scenario_id, \"symbol\": self.active_symbol},\n"
+        "                    )",
+        "portfolio parent-fill callback",
+    )
+    changed += _replace_once(
+        path,
+        "            self.logic[symbol].mark_submitted(plan, self.last_ts_ns)",
+        "            self.logic[symbol].mark_submitted(\n"
+        "                plan,\n"
+        "                decision.quantity,\n"
+        "                {\"symbol\": symbol, \"scenario_id\": plan.scenario_id},\n"
+        "            )",
+        "portfolio submission callback",
+    )
+    return changed
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent
     part_paths = tuple(root / name for name in PARTS)
@@ -30,7 +79,8 @@ def main() -> None:
         missing = [name for name in FILES if not (root / name).is_file()]
         if missing:
             raise SystemExit(f"portfolio source parts and materialized files are missing: {missing}")
-        print("portfolio SCDAM source already materialized")
+        changed = _migrate_runner(root)
+        print(f"portfolio SCDAM source already materialized; API migrations applied: {changed}")
         return
     if present != PARTS:
         raise SystemExit(f"incomplete portfolio source part set: {present}")
@@ -74,7 +124,8 @@ def main() -> None:
 
     for path in part_paths:
         path.unlink()
-    print(f"materialized {len(FILES)} verified portfolio SCDAM files")
+    changed = _migrate_runner(root)
+    print(f"materialized {len(FILES)} verified portfolio SCDAM files; API migrations applied: {changed}")
 
 
 if __name__ == "__main__":
