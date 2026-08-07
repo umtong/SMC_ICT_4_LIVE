@@ -42,6 +42,10 @@ def diagnose(
     one_pool_list = list(one_pools)
     five_pool_list = list(five_pools)
     bars = local._prepare_local_bars(seconds, logic)
+    # A heterogeneous pandas row can otherwise round nanosecond int64 endpoints
+    # through float64. Object-backed Python ints preserve the completed instant
+    # used by contact, MSS, retest and signal-delivery logic.
+    bars["timestamp_ns"] = bars["timestamp_ns"].astype(object)
     original_pool_confirmations = impact._pool_confirmations
     pools_15 = original_pool_confirmations(
         bars,
