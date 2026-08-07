@@ -44,12 +44,14 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git pull --rebase origin research/candidate-11
           chmod +x research/candidate-11/run_microstructure_v3_gated_v2.sh
-          mkdir -p research/candidate-11/results/MICROSTRUCTURE_V3
-          TRACE=research/candidate-11/results/MICROSTRUCTURE_V3/execution.txt
+          TRACE=/tmp/candidate-11-balance-acceptance-execution.txt
+          rm -f "$TRACE"
           set +e
           bash research/candidate-11/run_microstructure_v3_gated_v2.sh > "$TRACE" 2>&1
           STATUS=$?
           set -e
+          mkdir -p research/candidate-11/results/MICROSTRUCTURE_V3
+          cp "$TRACE" research/candidate-11/results/MICROSTRUCTURE_V3/execution.txt
           python - "$STATUS" <<'PY'
           import json
           import sys
@@ -97,6 +99,9 @@ jobs:
               git add -A "research/candidate-11/results/$name"
             fi
           done
+          if [ -f research/candidate-11/results/MICROSTRUCTURE_V3/execution.txt ]; then
+            git add -f research/candidate-11/results/MICROSTRUCTURE_V3/execution.txt
+          fi
           if ! git diff --cached --quiet; then
             git commit -m "candidate-11: record isolated balance-acceptance evidence [skip ci]"
             git push origin HEAD:research/candidate-11
