@@ -108,7 +108,7 @@ class MatureSwingBreakoutConfig:
             raise ValueError("invalid level-break geometry")
         if self.classification_minutes not in {2, 3, 4, 5}:
             raise ValueError("invalid acceptance horizon")
-        if not 1 <= self.minimum_outside_closes <= self.classification_minutes + 1:
+        if not 1 <= self.minimum_outside_closes <= self.classification_minutes:
             raise ValueError("invalid outside-close count")
         if self.minimum_acceptance_atr < 0.0:
             raise ValueError("negative acceptance floor")
@@ -169,6 +169,11 @@ def _normalise_index(frame: pd.DataFrame) -> pd.DataFrame:
         result.index = result.index.tz_localize(UTC)
     else:
         result.index = result.index.tz_convert(UTC)
+    # pandas may preserve second, millisecond or microsecond resolution.
+    # All scenario timestamps are stored as integer nanoseconds for NautilusTrader,
+    # so normalize the index resolution before any asi8 comparison.
+    if hasattr(result.index, "as_unit"):
+        result.index = result.index.as_unit("ns")
     if result.index.has_duplicates or not result.index.is_monotonic_increasing:
         raise ValueError("timestamps must be unique and increasing")
     return result
@@ -238,7 +243,7 @@ def _completed_bars(
     ).agg({"open": "first", "high": "max", "low": "min", "close": ["last", "count"]})
     bars.columns = ["open", "high", "low", "close", "count"]
     bars.dropna(subset=["open", "high", "low", "close"], inplace=True)
-    return bars.loc[bars["count"] >= minutes - 1, ["open", "high", "low", "close"]]
+    return bars.loc[bars["count"] == minutes, ["open", "high", "low", "close"]]
 
 
 def _generate_swing_candidates(
@@ -310,7 +315,7 @@ def _qualify_levels(
     atr: pd.Series,
     config: MatureSwingBreakoutConfig,
 ) -> list[MatureSwingLevel]:
-    frame = raw[["open", "high", "low", "close"]].copy()
+    frame = _normalise_index(raw[["open", "high", "low", "close"]])
     frame["atr"] = atr.reindex(frame.index)
     index_ns = frame.index.asi8
     output: list[MatureSwingLevel] = []
@@ -321,7 +326,7 @@ def _qualify_levels(
             continue
         left = int(np.searchsorted(index_ns, level.confirmation_ns, side="right"))
         right = int(np.searchsorted(index_ns, level.expiry_ns, side="right"))
-        earliest = int(np.searchsorted(index_ns, earliest_ns, side="left"))
+        earliest = int(np.searchsorted(index_ns, earliest_ns, side="right"))
         dead = False
 
         # A level cannot become mature if its external liquidity was already
@@ -377,7 +382,7 @@ def _qualify_levels(
                 position += 1
                 continue
 
-            confirm_end = min(position + config.defense_confirmation_minutes, right - 1)
+            confirm_end = min(position + config.defense_confirmation_minutes - 1, right - 1)
             invalidated = False
             for confirm_position in range(position, confirm_end + 1):
                 confirm_row = frame.iloc[confirm_position]
@@ -434,7 +439,6 @@ def _intact_pivots(bars: pd.DataFrame, radius: int) -> tuple[list[float], list[f
         return [], []
     highs = bars["high"].to_numpy(dtype=float)
     lows = bars["low"].to_numpy(dtype=float)
-    closes = bars["close"].to_numpy(dtype=float)
     intact_highs: list[float] = []
     intact_lows: list[float] = []
     for i in range(radius, len(bars) - radius):
@@ -445,12 +449,13 @@ def _intact_pivots(bars: pd.DataFrame, radius: int) -> tuple[list[float], list[f
         left_low = float(np.min(lows[i - radius : i]))
         right_low = float(np.min(lows[i + 1 : i + radius + 1]))
         confirmation = i + radius
-        later_closes = closes[confirmation + 1 :]
+        later_highs = highs[confirmation + 1 :]
+        later_lows = lows[confirmation + 1 :]
         is_high = high >= left_high and high >= right_high and (high > left_high or high > right_high)
         is_low = low <= left_low and low <= right_low and (low < left_low or low < right_low)
-        if is_high and not np.any(later_closes > high):
+        if is_high and not np.any(later_highs > high):
             intact_highs.append(high)
-        if is_low and not np.any(later_closes < low):
+        if is_low and not np.any(later_lows < low):
             intact_lows.append(low)
     return sorted(set(intact_highs)), sorted(set(intact_lows))
 
@@ -490,7 +495,7 @@ def _find_displacement(
     direction: int,
     config: MatureSwingBreakoutConfig,
 ) -> tuple[int, float, float] | None:
-    end_position = min(event_position + config.displacement_minutes, len(x) - 1)
+    end_position = min(event_position + config.displacement_minutes - 1, len(x) - 1)
     for position in range(max(event_position, 2), end_position + 1):
         row = x.iloc[position]
         if not _finite(row, ("raw_open", "raw_high", "raw_low", "raw_close", "body", "body_threshold", "atr")):
@@ -572,8 +577,6 @@ def build_rotation_signals(
                 break
 
     signals: list[RotationSignal] = []
-    used_observed_times: set[int] = set()
-    cooldown_until = -1
     event_fields = (
         "raw_high", "raw_low", "raw_close", "atr",
         "aggressive_total_quote_1m", "turnover_threshold",
@@ -634,7 +637,7 @@ def build_rotation_signals(
         if float(event["aggressive_total_quote_1m"]) < float(event["turnover_threshold"]):
             continue
 
-        classification_end = min(event_position + config.classification_minutes, len(x) - 1)
+        classification_end = min(event_position + config.classification_minutes - 1, len(x) - 1)
         segment = x.iloc[event_position : classification_end + 1]
         segment = segment.loc[segment.index < end]
         if len(segment) < config.classification_minutes:
@@ -665,7 +668,7 @@ def build_rotation_signals(
 
         displacement = _find_displacement(
             x=x,
-            event_position=event_position,
+            event_position=classification_end,
             boundary=boundary,
             direction=direction,
             config=config,
@@ -718,13 +721,20 @@ def build_rotation_signals(
             if retrace_flow < config.minimum_retrace_flow_alignment:
                 continue
             observed_ns = int(observed.value)
-            if observed_ns <= cooldown_until or observed_ns in used_observed_times:
-                continue
             entry = float(row["raw_close"])
             side = "BUY" if direction > 0 else "SELL"
             stop = invalidation_level
+            path = x.iloc[event_position : position + 1]
+            path_extreme = (
+                float(path["raw_high"].max()) if side == "BUY" else float(path["raw_low"].min())
+            )
+            intact_at_entry = (
+                [level for level in pivot_highs if level > path_extreme]
+                if side == "BUY"
+                else [level for level in pivot_lows if level < path_extreme]
+            )
             selected = _select_nearest_target(
-                levels=pivot_highs if side == "BUY" else pivot_lows,
+                levels=intact_at_entry,
                 side=side,
                 entry=entry,
                 stop=stop,
@@ -780,6 +790,7 @@ def build_rotation_signals(
                 "retest_close_utc": observed.isoformat(),
                 "retest_flow_alignment": retrace_flow,
                 "invalidation_level": stop,
+                "entry_path_extreme": path_extreme,
                 "selected_nearest_intact_swing": target,
                 "selected_target_cost_after_rr": rr,
                 "target_skip_rule": "NEAREST_ONLY_NO_RR_SKIPPING",
@@ -802,20 +813,20 @@ def build_rotation_signals(
                     details=details,
                 )
             )
-            used_observed_times.add(observed_ns)
-            cooldown_until = observed_ns + config.cooldown_minutes * NS_MINUTE
             break
 
     signals.sort(key=lambda signal: (signal.observed_time_ns, -signal.score, signal.scenario_id))
     unique: list[RotationSignal] = []
     seen: set[int] = set()
+    cooldown_until = -1
     for signal in signals:
-        if signal.observed_time_ns in seen:
+        if signal.observed_time_ns in seen or signal.observed_time_ns <= cooldown_until:
             continue
         seen.add(signal.observed_time_ns)
         if signal.source_max_market_time_ns > signal.observed_time_ns:
             raise AssertionError("future information detected in v95")
         unique.append(signal)
+        cooldown_until = signal.observed_time_ns + config.cooldown_minutes * NS_MINUTE
     return unique
 
 
