@@ -1,10 +1,11 @@
-"""Checksum-verified USD-M aggregate trades reduced to causal one-second bars.
+"""Checksum-verified USD-M aggregate trades reduced to causal clock seconds.
 
 The raw Binance Vision ``aggTrades`` archives are streamed once and reduced to
-one row per UTC second.  Missing seconds are never synthesized.  A downstream
-auction window must therefore prove exact one-second continuity before it is
-eligible.  Buyer-maker means the aggressive order was a sell; all quote-flow
-fields are derived from raw price * quantity, not from future candles.
+one row per UTC second.  A wall-clock second with no aggregate trade is a valid
+zero-flow observation, not an archive gap: its OHLC is the last observed trade
+price, every volume field is zero, and ``had_trade`` is false.  No future price
+is used and no trade is fabricated.  Buyer-maker means the aggressive order was
+a sell; all quote-flow fields are derived from raw price * quantity.
 """
 from __future__ import annotations
 
@@ -25,6 +26,8 @@ from data_positioning import PositioningBundle, load_positioning_bundle
 from smc_ict_4.manifest import build_data_manifest, write_data_manifest
 
 
+NS_PER_SECOND = 1_000_000_000
+SECOND_END_OFFSET_NS = NS_PER_SECOND - 1
 AGG_TRADES_DAILY_URL = (
     "https://data.binance.vision/data/futures/um/daily/aggTrades/{symbol}/"
     "{symbol}-aggTrades-{day}.zip"
@@ -152,12 +155,12 @@ def _read_archive_to_seconds(
                     diagnostics["filtered_rows"] += 1
                     continue
 
-                second_ns = (ts_ns // 1_000_000_000) * 1_000_000_000
+                second_ns = (ts_ns // NS_PER_SECOND) * NS_PER_SECOND
                 quote = price * quantity
                 item = buckets.get(second_ns)
                 if item is None:
                     item = {
-                        "timestamp_ns": second_ns + 999_999_999,
+                        "timestamp_ns": second_ns + SECOND_END_OFFSET_NS,
                         "open": price,
                         "high": price,
                         "low": price,
@@ -186,6 +189,78 @@ def _read_archive_to_seconds(
 
     records = [buckets[key] for key in sorted(buckets)]
     return records, diagnostics
+
+
+def _complete_no_trade_seconds(
+    seconds: pd.DataFrame,
+    *,
+    load_start_ns: int,
+    trade_end_ns: int,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Materialize causal zero-flow seconds without inventing any trades.
+
+    Binance ``aggTrades`` is event data: an absent row means no aggregate trade
+    occurred in that wall-clock second.  For clock-time auction windows the
+    correct observation is therefore zero flow with the last observed trade
+    price held constant.  A leading no-trade second cannot be filled causally;
+    callers must provide enough warm-up so the first requested second has a
+    trade.
+    """
+    if trade_end_ns <= load_start_ns:
+        raise ValueError("trade_end_ns must follow load_start_ns")
+    if seconds.empty:
+        raise ValueError("seconds must not be empty")
+    work = seconds.copy()
+    work["timestamp_ns"] = work["timestamp_ns"].astype("int64")
+    work = work.sort_values("timestamp_ns", kind="stable")
+    work = work.drop_duplicates(subset=["timestamp_ns"], keep="last")
+
+    first_second_end = (
+        (load_start_ns // NS_PER_SECOND) * NS_PER_SECOND
+        + SECOND_END_OFFSET_NS
+    )
+    last_second_end = (
+        ((trade_end_ns - 1) // NS_PER_SECOND) * NS_PER_SECOND
+        + SECOND_END_OFFSET_NS
+    )
+    expected = pd.RangeIndex(
+        start=first_second_end,
+        stop=last_second_end + NS_PER_SECOND,
+        step=NS_PER_SECOND,
+        name="timestamp_ns",
+    )
+    raw_second_rows = int(len(work.index))
+    work = work.set_index("timestamp_ns", drop=True).reindex(expected)
+    had_trade = work["trade_count"].notna()
+    if not bool(had_trade.iloc[0]):
+        raise RuntimeError(
+            "first requested clock second has no trade price; extend event warmup"
+        )
+
+    carried_close = work["close"].ffill()
+    no_trade = ~had_trade
+    for name in ("open", "high", "low", "close"):
+        work.loc[no_trade, name] = carried_close.loc[no_trade]
+    for name in (
+        "volume",
+        "quote_volume",
+        "taker_buy_quote",
+        "taker_sell_quote",
+    ):
+        work[name] = work[name].fillna(0.0)
+    work["trade_count"] = work["trade_count"].fillna(0).astype("int64")
+    work["first_trade_ns"] = work["first_trade_ns"].fillna(-1).astype("int64")
+    work["last_trade_ns"] = work["last_trade_ns"].fillna(-1).astype("int64")
+    work["had_trade"] = had_trade.astype(bool)
+    work = work.reset_index()
+
+    diagnostics = {
+        "raw_second_rows": raw_second_rows,
+        "expected_clock_seconds": int(len(expected)),
+        "observed_trade_seconds": int(had_trade.sum()),
+        "causal_zero_flow_seconds": int(no_trade.sum()),
+    }
+    return work, diagnostics
 
 
 def load_aggtrade_1s_bundle(
@@ -251,8 +326,13 @@ def load_aggtrade_1s_bundle(
     if not records:
         raise RuntimeError("no aggregate trades loaded")
     seconds = pd.DataFrame.from_records(records)
-    seconds = seconds.sort_values("timestamp_ns", kind="stable")
-    seconds = seconds.drop_duplicates(subset=["timestamp_ns"], keep="last")
+    seconds, clock_diagnostics = _complete_no_trade_seconds(
+        seconds,
+        load_start_ns=load_start_ns,
+        trade_end_ns=trade_end_ns,
+    )
+    aggregate_diagnostics.update(clock_diagnostics)
+
     numeric = [
         "open", "high", "low", "close", "volume", "quote_volume",
         "taker_buy_quote", "taker_sell_quote",
@@ -260,9 +340,6 @@ def load_aggtrade_1s_bundle(
     for name in numeric:
         seconds[name] = pd.to_numeric(seconds[name], errors="raise")
     seconds["timestamp_ns"] = seconds["timestamp_ns"].astype("int64")
-    seconds["first_trade_ns"] = seconds["first_trade_ns"].astype("int64")
-    seconds["last_trade_ns"] = seconds["last_trade_ns"].astype("int64")
-    seconds["trade_count"] = seconds["trade_count"].astype("int64")
     if not seconds["timestamp_ns"].is_monotonic_increasing:
         raise RuntimeError("aggregate-trade seconds are not monotonic")
     if bool((seconds[numeric] < 0.0).any().any()):
@@ -284,19 +361,23 @@ def load_aggtrade_1s_bundle(
     gaps = seconds["timestamp_ns"].diff().dropna()
     aggregate_diagnostics["second_rows"] = int(len(seconds.index))
     aggregate_diagnostics["noncontiguous_second_transitions"] = int(
-        (gaps != 1_000_000_000).sum()
+        (gaps != NS_PER_SECOND).sum()
     )
     aggregate_diagnostics["missing_seconds_from_span"] = int(
         ((int(seconds.iloc[-1]["timestamp_ns"]) - int(seconds.iloc[0]["timestamp_ns"]))
-        // 1_000_000_000 + 1) - len(seconds.index)
+        // NS_PER_SECOND + 1) - len(seconds.index)
     )
+    if aggregate_diagnostics["noncontiguous_second_transitions"] != 0:
+        raise RuntimeError("completed clock seconds are not contiguous")
+    if aggregate_diagnostics["missing_seconds_from_span"] != 0:
+        raise RuntimeError("completed clock-second span is incomplete")
     seconds.index = pd.to_datetime(seconds["timestamp_ns"], unit="ns", utc=True)
     seconds.index.name = "timestamp"
 
     all_archives = tuple([*base.archives, *archives])
     manifest = build_data_manifest(
         cache_root.resolve() / symbol,
-        dataset="binance-usdm-public-aggtrades-one-second-and-positioning",
+        dataset="binance-usdm-public-aggtrades-causal-clock-seconds-and-positioning",
         include=all_archives,
         metadata_values={
             "symbol": symbol,
@@ -308,7 +389,10 @@ def load_aggtrade_1s_bundle(
             "positioning_rows": int(len(base.metrics.index)),
             "source": "Binance Vision public USD-M aggTrades and metrics",
             "checksum": "published SHA-256 CHECKSUM verified per archive",
-            "missing_second_policy": "not synthesized; event continuity required",
+            "missing_second_policy": (
+                "causal zero-flow clock seconds use the last observed trade price; "
+                "had_trade is false and no trade is fabricated"
+            ),
         },
     )
     write_data_manifest(manifest_destination, manifest)
@@ -321,4 +405,9 @@ def load_aggtrade_1s_bundle(
     )
 
 
-__all__ = ["AGG_TRADES_DAILY_URL", "AggTrade1sBundle", "load_aggtrade_1s_bundle"]
+__all__ = [
+    "AGG_TRADES_DAILY_URL",
+    "AggTrade1sBundle",
+    "_complete_no_trade_seconds",
+    "load_aggtrade_1s_bundle",
+]
