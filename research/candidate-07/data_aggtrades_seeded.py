@@ -57,9 +57,9 @@ def complete_no_trade_seconds_with_seed(
         raise RuntimeError(
             "no actual pre-window aggregate trade is available for causal seeding"
         )
-    seed = seed_rows.iloc[-1]
-    seed_close = float(seed["close"])
-    seed_timestamp_ns = int(seed["timestamp_ns"])
+    seed_position = int(seed_rows.index[-1])
+    seed_timestamp_ns = int(work.loc[seed_position, "timestamp_ns"])
+    seed_close = float(work.loc[seed_position, "close"])
     if seed_close <= 0.0 or seed_timestamp_ns >= first_second_end:
         raise RuntimeError("invalid causal aggregate-trade seed")
 
