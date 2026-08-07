@@ -2,8 +2,8 @@
 """Reconcile multi-asset realized losses with their causal entry NAV.
 
 NautilusTrader owns every PnL value and the strategy owns every recorded entry
-NAV.  This module joins those two evidence streams by instrument and chronological
-open order; it never simulates or recalculates a fill.  Ambiguous evidence fails
+NAV. This module joins those two evidence streams by instrument and chronological
+open order; it never simulates or recalculates a fill. Ambiguous evidence fails
 closed so an integrated candidate cannot pass the 3% contract accidentally.
 """
 from __future__ import annotations
@@ -100,6 +100,7 @@ def event_order(event: dict[str, Any], fallback: int) -> tuple[int, int]:
     for value in (
         event.get("event_timestamp"),
         event.get("timestamp"),
+        event.get("ts_event"),
         (event.get("details") or {}).get("ts"),
         (event.get("details") or {}).get("ts_event"),
     ):
@@ -250,8 +251,12 @@ def load_positions(path: Path) -> pd.DataFrame:
 def load_events_by_symbol(output: Path) -> dict[str, list[dict[str, Any]]]:
     result: dict[str, list[dict[str, Any]]] = {}
     for symbol in SYMBOLS:
-        path = output / f"strategy_events-{symbol}.json"
-        if not path.exists():
+        candidates = (
+            output / f"strategy_events-{symbol}.json",
+            output / "strategies" / symbol / "strategy_events.json",
+        )
+        path = next((candidate for candidate in candidates if candidate.exists()), None)
+        if path is None:
             result[symbol] = []
             continue
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -270,7 +275,8 @@ def reconcile_output(output: Path, limit: float = 0.0301) -> dict[str, Any]:
     metrics["maximum_realized_loss_fraction"] = (
         evidence.maximum_realized_loss_fraction
     )
-    metrics["multi_asset_risk_evidence"] = {
+    record = {
+        "candidate": "candidate-04-four-instrument-risk-evidence",
         "matched_losses": evidence.matched_losses,
         "matched_positions": evidence.matched_positions,
         "matched_entries": evidence.matched_entries,
@@ -278,10 +284,15 @@ def reconcile_output(output: Path, limit: float = 0.0301) -> dict[str, Any]:
         "errors": list(evidence.errors),
         "limit": limit,
         "pass": evidence.pass_,
+        "risk_pass": evidence.pass_,
+        "maximum_realized_loss_fraction": (
+            evidence.maximum_realized_loss_fraction
+        ),
         "pnl_source": "NautilusTrader positions report",
         "entry_nav_source": "per-symbol strategy ENTRY_SUBMITTED evidence",
         "performance_recalculated": False,
     }
+    metrics["multi_asset_risk_evidence"] = record
     checks = dict(metrics.get("gate_checks") or {})
     checks["realized_loss_within_3pct_nav"] = evidence.pass_
     metrics["gate_checks"] = checks
@@ -295,12 +306,17 @@ def reconcile_output(output: Path, limit: float = 0.0301) -> dict[str, Any]:
         json.dumps(metrics, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    (output / "risk_evidence.json").write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return metrics
 
 
 __all__ = [
     "RiskEvidence",
     "entry_events",
+    "load_events_by_symbol",
     "reconcile_output",
     "reconcile_risk_evidence",
 ]
