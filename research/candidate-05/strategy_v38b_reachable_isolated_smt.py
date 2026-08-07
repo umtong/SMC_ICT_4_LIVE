@@ -2,10 +2,10 @@
 """Candidate 05 v38b: isolated SMT reversal with a reachable liquidity draw."""
 from __future__ import annotations
 
-import math
-
 from strategy_v38_isolated_smt_reversal import IsolatedSmtReversalStrategy
 from strategy_v9 import ArmedEntryPath
+from target_reachability_logic import MAX_REMAINING_TO_RECLAIM_MULTIPLE
+from target_reachability_logic import measured_move_target_reachability
 
 
 class ReachableIsolatedSmtReversalStrategy(IsolatedSmtReversalStrategy):
@@ -43,56 +43,33 @@ class ReachableIsolatedSmtReversalStrategy(IsolatedSmtReversalStrategy):
         row: dict[str, float | int],
     ) -> bool:
         self.diagnostics["smt_reachable_target_evaluations"] += 1
-        side = int(armed.setup.side)
-        target = float(self._frozen_target_price(armed))
-        boundary = float(armed.details.get("session_boundary", math.nan))
-        confirmation = float(armed.details.get("confirmation_close", math.nan))
-        values = (target, boundary, confirmation)
-        if not all(math.isfinite(value) for value in values):
-            self.diagnostics["smt_reachable_invalid_geometry"] += 1
-            self._expire_armed_entry(
-                row,
-                "REACHABILITY_GEOMETRY_IS_NOT_FINITE",
-            )
-            return False
-
-        demonstrated_reclaim = side * (confirmation - boundary)
-        remaining_target_distance = side * (target - confirmation)
-        total_boundary_to_target = side * (target - boundary)
-        completion_fraction = (
-            demonstrated_reclaim / total_boundary_to_target
-            if total_boundary_to_target > 0.0
-            else math.nan
+        decision = measured_move_target_reachability(
+            side=int(armed.setup.side),
+            session_boundary=float(armed.details.get("session_boundary", float("nan"))),
+            confirmation_close=float(armed.details.get("confirmation_close", float("nan"))),
+            target=float(self._frozen_target_price(armed)),
         )
         armed.details.update(
             {
                 "target_reachability_policy": (
                     "CHOCH_COMPLETED_AT_LEAST_ONE_THIRD_OF_BOUNDARY_TO_TARGET_PATH"
                 ),
-                "demonstrated_boundary_reclaim": demonstrated_reclaim,
-                "remaining_target_distance": remaining_target_distance,
-                "boundary_to_target_distance": total_boundary_to_target,
-                "boundary_to_target_completion_fraction": completion_fraction,
-                "maximum_remaining_to_reclaim_multiple": 2.0,
+                "target_reachability_reason_code": decision.reason_code,
+                "demonstrated_boundary_reclaim": decision.demonstrated_reclaim,
+                "remaining_target_distance": decision.remaining_target_distance,
+                "boundary_to_target_distance": decision.boundary_to_target_distance,
+                "boundary_to_target_completion_fraction": decision.completion_fraction,
+                "maximum_remaining_to_reclaim_multiple": (
+                    MAX_REMAINING_TO_RECLAIM_MULTIPLE
+                ),
             },
         )
-        if (
-            demonstrated_reclaim <= 0.0
-            or remaining_target_distance <= 0.0
-            or total_boundary_to_target <= 0.0
-        ):
-            self.diagnostics["smt_reachable_invalid_geometry"] += 1
-            self._expire_armed_entry(
-                row,
-                "REACHABILITY_DIRECTIONAL_GEOMETRY_INVALID",
-            )
-            return False
-        if remaining_target_distance > 2.0 * demonstrated_reclaim + 1e-12:
-            self.diagnostics["smt_reachable_target_rejections"] += 1
-            self._expire_armed_entry(
-                row,
-                "OPPOSING_LIQUIDITY_TARGET_NOT_REACHABLE_FROM_CONFIRMED_RECLAIM",
-            )
+        if not decision.reachable:
+            if "GEOMETRY" in decision.reason_code:
+                self.diagnostics["smt_reachable_invalid_geometry"] += 1
+            else:
+                self.diagnostics["smt_reachable_target_rejections"] += 1
+            self._expire_armed_entry(row, decision.reason_code)
             return False
 
         self.diagnostics["smt_reachable_target_confirmations"] += 1
