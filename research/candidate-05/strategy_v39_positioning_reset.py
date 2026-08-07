@@ -53,6 +53,12 @@ class PositioningResetReversalStrategy(ScenarioValidEntryStrategy):
     adverse repricing invalidates the rotation. This is an evidence exit; entry,
     target, structural stop, costs, sizing and exchange-side bracket are not
     changed.
+
+    Evidence exit does not create a new independent opportunity. The original
+    parent auction remains unresolved until its frozen target, structural stop,
+    day-trade horizon, funding boundary or evaluation boundary completes. No new
+    detector is allowed to acquire the single execution slot during that causal
+    remainder, preventing repeated entries into one liquidation/repricing chain.
     """
 
     def __init__(self, config: LiquidityResponseConfig) -> None:
@@ -63,6 +69,16 @@ class PositioningResetReversalStrategy(ScenarioValidEntryStrategy):
         self.counter_context_max_target_progress = 0.0
         self.counter_context_rotation_active = False
         self.counter_context_created_ts = 0
+
+        self.counter_context_parent_lock_active = False
+        self.counter_context_parent_lock_side = 0
+        self.counter_context_parent_lock_target = float("nan")
+        self.counter_context_parent_lock_stop = float("nan")
+        self.counter_context_parent_lock_horizon_index = -1
+        self.counter_context_parent_lock_scenario_id: str | None = None
+        self.counter_context_parent_lock_last_checked_index = -1
+        self.counter_context_parent_lock_resolved_index = -1
+
         self.diagnostics.update(
             {
                 "positioning_reset_early_participation_pass": 0,
@@ -71,6 +87,9 @@ class PositioningResetReversalStrategy(ScenarioValidEntryStrategy):
                 "software_same_bar_deferred_protection_arms": 0,
                 "counter_context_rotations_opened": 0,
                 "counter_context_rotation_failures": 0,
+                "counter_context_parent_event_locks_armed": 0,
+                "counter_context_parent_event_lock_bars": 0,
+                "counter_context_parent_event_locks_resolved": 0,
             },
         )
 
@@ -81,11 +100,62 @@ class PositioningResetReversalStrategy(ScenarioValidEntryStrategy):
         closes = [float(row["close"]) for row in rows[-31:]]
         return completed_path_efficiency(closes)
 
+    def _counter_context_parent_event_blocks_detection(
+        self,
+        row: dict[str, float | int],
+    ) -> bool:
+        # Even after a lock resolves, the resolving completed bar cannot also be
+        # reused as a new entry event.
+        if self.counter_context_parent_lock_resolved_index == self.bar_index:
+            return True
+        if not self.counter_context_parent_lock_active:
+            return False
+        if self.counter_context_parent_lock_last_checked_index == self.bar_index:
+            return True
+        self.counter_context_parent_lock_last_checked_index = self.bar_index
+
+        side = self.counter_context_parent_lock_side
+        target = self.counter_context_parent_lock_target
+        stop = self.counter_context_parent_lock_stop
+        target_completed = (
+            float(row["high"]) >= target
+            if side > 0
+            else float(row["low"]) <= target
+        )
+        stop_completed = (
+            float(row["low"]) <= stop
+            if side > 0
+            else float(row["high"]) >= stop
+        )
+        horizon_completed = (
+            self.counter_context_parent_lock_horizon_index >= 0
+            and self.bar_index > self.counter_context_parent_lock_horizon_index
+        )
+        boundary_completed = (
+            self._funding_blackout(int(row["ts"]))
+            or not self._in_evaluation(int(row["ts"]))
+        )
+        if (
+            target_completed
+            or stop_completed
+            or horizon_completed
+            or boundary_completed
+        ):
+            self.counter_context_parent_lock_active = False
+            self.counter_context_parent_lock_resolved_index = self.bar_index
+            self.diagnostics["counter_context_parent_event_locks_resolved"] += 1
+            return True
+
+        self.diagnostics["counter_context_parent_event_lock_bars"] += 1
+        return True
+
     def _detect_sweep(
         self,
         row: dict[str, float | int],
         previous_close: float,
     ) -> None:
+        if self._counter_context_parent_event_blocks_detection(row):
+            return
         previous_scenario = None if self.pending is None else self.pending.scenario_id
         super()._detect_sweep(row, previous_close)
         setup = self.pending
@@ -254,6 +324,20 @@ class PositioningResetReversalStrategy(ScenarioValidEntryStrategy):
             and efficiency >= COUNTER_CONTEXT_REACCEPTANCE_EFFICIENCY_MIN
         )
 
+    def _arm_counter_context_parent_event_lock(self) -> None:
+        horizon = self.pending_scenario_horizon_index
+        if horizon < 0:
+            horizon = self.bar_index + self.config.max_hold_bars
+        self.counter_context_parent_lock_active = True
+        self.counter_context_parent_lock_side = int(self.entry_side)
+        self.counter_context_parent_lock_target = float(self.counter_context_target)
+        self.counter_context_parent_lock_stop = float(self.entry_stop)
+        self.counter_context_parent_lock_horizon_index = int(horizon)
+        self.counter_context_parent_lock_scenario_id = self.current_scenario_id
+        self.counter_context_parent_lock_last_checked_index = -1
+        self.counter_context_parent_lock_resolved_index = -1
+        self.diagnostics["counter_context_parent_event_locks_armed"] += 1
+
     def _manage_open_position(
         self,
         row: dict[str, float | int],
@@ -270,6 +354,7 @@ class PositioningResetReversalStrategy(ScenarioValidEntryStrategy):
 
         if self._counter_context_rotation_failed(row):
             self.diagnostics["counter_context_rotation_failures"] += 1
+            self._arm_counter_context_parent_event_lock()
             self._flatten_at_software_invalidation(
                 row,
                 event_type="COUNTER_CONTEXT_ROTATION_FAILED",
