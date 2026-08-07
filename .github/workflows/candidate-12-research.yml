@@ -1,4 +1,4 @@
-name: candidate-12-i10-w9-frozen-confirmation
+name: candidate-12-i10-w10-frozen-confirmation
 
 on:
   push:
@@ -11,11 +11,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i10-w9-${{ github.ref }}-${{ github.sha }}
+  group: candidate-12-i10-w10-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  w9-frozen-confirmation:
+  w10-frozen-confirmation:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -42,7 +42,7 @@ jobs:
       - name: Run 23 causal unit tests
         run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
 
-      - name: Reproduce and freeze W9 before data access
+      - name: Reproduce and freeze W10 before data access
         shell: bash
         run: |
           set -euo pipefail
@@ -56,8 +56,13 @@ jobs:
           source = Path("research/candidate-12/config.json")
           config = json.loads(source.read_text(encoding="utf-8"))
           weeks = config["selection"]["weeks"]
-          assert "W9" not in weeks
+          assert "W9" not in weeks and "W10" not in weeks
+
+          w9_start = date(2023, 8, 13)
+          w9_end = w9_start + timedelta(days=7)
           existing_starts = [date.fromisoformat(item["start"]) for item in weeks.values()]
+          existing_starts.append(w9_start)
+
           candidates = []
           cursor = date(2022, 1, 1)
           final_start = date(2025, 12, 24)
@@ -66,44 +71,48 @@ jobs:
                   candidates.append(cursor)
               cursor += timedelta(days=1)
 
-          seed = 2026080810
+          seed = 2026080811
           selected = random.Random(seed).choice(candidates)
-          assert len(candidates) == 1137
-          assert selected == date(2023, 8, 13)
+          assert len(candidates) == 1096
+          assert selected == date(2023, 4, 28)
           end_exclusive = selected + timedelta(days=7)
+
           weeks["W9"] = {
+              "start": w9_start.isoformat(),
+              "end_exclusive": w9_end.isoformat(),
+          }
+          weeks["W10"] = {
               "start": selected.isoformat(),
               "end_exclusive": end_exclusive.isoformat(),
           }
-          config["selection"]["confirmation_week"] = "W9"
+          config["selection"]["confirmation_week"] = "W10"
           config["selection"]["confirmation_seed"] = seed
           config["selection"]["selection_rule"] = (
-              "W1-W8 are exposed design evidence. I10 passed authoritative Nautilus "
-              "regressions on W1/W5/W8 and exposed measurements on W2/W6. The I10 "
-              "strategy source is frozen. W9 was selected before data access by Python "
-              "random.Random(2026080810).choice over 2022-01-01..2025-12-24 daily "
-              "seven-day starts at least 21 days from every W1-W8 start; selected W9 is "
-              "2023-08-13..2023-08-20 UTC. W9 is performance-blind: only causal, "
-              "execution, risk, slot, event-log, and liquidation invariants are asserted."
+              "W1-W9 are exposed evidence. I10 strategy source remains frozen after W9 "
+              "produced no submitted orders and preserved NAV. W10 was selected before "
+              "data access by Python random.Random(2026080811).choice over "
+              "2022-01-01..2025-12-24 daily seven-day starts at least 21 days from every "
+              "W1-W9 start; selected W10 is 2023-04-28..2023-05-05 UTC. W10 is "
+              "performance-blind: only causal, execution, risk, slot, event-log, and "n              "liquidation invariants are asserted."
           )
-          destination = Path("artifacts/candidate-12/W9-frozen-config.json")
+          destination = Path("artifacts/candidate-12/W10-frozen-config.json")
           destination.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
           print(destination.read_text(encoding="utf-8"))
           PY
 
-      - name: Run frozen untouched W9 through NautilusTrader
+      - name: Run frozen untouched W10 through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
-          OUTPUT=artifacts/candidate-12/BTCUSDT-W9
+          OUTPUT=artifacts/candidate-12/BTCUSDT-W10
           mkdir -p "$OUTPUT"
           python research/candidate-12/run.py \
-            --config artifacts/candidate-12/W9-frozen-config.json \
+            --config artifacts/candidate-12/W10-frozen-config.json \
             --symbol BTCUSDT \
-            --week W9 \
+            --week W10 \
             --output "$OUTPUT" | tee "$OUTPUT.console.json"
 
-      - name: Enforce performance-blind W9 invariants
+      - name: Enforce performance-blind W10 invariants
         shell: bash
         run: |
           set -euo pipefail
@@ -111,12 +120,12 @@ jobs:
           from pathlib import Path
           import json
 
-          path = Path("artifacts/candidate-12/BTCUSDT-W9/metrics.json")
+          path = Path("artifacts/candidate-12/BTCUSDT-W10/metrics.json")
           metrics = json.loads(path.read_text(encoding="utf-8"))
           assert metrics["candidate"] == "candidate-12-connected-reacceptance-session-auction-router", metrics
-          assert metrics["week_id"] == "W9", metrics
-          assert metrics["evaluation_start"] == "2023-08-13", metrics
-          assert metrics["evaluation_end_exclusive"] == "2023-08-20", metrics
+          assert metrics["week_id"] == "W10", metrics
+          assert metrics["evaluation_start"] == "2023-04-28", metrics
+          assert metrics["evaluation_end_exclusive"] == "2023-05-05", metrics
           assert metrics["risk_budget_passed"] is True, metrics
           assert metrics["global_slot_passed"] is True, metrics
           assert metrics["event_log_valid"] is True, metrics
@@ -125,10 +134,10 @@ jobs:
           print(json.dumps(metrics, indent=2, sort_keys=True))
           PY
 
-      - name: Preserve reproducible W9 evidence
+      - name: Preserve reproducible W10 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I10-BTCUSDT-W9-${{ github.sha }}
+          name: candidate-12-I10-BTCUSDT-W10-${{ github.sha }}
           path: artifacts/candidate-12
           if-no-files-found: warn
