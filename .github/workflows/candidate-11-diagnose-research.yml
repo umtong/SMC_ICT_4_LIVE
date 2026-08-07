@@ -1,0 +1,41 @@
+name: Candidate 11 diagnose research runs
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/research_diagnosis_trigger.txt"
+      - ".github/workflows/candidate-11-diagnose-research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-11-diagnose-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Classify committed execution evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase origin research/candidate-11
+          python research/candidate-11/diagnose_research_runs.py
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add research/candidate-11/results/RESEARCH_DIAGNOSIS.json
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: classify current research evidence [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi
