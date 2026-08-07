@@ -53,13 +53,17 @@ def verify_runtime() -> str:
         ]
     )
     detector = "research/candidate-03/derive_nt_lvcfr_v31_signals.py"
-    base.run(
-        [
-            base.sys.executable,
-            "research/candidate-03/patch_v31_numpy_model.py",
-            detector,
-        ]
-    )
+    for patch in (
+        "patch_v31_causal_volatility.py",
+        "patch_v31_numpy_model.py",
+    ):
+        base.run(
+            [
+                base.sys.executable,
+                f"research/candidate-03/{patch}",
+                detector,
+            ]
+        )
     for test in (
         "test_nt_lvcfr.py",
         "test_nt_lvcfr_trade_proxy.py",
