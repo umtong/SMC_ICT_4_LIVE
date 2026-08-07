@@ -417,6 +417,7 @@ class SourceState:
     initial_acceptance_attempted: bool = False
     had_high_acceptance: bool = False
     failed_high_acceptance: bool = False
+    reacceptance_anchor_fvg: BullFVG | None = None
     reacceptance_done: bool = False
 
     outside_low_closes: int = 0
@@ -1616,6 +1617,9 @@ class CausalLiquidityAuctionEngine:
                     and bar.close >= original_fvg.lower
                 )
                 state.failed_high_acceptance = reacceptance_eligible
+                state.reacceptance_anchor_fvg = (
+                    original_fvg if reacceptance_eligible else None
+                )
                 state.acceptance_phase = "WATCH"
                 state.outside_high_closes = 0
                 state.active_fvg = None
@@ -1662,17 +1666,68 @@ class CausalLiquidityAuctionEngine:
             else:
                 state.outside_high_closes = 0
             fresh = self._fresh_bull_fvg(source, bar, atr)
+            anchor = state.reacceptance_anchor_fvg
+
+            # A valid re-acceptance repairs the preserved original imbalance.
+            # A later FVG which is spatially disconnected from that imbalance
+            # is a new extension, not evidence that the failed auction was
+            # re-accepted.  Chasing it would reuse stale range context.
+            if (
+                state.failed_high_acceptance
+                and source.label is SessionLabel.ASIA
+                and not state.reacceptance_done
+                and fresh is not None
+                and anchor is not None
+                and (fresh.lower > anchor.upper or fresh.upper < anchor.lower)
+            ):
+                self.skips[
+                    "ASIA_REACCEPTANCE_FVG_DISCONNECTED_FROM_PRESERVED_IMBALANCE"
+                ] += 1
+                # Re-acceptance is an immediate repair sequence.  Once the
+                # first fresh imbalance forms disconnected from the preserved
+                # one, that sequence is broken; a later overlap belongs to a
+                # new auction and cannot reuse the old full-range objective.
+                state.failed_high_acceptance = False
+                state.reacceptance_done = True
+                state.reacceptance_anchor_fvg = None
+                sid = self._next_scenario_id(
+                    source.label, "HIGH-REACCEPTANCE-DISCONNECTED"
+                )
+                self._emit(
+                    scenario_id=sid,
+                    event_type="ASIA_HIGH_REACCEPTANCE_REJECTED",
+                    event_time_ns=bar.ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state="TERMINAL",
+                    reason_code=(
+                        "FIRST_FRESH_FVG_DID_NOT_REPAIR_PRESERVED_ORIGINAL_IMBALANCE"
+                    ),
+                    reference_price=source.high,
+                    details={
+                        "source": source.label.value,
+                        "anchor_fvg_lower": anchor.lower,
+                        "anchor_fvg_upper": anchor.upper,
+                        "fresh_fvg_lower": fresh.lower,
+                        "fresh_fvg_upper": fresh.upper,
+                        "decision_close": bar.close,
+                    },
+                )
+                return None
 
             if (
                 state.failed_high_acceptance
                 and source.label is SessionLabel.ASIA
                 and not state.reacceptance_done
                 and fresh is not None
+                and anchor is not None
+                and fresh.lower <= anchor.upper
+                and fresh.upper >= anchor.lower
                 and fresh.displacement_body_atr >= self.config.reacceptance_displacement_body_atr
                 and state.outside_high_closes >= self.config.acceptance_closes
             ):
                 state.reacceptance_done = True
                 state.failed_high_acceptance = False
+                state.reacceptance_anchor_fvg = None
                 plan = self._reacceptance_plan(state=state, bar=bar, atr=atr, fvg=fresh)
                 if plan is None:
                     self.skips["ASIA_REACCEPTANCE_COSTED_PLAN_REJECTED"] += 1

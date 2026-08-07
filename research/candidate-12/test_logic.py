@@ -213,7 +213,7 @@ class LogicTests(unittest.TestCase):
         )
         self.assertEqual(engine.skips["FVG_RETEST_NOT_EXECUTABLE"], 1)
         # Completed close back inside, followed by a fresh two-close FVG re-acceptance.
-        engine._on_five(bar(ts(y, m, d, 6, 25), 106.1, 106.2, 104, 104.5), True)
+        engine._on_five(bar(ts(y, m, d, 6, 25), 105.2, 105.4, 104, 104.5), True)
         engine._on_five(bar(ts(y, m, d, 6, 30), 104.5, 109, 104.4, 108.5), True)
         plan = engine._on_five(bar(ts(y, m, d, 6, 35), 108.5, 110, 106.5, 109), True)
         self.assertIsNotNone(plan)
@@ -221,6 +221,40 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(plan.scenario, ScenarioKind.ASIA_HIGH_REACCEPTANCE)
         self.assertEqual(plan.entry_order, EntryOrder.MARKET)
 
+
+
+    def test_reacceptance_requires_fresh_fvg_to_overlap_preserved_imbalance(self) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(config(), "X")
+        self.seed_asia(engine)
+        self.form_asia_high_acceptance(engine)
+        self.assertIsNone(
+            engine._on_five(bar(ts(y, m, d, 6, 20), 106, 107, 105.2, 106.1), True)
+        )
+        # The close back inside preserves the original 104.0-105.5 FVG, but
+        # the later fresh FVG starts above it at 106.2.  That is a disconnected
+        # extension, not a repair of the failed acceptance.
+        engine._on_five(bar(ts(y, m, d, 6, 25), 106.1, 106.2, 104, 104.5), True)
+        engine._on_five(bar(ts(y, m, d, 6, 30), 104.5, 109, 104.4, 108.5), True)
+        plan = engine._on_five(bar(ts(y, m, d, 6, 35), 108.5, 110, 106.5, 109), True)
+        self.assertIsNone(plan)
+        self.assertEqual(
+            engine.skips[
+                "ASIA_REACCEPTANCE_FVG_DISCONNECTED_FROM_PRESERVED_IMBALANCE"
+            ],
+            1,
+        )
+        state = engine._sources[SessionLabel.ASIA]
+        self.assertFalse(state.failed_high_acceptance)
+        self.assertTrue(state.reacceptance_done)
+        self.assertIsNone(state.reacceptance_anchor_fvg)
+        self.assertTrue(
+            any(
+                event.reason_code
+                == "FIRST_FRESH_FVG_DID_NOT_REPAIR_PRESERVED_ORIGINAL_IMBALANCE"
+                for event in engine.events
+            )
+        )
 
     def test_deep_acceptance_failure_cannot_reuse_destroyed_fvg(self) -> None:
         y, m, d = self.DAY
