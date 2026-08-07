@@ -2,9 +2,9 @@
 """Generate the isolated M7-M9 balance-acceptance evaluator.
 
 The evaluator reuses the tested one-second Nautilus harness while limiting
-preflight tests and evidence to the microstructure family plus shared bar/risk
-contracts.  Unrelated candidate families cannot block or contaminate the
-screening result.
+preflight tests and evidence to the balance-acceptance family plus the shared
+bar and risk contracts it actually depends on.  Unrelated candidate families
+cannot block or contaminate the screening result.
 """
 from __future__ import annotations
 
@@ -50,10 +50,11 @@ def main() -> None:
     source = replace_once(
         source,
         "python -m unittest discover -s \"$CAND\" -p 'test_*.py' -v\n",
-        "python -m unittest discover -s \"$CAND\" -p 'test_microstructure*.py' -v\n"
+        "python -m unittest discover -s \"$CAND\" -p 'test_microstructure.py' -v\n"
+        "python -m unittest discover -s \"$CAND\" -p 'test_microstructure_v3*.py' -v\n"
         "python -m unittest discover -s \"$CAND\" -p 'test_bar_adapter.py' -v\n"
         "python -m unittest discover -s \"$CAND\" -p 'test_logic.py' -v\n",
-        "focused microstructure preflight",
+        "focused balance-acceptance preflight",
     )
 
     destination = root / "run_microstructure_v3_generated.sh"
