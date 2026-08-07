@@ -1,20 +1,45 @@
 #!/usr/bin/env python3
-"""Index-correct V48 cross-market compiler entrypoint.
+"""Index- and symbol-contract-correct V48 compiler entrypoint.
 
-Rich feature frames are indexed by completed minute labels while Nautilus kline
-frames retain their exchange close timestamps. The base candidate correctly
-requires positional equality, but its first alignment wrapper attempted label
-selection on the Nautilus timestamps. This module changes no market logic. It
-aligns rich frames on common labels and applies the corresponding positional
-indices to each Nautilus frame.
+Rich feature frames use completed-minute labels while Nautilus kline frames use
+exchange close timestamps. The base compiler requires positional equality, so
+this wrapper aligns rich labels and applies the same integer positions to each
+Nautilus frame.
+
+The frozen Config class also contains a BTC-first research guard. For the four
+explicitly allowed experiment symbols, this wrapper instantiates the unchanged
+configuration and validates an otherwise identical BTC-symbol clone. Thus every
+risk, cost and structural validation remains active; only the obsolete
+single-symbol research guard is bypassed.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+import json
 from pathlib import Path
 
 import pandas as pd
 
 import cross_market_information_transfer_compiler as base
+
+
+def load_allowed_symbol_config(path: Path):
+    values = json.loads(path.read_text(encoding="utf-8"))
+    if "funding_hours_utc" in values:
+        values["funding_hours_utc"] = tuple(
+            int(value) for value in values["funding_hours_utc"]
+        )
+    allowed = set(base.v22.Config.__dataclass_fields__)  # type: ignore[attr-defined]
+    unknown = sorted(set(values) - allowed)
+    if unknown:
+        raise base.v22.CandidateError(f"unknown config keys: {unknown}")
+    result = base.v22.Config(**values)
+    if result.symbol not in base.SYMBOLS:
+        raise base.v22.CandidateError(
+            f"unsupported cross-market experiment symbol: {result.symbol}"
+        )
+    replace(result, symbol="BTCUSDT").validate()
+    return result
 
 
 def load_frames(
@@ -27,7 +52,11 @@ def load_frames(
     frames: dict[str, pd.DataFrame] = {}
     nt_frames: dict[str, pd.DataFrame] = {}
     for symbol in base.SYMBOLS:
-        config = base.v22.Config.load(config_root / f"{symbol}.json")
+        config = load_allowed_symbol_config(config_root / f"{symbol}.json")
+        if config.symbol != symbol:
+            raise RuntimeError(
+                f"config symbol/path mismatch: expected {symbol}, got {config.symbol}"
+            )
         data, nt_frame = base.v22._load_data(
             rich_root / symbol,
             kline_root / symbol,
