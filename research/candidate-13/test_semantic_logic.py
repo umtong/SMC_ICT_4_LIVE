@@ -45,11 +45,22 @@ class StructuralExecutionTests(unittest.TestCase):
         self.assertLess(gain, 220.73 - 211.27)
         self.assertGreater(net_r, 3.25)
 
-    def test_low_after_cost_market_r_must_fall_back_to_passive(self):
+    def test_void_repair_market_can_restore_after_cost_structure(self):
+        _, _, _, net_r = costed_market_economics(
+            direction=Direction.SHORT,
+            entry=2.0853,
+            stop=2.0905232,
+            target=2.0559,
+            taker_rate=0.0008,
+            target_maker_rate=0.0004,
+        )
+        self.assertGreater(net_r, 3.10)
+
+    def test_low_after_cost_void_repair_r_must_remain_passive(self):
         _, _, _, net_r = costed_market_economics(
             direction=Direction.SHORT,
             entry=0.4357,
-            stop=0.4376368,
+            stop=0.4366368,
             target=0.4334,
             taker_rate=0.0008,
             target_maker_rate=0.0004,

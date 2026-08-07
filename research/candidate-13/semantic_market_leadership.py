@@ -1,15 +1,22 @@
-"""Mutually exclusive cross-market auction states for Candidate 13.
+"""Mutually exclusive cross-market auction roles for Candidate 13.
 
-FAR is a moderate counter-trend failed auction.  The strongest form requires
-all three peers to reclaim in the proposed direction.  A second form admits one
-sub-dominant dissenting peer only when the candidate is a follower, completes a
-top-half local event, contributes an efficient volatility-normalized reclaim,
-and the completed market-wide auction is coherently adverse to the proposed
-reversal.  This treats tiny asynchronous peer noise differently from a material
-market disagreement without weakening the local auction evidence.
+The pattern engine detects a failed-auction reclaim.  This module decides which
+economic role, if any, that reclaim is allowed to trade:
 
-AAC is synchronized accepted repricing in the direction already controlling
-both the candidate's and the market's completed 24-hour auction.
+* EXHAUSTION: every market's completed 24-hour auction is adverse to the
+  proposed reversal.  The event therefore needs a dominant peer reclaim; the
+  strongest form is unanimous.
+* ROTATION_TRANSFER: the completed auctions are already split, while the
+  candidate and market median remain adverse.  A coordinated peer event can
+  transfer the first rotation into the lagging market.  When the final
+  confirmation impulse is modest, the candidate must replace it with an
+  efficient volatility-normalized event path.
+* IDIOSYNCRATIC_PRICE_DISCOVERY: completed auctions are split and peers do not
+  form a dominant event quorum.  Only a non-liquidity-leader which is first in
+  the event and contributes its own efficient displacement may lead.
+
+AAC remains synchronized accepted repricing in the direction controlling both
+the candidate's and market's completed auction.
 """
 from __future__ import annotations
 
@@ -19,6 +26,13 @@ from statistics import median
 from market_leadership import LeadershipDecision, MarketLeadershipGate
 
 
+FAR_EXHAUSTION_UNANIMOUS = "SEMANTIC_FAR_EXHAUSTION_UNANIMOUS"
+FAR_EXHAUSTION_QUORUM = "SEMANTIC_FAR_EXHAUSTION_DOMINANT_QUORUM"
+FAR_ROTATION_UNANIMOUS = "SEMANTIC_FAR_ROTATION_TRANSFER_UNANIMOUS"
+FAR_ROTATION_DISPLACEMENT = "SEMANTIC_FAR_ROTATION_TRANSFER_EVENT_DISPLACEMENT"
+FAR_IDIOSYNCRATIC = "SEMANTIC_FAR_IDIOSYNCRATIC_PRICE_DISCOVERY"
+
+
 def _with(decision: LeadershipDecision, approved: bool, reason: str) -> LeadershipDecision:
     return replace(decision, approved=approved, reason=reason)
 
@@ -26,10 +40,9 @@ def _with(decision: LeadershipDecision, approved: bool, reason: str) -> Leadersh
 def _dominant_peer_quorum(decision: LeadershipDecision, sign: float) -> bool:
     """Return true when a strict peer majority dominates a lone dissent.
 
-    Returns are already synchronized to the candidate sweep and confirmation.
-    No free threshold is introduced: the absolute dissent must be smaller than
-    every aligned peer move.  With the four-market universe this means two of
-    three peers agree and the third is economically subordinate.
+    No fitted magnitude is introduced.  The absolute dissent must be smaller
+    than every aligned peer move.  In the four-market universe this means two
+    of three peers agree and the third is economically subordinate.
     """
     signed = [sign * float(value) for value in decision.peer_returns.values()]
     required = len(signed) // 2 + 1
@@ -38,6 +51,20 @@ def _dominant_peer_quorum(decision: LeadershipDecision, sign: float) -> bool:
     if len(aligned) < required:
         return False
     return not dissent or max(dissent) < min(aligned)
+
+
+def _event_quality(
+    decision: LeadershipDecision,
+    *,
+    minimum_event_efficiency: float,
+    minimum_event_displacement: float,
+) -> bool:
+    return (
+        decision.event_path_efficiency is not None
+        and decision.event_path_efficiency >= minimum_event_efficiency
+        and decision.event_standardized_displacement is not None
+        and decision.event_standardized_displacement >= minimum_event_displacement
+    )
 
 
 def semantic_decision(
@@ -61,27 +88,26 @@ def semantic_decision(
         return _with(decision, False, decision.reason)
 
     sign = 1.0 if decision.direction == "LONG" else -1.0
-    all_peers_aligned = all(
-        sign * value > 0.0 for value in decision.peer_returns.values()
-    )
+    all_peers_aligned = all(sign * value > 0.0 for value in decision.peer_returns.values())
     dominant_quorum = _dominant_peer_quorum(decision, sign)
     candidate_move = float(decision.candidate_event_move)
     impulse = float(decision.confirmation_impulse)
-    candidate_trend = float(decision.directional_trend_scores[decision.symbol])
-    market_trend = float(median(decision.directional_trend_scores.values()))
     event_rank = int(decision.event_direction_rank)
+    scores = {symbol: float(value) for symbol, value in decision.directional_trend_scores.items()}
+    candidate_trend = scores[decision.symbol]
+    market_trend = float(median(scores.values()))
+    all_prior_adverse = all(value < 0.0 for value in scores.values())
+    event_quality = _event_quality(
+        decision,
+        minimum_event_efficiency=minimum_event_efficiency,
+        minimum_event_displacement=minimum_event_displacement,
+    )
 
     if decision.scenario == "FAR":
-        if not all_peers_aligned and not dominant_quorum:
-            return _with(decision, False, "SEMANTIC_FAR_REQUIRES_DOMINANT_PEER_RECLAIM")
         if candidate_move <= 0.0:
             return _with(decision, False, "SEMANTIC_FAR_WITHOUT_LOCAL_RECLAIM")
-        if impulse < minimum_confirmation_impulse:
-            return _with(decision, False, "SEMANTIC_FAR_WEAK_LOCAL_DISPLACEMENT")
         if event_rank >= symbol_count:
             return _with(decision, False, "SEMANTIC_FAR_EVENT_LAGGARD")
-        # FAR is a reversal of the completed auction, not continuation with a
-        # different local detector label.
         if candidate_trend >= 0.0 or market_trend >= 0.0:
             return _with(decision, False, "SEMANTIC_FAR_NOT_COUNTERTREND")
         if (
@@ -90,34 +116,45 @@ def semantic_decision(
         ):
             return _with(decision, False, "SEMANTIC_FAR_UNRESOLVED_ADVERSE_AUCTION")
 
-        if all_peers_aligned:
-            return _with(decision, True, "SEMANTIC_FAR_MODERATE_COUNTERTREND_UNANIMOUS")
+        if all_prior_adverse:
+            if not dominant_quorum:
+                return _with(decision, False, "SEMANTIC_FAR_EXHAUSTION_REQUIRES_PEER_QUORUM")
+            if impulse < minimum_confirmation_impulse:
+                return _with(decision, False, "SEMANTIC_FAR_EXHAUSTION_WEAK_LOCAL_DISPLACEMENT")
+            if all_peers_aligned:
+                return _with(decision, True, FAR_EXHAUSTION_UNANIMOUS)
+            if decision.symbol == decision.leader:
+                return _with(decision, False, "SEMANTIC_FAR_QUORUM_CANNOT_USE_LIQUIDITY_LEADER")
+            if event_rank > max(1, symbol_count // 2):
+                return _with(decision, False, "SEMANTIC_FAR_QUORUM_REQUIRES_LOCAL_EVENT_LEAD")
+            if not event_quality:
+                return _with(decision, False, "SEMANTIC_FAR_QUORUM_REQUIRES_LOCAL_EVENT_QUALITY")
+            return _with(decision, True, FAR_EXHAUSTION_QUORUM)
 
-        # Partial event consensus is usable only as information transfer into
-        # a follower from a coherent market-wide prior auction.  If any market
-        # was already trending in the proposed direction, the divided event is
-        # more plausibly rotation than exhaustion of one common auction.
-        if not all(float(value) < 0.0 for value in decision.directional_trend_scores.values()):
-            return _with(
-                decision,
-                False,
-                "SEMANTIC_FAR_QUORUM_REQUIRES_COHERENT_ADVERSE_AUCTION",
-            )
+        # A divided completed auction is not exhaustion of one common trend.
+        # It can trade only as synchronized rotation transfer or genuinely
+        # idiosyncratic price discovery.
+        if all_peers_aligned:
+            if impulse >= minimum_confirmation_impulse:
+                return _with(decision, True, FAR_ROTATION_UNANIMOUS)
+            if event_quality:
+                return _with(decision, True, FAR_ROTATION_DISPLACEMENT)
+            return _with(decision, False, "SEMANTIC_FAR_ROTATION_REQUIRES_IMPULSE_OR_EVENT_QUALITY")
+
+        # Partial consensus in a split prior auction is neither a common
+        # exhaustion nor a synchronized transfer.
+        if dominant_quorum:
+            return _with(decision, False, "SEMANTIC_FAR_SPLIT_AUCTION_REQUIRES_UNANIMOUS_TRANSFER")
+
         if decision.symbol == decision.leader:
-            return _with(decision, False, "SEMANTIC_FAR_QUORUM_CANNOT_USE_LIQUIDITY_LEADER")
-        if event_rank > max(1, symbol_count // 2):
-            return _with(decision, False, "SEMANTIC_FAR_QUORUM_REQUIRES_LOCAL_EVENT_LEAD")
-        if (
-            decision.event_path_efficiency is None
-            or decision.event_path_efficiency < minimum_event_efficiency
-        ):
-            return _with(decision, False, "SEMANTIC_FAR_QUORUM_INEFFICIENT_LOCAL_PATH")
-        if (
-            decision.event_standardized_displacement is None
-            or decision.event_standardized_displacement < minimum_event_displacement
-        ):
-            return _with(decision, False, "SEMANTIC_FAR_QUORUM_INSUFFICIENT_LOCAL_DISPLACEMENT")
-        return _with(decision, True, "SEMANTIC_FAR_DOMINANT_PEER_QUORUM")
+            return _with(decision, False, "SEMANTIC_FAR_IDIOSYNCRATIC_CANNOT_USE_LIQUIDITY_LEADER")
+        if event_rank != 1:
+            return _with(decision, False, "SEMANTIC_FAR_IDIOSYNCRATIC_REQUIRES_EVENT_LEAD")
+        if impulse < minimum_confirmation_impulse:
+            return _with(decision, False, "SEMANTIC_FAR_IDIOSYNCRATIC_WEAK_LOCAL_DISPLACEMENT")
+        if not event_quality:
+            return _with(decision, False, "SEMANTIC_FAR_IDIOSYNCRATIC_REQUIRES_LOCAL_EVENT_QUALITY")
+        return _with(decision, True, FAR_IDIOSYNCRATIC)
 
     if decision.scenario == "AAC":
         if not all_peers_aligned:

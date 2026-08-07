@@ -3,9 +3,9 @@
 
 The materialized portfolio runner remains in ``run_leadership_scdam_base.py``.
 Before compiling it, Candidate 13 installs the mutually exclusive FAR/AAC state
-semantics and the scenario-specific price plan.  One exact source boundary is
-then expanded so a TradePlan explicitly marked MARKET builds a Nautilus MARKET
-bracket; all other parents retain the inherited passive GTD limit path.
+semantics, scenario-specific price plans, and the synchronized post-leadership
+execution amendment.  Exact source boundaries are then expanded so explicit
+MARKET parents remain inside NautilusTrader.
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import market_leadership as _market_leadership
 from runner_materializer import materialize_runner_source
 from semantic_market_leadership import SemanticMarketLeadershipGate
 from semantic_logic import install as _install_semantic_logic
+from semantic_post_gate import amend_after_leadership
 
 _market_leadership.MarketLeadershipGate = SemanticMarketLeadershipGate
 _install_semantic_logic()

@@ -2,10 +2,13 @@
 
 FAR and AAC carry different execution hazards.
 
-* FAR has already reclaimed the raid, shifted local structure and displaced in
-  the same direction as all peers.  When the confirmation close still offers
-  the configured after-cost structural R, it enters immediately with a
-  Nautilus MARKET parent; otherwise the inherited passive void order remains.
+* FAR first builds the inherited structural plan.  If the completed
+  confirmation close still offers the required after-cost structural R, it
+  enters immediately with a Nautilus MARKET parent.
+* A passive FAR also records, but does not yet activate, a narrower
+  first-execution invalidation: full repair of the confirmation displacement
+  void.  The post-leadership boundary may activate that market plan only for a
+  unanimous common-auction exhaustion role.
 * AAC rests at the already-known defended pullback pivot and is invalidated only
   by reacceptance through the original external-liquidity boundary.
 
@@ -93,6 +96,78 @@ def _amend_last_plan_event(
         break
 
 
+def _void_repair_candidate(
+    self: CausalAuctionEngine,
+    a: Auction,
+    confirmation_bar: BarObs,
+    inherited: TradePlan,
+) -> dict[str, object]:
+    """Price a market entry invalidated by full repair of the first void.
+
+    The original sweep stop has an overshoot buffer beyond the observed sweep
+    extreme.  Reuse exactly that buffer beyond the far edge of the displacement
+    zone; no new free width parameter is introduced.
+    """
+    if a.direction is None or a.zone_low is None or a.zone_high is None:
+        return {"eligible": False, "reason": "VOID_ZONE_NOT_KNOWN"}
+
+    if a.direction == Direction.LONG:
+        buffer = a.sweep_extreme - inherited.stop_price
+        stop = a.zone_low - buffer
+    else:
+        buffer = inherited.stop_price - a.sweep_extreme
+        stop = a.zone_high + buffer
+    if buffer < 0.0:
+        return {
+            "eligible": False,
+            "reason": "STRUCTURAL_STOP_NOT_BEYOND_SWEEP",
+            "buffer": buffer,
+        }
+
+    entry = confirmation_bar.close
+    target = inherited.target_price
+    risk, loss, net_gain, net_r = costed_market_economics(
+        direction=a.direction,
+        entry=entry,
+        stop=stop,
+        target=target,
+        taker_rate=self.config.effective_taker_rate,
+        target_maker_rate=self.config.effective_maker_rate,
+    )
+    causal_order = (
+        stop < entry < target
+        if a.direction == Direction.LONG
+        else target < entry < stop
+    )
+    eligible = (
+        causal_order
+        and risk > 0.0
+        and risk / a.atr >= self.config.min_stop_atr
+        and net_gain > 0.0
+        and net_r >= self.config.min_net_r
+    )
+    return {
+        "eligible": eligible,
+        "reason": "OK" if eligible else "AFTER_COST_VOID_REPAIR_NOT_EXECUTABLE",
+        "entry": entry,
+        "stop": stop,
+        "target": target,
+        "buffer": buffer,
+        "zone_low": a.zone_low,
+        "zone_high": a.zone_high,
+        "risk": risk,
+        "loss_per_unit": loss,
+        "gain_per_unit": net_gain,
+        "net_r": net_r,
+        "minimum_net_r": self.config.min_net_r,
+        "minimum_stop_atr": self.config.min_stop_atr,
+        "risk_atr": risk / a.atr if a.atr > 0.0 else -1.0,
+        "entry_cost_assumption": "TAKER",
+        "target_cost_assumption": "MAKER",
+        "stop_model": "FULL_DISPLACEMENT_VOID_REPAIR",
+    }
+
+
 def _far_plan(
     self: CausalAuctionEngine,
     a: Auction,
@@ -106,6 +181,14 @@ def _far_plan(
     expire_ts_ns, structural_minutes = _structure_expiry(self, confirmation_bar.ts_ns)
     passive_details = dict(inherited.details)
     passive_details["entry_expiry_structure_minutes"] = structural_minutes
+    passive_details["structural_stop"] = inherited.stop_price
+    passive_details["confirmation_close"] = confirmation_bar.close
+    passive_details["void_repair_candidate"] = _void_repair_candidate(
+        self,
+        a,
+        confirmation_bar,
+        inherited,
+    )
     passive = replace(
         inherited,
         expire_ts_ns=expire_ts_ns,
@@ -169,6 +252,7 @@ def _far_plan(
                 "net_r": net_r,
                 "entry_cost_assumption": "TAKER",
                 "expire_ts_ns": MARKET_ENTRY_SENTINEL_NS,
+                "void_repair_candidate": passive_details["void_repair_candidate"],
             },
         )
         return market
@@ -180,6 +264,7 @@ def _far_plan(
             "expire_ts_ns": expire_ts_ns,
             "entry_expiry_structure_minutes": structural_minutes,
             "market_entry_rejected_net_r": net_r,
+            "void_repair_candidate": passive_details["void_repair_candidate"],
         },
     )
     return passive
