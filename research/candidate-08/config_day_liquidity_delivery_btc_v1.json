@@ -1,0 +1,124 @@
+{
+  "candidate": "candidate-08-day-liquidity-delivery-btc-nautilus-v1",
+  "description": "BTC-first higher-timeframe draw-on-liquidity day-trading router with session raid and acceptance delivery paths",
+  "implementation_revision": "DAY_LIQUIDITY_DELIVERY_ROUTER_V1",
+  "random_seed": 8808,
+  "starting_nav_usdt": 100000.0,
+  "risk_fraction": 0.03,
+  "effective_fee_rate_per_fill": 0.0006,
+  "minimum_net_reward_risk": 1.2,
+  "maximum_hold_minutes": 360,
+  "funding_avoidance_minutes": 5,
+  "assets": {
+    "BTCUSDT": {
+      "instrument_id": "BTCUSDT-PERP.BINANCE",
+      "base_currency": "BTC",
+      "price_precision": 1,
+      "size_precision": 3,
+      "tick_size": "0.1",
+      "size_increment": "0.001",
+      "min_quantity": "0.001"
+    }
+  },
+  "cost_assumptions": {
+    "maker_fee_rate": 0.0006,
+    "taker_fee_rate": 0.0006,
+    "one_tick_slippage_probability": 1.0,
+    "latency_ms": {
+      "base": 0,
+      "insert": 0,
+      "update": 0,
+      "cancel": 0
+    },
+    "rationale": "Every fill is charged 6 bp. Entry reserves one adverse tick; stop execution reserves the shifted 99th percentile of completed ten-second true range over the preceding hour. Ten-second data is execution infrastructure only. NautilusTrader separately settles checksum-verified official funding and applies native liquidation.",
+    "actual_funding_settlement": "checksum-verified Binance Vision monthly fundingRate archives; funding_interval_hours converted to Nautilus minutes",
+    "stop_market_slippage_reserve": "Shifted 99th percentile of completed ten-second true range over the preceding 60 minutes, minimum one tick; independent of direction, route family, target and outcome."
+  },
+  "venue": {
+    "default_leverage": 125,
+    "bar_adaptive_high_low_ordering": true,
+    "liquidation_enabled": true,
+    "liquidation_trigger_ratio": 1.0,
+    "liquidation_cancel_open_orders": true,
+    "runtime_liquidation_switch_supported": true
+  },
+  "pattern_source_config": "config_range_fvg.json",
+  "day_liquidity_delivery_config": {
+    "h4_swing_span": 2,
+    "h4_displacement_lookback": 12,
+    "h4_close_location": 0.6666666666666666,
+    "h4_target_minimum_atr": 0.75,
+    "session_boundary_excursion_atr": 0.05,
+    "acceptance_close_location": 0.6666666666666666,
+    "five_swing_span": 2,
+    "five_displacement_lookback": 12,
+    "five_close_location": 0.6666666666666666,
+    "structural_stop_buffer_atr": 0.05,
+    "maximum_delivery_minutes": 180
+  },
+  "scenario_contract": {
+    "asset_role": "BTC, ETH, SOL and XRP are liquid testbeds only. V1 is discovered on one frozen BTC week and later transferred unchanged; no asset-specific optimization is permitted.",
+    "direction_layer": "Only a completed four-hour displacement close through a causally confirmed four-hour swing creates the active draw. The latest causally confirmed opposite swing is the dealing-range origin and structural invalidation reference.",
+    "target_layer": "At the session interaction, freeze the nearest still-active completed day or week external pool in the draw direction. A four-hour pool is allowed only when no day/week pool exists and it remains at least 0.75 current four-hour ATR away. No fitted-R fallback exists.",
+    "location_layer": "Long entries must remain in discount and short entries in premium of the frozen origin-to-target dealing range. This is a scenario condition, not a risk multiplier.",
+    "time_layer": "UTC Asia 00:00-08:00 supplies the Europe 08:00-13:00 route; Europe 08:00-13:00 supplies the US 13:00-18:00 route. Time fixes completed source inventory and opportunity windows but never supplies direction.",
+    "raid_route": "Opposite-side source-session liquidity is swept and reclaimed on a completed fifteen-minute bar in the active higher-timeframe draw direction.",
+    "acceptance_route": "Same-side source-session liquidity is accepted by a completed fifteen-minute displacement bar, then a later separate fifteen-minute retest touches and holds the accepted boundary.",
+    "delivery_layer": "After either route, freeze the latest causally confirmed opposing five-minute swing. A later five-minute displacement candle must close through it and create a standard three-bar FVG. Enter only after the first subsequent five-minute FVG touch closes back with the draw.",
+    "entry": "The market OUO bracket is submitted at the first observable ten-second replay bucket after the completed five-minute retracement bar. The ten-second frame does not choose direction, route, target or setup quality.",
+    "stop": "Raid route stops beyond the observed fifteen-minute raid extreme; acceptance route stops beyond the observed fifteen-minute retest extreme; both use only a fixed 0.05 five-minute ATR execution buffer.",
+    "holding_period": "New entries occur no later than the end of the Europe or US route. Maximum hold is six hours, so no scenario can deliberately carry beyond the UTC trading day.",
+    "one_attempt": "At most one route is armed per source-session route window. A failed acceptance or failed first FVG mitigation is not retried.",
+    "parameter_search": "none; all structural relations and relative thresholds are frozen before first-window performance evidence"
+  },
+  "suites": {
+    "first": [
+      {
+        "name": "screen-01",
+        "start": "2024-04-08T00:00:00Z",
+        "end": "2024-04-15T00:00:00Z"
+      }
+    ],
+    "screen": [
+      {
+        "name": "screen-01",
+        "start": "2024-04-08T00:00:00Z",
+        "end": "2024-04-15T00:00:00Z"
+      },
+      {
+        "name": "screen-02",
+        "start": "2025-06-09T00:00:00Z",
+        "end": "2025-06-16T00:00:00Z"
+      },
+      {
+        "name": "screen-03",
+        "start": "2025-09-29T00:00:00Z",
+        "end": "2025-10-06T00:00:00Z"
+      }
+    ]
+  },
+  "first_window_gate": {
+    "minimum_closed_trades": 3,
+    "cost_after_total_return_positive": true,
+    "no_execution_failures": true,
+    "no_residual_exposure": true
+  },
+  "screen_gate": {
+    "minimum_closed_trades_per_week": 3,
+    "all_three_cost_after_positive": true,
+    "minimum_positive_trade_share": 0.45,
+    "maximum_single_positive_pnl_share": 0.5,
+    "combined_daily_geometric_growth": 0.01,
+    "no_execution_failures": true,
+    "no_residual_exposure": true
+  },
+  "validation_protocol": {
+    "first_question": "Does the fixed first BTC week naturally produce several complete H4-to-session-to-5m day-trading deliveries whose frozen HTF target can pay actual costs?",
+    "logic_before_performance": "Inspect the state funnel in order: active H4 draw, active external target, session route, separate 5m MSS/FVG, first FVG retracement, premium/discount location, cost-after geometry, signal.",
+    "promotion": "The first fixed BTC week must pass unchanged before the remaining two fixed BTC weeks. All three must pass before the exact same contract is transferred unchanged to ETH, SOL and XRP.",
+    "failure_rule": "A clean zero/weak result is a scenario-logic result. Do not lower thresholds or add asset-specific parameters; identify the failed structural transition before deciding whether one economically distinct revision is justified.",
+    "global_selection": "At any timestamp only the highest causal cost-after net reward-risk signal is eligible; while any order or position exists the shared account is unavailable to every instrument.",
+    "sizing": "Current full shared USDT NAV times 3 percent divided by expected entry-to-stop loss including two 6 bp fill charges, one adverse entry tick, causal Q99 stop-slippage reserve and causal funding reserve; no separate notional cap or score multiplier.",
+    "engine": "NautilusTrader is the sole execution, account, funding, liquidation, order and position engine."
+  }
+}
