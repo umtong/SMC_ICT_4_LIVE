@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-MARKER = "C11_IRX_COMPATIBILITY_V2"
+MARKER = "C11_IRX_COMPATIBILITY_V3"
 
 
 def replace_once(source: str, old: str, new: str, label: str) -> str:
@@ -22,7 +22,7 @@ def apply(root: Path) -> int:
     source = replace_once(
         source,
         "from logic import Direction, Scenario, TradePlan\n",
-        '''# C11_IRX_COMPATIBILITY_V2
+        '''# C11_IRX_COMPATIBILITY_V3
 import logic as _logic
 Direction = _logic.Direction
 TradePlan = _logic.TradePlan
@@ -40,8 +40,25 @@ if Scenario is None:
 ''',
         '''        if field.default is not MISSING or field.default_factory is not MISSING:
             continue
+        # Required fields introduced by the current project TradePlan are
+        # deterministic economic fields already implied by this costed plan.
+        # They do not add a new alpha filter or alter the fixed risk fraction.
+        if field.name == "atr":
+            details = canonical.get("details") or {}
+            fallback = abs(float(canonical["expected_entry"]) - float(canonical["stop_price"]))
+            kwargs[field.name] = float(values.get("atr", details.get("atr", fallback)))
+            continue
+        if field.name == "gain_per_unit":
+            kwargs[field.name] = float(values.get(
+                "gain_per_unit",
+                abs(float(canonical["target_price"]) - float(canonical["expected_entry"])),
+            ))
+            continue
+        if field.name == "reason_code":
+            kwargs[field.name] = str(values.get("reason_code", "INTERNAL_RECLAIM_CONFIRMED"))
+            continue
         # Historical source revisions briefly exposed zone/time metadata as
-        # top-level required fields.  They are deterministic aliases of the
+        # top-level required fields. They are deterministic aliases of the
         # already costed plan, never additional alpha inputs.
         if field.name in {"entry_zone_low", "zone_low"}:
             kwargs[field.name] = float(canonical["expected_entry"])
@@ -61,6 +78,24 @@ if Scenario is None:
         raise TypeError(f"unsupported required TradePlan field: {field.name}")
 ''',
         "required field compatibility",
+    )
+    # Supply exact current-contract values from the live IRX calculation when
+    # the source emits a plan. The adapter fallbacks above remain only for
+    # regression fixtures and older committed snapshots.
+    source = replace_once(
+        source,
+        '''            "target_price": target,
+            "loss_per_unit": loss_per_unit,
+            "net_r": net_r,
+''',
+        '''            "target_price": target,
+            "atr": atr,
+            "loss_per_unit": loss_per_unit,
+            "gain_per_unit": abs(target - entry),
+            "net_r": net_r,
+            "reason_code": "INTERNAL_RECLAIM_CONFIRMED",
+''',
+        "current TradePlan economics",
     )
     path.write_text(source, encoding="utf-8")
     return 1
