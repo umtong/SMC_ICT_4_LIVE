@@ -18,7 +18,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 CANDIDATE = ROOT / "research/candidate-02"
-LOCK_PATH = CANDIDATE / "v105_external_liquidity_lock.json"
+LOCK_PATH = CANDIDATE / "v105_auction_state_lock.json"
 BASE_CONFIG = CANDIDATE / "v105_base_config.json"
 INPUT_ROOT = ROOT / "inputs/v105-first-week"
 CONFIG_ROOT = Path("/tmp/v105-configs")
@@ -87,7 +87,7 @@ def verify_lock() -> tuple[dict[str, Any], dict[str, Any]]:
         CANDIDATE / "v53_nt_core.py",
         CANDIDATE / "v53_nt_strategy.py",
         CANDIDATE / "v53_nt_backtest.py",
-        CANDIDATE / "v105_external_liquidity_core.py",
+        CANDIDATE / "v105_auction_state_core.py",
         CANDIDATE / "v105_nt_strategy.py",
         CANDIDATE / "v105_nt_backtest.py",
         CANDIDATE / "v105_first_week_driver.py",
@@ -212,7 +212,7 @@ def collect_inputs(tools: Path, lock: Mapping[str, Any], base: Mapping[str, Any]
     shutil.copy2(ROOT / ".candidate-02-v89/augment_cross_market.py", spot_augment)
     replacements = {
         "research/candidate-02/v89_cross_market_impact_lock.json":
-            "research/candidate-02/v105_external_liquidity_lock.json",
+            "research/candidate-02/v105_auction_state_lock.json",
         "inputs/v89-first-week": "inputs/v105-first-week",
         "candidate-02-v89-first-week": "candidate-02-v105-first-week",
         "v89 first-week": "v105 first-week",
