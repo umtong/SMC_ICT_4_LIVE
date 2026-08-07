@@ -23,7 +23,10 @@ class PreAttackValueTests(unittest.TestCase):
         close[:14] = 98.0
         close[14] = 97.0
         close[21] = 99.0
-        close[22] = 97.8
+        # The future path must actually trade through both the prior-bucket
+        # VWAP and the lower close-ablation target.  This is deliberately after
+        # the causal entry observation and does not affect target construction.
+        close[22] = 96.8
         open_ = close.copy()
         high = np.maximum(open_, close) + 0.1
         low = np.minimum(open_, close) - 0.1
