@@ -8,8 +8,10 @@ on:
       - "research/candidate-05/failed_reversal_continuation_logic.py"
       - "research/candidate-05/v38_failure_path_diagnostic.py"
       - "research/candidate-05/v38_failure_path_diagnostic_v2.py"
+      - "research/candidate-05/v38_failure_path_cascade.py"
       - "research/candidate-05/tests/test_failed_reversal_continuation_logic.py"
       - "research/candidate-05/tests/test_v38_failure_path_diagnostic_v2.py"
+      - "research/candidate-05/tests/test_v38_failure_path_cascade.py"
       - "research/candidate-05/V38B_RESULT.md"
       - ".github/workflows/candidate-05-v38-failure-path-diagnostic.yml"
   workflow_dispatch:
@@ -46,19 +48,19 @@ jobs:
             -s research/candidate-05/tests \
             -p 'test_*.py' -v
 
-      - name: Observe post-reversal continuation sequence
+      - name: Decompose post-reversal continuation sequence
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
-          python research/candidate-05/v38_failure_path_diagnostic_v2.py \
+          python research/candidate-05/v38_failure_path_cascade.py \
             --cases research/candidate-05/v38_trade_cases.json \
             --config research/candidate-05/config.json \
             --cache .cache/candidate-05-v38-failure-path \
             --output "$ROOT" \
             2>&1 | tee "$ROOT/console.log"
 
-      - name: Verify diagnostic is observational and unambiguous
+      - name: Verify diagnostic is observational and component-complete
         if: always()
         shell: bash
         run: |
@@ -68,7 +70,7 @@ jobs:
           from pathlib import Path
           path = Path("artifacts/candidate-05-v38-failure-path-diagnostic/v38_failure_path_diagnostic.json")
           payload = json.loads(path.read_text())
-          assert payload["schema"] == "candidate-05-v38-failure-path-diagnostic-v2"
+          assert payload["schema"] == "candidate-05-v38-failure-path-component-cascade-v1"
           assert payload["method"]["engine"] == "OBSERVATIONAL_COMPLETED_BAR_DIAGNOSTIC_ONLY"
           assert payload["method"]["creates_orders_or_pnl"] is False
           assert len(payload["cases"]) == 11
@@ -76,6 +78,10 @@ jobs:
               assert "continuation_reference_price" not in case
               assert "reacceptance_reference_price" in case
               assert "retest_reference_price" in case
+              assert "component_cascade" in case
+              cascade = case["component_cascade"]
+              assert "first_price_reacceptance" in cascade
+              assert "cumulative_bar_counts" in cascade
           print(json.dumps(payload, indent=2, sort_keys=True))
           PY
           fi
