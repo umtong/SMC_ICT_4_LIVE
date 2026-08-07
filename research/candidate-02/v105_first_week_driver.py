@@ -186,6 +186,20 @@ def materialize_futures_tools(lock: Mapping[str, Any], base: Mapping[str, Any]) 
             if text.count(archive_before) != 1:
                 raise RuntimeError("v75 feature-builder archive assertion materialization mismatch")
             text = text.replace(archive_before, archive_after)
+            qh_before = (
+                '    # Quarter-hour openings must have real trade observations in the first ten\n'
+                '    # seconds; otherwise the data transformation is not suitable for v75.\n'
+                '    qh = ((matrix.index - pd.Timedelta(minutes=1)).minute % 15 == 0)\n'
+                '    if (matrix.loc[qh, "qh_opening_10s_trade_count"] <= 0).any():\n'
+                '        raise ValueError("quarter-hour opening without a first-ten-second trade")'
+            )
+            qh_after = (
+                '    # v105 does not consume quarter-hour opening fields; preserve causal zeros.\n'
+                '    qh = ((matrix.index - pd.Timedelta(minutes=1)).minute % 15 == 0)'
+            )
+            if text.count(qh_before) != 1:
+                raise RuntimeError("v75-only quarter-hour assertion materialization mismatch")
+            text = text.replace(qh_before, qh_after)
         path.write_text(text, encoding="utf-8")
     if date_changes != 1 or warmup_changes != 1:
         raise RuntimeError(f"collector materialization mismatch: date={date_changes}, warmup={warmup_changes}")
