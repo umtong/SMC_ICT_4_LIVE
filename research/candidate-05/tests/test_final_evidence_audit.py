@@ -48,7 +48,7 @@ class FinalEvidenceAuditTest(unittest.TestCase):
             current += timedelta(days=1)
         return result
 
-    def make_long_run(self, **overrides):
+    def make_long_run(self, *, slot_overrides=None, **overrides):
         value = self.make_run(
             trades=500,
             wins=220,
@@ -61,6 +61,7 @@ class FinalEvidenceAuditTest(unittest.TestCase):
                 "evaluation_end": "2026-06-30",
             },
             daily_returns=self.long_daily_returns(),
+            slot_overrides=slot_overrides,
         )
         value.update(overrides)
         slot = value["global_slot_audit"]
