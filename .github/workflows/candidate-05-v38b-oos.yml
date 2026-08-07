@@ -1,0 +1,217 @@
+name: candidate-05-v38b-oos
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/strategy_v38b_reachable_isolated_smt.py"
+      - "research/candidate-05/target_reachability_logic.py"
+      - "research/candidate-05/shared_account_strategy_variants_v38b.py"
+      - "research/candidate-05/shared_account_backtest_v38b.py"
+      - "research/candidate-05/tests/test_target_reachability_logic.py"
+      - "research/candidate-05/tests/test_strategy_v38b_contract.py"
+      - "research/candidate-05/V38_RESULT.md"
+      - ".github/workflows/candidate-05-v38b-oos.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v38b-oos
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deterministic-oos-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v38b-oos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and ablation contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_*.py' -v
+
+      - name: Run untouched deterministic week through shared NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/v26.json" <<'JSON'
+          {"classification":"VALIDATED_BTC_WINNER_RESOLVED","winner":"strategy_v26:ScenarioValidEntryStrategy","experiment_role":"EXACT_SHARED_CONTROL"}
+          JSON
+          cat > "$ROOT/evidence/v38.json" <<'JSON'
+          {"classification":"VALIDATED_BTC_WINNER_RESOLVED","winner":"strategy_v38_isolated_smt_reversal:IsolatedSmtReversalStrategy","experiment_role":"UNRESTRICTED_V38_ABLATION_CONTROL"}
+          JSON
+          cat > "$ROOT/evidence/v38b.json" <<'JSON'
+          {"classification":"VALIDATED_BTC_WINNER_RESOLVED","winner":"strategy_v38b_reachable_isolated_smt:ReachableIsolatedSmtReversalStrategy","experiment_role":"REACHABLE_TARGET_ABLATION"}
+          JSON
+
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import date, timedelta
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          root = Path(os.environ["ROOT"])
+          seed_text = "candidate-05-v38b-reachability-oos-v1"
+          starts = []
+          cursor = date(2024, 1, 1)
+          last = date(2025, 12, 25)
+          while cursor <= last:
+              starts.append(cursor)
+              cursor += timedelta(days=1)
+          selected = starts[int(hashlib.sha256(seed_text.encode()).hexdigest(), 16) % len(starts)]
+          evaluation_start = selected
+          evaluation_end = selected + timedelta(days=6)
+          assert str(evaluation_start) == "2025-12-04"
+          assert str(evaluation_end) == "2025-12-10"
+          build_start = evaluation_start - timedelta(days=2)
+          build_end = evaluation_end + timedelta(days=2)
+
+          variants = {
+              "v26": Path("research/candidate-05/shared_account_backtest_v38b.py"),
+              "v38": Path("research/candidate-05/shared_account_backtest_v38.py"),
+              "v38b": Path("research/candidate-05/shared_account_backtest_v38b.py"),
+          }
+
+          def write_json(path: Path, value: object) -> None:
+              path.parent.mkdir(parents=True, exist_ok=True)
+              temporary = path.with_suffix(path.suffix + ".tmp")
+              temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+              temporary.replace(path)
+
+          metrics = {}
+          implementation_errors = []
+          for variant, runner in variants.items():
+              output = root / "oos-week" / variant
+              output.mkdir(parents=True, exist_ok=True)
+              command = [
+                  sys.executable,
+                  str(runner),
+                  "--winner-evidence", str(root / "evidence" / f"{variant}.json"),
+                  "--build-start", str(build_start),
+                  "--build-end", str(build_end),
+                  "--evaluation-start", str(evaluation_start),
+                  "--evaluation-end", str(evaluation_end),
+                  "--cache", str(Path(".cache/candidate-05-v38b-oos")),
+                  "--output", str(output),
+              ]
+              completed = subprocess.run(
+                  command,
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+              )
+              (root / f"{variant}-console.log").write_text(completed.stdout or "")
+              if completed.returncode != 0:
+                  implementation_errors.append(
+                      {
+                          "variant": variant,
+                          "returncode": completed.returncode,
+                          "classification": f"IMPLEMENTATION_ERROR_V38B_OOS_{variant.upper()}",
+                      },
+                  )
+                  break
+              metrics[variant] = json.loads((output / "metrics.json").read_text())
+
+          if implementation_errors:
+              summary = {
+                  "schema": "candidate-05-v38b-oos-v1",
+                  "classification": implementation_errors[0]["classification"],
+                  "passed": False,
+                  "selection_seed": seed_text,
+                  "evaluation_start": str(evaluation_start),
+                  "evaluation_end": str(evaluation_end),
+                  "implementation_errors": implementation_errors,
+              }
+              write_json(root / "v38b_oos_summary.json", summary)
+              print(json.dumps(summary, indent=2, sort_keys=True))
+              raise SystemExit(0)
+
+          branch38 = metrics["v38"].get("scenario_metrics", {}).get(
+              "SMT_ISOLATED_SESSION_REVERSAL", {},
+          )
+          branch38b = metrics["v38b"].get("scenario_metrics", {}).get(
+              "SMT_REACHABLE_ISOLATED_REVERSAL", {},
+          )
+          integrity = all(bool(metrics[v].get("integrity_pass")) for v in variants)
+          trades = int(branch38b.get("trades", 0))
+          pnl = float(branch38b.get("net_pnl", 0.0))
+          improves_control = float(metrics["v38b"]["total_return"]) > float(metrics["v26"]["total_return"])
+          improves_unrestricted = float(metrics["v38b"]["total_return"]) > float(metrics["v38"]["total_return"])
+
+          if not integrity:
+              classification = "IMPLEMENTATION_ERROR_V38B_OOS_INTEGRITY"
+          elif trades == 0:
+              classification = "LOGIC_FAILURE_V38B_NO_OOS_TRADES"
+          elif pnl <= 0.0:
+              classification = "LOGIC_FAILURE_V38B_NONPOSITIVE_OOS_EXPECTANCY"
+          elif not improves_control:
+              classification = "LOGIC_FAILURE_V38B_DID_NOT_IMPROVE_OOS_CONTROL"
+          elif trades < 2:
+              classification = "V38B_OOS_POSITIVE_BUT_TOO_SPARSE"
+          else:
+              classification = "V38B_OOS_WEEK_PASSED"
+
+          summary = {
+              "schema": "candidate-05-v38b-oos-v1",
+              "classification": classification,
+              "passed": classification == "V38B_OOS_WEEK_PASSED",
+              "selection_method": "sha256 seed modulo all eligible seven-day starts",
+              "selection_seed": seed_text,
+              "evaluation_start": str(evaluation_start),
+              "evaluation_end": str(evaluation_end),
+              "build_start": str(build_start),
+              "build_end": str(build_end),
+              "integrity_pass": integrity,
+              "v26": metrics["v26"],
+              "v38": metrics["v38"],
+              "v38b": metrics["v38b"],
+              "v38_incremental_branch": branch38,
+              "v38b_incremental_branch": branch38b,
+              "v38b_improves_v26_control": improves_control,
+              "v38b_improves_unrestricted_v38": improves_unrestricted,
+              "next_action": (
+                  "Run frozen three-week regression and then continuous 30-day validation"
+                  if classification == "V38B_OOS_WEEK_PASSED"
+                  else "Discard the isolated-reversal family without testing another reachability multiple"
+              ),
+          }
+          write_json(root / "v38b_oos_summary.json", summary)
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Print evidence
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$ROOT/v38b_oos_summary.json"; then
+            python -m json.tool "$ROOT/v38b_oos_summary.json"
+          fi
+          find "$ROOT" -name '*console.log' -type f -print -exec tail -n 140 {} \;
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v38b-oos-${{ github.sha }}
+          path: artifacts/candidate-05-v38b-oos/**
+          if-no-files-found: error
+          retention-days: 90
