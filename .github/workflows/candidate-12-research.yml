@@ -1,10 +1,9 @@
-name: candidate-12-i8-w1-design-gate
+name: candidate-12-i8-w7-frozen-confirmation
 
 on:
   push:
     branches: ["research/candidate-12"]
     paths:
-      - "research/candidate-12/**"
       - ".github/workflows/candidate-12-research.yml"
   workflow_dispatch:
 
@@ -12,11 +11,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i8-w1-${{ github.ref }}-${{ github.sha }}
+  group: candidate-12-i8-w7-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  w1-design-gate:
+  w7-frozen-confirmation:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -24,8 +23,8 @@ jobs:
       options: --user root
     env:
       SYMBOL: BTCUSDT
-      WEEK: W1
-      OUTPUT: artifacts/candidate-12/BTCUSDT-W1
+      WEEK: W7
+      OUTPUT: artifacts/candidate-12/BTCUSDT-W7
     steps:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
@@ -33,41 +32,54 @@ jobs:
       - name: Verify prebuilt environment
         run: smc4 doctor
 
-      - name: Compile candidate
+      - name: Compile unchanged candidate
         run: python -m compileall -q research/candidate-12
 
       - name: Candidate unit tests
         run: python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
 
-      - name: Run W1 through NautilusTrader
+      - name: Run frozen untouched W7 through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$OUTPUT"
-          python research/candidate-12/run.py \
-            --symbol "$SYMBOL" \
-            --week "$WEEK" \
-            --output "$OUTPUT" | tee "$OUTPUT.console.json"
+          python - <<'PY' | tee "$OUTPUT.console.json"
+          from pathlib import Path
+          import json
+          import sys
 
-      - name: Surface W1 decision evidence
+          root = Path("research/candidate-12").resolve()
+          sys.path.insert(0, str(root))
+          from run import run
+
+          metrics = run(
+              root / "config.json",
+              "BTCUSDT",
+              "W7",
+              Path("artifacts/candidate-12/BTCUSDT-W7").resolve(),
+          )
+          print(json.dumps(metrics, indent=2, sort_keys=True, default=str))
+          PY
+
+      - name: Surface W7 decision evidence
         if: always()
         shell: bash
         run: |
           if [[ -f "$OUTPUT/metrics.json" ]]; then
-            echo '=== CANDIDATE_12_I8_W1_METRICS_BEGIN ==='
+            echo '=== CANDIDATE_12_I8_W7_METRICS_BEGIN ==='
             cat "$OUTPUT/metrics.json"
-            echo '=== CANDIDATE_12_I8_W1_METRICS_END ==='
+            echo '=== CANDIDATE_12_I8_W7_METRICS_END ==='
           fi
           if [[ -f "$OUTPUT/run.json" ]]; then
-            echo '=== CANDIDATE_12_I8_W1_RUN_BEGIN ==='
+            echo '=== CANDIDATE_12_I8_W7_RUN_BEGIN ==='
             cat "$OUTPUT/run.json"
-            echo '=== CANDIDATE_12_I8_W1_RUN_END ==='
+            echo '=== CANDIDATE_12_I8_W7_RUN_END ==='
           fi
 
-      - name: Preserve reproducible W1 evidence
+      - name: Preserve reproducible W7 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I8-BTCUSDT-W1-${{ github.sha }}
+          name: candidate-12-I8-BTCUSDT-W7-${{ github.sha }}
           path: ${{ env.OUTPUT }}
           if-no-files-found: warn
