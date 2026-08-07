@@ -5,96 +5,93 @@ test_displacement_and_retrace_must_be_separate_completed_bars (__main__.DayLiqui
 test_full_builder_emits_after_completed_retrace (__main__.DayLiquidityDeliverySignalTests.test_full_builder_emits_after_completed_retrace) ... ERROR
 test_future_suffix_does_not_change_existing_signal (__main__.DayLiquidityDeliverySignalTests.test_future_suffix_does_not_change_existing_signal) ... ERROR
 test_swing_is_not_observable_before_right_span (__main__.DayLiquidityDeliverySignalTests.test_swing_is_not_observable_before_right_span) ... ERROR
-test_touched_but_nonconfirming_first_touch_is_terminal (__main__.DayLiquidityDeliverySignalTests.test_touched_but_nonconfirming_first_touch_is_terminal) ... ERROR
+test_touched_but_nonconfirming_first_touch_is_terminal (__main__.DayLiquidityDeliverySignalTests.test_touched_but_nonconfirming_first_touch_is_terminal) ... ok
 
 ======================================================================
 ERROR: test_displacement_and_retrace_must_be_separate_completed_bars (__main__.DayLiquidityDeliverySignalTests.test_displacement_and_retrace_must_be_separate_completed_bars)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 129, in test_displacement_and_retrace_must_be_separate_completed_bars
-    bars = _bars()
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 40, in _bars
-    _bar(i, open_=100.0, high=100.4, low=99.6, close=100.1)
-    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 21, in _bar
-    return FiveMinuteBar(
-        index=index,
-    ...<11 lines>...
-        trade_ratio=1.0,
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 135, in test_displacement_and_retrace_must_be_separate_completed_bars
+    states = signals._confirmed_five_swings(bars, span=2)
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/day_liquidity_delivery_signals_v1.py", line 109, in _confirmed_five_swings
+    latest_high = Swing(
+        kind="HIGH",
+    ...<4 lines>...
+        confirmed_time_ns=int(bars[current].ts_event_ns),
     )
-TypeError: FiveMinuteBar.__init__() missing 5 required positional arguments: 'efficiency_60m', 'direction_60m', 'session_key', 'day_key', and 'week_key'
+TypeError: Swing.__init__() got an unexpected keyword argument 'level'
 
 ======================================================================
 ERROR: test_full_builder_emits_after_completed_retrace (__main__.DayLiquidityDeliverySignalTests.test_full_builder_emits_after_completed_retrace)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 204, in test_full_builder_emits_after_completed_retrace
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 209, in test_full_builder_emits_after_completed_retrace
     bundle = self._build()
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 175, in _build
-    bars = _bars()
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 40, in _bars
-    _bar(i, open_=100.0, high=100.4, low=99.6, close=100.1)
-    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 21, in _bar
-    return FiveMinuteBar(
-        index=index,
-    ...<11 lines>...
-        trade_ratio=1.0,
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 195, in _build
+    return signals.build_day_liquidity_delivery_signals(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        data=_ten_second_data(extra_rows),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<8 lines>...
+        config=DayLiquidityDeliveryConfig(),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     )
-TypeError: FiveMinuteBar.__init__() missing 5 required positional arguments: 'efficiency_60m', 'direction_60m', 'session_key', 'day_key', and 'week_key'
+    ^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/day_liquidity_delivery_signals_v1.py", line 392, in build_day_liquidity_delivery_signals
+    diagnostics["ACTIVE_HTF_TARGET_BARS"] = sum(
+                                            ~~~^
+        item is not None and item.target is not None for item in draw_contexts
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/day_liquidity_delivery_signals_v1.py", line 393, in <genexpr>
+    item is not None and item.target is not None for item in draw_contexts
+                         ^^^^^^^^^^^
+AttributeError: 'DrawContext' object has no attribute 'target'
 
 ======================================================================
 ERROR: test_future_suffix_does_not_change_existing_signal (__main__.DayLiquidityDeliverySignalTests.test_future_suffix_does_not_change_existing_signal)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 215, in test_future_suffix_does_not_change_existing_signal
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 220, in test_future_suffix_does_not_change_existing_signal
     original = self._build(extra_rows=0)
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 175, in _build
-    bars = _bars()
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 40, in _bars
-    _bar(i, open_=100.0, high=100.4, low=99.6, close=100.1)
-    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 21, in _bar
-    return FiveMinuteBar(
-        index=index,
-    ...<11 lines>...
-        trade_ratio=1.0,
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 195, in _build
+    return signals.build_day_liquidity_delivery_signals(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        data=_ten_second_data(extra_rows),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<8 lines>...
+        config=DayLiquidityDeliveryConfig(),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     )
-TypeError: FiveMinuteBar.__init__() missing 5 required positional arguments: 'efficiency_60m', 'direction_60m', 'session_key', 'day_key', and 'week_key'
+    ^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/day_liquidity_delivery_signals_v1.py", line 392, in build_day_liquidity_delivery_signals
+    diagnostics["ACTIVE_HTF_TARGET_BARS"] = sum(
+                                            ~~~^
+        item is not None and item.target is not None for item in draw_contexts
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/day_liquidity_delivery_signals_v1.py", line 393, in <genexpr>
+    item is not None and item.target is not None for item in draw_contexts
+                         ^^^^^^^^^^^
+AttributeError: 'DrawContext' object has no attribute 'target'
 
 ======================================================================
 ERROR: test_swing_is_not_observable_before_right_span (__main__.DayLiquidityDeliverySignalTests.test_swing_is_not_observable_before_right_span)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 122, in test_swing_is_not_observable_before_right_span
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 127, in test_swing_is_not_observable_before_right_span
     states = signals._confirmed_five_swings(_bars(), span=2)
-                                            ~~~~~^^
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 40, in _bars
-    _bar(i, open_=100.0, high=100.4, low=99.6, close=100.1)
-    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 21, in _bar
-    return FiveMinuteBar(
-        index=index,
-    ...<11 lines>...
-        trade_ratio=1.0,
+  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/day_liquidity_delivery_signals_v1.py", line 109, in _confirmed_five_swings
+    latest_high = Swing(
+        kind="HIGH",
+    ...<4 lines>...
+        confirmed_time_ns=int(bars[current].ts_event_ns),
     )
-TypeError: FiveMinuteBar.__init__() missing 5 required positional arguments: 'efficiency_60m', 'direction_60m', 'session_key', 'day_key', and 'week_key'
-
-======================================================================
-ERROR: test_touched_but_nonconfirming_first_touch_is_terminal (__main__.DayLiquidityDeliverySignalTests.test_touched_but_nonconfirming_first_touch_is_terminal)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 163, in test_touched_but_nonconfirming_first_touch_is_terminal
-    bad = _bar(14, open_=101.7, high=101.9, low=100.8, close=101.1)
-  File "/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-08/test_day_liquidity_delivery_signals_v1.py", line 21, in _bar
-    return FiveMinuteBar(
-        index=index,
-    ...<11 lines>...
-        trade_ratio=1.0,
-    )
-TypeError: FiveMinuteBar.__init__() missing 5 required positional arguments: 'efficiency_60m', 'direction_60m', 'session_key', 'day_key', and 'week_key'
+TypeError: Swing.__init__() got an unexpected keyword argument 'level'
 
 ----------------------------------------------------------------------
-Ran 5 tests in 0.003s
+Ran 5 tests in 0.019s
 
-FAILED (errors=5)
+FAILED (errors=4)
