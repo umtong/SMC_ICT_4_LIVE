@@ -1,0 +1,88 @@
+{
+  "candidate_family": "candidate-02-v93-cross-market-liquidity-shock-resilience",
+  "status": "DISCARDED_AFTER_PRELOCKED_SINGLE_STATE_ABLATION",
+  "performance_engine": "NautilusTrader 1.230.0",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "revealed_first_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2025-08-18T00:00:00Z",
+    "end_utc": "2025-08-25T00:00:00Z",
+    "selection_seed": 2026080693
+  },
+  "evidence": {
+    "workflow_run_id": 31105713404,
+    "artifact_id": 8969465258,
+    "artifact_name": "candidate-02-v93-first-week-497a2f85720f88bff7bdcd6aea0f5cd4824433ea",
+    "artifact_sha256": "7bd5e281f882fd33cebdb4ae0d1ab459c506eb8c92a9069442e89b39bfa1b3ab"
+  },
+  "central_portfolio": {
+    "scheduled_signals": 3,
+    "trades": 3,
+    "trades_per_day": 0.42857142857142855,
+    "wins": 1,
+    "losses": 2,
+    "win_rate": 0.3333333333333333,
+    "profit_factor_after_cost": 0.6530814838685807,
+    "geometric_daily_growth_after_cost": -0.0031412252357650994,
+    "maximum_mark_to_market_drawdown": -0.03630899034073454,
+    "final_nav_usdt": 97821.75551276,
+    "signal_cycles": ["CYCLE_00", "CYCLE_16"],
+    "state_counts": {
+      "LOCAL_REVERSION": 2,
+      "COMMON_BREAKOUT_CONTINUATION": 1
+    }
+  },
+  "prelocked_single_core_ablation": {
+    "removed_core_state": "LOCAL_REVERSION",
+    "implementation": "prelocked COMMON_BREAKOUT_CONTINUATION component run",
+    "equivalence_evidence": {
+      "mutually_exclusive_states": true,
+      "central_continuation_scenario_id": "v93-common_breakout_continuation-1755918900000000000",
+      "ablation_scenario_id": "v93-common_breakout_continuation-1755918900000000000",
+      "same_entry_stop_target_and_execution_path": true
+    },
+    "scheduled_signals": 1,
+    "trades": 1,
+    "trades_per_day": 0.14285714285714285,
+    "wins": 1,
+    "losses": 0,
+    "win_rate": 1.0,
+    "profit_factor_after_cost": "Infinity",
+    "geometric_daily_growth_after_cost": 0.005939409914906824,
+    "maximum_mark_to_market_drawdown": -0.00824319540712981,
+    "final_nav_usdt": 104232.40547826,
+    "net_profit_after_cost_usdt": 4232.40547826,
+    "decision": "POSITIVE_COMPONENT_BUT_NO_PROMOTION_OR_STRUCTURAL_COMPLETION"
+  },
+  "rejected_state": {
+    "name": "LOCAL_REVERSION",
+    "scheduled_signals": 2,
+    "trades": 2,
+    "wins": 0,
+    "losses": 2,
+    "profit_factor_after_cost": 0.0,
+    "geometric_daily_growth_after_cost": -0.00902716861489461,
+    "maximum_mark_to_market_drawdown": -0.06150441066900003,
+    "final_nav_usdt": 93849.5589331
+  },
+  "failure_classification": "LOGIC_ERROR",
+  "dominant_failure_factor": "The local-reversion state remained a negative-expectancy branch even after v92 had already shown that sweep, reclaim, displacement and FVG identify only a local reaction. Its two rapid stop losses erased the single profitable common-breakout continuation trade.",
+  "invalid_generalizations": [
+    "Closing back inside after a sweep is not sufficient evidence of tradable mean reversion even when a nearby intact internal pivot exists.",
+    "Separating a profitable state from a losing portfolio does not establish a complete strategy when the retained state occurs only once in a week.",
+    "One common spot-perpetual accepted breakout cannot justify a second-week promotion."
+  ],
+  "valid_components": [
+    "Common spot-perpetual range acceptance with limited basis expansion correctly separated one profitable breakout from two failed local reversions.",
+    "The continuation target was a pre-existing intact external pivot rather than an arbitrary reward multiple.",
+    "The winning continuation signal was invariant between the central portfolio and the state-removal ablation.",
+    "State-specific runs made the source of portfolio degradation directly diagnosable."
+  ],
+  "promotion": {
+    "second_week_allowed": false,
+    "third_week_allowed": false,
+    "long_horizon_allowed": false
+  },
+  "next_design_implication": "Retain only the common spot-perpetual accepted-breakout mechanism, but increase independent opportunities by applying it to a prospective hierarchy of pre-existing structural liquidity levels rather than to only three eight-hour boundaries per day. Each level must be consumed once, retested from the accepted side, and target the nearest intact external pivot."
+}

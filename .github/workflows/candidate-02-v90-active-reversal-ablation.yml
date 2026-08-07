@@ -1,0 +1,182 @@
+name: candidate-02-v90-active-reversal-branch-ablation
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v90_active_reversal_branch_ablation_lock.json"
+      - ".github/workflows/candidate-02-v90-active-reversal-ablation.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  single-branch-ablation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download immutable corrected v90 feature matrix
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v90-first-week-r2-5e37ea791464e016d469e0bcbcfeedefff0b4819
+          path: inputs/v90-branch-ablation-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31097079388"
+
+      - name: Verify fixed runtime and exact single-state removal
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-02/v90_common_failed_auction_core.py research/candidate-02/v90_nt_backtest.py
+          python -m json.tool research/candidate-02/v90_active_reversal_branch_ablation_lock.json >/dev/null
+          rm -rf inputs/v90-branch-ablation
+          mkdir -p inputs/v90-branch-ablation/candidate-02-v48-first-week
+          mkdir -p inputs/v90-branch-ablation/.cache/candidate-02/v90-branch-ablation/binance_1m
+          feature=$(find inputs/v90-branch-ablation-source -name v48_features.npz -type f | sort | head -n1)
+          columns=$(find inputs/v90-branch-ablation-source -name columns.json -type f | sort | head -n1)
+          test -n "$feature"
+          test -n "$columns"
+          cp "$feature" inputs/v90-branch-ablation/candidate-02-v48-first-week/v48_features.npz
+          cp "$columns" inputs/v90-branch-ablation/candidate-02-v48-first-week/columns.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v90_active_reversal_branch_ablation_lock.json').read_text())
+          assert lock['status']=='LOCKED_SINGLE_ABLATION_ON_REVEALED_V90_FIRST_WEEK'
+          assert lock['single_ablation']['removed_core_state']=='ACTIVE_FLOW_REVERSAL'
+          assert lock['single_ablation']['retained_state']=='PERSISTENT_FLOW_ABSORPTION'
+          assert lock['single_ablation']['single_ablation_only'] is True
+          assert lock['performance_engine']=='NautilusTrader 1.230.0'
+          assert lock['custom_backtest_engine'] is False
+          assert float(lock['risk_fraction'])==0.03
+          PY
+
+      - name: Recollect exact locked futures one-minute bars
+        shell: bash
+        run: |
+          python - <<'PY'
+          from datetime import date,timedelta
+          from pathlib import Path
+          import urllib.request
+          root=Path('inputs/v90-branch-ablation/.cache/candidate-02/v90-branch-ablation/binance_1m')
+          d=date(2022,2,12); end=date(2022,2,21)
+          while d<=end:
+              name=f'BTCUSDT-1m-{d.isoformat()}.zip'
+              with urllib.request.urlopen(f'https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1m/{name}',timeout=60) as response:
+                  (root/name).write_bytes(response.read())
+              d+=timedelta(days=1)
+          assert len(list(root.glob('BTCUSDT-1m-*.zip')))==10
+          PY
+
+      - name: Materialize three controlled persistent-only runtime configs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy,json
+          from pathlib import Path
+          for horizon in (15,30,60):
+              base=json.loads(Path(f'research/candidate-02/v90_portfolio_{horizon}m_config.json').read_text())
+              cfg=copy.deepcopy(base)
+              cfg['candidate']=str(base['candidate']).replace('portfolio', 'ablate-active-reversal-persistent-only')
+              cfg['scenario']['mode']='PERSISTENT_FLOW_ABSORPTION'
+              normalized=copy.deepcopy(cfg)
+              normalized['candidate']=base['candidate']
+              normalized['scenario']['mode']=base['scenario']['mode']
+              if normalized != base:
+                  raise RuntimeError(f'more than ACTIVE_FLOW_REVERSAL state availability changed for {horizon}m')
+              assert float(cfg['risk']['risk_fraction'])==0.03
+              assert cfg['risk']['maximum_notional_cap'] is None
+              assert cfg['risk']['score_risk_multiplier'] is None
+              Path(f'/tmp/v90_persistent_only_{horizon}m.json').write_text(json.dumps(cfg,indent=2,sort_keys=True))
+          PY
+
+      - name: Run central and adjacent ablations in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for horizon in 15 30 60; do
+            output="artifacts/candidate-02-v90-persistent-only-${horizon}m"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v90_nt_backtest.py \
+              --config "/tmp/v90_persistent_only_${horizon}m.json" \
+              --input-root inputs/v90-branch-ablation \
+              --output "$output" \
+              | tee "artifacts-v90-persistent-only-${horizon}m.log"
+            status=${PIPESTATUS[0]}; set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish ablation decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          rows={}
+          print('# Candidate-02 v90 single ACTIVE_FLOW_REVERSAL branch ablation')
+          print('| Horizon | Decision | Signals | Trades/day | Win | PF | Growth/day | MDD |')
+          print('|---|---:|---:|---:|---:|---:|---:|---:|')
+          def passed(m):
+              return (
+                  m.get('trades_per_day',0)>=0.75
+                  and m.get('win_rate',0)>=0.50
+                  and m.get('profit_factor_after_cost',0)>=1.50
+                  and m.get('geometric_daily_growth_after_cost',-1)>=0.01
+                  and abs(m.get('maximum_mark_to_market_drawdown',-1))<=0.25
+                  and m.get('engine','').startswith('NautilusTrader')
+                  and m.get('custom_backtest_engine') is False
+                  and abs(m.get('risk_fraction',0)-0.03)<=1e-12
+              )
+          for horizon in (15,30,60):
+              path=Path(f'artifacts/candidate-02-v90-persistent-only-{horizon}m/metrics.json')
+              if not path.exists():
+                  rows[str(horizon)]={'status':'IMPLEMENTATION_ERROR'}
+                  print(f'| {horizon}m | implementation error | - | - | - | - | - | - |')
+                  continue
+              m=json.loads(path.read_text())
+              rows[str(horizon)]={'passes_all':passed(m),'metrics':m}
+              print(f"| {horizon}m | {'PASS' if passed(m) else 'REJECT'} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          central=rows.get('30',{}).get('passes_all') is True
+          adjacent=any(rows.get(key,{}).get('passes_all') is True for key in ('15','60'))
+          decision={
+              'status':'STRUCTURAL_PATH_PRESENT_REQUIRES_NEW_BLIND_CANDIDATE' if central and adjacent else 'NO_STRUCTURAL_PATH_DISCARD_V90',
+              'single_ablation':'remove_ACTIVE_FLOW_REVERSAL_state',
+              'retained_state':'PERSISTENT_FLOW_ABSORPTION',
+              'diagnostic_only':True,
+              'rows':rows,
+              'risk_fraction':0.03,
+              'performance_engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+          }
+          Path('artifacts-v90-active-reversal-ablation-decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+
+      - name: Preserve NautilusTrader ablation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v90-active-reversal-ablation-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v90-persistent-only-*
+            artifacts-v90-persistent-only-*.log
+            artifacts-v90-active-reversal-ablation-decision.json
+          if-no-files-found: warn
+          retention-days: 30

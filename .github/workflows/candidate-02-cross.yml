@@ -1,0 +1,31 @@
+name: candidate-02-cross-asset-data
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-cross/**"
+      - ".github/workflows/candidate-02-cross.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Collect locked cross-asset screen data
+        run: python .candidate-02-cross/collect_cross_asset.py
+      - name: Upload immutable data and manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-cross-asset-data-${{ github.sha }}
+          path: |
+            .cache/candidate-02/cross-asset
+            artifacts/candidate-02-cross/manifest.json
+          retention-days: 30

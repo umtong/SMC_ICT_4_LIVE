@@ -1,0 +1,143 @@
+name: candidate-02-v65-nautilustrader-control
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v65_*.json"
+      - ".github/workflows/candidate-02-v65-control.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  two-week-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - name: Checkout locked control
+        uses: actions/checkout@v4
+
+      - name: Download immutable historical feature matrix
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e
+          path: inputs/v65-base
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31036754667"
+
+      - name: Download revealed week A raw evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v55-first-week-500bd78d3ac6e6586482fa4dc76196ccd4e40532
+          path: inputs/v65-a-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31066652588"
+
+      - name: Download revealed week B raw evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v58-second-week-e9025707a88c0cc1a0b312e72236468b82f33b6e
+          path: inputs/v65-b-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31067990119"
+
+      - name: Materialize exact two-week inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for label in a b; do
+            mkdir -p "inputs/v65-${label}/features" "inputs/v65-${label}/.cache/candidate-02/v65-${label}/binance_1m"
+            find inputs/v65-base -name v48_features.npz -type f -exec cp '{}' "inputs/v65-${label}/features/v48_features.npz" \;
+            find inputs/v65-base -name columns.json -type f -exec cp '{}' "inputs/v65-${label}/features/columns.json" \;
+            find "inputs/v65-${label}-source" -path '*/binance_1m/*.zip' -type f -exec cp '{}' "inputs/v65-${label}/.cache/candidate-02/v65-${label}/binance_1m/" \;
+            test -f "inputs/v65-${label}/features/v48_features.npz"
+            test -f "inputs/v65-${label}/features/columns.json"
+            test "$(find "inputs/v65-${label}/.cache/candidate-02/v65-${label}/binance_1m" -name '*.zip' | wc -l)" -eq 10
+          done
+
+      - name: Verify runtime and structural lock
+        run: |
+          smc4 doctor
+          python -m py_compile research/candidate-02/v57_nt_core.py research/candidate-02/v57_nt_backtest.py
+          python -m json.tool research/candidate-02/v65_impact_decay_lock.json >/dev/null
+          python -m json.tool research/candidate-02/v65_week_a_config.json >/dev/null
+          python -m json.tool research/candidate-02/v65_week_b_config.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path("research/candidate-02/v65_impact_decay_lock.json").read_text())
+          assert lock["custom_backtest_engine"] is False
+          for path,week in (("research/candidate-02/v65_week_a_config.json","2024-11-18"),("research/candidate-02/v65_week_b_config.json","2024-12-16")):
+              cfg=json.loads(Path(path).read_text())
+              assert cfg["validation"]["first_week_start"] == week
+              assert cfg["scenario"]["target_impulse_multiple"] == 1.0
+              assert cfg["scenario"]["maximum_holding_minutes"] == 90
+              assert float(cfg["risk"]["risk_fraction"]) == 0.03
+              assert cfg["risk"]["maximum_notional_cap"] is None
+              assert cfg["risk"]["score_risk_multiplier"] is None
+          PY
+
+      - name: Run both revealed weeks in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for label in a b; do
+            output="artifacts/candidate-02-v65-week-${label}"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v57_nt_backtest.py \
+              --config "research/candidate-02/v65_week_${label}_config.json" \
+              --input-root "inputs/v65-${label}" \
+              --output "$output" \
+              | tee "artifacts-v65-${label}-console.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish decision matrix
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          print("# Candidate-02 v65 one-impulse control")
+          print("| Week | Decision | Trades/day | Win | PF | Growth/day | MDD |")
+          print("|---|---:|---:|---:|---:|---:|---:|")
+          for label in ("a","b"):
+              p=Path(f"artifacts/candidate-02-v65-week-{label}/metrics.json")
+              if not p.exists():
+                  print(f"| {label} | implementation error | - | - | - | - | - |")
+                  continue
+              m=json.loads(p.read_text())
+              print(f"| {label} | {m['decision']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          PY
+
+      - name: Preserve NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v65-control-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v65-week-a
+            artifacts/candidate-02-v65-week-b
+            artifacts-v65-a-console.log
+            artifacts-v65-b-console.log
+          if-no-files-found: warn
+          retention-days: 30

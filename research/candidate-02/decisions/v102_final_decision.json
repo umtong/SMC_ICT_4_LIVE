@@ -1,0 +1,64 @@
+{
+  "candidate_family": "candidate-02-v102-quarter-hour-impact-retention",
+  "status": "DISCARDED_BEFORE_PERFORMANCE_RUN_DUE_TO_CAUSAL_SIGNAL_CEILING",
+  "performance_engine_required": "NautilusTrader 1.230.0",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "development_weeks": {
+    "2024-09-16": {
+      "baseline_final_scheduled_signal_upper_bounds": {
+        "response_2m": 6,
+        "response_3m_central": 5,
+        "response_4m": 3
+      },
+      "single_ablation_response_3m_signal_upper_bound": 6
+    },
+    "2024-01-29": {
+      "baseline_final_scheduled_signal_upper_bounds": {
+        "response_2m": 4,
+        "response_3m_central": 2,
+        "response_4m": 6
+      },
+      "single_ablation_response_3m_signal_upper_bound": 3
+    }
+  },
+  "weekly_frequency_gate": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_seven_day_trades": 6,
+    "reason_for_integer_gate": "a seven-day candidate must schedule at least six causal signals before execution can possibly produce at least 0.75 completed trades per day"
+  },
+  "implementation_error_assessment": {
+    "state": "NO_PERFORMANCE_RESULT_CLASSIFIED",
+    "notes": [
+      "The source, lock and configuration compile and validate.",
+      "The final signal ceiling was measured with the locked causal generator on the previously revealed direct aggTrade/bookDepth feature matrices.",
+      "GitHub Actions queue saturation blocked a fresh NautilusTrader performance run, but that blockage is not used as the strategy verdict.",
+      "No PnL, win-rate or profit-factor claim is made from the diagnostic path."
+    ]
+  },
+  "single_logic_ablation": {
+    "removed_variable": "minimum_response_flow_alignment",
+    "unchanged_variables": [
+      "quarter-hour event clock",
+      "opening ten-second and completed-minute shock requirements",
+      "front-side depth refill ceiling",
+      "three-minute price-impact retention",
+      "pre-burst invalidation",
+      "frozen prior sixty-minute accepted-close range objective",
+      "cost model",
+      "risk fraction"
+    ],
+    "result": "The negative development week scheduled only three final signals, an absolute upper bound of 0.429 trades per day, so execution cannot meet the day-trading frequency gate."
+  },
+  "dominant_failure_factor": "The conjunction of quarter-hour event timing, full impact retention and liquidity-vacuum confirmation is too rare in the adverse week; removing response-flow sign does not restore sufficient opportunity.",
+  "useful_components": [
+    "impact retention is a better causal discriminator than aggressive flow magnitude alone",
+    "response-flow sign is not the main opportunity bottleneck",
+    "event frequency must be tested before spending time on execution performance",
+    "a fixed quarter-hour clock should be treated as contextual timing, not as the event generator"
+  ],
+  "next_design_requirement": "Use an endogenous information clock based on completed turnover/order-flow accumulation, classify metaorder start, completion and impact decay without a fixed quarter-hour gate, and keep retained-impact continuation and decayed-impact reversion mutually exclusive.",
+  "promotion_to_new_random_week": false,
+  "long_evaluation_allowed": false
+}

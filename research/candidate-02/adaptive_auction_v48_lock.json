@@ -1,0 +1,135 @@
+{
+  "candidate": "adaptive_price_discovery_or_toxic_exhaustion_v48",
+  "locked_before_fresh_first_week_features_and_prices": true,
+  "risk_fraction_of_current_nav": 0.03,
+  "single_global_pending_entry_or_open_position": true,
+  "economic_hypothesis": "A completed 15-minute displacement is only an event detector. Its trading scenario depends on the prior-only liquidity state. Directionally aligned Hawkes arrivals, taker pressure, depth imbalance and open-interest buildup with non-extreme toxicity imply price discovery continuation. Extreme flow toxicity with weak marginal price response, opposing or replenished depth and non-confirming open interest implies order-flow exhaustion and reversal. The boundary between these states is recalibrated from past events only because identical raw values represent different liquidity regimes across weeks.",
+  "data_contract": {
+    "published_feature_source": "ibrahimdaud/binance-btcusdt features/BTCUSDT daily parquet",
+    "original_raw_source": "Binance Vision USD-M public archive",
+    "feature_interval_minutes": 5,
+    "execution_source": "separately downloaded official Binance Vision one-minute klines",
+    "allowed_live_features": [
+      "log_ret_1m",
+      "log_ret_5m",
+      "log_ret_15m",
+      "log_ret_60m",
+      "realized_vol_30m",
+      "rsi_14",
+      "vol_5m",
+      "taker_buy_ratio_5m",
+      "trade_count_5m",
+      "avg_trade_size_5m",
+      "depth_imbalance_1pct",
+      "vpin_50",
+      "vpin_bucket_imbalance",
+      "hawkes_buy_intensity",
+      "hawkes_sell_intensity",
+      "hawkes_net",
+      "oi_btc",
+      "oi_change_1h",
+      "ls_count_ratio",
+      "taker_ls_vol_ratio"
+    ],
+    "strictly_forbidden_live_inputs": [
+      "fwd_ret_5m",
+      "fwd_ret_15m",
+      "fwd_ret_60m",
+      "fwd_direction_5m"
+    ],
+    "missing_depth_policy": "No candidate evaluation before 2023-01-01; a decision with missing depth, VPIN, Hawkes or OI state is NO_TRADE."
+  },
+  "event_detector": {
+    "event": "completed 15-minute displacement",
+    "absolute_log_return_threshold": "prior 60-day rolling 65th percentile of absolute 15-minute returns",
+    "minimum_threshold_floor": 0.0010,
+    "event_direction": "sign of completed log_ret_15m",
+    "minimum_gap_between_events_bars": 3
+  },
+  "state_classifier": {
+    "type": "multinomial logistic regression with L2 regularization",
+    "classes": ["PRICE_DISCOVERY_CONTINUATION", "TOXIC_FLOW_EXHAUSTION", "NO_EDGE"],
+    "training_window_days": 180,
+    "minimum_training_events": 500,
+    "retraining_schedule": "once at 00:00 UTC using observations and labels whose full 60-minute horizon ended before that UTC day",
+    "standardization": "median and interquartile range from the trailing training window only",
+    "regularization_C": 0.25,
+    "class_weight": "balanced",
+    "solver": "lbfgs",
+    "maximum_iterations": 1000,
+    "random_state": 2026080648,
+    "input_transforms": {
+      "directional_price_response": "event_direction times log_ret_15m",
+      "directional_hawkes": "event_direction times hawkes_net",
+      "directional_taker": "event_direction times (2*taker_buy_ratio_5m-1)",
+      "directional_depth": "event_direction times depth_imbalance_1pct",
+      "directional_current_bucket": "event_direction times (2*vpin_bucket_imbalance-1)",
+      "directional_oi": "event_direction times oi_change_1h",
+      "toxicity": "vpin_50",
+      "marginal_impact": "absolute log_ret_15m divided by log1p(vol_5m)",
+      "arrival_intensity": "log1p(hawkes_buy_intensity+hawkes_sell_intensity)",
+      "volatility": "realized_vol_30m",
+      "prior_trend": "event_direction times log_ret_60m",
+      "rsi_distance": "event_direction times (rsi_14-50)/50",
+      "trade_size": "log1p(avg_trade_size_5m)",
+      "trade_count": "log1p(trade_count_5m)",
+      "broad_positioning": "event_direction times log(ls_count_ratio)"
+    },
+    "historical_label": {
+      "horizon_minutes": 60,
+      "continuation": "event_direction * fwd_ret_60m >= 0.0015",
+      "exhaustion": "event_direction * fwd_ret_60m <= -0.0015",
+      "no_edge": "otherwise",
+      "note": "These labels are permitted only for fully historical training rows and are unavailable to test/live decisions."
+    },
+    "entry_probability_threshold": 0.52,
+    "minimum_probability_margin_over_second_class": 0.08,
+    "no_trade_if_no_edge_is_highest": true
+  },
+  "scenario_execution": {
+    "PRICE_DISCOVERY_CONTINUATION": {
+      "side": "event_direction",
+      "entry": "next one-minute open after the completed event bar",
+      "stop": "opposite extreme of the completed 15-minute event window plus 0.10 prior one-minute ATR",
+      "cost_after_target_r": 0.80,
+      "maximum_holding_minutes": 90
+    },
+    "TOXIC_FLOW_EXHAUSTION": {
+      "side": "opposite event_direction",
+      "entry": "next one-minute open after the completed event bar",
+      "stop": "event-direction extreme of the completed 15-minute event window plus 0.10 prior one-minute ATR",
+      "cost_after_target_r": 0.80,
+      "maximum_holding_minutes": 90
+    },
+    "same_bar_stop_target_policy": "STOP_FIRST",
+    "stop_gap_policy": "worse of stop or one-minute open"
+  },
+  "cost_model": {
+    "entry_taker_fee_rate": 0.00050,
+    "entry_slippage_rate": 0.00015,
+    "market_impact_rate": 0.00005,
+    "stop_taker_fee_rate": 0.00050,
+    "stop_slippage_rate": 0.00025,
+    "target_maker_fee_rate": 0.00020,
+    "funding_allowance_rate": 0.00010
+  },
+  "quantity_rule": "current NAV times 0.03 divided by per-unit expected stop loss including price distance, entry and stop costs, market impact and funding allowance",
+  "fresh_week_selection": {
+    "population_start_monday": "2023-07-03",
+    "population_end_monday": "2026-05-18",
+    "exclude_every_previously_used_or_collected_research_week": true,
+    "selection_seed": 2026080648,
+    "algorithm": "random.Random(seed).shuffle(eligible Monday starts); select first",
+    "first_random_btc_week": "2025-03-03",
+    "fallback_prefix": ["2023-10-16", "2024-05-20", "2024-09-23", "2025-06-30", "2025-06-23"]
+  },
+  "sequential_gate": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor": 1.50,
+    "minimum_after_cost_geometric_daily_growth": 0.01,
+    "maximum_drawdown": 0.25,
+    "second_and_third_weeks_must_be_selected_and_locked_only_after_prior_week_passes": true,
+    "long_evaluation_allowed_only_after_all_three_pass": true
+  }
+}

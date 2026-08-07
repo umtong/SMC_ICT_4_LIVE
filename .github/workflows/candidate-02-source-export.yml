@@ -1,0 +1,35 @@
+name: candidate-02-source-export
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-source-export.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Package exact branch source
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar --exclude=.git --exclude=.venv --exclude='*.pyc' -czf /tmp/candidate-02-source.tar.gz .
+          sha256sum /tmp/candidate-02-source.tar.gz > /tmp/candidate-02-source.sha256
+      - name: Upload exact source bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-source-${{ github.sha }}
+          path: |
+            /tmp/candidate-02-source.tar.gz
+            /tmp/candidate-02-source.sha256
+          retention-days: 7
+
+# export-trigger: 2026-08-06-candidate-02-v75-diagnostics

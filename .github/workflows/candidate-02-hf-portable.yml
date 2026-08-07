@@ -1,0 +1,33 @@
+name: candidate-02-btc-feature-matrix
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-adaptive/export_feature_matrix.py"
+      - ".github/workflows/candidate-02-hf-portable.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install locked conversion dependencies
+        run: python -m pip install --disable-pip-version-check "huggingface_hub>=0.30,<2" "pandas>=2.2,<4" "pyarrow>=18,<26" "numpy>=2,<3"
+      - name: Export portable feature matrix
+        env:
+          HF_HUB_DISABLE_XET: "1"
+        run: python .candidate-02-adaptive/export_feature_matrix.py
+      - name: Upload portable matrix and schema
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-btc-feature-matrix-${{ github.sha }}
+          path: artifacts/candidate-02-hf-portable
+          retention-days: 14

@@ -1,0 +1,188 @@
+name: candidate-02-v77-nautilustrader-third-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v77-week3.yml"
+      - "research/candidate-02/v77_week3_lock.json"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  third-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Gate on immutable third-week lock
+        id: gate
+        shell: bash
+        run: |
+          if [[ -f research/candidate-02/v77_week3_lock.json ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "No passed second-week lock; no third-week data will be collected."
+          fi
+
+      - name: Verify runtime and unchanged selected rule
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-02/v75_quarter_hour_core.py research/candidate-02/v76_metaorder_wave_core.py research/candidate-02/v76_nt_backtest.py
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v77_week3_lock.json').read_text())
+          cfg=Path('research/candidate-02/v77_selected_config.json').read_bytes()
+          assert lock['status']=='LOCKED_BEFORE_THIRD_WEEK_COLLECTION'
+          assert lock['custom_backtest_engine'] is False
+          assert float(lock['risk_fraction'])==0.03
+          assert hashlib.sha256(cfg).hexdigest()==lock['selected_config_sha256']
+          PY
+
+      - name: Shift generic direct-data tools to locked third week
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v77-week3-tools
+          cp -a .candidate-02-v75 /tmp/v77-week3-tools
+          python - <<'PY'
+          from datetime import date
+          import json,re
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v77_week3_lock.json').read_text())
+          new_start=date.fromisoformat(lock['third_week']['start_utc'][:10])
+          candidates=[]
+          for path in Path('research/candidate-02').glob('v75_*_config.json'):
+              try:
+                  token=json.loads(path.read_text()).get('validation',{}).get('first_week_start')
+                  if token:candidates.append(date.fromisoformat(token[:10]))
+              except Exception:pass
+          if not candidates:
+              for path in Path('/tmp/v77-week3-tools').rglob('*.py'):
+                  for token in re.findall(r'20\d{2}-\d{2}-\d{2}',path.read_text(errors='ignore')):
+                      d=date.fromisoformat(token)
+                      if d.weekday()==0:candidates.append(d)
+          if not candidates:raise RuntimeError('cannot infer v75 base week')
+          old_start=min(candidates,key=lambda d:abs((d-new_start).days)); delta=new_start-old_start
+          pat=re.compile(r'20\d{2}-\d{2}-\d{2}')
+          for path in Path('/tmp/v77-week3-tools').rglob('*'):
+              if not path.is_file() or path.suffix not in {'.py','.json','.md'}:continue
+              text=path.read_text(encoding='utf-8',errors='ignore')
+              text=pat.sub(lambda m:(date.fromisoformat(m.group(0))+delta).isoformat(),text)
+              text=text.replace('v75-first-week','v77-week3').replace('candidate-02-v75-first-week','candidate-02-v77-week3')
+              path.write_text(text,encoding='utf-8')
+          PY
+
+      - name: Collect direct data and build completed-minute features
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          collect=$(find /tmp/v77-week3-tools -maxdepth 1 -type f -name 'collect*.py' | sort | head -n1)
+          build=$(find /tmp/v77-week3-tools -maxdepth 1 -type f -name 'build*.py' | sort | head -n1)
+          test -n "$collect"; test -n "$build"
+          python "$collect"
+          python "$build"
+          mkdir -p inputs/v77-week3/candidate-02-v75-first-week
+          feature=$(find . /tmp -type f -name '*.npz' -newermt '10 minutes ago' | sort | tail -n1)
+          columns=$(find . /tmp -type f -name 'columns.json' -newermt '10 minutes ago' | sort | tail -n1)
+          test -n "$feature"; test -n "$columns"
+          cp "$feature" inputs/v77-week3/candidate-02-v75-first-week/
+          cp "$columns" inputs/v77-week3/candidate-02-v75-first-week/columns.json
+          python - <<'PY'
+          from datetime import date,timedelta
+          import json,urllib.request
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v77_week3_lock.json').read_text())
+          start=date.fromisoformat(lock['third_week']['start_utc'][:10])-timedelta(days=2)
+          end=date.fromisoformat(lock['third_week']['end_utc'][:10])+timedelta(days=1)
+          root=Path('inputs/v77-week3/.cache/candidate-02/v77-week3/binance_1m'); root.mkdir(parents=True,exist_ok=True)
+          d=start
+          while d<=end:
+              name=f'BTCUSDT-1m-{d.isoformat()}.zip'; path=root/name
+              if not path.exists():
+                  with urllib.request.urlopen(f'https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1m/{name}',timeout=60) as r:path.write_bytes(r.read())
+              d+=timedelta(days=1)
+          PY
+
+      - name: Run unchanged third week through NautilusTrader
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('research/candidate-02/v77_selected_config.json').read_text())
+          lock=json.loads(Path('research/candidate-02/v77_week3_lock.json').read_text())
+          cfg['candidate']=str(cfg['candidate'])+'-locked-week3'
+          cfg['validation']['first_week_start']=lock['third_week']['start_utc'][:10]
+          Path('/tmp/v77_week3_runtime.json').write_text(json.dumps(cfg,indent=2,sort_keys=True))
+          PY
+          set -o pipefail
+          mkdir -p artifacts/candidate-02-v77-week3
+          set +e
+          python research/candidate-02/v76_nt_backtest.py --config /tmp/v77_week3_runtime.json --input-root inputs/v77-week3 --output artifacts/candidate-02-v77-week3 | tee artifacts-v77-week3-console.log
+          status=${PIPESTATUS[0]}; set -e
+          echo "$status" > artifacts/candidate-02-v77-week3/validation_exit_code.txt
+          if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+
+      - name: Commit third-week decision and optional long-evaluation lock
+        if: steps.gate.outputs.enabled == 'true' && always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          root=Path('research/candidate-02'); p=Path('artifacts/candidate-02-v77-week3/metrics.json')
+          lock=json.loads((root/'v77_week3_lock.json').read_text())
+          if not p.exists():
+              decision={'status':'IMPLEMENTATION_ERROR','lock':lock}
+          else:
+              m=json.loads(p.read_text())
+              checks={'trades_per_day':float(m.get('trades_per_day',0))>=0.75,'win_rate':float(m.get('win_rate',0))>=0.50,'profit_factor':float(m.get('profit_factor_after_cost',0))>=1.50,'growth':float(m.get('geometric_daily_growth_after_cost',-1))>=0.01,'drawdown':abs(float(m.get('maximum_mark_to_market_drawdown',-1)))<=0.25,'risk':abs(float(m.get('risk_fraction',0))-0.03)<=1e-12,'engine':str(m.get('engine','')).startswith('NautilusTrader'),'no_custom_engine':m.get('custom_backtest_engine') is False}
+              passed=all(checks.values())
+              decision={'status':'PASSED_LOCKED_THIRD_WEEK' if passed else 'REJECTED_LOCKED_THIRD_WEEK','checks':checks,'metrics':m,'lock':lock}
+              if passed:
+                  cfg=(root/'v77_selected_config.json').read_bytes()
+                  long_lock={'status':'LOCKED_BEFORE_LONG_EVALUATION','candidate_family':lock['candidate_family'],'selected_config_sha256':hashlib.sha256(cfg).hexdigest(),'risk_fraction':0.03,'custom_backtest_engine':False,'performance_engine':'NautilusTrader 1.230.0','evaluation_rule':'Evaluate the unchanged rule over a predeclared multi-regime BTC interval before any four-symbol expansion.'}
+                  (root/'v77_long_lock.json').write_text(json.dumps(long_lock,indent=2,sort_keys=True))
+          (root/'v77_week3_decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-02/v77_week3_decision.json
+          if [[ -f research/candidate-02/v77_long_lock.json ]]; then git add research/candidate-02/v77_long_lock.json; fi
+          git commit -m "research(candidate-02): record locked v77 third week"
+          git push origin HEAD:research/candidate-02
+
+      - name: Preserve third-week evidence
+        if: steps.gate.outputs.enabled == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v77-third-week-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v77-week3
+            artifacts-v77-week3-console.log
+            inputs/v77-week3
+          if-no-files-found: warn
+          retention-days: 30

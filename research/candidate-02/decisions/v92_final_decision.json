@@ -1,0 +1,81 @@
+{
+  "candidate_family": "candidate-02-v92-session-liquidity-sweep-displacement-fvg-retrace",
+  "status": "DISCARDED_AFTER_CONTROLLED_FIX_AND_SINGLE_CORE_ABLATION",
+  "performance_engine": "NautilusTrader 1.230.0",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "revealed_first_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2024-03-11T00:00:00Z",
+    "end_utc": "2024-03-18T00:00:00Z"
+  },
+  "implementation_error": {
+    "classification": "UNINTENDED_PERFORMANCE_CEILING",
+    "field": "maximum_cost_after_rr",
+    "before": 8.0,
+    "after": 1000.0,
+    "same_week_rerun": true,
+    "all_scenario_states_unchanged": true,
+    "workflow_run_id": 31103675170,
+    "artifact_id": 8968618966,
+    "artifact_sha256": "5248cea2622f1349539b352898dd97c6d48ed5bd11bd9e4fc7dc84b834ef106e"
+  },
+  "corrected_base_result": {
+    "scheduled_signals": 1,
+    "trades": 1,
+    "trades_per_day": 0.14285714285714285,
+    "wins": 0,
+    "losses": 1,
+    "win_rate": 0.0,
+    "profit_factor_after_cost": 0.0,
+    "geometric_daily_growth_after_cost": -0.004419084075612645,
+    "maximum_mark_to_market_drawdown": -0.03176760187935909,
+    "final_nav_usdt": 96947.14598605
+  },
+  "single_core_ablation": {
+    "removed_variable": "sweep_aggressive_flow_direction_alignment_gate",
+    "workflow_run_id": 31104528825,
+    "artifact_id": 8968955884,
+    "artifact_sha256": "f4d7bfd833deea5fcf9e7f0fc9d577b1b1b5d1f52b8e25713292d7becc0a3a7c",
+    "source_delta_verified": true,
+    "scheduled_signals": 5,
+    "trades": 5,
+    "trades_per_day": 0.7142857142857143,
+    "wins": 0,
+    "losses": 5,
+    "win_rate": 0.0,
+    "profit_factor_after_cost": 0.0,
+    "geometric_daily_growth_after_cost": -0.018015601096391665,
+    "maximum_mark_to_market_drawdown": -0.1298112108776971,
+    "final_nav_usdt": 88050.327677,
+    "signal_cycles": ["CYCLE_00", "CYCLE_08", "CYCLE_16"],
+    "decision": "NO_STRUCTURAL_PATH_DISCARD_V92"
+  },
+  "trade_path_diagnostics": {
+    "trades_with_more_than_1p5R_favorable_excursion_before_exit": 3,
+    "maximum_favorable_excursion_R_before_exit": [1.563615, 1.867556, 1.805988, 0.266710, 0.812375],
+    "opposite_range_boundary_targets_reached_within_240_minutes": 0,
+    "stop_exits": 4,
+    "maximum_holding_time_exits": 1
+  },
+  "failure_classification": "LOGIC_ERROR",
+  "dominant_failure_factor": "The ordered sweep, reclaim, opposite displacement, structure break, FVG and retrace sequence often identified a short local rotation, but it did not establish continued delivery to the opposite eight-hour external liquidity boundary. Removing sweep-flow alignment increased occurrence across all cycles without producing a single profitable trade.",
+  "invalid_generalizations": [
+    "A failed external sweep plus CHoCH/BOS and FVG does not by itself imply full dealing-range traversal.",
+    "Aggressive flow aligned with the sweep is neither a sufficient continuation discriminator nor the main cause of the failure.",
+    "A very large geometric target-derived reward-risk ratio is not evidence that the target is probable."
+  ],
+  "valid_components": [
+    "Frozen external-liquidity boundaries prevented hindsight movement of the dealing range.",
+    "The ordered state machine separated sweep detection from trade authorization.",
+    "Three of five ablation trades produced more than 1.5R favorable excursion before eventual failure, indicating useful local reaction timing.",
+    "Cycle component diagnostics showed the failure was not monopolized by one UTC session.",
+    "Current-NAV 3% risk sizing stayed within the planned loss budget under NautilusTrader execution."
+  ],
+  "promotion": {
+    "second_week_allowed": false,
+    "third_week_allowed": false,
+    "long_horizon_allowed": false
+  },
+  "next_design_implication": "A successor may retain external sweep, reclaim and displacement as a local reaction detector, but must separately prove post-retrace acceptance and continuation before targeting distant external liquidity. Local reaction and range traversal are distinct states."
+}

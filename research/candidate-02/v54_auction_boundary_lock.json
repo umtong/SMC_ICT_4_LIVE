@@ -1,0 +1,51 @@
+{
+  "candidate": "candidate-02-full-auction-rotation-v54-auction-boundary-invalidation",
+  "status": "LOCKED_SINGLE_VARIABLE_CONTROL_AFTER_V53_SECOND_WEEK_FAILURE",
+  "engine": "NautilusTrader 1.230.0 only",
+  "risk_fraction": 0.03,
+  "diagnosis": {
+    "v53_first_week": {
+      "workflow_run_id": 31065401010,
+      "trades": 8,
+      "win_rate": 0.5,
+      "profit_factor_after_cost": 1.581009806701423,
+      "geometric_daily_growth_after_cost": 0.010464463745853969
+    },
+    "v53_second_week": {
+      "workflow_run_id": 31065619489,
+      "trades": 7,
+      "win_rate": 0.14285714285714285,
+      "profit_factor_after_cost": 0.2062638261660474,
+      "geometric_daily_growth_after_cost": -0.021021618172708978
+    },
+    "classification": "logical invalidation geometry mismatch, not engine, data, frequency or risk-budget failure",
+    "evidence": "Several second-week rotations reached meaningful favorable excursion and some reached the predeclared opposite-side liquidity after the local 20-minute stop. A full 60-minute auction should invalidate beyond its auction/excursion boundary, not an unrelated shorter micro range."
+  },
+  "single_controlled_change": {
+    "field": "scenario.stop_lookback_minutes",
+    "before": 20,
+    "after": 60,
+    "causal_reason": "match invalidation horizon to the 60-minute source auction"
+  },
+  "unchanged": {
+    "auction_bars_5m": 12,
+    "prior_quantile_days": 30,
+    "efficiency_quantile": 0.45,
+    "vpin_quantile": 0.55,
+    "oi_abs_quantile": 0.70,
+    "z_min": 1.25,
+    "excursion_flow_min": 0.0,
+    "confirmation_return_min": 0.0,
+    "confirmation_depth_min": 0.0,
+    "target_extension": 1.0,
+    "atr_lookback_minutes": 60,
+    "stop_buffer_atr": 0.15,
+    "minimum_cost_after_rr": 1.0,
+    "maximum_cost_after_rr": 3.0,
+    "maximum_holding_minutes": 120,
+    "cost_model": "unchanged",
+    "pass_criteria": "unchanged",
+    "risk_fraction": 0.03
+  },
+  "decision_rule": "Run both already revealed weeks through the same NautilusTrader path. If either lacks natural frequency, win rate, PF or cost-after growth, discard v54 without further stop tuning."
+}

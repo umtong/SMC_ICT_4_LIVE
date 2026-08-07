@@ -1,0 +1,244 @@
+name: candidate-02-nautilustrader-distributed-long-evaluation
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-long-evaluate.yml"
+      - "research/candidate-02/long_evaluation_lock.json"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      enabled: ${{ steps.matrix.outputs.enabled }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: matrix
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          path=Path('research/candidate-02/long_evaluation_lock.json')
+          if not path.exists():
+              print('enabled=false'); print('matrix=[]')
+          else:
+              lock=json.loads(path.read_text())
+              rows=[{'index':f'{i:02d}','start':w['start_utc'][:10],'end':w['end_utc'][:10]} for i,w in enumerate(lock['weeks'])]
+              print('enabled=true'); print('matrix='+json.dumps(rows,separators=(',',':')))
+          PY
+
+  build-data:
+    needs: prepare
+    if: needs.prepare.outputs.enabled == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify locked week
+        shell: bash
+        run: |
+          smc4 doctor
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/long_evaluation_lock.json').read_text())
+          row=lock['weeks'][int('${{ matrix.index }}')]
+          assert row['start_utc'][:10]=='${{ matrix.start }}'
+          assert row['end_utc'][:10]=='${{ matrix.end }}'
+          assert row['raw_data_status_at_lock']=='NOT_COLLECTED'
+          assert lock['custom_backtest_engine'] is False and float(lock['risk_fraction'])==0.03
+          PY
+      - name: Shift generic direct-data tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/long-tools; cp -a .candidate-02-v75 /tmp/long-tools
+          python - <<'PY'
+          from datetime import date
+          import json,re
+          from pathlib import Path
+          new=date.fromisoformat('${{ matrix.start }}'); old=[]
+          for p in Path('research/candidate-02').glob('v75_*_config.json'):
+              try:
+                  t=json.loads(p.read_text()).get('validation',{}).get('first_week_start')
+                  if t:old.append(date.fromisoformat(t[:10]))
+              except Exception:pass
+          if not old:
+              for p in Path('/tmp/long-tools').rglob('*.py'):
+                  for token in re.findall(r'20\d{2}-\d{2}-\d{2}',p.read_text(errors='ignore')):
+                      d=date.fromisoformat(token)
+                      if d.weekday()==0:old.append(d)
+          if not old:raise RuntimeError('cannot infer v75 base week')
+          base=min(old,key=lambda d:abs((d-new).days)); delta=new-base; pat=re.compile(r'20\d{2}-\d{2}-\d{2}')
+          for p in Path('/tmp/long-tools').rglob('*'):
+              if p.is_file() and p.suffix in {'.py','.json','.md'}:
+                  s=p.read_text(encoding='utf-8',errors='ignore'); s=pat.sub(lambda m:(date.fromisoformat(m.group(0))+delta).isoformat(),s); s=s.replace('v75-first-week','long-${{ matrix.index }}').replace('candidate-02-v75-first-week','candidate-02-long-${{ matrix.index }}'); p.write_text(s,encoding='utf-8')
+          PY
+      - name: Collect direct data and build completed-minute feature matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          collect=$(find /tmp/long-tools -maxdepth 1 -type f -name 'collect*.py' | sort | head -n1); build=$(find /tmp/long-tools -maxdepth 1 -type f -name 'build*.py' | sort | head -n1); test -n "$collect"; test -n "$build"; python "$collect"; python "$build"
+          root="long-data/${{ matrix.index }}"; mkdir -p "$root/candidate-02-v48-first-week"
+          feature=$(find . /tmp -type f -name '*.npz' -newermt '20 minutes ago' | sort | tail -n1); columns=$(find . /tmp -type f -name 'columns.json' -newermt '20 minutes ago' | sort | tail -n1); test -n "$feature"; test -n "$columns"; cp "$feature" "$root/candidate-02-v48-first-week/v48_features.npz"; cp "$columns" "$root/candidate-02-v48-first-week/columns.json"
+          python - <<'PY'
+          from datetime import date,timedelta
+          import urllib.request
+          from pathlib import Path
+          start=date.fromisoformat('${{ matrix.start }}')-timedelta(days=2); end=date.fromisoformat('${{ matrix.end }}')+timedelta(days=1); root=Path('long-data/${{ matrix.index }}/.cache/candidate-02/long-${{ matrix.index }}/binance_1m'); root.mkdir(parents=True,exist_ok=True); d=start
+          while d<=end:
+              n=f'BTCUSDT-1m-{d.isoformat()}.zip'; p=root/n
+              if not p.exists():
+                  with urllib.request.urlopen(f'https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1m/{n}',timeout=60) as r:p.write_bytes(r.read())
+              d+=timedelta(days=1)
+          assert len(list(root.glob('*.zip')))>=10
+          PY
+          cat > "$root/window.json" <<JSON
+          {"index":"${{ matrix.index }}","start":"${{ matrix.start }}","end":"${{ matrix.end }}"}
+          JSON
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-long-data-${{ matrix.index }}-${{ github.sha }}
+          path: long-data/${{ matrix.index }}
+          retention-days: 7
+
+  evaluate:
+    needs: [prepare, build-data]
+    if: needs.prepare.outputs.enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 1}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-02-long-data-*-${{ github.sha }}
+          path: inputs/long
+          merge-multiple: false
+      - name: Verify selected source and run all weeks sequentially in NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/long_evaluation_lock.json').read_text()); cfg=Path(lock['selected_config_path']).read_bytes(); assert hashlib.sha256(cfg).hexdigest()==lock['selected_config_sha256']; assert lock['custom_backtest_engine'] is False and float(lock['risk_fraction'])==0.03
+          PY
+          mkdir -p artifacts/candidate-02-long/weeks
+          echo "100000" > /tmp/current_nav.txt
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/long_evaluation_lock.json').read_text())
+          for i,w in enumerate(lock['weeks']):
+              print(f'{i:02d}|{w["start_utc"][:10]}')
+          PY
+          while IFS='|' read -r idx start; do
+            artifact=$(find inputs/long -maxdepth 1 -type d -name "candidate-02-long-data-${idx}-*" | head -n1)
+            test -n "$artifact"
+            input_root="$artifact/$idx"
+            test -d "$input_root"
+            current_nav=$(cat /tmp/current_nav.txt)
+            python - "$start" "$current_nav" <<'PY'
+          import json,sys
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/long_evaluation_lock.json').read_text()); cfg=json.loads(Path(lock['selected_config_path']).read_text()); cfg['candidate']=str(cfg['candidate'])+'-long-'+sys.argv[1]; cfg['validation']['first_week_start']=sys.argv[1]; cfg['risk']['starting_nav_usdt']=sys.argv[2]; Path('/tmp/runtime-long.json').write_text(json.dumps(cfg,indent=2,sort_keys=True))
+          PY
+            output="artifacts/candidate-02-long/weeks/$idx"; mkdir -p "$output"; set +e
+            python "$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('research/candidate-02/long_evaluation_lock.json').read_text())['runner'])
+          PY
+          )" --config /tmp/runtime-long.json --input-root "$input_root" --output "$output" | tee "artifacts/candidate-02-long/week-${idx}.log"
+            status=${PIPESTATUS[0]}; set -e; echo "$status" > "$output/validation_exit_code.txt"; if [[ "$status" != 0 && "$status" != 2 ]]; then exit "$status"; fi
+            python - "$output/metrics.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          p=Path(sys.argv[1]);
+          if not p.exists():raise RuntimeError(f'metrics missing: {p}')
+          m=json.loads(p.read_text()); Path('/tmp/current_nav.txt').write_text(str(m['final_nav_usdt']))
+          PY
+          done < <(python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/long_evaluation_lock.json').read_text())
+          for i,w in enumerate(lock['weeks']):print(f'{i:02d}|{w["start_utc"][:10]}')
+          PY
+          )
+      - name: Aggregate NautilusTrader reports without simulating fills
+        shell: bash
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json,math
+          from datetime import datetime,timezone
+          from pathlib import Path
+          root=Path('artifacts/candidate-02-long'); lock=json.loads(Path('research/candidate-02/long_evaluation_lock.json').read_text()); metrics=[]; trades=[]; nav=[100000.0]
+          for p in sorted((root/'weeks').glob('*/metrics.json')):
+              m=json.loads(p.read_text()); metrics.append(m)
+              trade_path=p.parent/'trades.jsonl'
+              if trade_path.exists():
+                  for line in trade_path.read_text().splitlines():
+                      if line.strip():trades.append(json.loads(line))
+              nav_path=p.parent/'nav.jsonl'
+              if nav_path.exists():
+                  for line in nav_path.read_text().splitlines():
+                      if line.strip():
+                          value=float(json.loads(line).get('nav',0));
+                          if value>0:nav.append(value)
+              final=float(m['final_nav_usdt'])
+              if not math.isclose(nav[-1],final,rel_tol=1e-9,abs_tol=0.01):nav.append(final)
+          if len(metrics)!=len(lock['weeks']):raise RuntimeError(f'incomplete long metrics {len(metrics)}/{len(lock["weeks"])}')
+          pnl=[float(t.get('net_pnl_after_cost',0)) for t in trades]; wins=[x for x in pnl if x>0]; losses=[x for x in pnl if x<0]; final_nav=float(metrics[-1]['final_nav_usdt']); days=float(lock['evaluation_days']); growth=(final_nav/100000.0)**(1.0/days)-1.0; pf=sum(wins)/abs(sum(losses)) if losses else (math.inf if wins else 0.0)
+          peak=nav[0]; mdd=0.0
+          for value in nav:
+              peak=max(peak,value); mdd=min(mdd,value/peak-1.0)
+          positive=sum(1 for m in metrics if float(m['final_nav_usdt'])>float(m['starting_nav_usdt']))/len(metrics); largest=max(wins,default=0.0)/sum(wins) if wins else 0.0; criteria=lock['pass_criteria']; checks={'trades_per_day':len(trades)/days>=criteria['minimum_trades_per_day'],'win_rate':len(wins)/len(trades)>=criteria['minimum_win_rate'] if trades else False,'profit_factor':pf>=criteria['minimum_profit_factor_after_cost'],'growth':growth>=criteria['minimum_geometric_daily_growth_after_cost'],'drawdown':abs(mdd)<=criteria['maximum_mark_to_market_drawdown'],'positive_week_fraction':positive>=criteria['minimum_positive_week_fraction'],'single_win_share':largest<=criteria['maximum_single_win_profit_share'],'risk':all(abs(float(m.get('risk_fraction',0))-0.03)<=1e-12 for m in metrics),'engine':all(str(m.get('engine','')).startswith('NautilusTrader') and m.get('custom_backtest_engine') is False for m in metrics)}
+          out={'status':'PASSED_DISTRIBUTED_LONG_EVALUATION' if all(checks.values()) else 'REJECTED_DISTRIBUTED_LONG_EVALUATION','recorded_utc':datetime.now(timezone.utc).isoformat(),'candidate_family':lock['candidate_family'],'weeks':len(metrics),'evaluation_days':days,'trades':len(trades),'trades_per_day':len(trades)/days,'wins':len(wins),'losses':len(losses),'win_rate':len(wins)/len(trades) if trades else 0.0,'profit_factor_after_cost':pf,'starting_nav_usdt':100000.0,'final_nav_usdt':final_nav,'nav_factor':final_nav/100000.0,'geometric_daily_growth_after_cost':growth,'maximum_mark_to_market_drawdown':mdd,'positive_week_fraction':positive,'maximum_single_win_profit_share':largest,'checks':checks,'performance_engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':0.03,'weekly_metrics':metrics}
+          (root/'long_evaluation_decision.json').write_text(json.dumps(out,indent=2,sort_keys=True))
+          Path('research/candidate-02/long_evaluation_decision.json').write_text(json.dumps(out,indent=2,sort_keys=True))
+          if all(checks.values()):
+              four={'status':'LOCKED_BEFORE_FOUR_SYMBOL_GLOBAL_SINGLE_POSITION_EVALUATION','candidate_family':lock['candidate_family'],'selected_config_sha256':lock['selected_config_sha256'],'symbols':['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'],'risk_fraction':0.03,'global_pending_entry_plus_position_limit':1,'custom_backtest_engine':False,'performance_engine':'NautilusTrader 1.230.0'}; Path('research/candidate-02/four_symbol_lock.json').write_text(json.dumps(four,indent=2,sort_keys=True))
+          PY
+      - name: Commit exact long decision
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"; git add research/candidate-02/long_evaluation_decision.json; if [[ -f research/candidate-02/four_symbol_lock.json ]]; then git add research/candidate-02/four_symbol_lock.json; fi; git commit -m "research(candidate-02): record distributed long evaluation"; git pull --rebase origin research/candidate-02; git push origin HEAD:research/candidate-02
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-02-long-evaluation-${{ github.sha }}
+          path: artifacts/candidate-02-long
+          if-no-files-found: warn
+          retention-days: 30

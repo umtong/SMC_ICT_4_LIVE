@@ -1,0 +1,62 @@
+{
+  "candidate_family": "candidate-02-v94-multilevel-common-spot-perpetual-accepted-breakout",
+  "status": "LOCKED_SINGLE_CORE_VARIABLE_ABLATION_BEFORE_EXECUTION",
+  "revealed_first_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2025-11-03T00:00:00Z",
+    "end_utc": "2025-11-10T00:00:00Z"
+  },
+  "base_evidence": {
+    "workflow_run_id": 31108758860,
+    "artifact_id": 8970792202,
+    "artifact_name": "candidate-02-v94-first-week-4f1067d773cfe5834c79c80398d666f5c1adda5a",
+    "artifact_sha256": "89b7c8c8069dbf9255743a76e6aae3611e330e906e905bb0928172e4d528d7e8",
+    "central_result": {
+      "scheduled_signals": 3,
+      "trades": 3,
+      "trades_per_day": 0.42857142857142855,
+      "wins": 0,
+      "losses": 3,
+      "win_rate": 0.0,
+      "profit_factor_after_cost": 0.0,
+      "geometric_daily_growth_after_cost": -0.013507822128506874,
+      "maximum_mark_to_market_drawdown": -0.12536434751090852,
+      "final_nav_usdt": 90919.18244568
+    },
+    "source_components": {
+      "FOUR_HOUR": {"trades": 2, "wins": 0},
+      "EIGHT_HOUR": {"trades": 1, "wins": 0},
+      "PREVIOUS_DAY": {"trades": 0, "wins": 0}
+    }
+  },
+  "failure_classification": "LOGIC_ERROR",
+  "removed_core_variable": {
+    "name": "minimum_cost_after_reward_risk_filter_for_pivot_target_selection",
+    "exact_predicate_removed": "minimum_rr <= rr",
+    "reason": "The selector can skip the nearest intact pre-event pivot and choose a materially farther pivot solely to meet the 1.10 after-cost RR floor. The first losing trade traveled more than +5R favorably but reversed before its selected 8.29 after-cost-R target; a nearer intact pivot existed. This ablation tests whether target skipping, rather than breakout direction, is the dominant failure."
+  },
+  "unchanged": [
+    "first week and immutable source data",
+    "4-hour, 8-hour and previous-day level registry",
+    "first breach consumes each level once",
+    "level clustering",
+    "turnover qualification",
+    "three completed-minute outside acceptance",
+    "minimum outside close count",
+    "basis-adjusted spot boundary crossing",
+    "minimum spot acceptance ratio",
+    "maximum basis expansion share",
+    "directional displacement",
+    "three-candle FVG",
+    "later retest and midpoint rejection",
+    "old level held from the accepted side",
+    "retest aggressive-flow condition",
+    "nearest intact pre-event five-minute pivot ordering",
+    "stop invalidation inside the old boundary",
+    "maximum holding time",
+    "all transaction costs",
+    "current NAV risk fraction 3%",
+    "NautilusTrader 1.230.0"
+  ],
+  "decision_rule": "A structural path exists only if using the nearest intact pivot without the minimum-RR skip produces repeated independent positive after-cost expectancy across at least two level sources and materially approaches the original weekly gates. Otherwise discard v94 after this one ablation."
+}

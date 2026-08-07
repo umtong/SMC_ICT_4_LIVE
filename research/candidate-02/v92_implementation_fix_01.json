@@ -1,0 +1,57 @@
+{
+  "candidate_family": "candidate-02-v92-session-liquidity-sweep-displacement-fvg-retrace",
+  "classification": "IMPLEMENTATION_CONFIGURATION_ERROR",
+  "revealed_week": {
+    "start_utc": "2024-03-11T00:00:00Z",
+    "end_utc": "2024-03-18T00:00:00Z"
+  },
+  "original_workflow_run_id": 31102811609,
+  "original_artifact_id": 8968257511,
+  "original_artifact_sha256": "ef1b43b573da0d792070a9444124e6692ea5851e5c4099d033972232c885a88d",
+  "controlled_diagnosis": {
+    "cycles": 21,
+    "exact_one_boundary_sweep_minutes": 1611,
+    "sweep_extension_passes": 303,
+    "directional_flow_passes": 52,
+    "turnover_passes": 27,
+    "prompt_reclaims": 12,
+    "opposite_directional_displacements": 8,
+    "internal_structure_breaks": 2,
+    "fair_value_gaps": 1,
+    "completed_retrace_rejections": 1,
+    "valid_entry_stop_target_geometry": 1,
+    "scheduled_signals": 0
+  },
+  "isolated_root_cause": "The only fully completed scenario was rejected solely because its natural opposite-boundary target produced cost-after reward/risk above the inherited maximum_cost_after_rr=8.0. The locked v92 design specifies only a minimum cost-after reward/risk and the project explicitly does not cap sustainable performance.",
+  "example_event": {
+    "cycle": "CYCLE_08",
+    "sweep_close_utc": "2024-03-11T08:37:00Z",
+    "sweep_side": "BUY_SIDE_LIQUIDITY",
+    "reclaim_close_utc": "2024-03-11T08:38:00Z",
+    "displacement_close_utc": "2024-03-11T08:43:00Z",
+    "first_valid_retrace_close_utc": "2024-03-11T08:48:00Z",
+    "gross_geometric_reward_risk_before_costs": 14.870744552683501
+  },
+  "single_controlled_fix": {
+    "field": "scenario.maximum_cost_after_rr",
+    "before": 8.0,
+    "after": 1000.0,
+    "interpretation": "effectively remove the non-scenario performance ceiling while preserving finite-value validation"
+  },
+  "unchanged": [
+    "first week",
+    "all event thresholds",
+    "cycle anchors",
+    "sweep and reclaim definitions",
+    "CHoCH/BOS displacement",
+    "FVG requirement",
+    "retrace rules",
+    "entry direction",
+    "stop",
+    "target",
+    "cost assumptions",
+    "risk fraction 3%",
+    "NautilusTrader execution"
+  ],
+  "required_next_action": "Rerun the identical revealed week after changing only the maximum reward-risk ceiling in every locked configuration."
+}

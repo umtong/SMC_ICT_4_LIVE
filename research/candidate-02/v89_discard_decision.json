@@ -1,0 +1,125 @@
+{
+  "status": "DISCARDED_AFTER_FIRST_WEEK_AND_SINGLE_ABLATION",
+  "candidate_family": "candidate-02-v89-cross-market-impact-permanence",
+  "performance_engine": "NautilusTrader 1.230.0",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "first_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2023-04-10T00:00:00Z",
+    "selection_seed": 2026080689,
+    "prospectively_locked_before_collection": true,
+    "portfolio_15m": {
+      "trades": 9,
+      "trades_per_day": 1.2857142857142858,
+      "win_rate": 0.1111111111111111,
+      "profit_factor_after_cost": 0.08581411487808184,
+      "geometric_daily_growth_after_cost": -0.03237161827852286,
+      "maximum_mark_to_market_drawdown": -0.20574457869809992
+    },
+    "portfolio_30m": {
+      "trades": 20,
+      "trades_per_day": 2.857142857142857,
+      "win_rate": 0.05,
+      "profit_factor_after_cost": 0.0799888532537318,
+      "geometric_daily_growth_after_cost": -0.07559581860126308,
+      "maximum_mark_to_market_drawdown": -0.4232236932485
+    },
+    "portfolio_60m": {
+      "trades": 23,
+      "trades_per_day": 3.2857142857142856,
+      "win_rate": 0.08695652173913043,
+      "profit_factor_after_cost": 0.1558509148353579,
+      "geometric_daily_growth_after_cost": -0.07567104325043106,
+      "maximum_mark_to_market_drawdown": -0.42351070748040004
+    },
+    "component_attribution": {
+      "permanent_discovery_30m": {
+        "trades": 20,
+        "win_rate": 0.05,
+        "profit_factor_after_cost": 0.0799888532537318,
+        "geometric_daily_growth_after_cost": -0.07559581860126308
+      },
+      "transient_overshoot_30m": {
+        "trades": 0,
+        "interpretation": "The prospectively locked transient conditions were too restrictive or absent in the week; they did not contribute to profit or loss."
+      }
+    },
+    "decision": "FIRST_WEEK_REJECT_OR_REDESIGN"
+  },
+  "single_ablation": {
+    "removed_core_variable": "minimum_common_impact_retention",
+    "all_other_variables_unchanged": true,
+    "diagnostic_week": "2023-04-10",
+    "results": {
+      "15m": {
+        "trades": 9,
+        "trades_per_day": 1.2857142857142858,
+        "win_rate": 0.1111111111111111,
+        "profit_factor_after_cost": 0.08581411487808184,
+        "geometric_daily_growth_after_cost": -0.03237161827852286,
+        "maximum_mark_to_market_drawdown": -0.20574457869809992
+      },
+      "30m": {
+        "trades": 23,
+        "trades_per_day": 3.2857142857142856,
+        "win_rate": 0.043478260869565216,
+        "profit_factor_after_cost": 0.0717192230499226,
+        "geometric_daily_growth_after_cost": -0.08825786874009323,
+        "maximum_mark_to_market_drawdown": -0.4762739610983001
+      },
+      "60m": {
+        "trades": 26,
+        "trades_per_day": 3.7142857142857144,
+        "win_rate": 0.07692307692307693,
+        "profit_factor_after_cost": 0.1357980102784055,
+        "geometric_daily_growth_after_cost": -0.08832413928433813,
+        "maximum_mark_to_market_drawdown": -0.47654037447100006
+      }
+    },
+    "decision": "NO_STRUCTURAL_PATH_DISCARD_V89"
+  },
+  "failure_analysis": {
+    "primary_failure": "Common spot-perpetual participation and two-minute retained impact did not identify durable price discovery. At this horizon the same state frequently represented a synchronized terminal burst, inventory transfer or locally exhausted common shock.",
+    "largest_performance_driver": "The PERMANENT_DISCOVERY directional assignment. All material losses came from this branch; the transient branch produced no trades.",
+    "frequency": "Frequency was not the limiting problem. Removing the impact-retention gate raised central frequency from 2.86 to 3.29 trades per day but reduced win rate and increased drawdown.",
+    "impact_retention": "The retention threshold had useful selectivity but no independent positive expectancy. Its removal worsened performance, so it should remain a quality descriptor rather than be treated as causal proof of continuation.",
+    "why_no_more_parameter_search": "The central and both adjacent accepted-range horizons were deeply negative before and after the single ablation. Threshold tuning would fit a state whose directional interpretation has been directly falsified."
+  },
+  "valid_components": [
+    {
+      "component": "quarter-hour first-ten-second event clock",
+      "why_useful": "It produced enough causally observable opportunities for day trading and can anchor later state machines without assuming direction."
+    },
+    {
+      "component": "cross-market spot participation and basis-share decomposition",
+      "why_useful": "It separates common shocks from derivative-specific dislocations and improved causal diagnosis, even though common shocks were not continuation signals."
+    },
+    {
+      "component": "explicit ambiguous no-trade state",
+      "why_useful": "It prevents overlapping continuation and reversal interpretations from being traded simultaneously."
+    },
+    {
+      "component": "impact-retention measurement",
+      "why_useful": "It filters some low-quality events, but must be combined with external-liquidity location and failed-auction evidence before assigning direction."
+    }
+  ],
+  "next_hypothesis_requirements": [
+    "Do not trade common spot-perpetual participation as continuation by itself.",
+    "Require the shock to reach a frozen external auction boundary before a scenario exists.",
+    "Use failure to extend and completed reclaim of the frozen boundary to identify absorption or terminal execution.",
+    "Separate persistent-flow absorption from active flow reversal, but allow both to express the same failed-auction direction only after reclaim.",
+    "Use the opposite side of the frozen accepted range as the natural liquidity objective and the observed sweep extreme as invalidation.",
+    "Preserve NautilusTrader-only execution, 3% current-NAV risk and first-week-to-second-week sequential gates."
+  ],
+  "evidence": {
+    "first_week_run_id": 31095061352,
+    "first_week_artifact_id": 8965110520,
+    "ablation_run_id": 31095704270,
+    "ablation_artifact_id": 8965360475,
+    "first_week_lock": "research/candidate-02/v89_cross_market_impact_lock.json",
+    "ablation_lock": "research/candidate-02/v89_impact_retention_ablation_lock.json"
+  },
+  "second_week_or_long_evaluation_permitted": false
+}
