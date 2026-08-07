@@ -1,12 +1,13 @@
-name: candidate-03-candidate14-frozen-holdout
+name: candidate-03-candidate15-far-execution-development
 
 on:
   push:
     branches: ["research/candidate-03"]
     paths:
       - ".github/workflows/candidate-03-v30-staged-container.yml"
-      - "research/candidate-03/candidate14_frozen_holdout_protocol.json"
       - "research/candidate-03/patch_candidate14_event_ids.py"
+      - "research/candidate-03/patch_candidate15_far_execution.py"
+      - "research/candidate-03/compare_candidate15_far_execution.py"
   workflow_dispatch:
 
 permissions:
@@ -15,12 +16,13 @@ permissions:
 
 env:
   FROZEN_SOURCE_COMMIT: dfb180490b141fdafd5b5ac0b52d3dd0b842550d
-  PROTOCOL_REL: research/candidate-03/candidate14_frozen_holdout_protocol.json
+  BASE_PROTOCOL_REL: research/candidate-03/candidate14_frozen_holdout_protocol.json
   EVENT_PATCH_REL: research/candidate-03/patch_candidate14_event_ids.py
-  RESULT_REL: research/candidate-03/results/candidate14-frozen-holdout
+  FAR_PATCH_REL: research/candidate-03/patch_candidate15_far_execution.py
+  RESULT_REL: research/candidate-03/results/candidate15-far-execution-development
 
 concurrency:
-  group: candidate-03-candidate14-frozen-holdout
+  group: candidate-03-candidate15-far-execution-development
   cancel-in-progress: true
 
 jobs:
@@ -34,55 +36,46 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Checkout holdout orchestrator
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          path: orchestrator
-      - name: Checkout exact frozen Candidate 14 strategy
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_SOURCE_COMMIT }}
-          path: frozen-source
-      - name: Verify frozen source and apply audit-only event ID repair
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", path: orchestrator}
+      - uses: actions/checkout@v4
+        with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
+      - name: Verify frozen source and both execution patches
         shell: bash
         run: |
           set -euo pipefail
+          smc4 doctor
           test "$(git -C frozen-source rev-parse HEAD)" = "$FROZEN_SOURCE_COMMIT"
           python - <<'PY'
-          from __future__ import annotations
-          import json
-          import subprocess
+          import json, subprocess
           from pathlib import Path
-
-          protocol = json.loads(Path("orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json").read_text())
-          failures = []
-          for name, expected in protocol["locked_source"]["blobs"].items():
-              actual = subprocess.check_output(
-                  ["git", "-C", "frozen-source", "hash-object", str(Path("research/candidate-14") / name)],
-                  text=True,
-              ).strip()
-              if actual != expected:
-                  failures.append((name, expected, actual))
-          if failures:
-              raise SystemExit(f"frozen source blob mismatch: {failures}")
-          print(f"verified {len(protocol['locked_source']['blobs'])} exact frozen blobs")
+          p=json.loads(Path("orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json").read_text())
+          bad=[]
+          for name, expected in p["locked_source"]["blobs"].items():
+              actual=subprocess.check_output(["git","-C","frozen-source","hash-object",str(Path("research/candidate-14")/name)],text=True).strip()
+              if actual != expected: bad.append((name, expected, actual))
+          if bad: raise SystemExit(f"frozen source mismatch: {bad}")
+          print(f"verified {len(p['locked_source']['blobs'])} origin blobs")
           PY
-          python "orchestrator/$EVENT_PATCH_REL" frozen-source/research/candidate-14/logic.py
-          git -C frozen-source diff --exit-code -- \
-            ':(exclude)research/candidate-14/logic.py' \
-            'research/candidate-14'
-          diff_text="$(git -C frozen-source diff -- research/candidate-14/logic.py)"
-          grep -q 'ambiguous_scenario_id' <<<"$diff_text"
-          grep -q -- '-                "AMBIGUOUS", "AMBIGUOUS_SWEEP"' <<<"$diff_text"
-          grep -q -- '+                ambiguous_scenario_id, "AMBIGUOUS_SWEEP"' <<<"$diff_text"
-          test "$(grep -c '^[-+].*AMBIGUOUS_SWEEP' <<<"$diff_text")" -eq 2
-          sha256sum frozen-source/research/candidate-14/logic.py
-          cp "orchestrator/$PROTOCOL_REL" frozen-source/research/candidate-14/protocol.json
-          smc4 doctor
           export PYTHONPATH="$GITHUB_WORKSPACE/frozen-source/research/candidate-14:$GITHUB_WORKSPACE/frozen-source/src"
           python -m py_compile frozen-source/research/candidate-14/*.py
           python -m unittest discover -s frozen-source/research/candidate-14 -p 'test_*.py' -v
+          for variant in SWEEP_MARKET PASSIVE_RETEST; do
+            git -C frozen-source reset --hard "$FROZEN_SOURCE_COMMIT"
+            python "orchestrator/$EVENT_PATCH_REL" frozen-source/research/candidate-14/logic.py
+            python "orchestrator/$FAR_PATCH_REL" frozen-source/research/candidate-14/semantic_logic.py "$variant"
+            git -C frozen-source diff --exit-code -- \
+              ':(exclude)research/candidate-14/logic.py' \
+              ':(exclude)research/candidate-14/semantic_logic.py' \
+              'research/candidate-14'
+            grep -q "candidate15_execution_variant.*$variant" frozen-source/research/candidate-14/semantic_logic.py
+            if [[ "$variant" == SWEEP_MARKET ]]; then
+              ! grep -q 'FULL_DISPLACEMENT_VOID_TRAVERSAL' frozen-source/research/candidate-14/semantic_logic.py
+            else
+              ! grep -q 'FAR_CONFIRMED_RECLAIM_DISPLACEMENT_MARKET' frozen-source/research/candidate-14/semantic_logic.py
+            fi
+            python -m py_compile frozen-source/research/candidate-14/logic.py frozen-source/research/candidate-14/semantic_logic.py
+          done
 
   evaluate:
     needs: static
@@ -90,49 +83,53 @@ jobs:
       fail-fast: false
       max-parallel: 16
       matrix:
+        variant: [SWEEP_MARKET, PASSIVE_RETEST]
         week: [H01, H02, H03, H04, H05, H06, H07, H08, H09, H10, H11, H12, H13, H14, H15, H16]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
     steps:
-      - name: Checkout holdout orchestrator
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          path: orchestrator
-      - name: Checkout exact frozen Candidate 14 strategy
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_SOURCE_COMMIT }}
-          path: frozen-source
-      - name: Run frozen Candidate 14 holdout ${{ matrix.week }}
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", path: orchestrator}
+      - uses: actions/checkout@v4
+        with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
+      - name: Materialize development variant
         shell: bash
+        env: {VARIANT: "${{ matrix.variant }}"}
         run: |
           set -euo pipefail
           test "$(git -C frozen-source rev-parse HEAD)" = "$FROZEN_SOURCE_COMMIT"
-          cp "orchestrator/$PROTOCOL_REL" frozen-source/research/candidate-14/protocol.json
           python "orchestrator/$EVENT_PATCH_REL" frozen-source/research/candidate-14/logic.py
-          bash frozen-source/research/candidate-14/run_week.sh \
-            "${{ matrix.week }}" \
-            "$GITHUB_WORKSPACE/evidence/${{ matrix.week }}"
-          rm -rf "$GITHUB_WORKSPACE/evidence/${{ matrix.week }}/data"
-          for file in \
-            run.json data_manifest.json metrics.json summary.json audit.json audit.md \
-            source_lock.json effective_config.json scenario_events.jsonl submitted_plans.json \
-            order_lifecycle.json orders.csv positions.csv account.csv; do
-            test -s "$GITHUB_WORKSPACE/evidence/${{ matrix.week }}/$file"
-          done
-      - name: Upload immutable holdout evidence
-        if: always()
+          python "orchestrator/$FAR_PATCH_REL" frozen-source/research/candidate-14/semantic_logic.py "$VARIANT"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          v=os.environ["VARIANT"]
+          p=json.loads(Path("orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json").read_text())
+          slug=v.lower().replace("_","-")
+          p["schema"]=f"candidate-15-{slug}-development-v1"
+          p["candidate"]=f"candidate-15-{slug}-far-execution"
+          p["validation_mode"]="development_replay"
+          p["selection"]["seed"]=202608081500+(1 if v=="SWEEP_MARKET" else 2)
+          p["claim_rules"]=["Development replay only; success_claim is false.","Only FAR post-confirmation execution semantics differ.","Any survivor requires untouched holdouts after a new source freeze."]
+          Path("frozen-source/research/candidate-14/protocol.json").write_text(json.dumps(p,indent=2,sort_keys=True)+"\n")
+          PY
+      - name: Run NautilusTrader development week
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/evidence/${{ matrix.variant }}/${{ matrix.week }}"
+          bash frozen-source/research/candidate-14/run_week.sh "${{ matrix.week }}" "$out"
+          rm -rf "$out/data"
+          for f in metrics.json summary.json audit.json source_lock.json effective_config.json submitted_plans.json positions.csv account.csv; do test -s "$out/$f"; done
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate14-frozen-${{ matrix.week }}
-          path: evidence/${{ matrix.week }}/
+          name: candidate15-${{ matrix.variant }}-${{ matrix.week }}
+          path: evidence/${{ matrix.variant }}/${{ matrix.week }}/
           if-no-files-found: error
           retention-days: 30
           compression-level: 6
@@ -143,107 +140,39 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Checkout current candidate branch
-        uses: actions/checkout@v4
-        with:
-          ref: research/candidate-03
-          fetch-depth: 0
-          path: orchestrator
-      - name: Checkout exact frozen Candidate 14 strategy tools
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_SOURCE_COMMIT }}
-          path: frozen-source
-      - name: Download all fresh holdout evidence
-        uses: actions/download-artifact@v4
-        with:
-          pattern: candidate14-frozen-H*
-          path: downloaded
-      - name: Validate, aggregate and persist frozen holdout evidence
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-03, fetch-depth: 0, path: orchestrator}
+      - uses: actions/download-artifact@v4
+        with: {pattern: "candidate15-*", path: downloaded}
+      - name: Compare and persist development evidence
         shell: bash
         run: |
           set -euo pipefail
-          result_root="orchestrator/$RESULT_REL"
-          rm -rf "$result_root"
-          mkdir -p "$result_root"
-          for week in H01 H02 H03 H04 H05 H06 H07 H08 H09 H10 H11 H12 H13 H14 H15 H16; do
-            src="downloaded/candidate14-frozen-$week"
-            test -d "$src"
-            mkdir -p "$result_root/$week"
-            cp -a "$src/." "$result_root/$week/"
+          root="orchestrator/$RESULT_REL"
+          rm -rf "$root"; mkdir -p "$root"
+          for variant in SWEEP_MARKET PASSIVE_RETEST; do
+            for week in H01 H02 H03 H04 H05 H06 H07 H08 H09 H10 H11 H12 H13 H14 H15 H16; do
+              src="downloaded/candidate15-$variant-$week"; test -d "$src"
+              mkdir -p "$root/$variant/$week"; cp -a "$src/." "$root/$variant/$week/"
+            done
           done
-          python - <<'PY'
-          from __future__ import annotations
-          import json
-          from pathlib import Path
-
-          root = Path("orchestrator/research/candidate-03/results/candidate14-frozen-holdout")
-          protocol = json.loads(Path("orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json").read_text())
-          expected = set(protocol["selection"]["holdouts"])
-          actual = {p.name for p in root.iterdir() if p.is_dir()}
-          if actual != expected:
-              raise SystemExit(f"holdout set mismatch: expected={sorted(expected)} actual={sorted(actual)}")
-          safety_keys = (
-              "evidence_complete",
-              "metric_recalculation_passed",
-              "risk_budget_passed",
-              "global_slot_passed",
-              "partial_entry_protection_passed",
-              "no_liquidation_passed",
-              "engine_errors_absent",
-          )
-          patched_logic_hashes = set()
-          for week in sorted(expected):
-              folder = root / week
-              for name in (
-                  "run.json", "data_manifest.json", "metrics.json", "summary.json",
-                  "audit.json", "source_lock.json", "effective_config.json",
-                  "scenario_events.jsonl", "submitted_plans.json", "order_lifecycle.json",
-                  "orders.csv", "positions.csv", "account.csv",
-              ):
-                  path = folder / name
-                  if not path.is_file() or path.stat().st_size == 0:
-                      raise SystemExit(f"{week}: missing {name}")
-              metrics = json.loads((folder / "metrics.json").read_text())
-              audit = json.loads((folder / "audit.json").read_text())
-              lock = json.loads((folder / "source_lock.json").read_text())
-              effective = json.loads((folder / "effective_config.json").read_text())
-              if metrics.get("candidate") != protocol["candidate"]:
-                  raise SystemExit(f"{week}: candidate mismatch")
-              if metrics.get("validation_mode") != "frozen_holdout":
-                  raise SystemExit(f"{week}: validation mode mismatch")
-              if effective.get("candidate14_protocol", {}).get("schema") != protocol["schema"]:
-                  raise SystemExit(f"{week}: protocol schema mismatch")
-              if lock.get("validation_mode") != "frozen_holdout":
-                  raise SystemExit(f"{week}: source lock mode mismatch")
-              for name, expected_blob in protocol["locked_source"]["blobs"].items():
-                  if lock["files"][name]["origin_git_blob"] != expected_blob:
-                      raise SystemExit(f"{week}: origin blob mismatch for {name}")
-              patched_logic_hashes.add(lock["files"]["logic.py"]["sha256"])
-              if not all(audit.get(key) is True for key in safety_keys):
-                  raise SystemExit(f"{week}: safety audit failed: {audit}")
-          if len(patched_logic_hashes) != 1:
-              raise SystemExit(f"non-identical audit patch across weeks: {patched_logic_hashes}")
-          print(f"all 16 holdouts passed evidence validation; audit logic hash={next(iter(patched_logic_hashes))}")
-          PY
-          python frozen-source/research/candidate-14/aggregate.py \
-            --results "$result_root" \
-            --protocol "orchestrator/$PROTOCOL_REL" \
-            --output "$result_root/aggregate.json"
-          git -C orchestrator config user.name "candidate-03-holdout-bot"
-          git -C orchestrator config user.email "candidate-03-holdout-bot@users.noreply.github.com"
+          python orchestrator/research/candidate-03/compare_candidate15_far_execution.py \
+            --root "$root" \
+            --baseline orchestrator/research/candidate-03/results/candidate14-frozen-holdout/aggregate.json \
+            --output "$root/comparison.json"
+          git -C orchestrator config user.name candidate-03-development-bot
+          git -C orchestrator config user.email candidate-03-development-bot@users.noreply.github.com
           git -C orchestrator add "$RESULT_REL"
-          git -C orchestrator commit -m "candidate-03: record Candidate 14 frozen holdout evidence [skip ci]"
+          git -C orchestrator commit -m "candidate-03: record Candidate 15 FAR execution development [skip ci]"
           git -C orchestrator fetch origin research/candidate-03
           git -C orchestrator rebase origin/research/candidate-03
           git -C orchestrator push origin HEAD:research/candidate-03
-      - name: Upload aggregate holdout decision
-        if: always()
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate14-frozen-aggregate-${{ github.run_id }}
+          name: candidate15-far-execution-comparison-${{ github.run_id }}
           path: |
-            orchestrator/research/candidate-03/results/candidate14-frozen-holdout/aggregate.json
-            orchestrator/research/candidate-03/results/candidate14-frozen-holdout/RESULT.md
+            orchestrator/research/candidate-03/results/candidate15-far-execution-development/comparison.json
+            orchestrator/research/candidate-03/results/candidate15-far-execution-development/RESULT.md
           if-no-files-found: warn
           retention-days: 30
