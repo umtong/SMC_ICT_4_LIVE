@@ -1,0 +1,280 @@
+name: candidate-04-v57-four-asset-development
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/v57_trigger.json"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-04-v57-four-asset-development
+  cancel-in-progress: false
+
+env:
+  BUILD_START: "2023-02-25"
+  BUILD_END: "2023-03-06"
+  EVALUATION_START: "2023-02-27"
+  EVALUATION_END: "2023-03-05"
+  SOURCE_RUN_ID: "31191716971"
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      SYMBOL: ${{ matrix.symbol }}
+      C04_SYMBOL: ${{ matrix.symbol }}
+      C04_BUILD_START: "2023-02-25"
+      C04_BUILD_END: "2023-03-06"
+      C04_EVALUATION_START: "2023-02-27"
+      C04_EVALUATION_END: "2023-03-05"
+      ROOT: artifacts/candidate-04-v57/${{ matrix.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-04-v51-rich-${{ matrix.symbol }}-31191716971
+          path: restored-rich
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31191716971
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify common contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-04/boundary_negotiation_expansion_for_symbol.py \
+            research/candidate-04/causal_target_registry_enricher_for_symbol.py \
+            research/candidate-04/prominence_state_router_for_symbol.py \
+            research/candidate-04/internal_pool_failed_auction_kernel.py \
+            research/candidate-04/nt_global_state_preserving_rich_signal_strategy.py \
+            research/candidate-04/nt_multi_asset_v56.py
+          python -m unittest discover -s research/candidate-04/tests -p 'test_prominence_state_router.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_state_preserving_rich_signal_strategy.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_multi_asset_runtime_contract.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_multi_asset_risk_evidence.py' -v
+
+      - name: Compile symbol kernel without execution or PnL
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT/config"
+          rich_manifest="$(find restored-rich -type f -name data_manifest.json | head -n1)"
+          test -n "$rich_manifest"
+          rich="$(dirname "$rich_manifest")"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          value=json.loads(Path('research/candidate-04/inventory_transfer_config.json').read_text())
+          value['symbol']=os.environ['SYMBOL']
+          path=Path(os.environ['ROOT'])/'config/base.json'
+          path.write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
+          PY
+          for attempt in 1 2 3 4; do
+            if python research/candidate-04/boundary_negotiation_expansion_for_symbol.py \
+              --base-config "$ROOT/config/base.json" \
+              --impact-config research/candidate-04/impact_exhaustion_config.json \
+              --router-config research/candidate-04/auction_activity_router_config.json \
+              --rich-dir "$rich" \
+              --kline-dir ".cache/candidate-04-v57/$SYMBOL/klines" \
+              --evaluation-start "$EVALUATION_START" \
+              --evaluation-end "$EVALUATION_END" \
+              --output "$ROOT/v31" \
+              --download-klines; then break; fi
+            test "$attempt" -lt 4
+            sleep $((attempt*8))
+          done
+          python research/candidate-04/ablate_compiled_scenario.py \
+            --input-signals "$ROOT/v31/signals.json" \
+            --input-summary "$ROOT/v31/summary.json" \
+            --remove STRESS_SETTLED_ACCEPTANCE_CONTINUATION \
+            --candidate candidate-04-v31-no-stress-continuation \
+            --output "$ROOT/ablated"
+          for attempt in 1 2 3 4; do
+            if python research/candidate-04/causal_target_registry_enricher_for_symbol.py \
+              --signals "$ROOT/ablated/signals.json" \
+              --base-config "$ROOT/config/base.json" \
+              --rich-dir "$rich" \
+              --kline-dir ".cache/candidate-04-v57/$SYMBOL/klines" \
+              --build-start "$BUILD_START" \
+              --build-end "$BUILD_END" \
+              --output-dir "$ROOT/v44" \
+              --download-klines \
+              --cost-rate 0.00075 \
+              --minimum-net-r 1.20; then break; fi
+            test "$attempt" -lt 4
+            sleep $((attempt*8))
+          done
+          C04_SYMBOL="$SYMBOL" python research/candidate-04/internal_pool_failed_auction_kernel.py \
+            --signals "$ROOT/v44/signals.json" \
+            --rich-dir "$rich" \
+            --output "$ROOT/signals"
+          test -s "$ROOT/signals/signals.json"
+          test -s "$ROOT/signals/summary.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-v57-${{ matrix.symbol }}-${{ github.run_id }}
+          path: artifacts/candidate-04-v57/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 90
+
+  evaluate:
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      ROOT: artifacts/candidate-04-v57-evaluation
+      EVIDENCE: research/candidate-04/evidence-v57-development.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v57-*-${{ github.run_id }}
+          path: restored-signals
+          merge-multiple: false
+
+      - name: Normalize frozen symbol intents
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT/signals"
+          for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+            source="$(find restored-signals -type f -path "*/$symbol/signals/signals.json" | head -n1)"
+            summary="$(find restored-signals -type f -path "*/$symbol/signals/summary.json" | head -n1)"
+            test -n "$source" -a -n "$summary"
+            mkdir -p "$ROOT/signals/$symbol"
+            cp "$source" "$ROOT/signals/$symbol/signals.json"
+            cp "$summary" "$ROOT/signals/$symbol/summary.json"
+          done
+
+      - name: Execute one global account only through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-04/nt_global_state_preserving_rich_signal_strategy.py \
+            research/candidate-04/nt_multi_asset_v56.py
+          for attempt in 1 2 3 4; do
+            if python research/candidate-04/nt_multi_asset_v56.py \
+              --config research/candidate-04/nt_liquidity_config.json \
+              --signals-root "$ROOT/signals" \
+              --build-start "$BUILD_START" \
+              --build-end "$BUILD_END" \
+              --evaluation-start "$EVALUATION_START" \
+              --evaluation-end "$EVALUATION_END" \
+              --cache ".cache/candidate-04-v57/global" \
+              --output "$ROOT/nautilus" \
+              --min-trades 4 \
+              --min-active-days 3 \
+              --min-win-rate 0.75 \
+              --min-geometric-daily 0.0; then break; fi
+            test "$attempt" -lt 4
+            sleep $((attempt*8))
+          done
+          test -s "$ROOT/nautilus/metrics.json"
+          test -s "$ROOT/nautilus/risk_evidence.json"
+
+      - name: Decide V57 development screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          metrics=json.loads((root/'nautilus/metrics.json').read_text())
+          risk=json.loads((root/'nautilus/risk_evidence.json').read_text())
+          signal_counts={}
+          for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'):
+              summary=json.loads((root/f'signals/{symbol}/summary.json').read_text())
+              signal_counts[symbol]=int(summary.get('written_signals') or 0)
+          pass_=bool(
+              risk.get('risk_pass')
+              and metrics.get('global_entry_pass')
+              and int(metrics.get('trades') or 0)>=4
+              and int(metrics.get('active_days') or 0)>=3
+              and float(metrics.get('win_rate') or 0.0)>=0.75
+              and float(metrics.get('total_return') or 0.0)>0.0
+          )
+          evidence={
+              'candidate':'candidate-04-v57-internal-pool-failed-auction',
+              'stage':'four_asset_development_screen',
+              'source_commit':os.environ.get('GITHUB_SHA'),
+              'engine':'NautilusTrader 1.230.0 BacktestNode',
+              'evaluation':{'start':'2023-02-27','end_inclusive':'2023-03-05'},
+              'signal_counts':signal_counts,
+              'metrics':metrics,
+              'risk_evidence':risk,
+              'implementation_pass':bool(risk.get('risk_pass') and metrics.get('global_entry_pass')),
+              'development_pass':pass_,
+              'prospective_week_allowed':pass_,
+              'project_target_reached':False,
+              'decision':'FREEZE_V57_AND_OPEN_NEW_FOUR_ASSET_WEEK' if pass_ else 'DISCARD_V57_NO_FOUR_ASSET_FREQUENCY_EDGE',
+          }
+          Path(os.environ['EVIDENCE']).write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          (root/'decision.json').write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(evidence,indent=2,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v57-development-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v57-evaluation
+            research/candidate-04/evidence-v57-development.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist V57 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test -s "$EVIDENCE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research(candidate-04): record V57 four-asset evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt*3))
+          done
+          exit 1
