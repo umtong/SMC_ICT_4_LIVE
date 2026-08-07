@@ -14,37 +14,44 @@ jobs:
   patch:
     runs-on: ubuntu-24.04
     steps:
-      - name: Apply controlled dataclass serialization fix
+      - name: Apply controlled V19 feature-accounting fixes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import base64,json,os,urllib.request
-          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GITHUB_TOKEN']; branch='research/candidate-03'; path='research/candidate-03/derive_nt_lvcfr_v19_signals.py'
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GITHUB_TOKEN']; branch='research/candidate-03'
           headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'candidate-03-v19-source-fix','Content-Type':'application/json'}
           def req(method,url,payload=None):
             r=urllib.request.Request(url,data=None if payload is None else json.dumps(payload).encode(),method=method,headers=headers)
             with urllib.request.urlopen(r,timeout=120) as x: return json.loads(x.read().decode())
-          url=f'https://api.github.com/repos/{repo}/contents/{path}?ref={branch}'
-          current=req('GET',url); source=base64.b64decode(current['content']).decode()
-          replacements={
-            'from dataclasses import dataclass, field':'from dataclasses import asdict, dataclass, field',
-            '"futures_features": future_features.__dict__':'"futures_features": asdict(future_features)',
-            '"spot_features": spot_features.__dict__':'"spot_features": asdict(spot_features)',
-          }
-          changed=source
-          for old,new in replacements.items():
-            if old not in changed and new not in changed: raise SystemExit(f'missing controlled target: {old}')
-            changed=changed.replace(old,new)
-          compile(changed,path,'exec')
-          if changed==source:
-            print('already patched'); raise SystemExit(0)
-          req('PUT',f'https://api.github.com/repos/{repo}/contents/{path}',{
-            'message':'candidate-03: fix V19 feature serialization',
-            'content':base64.b64encode(changed.encode()).decode(),
-            'sha':current['sha'],
-            'branch':branch,
-          })
-          print('patched',path)
+          def patch(path,replacements,message):
+            url=f'https://api.github.com/repos/{repo}/contents/{path}?ref={branch}'
+            current=req('GET',url); source=base64.b64decode(current['content']).decode(); changed=source
+            for old,new in replacements:
+              if old not in changed and new not in changed: raise SystemExit(f'missing controlled target in {path}: {old}')
+              changed=changed.replace(old,new)
+            compile(changed,path,'exec')
+            if changed==source:
+              print('already patched',path); return
+            req('PUT',f'https://api.github.com/repos/{repo}/contents/{path}',{'message':message,'content':base64.b64encode(changed.encode()).decode(),'sha':current['sha'],'branch':branch})
+            print('patched',path)
+          patch('research/candidate-03/derive_nt_lvcfr_v19_signals.py',[
+            ('from dataclasses import dataclass, field','from dataclasses import asdict, dataclass, field'),
+            ('"futures_features": future_features.__dict__','"futures_features": asdict(future_features)'),
+            ('"spot_features": spot_features.__dict__','"spot_features": asdict(spot_features)'),
+            (
+'''    path = sum(block.path_bp for block in valid)
+    progress = direction * (last / first - 1.0) * 10_000.0''',
+'''    path = sum(block.path_bp for block in valid)
+    for previous, current in zip(valid, valid[1:]):
+        assert previous.last_price is not None and current.first_price is not None
+        path += abs(current.first_price / previous.last_price - 1.0) * 10_000.0
+    progress = direction * (last / first - 1.0) * 10_000.0'''
+            ),
+          ],'candidate-03: account for cross-block V19 price path')
+          patch('research/candidate-03/test_nt_lvcfr_v19.py',[
+            ('second.add(101.0, 1.0, False)\n        second.add(102.0, 1.0, False)','second.add(103.0, 1.0, False)\n        second.add(104.0, 1.0, False)'),
+          ],'candidate-03: test V19 cross-block path continuity')
           PY
