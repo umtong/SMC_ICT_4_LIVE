@@ -1,0 +1,177 @@
+name: candidate-04-v50b-validation-week2
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - ".github/workflows/candidate-04-v50b-validation-week2.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  features:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      FROZEN_REF: bb99980f99c98ff0e6fe4bee58f43549fe7833fd
+      BUILD_START: 2023-10-01
+      BUILD_END: 2023-10-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: bb99980f99c98ff0e6fe4bee58f43549fe7833fd
+
+      - name: Build frozen completed-data stream
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = "$FROZEN_REF"
+          smc4 doctor
+          root="artifacts/candidate-04-v50b-week2-rich/${{ matrix.symbol }}"
+          mkdir -p "$root"
+          python research/candidate-04/rich_features_for_symbol.py \
+            --symbol "${{ matrix.symbol }}" \
+            --start "$BUILD_START" \
+            --end "$BUILD_END" \
+            --cache ".cache/candidate-04-v50b-week2-rich/${{ matrix.symbol }}" \
+            --output "$root/rich"
+          test -s "$root/rich/data_manifest.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-v50b-week2-rich-${{ matrix.symbol }}-${{ github.run_id }}
+          path: artifacts/candidate-04-v50b-week2-rich/${{ matrix.symbol }}
+          if-no-files-found: error
+          retention-days: 90
+
+  evaluate:
+    needs: features
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      FROZEN_REF: bb99980f99c98ff0e6fe4bee58f43549fe7833fd
+      ROOT: artifacts/candidate-04-v50b-validation-week2
+      EVIDENCE: research/candidate-04/evidence-v50b-validation-week2.json
+      BUILD_START: 2023-10-01
+      BUILD_END: 2023-10-09
+      EVALUATION_START: 2023-10-03
+      EVALUATION_END: 2023-10-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: bb99980f99c98ff0e6fe4bee58f43549fe7833fd
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v50b-week2-rich-*-${{ github.run_id }}
+          path: restored-rich
+          merge-multiple: false
+
+      - name: Verify the unchanged candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = "$FROZEN_REF"
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-04/cross_market_information_transfer_compiler.py \
+            research/candidate-04/cross_market_information_transfer_compiler_v2.py \
+            research/candidate-04/cross_market_follower_failure_reversal_compiler.py \
+            research/candidate-04/cross_market_dominant_failure_reversal_compiler.py \
+            research/candidate-04/run_v48_cross_market_evaluation.py \
+            research/candidate-04/nt_multi_asset_rich_backtest_v44.py
+          python -m unittest discover -s research/candidate-04/tests -p 'test_cross_market_dominant_failure_reversal_compiler.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_multi_asset_risk_evidence.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_multi_asset_rich_backtest_v44.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_trusted_execution_factory.py' -v
+
+      - name: Execute frozen V50b on the predeclared second week
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          status=0
+          python research/candidate-04/run_v48_cross_market_evaluation.py \
+            --compiler-script cross_market_dominant_failure_reversal_compiler.py \
+            --candidate candidate-04-v50b-cross-market-dominant-failure-reversal \
+            --market-cause "BTC information event, follower tail expansion, opposite displacement larger than the invalidated expansion" \
+            --restored-rich restored-rich \
+            --source-feature-run "${{ github.run_id }}" \
+            --build-start "$BUILD_START" \
+            --build-end "$BUILD_END" \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --cache .cache/candidate-04-v50b-week2 \
+            --output "$ROOT" \
+            --evidence "$EVIDENCE" || status=$?
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ["EVIDENCE"])
+          if path.exists():
+              value = json.loads(path.read_text())
+              value["frozen_source_commit"] = os.environ["FROZEN_REF"]
+              value["validation_week"] = "nt-week-1 / second V50b evaluation"
+              value["selection_source"] = "research/candidate-04/nt_validation_weeks.json"
+              path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+              root = Path(os.environ["ROOT"])
+              (root / "decision.json").write_text(
+                  json.dumps(value, indent=2, sort_keys=True) + "\n"
+              )
+          PY
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v50b-validation-week2-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v50b-validation-week2
+            research/candidate-04/evidence-v50b-validation-week2.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Persist week-2 evidence on the research branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test -s "$EVIDENCE" || exit 0
+          cp "$EVIDENCE" /tmp/evidence-v50b-validation-week2.json
+          git fetch origin research/candidate-04
+          git checkout -B research/candidate-04 origin/research/candidate-04
+          cp /tmp/evidence-v50b-validation-week2.json "$EVIDENCE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "record frozen V50b validation week 2"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 3))
+          done
+          exit 1
