@@ -1,4 +1,4 @@
-# Controlled trigger revision: 2026-08-07T03:05:00Z
+# Controlled trigger revision: 2026-08-07T03:18:00Z
 # Canonical v20 source commit: f3d68f941637f23b40c4e3e29345669600be7f54
 # Canonical v20 source Git blob: 32114dbd1f555e9a417c2774073abf025a15e3c2
 # Patch SHA256: ad93590e75c6c68f0de2daaae1525bc5aa4503afa91795e829e787c58fb1dc6f
@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf .candidate10-runtime
-          mkdir -p .candidate10-runtime/source .candidate10-runtime/patch artifacts/candidate-10-v20-2
+          mkdir -p .candidate10-runtime/source .candidate10-runtime/patch artifacts/candidate-10-v20-2/raw-source
 
           actual_blob="$(git rev-parse "${V20_SOURCE_COMMIT}:research/candidate-10/v20_source.zip")"
           if [[ "${actual_blob}" != "${V20_SOURCE_BLOB}" ]]; then
@@ -54,6 +54,8 @@ jobs:
             exit 1
           fi
           git cat-file blob "${V20_SOURCE_BLOB}" > .candidate10-runtime/canonical_source.bin
+          cp research/candidate-10/v20_source.zip artifacts/candidate-10-v20-2/raw-source/tracked_source.bin
+          cp .candidate10-runtime/canonical_source.bin artifacts/candidate-10-v20-2/raw-source/canonical_source.bin
 
           python - <<'PY'
           from __future__ import annotations
@@ -218,11 +220,11 @@ jobs:
                       })
                       shutil.rmtree(attempt_root, ignore_errors=True)
 
+          Path('artifacts/candidate-10-v20-2/source_diagnostics.json').write_text(
+              json.dumps(diagnostics, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
           if not successes:
-              Path('artifacts/candidate-10-v20-2/source_diagnostics.json').write_text(
-                  json.dumps(diagnostics, indent=2, sort_keys=True) + '\n',
-                  encoding='utf-8',
-              )
               raise SystemExit('no source representation produced the required verified members')
 
           content_sets = {
@@ -230,10 +232,6 @@ jobs:
               for item in successes
           }
           if len(content_sets) != 1:
-              Path('artifacts/candidate-10-v20-2/source_diagnostics.json').write_text(
-                  json.dumps({'diagnostics': diagnostics, 'successes': successes}, indent=2, sort_keys=True) + '\n',
-                  encoding='utf-8',
-              )
               raise SystemExit('source representations disagree at member-content level')
 
           priority = {
