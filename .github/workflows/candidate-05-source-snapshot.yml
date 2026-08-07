@@ -10,21 +10,48 @@ permissions:
   contents: read
 
 jobs:
-  snapshot:
+  coin-m-liquidation-probe:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Probe continuing COIN-M liquidation reference coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from urllib.error import HTTPError
+          import json
+          import urllib.request
+
+          root = Path("artifacts/candidate-05-coin-m-probe")
+          root.mkdir(parents=True, exist_ok=True)
+          symbols = ("BTCUSD_PERP", "ETHUSD_PERP", "SOLUSD_PERP", "XRPUSD_PERP")
+          dates = ("2023-07-09", "2024-03-15", "2024-05-15", "2025-01-15")
+          result = []
+          for symbol in symbols:
+              for day in dates:
+                  name = f"{symbol}-liquidationSnapshot-{day}.zip"
+                  url = (
+                      "https://data.binance.vision/data/futures/cm/daily/"
+                      f"liquidationSnapshot/{symbol}/{name}"
+                  )
+                  target = root / name
+                  try:
+                      with urllib.request.urlopen(url, timeout=20) as response:
+                          target.write_bytes(response.read())
+                      result.append({"symbol": symbol, "day": day, "available": True, "bytes": target.stat().st_size})
+                  except HTTPError as exc:
+                      if exc.code != 404:
+                          raise
+                      result.append({"symbol": symbol, "day": day, "available": False, "bytes": 0})
+          (root / "probe.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
       - uses: actions/upload-artifact@v4
         with:
-          name: candidate-05-source-${{ github.sha }}
-          path: |
-            research/candidate-05/**
-            src/**
-            tests/**
-            pyproject.toml
-            uv.lock
-            PROJECT_PRINCIPLES.md
-            AGENTS.md
-            .github/workflows/candidate-05-*.yml
+          name: candidate-05-coin-m-probe-${{ github.sha }}
+          path: artifacts/candidate-05-coin-m-probe/**
           if-no-files-found: error
           retention-days: 1
