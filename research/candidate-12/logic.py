@@ -1,19 +1,17 @@
-"""Causal session-high failed-auction state machine for Candidate 12.
+"""Causal completed-session auction router for Candidate 12 I7.
 
-The executable scenario is deliberately asymmetric:
+The engine distinguishes economically different interactions with a completed
+Asia or London dealing range instead of forcing one candle pattern onto every
+crossing:
 
-* During London, a completed Asia-session high raid must reclaim with material
-  displacement and then print a completed bearish confirmation bar.
-* During New York, a completed London-session high raid must reclaim with
-  material displacement and survive one completed confirmation bar.
+* premium-side buy-side raid -> failed auction rejection;
+* sell-side raid -> bullish rejection only after an explicit reclaim and MSS;
+* sustained buy-side acceptance -> bullish FVG mitigation and continuation;
+* Asia high acceptance which fails back inside -> one fresh FVG re-acceptance.
 
-Low-side raids and accepted breakouts remain observable market states, but are
-not executable until a separately verified causal route exists.  This prevents
-one entry rule from being forced onto economically different auction outcomes.
-
-The module emits causal trade plans only.  NautilusTrader remains the sole
-matching, fill, fee, margin, position, contingent-order, and account-NAV
-authority.
+Every decision uses completed five-minute observations only.  The module emits
+trade plans; NautilusTrader remains the sole matching, fill, fee, margin,
+position, contingent-order, and account-NAV authority.
 """
 from __future__ import annotations
 
@@ -41,9 +39,19 @@ class SessionLabel(str, Enum):
     LONDON = "LONDON"
 
 
+class EntryOrder(str, Enum):
+    MARKET = "MARKET"
+    LIMIT_GTD = "LIMIT_GTD_MARKETABLE_PROTECTED"
+
+
 class ScenarioKind(str, Enum):
     ASIA_HIGH_REJECTION = "ASIA_HIGH_REJECTION"
     LONDON_HIGH_REJECTION = "LONDON_HIGH_REJECTION"
+    ASIA_LOW_REJECTION = "ASIA_LOW_REJECTION"
+    LONDON_LOW_REJECTION = "LONDON_LOW_REJECTION"
+    ASIA_HIGH_ACCEPTANCE = "ASIA_HIGH_ACCEPTANCE"
+    LONDON_HIGH_ACCEPTANCE = "LONDON_HIGH_ACCEPTANCE"
+    ASIA_HIGH_REACCEPTANCE = "ASIA_HIGH_REACCEPTANCE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,15 +86,37 @@ class LogicConfig:
     asia_end_minute: int = 360
     london_end_minute: int = 720
     new_york_end_minute: int = 1080
+
     reclaim_max_bars: int = 3
     confirmation_bars: int = 1
-    reclaim_body_atr: float = 0.80
-    asia_confirmation_body_atr: float = 0.50
-    asia_confirmation_max_close_location: float = 0.35
-    stop_buffer_atr: float = 0.80
+    rejection_reclaim_body_atr: float = 0.80
+    asia_high_confirmation_body_atr: float = 0.50
+    asia_high_confirmation_max_close_location: float = 0.35
+    asia_high_min_pre_raid_location: float = 0.25
+    low_confirmation_body_atr: float = 0.50
+    low_confirmation_min_close_location: float = 0.65
+
+    acceptance_closes: int = 2
+    acceptance_displacement_body_atr: float = 0.80
+    reacceptance_displacement_body_atr: float = 0.60
+    acceptance_displacement_min_close_location: float = 0.65
+    fvg_boundary_tolerance_atr: float = 0.15
+    acceptance_retest_expiry_bars: int = 36
+    active_retest_body_atr: float = 0.35
+    active_retest_min_close_location: float = 0.75
+    passive_retest_body_atr: float = 0.80
+    passive_retest_max_close_location: float = 0.25
+    fvg_stop_buffer_atr: float = 0.20
+    limit_entry_expiry_bars: int = 1
+
+    rejection_stop_buffer_atr: float = 0.80
     rejection_target_fraction: float = 0.60
+    acceptance_market_projection: float = 1.00
+    acceptance_limit_projection: float = 0.50
+    reacceptance_projection: float = 1.00
     max_stop_atr: float = 5.0
     min_net_r: float = 0.65
+
     risk_fraction: float = 0.03
     effective_maker_rate: float = 0.0004
     effective_taker_rate: float = 0.0008
@@ -94,25 +124,50 @@ class LogicConfig:
     price_increment: float = 0.1
 
     def __post_init__(self) -> None:
-        for name in ("bar_minutes", "atr_period", "reclaim_max_bars", "confirmation_bars"):
+        positive_ints = (
+            "bar_minutes", "atr_period", "reclaim_max_bars", "confirmation_bars",
+            "acceptance_closes", "acceptance_retest_expiry_bars", "limit_entry_expiry_bars",
+        )
+        for name in positive_ints:
             if int(getattr(self, name)) <= 0:
                 raise ValueError(f"{name} must be positive")
         if not 0 < self.risk_fraction <= 0.03:
             raise ValueError("risk_fraction must be within (0, 0.03]")
-        if not 0 < self.reclaim_body_atr:
-            raise ValueError("reclaim_body_atr must be positive")
-        if not 0 < self.asia_confirmation_body_atr:
-            raise ValueError("asia_confirmation_body_atr must be positive")
-        if not 0 < self.asia_confirmation_max_close_location < 0.5:
-            raise ValueError("Asia confirmation must close in the lower half")
+        for name in (
+            "rejection_reclaim_body_atr", "asia_high_confirmation_body_atr",
+            "low_confirmation_body_atr", "acceptance_displacement_body_atr",
+            "reacceptance_displacement_body_atr", "active_retest_body_atr",
+            "passive_retest_body_atr", "rejection_stop_buffer_atr",
+            "fvg_stop_buffer_atr", "max_stop_atr",
+        ):
+            if float(getattr(self, name)) <= 0:
+                raise ValueError(f"{name} must be positive")
+        if not 0 < self.asia_high_confirmation_max_close_location < 0.5:
+            raise ValueError("Asia high confirmation must close in the lower half")
+        if not 0.5 < self.low_confirmation_min_close_location < 1:
+            raise ValueError("low confirmation must close in the upper half")
+        if not 0 < self.asia_high_min_pre_raid_location < 0.5:
+            raise ValueError("Asia pre-raid location must represent deep discount")
+        if not 0.5 < self.acceptance_displacement_min_close_location < 1:
+            raise ValueError("acceptance displacement must close in the upper half")
+        if not 0.5 < self.active_retest_min_close_location < 1:
+            raise ValueError("active retest must close in the upper half")
+        if not 0 < self.passive_retest_max_close_location < 0.5:
+            raise ValueError("passive retest must close in the lower half")
+        if not 0 <= self.fvg_boundary_tolerance_atr <= 0.5:
+            raise ValueError("invalid FVG boundary tolerance")
         if not 0.5 <= self.rejection_target_fraction <= 0.618:
-            raise ValueError("rejection target must remain equilibrium-to-discount")
-        if self.stop_buffer_atr <= 0 or self.max_stop_atr <= self.stop_buffer_atr:
-            raise ValueError("invalid stop-distance bounds")
-        if self.price_increment <= 0:
-            raise ValueError("price_increment must be positive")
+            raise ValueError("rejection target must remain equilibrium-to-discount/premium")
+        if self.acceptance_market_projection <= 0 or self.acceptance_limit_projection <= 0:
+            raise ValueError("acceptance projections must be positive")
+        if self.reacceptance_projection <= 0:
+            raise ValueError("reacceptance projection must be positive")
+        if self.max_stop_atr <= max(self.rejection_stop_buffer_atr, self.fvg_stop_buffer_atr):
+            raise ValueError("max stop must exceed route buffers")
         if self.min_net_r < 0:
             raise ValueError("min_net_r cannot be negative")
+        if self.price_increment <= 0:
+            raise ValueError("price_increment must be positive")
         if not (
             0 <= self.asia_start_minute
             < self.asia_end_minute
@@ -128,10 +183,12 @@ class TradePlan:
     scenario_id: str
     scenario: ScenarioKind
     direction: Direction
+    entry_order: EntryOrder
     observed_ts_ns: int
     expected_entry: float
     stop_price: float
     target_price: float
+    expire_ts_ns: int | None
     loss_per_unit: float
     expected_profit_per_unit: float
     net_r: float
@@ -214,9 +271,7 @@ class FiveBar:
 
     @property
     def close_location(self) -> float:
-        if self.range <= 0:
-            return 0.5
-        return (self.close - self.low) / self.range
+        return 0.5 if self.range <= 0 else (self.close - self.low) / self.range
 
     @property
     def signed_flow(self) -> float:
@@ -246,9 +301,10 @@ class SessionRange:
 
 
 @dataclass(slots=True)
-class HighRaidEpisode:
+class RaidEpisode:
     scenario_id: str
     source: SessionRange
+    side: str
     sweep_index: int
     sweep_ts_ns: int
     extreme: float
@@ -260,6 +316,16 @@ class HighRaidEpisode:
     confirm_index: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class BullFVG:
+    lower: float
+    upper: float
+    formed_index: int
+    formed_ts_ns: int
+    displacement_body_atr: float
+    displacement_close_location: float
+
+
 @dataclass(slots=True)
 class _RangeBuilder:
     high: float = -math.inf
@@ -267,9 +333,29 @@ class _RangeBuilder:
     close: float | None = None
 
 
-class CausalLiquidityAuctionEngine:
-    """Completed-session buy-side raid and failed-auction router."""
+@dataclass(slots=True)
+class SourceState:
+    source: SessionRange
+    min_since_activity_open: float = math.inf
+    trade_plan_emitted: bool = False
+    high_rejection: RaidEpisode | None = None
+    high_rejection_done: bool = False
+    low_rejection: RaidEpisode | None = None
+    low_rejection_done: bool = False
+    outside_high_closes: int = 0
+    active_fvg: BullFVG | None = None
+    acceptance_phase: str = "WATCH"
+    acceptance_started_index: int | None = None
+    acceptance_scenario_id: str | None = None
+    acceptance_pullback_low: float | None = None
+    acceptance_peak: float | None = None
+    initial_acceptance_attempted: bool = False
+    had_high_acceptance: bool = False
+    failed_high_acceptance: bool = False
+    reacceptance_done: bool = False
 
+
+class CausalLiquidityAuctionEngine:
     def __init__(self, config: LogicConfig, instrument_id: str) -> None:
         self.config = config
         self.instrument_id = instrument_id
@@ -280,15 +366,14 @@ class CausalLiquidityAuctionEngine:
         self._states: dict[str, str] = {}
         self._minute_parts: list[BarObs] = []
         self._five_index = -1
+        self._bars: Deque[FiveBar] = deque(maxlen=1_000)
+        self._bar_atrs: Deque[float | None] = deque(maxlen=1_000)
         self._true_ranges: Deque[float] = deque(maxlen=config.atr_period)
         self._previous_five_close: float | None = None
         self._day_bucket: int | None = None
         self._builders: dict[SessionLabel, _RangeBuilder] = {}
-        self._ranges: dict[SessionLabel, SessionRange] = {}
+        self._sources: dict[SessionLabel, SourceState] = {}
         self._range_history: list[SessionRange] = []
-        self._episodes: dict[SessionLabel, HighRaidEpisode] = {}
-        self._done: set[SessionLabel] = set()
-        self._observed_low_raids: set[SessionLabel] = set()
         self._scenario_counter = 0
 
     @property
@@ -327,14 +412,16 @@ class CausalLiquidityAuctionEngine:
                 next_state=next_state,
                 reason_code=reason_code,
                 reference_price=(
-                    None
-                    if reference_price is None
-                    else f"{reference_price:.12f}".rstrip("0").rstrip(".")
+                    None if reference_price is None else f"{reference_price:.12f}".rstrip("0").rstrip(".")
                 ),
                 details=details or {},
             )
         )
         self._states[scenario_id] = next_state
+
+    def _next_scenario_id(self, label: SessionLabel, route: str) -> str:
+        self._scenario_counter += 1
+        return f"{self.instrument_id}-{label.value}-{route}-{self._scenario_counter:06d}"
 
     def _aggregate_five(self) -> FiveBar:
         parts = self._minute_parts
@@ -372,14 +459,9 @@ class CausalLiquidityAuctionEngine:
         day_bucket = (bar.ts_ns - 1) // NS_DAY
         if self._day_bucket == day_bucket:
             return
-        for label in tuple(self._episodes):
-            self._terminate(label, bar.ts_ns, "DAY_ROLLOVER")
         self._day_bucket = day_bucket
         self._builders.clear()
-        self._ranges.clear()
-        self._episodes.clear()
-        self._done.clear()
-        self._observed_low_raids.clear()
+        self._sources.clear()
 
     def _update_and_freeze_ranges(self, bar: FiveBar, minute: int) -> None:
         if self._day_bucket is None:
@@ -391,7 +473,7 @@ class CausalLiquidityAuctionEngine:
                 builder.high = max(builder.high, bar.high)
                 builder.low = min(builder.low, bar.low)
                 builder.close = bar.close
-            if minute != build_end or label in self._ranges:
+            if minute != build_end or label in self._sources:
                 continue
             builder = self._builders.get(label)
             if (
@@ -413,7 +495,7 @@ class CausalLiquidityAuctionEngine:
                 trade_start_minute=trade_start,
                 trade_end_minute=trade_end,
             )
-            self._ranges[label] = source
+            self._sources[label] = SourceState(source=source)
             self._range_history.append(source)
             self.pool_counts[f"{label.value}_RANGE"] += 1
             range_id = f"{self.instrument_id}-{label.value}-RANGE-{self._day_bucket}"
@@ -431,113 +513,11 @@ class CausalLiquidityAuctionEngine:
                     "close": source.close,
                     "width": source.width,
                     "close_location": source.close_location,
-                    "trade_start_minute": source.trade_start_minute,
-                    "trade_end_minute": source.trade_end_minute,
+                    "trade_start_minute": trade_start,
+                    "trade_end_minute": trade_end,
                     "weekday": self._weekday(source.day_bucket),
                 },
             )
-
-    def _observe_low_raid(self, source: SessionRange, bar: FiveBar) -> None:
-        if source.label in self._observed_low_raids:
-            return
-        if bar.low > source.low - self.config.price_increment:
-            return
-        self._observed_low_raids.add(source.label)
-        scenario_id = f"{self.instrument_id}-{source.label.value}-LOW-DIAGNOSTIC-{source.day_bucket}"
-        self._emit(
-            scenario_id=scenario_id,
-            event_type="SESSION_LOW_RAID_DIAGNOSTIC",
-            event_time_ns=bar.ts_ns,
-            observed_time_ns=bar.ts_ns,
-            next_state="TERMINAL",
-            reason_code="LOW_SIDE_ROUTE_NOT_EXECUTABLE_WITHOUT_SEPARATE_STRUCTURE_PROOF",
-            reference_price=source.low,
-            details={
-                "source": source.label.value,
-                "session_high": source.high,
-                "session_low": source.low,
-                "raid_low": bar.low,
-            },
-        )
-
-    def _start_episode(self, source: SessionRange, bar: FiveBar, atr: float) -> HighRaidEpisode:
-        self._scenario_counter += 1
-        scenario_id = f"{self.instrument_id}-{source.label.value}-HIGH-{self._scenario_counter:06d}"
-        episode = HighRaidEpisode(
-            scenario_id=scenario_id,
-            source=source,
-            sweep_index=self._five_index,
-            sweep_ts_ns=bar.ts_ns,
-            extreme=bar.high,
-        )
-        self._episodes[source.label] = episode
-        self.scenario_counts[f"{source.label.value}_HIGH_RAID"] += 1
-        self._emit(
-            scenario_id=scenario_id,
-            event_type="SESSION_HIGH_RAID_DETECTED",
-            event_time_ns=bar.ts_ns,
-            observed_time_ns=bar.ts_ns,
-            next_state="WAIT_RECLAIM",
-            reason_code=f"PRICE_TRADED_ABOVE_COMPLETED_{source.label.value}_HIGH",
-            reference_price=source.high,
-            details={
-                "source": source.label.value,
-                "session_high": source.high,
-                "session_low": source.low,
-                "session_close_location": source.close_location,
-                "raid_extreme": bar.high,
-                "penetration_atr": (bar.high - source.high) / atr,
-            },
-        )
-        return episode
-
-    def _mark_reclaim(self, episode: HighRaidEpisode, bar: FiveBar, atr: float) -> None:
-        episode.phase = "WAIT_CONFIRM"
-        episode.reclaim_index = self._five_index
-        episode.reclaim_ts_ns = bar.ts_ns
-        episode.reclaim_bar = bar
-        episode.atr_at_reclaim = atr
-        episode.confirm_index = self._five_index + self.config.confirmation_bars
-        self._emit(
-            scenario_id=episode.scenario_id,
-            event_type="SESSION_HIGH_RECLAIM_OBSERVED",
-            event_time_ns=episode.sweep_ts_ns,
-            observed_time_ns=bar.ts_ns,
-            next_state="WAIT_CONFIRM",
-            reason_code="COMPLETED_BAR_CLOSED_BACK_BELOW_SESSION_HIGH",
-            reference_price=episode.source.high,
-            details={
-                "source": episode.source.label.value,
-                "raid_extreme": episode.extreme,
-                "bars_from_sweep": self._five_index - episode.sweep_index,
-                "atr_at_reclaim": atr,
-                "reclaim_body_atr": bar.body / atr,
-                "reclaim_close_location": bar.close_location,
-                "reclaim_direction": "UP" if bar.close > bar.open else "DOWN",
-                "reclaim_flow": bar.signed_flow,
-            },
-        )
-
-    def _terminate(self, label: SessionLabel, ts_ns: int, reason: str) -> None:
-        episode = self._episodes.pop(label, None)
-        if episode is None:
-            return
-        self.skips[reason] += 1
-        self._emit(
-            scenario_id=episode.scenario_id,
-            event_type="SCENARIO_INVALIDATED",
-            event_time_ns=ts_ns,
-            observed_time_ns=ts_ns,
-            next_state="TERMINAL",
-            reason_code=reason,
-            reference_price=episode.source.high,
-            details={
-                "source": label.value,
-                "phase": episode.phase,
-                "raid_extreme": episode.extreme,
-            },
-        )
-        self._done.add(label)
 
     def _round_price(self, value: float, rounding: str) -> float:
         increment = Decimal(str(self.config.price_increment))
@@ -545,29 +525,44 @@ class CausalLiquidityAuctionEngine:
         units = (Decimal(str(value)) / increment).to_integral_value(rounding=mode)
         return float(units * increment)
 
-    def _build_plan(
+    def _costed_plan(
         self,
         *,
-        episode: HighRaidEpisode,
+        scenario_id: str,
+        scenario: ScenarioKind,
+        direction: Direction,
+        entry_order: EntryOrder,
+        observed_ts_ns: int,
         bar: FiveBar,
         atr: float,
+        entry_raw: float,
         stop_raw: float,
+        target_raw: float,
+        expire_ts_ns: int | None,
+        details: dict[str, Any],
     ) -> TradePlan | None:
-        source = episode.source
-        target_raw = source.high - self.config.rejection_target_fraction * source.width
-        if bar.low <= target_raw:
-            self.skips["STRUCTURAL_TARGET_REACHED_BEFORE_DECISION"] += 1
-            return None
-        entry = self._round_price(bar.close, "FLOOR")
-        stop = self._round_price(stop_raw, "CEIL")
-        target = self._round_price(target_raw, "CEIL")
-        structural_loss = stop - entry
-        structural_profit = entry - target
+        if direction is Direction.LONG:
+            entry = self._round_price(entry_raw, "CEIL")
+            stop = self._round_price(stop_raw, "FLOOR")
+            target = self._round_price(target_raw, "FLOOR")
+            structural_loss = entry - stop
+            structural_profit = target - entry
+            target_preconsumed = bar.high >= target
+        else:
+            entry = self._round_price(entry_raw, "FLOOR")
+            stop = self._round_price(stop_raw, "CEIL")
+            target = self._round_price(target_raw, "CEIL")
+            structural_loss = stop - entry
+            structural_profit = entry - target
+            target_preconsumed = bar.low <= target
         if structural_loss <= 0 or structural_loss > self.config.max_stop_atr * atr:
             self.skips["INVALID_STRUCTURAL_STOP"] += 1
             return None
         if structural_profit <= 0:
             self.skips["INVALID_STRUCTURAL_TARGET"] += 1
+            return None
+        if target_preconsumed:
+            self.skips["STRUCTURAL_TARGET_REACHED_BEFORE_DECISION"] += 1
             return None
         entry_cost = entry * self.config.effective_taker_rate
         stop_cost = stop * self.config.effective_taker_rate
@@ -582,112 +577,199 @@ class CausalLiquidityAuctionEngine:
         if net_r < self.config.min_net_r:
             self.skips["INSUFFICIENT_COSTED_STRUCTURAL_R"] += 1
             return None
-        scenario = (
-            ScenarioKind.ASIA_HIGH_REJECTION
-            if source.label is SessionLabel.ASIA
-            else ScenarioKind.LONDON_HIGH_REJECTION
-        )
-        return TradePlan(
-            scenario_id=episode.scenario_id,
-            scenario=scenario,
-            direction=Direction.SHORT,
-            observed_ts_ns=bar.ts_ns,
-            expected_entry=entry,
-            stop_price=stop,
-            target_price=target,
-            loss_per_unit=loss_per_unit,
-            expected_profit_per_unit=expected_profit,
-            net_r=net_r,
-            details={
-                "source": f"COMPLETED_{source.label.value}_RANGE",
-                "source_label": source.label.value,
-                "session_high": source.high,
-                "session_low": source.low,
-                "session_close": source.close,
-                "session_close_location": source.close_location,
-                "session_width": source.width,
-                "raid_extreme": episode.extreme,
-                "sweep_ts_ns": episode.sweep_ts_ns,
-                "reclaim_ts_ns": episode.reclaim_ts_ns,
-                "decision_ts_ns": bar.ts_ns,
-                "decision_atr": atr,
-                "decision_body_atr": bar.body / atr,
-                "decision_close_location": bar.close_location,
-                "decision_flow": bar.signed_flow,
-                "target_semantics": "COMPLETED_RANGE_DISCOUNT_OBJECTIVE",
-                "entry_semantics": "MARKET_AFTER_COMPLETED_CAUSAL_CONFIRMATION",
+        merged = dict(details)
+        merged.update(
+            {
+                "entry_order_type": entry_order.value,
                 "entry_cost_per_unit": entry_cost,
                 "stop_cost_per_unit": stop_cost,
                 "target_cost_per_unit": target_cost,
                 "slippage_allowance_per_unit": slippage,
-            },
+                "decision_atr": atr,
+            }
+        )
+        return TradePlan(
+            scenario_id=scenario_id,
+            scenario=scenario,
+            direction=direction,
+            entry_order=entry_order,
+            observed_ts_ns=observed_ts_ns,
+            expected_entry=entry,
+            stop_price=stop,
+            target_price=target,
+            expire_ts_ns=expire_ts_ns,
+            loss_per_unit=loss_per_unit,
+            expected_profit_per_unit=expected_profit,
+            net_r=net_r,
+            details=merged,
         )
 
-    def _emit_plan(
-        self,
-        episode: HighRaidEpisode,
-        bar: FiveBar,
-        plan: TradePlan,
-        allow_entry: bool,
-    ) -> TradePlan | None:
-        label = episode.source.label
-        self._episodes.pop(label, None)
-        self._done.add(label)
+    def _emit_plan(self, plan: TradePlan, allow_entry: bool) -> TradePlan | None:
         if not allow_entry:
-            self.skips["OUTSIDE_EVALUATION_WINDOW"] += 1
+            self.skips["GLOBAL_SLOT_OR_EVALUATION_BLOCKED"] += 1
             self._emit(
-                scenario_id=episode.scenario_id,
+                scenario_id=plan.scenario_id,
                 event_type="TRADE_PLAN_REJECTED",
-                event_time_ns=bar.ts_ns,
-                observed_time_ns=bar.ts_ns,
+                event_time_ns=plan.observed_ts_ns,
+                observed_time_ns=plan.observed_ts_ns,
                 next_state="TERMINAL",
-                reason_code="OUTSIDE_EVALUATION_WINDOW",
+                reason_code="GLOBAL_SLOT_OR_EVALUATION_BLOCKED",
                 reference_price=plan.expected_entry,
                 details={"scenario": plan.scenario.value, "net_r": plan.net_r},
             )
             return None
         self._emit(
-            scenario_id=episode.scenario_id,
+            scenario_id=plan.scenario_id,
             event_type="TRADE_PLAN_EMITTED",
-            event_time_ns=bar.ts_ns,
-            observed_time_ns=bar.ts_ns,
+            event_time_ns=plan.observed_ts_ns,
+            observed_time_ns=plan.observed_ts_ns,
             next_state="PLAN_EMITTED",
-            reason_code="COSTED_CAUSAL_SESSION_REJECTION_PLAN_VALID",
+            reason_code="COSTED_CAUSAL_SESSION_AUCTION_PLAN_VALID",
             reference_price=plan.expected_entry,
             details={
                 "scenario": plan.scenario.value,
                 "direction": plan.direction.value,
+                "entry_order": plan.entry_order.value,
                 "entry": plan.expected_entry,
                 "stop": plan.stop_price,
                 "target": plan.target_price,
+                "expire_ts_ns": plan.expire_ts_ns,
                 "net_r": plan.net_r,
             },
         )
         return plan
 
-    def _advance_episode(
-        self,
-        label: SessionLabel,
-        bar: FiveBar,
-        atr: float,
-        allow_entry: bool,
-    ) -> TradePlan | None:
-        episode = self._episodes.get(label)
+    def _start_raid(self, state: SourceState, side: str, bar: FiveBar, atr: float) -> RaidEpisode:
+        source = state.source
+        route = f"{side}-RAID"
+        scenario_id = self._next_scenario_id(source.label, route)
+        extreme = bar.high if side == "HIGH" else bar.low
+        episode = RaidEpisode(
+            scenario_id=scenario_id,
+            source=source,
+            side=side,
+            sweep_index=self._five_index,
+            sweep_ts_ns=bar.ts_ns,
+            extreme=extreme,
+        )
+        self.scenario_counts[f"{source.label.value}_{side}_RAID"] += 1
+        self._emit(
+            scenario_id=scenario_id,
+            event_type=f"SESSION_{side}_RAID_DETECTED",
+            event_time_ns=bar.ts_ns,
+            observed_time_ns=bar.ts_ns,
+            next_state="WAIT_RECLAIM",
+            reason_code=f"PRICE_TRADED_BEYOND_COMPLETED_{source.label.value}_{side}",
+            reference_price=source.high if side == "HIGH" else source.low,
+            details={
+                "source": source.label.value,
+                "session_high": source.high,
+                "session_low": source.low,
+                "session_close_location": source.close_location,
+                "raid_extreme": extreme,
+                "penetration_atr": (
+                    (bar.high - source.high) / atr if side == "HIGH" else (source.low - bar.low) / atr
+                ),
+            },
+        )
+        return episode
+
+    def _mark_raid_reclaim(self, episode: RaidEpisode, bar: FiveBar, atr: float) -> None:
+        episode.phase = "WAIT_CONFIRM"
+        episode.reclaim_index = self._five_index
+        episode.reclaim_ts_ns = bar.ts_ns
+        episode.reclaim_bar = bar
+        episode.atr_at_reclaim = atr
+        episode.confirm_index = self._five_index + self.config.confirmation_bars
+        self._emit(
+            scenario_id=episode.scenario_id,
+            event_type=f"SESSION_{episode.side}_RECLAIM_OBSERVED",
+            event_time_ns=episode.sweep_ts_ns,
+            observed_time_ns=bar.ts_ns,
+            next_state="WAIT_CONFIRM",
+            reason_code=f"COMPLETED_BAR_CLOSED_BACK_INSIDE_{episode.side}_BOUNDARY",
+            reference_price=episode.source.high if episode.side == "HIGH" else episode.source.low,
+            details={
+                "source": episode.source.label.value,
+                "raid_extreme": episode.extreme,
+                "bars_from_sweep": self._five_index - episode.sweep_index,
+                "atr_at_reclaim": atr,
+                "reclaim_body_atr": bar.body / atr,
+                "reclaim_close_location": bar.close_location,
+                "reclaim_direction": "UP" if bar.close > bar.open else "DOWN",
+                "reclaim_flow": bar.signed_flow,
+            },
+        )
+
+    def _invalidate_raid(self, state: SourceState, side: str, bar: FiveBar, reason: str) -> None:
+        episode = state.high_rejection if side == "HIGH" else state.low_rejection
         if episode is None:
+            return
+        self.skips[reason] += 1
+        self._emit(
+            scenario_id=episode.scenario_id,
+            event_type="SCENARIO_INVALIDATED",
+            event_time_ns=bar.ts_ns,
+            observed_time_ns=bar.ts_ns,
+            next_state="TERMINAL",
+            reason_code=reason,
+            reference_price=episode.source.high if side == "HIGH" else episode.source.low,
+            details={"source": episode.source.label.value, "side": side, "phase": episode.phase},
+        )
+        if side == "HIGH":
+            state.high_rejection = None
+            state.high_rejection_done = True
+        else:
+            state.low_rejection = None
+            state.low_rejection_done = True
+
+    def _advance_high_rejection(
+        self, state: SourceState, bar: FiveBar, atr: float, allow_entry: bool
+    ) -> TradePlan | None:
+        source = state.source
+        if state.trade_plan_emitted:
             return None
-        source = episode.source
-        minute = self._minute_of_day(bar.ts_ns)
-        if minute > source.trade_end_minute:
-            self._terminate(label, bar.ts_ns, "SESSION_ACTIVITY_WINDOW_EXPIRED")
+        if state.high_rejection_done:
+            return None
+        episode = state.high_rejection
+        if episode is None:
+            if bar.high < source.high + self.config.price_increment:
+                return None
+            if source.label is SessionLabel.ASIA:
+                min_location = (state.min_since_activity_open - source.low) / source.width
+                if min_location < self.config.asia_high_min_pre_raid_location:
+                    state.high_rejection_done = True
+                    reason = "ASIA_HIGH_RAID_AFTER_DEEP_DISCOUNT_TRAVERSAL"
+                    self.skips[reason] += 1
+                    sid = self._next_scenario_id(source.label, "HIGH-REJECTION-SKIP")
+                    self._emit(
+                        scenario_id=sid,
+                        event_type="SCENARIO_INVALIDATED",
+                        event_time_ns=bar.ts_ns,
+                        observed_time_ns=bar.ts_ns,
+                        next_state="TERMINAL",
+                        reason_code=reason,
+                        reference_price=source.high,
+                        details={
+                            "source": source.label.value,
+                            "minimum_location_before_raid": min_location,
+                            "required_minimum_location": self.config.asia_high_min_pre_raid_location,
+                        },
+                    )
+                    return None
+            episode = self._start_raid(state, "HIGH", bar, atr)
+            state.high_rejection = episode
+            if bar.close < source.high:
+                self._mark_raid_reclaim(episode, bar, atr)
             return None
 
         if episode.phase == "WAIT_RECLAIM":
             episode.extreme = max(episode.extreme, bar.high)
             if bar.close < source.high:
-                self._mark_reclaim(episode, bar, atr)
+                self._mark_raid_reclaim(episode, bar, atr)
                 return None
             if self._five_index - episode.sweep_index >= self.config.reclaim_max_bars:
-                self._terminate(label, bar.ts_ns, "BOUNDARY_ACCEPTED_NOT_RECLAIMED_IN_TIME")
+                self._invalidate_raid(state, "HIGH", bar, "HIGH_BOUNDARY_ACCEPTED_NOT_RECLAIMED")
             return None
 
         assert episode.confirm_index is not None
@@ -696,32 +778,537 @@ class CausalLiquidityAuctionEngine:
         assert episode.reclaim_bar is not None and episode.atr_at_reclaim is not None
         reclaim = episode.reclaim_bar
         reclaim_atr = episode.atr_at_reclaim
-        if reclaim.body / reclaim_atr < self.config.reclaim_body_atr:
-            self._terminate(label, bar.ts_ns, "RECLAIM_LACKED_DISPLACEMENT")
+        if reclaim.body / reclaim_atr < self.config.rejection_reclaim_body_atr:
+            self._invalidate_raid(state, "HIGH", bar, "HIGH_RECLAIM_LACKED_DISPLACEMENT")
             return None
-        invalidation = episode.extreme + self.config.stop_buffer_atr * reclaim_atr
+        invalidation = episode.extreme + self.config.rejection_stop_buffer_atr * reclaim_atr
         if bar.high >= invalidation:
-            self._terminate(label, bar.ts_ns, "RAID_EXTREME_NOT_DEFENDED")
+            self._invalidate_raid(state, "HIGH", bar, "HIGH_RAID_EXTREME_NOT_DEFENDED")
             return None
         if source.label is SessionLabel.ASIA:
             confirmed = (
                 bar.close < bar.open
-                and bar.body / atr >= self.config.asia_confirmation_body_atr
-                and bar.close_location <= self.config.asia_confirmation_max_close_location
+                and bar.body / atr >= self.config.asia_high_confirmation_body_atr
+                and bar.close_location <= self.config.asia_high_confirmation_max_close_location
             )
             if not confirmed:
-                self._terminate(label, bar.ts_ns, "ASIA_REJECTION_LACKED_DOWNSIDE_CONFIRMATION")
+                self._invalidate_raid(state, "HIGH", bar, "ASIA_HIGH_REJECTION_LACKED_CONFIRMATION")
                 return None
-        plan = self._build_plan(
-            episode=episode,
+        scenario = (
+            ScenarioKind.ASIA_HIGH_REJECTION
+            if source.label is SessionLabel.ASIA
+            else ScenarioKind.LONDON_HIGH_REJECTION
+        )
+        target = source.high - self.config.rejection_target_fraction * source.width
+        plan = self._costed_plan(
+            scenario_id=episode.scenario_id,
+            scenario=scenario,
+            direction=Direction.SHORT,
+            entry_order=EntryOrder.MARKET,
+            observed_ts_ns=bar.ts_ns,
             bar=bar,
             atr=reclaim_atr,
+            entry_raw=bar.close,
             stop_raw=invalidation,
+            target_raw=target,
+            expire_ts_ns=None,
+            details={
+                "source": source.label.value,
+                "route": "BUY_SIDE_FAILED_AUCTION",
+                "session_high": source.high,
+                "session_low": source.low,
+                "session_width": source.width,
+                "raid_extreme": episode.extreme,
+                "sweep_ts_ns": episode.sweep_ts_ns,
+                "reclaim_ts_ns": episode.reclaim_ts_ns,
+                "decision_body_atr": bar.body / atr,
+                "decision_close_location": bar.close_location,
+                "decision_flow": bar.signed_flow,
+                "target_semantics": "COMPLETED_RANGE_DISCOUNT_OBJECTIVE",
+            },
         )
+        state.high_rejection = None
+        state.high_rejection_done = True
         if plan is None:
-            self._terminate(label, bar.ts_ns, "COSTED_PLAN_REJECTED")
+            self.skips["HIGH_REJECTION_COSTED_PLAN_REJECTED"] += 1
             return None
-        return self._emit_plan(episode, bar, plan, allow_entry)
+        state.trade_plan_emitted = True
+        return self._emit_plan(plan, allow_entry)
+
+    def _advance_low_rejection(
+        self, state: SourceState, bar: FiveBar, atr: float, allow_entry: bool
+    ) -> TradePlan | None:
+        source = state.source
+        if state.trade_plan_emitted:
+            return None
+        if state.low_rejection_done:
+            return None
+        episode = state.low_rejection
+        if episode is None:
+            if bar.low > source.low - self.config.price_increment:
+                return None
+            episode = self._start_raid(state, "LOW", bar, atr)
+            state.low_rejection = episode
+            if bar.close > source.low:
+                self._mark_raid_reclaim(episode, bar, atr)
+            return None
+
+        if episode.phase == "WAIT_RECLAIM":
+            episode.extreme = min(episode.extreme, bar.low)
+            if bar.close > source.low:
+                self._mark_raid_reclaim(episode, bar, atr)
+                return None
+            if self._five_index - episode.sweep_index >= self.config.reclaim_max_bars:
+                self._invalidate_raid(state, "LOW", bar, "LOW_BOUNDARY_ACCEPTED_NOT_RECLAIMED")
+            return None
+
+        assert episode.confirm_index is not None
+        if self._five_index < episode.confirm_index:
+            return None
+        assert episode.reclaim_bar is not None and episode.atr_at_reclaim is not None
+        reclaim = episode.reclaim_bar
+        reclaim_atr = episode.atr_at_reclaim
+        reclaimed = (
+            reclaim.close > reclaim.open
+            and reclaim.body / reclaim_atr >= self.config.rejection_reclaim_body_atr
+            and reclaim.close_location >= self.config.low_confirmation_min_close_location
+        )
+        if not reclaimed:
+            self._invalidate_raid(state, "LOW", bar, "LOW_RECLAIM_LACKED_BULLISH_DISPLACEMENT")
+            return None
+        invalidation = episode.extreme - self.config.rejection_stop_buffer_atr * reclaim_atr
+        confirmed = (
+            bar.close > bar.open
+            and bar.body / atr >= self.config.low_confirmation_body_atr
+            and bar.close_location >= self.config.low_confirmation_min_close_location
+            and bar.close > reclaim.high
+        )
+        if not confirmed:
+            self._invalidate_raid(state, "LOW", bar, "LOW_REJECTION_LACKED_BULLISH_MSS")
+            return None
+        if bar.low <= invalidation:
+            self._invalidate_raid(state, "LOW", bar, "LOW_RAID_EXTREME_NOT_DEFENDED")
+            return None
+        scenario = (
+            ScenarioKind.ASIA_LOW_REJECTION
+            if source.label is SessionLabel.ASIA
+            else ScenarioKind.LONDON_LOW_REJECTION
+        )
+        target = source.low + self.config.rejection_target_fraction * source.width
+        plan = self._costed_plan(
+            scenario_id=episode.scenario_id,
+            scenario=scenario,
+            direction=Direction.LONG,
+            entry_order=EntryOrder.MARKET,
+            observed_ts_ns=bar.ts_ns,
+            bar=bar,
+            atr=reclaim_atr,
+            entry_raw=bar.close,
+            stop_raw=invalidation,
+            target_raw=target,
+            expire_ts_ns=None,
+            details={
+                "source": source.label.value,
+                "route": "SELL_SIDE_FAILED_AUCTION_WITH_BULLISH_MSS",
+                "session_high": source.high,
+                "session_low": source.low,
+                "session_width": source.width,
+                "raid_extreme": episode.extreme,
+                "sweep_ts_ns": episode.sweep_ts_ns,
+                "reclaim_ts_ns": episode.reclaim_ts_ns,
+                "reclaim_high": reclaim.high,
+                "decision_body_atr": bar.body / atr,
+                "decision_close_location": bar.close_location,
+                "decision_flow": bar.signed_flow,
+                "target_semantics": "COMPLETED_RANGE_PREMIUM_OBJECTIVE",
+            },
+        )
+        state.low_rejection = None
+        state.low_rejection_done = True
+        if plan is None:
+            self.skips["LOW_REJECTION_COSTED_PLAN_REJECTED"] += 1
+            return None
+        state.trade_plan_emitted = True
+        return self._emit_plan(plan, allow_entry)
+
+    def _fresh_bull_fvg(self, source: SessionRange, bar: FiveBar, atr: float) -> BullFVG | None:
+        if len(self._bars) < 2 or len(self._bar_atrs) < 2:
+            return None
+        first = self._bars[-2]
+        displacement = self._bars[-1]
+        displacement_atr = self._bar_atrs[-1]
+        if displacement_atr is None or displacement_atr <= 0:
+            return None
+        if not (
+            bar.low > first.high
+            and displacement.close > displacement.open
+            and displacement.close > source.high
+            and bar.close > source.high
+            and displacement.close_location >= self.config.acceptance_displacement_min_close_location
+            and bar.low >= source.high - self.config.fvg_boundary_tolerance_atr * atr
+        ):
+            return None
+        return BullFVG(
+            lower=first.high,
+            upper=bar.low,
+            formed_index=self._five_index,
+            formed_ts_ns=bar.ts_ns,
+            displacement_body_atr=displacement.body / displacement_atr,
+            displacement_close_location=displacement.close_location,
+        )
+
+    def _acceptance_plan(
+        self,
+        *,
+        state: SourceState,
+        bar: FiveBar,
+        atr: float,
+        fvg: BullFVG,
+        entry_order: EntryOrder,
+        scenario_id: str,
+    ) -> TradePlan | None:
+        source = state.source
+        scenario = (
+            ScenarioKind.ASIA_HIGH_ACCEPTANCE
+            if source.label is SessionLabel.ASIA
+            else ScenarioKind.LONDON_HIGH_ACCEPTANCE
+        )
+        if entry_order is EntryOrder.MARKET:
+            entry_raw = bar.close
+            stop_raw = bar.low - self.config.fvg_stop_buffer_atr * atr
+            target_raw = source.high + self.config.acceptance_market_projection * source.width
+            expire_ts_ns = None
+            route = "ACTIVE_FVG_RETEST_HOLD"
+        else:
+            entry_raw = fvg.upper
+            stop_raw = fvg.lower - self.config.fvg_stop_buffer_atr * atr
+            target_raw = source.high + self.config.acceptance_limit_projection * source.width
+            expire_ts_ns = bar.ts_ns + self.config.limit_entry_expiry_bars * self.config.bar_minutes * NS_MINUTE
+            route = "PASSIVE_FVG_MITIGATION_HOLD"
+        return self._costed_plan(
+            scenario_id=scenario_id,
+            scenario=scenario,
+            direction=Direction.LONG,
+            entry_order=entry_order,
+            observed_ts_ns=bar.ts_ns,
+            bar=bar,
+            atr=atr,
+            entry_raw=entry_raw,
+            stop_raw=stop_raw,
+            target_raw=target_raw,
+            expire_ts_ns=expire_ts_ns,
+            details={
+                "source": source.label.value,
+                "route": route,
+                "session_high": source.high,
+                "session_low": source.low,
+                "session_width": source.width,
+                "fvg_lower": fvg.lower,
+                "fvg_upper": fvg.upper,
+                "fvg_formed_ts_ns": fvg.formed_ts_ns,
+                "retest_low": bar.low,
+                "retest_close": bar.close,
+                "retest_body_atr": bar.body / atr,
+                "retest_close_location": bar.close_location,
+                "retest_flow": bar.signed_flow,
+                "target_semantics": (
+                    "FULL_COMPLETED_RANGE_EXPANSION"
+                    if entry_order is EntryOrder.MARKET
+                    else "HALF_COMPLETED_RANGE_EXPANSION"
+                ),
+            },
+        )
+
+    def _reacceptance_plan(
+        self,
+        *,
+        state: SourceState,
+        bar: FiveBar,
+        atr: float,
+        fvg: BullFVG,
+    ) -> TradePlan | None:
+        source = state.source
+        scenario_id = self._next_scenario_id(source.label, "HIGH-REACCEPTANCE")
+        target = source.high + self.config.reacceptance_projection * source.width
+        return self._costed_plan(
+            scenario_id=scenario_id,
+            scenario=ScenarioKind.ASIA_HIGH_REACCEPTANCE,
+            direction=Direction.LONG,
+            entry_order=EntryOrder.MARKET,
+            observed_ts_ns=bar.ts_ns,
+            bar=bar,
+            atr=atr,
+            entry_raw=bar.close,
+            stop_raw=source.high - self.config.fvg_stop_buffer_atr * atr,
+            target_raw=target,
+            expire_ts_ns=None,
+            details={
+                "source": source.label.value,
+                "route": "FAILED_FIRST_ACCEPTANCE_THEN_FRESH_ASIA_REACCEPTANCE",
+                "session_high": source.high,
+                "session_low": source.low,
+                "session_width": source.width,
+                "fvg_lower": fvg.lower,
+                "fvg_upper": fvg.upper,
+                "fvg_formed_ts_ns": fvg.formed_ts_ns,
+                "displacement_body_atr": fvg.displacement_body_atr,
+                "displacement_close_location": fvg.displacement_close_location,
+                "decision_flow": bar.signed_flow,
+                "target_semantics": "FULL_COMPLETED_RANGE_EXPANSION",
+            },
+        )
+
+    def _advance_high_acceptance(
+        self, state: SourceState, bar: FiveBar, atr: float, allow_entry: bool
+    ) -> TradePlan | None:
+        source = state.source
+        if state.trade_plan_emitted:
+            return None
+        # A completed close back inside terminates the current acceptance and
+        # creates the only causal prerequisite for an Asia re-acceptance route.
+        if bar.close < source.high and state.had_high_acceptance:
+            if state.acceptance_phase in ("WAIT_RETEST", "WAIT_REACCELERATION", "MONITOR_FAILURE"):
+                state.failed_high_acceptance = True
+                state.acceptance_phase = "WATCH"
+                state.outside_high_closes = 0
+                state.active_fvg = None
+                state.acceptance_started_index = None
+                state.acceptance_scenario_id = None
+                state.acceptance_pullback_low = None
+                state.acceptance_peak = None
+                sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE-FAILURE")
+                self._emit(
+                    scenario_id=sid,
+                    event_type="HIGH_ACCEPTANCE_FAILED_BACK_INSIDE",
+                    event_time_ns=bar.ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state="TERMINAL",
+                    reason_code="COMPLETED_CLOSE_RETURNED_INSIDE_SESSION_RANGE",
+                    reference_price=source.high,
+                    details={"source": source.label.value, "close": bar.close},
+                )
+
+        if state.acceptance_phase == "WATCH":
+            if bar.close > source.high:
+                state.outside_high_closes += 1
+            else:
+                state.outside_high_closes = 0
+            fresh = self._fresh_bull_fvg(source, bar, atr)
+
+            if (
+                state.failed_high_acceptance
+                and source.label is SessionLabel.ASIA
+                and not state.reacceptance_done
+                and fresh is not None
+                and fresh.displacement_body_atr >= self.config.reacceptance_displacement_body_atr
+                and state.outside_high_closes >= self.config.acceptance_closes
+            ):
+                state.reacceptance_done = True
+                state.failed_high_acceptance = False
+                plan = self._reacceptance_plan(state=state, bar=bar, atr=atr, fvg=fresh)
+                if plan is None:
+                    self.skips["ASIA_REACCEPTANCE_COSTED_PLAN_REJECTED"] += 1
+                    return None
+                self.scenario_counts[ScenarioKind.ASIA_HIGH_REACCEPTANCE.value] += 1
+                state.trade_plan_emitted = True
+                return self._emit_plan(plan, allow_entry)
+
+            if (
+                not state.initial_acceptance_attempted
+                and fresh is not None
+                and fresh.displacement_body_atr >= self.config.acceptance_displacement_body_atr
+            ):
+                state.active_fvg = fresh
+
+            if (
+                not state.initial_acceptance_attempted
+                and state.active_fvg is not None
+                and state.outside_high_closes >= self.config.acceptance_closes
+            ):
+                state.had_high_acceptance = True
+                state.acceptance_phase = "WAIT_RETEST"
+                state.acceptance_started_index = self._five_index
+                state.acceptance_peak = bar.high
+                sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE")
+                state.acceptance_scenario_id = sid
+                self.scenario_counts[f"{source.label.value}_HIGH_ACCEPTANCE"] += 1
+                self._emit(
+                    scenario_id=sid,
+                    event_type="SESSION_HIGH_ACCEPTANCE_CONFIRMED",
+                    event_time_ns=state.active_fvg.formed_ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state="WAIT_FVG_RETEST",
+                    reason_code="MULTI_CLOSE_DISPLACEMENT_CREATED_BULLISH_FVG_ABOVE_RANGE",
+                    reference_price=source.high,
+                    details={
+                        "source": source.label.value,
+                        "outside_closes": state.outside_high_closes,
+                        "fvg_lower": state.active_fvg.lower,
+                        "fvg_upper": state.active_fvg.upper,
+                        "displacement_body_atr": state.active_fvg.displacement_body_atr,
+                    },
+                )
+            return None
+
+        if state.acceptance_phase == "WAIT_RETEST":
+            assert state.active_fvg is not None and state.acceptance_started_index is not None
+            state.acceptance_peak = max(state.acceptance_peak or source.high, bar.high)
+            if self._five_index - state.acceptance_started_index > self.config.acceptance_retest_expiry_bars:
+                state.acceptance_phase = "MONITOR_FAILURE"
+                self.skips["ACCEPTANCE_FVG_RETEST_EXPIRED"] += 1
+                return None
+            if bar.low > state.active_fvg.upper or bar.ts_ns <= state.active_fvg.formed_ts_ns:
+                return None
+            if bar.close <= source.high:
+                return None
+            active = (
+                bar.close > bar.open
+                and bar.body / atr >= self.config.active_retest_body_atr
+                and bar.close_location >= self.config.active_retest_min_close_location
+                and bar.close > state.active_fvg.upper
+            )
+            passive = (
+                bar.low >= state.active_fvg.lower
+                and bar.close < bar.open
+                and bar.body / atr >= self.config.passive_retest_body_atr
+                and bar.close_location <= self.config.passive_retest_max_close_location
+            )
+            # Trading through the FVG lower edge is not passive absorption.
+            # If the completed session boundary still holds, wait for a fresh
+            # bullish FVG before considering a protected continuation limit.
+            if bar.low < state.active_fvg.lower and not active:
+                state.initial_acceptance_attempted = True
+                state.acceptance_phase = "WAIT_REACCELERATION"
+                state.acceptance_started_index = self._five_index
+                state.acceptance_pullback_low = bar.low
+                sid = state.acceptance_scenario_id
+                if sid is None:
+                    sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE")
+                    state.acceptance_scenario_id = sid
+                self.skips["INITIAL_FVG_LOWER_EDGE_BREACHED"] += 1
+                self._emit(
+                    scenario_id=sid,
+                    event_type="INITIAL_FVG_MITIGATION_FAILED",
+                    event_time_ns=bar.ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state="WAIT_REACCELERATION",
+                    reason_code="FVG_LOWER_EDGE_TRADED_THROUGH_BUT_SESSION_HIGH_HELD",
+                    reference_price=state.active_fvg.lower,
+                    details={
+                        "source": source.label.value,
+                        "session_high": source.high,
+                        "pullback_low": bar.low,
+                        "fvg_lower": state.active_fvg.lower,
+                        "fvg_upper": state.active_fvg.upper,
+                    },
+                )
+                state.active_fvg = None
+                return None
+
+            # The first completed mitigation consumes this acceptance attempt.
+            # A weak/indecisive mitigation is not a trade, but it is still the
+            # causal event which can later make an Asia re-acceptance eligible.
+            state.initial_acceptance_attempted = True
+            state.acceptance_phase = "MONITOR_FAILURE"
+            sid = state.acceptance_scenario_id
+            if sid is None:
+                sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE")
+                state.acceptance_scenario_id = sid
+            if not active and not passive:
+                self.skips["FVG_RETEST_NOT_EXECUTABLE"] += 1
+                self._emit(
+                    scenario_id=sid,
+                    event_type="ACCEPTED_FVG_RETEST_REJECTED",
+                    event_time_ns=bar.ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state="MONITOR_FAILURE",
+                    reason_code="FIRST_FVG_MITIGATION_LACKED_ACTIVE_HOLD_OR_PASSIVE_EXHAUSTION",
+                    reference_price=state.active_fvg.upper,
+                    details={
+                        "source": source.label.value,
+                        "retest_body_atr": bar.body / atr,
+                        "retest_close_location": bar.close_location,
+                        "retest_close": bar.close,
+                    },
+                )
+                return None
+            entry_order = EntryOrder.MARKET if active else EntryOrder.LIMIT_GTD
+            plan = self._acceptance_plan(
+                state=state,
+                bar=bar,
+                atr=atr,
+                fvg=state.active_fvg,
+                entry_order=entry_order,
+                scenario_id=sid,
+            )
+            if plan is None:
+                self.skips["HIGH_ACCEPTANCE_COSTED_PLAN_REJECTED"] += 1
+                return None
+            state.trade_plan_emitted = True
+            return self._emit_plan(plan, allow_entry)
+
+        if state.acceptance_phase == "WAIT_REACCELERATION":
+            assert state.acceptance_started_index is not None
+            if self._five_index - state.acceptance_started_index > self.config.acceptance_retest_expiry_bars:
+                state.acceptance_phase = "MONITOR_FAILURE"
+                self.skips["ACCEPTANCE_REACCELERATION_EXPIRED"] += 1
+                return None
+            fresh = self._fresh_bull_fvg(source, bar, atr)
+            if (
+                fresh is None
+                or fresh.displacement_body_atr < self.config.acceptance_displacement_body_atr
+                or bar.close <= source.high
+            ):
+                return None
+            state.active_fvg = fresh
+            state.acceptance_phase = "MONITOR_FAILURE"
+            sid = state.acceptance_scenario_id
+            if sid is None:
+                sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE-REACCELERATION")
+                state.acceptance_scenario_id = sid
+            prior_peak = state.acceptance_peak or source.high
+            plan = self._costed_plan(
+                scenario_id=sid,
+                scenario=(
+                    ScenarioKind.ASIA_HIGH_ACCEPTANCE
+                    if source.label is SessionLabel.ASIA
+                    else ScenarioKind.LONDON_HIGH_ACCEPTANCE
+                ),
+                direction=Direction.LONG,
+                entry_order=EntryOrder.LIMIT_GTD,
+                observed_ts_ns=bar.ts_ns,
+                bar=bar,
+                atr=atr,
+                entry_raw=fresh.upper,
+                stop_raw=fresh.lower - self.config.fvg_stop_buffer_atr * atr,
+                target_raw=prior_peak,
+                expire_ts_ns=(
+                    bar.ts_ns
+                    + self.config.limit_entry_expiry_bars
+                    * self.config.bar_minutes
+                    * NS_MINUTE
+                ),
+                details={
+                    "source": source.label.value,
+                    "route": "FVG_BREACH_HELD_BOUNDARY_THEN_FRESH_REACCELERATION_LIMIT",
+                    "session_high": source.high,
+                    "session_low": source.low,
+                    "session_width": source.width,
+                    "fvg_lower": fresh.lower,
+                    "fvg_upper": fresh.upper,
+                    "fvg_formed_ts_ns": fresh.formed_ts_ns,
+                    "initial_pullback_low": state.acceptance_pullback_low,
+                    "prior_acceptance_peak": prior_peak,
+                    "target_semantics": "PRIOR_ACCEPTANCE_EXPANSION_HIGH",
+                },
+            )
+            if plan is None:
+                self.skips["ACCEPTANCE_REACCELERATION_COSTED_PLAN_REJECTED"] += 1
+                return None
+            state.trade_plan_emitted = True
+            return self._emit_plan(plan, allow_entry)
+
+        return None
 
     def _on_five(self, bar: FiveBar, allow_entry: bool) -> TradePlan | None:
         self._five_index += 1
@@ -740,33 +1327,32 @@ class CausalLiquidityAuctionEngine:
         minute = self._minute_of_day(bar.ts_ns)
         self._update_and_freeze_ranges(bar, minute)
 
-        if (
-            atr is None
-            or self._day_bucket is None
-            or self._weekday(self._day_bucket) >= 5
-        ):
-            return None
-
         plan: TradePlan | None = None
-        for label in (SessionLabel.ASIA, SessionLabel.LONDON):
-            source = self._ranges.get(label)
-            if source is None or not (
-                source.trade_start_minute < minute <= source.trade_end_minute
-            ):
-                continue
-            self._observe_low_raid(source, bar)
-            if label in self._done:
-                continue
-            episode = self._episodes.get(label)
-            if episode is None:
-                if bar.high >= source.high + self.config.price_increment:
-                    episode = self._start_episode(source, bar, atr)
-                    if bar.close < source.high:
-                        self._mark_reclaim(episode, bar, atr)
-                continue
-            candidate = self._advance_episode(label, bar, atr, allow_entry)
-            if candidate is not None and plan is None:
-                plan = candidate
+        if atr is not None and self._day_bucket is not None and self._weekday(self._day_bucket) < 5:
+            for label in (SessionLabel.ASIA, SessionLabel.LONDON):
+                state = self._sources.get(label)
+                if state is None:
+                    continue
+                source = state.source
+                if not (source.trade_start_minute < minute <= source.trade_end_minute):
+                    continue
+                state.min_since_activity_open = min(state.min_since_activity_open, bar.low)
+                route_allow = allow_entry and plan is None
+                candidate = self._advance_high_rejection(state, bar, atr, route_allow)
+                if candidate is not None and plan is None:
+                    plan = candidate
+
+                route_allow = allow_entry and plan is None
+                candidate = self._advance_low_rejection(state, bar, atr, route_allow)
+                if candidate is not None and plan is None:
+                    plan = candidate
+
+                route_allow = allow_entry and plan is None
+                candidate = self._advance_high_acceptance(state, bar, atr, route_allow)
+                if candidate is not None and plan is None:
+                    plan = candidate
+        self._bars.append(bar)
+        self._bar_atrs.append(atr)
         return plan
 
     def on_bar(self, bar: BarObs, *, allow_entry: bool = True) -> TradePlan | None:
@@ -808,7 +1394,7 @@ class CausalLiquidityAuctionEngine:
             event_time_ns=ts_ns,
             observed_time_ns=ts_ns,
             next_state="SUBMITTED",
-            reason_code="NAUTILUS_MARKET_BRACKET_SUBMITTED",
+            reason_code="NAUTILUS_ORDER_LIST_SUBMITTED",
             reference_price=plan.expected_entry,
             details=details,
         )
@@ -833,14 +1419,6 @@ class CausalLiquidityAuctionEngine:
 
 
 __all__ = [
-    "BarObs",
-    "CausalLiquidityAuctionEngine",
-    "Direction",
-    "FiveBar",
-    "LogicConfig",
-    "RiskSizer",
-    "ScenarioKind",
-    "SessionLabel",
-    "SizeDecision",
-    "TradePlan",
+    "BarObs", "CausalLiquidityAuctionEngine", "Direction", "EntryOrder", "LogicConfig",
+    "RiskSizer", "ScenarioKind", "SizeDecision", "TradePlan",
 ]

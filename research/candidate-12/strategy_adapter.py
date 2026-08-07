@@ -1,10 +1,19 @@
-"""NautilusTrader adapter for Candidate 12 causal market-entry plans."""
+"""NautilusTrader adapter for Candidate 12 I7 causal market/limit plans."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from logic import BarObs, CausalLiquidityAuctionEngine, Direction, LogicConfig, RiskSizer, TradePlan
+from logic import (
+    BarObs,
+    CausalLiquidityAuctionEngine,
+    Direction,
+    EntryOrder,
+    LogicConfig,
+    RiskSizer,
+    TradePlan,
+)
 from metrics import decimal_value
 
 
@@ -89,6 +98,7 @@ def build_candidate_strategy(
                 self.slot_rejections += 1
                 self.logic.mark_plan_rejected(plan, self.last_ts_ns, "GLOBAL_SLOT_OCCUPIED")
                 return
+
             nav, free_balance = self._account_values()
             decision = self.sizer.size(
                 nav=nav,
@@ -116,11 +126,10 @@ def build_candidate_strategy(
 
             side = OrderSide.BUY if plan.direction is Direction.LONG else OrderSide.SELL
             try:
-                order_list = self.order_factory.bracket(
+                common = dict(
                     instrument_id=self.config.instrument_id,
                     order_side=side,
                     quantity=instrument.make_qty(decision.quantity),
-                    entry_order_type=OrderType.MARKET,
                     tp_order_type=OrderType.LIMIT,
                     tp_price=instrument.make_price(plan.target_price),
                     tp_time_in_force=TimeInForce.GTC,
@@ -129,6 +138,28 @@ def build_candidate_strategy(
                     sl_trigger_price=instrument.make_price(plan.stop_price),
                     sl_time_in_force=TimeInForce.GTC,
                 )
+                if plan.entry_order is EntryOrder.MARKET:
+                    order_list = self.order_factory.bracket(
+                        entry_order_type=OrderType.MARKET,
+                        **common,
+                    )
+                else:
+                    if plan.expire_ts_ns is None:
+                        raise ValueError("LIMIT_GTD plan is missing expire_ts_ns")
+                    order_list = self.order_factory.bracket(
+                        entry_order_type=OrderType.LIMIT,
+                        entry_price=instrument.make_price(plan.expected_entry),
+                        time_in_force=TimeInForce.GTD,
+                        expire_time=(
+                            datetime.fromtimestamp(
+                                plan.expire_ts_ns / 1_000_000_000,
+                                tz=timezone.utc,
+                            )
+                            + timedelta(microseconds=1)
+                        ),
+                        entry_post_only=False,
+                        **common,
+                    )
                 self.submit_order_list(order_list)
             except Exception as exc:
                 record = {
@@ -146,7 +177,9 @@ def build_candidate_strategy(
                 "scenario": plan.scenario.value,
                 "direction": plan.direction.value,
                 "observed_ts_ns": plan.observed_ts_ns,
-                "entry_order_type": "MARKET_AFTER_COMPLETED_CAUSAL_CONFIRMATION",
+                "entry_order_type": plan.entry_order.value,
+                "entry_post_only": False if plan.entry_order is EntryOrder.LIMIT_GTD else None,
+                "expire_ts_ns": plan.expire_ts_ns,
                 "entry": plan.expected_entry,
                 "stop": plan.stop_price,
                 "target": plan.target_price,
@@ -188,13 +221,14 @@ def build_candidate_strategy(
                 high=float(str(bar.high)),
                 low=float(str(bar.low)),
                 close=float(str(bar.close)),
-                volume=source_volume,
-                taker_buy_volume=taker_buy,
+                volume=source_volumes[self.flow_index - 1],
+                taker_buy_volume=taker_buy_volumes[self.flow_index - 1],
             )
-            plan = self.logic.on_bar(
-                observation,
-                allow_entry=self.last_ts_ns >= self.config.evaluation_start_ns,
+            allow_entry = (
+                self.last_ts_ns >= self.config.evaluation_start_ns
+                and self._slot_free()
             )
+            plan = self.logic.on_bar(observation, allow_entry=allow_entry)
             if plan is not None:
                 self._submit_plan(plan)
 
@@ -213,7 +247,7 @@ def build_candidate_strategy(
 
         def on_order_expired(self, event: Any) -> None:
             self._record_order_event(event, "ORDER_EXPIRED")
-            self._terminal_if_flat(int(event.ts_event), "ORDER_EXPIRED_FLAT")
+            self._terminal_if_flat(int(event.ts_event), "GTD_ENTRY_EXPIRED_UNFILLED")
 
         def on_order_canceled(self, event: Any) -> None:
             self._record_order_event(event, "ORDER_CANCELED")
@@ -225,7 +259,10 @@ def build_candidate_strategy(
             self.errors.append(record)
             if self.active_plan is not None:
                 self.logic.mark_plan_rejected(
-                    self.active_plan, int(event.ts_event), "ORDER_DENIED", record
+                    self.active_plan,
+                    int(event.ts_event),
+                    "ORDER_DENIED",
+                    record,
                 )
                 self.active_plan = None
 
@@ -235,7 +272,10 @@ def build_candidate_strategy(
             self.errors.append(record)
             if self.active_plan is not None:
                 self.logic.mark_plan_rejected(
-                    self.active_plan, int(event.ts_event), "ORDER_REJECTED", record
+                    self.active_plan,
+                    int(event.ts_event),
+                    "ORDER_REJECTED",
+                    record,
                 )
                 self.active_plan = None
 
