@@ -1,15 +1,15 @@
-name: candidate-02-v107-volatility-regime-family
+name: candidate-02-v108-cross-market-rotation-family
 
 on:
   push:
     branches: ["research/candidate-02"]
-    paths: ["research/candidate-02/v107_trigger.json"]
+    paths: ["research/candidate-02/v108_trigger.json"]
 
 permissions: {contents: write, packages: read, actions: read}
-concurrency: {group: candidate-02-v107-volatility-regime-family, cancel-in-progress: false}
+concurrency: {group: candidate-02-v108-cross-market-rotation-family, cancel-in-progress: false}
 
 jobs:
-  v107-family:
+  v108-family:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -23,89 +23,78 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {ref: "${{ github.sha }}", fetch-depth: 0}
-      - name: Verify fixed engine and family contract
+      - name: Verify engine and causal cross-market code
         shell: bash
         run: |
-          set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          smc4 doctor
-          python -m py_compile research/candidate-02/v107_regime_rotation_core.py research/candidate-02/v107_nt_backtest.py
+          set -euo pipefail; git config --global --add safe.directory "$GITHUB_WORKSPACE"; smc4 doctor
+          python -m py_compile research/candidate-02/v108_prepare_spot.py research/candidate-02/v108_cross_market_rotation_core.py research/candidate-02/v108_nt_backtest.py
           python - <<'PY'
           import json
           from pathlib import Path
           a=json.loads(Path('research/candidate-02/v107_week1_config.json').read_text()); b=json.loads(Path('research/candidate-02/v107_week2_config.json').read_text())
           assert a['scenario']==b['scenario'] and a['costs']==b['costs'] and a['risk']==b['risk']
-          assert float(a['risk']['risk_fraction'])==0.03 and a['risk']['maximum_notional_cap'] is None
-          assert a['scenario']['auction_windows_5m']==[6,9,12,15,18]
-          assert a['scenario']['volatility_quantile']==0.65
+          assert a['scenario']['volatility_quantile']==0.65 and float(a['risk']['risk_fraction'])==0.03
           PY
-      - name: Download immutable week-one data
+      - name: Download immutable week-one futures data
         uses: actions/download-artifact@v4
-        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v107-week1, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
+        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v108-week1, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
       - name: Download immutable matrix for week two
         uses: actions/download-artifact@v4
-        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v107-week2, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
+        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v108-week2, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
       - name: Download locked week-two bars
         uses: actions/download-artifact@v4
-        with: {name: candidate-02-v53-nt-second-week-3c73273b563ee221a0e0b9f4ec3c87077c645edd, path: inputs/v107-week2-source, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31065619489"}
-      - name: Materialize bars and fixed adjacent configs
+        with: {name: candidate-02-v53-nt-second-week-3c73273b563ee221a0e0b9f4ec3c87077c645edd, path: inputs/v108-week2-source, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31065619489"}
+      - name: Materialize futures bars and causally align spot
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf inputs/v107-week2/.cache; mkdir -p inputs/v107-week2/.cache/candidate-02/v107-week2/binance_1m
-          find inputs/v107-week2-source -path '*/binance_1m/*.zip' -type f -exec cp '{}' inputs/v107-week2/.cache/candidate-02/v107-week2/binance_1m/ \;
-          test "$(find inputs/v107-week2/.cache/candidate-02/v107-week2/binance_1m -name '*.zip' | wc -l)" -eq 10
-          mkdir -p /tmp/v107-config
+          rm -rf inputs/v108-week2/.cache; mkdir -p inputs/v108-week2/.cache/candidate-02/v108-week2/binance_1m
+          find inputs/v108-week2-source -path '*/binance_1m/*.zip' -type f -exec cp '{}' inputs/v108-week2/.cache/candidate-02/v108-week2/binance_1m/ \;
+          test "$(find inputs/v108-week2/.cache/candidate-02/v108-week2/binance_1m -name '*.zip' | wc -l)" -eq 10
+          python research/candidate-02/v108_prepare_spot.py --input-root inputs/v108-week1 --start 2025-03-03
+          python research/candidate-02/v108_prepare_spot.py --input-root inputs/v108-week2 --start 2024-12-30
+          mkdir -p /tmp/v108-config
           python - <<'PY'
           import json
           from pathlib import Path
           for week in ('week1','week2'):
               base=json.loads(Path(f'research/candidate-02/v107_{week}_config.json').read_text())
-              for q in (0.55,0.65,0.75):
-                  obj=json.loads(json.dumps(base)); obj['scenario']['volatility_quantile']=q; obj['candidate']=f"candidate-02-v107-q{int(q*100)}"
-                  Path(f'/tmp/v107-config/{week}-q{int(q*100)}.json').write_text(json.dumps(obj,indent=2,sort_keys=True)+'\n')
+              for p in (0.35,0.50,0.65):
+                  obj=json.loads(json.dumps(base)); obj['scenario']['spot_participation_max']=p; obj['candidate']=f"candidate-02-v108-p{int(p*100):02d}"
+                  Path(f'/tmp/v108-config/{week}-p{int(p*100):02d}.json').write_text(json.dumps(obj,indent=2,sort_keys=True)+'\n')
           PY
       - name: Run six NautilusTrader screens
         shell: bash
         run: |
           set -euo pipefail
-          for q in 55 65 75; do
-            for week in week1 week2; do
-              out="artifacts/candidate-02-v107/q${q}/${week}"; mkdir -p "$out"
-              set +e
-              python research/candidate-02/v107_nt_backtest.py --config "/tmp/v107-config/${week}-q${q}.json" --input-root "inputs/v107-${week}" --output "$out" | tee "artifacts-v107-q${q}-${week}.log"
-              status=${PIPESTATUS[0]}; set -e; echo "$status" > "$out/validation_exit_code.txt"
-              if [[ "$status" != 0 && "$status" != 2 ]]; then exit "$status"; fi
-            done
-          done
+          for p in 35 50 65; do for week in week1 week2; do
+            out="artifacts/candidate-02-v108/p${p}/${week}"; mkdir -p "$out"; set +e
+            python research/candidate-02/v108_nt_backtest.py --config "/tmp/v108-config/${week}-p${p}.json" --input-root "inputs/v108-${week}" --output "$out" | tee "artifacts-v108-p${p}-${week}.log"
+            status=${PIPESTATUS[0]}; set -e; echo "$status" > "$out/validation_exit_code.txt"; if [[ "$status" != 0 && "$status" != 2 ]]; then exit "$status"; fi
+          done; done
           python - <<'PY'
           import json
           from pathlib import Path
-          out={'candidate':'candidate-02-v107-multihorizon-volatility-regime-rotation','engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':0.03,'variants':{}}
-          for q in (55,65,75):
-              out['variants'][str(q)]={}
-              for week in ('week1','week2'):
-                  out['variants'][str(q)][week]=json.loads(Path(f'artifacts/candidate-02-v107/q{q}/{week}/metrics.json').read_text())
-          passes={q:all(m['target_met'] for m in weeks.values()) for q,weeks in out['variants'].items()}
-          out['variant_both_week_pass']=passes
-          out['plateau_pass']=passes['65'] and (passes['55'] or passes['75'])
-          out['status']='READY_FOR_PROSPECTIVE_WEEK' if out['plateau_pass'] else 'DEVELOPMENT_REJECT'
-          Path('artifacts-v107-family-decision.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
-          print(json.dumps({'status':out['status'],'passes':passes,'metrics':{q:{w:{k:m.get(k) for k in ('trades','trades_per_day','win_rate','profit_factor_after_cost','geometric_daily_growth_after_cost','maximum_mark_to_market_drawdown','target_met')} for w,m in ws.items()} for q,ws in out['variants'].items()}},indent=2,sort_keys=True))
+          out={'candidate':'candidate-02-v108-derivative-led-cross-market-rotation','engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':0.03,'variants':{}}
+          for p in (35,50,65):
+              out['variants'][str(p)]={w:json.loads(Path(f'artifacts/candidate-02-v108/p{p}/{w}/metrics.json').read_text()) for w in ('week1','week2')}
+          passes={p:all(m['target_met'] for m in ws.values()) for p,ws in out['variants'].items()}; out['variant_both_week_pass']=passes
+          out['plateau_pass']=passes['50'] and (passes['35'] or passes['65']); out['status']='READY_FOR_PROSPECTIVE_WEEK' if out['plateau_pass'] else 'DEVELOPMENT_REJECT'
+          Path('artifacts-v108-family-decision.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'status':out['status'],'passes':passes,'metrics':{p:{w:{k:m.get(k) for k in ('trades','trades_per_day','win_rate','profit_factor_after_cost','geometric_daily_growth_after_cost','maximum_mark_to_market_drawdown','target_met')} for w,m in ws.items()} for p,ws in out['variants'].items()}},indent=2,sort_keys=True))
           PY
       - name: Commit compact evidence
         if: always()
         shell: bash
         run: |
-          set -euo pipefail
-          rm -rf compact-v107; mkdir compact-v107
-          cp -f artifacts-v107-*.json compact-v107/ 2>/dev/null || true; cp -f artifacts-v107-*.log compact-v107/ 2>/dev/null || true; cp -a artifacts/candidate-02-v107 compact-v107/ 2>/dev/null || true
+          set -euo pipefail; rm -rf compact-v108; mkdir compact-v108
+          cp -f artifacts-v108-*.json compact-v108/ 2>/dev/null || true; cp -f artifacts-v108-*.log compact-v108/ 2>/dev/null || true; cp -a artifacts/candidate-02-v108 compact-v108/ 2>/dev/null || true
           git fetch origin research/candidate-02
-          if test "$(git rev-parse origin/research/candidate-02)" = "$GITHUB_SHA" && test -f artifacts-v107-family-decision.json; then
-            dest="research/candidate-02/results/v107_family/$GITHUB_SHA"; rm -rf "$dest"; mkdir -p "$dest"; cp -a compact-v107/. "$dest/"
-            git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"; git add "$dest"; git commit -m "research(candidate-02): record v107 family evidence"; git push origin HEAD:research/candidate-02
+          if test "$(git rev-parse origin/research/candidate-02)" = "$GITHUB_SHA" && test -f artifacts-v108-family-decision.json; then
+            dest="research/candidate-02/results/v108_family/$GITHUB_SHA"; rm -rf "$dest"; mkdir -p "$dest"; cp -a compact-v108/. "$dest/"
+            git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"; git add "$dest"; git commit -m "research(candidate-02): record v108 family evidence"; git push origin HEAD:research/candidate-02
           fi
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
-        with: {name: "candidate-02-v107-family-${{ github.sha }}", path: compact-v107, if-no-files-found: warn, retention-days: 30, compression-level: 9}
+        with: {name: "candidate-02-v108-family-${{ github.sha }}", path: compact-v108, if-no-files-found: warn, retention-days: 30, compression-level: 9}
