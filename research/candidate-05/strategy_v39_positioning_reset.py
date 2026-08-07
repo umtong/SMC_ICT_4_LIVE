@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
+from inventory_repricing_logic import QH_CONTEXT_MAX_AGE_BARS
+from inventory_repricing_logic import QH_CONTEXT_MIN_AGE_BARS
 from positioning_reset_logic import completed_path_efficiency
 from positioning_reset_logic import positioning_reset_supports_early_reversal
 from strategy_base import LiquidityResponseConfig
 from strategy_base import PendingSetup
+from strategy_base import _as_float
 from strategy_v18 import ExecutionConfirmedCancelStrategy
+from strategy_v9 import ArmedEntryPath
 from strategy_v9 import ObservedEntryPathStrategy
 from strategy_v26 import ScenarioValidEntryStrategy
+
+
+COUNTER_CONTEXT_ROTATION_MIN_TARGET_PROGRESS = 1.0 / 3.0
+TWO_TO_ONE_FLOW_IMBALANCE = 1.0 / 3.0
+COUNTER_CONTEXT_REACCEPTANCE_EFFICIENCY_MIN = 0.20
 
 
 class PositioningResetReversalStrategy(ScenarioValidEntryStrategy):
@@ -24,26 +34,43 @@ class PositioningResetReversalStrategy(ScenarioValidEntryStrategy):
     retrace/breakaway response. Detector, target, stop, costs, 3% NAV sizing,
     Nautilus execution and pending-order lifecycle are inherited unchanged.
 
-    The position manager also resolves one completed-bar ambiguity at an
-    intermediate liquidity milestone. If the same completed bar touches both
-    the milestone and its software-protected level, intrabar ordering is not
-    guessed. A close beyond the consumed pool with reversal-side visible depth
-    and failed aggressive counterflow is treated as acceptance, so the nearer
-    software milestone is retired while the original exchange-side structural
-    stop and live-liquidity target remain unchanged. If price and depth accept
-    but aggressive flow is aligned with the position, protection begins only
-    from the next completed bar. All other ambiguous bars retain the prior
+    The position manager resolves one completed-bar ambiguity at an intermediate
+    liquidity milestone. If the same completed bar touches both the milestone
+    and its software-protected level, intrabar ordering is not guessed. A close
+    beyond the consumed pool with reversal-side visible depth and failed
+    aggressive counterflow is treated as acceptance, so the nearer software
+    milestone is retired while the original exchange-side structural stop and
+    live-liquidity target remain unchanged. If price and depth accept but
+    aggressive flow is aligned with the position, protection begins only from
+    the next completed bar. All other ambiguous bars retain the prior
     conservative flatten.
+
+    A position opened against an already accepted quarter-hour repricing state is
+    treated as a bounded counter-context rotation, not a new directional regime.
+    Once that rotation has completed at least one third of its frozen path to the
+    actual liquidity target, a completed close back through its CHoCH reference
+    with two-to-one adverse one- and three-minute aggressive flow and efficient
+    adverse repricing invalidates the rotation. This is an evidence exit; entry,
+    target, structural stop, costs, sizing and exchange-side bracket are not
+    changed.
     """
 
     def __init__(self, config: LiquidityResponseConfig) -> None:
         super().__init__(config)
+        self.counter_context_choch_reference = float("nan")
+        self.counter_context_target = float("nan")
+        self.counter_context_entry = float("nan")
+        self.counter_context_max_target_progress = 0.0
+        self.counter_context_rotation_active = False
+        self.counter_context_created_ts = 0
         self.diagnostics.update(
             {
                 "positioning_reset_early_participation_pass": 0,
                 "positioning_reset_early_participation_deferred": 0,
                 "software_same_bar_counterflow_absorption_acceptances": 0,
                 "software_same_bar_deferred_protection_arms": 0,
+                "counter_context_rotations_opened": 0,
+                "counter_context_rotation_failures": 0,
             },
         )
 
@@ -101,6 +128,132 @@ class PositioningResetReversalStrategy(ScenarioValidEntryStrategy):
         self.diagnostics[key] += 1
         return allowed
 
+    def _submit_price_capped_bracket(
+        self,
+        *,
+        armed: ArmedEntryPath,
+        row: dict[str, float | int],
+        entry_price: Any,
+        stop_price: Any,
+        target_price: Any,
+        sizing_entry: float,
+        planned_loss: float,
+        target_source: str,
+        target_r: float,
+        branch: str,
+        event_type: str,
+        reason: str,
+        expires_index: int,
+        entry_tag: str,
+        extra: dict[str, Any] | None = None,
+    ) -> bool:
+        submitted = super()._submit_price_capped_bracket(
+            armed=armed,
+            row=row,
+            entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            sizing_entry=sizing_entry,
+            planned_loss=planned_loss,
+            target_source=target_source,
+            target_r=target_r,
+            branch=branch,
+            event_type=event_type,
+            reason=reason,
+            expires_index=expires_index,
+            entry_tag=entry_tag,
+            extra=extra,
+        )
+        if submitted:
+            self.counter_context_choch_reference = float(armed.choch_close)
+            self.counter_context_target = _as_float(target_price)
+            self.counter_context_entry = float("nan")
+            self.counter_context_max_target_progress = 0.0
+            self.counter_context_rotation_active = False
+            self.counter_context_created_ts = 0
+        return submitted
+
+    def on_position_opened(self, event: Any) -> None:
+        super().on_position_opened(event)
+        if self.entry_cancel_requested:
+            return
+        actual_entry = self._actual_average_entry(event)
+        self.counter_context_entry = (
+            actual_entry
+            if math.isfinite(actual_entry) and actual_entry > 0.0
+            else self.entry_limit
+        )
+        context = getattr(self, "quarter_context", None)
+        if context is None:
+            return
+        age = self.bar_index - int(context.created_index)
+        active = (
+            bool(context.accepted)
+            and QH_CONTEXT_MIN_AGE_BARS <= age <= QH_CONTEXT_MAX_AGE_BARS
+            and int(context.direction) == -int(self.entry_side)
+        )
+        if not active:
+            return
+        if not all(
+            math.isfinite(value)
+            for value in (
+                self.counter_context_entry,
+                self.counter_context_choch_reference,
+                self.counter_context_target,
+            )
+        ):
+            return
+        target_distance = self.entry_side * (
+            self.counter_context_target - self.counter_context_entry
+        )
+        if target_distance <= 0.0:
+            return
+        self.counter_context_rotation_active = True
+        self.counter_context_created_ts = int(context.created_ts)
+        self.diagnostics["counter_context_rotations_opened"] += 1
+
+    def _counter_context_rotation_failed(
+        self,
+        row: dict[str, float | int],
+    ) -> bool:
+        if not self.counter_context_rotation_active:
+            return False
+        side = int(self.entry_side)
+        target_distance = side * (
+            self.counter_context_target - self.counter_context_entry
+        )
+        if side not in (-1, 1) or target_distance <= 0.0:
+            return False
+
+        favorable_price = (
+            float(row["high"]) if side > 0 else float(row["low"])
+        )
+        progress = side * (
+            favorable_price - self.counter_context_entry
+        ) / target_distance
+        self.counter_context_max_target_progress = max(
+            self.counter_context_max_target_progress,
+            progress,
+        )
+        if (
+            self.counter_context_max_target_progress
+            < COUNTER_CONTEXT_ROTATION_MIN_TARGET_PROGRESS
+        ):
+            return False
+
+        choch_reaccepted = side * (
+            float(row["close"]) - self.counter_context_choch_reference
+        ) < 0.0
+        directional_flow_60s = side * self._feature("flow_60s")
+        directional_flow_3m = side * self._feature("flow_3m")
+        efficiency = self._feature("efficiency_60s")
+        return (
+            choch_reaccepted
+            and directional_flow_60s <= -TWO_TO_ONE_FLOW_IMBALANCE
+            and directional_flow_3m <= -TWO_TO_ONE_FLOW_IMBALANCE
+            and efficiency >= COUNTER_CONTEXT_REACCEPTANCE_EFFICIENCY_MIN
+        )
+
     def _manage_open_position(
         self,
         row: dict[str, float | int],
@@ -113,6 +266,15 @@ class PositioningResetReversalStrategy(ScenarioValidEntryStrategy):
             ExecutionConfirmedCancelStrategy._manage_open_position(self, row)
             return
         if self.exit_pending:
+            return
+
+        if self._counter_context_rotation_failed(row):
+            self.diagnostics["counter_context_rotation_failures"] += 1
+            self._flatten_at_software_invalidation(
+                row,
+                event_type="COUNTER_CONTEXT_ROTATION_FAILED",
+                reason="CHOCH_REACCEPTED_AFTER_ONE_THIRD_TARGET_PATH_WITH_BROAD_ADVERSE_FLOW",
+            )
             return
 
         side = self.entry_side
@@ -237,6 +399,15 @@ class PositioningResetReversalStrategy(ScenarioValidEntryStrategy):
                         )
 
         ObservedEntryPathStrategy._manage_open_position(self, row)
+
+    def _clear_trade_state(self) -> None:
+        super()._clear_trade_state()
+        self.counter_context_choch_reference = float("nan")
+        self.counter_context_target = float("nan")
+        self.counter_context_entry = float("nan")
+        self.counter_context_max_target_progress = 0.0
+        self.counter_context_rotation_active = False
+        self.counter_context_created_ts = 0
 
 
 __all__ = ["PositioningResetReversalStrategy"]
