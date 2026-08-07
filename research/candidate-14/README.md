@@ -1,64 +1,72 @@
-# Candidate 14 — Combined Cross-Market and Session Auction Portfolio
+# Candidate 14 — SCDAM + Session Auction with Four-Market Semantics
 
-Candidate 14 runs two economically distinct scenario modules through one NautilusTrader portfolio:
+Candidate 14 runs two independently causal scenario generators through one NautilusTrader portfolio:
 
-1. **SCDAM core** — Candidate 13's synchronized four-market failed-auction reversal and accepted-auction continuation semantics.
-2. **Session I7** — Candidate 12 I7's frozen BTC Asia/London completed-session rejection, acceptance, reacceptance and protected FVG routes from commit `036c0e8302c3826aa293f6037405a84fc7118ae8`.
+1. **SCDAM core** — Candidate 13's synchronized four-market failed-auction reversal and accepted-auction continuation semantics, with Candidate 14's validated displacement-failure execution fallback.
+2. **Session I7 generator** — Candidate 12 I7's frozen BTC Asia/London completed-session rejection, acceptance, reacceptance and protected FVG routes from commit `036c0e8302c3826aa293f6037405a84fc7118ae8`.
 
-Both modules share one `GlobalCandidateMutex`, one current-NAV exact 3% planned-loss sizer, one margin account and one position/pending-entry slot. They never run separate NAV curves and their returns are not added after the fact.
+Every completed session plan must now pass the same four-market economic state machine as the SCDAM core before it can enter the shared global candidate arbitration.
 
-## Research path
+## Development history
 
-### Development v1 — rejected
+### V1 — rejected
 
-Generic trend resumption, originator/laggard transfer, path-only confirmation and AAC immediate execution increased frequency but produced 12 trades with 5 wins and 7 losses. The logic failed despite clean implementation audits. Evidence is retained as `development-v1-aggregate.json` and `development-v1-RESULT.md`.
+Generic trend resumption, originator/laggard transfer, path-only confirmation and AAC immediate execution produced 12 trades with 5 wins and 7 losses. Implementation audits were clean; the logic was bad.
 
-### Development v2 — selective but incomplete
+### V2 — selective, just below target
 
-The Candidate 13 core was restored and FAR received a causal displacement-failure execution fallback. The result was 6 trades, 5 wins, 1 loss, 0.9032% daily geometric growth and a 2.456 payoff ratio. Trade-level diagnosis showed:
+The Candidate 13 core was restored and FAR received a full-displacement-traversal execution fallback. The result was 6 trades, 5 wins, 1 loss, 0.9032% daily geometric growth and a 2.456 payoff ratio. The only leader-catch-up trade lost, so that state was removed.
 
-- the displacement execution converted a previously unfilled W10 plan into a winner;
-- the only liquidity-leader-catch-up trade was the W13 loss.
+### V3 — frequency solved, semantic breadth too loose
 
-Leader catch-up was removed rather than tuned. Evidence is retained as `development-v2-aggregate.json` and `development-v2-RESULT.md`.
+The complete I7 session module was inserted into the same Nautilus account and global slot. Fresh provenance-verified diagnostics produced:
 
-### Development v3 — current
+- 35 days;
+- NAV multiple 1.3915;
+- 0.9485% daily geometric growth;
+- 12 trades, 8 wins, 4 losses;
+- payoff ratio 1.9449;
+- all safety audits passed.
 
-The preserved SCDAM core and displacement execution are combined with the already implemented Candidate 12 I7 session state machine. No Candidate 12 rule was rewritten or fitted to Candidate 14 dates; its source is copied by exact Git blob.
+The four session losses were two fresh Asia reacceptances, one Asia high acceptance and one London high rejection. Yet earlier I7 evidence contains profitable continuation and rejection routes. Deleting route names would therefore memorize the current dates rather than identify the common failure cause.
 
-## Scenario independence
+V3 evidence is retained in `development-v3-aggregate.json` and `development-v3-RESULT.md`.
+
+## V4 hypothesis
+
+The I7 local state machine answers whether a completed BTC session boundary produced a valid local plan. It does not by itself answer whether the four-market auction supports that plan. V4 reconstructs each plan's causal observation interval and applies the already-frozen four-market semantic gate:
 
 ```text
-SCDAM core
-  completed regional range
-  -> pre-existing external liquidity traded through
-  -> local reclaim or outside acceptance
-  -> local structure displacement
-  -> synchronized four-market semantic approval
-  -> independent external target
+session failed auction
+  raid close -> completed confirmation
+  -> evaluate as FAR
 
-Session I7
-  completed Asia or London range
-  -> boundary raid, acceptance, failed acceptance or FVG mitigation
-  -> route-specific reclaim/MSS/confirmation
-  -> session structural objective
+first session acceptance
+  bullish FVG formation -> defended retest decision
+  -> evaluate as AAC
+
+fresh reacceptance
+  prior accepted-auction failure back inside -> fresh reacceptance decision
+  -> evaluate as AAC
 ```
 
-The modules are alternative scenario branches, not stacked indicators. A same-minute conflict is resolved by the existing deterministic global candidate arbitration before any order is submitted.
+The start times are taken from the unchanged I7 plan or event log. Missing context fails closed. No lookback length, price threshold, route whitelist, stop, target or risk parameter is added.
 
-## Execution and risk
+## Shared execution and risk contract
 
-- Account NAV is read from Nautilus at each submission.
-- Planned loss budget is `NAV × 3%`.
-- Quantity uses full entry-to-stop price risk plus the route's frozen fee/slippage reserves.
-- SCDAM passive orders remain post-only.
-- I7's one-bar protected FVG limit remains non-post-only because its loss budget reserves taker entry cost and two ticks of slippage.
-- Take profit is post-only limit GTC; stop is stop-market GTC.
+- Both generators feed one `GlobalCandidateMutex`.
 - Pending new entry plus open position is globally limited to one.
+- NAV is read from Nautilus at each submission.
+- Planned loss budget is exactly `current NAV × 3%`.
+- Quantity includes the route's frozen entry-to-stop risk, fees and slippage reserve.
+- SCDAM passive limits remain post-only.
+- I7's one-bar protected FVG limit remains non-post-only because its frozen loss budget reserves taker entry and two ticks of slippage.
+- Take profit is post-only limit GTC; stop is stop-market GTC.
+- NautilusTrader exclusively owns orders, fills, fees, margin, positions and NAV.
 
 ## Validation status
 
-W10-W14 are development diagnostics already exposed in earlier candidates. They can reject implementation or scenario logic but can never establish success. If the combined diagnostic survives, source and protocol are frozen before newly predeclared non-overlapping intervals are evaluated.
+W10-W14 remain development diagnostics already exposed in prior candidates. They can reject V4 but can never prove success. If V4 survives, source and protocol are frozen before newly predeclared, non-overlapping intervals are evaluated.
 
 ## Reproduction
 
@@ -72,5 +80,3 @@ python research/candidate-14/aggregate.py \
   --protocol research/candidate-14/protocol.json \
   --output research/candidate-14/aggregate.json
 ```
-
-NautilusTrader is the only backtest, execution and account engine.

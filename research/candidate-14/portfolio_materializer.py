@@ -1,10 +1,12 @@
-"""Fail-closed source materialization for the Candidate 14 combined portfolio.
+"""Fail-closed materialization of Candidate 14's combined portfolio.
 
-The inherited Candidate 13 runner is intentionally retained as the execution
-source of truth.  This transformer inserts Candidate 12 I7 as a plan-producing
-BTC session module *inside the same strategy*, then sends both modules through
-the existing GlobalCandidateMutex, exact NAV risk sizer and Nautilus account.
-Every replacement is an exact source contract; upstream drift aborts before any
+The inherited Candidate 13 runner remains the execution source of truth.  This
+transformer inserts Candidate 12 I7 as a plan-producing BTC session module
+inside the same strategy, sends each completed session scenario through the
+same frozen four-market FAR/AAC semantic gate as the SCDAM core, and only then
+allows it to compete in the existing GlobalCandidateMutex.
+
+Every replacement is an exact source contract.  Upstream drift aborts before
 market data is downloaded.
 """
 from __future__ import annotations
@@ -199,8 +201,9 @@ def materialize_combined_portfolio_source(source: str) -> str:
         '''            if not plans:
                 return
             plan_by_id = {plan.scenario_id: (plan, candidate) for plan, candidate in plans}''',
-        '''            # Candidate 12 I7 observes only BTC, but competes for the
-            # exact same global slot as every four-market SCDAM plan.
+        '''            # Candidate 12 I7 observes BTC only, but a completed plan
+            # must pass the same already-frozen four-market economic semantics
+            # before it can compete for Candidate 14's one global slot.
             session_plan = self.logic[self.session_logic_key].on_bar(
                 self.buffer["BTCUSDT"],
                 allow_entry=True,
@@ -215,21 +218,58 @@ def materialize_combined_portfolio_source(source: str) -> str:
                     )
                     self._capture_events(self.session_logic_key)
                 else:
-                    session_candidate = Candidate(
-                        symbol="BTCUSDT",
-                        scenario_id=session_plan.scenario_id,
-                        observed_ts_ns=session_plan.observed_ts_ns,
-                        net_structural_r=Decimal(str(session_plan.net_r)),
-                        expected_entry=Decimal(str(session_plan.expected_entry)),
-                        expected_loss_per_unit=Decimal(str(session_plan.loss_per_unit)),
+                    semantic_scenario = str(
+                        session_plan.details.get("market_semantic_scenario", "UNSUPPORTED")
                     )
-                    plans.append((session_plan, session_candidate))
+                    causal_start_ts_ns = int(
+                        session_plan.details.get("causal_start_ts_ns", -1)
+                    )
+                    session_leadership = self.leadership.decide(
+                        symbol="BTCUSDT",
+                        scenario=semantic_scenario,
+                        direction=session_plan.direction.value,
+                        sweep_ts_ns=causal_start_ts_ns,
+                        confirmation_ts_ns=int(session_plan.observed_ts_ns),
+                    )
+                    session_plan.details["market_leadership"] = session_leadership.to_dict()
+                    if not session_leadership.approved:
+                        reason = f"SESSION_{session_leadership.reason}"
+                        self.logic[self.session_logic_key].mark_rejected(
+                            session_plan,
+                            ts_ns,
+                            reason,
+                            session_leadership.to_dict(),
+                        )
+                        self._capture_events(self.session_logic_key)
+                        self.rejections.append({
+                            "type": "SESSION_MARKET_LEADERSHIP_REJECTED",
+                            "observed_ts_ns": session_plan.observed_ts_ns,
+                            "causal_start_ts_ns": causal_start_ts_ns,
+                            "scenario_id": session_plan.scenario_id,
+                            "scenario": session_plan.scenario.value,
+                            "market_semantic_scenario": semantic_scenario,
+                            "symbol": "BTCUSDT",
+                            "reason": reason,
+                            "leader": session_leadership.leader,
+                            "peer_returns": session_leadership.peer_returns,
+                            "net_structural_r": str(session_plan.net_r),
+                        })
+                    else:
+                        session_candidate = Candidate(
+                            symbol="BTCUSDT",
+                            scenario_id=session_plan.scenario_id,
+                            observed_ts_ns=session_plan.observed_ts_ns,
+                            net_structural_r=Decimal(str(session_plan.net_r)),
+                            expected_entry=Decimal(str(session_plan.expected_entry)),
+                            expected_loss_per_unit=Decimal(str(session_plan.loss_per_unit)),
+                        )
+                        plans.append((session_plan, session_candidate))
 
             if not plans:
                 return
             plan_by_id = {plan.scenario_id: (plan, candidate) for plan, candidate in plans}''',
-        label="session-plan-arbitration",
+        label="session-plan-semantic-arbitration",
     )
-    if source.count("Candidate 12 I7 observes only BTC") != 1:
-        raise RuntimeError("Candidate 14 session module was not materialized exactly once")
+    if source.count("same already-frozen four-market economic semantics") != 1:
+        raise RuntimeError("Candidate 14 session semantic gate was not materialized exactly once")
     return source

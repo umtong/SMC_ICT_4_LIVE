@@ -1,15 +1,24 @@
-"""Bridge Candidate 12 I7's frozen session auction into Candidate 14.
+"""Bridge frozen Candidate 12 I7 plans into Candidate 14's shared portfolio.
 
-The source engine is kept under :mod:`session_auction_i7` without reimplementing
-its conditions.  This bridge only converts its completed plans to the common
-portfolio plan protocol and routes lifecycle events back to the original engine.
-NautilusTrader and Candidate 14's single global mutex remain the sole execution
-and account authorities.
+The source engine remains byte-identical under :mod:`session_auction_i7`.  This
+module only converts its completed plans, reconstructs the causal observation
+window needed by Candidate 14's already-frozen four-market semantic gate, and
+routes lifecycle events back to the original engine.
+
+Causal windows are scenario identities, not fitted lookbacks:
+
+* failed session auction: external raid close -> completed confirmation;
+* first accepted auction: bullish FVG formation -> defended retest decision;
+* fresh reacceptance: prior accepted-auction failure back inside -> fresh FVG
+  reacceptance decision.
+
+If a causal start cannot be reconstructed from information already observed by
+the I7 engine, the plan carries ``-1`` and the market gate fails closed.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
 from logic import BarObs as PortfolioBarObs
 from logic import Direction as PortfolioDirection
@@ -25,6 +34,23 @@ from session_auction_i7 import TradePlan as SessionTradePlan
 SESSION_LOGIC_KEY = "BTCUSDT::SESSION_I7"
 SESSION_MODULE = "SESSION_I7"
 SESSION_SOURCE_COMMIT = "036c0e8302c3826aa293f6037405a84fc7118ae8"
+DAY_NS = 86_400_000_000_000
+
+REVERSAL_SCENARIOS = frozenset(
+    {
+        "ASIA_HIGH_REJECTION",
+        "ASIA_LOW_REJECTION",
+        "LONDON_HIGH_REJECTION",
+        "LONDON_LOW_REJECTION",
+    },
+)
+CONTINUATION_SCENARIOS = frozenset(
+    {
+        "ASIA_HIGH_ACCEPTANCE",
+        "ASIA_HIGH_REACCEPTANCE",
+        "LONDON_HIGH_ACCEPTANCE",
+    },
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,12 +75,74 @@ class SessionPortfolioPlan:
     details: dict[str, Any] = field(default_factory=dict)
 
 
+def session_market_semantic(plan: SessionTradePlan) -> str:
+    """Map an I7 scenario to the existing FAR/AAC economic state machine."""
+    scenario = plan.scenario.value
+    if scenario in REVERSAL_SCENARIOS:
+        return "FAR"
+    if scenario in CONTINUATION_SCENARIOS:
+        return "AAC"
+    return "UNSUPPORTED"
+
+
+def _event_value(event: Any, name: str, default: Any = None) -> Any:
+    if isinstance(event, dict):
+        return event.get(name, default)
+    return getattr(event, name, default)
+
+
+def session_causal_start_ns(
+    plan: SessionTradePlan,
+    events: Iterable[Any] = (),
+) -> int:
+    """Return the earliest already-observed event proving this exact plan.
+
+    Reacceptance plan details intentionally do not contain the earlier failure
+    timestamp.  The unchanged source engine does record that event, so this
+    bridge retrieves the most recent same-day, same-source failure which
+    causally precedes the plan.  No future event or arbitrary time window is
+    used.
+    """
+    details = plan.details
+    scenario = plan.scenario.value
+    observed = int(plan.observed_ts_ns)
+
+    if scenario in REVERSAL_SCENARIOS:
+        value = details.get("sweep_ts_ns")
+        return int(value) if value is not None else -1
+
+    if scenario == "ASIA_HIGH_REACCEPTANCE":
+        source = str(details.get("source", ""))
+        day = (observed - 1) // DAY_NS
+        for event in reversed(tuple(events)):
+            event_type = str(_event_value(event, "event_type", ""))
+            event_ts = int(_event_value(event, "observed_time_ns", -1))
+            event_details = _event_value(event, "details", {}) or {}
+            if event_type != "HIGH_ACCEPTANCE_FAILED_BACK_INSIDE":
+                continue
+            if event_ts < 0 or event_ts >= observed:
+                continue
+            if (event_ts - 1) // DAY_NS != day:
+                continue
+            if str(event_details.get("source", "")) != source:
+                continue
+            return event_ts
+        return -1
+
+    if scenario in CONTINUATION_SCENARIOS:
+        value = details.get("fvg_formed_ts_ns")
+        return int(value) if value is not None else -1
+
+    return -1
+
+
 def adapt_session_plan(
     plan: SessionTradePlan,
     *,
     logic_key: str = SESSION_LOGIC_KEY,
+    causal_start_ts_ns: int | None = None,
 ) -> SessionPortfolioPlan:
-    """Losslessly adapt one already-completed I7 plan for shared arbitration."""
+    """Losslessly adapt one completed I7 plan for shared arbitration."""
     direction = (
         PortfolioDirection.LONG
         if plan.direction is SessionDirection.LONG
@@ -66,6 +154,9 @@ def adapt_session_plan(
         if plan.expire_ts_ns is None
         else int(plan.expire_ts_ns)
     )
+    if causal_start_ts_ns is None:
+        causal_start_ts_ns = session_causal_start_ns(plan)
+    semantic = session_market_semantic(plan)
     details = dict(plan.details)
     details.update(
         {
@@ -75,6 +166,9 @@ def adapt_session_plan(
             "session_entry_order": plan.entry_order.value,
             "entry_cost_assumption": "TAKER",
             "entry_post_only": False,
+            "market_semantic_scenario": semantic,
+            "causal_start_ts_ns": int(causal_start_ts_ns),
+            "causal_confirmation_ts_ns": int(plan.observed_ts_ns),
         },
     )
     return SessionPortfolioPlan(
@@ -89,7 +183,7 @@ def adapt_session_plan(
         loss_per_unit=float(plan.loss_per_unit),
         gain_per_unit=float(plan.expected_profit_per_unit),
         net_r=float(plan.net_r),
-        reason_code=f"SESSION_I7_{plan.scenario.value}",
+        reason_code=f"SESSION_I7_{plan.scenario.value}_{semantic}",
         expire_ts_ns=expire_ts_ns,
         entry_order_type=entry_order_type,
         # I7's one-bar protected FVG limit is intentionally marketable and its
@@ -141,7 +235,12 @@ class SessionAuctionBridge:
         if original is None:
             return None
         self._originals[original.scenario_id] = original
-        return adapt_session_plan(original, logic_key=self.logic_key)
+        causal_start = session_causal_start_ns(original, self.engine.events)
+        return adapt_session_plan(
+            original,
+            logic_key=self.logic_key,
+            causal_start_ts_ns=causal_start,
+        )
 
     @staticmethod
     def _ts(value: Any) -> int:
@@ -184,6 +283,7 @@ class SessionAuctionBridge:
                 "module": SESSION_MODULE,
                 "entry_order_type": plan.entry_order_type,
                 "entry_post_only": plan.entry_post_only,
+                "market_semantic_scenario": plan.details.get("market_semantic_scenario"),
             },
         )
         self.engine.mark_plan_submitted(original, plan.observed_ts_ns, payload)

@@ -1,34 +1,9 @@
-# Candidate 14 aggregate result
+# Candidate 14 evidence status
 
-**CANDIDATE14_DIAGNOSTIC_GATE_FAILED**
+**NO_FRESH_V4_EVIDENCE**
 
-- validation_mode: `diagnostic`
-- gate_passed: `False`
-- success_claim: `False`
-- daily_geometric_growth: `0.0094850698`
-- pooled_nav_multiple: `1.3915425989`
-- closed_trades: `12`
-- wins / losses: `8 / 4`
-- win_rate: `0.666667`
-- payoff_ratio: `1.9449238022974358`
-- active_weeks: `5 / 5`
-- maximum_weekly_closed_trade_drawdown: `0.0590970455`
-- maximum_positive_log_growth_share_from_one_week: `0.4551692226`
+Development V3 is archived under `development-v3-aggregate.json` and `development-v3-RESULT.md`.
 
-## Gate checks
-- all_holdouts_complete: `True`
-- all_safety_audits: `True`
-- daily_geometric_growth: `False`
-- closed_trades: `True`
-- active_weeks: `True`
-- win_rate: `False`
-- payoff_ratio: `True`
-- max_drawdown: `True`
-- growth_concentration: `True`
+V4 changes the session-plan admission rule: every frozen I7 plan now requires approval from the existing four-market FAR/AAC semantic gate over its exact causal observation interval. V3 weekly files therefore cannot be reused or relabeled.
 
-## Weekly evidence
-- W11 (2023-03-20): daily_geo=0.006473, trades=2, W/L=1/1, plans=3, safety=True
-- W12 (2023-06-20): daily_geo=0.015406, trades=3, W/L=3/0, plans=3, safety=True
-- W13 (2024-09-17): daily_geo=0.006919, trades=1, W/L=1/0, plans=1, safety=True
-- W14 (2024-12-31): daily_geo=-0.005343, trades=3, W/L=1/2, plans=3, safety=True
-- W10 (2025-04-14): daily_geo=0.024212, trades=3, W/L=2/1, plans=3, safety=True
+Fresh V4 evidence requires all W10-W14 Nautilus jobs, exact candidate/protocol provenance, the frozen session module, one global portfolio slot and every independent safety audit to pass before aggregation.
