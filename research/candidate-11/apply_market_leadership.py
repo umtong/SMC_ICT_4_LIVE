@@ -157,7 +157,7 @@ def build_runner(root: Path) -> int:
     source = replace_once(
         source,
         'parser.add_argument("--week", choices=("W1", "W2", "W3"), default="W1")',
-        'parser.add_argument("--week", choices=("W1", "W2", "W3", "W4", "W5", "W6"), default="W1")',
+        'parser.add_argument("--week", choices=("W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9"), default="W1")',
         "leadership week choices",
     )
     source = replace_once(
@@ -228,12 +228,17 @@ def patch_validation_config(root: Path) -> int:
 def patch_evidence_audit(root: Path) -> int:
     path = root / "evidence_audit.py"
     source = path.read_text(encoding="utf-8")
-    old = 'parser.add_argument("--week", choices=("W1", "W2", "W3", "LONG"), required=True)'
-    new = 'parser.add_argument("--week", choices=("W1", "W2", "W3", "W4", "W5", "W6", "LONG"), required=True)'
-    updated = replace_once(source, old, new, "leadership audit week choices")
-    if updated == source:
+    final = 'parser.add_argument("--week", choices=("W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8", "W9", "LONG"), required=True)'
+    if final in source:
         return 0
-    path.write_text(updated, encoding="utf-8")
+    alternatives = (
+        'parser.add_argument("--week", choices=("W1", "W2", "W3", "LONG"), required=True)',
+        'parser.add_argument("--week", choices=("W1", "W2", "W3", "W4", "W5", "W6", "LONG"), required=True)',
+    )
+    matches = [old for old in alternatives if old in source]
+    if len(matches) != 1:
+        raise SystemExit(f"leadership audit week choices: expected one recognized state, found {len(matches)}")
+    path.write_text(source.replace(matches[0], final, 1), encoding="utf-8")
     return 1
 
 
