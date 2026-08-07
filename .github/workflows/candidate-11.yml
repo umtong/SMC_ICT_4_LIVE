@@ -72,7 +72,13 @@ jobs:
           REQUESTED_WEEK: ${{ github.event.inputs.week }}
         run: |
           WEEK="$REQUESTED_WEEK"
-          if [ -z "$WEEK" ]; then WEEK=W1; fi
+          if [ -z "$WEEK" ]; then
+            if [ -s research/candidate-11/validation_week.txt ]; then
+              WEEK="$(tr -d '[:space:]' < research/candidate-11/validation_week.txt)"
+            else
+              WEEK=W1
+            fi
+          fi
           bash research/candidate-11/ci_validate.sh "$WEEK"
 
       - name: Publish metrics summary
@@ -82,7 +88,13 @@ jobs:
           REQUESTED_WEEK: ${{ github.event.inputs.week }}
         run: |
           WEEK="$REQUESTED_WEEK"
-          if [ -z "$WEEK" ]; then WEEK=W1; fi
+          if [ -z "$WEEK" ]; then
+            if [ -s research/candidate-11/validation_week.txt ]; then
+              WEEK="$(tr -d '[:space:]' < research/candidate-11/validation_week.txt)"
+            else
+              WEEK=W1
+            fi
+          fi
           for METRICS in \
             "research/candidate-11/results/$WEEK/metrics.json" \
             "research/candidate-11/results/PORTFOLIO_$WEEK/metrics.json"; do
@@ -116,5 +128,6 @@ jobs:
             research/candidate-11/*.json
             research/candidate-11/*.md
             research/candidate-11/*.sh
+            research/candidate-11/*.txt
           if-no-files-found: warn
           retention-days: 30
