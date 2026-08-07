@@ -1,0 +1,288 @@
+name: candidate-04-v56-prominence-state-rerun
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/v56_rerun_trigger.json"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-04-v56-prominence-state-rerun
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          rows = [
+            dict(name='low_activity', kind='v31', source_run=31114267295, source_name='candidate-04-v31-ablation-low_activity-32303a70a1a24aa795c280483e2f9ea6b22361fc', source_subdir='', build_start='2023-08-02', build_end='2023-08-10', evaluation_start='2023-08-04', evaluation_end='2023-08-10'),
+            dict(name='normal_basis', kind='v31', source_run=31114267295, source_name='candidate-04-v31-ablation-normal_basis-32303a70a1a24aa795c280483e2f9ea6b22361fc', source_subdir='', build_start='2023-12-16', build_end='2023-12-24', evaluation_start='2023-12-18', evaluation_end='2023-12-24'),
+            dict(name='stress_a', kind='v31', source_run=31114267295, source_name='candidate-04-v31-ablation-stress_a-32303a70a1a24aa795c280483e2f9ea6b22361fc', source_subdir='', build_start='2024-08-05', build_end='2024-08-13', evaluation_start='2024-08-07', evaluation_end='2024-08-13'),
+            dict(name='year_end', kind='v31', source_run=31114267295, source_name='candidate-04-v31-ablation-year_end-32303a70a1a24aa795c280483e2f9ea6b22361fc', source_subdir='', build_start='2024-12-25', build_end='2025-01-02', evaluation_start='2024-12-27', evaluation_end='2025-01-02'),
+            dict(name='autumn', kind='v31', source_run=31114267295, source_name='candidate-04-v31-ablation-autumn-32303a70a1a24aa795c280483e2f9ea6b22361fc', source_subdir='', build_start='2025-10-18', build_end='2025-10-26', evaluation_start='2025-10-20', evaluation_end='2025-10-26'),
+            dict(name='may_2024', kind='v31', source_run=31114267295, source_name='candidate-04-v31-ablation-may_2024-32303a70a1a24aa795c280483e2f9ea6b22361fc', source_subdir='', build_start='2024-05-25', build_end='2024-06-02', evaluation_start='2024-05-27', evaluation_end='2024-06-02'),
+            dict(name='failed_untouched_2025_03', kind='v31', source_run=31114267295, source_name='candidate-04-v31-ablation-failed_untouched_2025_03-32303a70a1a24aa795c280483e2f9ea6b22361fc', source_subdir='', build_start='2025-03-22', build_end='2025-03-30', evaluation_start='2025-03-24', evaluation_end='2025-03-30'),
+            dict(name='opened_2025_07', kind='v45', source_run=31157625404, source_name='candidate-04-v45b-progressive-untouched-btc-31157625404', source_subdir='untouched_1_2025_07', build_start='2025-07-19', build_end='2025-07-27', evaluation_start='2025-07-21', evaluation_end='2025-07-27'),
+            dict(name='opened_2024_09', kind='v45', source_run=31157625404, source_name='candidate-04-v45b-progressive-untouched-btc-31157625404', source_subdir='untouched_2_2024_09', build_start='2024-09-21', build_end='2024-09-29', evaluation_start='2024-09-23', evaluation_end='2024-09-29'),
+          ]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as handle:
+              handle.write('matrix=' + json.dumps({'include': rows}, separators=(',', ':')) + '\n')
+          PY
+
+  evaluate:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      MATRIX_NAME: ${{ matrix.name }}
+      SOURCE_KIND: ${{ matrix.kind }}
+      SOURCE_SUBDIR: ${{ matrix.source_subdir }}
+      BUILD_START: ${{ matrix.build_start }}
+      BUILD_END: ${{ matrix.build_end }}
+      EVALUATION_START: ${{ matrix.evaluation_start }}
+      EVALUATION_END: ${{ matrix.evaluation_end }}
+      C04_BUILD_START: ${{ matrix.build_start }}
+      C04_BUILD_END: ${{ matrix.build_end }}
+      C04_EVALUATION_START: ${{ matrix.evaluation_start }}
+      C04_EVALUATION_END: ${{ matrix.evaluation_end }}
+      ROOT: artifacts/candidate-04-v56-rerun/${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.source_name }}
+          path: restored
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ matrix.source_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify identical V56 logic and repaired warmup contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-04/prominence_state_router.py \
+            research/candidate-04/nt_state_preserving_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v56_prominence_state.py
+          python -m unittest discover -s research/candidate-04/tests -p 'test_prominence_state_router.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_state_preserving_rich_signal_strategy.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_conditional_adverse_fill_risk_sizing.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_rich_signal_strategy.py' -v
+          test "$C04_BUILD_START" = "$BUILD_START"
+          test "$C04_BUILD_END" = "$BUILD_END"
+
+      - name: Restore the same frozen signals and strict causal targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT/v44_signals"
+          if [[ "$SOURCE_KIND" == v31 ]]; then
+            raw="$(find restored -type f -path '*/ablated/signals/signals.json' | head -n1)"
+            manifest="$(find restored -type f -path '*/rich/data_manifest.json' | sort | tail -n1)"
+            test -n "$raw" -a -n "$manifest"
+            rich="$(dirname "$manifest")"
+            python research/candidate-04/causal_target_registry_enricher.py \
+              --signals "$raw" \
+              --base-config research/candidate-04/inventory_transfer_config.json \
+              --rich-dir "$rich" \
+              --kline-dir ".cache/candidate-04-v56-rerun/$MATRIX_NAME/target-klines" \
+              --build-start "$BUILD_START" \
+              --build-end "$BUILD_END" \
+              --output-dir "$ROOT/v44_signals" \
+              --download-klines \
+              --cost-rate 0.00075 \
+              --minimum-net-r 1.20 \
+              > "$ROOT/target_enrichment.log"
+          else
+            base="$(find restored -type d -path "*/${SOURCE_SUBDIR}/routes/full" | head -n1)"
+            rich="$(find restored -type d -path "*/${SOURCE_SUBDIR}/rich" | head -n1)"
+            test -n "$base" -a -n "$rich"
+            test -s "$base/signals/signals.json"
+            test -s "$rich/data_manifest.json"
+            cp "$base/signals/signals.json" "$ROOT/v44_signals/signals.json"
+            cp "$base/signals/summary.json" "$ROOT/v44_signals/summary.json"
+          fi
+          echo "$rich" > "$ROOT/rich_path.txt"
+          test -s "$ROOT/v44_signals/signals.json"
+
+      - name: Route unchanged V56 and execute only in NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rich="$(cat "$ROOT/rich_path.txt")"
+          python research/candidate-04/prominence_state_router.py \
+            --signals "$ROOT/v44_signals/signals.json" \
+            --rich-dir "$rich" \
+            --output "$ROOT/signals" \
+            > "$ROOT/router.log"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$ROOT/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v56_prominence_state.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start "$BUILD_START" \
+            --build-end "$BUILD_END" \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --cache ".cache/candidate-04-v56-rerun/$MATRIX_NAME/nautilus" \
+            --output "$ROOT/nautilus" \
+            > "$ROOT/nautilus.log"
+          test -s "$ROOT/nautilus/metrics.json"
+          test -e "$ROOT/nautilus/positions.csv"
+          test -s "$ROOT/nautilus/strategy_events.json"
+
+      - name: Summarize exact V56 week
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python research/candidate-04/summarize_candidate_week.py \
+            --root "$ROOT" \
+            --candidate candidate-04-v56-prominence-state-router \
+            --stage "$MATRIX_NAME" \
+            --min-trades 0 \
+            --min-active-days 0 \
+            --min-win-rate 0.0 \
+            --min-geometric-daily -1.0 \
+            --output "$ROOT/summary.json" \
+            > "$ROOT/summary.log"
+          python - <<'PY'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          summary=json.loads((root/'summary.json').read_text())
+          summary['router']=json.loads((root/'signals/summary.json').read_text())
+          events=json.loads((root/'nautilus/strategy_events.json').read_text())
+          summary['execution_events']=dict(Counter(str(x.get('event_type')) for x in events))
+          summary['evaluation_start']=os.environ['EVALUATION_START']
+          summary['evaluation_end']=os.environ['EVALUATION_END']
+          summary['implementation_control']='warmup environment aliases only; signal and market logic unchanged'
+          (root/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v56-rerun-${{ matrix.name }}-${{ github.run_id }}
+          path: artifacts/candidate-04-v56-rerun/${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-04
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-04-v56-rerun-*-${{ github.run_id }}
+          path: restored-results
+          merge-multiple: false
+      - name: Aggregate implementation-controlled V56 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import json, math, os
+          from pathlib import Path
+          rows=[json.loads(path.read_text()) for path in sorted(Path('restored-results').glob('candidate-04-v56-rerun-*/summary.json'))]
+          if len(rows)!=9:
+              raise SystemExit(f'expected 9 summaries, found {len(rows)}')
+          returns=[float(row.get('total_return') or 0.0) for row in rows]
+          compounded=math.prod(1.0+x for x in returns)-1.0
+          days=sum(int(row.get('calendar_days') or 7) for row in rows)
+          daily=(1.0+compounded)**(1.0/days)-1.0 if 1.0+compounded>0 else -1.0
+          trades=sum(int(row.get('trades') or 0) for row in rows)
+          wins=sum(int(row.get('wins') or 0) for row in rows)
+          active=sum(int(row.get('active_days') or 0) for row in rows)
+          risk=all(bool(row.get('risk_pass')) for row in rows)
+          positive=sum(x>0 for x in returns)
+          negative=sum(x<0 for x in returns)
+          win_rate=wins/trades if trades else 0.0
+          promote=(risk and negative==0 and trades>=10 and active>=9 and win_rate>=0.80 and positive>=5 and daily>=0.005)
+          evidence={
+            'candidate':'candidate-04-v56-prominence-state-router',
+            'stage':'implementation_controlled_nine_week_screen',
+            'source_commit':os.environ.get('GITHUB_SHA'),
+            'engine':'NautilusTrader 1.230.0 BacktestNode',
+            'implementation_fix_only':True,
+            'market_logic_changed':False,
+            'weeks':rows,
+            'calendar_days':days,
+            'compounded_return':compounded,
+            'geometric_daily_growth':daily,
+            'trades':trades,
+            'wins':wins,
+            'win_rate':win_rate,
+            'active_days':active,
+            'positive_weeks':positive,
+            'negative_weeks':negative,
+            'risk_pass':risk,
+            'kernel_promotion_gate':promote,
+            'prospective_week_allowed':promote,
+            'project_target_reached':False,
+            'decision':'OPEN_FROZEN_V56_PROSPECTIVE_WEEK_1' if promote else 'DISCARD_V56_NO_ROBUST_FREQUENCY_GROWTH_PATH',
+          }
+          Path('research/candidate-04/evidence-v56-development.json').write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          Path('aggregate.json').write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(evidence,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-04-v56-rerun-aggregate-${{ github.run_id }}
+          path: |
+            aggregate.json
+            research/candidate-04/evidence-v56-development.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Persist V56 decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add research/candidate-04/evidence-v56-development.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research(candidate-04): record V56 controlled evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt*3))
+          done
+          exit 1
