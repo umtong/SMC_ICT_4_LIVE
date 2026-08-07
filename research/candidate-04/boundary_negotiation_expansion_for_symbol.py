@@ -26,4 +26,6 @@ base.v22.base.load_rich = load_allowed_symbol_rich
 
 
 if __name__ == "__main__":
-    base.main()
+    # The frozen compiler installs its collect_signals implementation on the
+    # shared V22 CLI module.  It intentionally has no public main() of its own.
+    base.v22.main()
