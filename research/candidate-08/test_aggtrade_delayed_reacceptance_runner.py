@@ -11,6 +11,10 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from aggtrade_acceptance_risk_v2 import (
+    RISK_ACCOUNTING_REVISION,
+    RiskCompleteAggTradeAcceptanceStrategy,
+)
 from aggtrade_acceptance_signals import AcceptanceLogicEvent
 from aggtrade_delayed_reacceptance_signals_v3 import (
     ABLATION_INITIAL_MODE,
@@ -106,8 +110,16 @@ class DelayedReacceptanceRunnerContracts(unittest.TestCase):
             runner.execution.runner.base_runner._write_merged_events,
             runner._write_merged_events,
         )
+        self.assertIs(
+            runner.execution.runner.base_runner.AggTradeAcceptanceStrategy,
+            RiskCompleteAggTradeAcceptanceStrategy,
+        )
+        self.assertIs(
+            runner.execution._original_run_window,
+            runner._run_window_with_risk_classification,
+        )
         self.assertEqual(
-            runner.execution._original_run_window.__module__,
+            runner._NATIVE_ORIGINAL_RUN_WINDOW.__module__,
             "run_aggtrade_acceptance_nautilus",
         )
         source = Path(runner.__file__).read_text(encoding="utf-8")
@@ -207,6 +219,7 @@ class DelayedReacceptanceRunnerContracts(unittest.TestCase):
 
         self.assertTrue(summary["suite_gate_passed"])
         self.assertEqual(summary["implementation_revision"], IMPLEMENTATION_REVISION)
+        self.assertEqual(summary["risk_accounting_revision"], RISK_ACCOUNTING_REVISION)
         self.assertEqual(summary["single_scenario_family"], REACCEPTANCE_FAMILY)
         self.assertTrue(summary["single_family_attribution_passed"])
         self.assertEqual(
@@ -216,6 +229,7 @@ class DelayedReacceptanceRunnerContracts(unittest.TestCase):
         self.assertTrue(
             summary["suite_gate_checks"]["base_initial_initiative_required"]
         )
+        self.assertTrue(summary["suite_gate_checks"]["no_realized_risk_budget_breach"])
         self.assertEqual(
             summary["event_chain_contract"],
             "IDLE->INTERACTION_ARMED->INITIAL_OUTWARD_RESPONSE"
@@ -253,6 +267,38 @@ class DelayedReacceptanceRunnerContracts(unittest.TestCase):
         self.assertFalse(
             summary["suite_gate_checks"]["base_initial_initiative_required"]
         )
+
+    def test_realized_risk_breach_window_cannot_pass_suite(self) -> None:
+        original = runner._ORIGINAL_SUITE_SUMMARY
+        try:
+            runner._ORIGINAL_SUITE_SUMMARY = lambda *_args: {
+                "suite_gate_passed": True,
+                "promotable": True,
+                "closed_trades": 1,
+                "suite_gate_checks": {},
+            }
+            result = {
+                "detector": {
+                    "signals": 1,
+                    "by_scenario_family": {REACCEPTANCE_FAMILY: 1},
+                },
+                "closed_trade_records": [_complete_trade()],
+                "execution_contract_classification": {
+                    "candidate_gate_failure": True,
+                },
+            }
+            with patch.dict(
+                os.environ,
+                {"DELAYED_REACCEPTANCE_INITIAL_MODE": BASE_INITIAL_MODE},
+                clear=False,
+            ):
+                summary = runner._suite_summary({}, "first", [result])
+        finally:
+            runner._ORIGINAL_SUITE_SUMMARY = original
+
+        self.assertEqual(summary["realized_risk_breach_windows"], 1)
+        self.assertFalse(summary["suite_gate_checks"]["no_realized_risk_budget_breach"])
+        self.assertFalse(summary["suite_gate_passed"])
 
     def test_zero_trade_evidence_is_explicit_and_complete(self) -> None:
         original = runner._ORIGINAL_SUITE_SUMMARY
