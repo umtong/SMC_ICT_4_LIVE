@@ -1,0 +1,143 @@
+name: candidate-10-v29-independent-draw
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/c10_v29_*.py
+      - research/candidate-10/test_c10_v29_overlay.py
+      - .github/workflows/candidate-10-v29-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v29-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CANDIDATE11_COMMIT: f10517d4ccd2a1a8fbd4d31091cbe0e7c3655327
+
+jobs:
+  weeks:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - week_id: DIAG_V28B
+            week_start: "2023-03-16"
+            evidence_class: controlled_diagnostic
+          - week_id: DIAG_V28C
+            week_start: "2025-01-02"
+            evidence_class: controlled_diagnostic
+          - week_id: DIAG_HOLDOUT_B
+            week_start: "2025-01-25"
+            evidence_class: previously_viewed_diagnostic
+          - week_id: DIAG_HOLDOUT_C
+            week_start: "2024-04-13"
+            evidence_class: previously_viewed_diagnostic
+          - week_id: NEW_V29A
+            week_start: "2023-11-26"
+            evidence_class: untouched_holdout
+          - week_id: NEW_V29B
+            week_start: "2023-12-20"
+            evidence_class: untouched_holdout
+          - week_id: NEW_V29C
+            week_start: "2023-04-11"
+            evidence_class: untouched_holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout candidate-10
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen Candidate 11 source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+
+      - name: Run full and exact draw ablation
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          OUT="artifacts/candidate-10-v29/${{ matrix.week_id }}"
+          rm -rf "${OUT}"
+          mkdir -p "${OUT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v29:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v29
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v29
+              cp /workspace/research/candidate-10/c10_v27_overlay.py /tmp/candidate11-v29/
+              cp /workspace/research/candidate-10/c10_v27_patch.py /tmp/candidate11-v29/
+              cp /workspace/research/candidate-10/c10_v28_overlay.py /tmp/candidate11-v29/
+              cp /workspace/research/candidate-10/c10_v28_patch.py /tmp/candidate11-v29/
+              cp /workspace/research/candidate-10/c10_v29_overlay.py /tmp/candidate11-v29/
+              cp /workspace/research/candidate-10/c10_v29_patch.py /tmp/candidate11-v29/
+              cp /workspace/research/candidate-10/c10_v29_run.py /tmp/candidate11-v29/
+              cp /workspace/research/candidate-10/test_c10_v27_overlay.py /tmp/candidate11-v29/
+              cp /workspace/research/candidate-10/test_c10_v28_overlay.py /tmp/candidate11-v29/
+              cp /workspace/research/candidate-10/test_c10_v29_overlay.py /tmp/candidate11-v29/
+              smc4 doctor
+              python /tmp/candidate11-v29/c10_v29_patch.py \
+                /tmp/candidate11-v29/run_leadership_scdam.py
+              python -m py_compile \
+                /tmp/candidate11-v29/c10_v27_overlay.py \
+                /tmp/candidate11-v29/c10_v27_patch.py \
+                /tmp/candidate11-v29/c10_v28_overlay.py \
+                /tmp/candidate11-v29/c10_v28_patch.py \
+                /tmp/candidate11-v29/c10_v29_overlay.py \
+                /tmp/candidate11-v29/c10_v29_patch.py \
+                /tmp/candidate11-v29/c10_v29_run.py \
+                /tmp/candidate11-v29/run_leadership_scdam.py
+              python -m unittest discover \
+                -s /tmp/candidate11-v29 \
+                -p "test_c10_v2*_overlay.py" \
+                -v
+              python /tmp/candidate11-v29/c10_v29_run.py \
+                --candidate11-dir /tmp/candidate11-v29 \
+                --week-start "${{ matrix.week_start }}" \
+                --variant full-independent-external-draw \
+                --output "/workspace/artifacts/candidate-10-v29/${{ matrix.week_id }}/full-independent-external-draw"
+              python /tmp/candidate11-v29/c10_v29_run.py \
+                --candidate11-dir /tmp/candidate11-v29 \
+                --week-start "${{ matrix.week_start }}" \
+                --variant ablation-v28-draw-unrestricted \
+                --output "/workspace/artifacts/candidate-10-v29/${{ matrix.week_id }}/ablation-v28-draw-unrestricted"
+            '
+
+      - name: Write evidence class
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts/candidate-10-v29/${{ matrix.week_id }}
+          printf '%s\n' '${{ matrix.evidence_class }}' > \
+            artifacts/candidate-10-v29/${{ matrix.week_id }}/evidence_class.txt
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v29-${{ matrix.week_id }}-${{ github.sha }}
+          path: artifacts/candidate-10-v29/${{ matrix.week_id }}
+          if-no-files-found: warn
+          retention-days: 14
