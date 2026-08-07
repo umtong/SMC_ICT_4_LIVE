@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Generate the M7-M9 runner from the tested one-second Nautilus harness."""
+"""Generate the isolated M7-M9 balance-acceptance Nautilus runner.
+
+The balance-acceptance family is evaluated on its own.  Earlier pool-impact and
+VWAP-exhaustion families are not silently bundled into its evidence, so every
+plan, fill, skip reason, and NAV outcome remains attributable to the hypothesis
+being screened.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,12 +24,12 @@ def main() -> None:
     source = replace_once(
         base,
         "from microstructure import AggressorImpactAuctionEngine, FlowBar, MicroPlan\n",
-        "from microstructure import FlowBar, MicroPlan\nfrom microstructure_v3 import CombinedMicrostructureV3Engine as AggressorImpactAuctionEngine\n",
-        "combined v3 engine import",
+        "from microstructure import FlowBar, MicroPlan\nfrom microstructure_v3 import BalanceAcceptanceEngine as AggressorImpactAuctionEngine\n",
+        "isolated balance-acceptance engine import",
     )
     source = source.replace(
         '"candidate": "candidate-11-btc-aggressor-impact-auction",',
-        '"candidate": "candidate-11-btc-balance-acceptance-suite",',
+        '"candidate": "candidate-11-btc-balance-acceptance-measured-move",',
         1,
     )
     source = source.replace(
@@ -52,7 +58,7 @@ def main() -> None:
         "v3 audit choices",
     )
     (root / "audit_microstructure_v3.py").write_text(audit, encoding="utf-8")
-    print("microstructure-v3 runner and audit materialized")
+    print("isolated microstructure-v3 runner and audit materialized")
 
 
 if __name__ == "__main__":
