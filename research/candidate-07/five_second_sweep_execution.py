@@ -35,6 +35,10 @@ def diagnose_five_second_execution(
     one_pool_list = list(one_pools)
     five_pool_list = list(five_pools)
     bars_15 = local._prepare_local_bars(seconds, logic)
+    # Pandas may coerce an int64 nanosecond endpoint through float64 when a
+    # heterogeneous row is selected. Keep the timestamp column as Python ints
+    # so 14.999999999s cannot silently become 15.000000000s.
+    bars_15["timestamp_ns"] = bars_15["timestamp_ns"].astype(object)
     source_pools = impact._pool_confirmations(
         bars_15,
         timeframe="15S",
@@ -44,6 +48,7 @@ def diagnose_five_second_execution(
 
     execution_logic = scaled_execution_logic(logic)
     bars_5 = prepare_five_second_bars(seconds, execution_logic)
+    bars_5["timestamp_ns"] = bars_5["timestamp_ns"].astype(object)
     pools_5 = impact._pool_confirmations(
         bars_5,
         timeframe="5S",
