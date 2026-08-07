@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared-account runner with UTC-day closing NAV aligned to the same day."""
+"""Shared-account runner with common timestamp and same-day NAV contracts."""
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -7,6 +7,16 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from timestamp_contract import install as install_timestamp_contract
+from wrangler_contract import install as install_wrangler_contract
+from positioning_contract import install as install_positioning_contract
+
+# The direct shared runner does not pass through candidate.py. Install the same
+# observation contracts before importing the original shared BacktestNode path.
+install_timestamp_contract()
+install_wrangler_contract()
+install_positioning_contract()
 
 import shared_account_backtest as _base
 from cross_asset_repricing_context import reset_shared_cross_asset_context
