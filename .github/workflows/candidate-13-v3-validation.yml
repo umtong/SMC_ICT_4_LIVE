@@ -1,0 +1,171 @@
+name: Candidate 13 v3 frozen independent validation
+
+on:
+  push:
+    branches:
+      - research/candidate-13
+    paths:
+      - "research/candidate-13/protocol-v3-validation.json"
+      - "research/candidate-13/run_v3_validation_week.sh"
+      - ".github/workflows/candidate-13-v3-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-13-v3-validation-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify environment, tests, and frozen source before data access
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-13:$GITHUB_WORKSPACE/src"
+          python -m py_compile research/candidate-13/*.py
+          python -m unittest discover -s research/candidate-13 -p 'test_*.py' -v
+          python - <<'PY'
+          from pathlib import Path
+          from candidate13_runner import load_object, source_lock
+
+          root = Path("research/candidate-13")
+          protocol = load_object(root / "protocol-v3-validation.json")
+          result = source_lock(protocol)
+          assert result["enforced"] is True
+          assert result["all_matched"] is True
+          assert protocol["selection"]["market_data_accessed_before_lock"] is False
+          print(result["strategy_freeze_commit"])
+          PY
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      matrix:
+        week: [W20, W21, W22, W23, W24, W25, W26, W27, W28, W29]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Run frozen v3 NautilusTrader validation week
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash research/candidate-13/run_v3_validation_week.sh "${{ matrix.week }}"
+      - name: Remove downloaded market archives
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "research/candidate-13/v3/validation/results/${{ matrix.week }}/data"
+      - name: Upload auditable frozen validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate13-v3-val-${{ matrix.week }}
+          path: |
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/run.json
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/data_manifest.json
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/metrics.json
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/summary.json
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/audit.json
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/audit.md
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/source_lock.json
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/effective_config.json
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/scenario_events.jsonl
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/submitted_plans.json
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/order_lifecycle.json
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/orders.csv
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/positions.csv
+            research/candidate-13/v3/validation/results/${{ matrix.week }}/account.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: always()
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Download all frozen validation weeks
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate13-v3-val-W*
+          path: artifacts
+      - name: Aggregate and persist validation evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-13
+          current_head="$(git rev-parse origin/research/candidate-13)"
+          if [[ "$current_head" != "$GITHUB_SHA" ]]; then
+            echo "stale v3 validation run: $GITHUB_SHA; current branch: $current_head"
+            exit 0
+          fi
+
+          mkdir -p research/candidate-13/v3/validation/results
+          if compgen -G 'artifacts/candidate13-v3-val-W*' > /dev/null; then
+            for dir in artifacts/candidate13-v3-val-W*; do
+              week="${dir##*-}"
+              rm -rf "research/candidate-13/v3/validation/results/$week"
+              mkdir -p "research/candidate-13/v3/validation/results/$week"
+              cp -a "$dir/." "research/candidate-13/v3/validation/results/$week/"
+            done
+          fi
+
+          python research/candidate-13/aggregate.py \
+            --results research/candidate-13/v3/validation/results \
+            --protocol research/candidate-13/protocol-v3-validation.json \
+            --output research/candidate-13/v3/validation/aggregate.json
+
+          latest_head="$(git ls-remote origin refs/heads/research/candidate-13 | cut -f1)"
+          if [[ "$latest_head" != "$GITHUB_SHA" ]]; then
+            echo "branch advanced during v3 validation; evidence remains artifact-only"
+            exit 0
+          fi
+
+          git config user.name "candidate-13-bot"
+          git config user.email "candidate-13-bot@users.noreply.github.com"
+          git add research/candidate-13/v3/validation
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-13 v3: record frozen independent validation [skip ci]"
+            git push origin HEAD:research/candidate-13
+          fi
+      - name: Upload validation aggregate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate13-v3-validation-aggregate-${{ github.run_id }}
+          path: |
+            research/candidate-13/v3/validation/aggregate.json
+            research/candidate-13/v3/validation/RESULT.md
+          if-no-files-found: warn
+          retention-days: 30
