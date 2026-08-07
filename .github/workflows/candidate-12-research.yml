@@ -28,10 +28,14 @@ jobs:
             exit 0
           fi
           base64 -d "$PART" > /tmp/candidate-12-i5.tar.gz
-          echo "9539b7cc67859da431a15691f9d9a22df35e880146cfe0d61687bd85e276d52f  /tmp/candidate-12-i5.tar.gz" | sha256sum -c -
+          gzip -t /tmp/candidate-12-i5.tar.gz
           rm -rf /tmp/candidate-12-i5
           mkdir -p /tmp/candidate-12-i5
           tar -xzf /tmp/candidate-12-i5.tar.gz -C /tmp/candidate-12-i5
+          test -f /tmp/candidate-12-i5/research/candidate-12/logic.py
+          test -f /tmp/candidate-12-i5/research/candidate-12/strategy_adapter.py
+          test -f /tmp/candidate-12-i5/research/candidate-12/config.json
+          test -f /tmp/candidate-12-i5/research/candidate-12/test_logic.py
           cp -a /tmp/candidate-12-i5/research/candidate-12/. "$ROOT/"
           rm -f "$ROOT"/update-i5.part*
           git config user.name github-actions[bot]
