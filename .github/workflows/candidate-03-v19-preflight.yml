@@ -1,0 +1,82 @@
+name: candidate-03-v19-preflight
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - ".github/workflows/candidate-03-v19-preflight.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-03-v19-preflight
+  cancel-in-progress: false
+
+jobs:
+  causal-preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Fetch source and derive first-week V19 schedule
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import io,os,shutil,tarfile,urllib.request
+          from pathlib import Path
+          root=Path('/tmp/candidate03-v19-preflight'); shutil.rmtree(root,ignore_errors=True); root.mkdir(parents=True)
+          req=urllib.request.Request(f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/tarball/research/candidate-03",headers={'Authorization':f"Bearer {os.environ['GITHUB_TOKEN']}",'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'candidate-03-v19-preflight'})
+          with urllib.request.urlopen(req,timeout=180) as r: payload=r.read()
+          extract=root/'extract'; extract.mkdir()
+          with tarfile.open(fileobj=io.BytesIO(payload),mode='r:gz') as a:
+            roots={Path(m.name).parts[0] for m in a.getmembers() if Path(m.name).parts}; a.extractall(extract,filter='data')
+          shutil.move(str(extract/next(iter(roots))),root/'repo')
+          PY
+          cd /tmp/candidate03-v19-preflight/repo
+          export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONPATH="$PWD/research/candidate-03"
+          python3 research/candidate-03/test_nt_lvcfr_v19.py
+          prepared=/tmp/candidate03-v19-preflight/prepared
+          output=/tmp/candidate03-v19-preflight/output
+          mkdir -p "$prepared" "$output"
+          python3 research/candidate-03/prepare_nt_lvcfr_v19.py \
+            --week-start 2024-01-08 --output "$prepared" \
+            --config research/candidate-03/nt_lvcfr_v19_config.json \
+            2>&1 | tee "$output/preparation.log"
+          cp "$prepared/signals.json" "$prepared/signals-v1.json"
+          python3 research/candidate-03/derive_nt_lvcfr_v19_signals.py \
+            --prepared-root "$prepared" --output-manifest "$output/v19_signal_manifest.json" \
+            2>&1 | tee "$output/derivation.log"
+          cp "$prepared/signals.json" "$output/signals.json"
+          cp "$prepared/data_manifest.json" "$output/data_manifest.json"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          o=Path('/tmp/candidate03-v19-preflight/output'); m=json.loads((o/'v19_signal_manifest.json').read_text()); s=json.loads((o/'signals.json').read_text())
+          x={'candidate':m['candidate'],'week_start':'2024-01-08','engine_status':'causal_opportunity_preflight_only_no_backtest','derived_signal_count':len(s),'minimum_required_episodes':8,'opportunity_gate_reachable':len(s)>=8,'state_counts':m['state_counts'],'inventory_regime_counts':m['inventory_regime_counts'],'routing_counts':m['routing_counts'],'threshold_policy':m['threshold_policy'],'performance_metrics_calculated':False}
+          (o/'preflight_summary.json').write_text(json.dumps(x,indent=2,sort_keys=True)+'\n'); print(json.dumps(x,indent=2,sort_keys=True))
+          PY
+
+      - name: Commit detector-only evidence
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64,json,os,urllib.request
+          from pathlib import Path
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GITHUB_TOKEN']; branch='research/candidate-03'; src=Path('/tmp/candidate03-v19-preflight/output')
+          def api(method,path,payload=None):
+            req=urllib.request.Request(f'https://api.github.com/repos/{repo}{path}',data=None if payload is None else json.dumps(payload).encode(),method=method,headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'candidate-03-v19-preflight','Content-Type':'application/json'})
+            with urllib.request.urlopen(req,timeout=180) as r: raw=r.read()
+            return json.loads(raw.decode()) if raw else None
+          ref=api('GET',f'/git/ref/heads/{branch}'); parent=ref['object']['sha']; pc=api('GET',f'/git/commits/{parent}'); entries=[]
+          for f in sorted(p for p in src.iterdir() if p.is_file()):
+            b=api('POST','/git/blobs',{'content':base64.b64encode(f.read_bytes()).decode(),'encoding':'base64'}); entries.append({'path':f'research/candidate-03/results/v19-preflight-development-1/{f.name}','mode':'100644','type':'blob','sha':b['sha']})
+          tree=api('POST','/git/trees',{'base_tree':pc['tree']['sha'],'tree':entries}); c=api('POST','/git/commits',{'message':'candidate-03: record V19 first-week causal preflight','tree':tree['sha'],'parents':[parent]}); api('PATCH',f'/git/refs/heads/{branch}',{'sha':c['sha'],'force':False}); print(c['sha'])
+          PY
