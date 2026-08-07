@@ -42,6 +42,15 @@ class PreAttackValueTests(unittest.TestCase):
         )
 
     def _upstream(self, bars: pd.DataFrame) -> dict:
+        # Read nanoseconds from the integer column directly. Selecting an entire
+        # mixed numeric row can coerce int64 to float64 and lose sub-second bits.
+        timestamps = bars["timestamp_ns"].astype("int64")
+        contact_ns = int(timestamps.iloc[16])
+        recovery_ns = int(timestamps.iloc[20])
+        self.assertEqual(
+            recovery_ns % 1_000_000_000,
+            999_999_999,
+        )
         return {
             "scenarios": [
                 {
@@ -50,10 +59,10 @@ class PreAttackValueTests(unittest.TestCase):
                     "direction": "SHORT",
                     "inventory_state": "NEUTRAL",
                     "contact": {
-                        "timestamp_ns": int(bars.iloc[16]["timestamp_ns"]),
+                        "timestamp_ns": contact_ns,
                     },
                     "recovery_terminal": {
-                        "timestamp_ns": int(bars.iloc[20]["timestamp_ns"]),
+                        "timestamp_ns": recovery_ns,
                     },
                     "entry": 100.0,
                     "stop": 101.0,
