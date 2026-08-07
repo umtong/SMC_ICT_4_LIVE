@@ -36,8 +36,7 @@ def materialize_driver() -> None:
     )
     # The orchestration template belongs to the v104 external-liquidity family.
     # v105 deliberately keeps the proven data/NT plumbing but has a different
-    # authoritative core and lock filename.  Map those names explicitly rather
-    # than relying on the version-only substitution above.
+    # authoritative core and lock filename. Map those names explicitly.
     text = text.replace(
         "v105_external_liquidity_core.py",
         "v105_auction_state_core.py",
@@ -57,6 +56,31 @@ def materialize_driver() -> None:
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
+
+    # The reused v75 builder carries a strategy-specific assertion that every
+    # quarter-hour opening has at least one trade in the first ten seconds.
+    # v105 never consumes those opening-auction fields. A legitimate zero-trade
+    # interval must therefore remain a causal zero observation rather than
+    # aborting construction of the independent one-minute fields v105 uses.
+    anchor = '            text = text.replace(archive_before, archive_after)\n'
+    if text.count(anchor) != 1:
+        raise RuntimeError("v105 feature-builder patch anchor mismatch")
+    insertion = '''            qh_before = (
+                '    # Quarter-hour openings must have real trade observations in the first ten\\n'
+                '    # seconds; otherwise the data transformation is not suitable for v75.\\n'
+                '    qh = ((matrix.index - pd.Timedelta(minutes=1)).minute % 15 == 0)\\n'
+                '    if (matrix.loc[qh, "qh_opening_10s_trade_count"] <= 0).any():\\n'
+                '        raise ValueError("quarter-hour opening without a first-ten-second trade")'
+            )
+            qh_after = (
+                '    # v105 does not consume quarter-hour opening fields; preserve causal zeros.\\n'
+                '    qh = ((matrix.index - pd.Timedelta(minutes=1)).minute % 15 == 0)'
+            )
+            if text.count(qh_before) != 1:
+                raise RuntimeError("v75-only quarter-hour assertion materialization mismatch")
+            text = text.replace(qh_before, qh_after)
+'''
+    text = text.replace(anchor, anchor + insertion)
 
     marker = '    assert lock["single_ablation"]["removed_level_family"] == "EQUAL_SWING_CLUSTER"\n'
     if text.count(marker) != 1:
@@ -144,6 +168,7 @@ def update_lock() -> None:
         "driver_derived_from_locked_v104_orchestration": True,
         "driver_materialized_before_market_data": True,
         "equal_swing_ablation_removed_to_prioritize_central_system": True,
+        "v75_only_qh_assertion_removed_without_changing_v105_used_columns": True,
         "materialization_commit_does_not_retrigger_router": True,
         "trigger_commit": os.environ.get("GITHUB_SHA"),
     }
