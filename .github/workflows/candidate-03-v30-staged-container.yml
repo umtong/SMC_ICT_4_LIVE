@@ -6,7 +6,9 @@ on:
     paths:
       - ".github/workflows/candidate-03-v30-staged-container.yml"
       - "research/candidate-03/run_v31_staged_container.py"
+      - "research/candidate-03/run_v31_staged_container_v2.py"
       - "research/candidate-03/derive_nt_lvcfr_v31_signals.py"
+      - "research/candidate-03/patch_v31_numpy_model.py"
       - "research/candidate-03/test_nt_lvcfr_v31.py"
       - "research/candidate-03/nt_lvcfr_v31_config.json"
   workflow_dispatch:
@@ -29,7 +31,7 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Run V31 staged controller from exact commit
+      - name: Run V31 NumPy staged controller from exact commit
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -41,19 +43,19 @@ jobs:
           repository=os.environ['GITHUB_REPOSITORY']
           commit=os.environ['GITHUB_SHA']
           token=os.environ['GITHUB_TOKEN']
-          path='research/candidate-03/run_v31_staged_container.py'
+          path='research/candidate-03/run_v31_staged_container_v2.py'
           request=urllib.request.Request(
               f'https://api.github.com/repos/{repository}/contents/{path}?ref={commit}',
               headers={
                   'Authorization':f'Bearer {token}',
                   'Accept':'application/vnd.github+json',
                   'X-GitHub-Api-Version':'2022-11-28',
-                  'User-Agent':'candidate-03-v31',
+                  'User-Agent':'candidate-03-v31-v2',
               },
           )
           with urllib.request.urlopen(request,timeout=120) as response:
               payload=json.loads(response.read().decode())
-          target=Path('/tmp/run_v31_staged_container.py')
+          target=Path('/tmp/run_v31_staged_container_v2.py')
           target.write_bytes(base64.b64decode(payload['content']))
           PY
-          python /tmp/run_v31_staged_container.py
+          python /tmp/run_v31_staged_container_v2.py
