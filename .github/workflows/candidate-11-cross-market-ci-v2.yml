@@ -1,0 +1,122 @@
+name: Candidate 11 cross-market implementation check v2
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/apply_cross_market_runtime_fixes.py"
+      - "research/candidate-11/run_cross_market_gated_v3.sh"
+      - ".github/workflows/candidate-11-cross-market-ci-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-cross-market-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Run repaired implementation checks
+        id: check
+        shell: bash
+        run: |
+          set -u
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git pull --rebase origin research/candidate-11
+          mkdir -p research/candidate-11/results/CROSS_MARKET_CHECK
+          set +e
+          {
+            smc4 doctor
+            python research/candidate-11/materialize_scdam.py
+            python research/candidate-11/materialize_portfolio.py
+            python research/candidate-11/apply_market_leadership.py
+            python research/candidate-11/repair_leadership_sweep_timestamp.py
+            python research/candidate-11/apply_market_leadership.py
+            python research/candidate-11/apply_price_discovery_revision.py
+            python research/candidate-11/apply_cross_market_runtime_fixes.py
+            python research/candidate-11/materialize_cross_market_audit.py
+            python -m py_compile \
+              research/candidate-11/cross_market.py \
+              research/candidate-11/test_cross_market.py \
+              research/candidate-11/run_cross_market_nautilus.py \
+              research/candidate-11/audit_cross_market.py
+            python -m unittest discover \
+              -s research/candidate-11 \
+              -p 'test_cross_market.py' -v
+          } > research/candidate-11/results/CROSS_MARKET_CHECK/execution.log 2>&1
+          STATUS=$?
+          set -e
+          python - "$STATUS" <<'PY'
+          import json
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          root = Path('research/candidate-11/results/CROSS_MARKET_CHECK')
+          log = (root / 'execution.log').read_text(encoding='utf-8', errors='replace')
+          errors = [
+              line for line in log.splitlines()
+              if any(token in line.lower() for token in (
+                  'traceback', 'error', 'failed', 'failure', 'assert', 'exception'
+              ))
+          ][-80:]
+          payload = {
+              'schema': 'candidate-11-cross-market-check-v2',
+              'exit_code': int(sys.argv[1]),
+              'passed': int(sys.argv[1]) == 0,
+              'completed_at': datetime.now(timezone.utc).isoformat(),
+              'error_tail': errors,
+              'success_claim': False,
+          }
+          (root / 'status.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          PY
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Publish implementation evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          SNAPSHOT=/tmp/c11-cross-market-check-v2
+          rm -rf "$SNAPSHOT"
+          cp -a research/candidate-11/results/CROSS_MARKET_CHECK "$SNAPSHOT"
+          git reset --hard HEAD
+          git clean -fd research/candidate-11
+          git pull --rebase origin research/candidate-11
+          rm -rf research/candidate-11/results/CROSS_MARKET_CHECK
+          cp -a "$SNAPSHOT" research/candidate-11/results/CROSS_MARKET_CHECK
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add -A research/candidate-11/results/CROSS_MARKET_CHECK
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record repaired cross-market implementation check [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi
+
+      - name: Enforce implementation result
+        if: always()
+        shell: bash
+        run: |
+          test "${{ steps.check.outputs.status }}" = "0"
