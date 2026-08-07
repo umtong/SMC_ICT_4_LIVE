@@ -96,11 +96,14 @@ def run_cirb_five_second_nautilus_backtest(
 
     class CIRBFiveSecondStrategy(BaseStrategy):
         def __init__(self, strategy_config: Any) -> None:
+            base_logic = dict(logic_params)
+            base_logic["engine"] = "LIQUIDITY_RESPONSE_BIFURCATION"
             super().__init__(
                 strategy_config,
                 observations=observations,
-                logic_params=logic_params,
+                logic_params=base_logic,
             )
+            self._logic_params = dict(logic_params)
             self._scenario_engine = _NoopScenarioEngine()
             self._execution_index = -1
             self._plans_by_timestamp = dict(by_timestamp)
