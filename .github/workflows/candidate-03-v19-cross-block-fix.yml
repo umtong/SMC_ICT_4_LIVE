@@ -1,0 +1,25 @@
+name: candidate-03-v19-cross-block-fix
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - ".github/workflows/candidate-03-v19-cross-block-fix.yml"
+      - "research/candidate-03/patch_v19_cross_block.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-03
+          fetch-depth: 1
+      - name: Apply controlled V19 path correction
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python research/candidate-03/patch_v19_cross_block.py
