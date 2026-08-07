@@ -3,16 +3,19 @@
 
 All data preparation, strategy configuration, global entry coordination,
 Nautilus reports and evidence verification remain in
-``nt_multi_asset_rich_backtest.py``.  This wrapper replaces only its run-config
-factory so the venue object is instantiated from the exact
-``nt_backtest.py`` AST by ``nt_trusted_execution_factory``.
+``nt_multi_asset_rich_backtest.py``. This wrapper replaces only its run-config
+factory so the venue object is instantiated from the exact ``nt_backtest.py``
+AST by ``nt_trusted_execution_factory``.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 import json
 from pathlib import Path
 import sys
 from typing import Any
+
+import pandas as pd
 
 from nautilus_trader.backtest.config import BacktestDataConfig
 from nautilus_trader.backtest.config import BacktestEngineConfig
@@ -48,6 +51,22 @@ def _load_config() -> dict[str, Any]:
     return value
 
 
+def evaluation_window_iso(
+    evaluation_start: Any,
+    evaluation_end: Any,
+) -> tuple[str, str]:
+    """Return inclusive UTC boundaries for the declared calendar dates."""
+
+    start = pd.Timestamp(evaluation_start, tz="UTC")
+    end = (
+        pd.Timestamp(evaluation_end + timedelta(days=1), tz="UTC")
+        - pd.Timedelta(nanoseconds=1)
+    )
+    if end < start:
+        raise RuntimeError("evaluation end precedes evaluation start")
+    return start.isoformat(), end.isoformat()
+
+
 def build_run_config(
     catalog_path: Path,
     strategies: list[Any],
@@ -60,6 +79,10 @@ def build_run_config(
     if _TRUSTED_CONFIG is None:
         raise RuntimeError("trusted execution config was not loaded")
     venue = make_trusted_venue_config(_TRUSTED_CONFIG)
+    start_time, end_time = evaluation_window_iso(
+        evaluation_start,
+        evaluation_end,
+    )
     data = [
         BacktestDataConfig(
             **base.accepted_kwargs(
@@ -69,8 +92,8 @@ def build_run_config(
                     "data_cls": "nautilus_trader.model.data:Bar",
                     "instrument_id": str(base.instrument_id(symbol)),
                     "bar_types": [str(base.bar_type(symbol))],
-                    "start_time": str(evaluation_start),
-                    "end_time": str(evaluation_end),
+                    "start_time": start_time,
+                    "end_time": end_time,
                 },
             )
         )
