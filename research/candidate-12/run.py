@@ -235,11 +235,15 @@ def run(config_path: Path, symbol: str, week_id: str, output_dir: Path) -> dict[
     finally:
         engine.dispose()
 
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=ROOT / "config.json")
     parser.add_argument("--symbol", choices=("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"), default="BTCUSDT")
-    parser.add_argument("--week", choices=("W1", "W2", "W3", "W4", "W5", "W6"), default="W1")
+    # The config is the sole authority for frozen evaluation identifiers.  The
+    # run() boundary below validates the supplied week against selection.weeks,
+    # so adding a precommitted week never requires a second hard-coded edit.
+    parser.add_argument("--week", default="W1")
     parser.add_argument("--output", type=Path, default=ROOT / "results" / "BTCUSDT-W1")
     args = parser.parse_args()
     metrics = run(args.config.resolve(), args.symbol, args.week, args.output.resolve())
