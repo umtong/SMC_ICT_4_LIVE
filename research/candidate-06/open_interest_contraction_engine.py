@@ -307,16 +307,20 @@ class OpenInterestContractionBifurcationEngine:
             )
 
         if exhaustion:
+            signal = (
+                self._signal(shock, snapshot, branch="EXHAUSTION")
+                if allow_new
+                else None
+            )
             transitions.append(
                 self._transition(
                     shock,
                     shock.state,
-                    "EXHAUSTION_CONFIRMED",
+                    "ENTRY_ARMED" if signal is not None else "EXHAUSTION_CONFIRMED",
                     "OI_CONTRACTION_PRICE_IMPACT_EXHAUSTED_AND_MIDPOINT_RECLAIMED",
                     snapshot,
                 ),
             )
-            signal = self._signal(shock, snapshot, branch="EXHAUSTION") if allow_new else None
             self._shock = None
             self._cooldown_until = snapshot.index + int(self.params.get("oicb_cooldown_bars", 2))
             return ScenarioStep(transitions=tuple(transitions), signal=signal)
@@ -337,16 +341,20 @@ class OpenInterestContractionBifurcationEngine:
             return ScenarioStep(transitions=tuple(transitions))
 
         if resumed and shock.retrace_index is not None and snapshot.index > shock.retrace_index:
+            signal = (
+                self._signal(shock, snapshot, branch="CONTINUATION")
+                if allow_new
+                else None
+            )
             transitions.append(
                 self._transition(
                     shock,
                     "CONTINUATION_RETEST",
-                    "CONTINUATION_CONFIRMED",
+                    "ENTRY_ARMED" if signal is not None else "CONTINUATION_CONFIRMED",
                     "OI_CONTRACTION_RETEST_HELD_AND_SEPARATE_RESUMPTION_CONFIRMED",
                     snapshot,
                 ),
             )
-            signal = self._signal(shock, snapshot, branch="CONTINUATION") if allow_new else None
             self._shock = None
             self._cooldown_until = snapshot.index + int(self.params.get("oicb_cooldown_bars", 2))
             return ScenarioStep(transitions=tuple(transitions), signal=signal)
