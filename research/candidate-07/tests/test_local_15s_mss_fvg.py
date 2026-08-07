@@ -7,9 +7,11 @@ import pandas as pd
 
 from diagnose_local_15s_mss_fvg import (
     aggregate_complete_clock_bars,
+    diagnose_local_mss_fvg,
     events_from_detector,
     local_structure_logic,
 )
+from model_impact_mss_fvg import ImpactEvent, ImpactMSSFVGLogic
 
 
 NS = 1_000_000_000
@@ -65,8 +67,8 @@ class LocalPhysicalTimeLogicTests(unittest.TestCase):
 
 
 class TargetFreeDetectorBridgeTests(unittest.TestCase):
-    def test_only_completed_accepted_event_is_bridged(self) -> None:
-        detector = {
+    def _detector(self) -> dict:
+        return {
             "scenarios": [
                 {
                     "scenario_id": "accepted-1",
@@ -75,8 +77,11 @@ class TargetFreeDetectorBridgeTests(unittest.TestCase):
                     "pool_id": "5MH-source",
                     "liquidity_level": 100.0,
                     "event_extreme": 101.0,
-                    "contact": {"timestamp_ns": 10},
-                    "recovery_terminal": {"timestamp_ns": 20, "close": 99.0},
+                    "contact": {"timestamp_ns": 18 * NS - 1},
+                    "recovery_terminal": {
+                        "timestamp_ns": 20 * NS - 1,
+                        "close": 99.0,
+                    },
                 },
                 {
                     "scenario_id": "rejected-1",
@@ -84,15 +89,77 @@ class TargetFreeDetectorBridgeTests(unittest.TestCase):
                 },
             ]
         }
-        events, details = events_from_detector(detector)
+
+    def test_only_completed_accepted_event_is_bridged(self) -> None:
+        events, details = events_from_detector(
+            self._detector(),
+            bar_seconds=15,
+        )
         self.assertEqual(len(events), 1)
         event = events[0]
-        self.assertEqual(event.event_end_ns, 20)
+        self.assertEqual(event.event_end_ns, 30 * NS - 1)
         self.assertEqual(event.source_pool_id, "5MH-source")
         source = details[event.event_id]
-        self.assertEqual(source["mss_search_begins_after_ns"], 20)
+        self.assertEqual(source["detector_recovery_terminal_ns"], 20 * NS - 1)
+        self.assertEqual(source["local_search_anchor_ns"], 30 * NS - 1)
+        self.assertFalse(source["partial_recovery_bucket_used_for_structure"])
         for forbidden in ("entry", "target", "position", "pnl", "nav"):
             self.assertNotIn(forbidden, source)
+
+
+class PostEventFVGTests(unittest.TestCase):
+    def test_fvg_using_pre_event_source_bars_cannot_route(self) -> None:
+        count = 20
+        timestamps = np.array(
+            [(index + 1) * 15 * NS - 1 for index in range(count)],
+            dtype=np.int64,
+        )
+        close = np.full(count, 99.0)
+        open_ = close - 0.02
+        high = np.full(count, 99.2)
+        low = np.full(count, 98.8)
+
+        # Causal upper swing at index 7, confirmed at index 9.
+        high[7] = 100.0
+        high[5:7] = [99.3, 99.4]
+        high[8:10] = [99.5, 99.6]
+
+        # Event anchor is index 10. Index 11 is a valid displacement and would
+        # form a bullish FVG only by using index 9, a pre-event source bar.
+        open_[11], close[11], high[11], low[11] = 99.5, 100.6, 100.7, 99.7
+        local = pd.DataFrame(
+            {
+                "timestamp_ns": timestamps,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "atr": np.ones(count),
+            }
+        )
+        event = ImpactEvent(
+            event_id="event-1",
+            direction="LONG",
+            event_end_ns=int(timestamps[10]),
+            source_pool_id="5ML-source",
+            source_level=98.5,
+            event_extreme=95.0,
+        )
+        logic = ImpactMSSFVGLogic(
+            displacement_rank_period=5,
+            maximum_mss_minutes=5,
+            maximum_retest_minutes=5,
+        )
+        plans, diagnostics = diagnose_local_mss_fvg(
+            local,
+            events=[event],
+            logic=logic,
+            require_fvg_retest=False,
+        )
+        self.assertEqual(plans, [])
+        final = diagnostics[-1]
+        self.assertEqual(final.outcome, "MSS_FVG_NOT_CONFIRMED_WITHIN_WINDOW")
+        self.assertTrue(final.details["post_event_fvg_required"])
 
 
 if __name__ == "__main__":

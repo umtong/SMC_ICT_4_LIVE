@@ -2,15 +2,17 @@
 
 The source pool remains a causal five-minute external-liquidity pivot and the
 failed-auction event remains the target-free one-second volume-time detector.
-Only the structure clock changes.  A five-candle fifteen-second swing is local
-to the seconds-scale event; after the completed recovery terminal, a later
-fifteen-second close must break that swing with displacement and a causal FVG.
-The baseline waits for the first valid FVG retest.  Its single ablation removes
-only the retest and enters after the completed displacement bar.
+Only the structure clock changes. A five-candle fifteen-second swing is local
+to the seconds-scale event; after the completed recovery terminal, the current
+partial local bucket is allowed to finish, then a later complete fifteen-second
+close must break that swing with displacement and a causal FVG whose three
+source bars are all post-event. The baseline waits for the first valid FVG
+retest. Its single ablation removes only the retest and enters after the
+completed displacement bar.
 
 The target is the nearest opposing five-minute pool known and unconsumed before
-entry.  It may not be skipped for a farther objective, and it must be positive
-after the same adverse execution-cost contract used by risk sizing.  This module
+entry. It may not be skipped for a farther objective, and it must be positive
+after the same adverse execution-cost contract used by risk sizing. This module
 creates no orders, fills, PnL, cash ledger or NAV.
 """
 from __future__ import annotations
@@ -27,9 +29,15 @@ from diagnose_impact_mss_fvg_paths import _first_second_after_completed_signal
 from diagnose_value_normalized_mss_fvg import _cost_adjusted_terminal_r
 from execution_cost_geometry import adverse_execution_geometry
 from model_impact_mss_fvg import (
+    EntryPlan,
+    EventDiagnostic,
     ImpactEvent,
     ImpactMSSFVGLogic,
-    diagnose as diagnose_mss_fvg,
+    _directional_displacement,
+    _fvg_at,
+    _latest_mss_swing,
+    confirmed_swings,
+    minute_features,
 )
 from run_aggtrade_resilience_second_safe import (
     target_pool_after_complete_confirmation_second,
@@ -40,13 +48,7 @@ NS_PER_SECOND = 1_000_000_000
 
 
 def local_structure_logic(*, bar_seconds: int = 15) -> ImpactMSSFVGLogic:
-    """Return the frozen local-structure logic with physical-time scaling.
-
-    The five-candle swing remains a local fractal (radius two). Historical
-    displacement ranking still spans sixty physical minutes, while MSS and
-    first-retest searches each span five physical minutes.  Changing the bar
-    clock therefore does not silently shorten the economic observation windows.
-    """
+    """Return the frozen local-structure logic with physical-time scaling."""
     if bar_seconds <= 0:
         raise ValueError("bar_seconds must be positive")
     if 3600 % bar_seconds != 0 or 300 % bar_seconds != 0:
@@ -73,7 +75,7 @@ def aggregate_complete_clock_bars(
     *,
     bar_seconds: int = 15,
 ) -> pd.DataFrame:
-    """Aggregate only complete contiguous clock bars with causal ATR context."""
+    """Aggregate only complete contiguous Unix-aligned clock bars."""
     if bar_seconds <= 0:
         raise ValueError("bar_seconds must be positive")
     required = {"timestamp_ns", "open", "high", "low", "close", "atr"}
@@ -108,8 +110,12 @@ def aggregate_complete_clock_bars(
 
 def events_from_detector(
     detector_report: Mapping[str, Any],
+    *,
+    bar_seconds: int = 15,
 ) -> tuple[list[ImpactEvent], dict[str, dict[str, Any]]]:
-    """Convert completed target-free events without adding trade state."""
+    """Synchronize completed detector events to the local bar clock."""
+    if bar_seconds <= 0:
+        raise ValueError("bar_seconds must be positive")
     events: list[ImpactEvent] = []
     details: dict[str, dict[str, Any]] = {}
     accepted = [
@@ -126,13 +132,16 @@ def events_from_detector(
     for source in accepted:
         source_id = str(source["scenario_id"])
         event_id = f"{source_id}-LOCAL-15S-MSS-FVG"
+        detector_end_ns = int(source["recovery_terminal"]["timestamp_ns"])
+        width_ns = bar_seconds * NS_PER_SECOND
+        local_search_anchor_ns = (
+            (detector_end_ns // width_ns) + 1
+        ) * width_ns - 1
         events.append(
             ImpactEvent(
                 event_id=event_id,
                 direction=str(source["direction"]),  # type: ignore[arg-type]
-                event_end_ns=int(
-                    source["recovery_terminal"]["timestamp_ns"]
-                ),
+                event_end_ns=local_search_anchor_ns,
                 source_pool_id=str(source["pool_id"]),
                 source_level=float(source["liquidity_level"]),
                 event_extreme=float(source["event_extreme"]),
@@ -146,11 +155,232 @@ def events_from_detector(
             "event_extreme": float(source["event_extreme"]),
             "contact": source["contact"],
             "recovery_terminal": source["recovery_terminal"],
-            "mss_search_begins_after_ns": int(
-                source["recovery_terminal"]["timestamp_ns"]
-            ),
+            "detector_recovery_terminal_ns": detector_end_ns,
+            "local_search_anchor_ns": local_search_anchor_ns,
+            "mss_search_begins_after_ns": local_search_anchor_ns,
+            "partial_recovery_bucket_used_for_structure": False,
         }
     return events, details
+
+
+def diagnose_local_mss_fvg(
+    local_bars: pd.DataFrame,
+    *,
+    events: Iterable[ImpactEvent],
+    logic: ImpactMSSFVGLogic,
+    require_fvg_retest: bool,
+) -> tuple[list[EntryPlan], list[EventDiagnostic]]:
+    """Diagnose local structure using only full post-event FVG source bars."""
+    logic.validate()
+    work = minute_features(
+        local_bars,
+        rank_period=logic.displacement_rank_period,
+    )
+    swings = confirmed_swings(work, radius=logic.pivot_radius)
+    timestamps = work["timestamp_ns"].astype("int64").to_numpy()
+    plans: list[EntryPlan] = []
+    diagnostics: list[EventDiagnostic] = []
+
+    for event in sorted(events, key=lambda item: (item.event_end_ns, item.event_id)):
+        swing = _latest_mss_swing(swings, event=event)
+        if swing is None:
+            diagnostics.append(
+                EventDiagnostic(event.event_id, "NO_CAUSAL_MSS_SWING", {})
+            )
+            continue
+        first_index = int(
+            np.searchsorted(timestamps, event.event_end_ns, side="right")
+        )
+        last_index = min(
+            len(work.index),
+            first_index + logic.maximum_mss_minutes,
+        )
+        mss_index: int | None = None
+        fvg = None
+        boundary_breaks = 0
+        displacement_breaks = 0
+        invalidated = False
+        for index in range(first_index, last_index):
+            row = work.iloc[index]
+            source_invalid = (
+                float(row["low"]) <= event.event_extreme
+                if event.direction == "LONG"
+                else float(row["high"]) >= event.event_extreme
+            )
+            if source_invalid:
+                invalidated = True
+                diagnostics.append(
+                    EventDiagnostic(
+                        event.event_id,
+                        "SOURCE_INVALIDATED_BEFORE_MSS",
+                        {
+                            "timestamp_ns": int(row["timestamp_ns"]),
+                            "event_extreme": event.event_extreme,
+                        },
+                    )
+                )
+                break
+            crossed = (
+                float(row["close"]) > swing.level
+                if event.direction == "LONG"
+                else float(row["close"]) < swing.level
+            )
+            if not crossed:
+                continue
+            boundary_breaks += 1
+            if not _directional_displacement(
+                row,
+                direction=event.direction,
+                logic=logic,
+            ):
+                continue
+            displacement_breaks += 1
+            # All three FVG source bars must be complete after the synchronized
+            # event anchor; the first two post-event bars cannot yet form one.
+            if index < first_index + 2:
+                continue
+            candidate = _fvg_at(work, index, direction=event.direction)
+            if candidate is None:
+                continue
+            mss_index = index
+            fvg = candidate
+            break
+        if invalidated:
+            continue
+        if mss_index is None or fvg is None:
+            diagnostics.append(
+                EventDiagnostic(
+                    event.event_id,
+                    "MSS_FVG_NOT_CONFIRMED_WITHIN_WINDOW",
+                    {
+                        "swing_id": swing.swing_id,
+                        "swing_level": swing.level,
+                        "boundary_breaks": boundary_breaks,
+                        "displacement_breaks": displacement_breaks,
+                        "post_event_fvg_required": True,
+                    },
+                )
+            )
+            continue
+
+        mss_row = work.iloc[mss_index]
+        observed_index = mss_index
+        retest_ns: int | None = None
+        if require_fvg_retest:
+            retest_end = min(
+                len(work.index),
+                mss_index + 1 + logic.maximum_retest_minutes,
+            )
+            retest_found = False
+            retest_invalidated = False
+            for index in range(mss_index + 1, retest_end):
+                row = work.iloc[index]
+                if event.direction == "LONG":
+                    touched = float(row["low"]) <= fvg.upper
+                    full_traversal = float(row["low"]) <= fvg.lower
+                    rejected = (
+                        touched
+                        and not full_traversal
+                        and float(row["close"]) >= fvg.upper
+                        and float(row["close"]) > float(row["open"])
+                        and float(row["close_location"])
+                        >= logic.retest_close_location
+                    )
+                    source_invalid = float(row["low"]) <= event.event_extreme
+                else:
+                    touched = float(row["high"]) >= fvg.lower
+                    full_traversal = float(row["high"]) >= fvg.upper
+                    rejected = (
+                        touched
+                        and not full_traversal
+                        and float(row["close"]) <= fvg.lower
+                        and float(row["close"]) < float(row["open"])
+                        and float(row["close_location"])
+                        <= 1.0 - logic.retest_close_location
+                    )
+                    source_invalid = float(row["high"]) >= event.event_extreme
+                if source_invalid or full_traversal:
+                    retest_invalidated = True
+                    diagnostics.append(
+                        EventDiagnostic(
+                            event.event_id,
+                            "RETEST_INVALIDATED",
+                            {
+                                "timestamp_ns": int(row["timestamp_ns"]),
+                                "source_invalid": source_invalid,
+                                "full_fvg_traversal": full_traversal,
+                            },
+                        )
+                    )
+                    break
+                if rejected:
+                    observed_index = index
+                    retest_ns = int(row["timestamp_ns"])
+                    retest_found = True
+                    break
+            if retest_invalidated:
+                continue
+            if not retest_found:
+                diagnostics.append(
+                    EventDiagnostic(
+                        event.event_id,
+                        "FIRST_FVG_RETEST_NOT_CONFIRMED",
+                        {"fvg_id": fvg.gap_id},
+                    )
+                )
+                continue
+
+        entry_row = work.iloc[observed_index]
+        entry = float(entry_row["close"])
+        atr = float(entry_row["atr"])
+        stop = (
+            event.event_extreme - logic.stop_buffer_atr * atr
+            if event.direction == "LONG"
+            else event.event_extreme + logic.stop_buffer_atr * atr
+        )
+        risk = entry - stop if event.direction == "LONG" else stop - entry
+        if not np.isfinite(risk) or risk <= 0.0:
+            diagnostics.append(
+                EventDiagnostic(
+                    event.event_id,
+                    "NONPOSITIVE_SOURCE_INVALIDATION",
+                    {"entry": entry, "stop": stop},
+                )
+            )
+            continue
+        plan = EntryPlan(
+            scenario_id=f"{event.event_id}-MSS-FVG",
+            event_id=event.event_id,
+            direction=event.direction,
+            observed_ns=int(entry_row["timestamp_ns"]),
+            entry=entry,
+            stop=stop,
+            source_level=event.source_level,
+            source_pool_id=event.source_pool_id,
+            mss_swing_id=swing.swing_id,
+            mss_level=swing.level,
+            mss_ns=int(mss_row["timestamp_ns"]),
+            fvg_id=fvg.gap_id,
+            fvg_lower=fvg.lower,
+            fvg_upper=fvg.upper,
+            retest_required=require_fvg_retest,
+            retest_ns=retest_ns,
+            body_atr=float(mss_row["body_atr"]),
+            displacement_rank=float(mss_row["displacement_rank"]),
+        )
+        plans.append(plan)
+        diagnostics.append(
+            EventDiagnostic(
+                event.event_id,
+                "ENTRY_READY",
+                {
+                    "scenario_id": plan.scenario_id,
+                    "observed_ns": plan.observed_ns,
+                    "retest_required": require_fvg_retest,
+                },
+            )
+        )
+    return plans, diagnostics
 
 
 def evaluate(
@@ -169,8 +399,15 @@ def evaluate(
     if maximum_hold_seconds <= 0:
         raise ValueError("maximum_hold_seconds must be positive")
     mss_logic.validate()
-    events, event_details = events_from_detector(detector_report)
-    plans, mss_diagnostics = diagnose_mss_fvg(
+    bar_seconds = max(
+        1,
+        3600 // int(mss_logic.displacement_rank_period),
+    )
+    events, event_details = events_from_detector(
+        detector_report,
+        bar_seconds=bar_seconds,
+    )
+    plans, mss_diagnostics = diagnose_local_mss_fvg(
         local_bars,
         events=events,
         logic=mss_logic,
@@ -325,9 +562,7 @@ def evaluate(
     entries = [
         item for item in scenarios if item.get("outcome") == "ENTRY_READY"
     ]
-    outcomes = Counter(
-        str(item["path"]["outcome"]) for item in entries
-    )
+    outcomes = Counter(str(item["path"]["outcome"]) for item in entries)
     dates = Counter(
         pd.to_datetime(
             int(item["entry_second_ns"]),
@@ -338,9 +573,7 @@ def evaluate(
         .isoformat()
         for item in entries
     )
-    realized = [
-        float(item["realized_cost_adjusted_r"]) for item in entries
-    ]
+    realized = [float(item["realized_cost_adjusted_r"]) for item in entries]
     winners = [value for value in realized if value > 0.0]
     gross_positive_r = sum(winners)
     single_winner_share = (
@@ -350,9 +583,7 @@ def evaluate(
     )
     mfe = [float(item["path"]["mfe_r"]) for item in entries]
     mae = [float(item["path"]["mae_r"]) for item in entries]
-    maximum_day_share = (
-        max(dates.values()) / len(entries) if entries else None
-    )
+    maximum_day_share = max(dates.values()) / len(entries) if entries else None
     gross_cost_r = float(sum(realized))
     gate = {
         "minimum_entry_ready": len(entries) >= 7,
@@ -366,8 +597,7 @@ def evaluate(
             maximum_day_share is not None and maximum_day_share <= 0.55
         ),
         "maximum_single_winner_share_at_most_55pct": (
-            single_winner_share is not None
-            and single_winner_share <= 0.55
+            single_winner_share is not None and single_winner_share <= 0.55
         ),
     }
     gate["passed"] = all(gate.values())
@@ -418,6 +648,7 @@ def evaluate(
 
 __all__ = [
     "aggregate_complete_clock_bars",
+    "diagnose_local_mss_fvg",
     "evaluate",
     "events_from_detector",
     "local_structure_logic",
