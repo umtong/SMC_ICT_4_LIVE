@@ -57,6 +57,17 @@ jobs:
           (
             set -euo pipefail
             smc4 doctor
+            python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-08/external_sweep_fvg_micro_reaccel_signals_v3.py")
+          source = path.read_text(encoding="utf-8")
+          old = "        super().validate()\n"
+          new = "        ExternalSweepFvgLegConfig.validate(self)\n"
+          if source.count(old) != 1:
+              raise SystemExit("micro config validation patch anchor mismatch")
+          path.write_text(source.replace(old, new), encoding="utf-8")
+          PY
             python -m compileall -q \
               research/candidate-08/external_sweep_fvg_micro_reaccel_signals_v3.py \
               research/candidate-08/run_external_sweep_fvg_micro_nautilus_v3.py
@@ -119,10 +130,6 @@ jobs:
           output = Path(os.environ["OUTPUT_DIR"])
           summary = json.loads((output / "suite_metrics.json").read_text())
           result = summary["window_results"][0]
-          metrics = json.loads(
-              (output / result["name"] / "metrics.json").read_text()
-          )
-          diagnostics = metrics.get("data_quality", {}).get("assets", {})
           decision = {
               "candidate": summary.get("candidate"),
               "window": result.get("name"),
