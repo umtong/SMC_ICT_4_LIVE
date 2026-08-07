@@ -43,11 +43,14 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git pull --rebase origin research/candidate-11
           chmod +x research/candidate-11/run_internal_reclaim_matrix_v3.sh
-          mkdir -p research/candidate-11/results/IRX_MATRIX
+          LOG=/tmp/candidate-11-irx-matrix.log
+          rm -f "$LOG"
           set +e
-          bash research/candidate-11/run_internal_reclaim_matrix_v3.sh > research/candidate-11/results/IRX_MATRIX/execution.log 2>&1
+          bash research/candidate-11/run_internal_reclaim_matrix_v3.sh > "$LOG" 2>&1
           STATUS=$?
           set -e
+          mkdir -p research/candidate-11/results/IRX_MATRIX
+          cp "$LOG" research/candidate-11/results/IRX_MATRIX/execution.log
           python - "$STATUS" <<'PY'
           import json
           import sys
