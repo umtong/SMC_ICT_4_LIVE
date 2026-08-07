@@ -1,0 +1,104 @@
+name: candidate-04-v56-prospective-r2
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/v56_prospective_r2_trigger.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-04-v56-prospective
+  cancel-in-progress: true
+
+jobs:
+  sequential-prospective:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      FROZEN_COMMIT: 4daf1f0ecf5b13017b7761eeef005f8d0b163d10
+      EVIDENCE: research/candidate-04/evidence-v56-prospective.json
+      ROOT: artifacts/candidate-04-v56-prospective-r2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify frozen source and Nautilus contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          for path in \
+            research/candidate-04/prominence_state_router.py \
+            research/candidate-04/nt_state_preserving_rich_signal_strategy.py \
+            research/candidate-04/nt_backtest_v56_prominence_state.py \
+            research/candidate-04/freeze-v56.json \
+            research/candidate-04/boundary_negotiation_expansion_compiler.py \
+            research/candidate-04/ablate_compiled_scenario.py \
+            research/candidate-04/causal_target_registry_enricher.py \
+            research/candidate-04/nt_conditional_adverse_fill_risk_sizing.py \
+            research/candidate-04/rich_features_for_symbol.py \
+            research/candidate-04/rich_features.py \
+            research/candidate-04/rich_features_v2.py \
+            research/candidate-04/nt_backtest.py \
+            research/candidate-04/nt_rich_signal_strategy.py \
+            research/candidate-04/summarize_candidate_week.py \
+            research/candidate-04/nt_liquidity_config.json \
+            research/candidate-04/inventory_transfer_config.json \
+            research/candidate-04/impact_exhaustion_config.json \
+            research/candidate-04/auction_activity_router_config.json; do
+            cmp "$path" <(git show "$FROZEN_COMMIT:$path")
+          done
+          python -m py_compile research/candidate-04/run_v56_prospective.py
+          python -m unittest discover -s research/candidate-04/tests -p 'test_prominence_state_router.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_state_preserving_rich_signal_strategy.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_conditional_adverse_fill_risk_sizing.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_boundary_negotiation_expansion_compiler.py' -v
+          python -m unittest discover -s research/candidate-04/tests -p 'test_nt_rich_signal_strategy.py' -v
+
+      - name: Run frozen V56 weeks sequentially
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python research/candidate-04/run_v56_prospective.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v56-prospective-r2-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v56-prospective-r2
+            research/candidate-04/evidence-v56-prospective.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist prospective decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test -s "$EVIDENCE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research(candidate-04): record V56 prospective evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt*3))
+          done
+          exit 1
