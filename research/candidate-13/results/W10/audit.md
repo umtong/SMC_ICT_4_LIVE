@@ -1,6 +1,6 @@
 # Candidate 13 evidence audit
 
-**EXECUTION_FAILURE_NO_CLOSED_TRADES**
+**LOGIC_OR_FREQUENCY_FAILURE**
 
 - evidence_complete: `True`
 - metric_recalculation_passed: `True`
@@ -11,4 +11,4 @@
 - engine_errors_absent: `True`
 
 ## Reasons
-- plans were submitted but Nautilus reported no closed trades
+- the frozen W1 promising gate did not pass
