@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Cross-week native stability test for the frozen V19 measured-acceptance core.
+"""Run the frozen V20 FVG-retracement redesign on the three fixed BTC weeks.
 
-The first frozen week showed that EXECUTED_FLOW_VACUUM_CONTINUATION was a
-late-chase state (four native episodes, four losses), while the existing
-MEASURED_ACCEPTANCE_CONTINUATION state retained positive after-cost expectancy.
-This controller does not tune thresholds or execution. It filters the frozen
-V19 schedule to that one structural state and evaluates the three predeclared
-BTC weeks through the unchanged NautilusTrader path. Official gates remain
-unchanged and are reported rather than weakened.
+This controller changes only the causal signal schedule. It retains the existing
+V19 official data acquisition, NautilusTrader execution, fee/slippage/funding,
+single-slot constraint, 3% current-NAV risk sizing, and unchanged project gates.
+Only compact decision evidence is committed.
 """
 from __future__ import annotations
 
@@ -26,7 +23,6 @@ REPOSITORY = os.environ["GITHUB_REPOSITORY"]
 REF = os.environ.get("GITHUB_SHA", "research/candidate-03")
 BASE_PATH = "research/candidate-03/run_v18_staged_container.py"
 CONFIG = Path("research/candidate-03/nt_lvcfr_v19_config.json")
-CORE_STATE = "MEASURED_ACCEPTANCE_CONTINUATION"
 WEEKS = (
     ("2024-01-08", "development-1"),
     ("2025-06-23", "development-2"),
@@ -52,13 +48,13 @@ def load_base():
             "Authorization": f"Bearer {TOKEN}",
             "Accept": "application/vnd.github.raw+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "candidate-03-v19-core-stability",
+            "User-Agent": "candidate-03-v20-fvg-retrace",
         },
     )
-    target = Path("/tmp/run_v19_staged_base.py")
+    target = Path("/tmp/run_v20_staged_base.py")
     with urllib.request.urlopen(request, timeout=120) as response:
         target.write_bytes(response.read())
-    spec = importlib.util.spec_from_file_location("v19_base", target)
+    spec = importlib.util.spec_from_file_location("v20_base", target)
     if spec is None or spec.loader is None:
         raise RuntimeError("unable to load staged base controller")
     module = importlib.util.module_from_spec(spec)
@@ -78,11 +74,16 @@ def verify_runtime() -> None:
         "test_nt_lvcfr_trade_proxy.py",
         "test_nt_lvcfr_v13.py",
         "test_nt_lvcfr_v19.py",
+        "test_nt_lvcfr_v20.py",
     ):
         base.run([base.sys.executable, f"research/candidate-03/{test}"])
 
 
-def prepare_core_schedule(week: str, prepared: Path, output: Path) -> tuple[int, int]:
+def prepare_v20_schedule(
+    week: str,
+    prepared: Path,
+    output: Path,
+) -> tuple[int, int]:
     prepared.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
     base.run(
@@ -108,40 +109,51 @@ def prepare_core_schedule(week: str, prepared: Path, output: Path) -> tuple[int,
             "--output-manifest",
             str(output / "v19_signal_manifest.json"),
         ],
-        log_path=output / "derivation.log",
+        log_path=output / "v19_derivation.log",
     )
-    full_signals = json.loads((prepared / "signals.json").read_text(encoding="utf-8"))
-    core_signals = [
-        signal
-        for signal in full_signals
-        if str(signal.get("scenario_kind")) == CORE_STATE
-    ]
-    (prepared / "signals.json").write_text(
-        json.dumps(core_signals, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    v19_signals = json.loads(
+        (prepared / "signals.json").read_text(encoding="utf-8")
+    )
+    shutil.copy2(prepared / "signals.json", prepared / "signals-v19.json")
+    base.run(
+        [
+            base.sys.executable,
+            "research/candidate-03/derive_nt_lvcfr_v20_signals.py",
+            "--prepared-root",
+            str(prepared),
+            "--source-signals",
+            str(prepared / "signals-v19.json"),
+            "--output-signals",
+            str(prepared / "signals.json"),
+            "--output-manifest",
+            str(output / "v20_signal_manifest.json"),
+        ],
+        log_path=output / "v20_derivation.log",
+    )
+    v20_signals = json.loads(
+        (prepared / "signals.json").read_text(encoding="utf-8")
     )
     (output / "signals.json").write_text(
-        json.dumps(core_signals, indent=2, sort_keys=True) + "\n",
+        json.dumps(v20_signals, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    manifest = json.loads((output / "v19_signal_manifest.json").read_text(encoding="utf-8"))
-    regime_counts: dict[str, int] = {}
-    for signal in core_signals:
-        regime = str(signal.get("details", {}).get("inventory_regime", "UNKNOWN"))
-        regime_counts[regime] = regime_counts.get(regime, 0) + 1
+    manifest = json.loads(
+        (output / "v20_signal_manifest.json").read_text(encoding="utf-8")
+    )
     preflight = {
-        "candidate": "candidate-03-v19-measured-acceptance-core-stability",
+        "candidate": "candidate-03-nt-lvcfr-v20-fvg-retrace-defense",
         "week_start": week,
-        "engine_status": "causal_core_state_preflight_only_no_backtest",
-        "core_state": CORE_STATE,
-        "full_v19_signal_count": len(full_signals),
-        "core_signal_count": len(core_signals),
+        "engine_status": "causal_opportunity_preflight_only_no_backtest",
+        "v19_source_signal_count": len(v19_signals),
+        "v20_signal_count": len(v20_signals),
         "minimum_required_episodes": 8,
-        "opportunity_gate_reachable": len(core_signals) >= 8,
-        "core_inventory_regime_counts": dict(sorted(regime_counts.items())),
-        "full_state_counts": manifest["state_counts"],
-        "threshold_policy": manifest["threshold_policy"],
-        "selection_basis": "frozen first-week native state attribution; no threshold or return-fit search",
+        "opportunity_gate_reachable": len(v20_signals) >= 8,
+        "output_state_counts": manifest["output_state_counts"],
+        "formation_modes": manifest["formation_modes"],
+        "no_trade_reasons": manifest["no_trade_reasons"],
+        "minimum_gross_structural_rr": manifest["minimum_gross_structural_rr"],
+        "median_gross_structural_rr": manifest["median_gross_structural_rr"],
+        "selection_policy": manifest["selection_policy"],
         "performance_metrics_calculated": False,
     }
     (output / "preflight_summary.json").write_text(
@@ -149,7 +161,7 @@ def prepare_core_schedule(week: str, prepared: Path, output: Path) -> tuple[int,
         encoding="utf-8",
     )
     print(json.dumps(preflight, indent=2, sort_keys=True))
-    return len(full_signals), len(core_signals)
+    return len(v19_signals), len(v20_signals)
 
 
 def run_native(week: str, prepared: Path, output: Path) -> int:
@@ -190,7 +202,9 @@ def run_native(week: str, prepared: Path, output: Path) -> int:
         log_path=output / "gate.json",
         check=False,
     )
-    (output / "gate_status.txt").write_text(f"{gate_status}\n", encoding="utf-8")
+    (output / "gate_status.txt").write_text(
+        f"{gate_status}\n", encoding="utf-8"
+    )
     base.run(
         [
             base.sys.executable,
@@ -217,6 +231,7 @@ def copy_essential(source: Path, destination: Path) -> list[Path]:
         "episodes.csv",
         "state_attribution.json",
         "preflight_summary.json",
+        "v20_signal_manifest.json",
     ):
         path = source / name
         if path.exists():
@@ -226,10 +241,120 @@ def copy_essential(source: Path, destination: Path) -> list[Path]:
     return copied
 
 
-def commit_minimal_results(status: dict[str, Any], files: list[Path]) -> str:
+def compact_week_result(
+    *,
+    week: str,
+    name: str,
+    v19_count: int,
+    v20_count: int,
+    gate_status: int | None,
+    output: Path,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "week_start": week,
+        "stage": name,
+        "v19_source_signal_count": v19_count,
+        "v20_signal_count": v20_count,
+        "official_gate_status": gate_status,
+        "official_gate_passed": gate_status == 0,
+    }
+    if (output / "metrics.json").exists():
+        metrics = json.loads(
+            (output / "metrics.json").read_text(encoding="utf-8")
+        )
+        for key in (
+            "initial_nav",
+            "final_nav",
+            "net_return",
+            "daily_geometric_growth",
+            "max_drawdown",
+            "independent_episodes",
+            "wins",
+            "losses",
+            "win_rate",
+            "mean_episode_pnl",
+            "native_orders",
+            "native_positions",
+            "entry_rejections",
+            "incomplete_at_end",
+            "target_met",
+        ):
+            result[key] = metrics.get(key)
+    if (output / "gate.json").exists():
+        result["official_gate"] = json.loads(
+            (output / "gate.json").read_text(encoding="utf-8")
+        )
+    if (output / "v20_signal_manifest.json").exists():
+        manifest = json.loads(
+            (output / "v20_signal_manifest.json").read_text(encoding="utf-8")
+        )
+        result["no_trade_reasons"] = manifest["no_trade_reasons"]
+        result["output_state_counts"] = manifest["output_state_counts"]
+        result["median_gross_structural_rr"] = manifest[
+            "median_gross_structural_rr"
+        ]
+    return result
+
+
+def aggregate_results(weeks: list[dict[str, Any]]) -> dict[str, Any]:
+    completed = [row for row in weeks if row.get("final_nav") is not None]
+    if not completed:
+        return {"completed_week_count": 0}
+    log_growth = 0.0
+    wins = 0
+    episodes = 0
+    for row in completed:
+        initial = float(row["initial_nav"])
+        final = float(row["final_nav"])
+        if initial <= 0.0 or final <= 0.0:
+            raise ValueError("non-positive NAV in completed week")
+        log_growth += math.log(final / initial)
+        wins += int(row.get("wins") or 0)
+        episodes += int(row.get("independent_episodes") or 0)
+    total_days = len(completed) * 7
+    return {
+        "completed_week_count": len(completed),
+        "total_evaluation_days": total_days,
+        "aggregate_nav_multiple": math.exp(log_growth),
+        "aggregate_daily_geometric_growth": math.exp(log_growth / total_days) - 1.0,
+        "pooled_episodes": episodes,
+        "pooled_wins": wins,
+        "pooled_win_rate": wins / episodes if episodes else 0.0,
+        "worst_week_max_drawdown": max(
+            float(row["max_drawdown"]) for row in completed
+        ),
+        "all_weeks_official_gate_passed": (
+            len(completed) == len(WEEKS)
+            and all(bool(row["official_gate_passed"]) for row in completed)
+        ),
+        "all_weeks_target_met": (
+            len(completed) == len(WEEKS)
+            and all(bool(row.get("target_met")) for row in completed)
+        ),
+        "all_weeks_positive_expectancy": (
+            len(completed) == len(WEEKS)
+            and all(
+                float(row.get("mean_episode_pnl") or 0.0) > 0.0
+                for row in completed
+            )
+        ),
+        "all_weeks_minimum_episodes": (
+            len(completed) == len(WEEKS)
+            and all(
+                int(row.get("independent_episodes") or 0) >= 8
+                for row in completed
+            )
+        ),
+    }
+
+
+def commit_minimal_results(
+    status: dict[str, Any],
+    files: list[Path],
+) -> str:
     result_root = base.REPO_ROOT / "research/candidate-03/results"
     result_root.mkdir(parents=True, exist_ok=True)
-    status_path = result_root / "V19_CORE_STABILITY_STATUS.json"
+    status_path = result_root / "V20_STABILITY_STATUS.json"
     status_path.write_text(
         json.dumps(status, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -265,7 +390,7 @@ def commit_minimal_results(status: dict[str, Any], files: list[Path]) -> str:
         "POST",
         "/git/commits",
         {
-            "message": "candidate-03: record V19 core cross-week native evidence",
+            "message": "candidate-03: record V20 FVG-retrace native evidence",
             "tree": tree["sha"],
             "parents": [parent],
         },
@@ -278,94 +403,22 @@ def commit_minimal_results(status: dict[str, Any], files: list[Path]) -> str:
     return str(commit["sha"])
 
 
-def compact_week_result(
-    *,
-    week: str,
-    name: str,
-    full_count: int,
-    core_count: int,
-    gate_status: int | None,
-    output: Path,
-) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "week_start": week,
-        "stage": name,
-        "full_v19_signal_count": full_count,
-        "core_signal_count": core_count,
-        "official_gate_status": gate_status,
-        "official_gate_passed": gate_status == 0,
-    }
-    if (output / "metrics.json").exists():
-        metrics = json.loads((output / "metrics.json").read_text(encoding="utf-8"))
-        for key in (
-            "initial_nav",
-            "final_nav",
-            "net_return",
-            "daily_geometric_growth",
-            "max_drawdown",
-            "independent_episodes",
-            "wins",
-            "losses",
-            "win_rate",
-            "mean_episode_pnl",
-            "native_orders",
-            "native_positions",
-            "entry_rejections",
-            "incomplete_at_end",
-            "target_met",
-        ):
-            result[key] = metrics.get(key)
-    if (output / "gate.json").exists():
-        result["official_gate"] = json.loads(
-            (output / "gate.json").read_text(encoding="utf-8")
-        )
-    return result
-
-
-def aggregate_results(weeks: list[dict[str, Any]]) -> dict[str, Any]:
-    completed = [row for row in weeks if row.get("final_nav") is not None]
-    if not completed:
-        return {"completed_week_count": 0}
-    log_growth = 0.0
-    total_days = 0
-    wins = 0
-    episodes = 0
-    for row in completed:
-        initial = float(row["initial_nav"])
-        final = float(row["final_nav"])
-        if initial <= 0.0 or final <= 0.0:
-            raise ValueError("non-positive NAV in completed week")
-        log_growth += math.log(final / initial)
-        total_days += 7
-        wins += int(row.get("wins") or 0)
-        episodes += int(row.get("independent_episodes") or 0)
-    return {
-        "completed_week_count": len(completed),
-        "total_evaluation_days": total_days,
-        "aggregate_nav_multiple": math.exp(log_growth),
-        "aggregate_daily_geometric_growth": math.exp(log_growth / total_days) - 1.0,
-        "pooled_episodes": episodes,
-        "pooled_wins": wins,
-        "pooled_win_rate": wins / episodes if episodes else 0.0,
-        "worst_week_max_drawdown": max(float(row["max_drawdown"]) for row in completed),
-        "all_weeks_official_gate_passed": all(bool(row["official_gate_passed"]) for row in completed),
-        "all_weeks_target_met": all(bool(row.get("target_met")) for row in completed),
-        "all_weeks_positive_expectancy": all(float(row.get("mean_episode_pnl") or 0.0) > 0.0 for row in completed),
-        "all_weeks_minimum_episodes": all(int(row.get("independent_episodes") or 0) >= 8 for row in completed),
-    }
-
-
 def main() -> int:
     base.fetch_branch()
     base.verify_frozen_sources()
     verify_runtime()
-    stage_root = base.REPO_ROOT / "artifacts/candidate-03/v19-core-stability"
+    stage_root = (
+        base.REPO_ROOT / "artifacts/candidate-03/v20-fvg-retrace-stability"
+    )
     result_root = base.REPO_ROOT / "research/candidate-03/results"
     status: dict[str, Any] = {
-        "candidate": "candidate-03-v19-measured-acceptance-core-stability",
-        "diagnostic_only": True,
-        "core_state": CORE_STATE,
+        "candidate": "candidate-03-nt-lvcfr-v20-fvg-retrace-defense",
         "official_gate_unchanged": True,
+        "risk_fraction": 0.03,
+        "entry_redesign": (
+            "directional auction -> displacement FVG -> retracement -> "
+            "completed midpoint defense -> next native quote"
+        ),
         "frozen_source_blobs": FROZEN_BLOBS,
         "weeks": [],
     }
@@ -373,37 +426,50 @@ def main() -> int:
     for week, name in WEEKS:
         prepared = stage_root / name / "prepared"
         output = stage_root / name / "output"
-        full_count, core_count = prepare_core_schedule(week, prepared, output)
+        v19_count, v20_count = prepare_v20_schedule(
+            week, prepared, output
+        )
         gate_status: int | None = None
-        if core_count >= 8:
+        if v20_count > 0:
             gate_status = run_native(week, prepared, output)
         row = compact_week_result(
             week=week,
             name=name,
-            full_count=full_count,
-            core_count=core_count,
+            v19_count=v19_count,
+            v20_count=v20_count,
             gate_status=gate_status,
             output=output,
         )
         status["weeks"].append(row)
         committed_files.extend(
-            copy_essential(output, result_root / f"v19-core-{name}")
+            copy_essential(output, result_root / f"v20-{name}")
         )
+
     status["aggregate"] = aggregate_results(status["weeks"])
     aggregate = status["aggregate"]
-    if aggregate.get("all_weeks_official_gate_passed"):
-        status["decision"] = "PROMOTE_TO_LONG_HORIZON"
-    elif (
+    promote = (
         aggregate.get("completed_week_count") == len(WEEKS)
-        and aggregate.get("all_weeks_target_met")
-        and aggregate.get("all_weeks_positive_expectancy")
-        and aggregate.get("all_weeks_minimum_episodes")
-    ):
-        status["decision"] = "STRUCTURAL_EDGE_PRESENT_BUT_OFFICIAL_GATE_NOT_MET"
-    else:
-        status["decision"] = "REJECT_OR_REDESIGN_CORE_STATE"
+        and float(aggregate.get("aggregate_daily_geometric_growth") or 0.0)
+        >= 0.01
+        and float(aggregate.get("pooled_win_rate") or 0.0) >= 0.45
+        and float(aggregate.get("worst_week_max_drawdown") or 1.0) <= 0.20
+        and bool(aggregate.get("all_weeks_target_met"))
+        and bool(aggregate.get("all_weeks_positive_expectancy"))
+        and bool(aggregate.get("all_weeks_minimum_episodes"))
+    )
+    status["decision"] = (
+        "PROMOTE_TO_LONG_HORIZON"
+        if promote
+        else "REJECT_OR_REDESIGN_V20"
+    )
     committed_sha = commit_minimal_results(status, committed_files)
-    print(json.dumps({"committed_sha": committed_sha, **status}, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {"committed_sha": committed_sha, **status},
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
