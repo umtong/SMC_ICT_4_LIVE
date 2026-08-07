@@ -10,7 +10,12 @@ from c10_v23_state import OISemanticExternalTargetStateMachine
 def install_oi_semantic_mapping() -> None:
     """Keep v22 targets/costs and replace only OI directional semantics."""
 
+    # Import after v22 installation so the live-cost class subclasses the exact
+    # v22 target/execution strategy rather than the earlier generic strategy.
     install_external_target()
+    from c10_live_cost_ledger import install_live_cost_ledger
+
+    install_live_cost_ledger()
     _strategy.LiquidationAuctionStateMachine = (
         OISemanticExternalTargetStateMachine
     )
