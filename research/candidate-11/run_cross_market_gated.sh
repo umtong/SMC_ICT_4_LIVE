@@ -33,7 +33,18 @@ python -m py_compile \
   "$CAND/cross_market.py" \
   "$CAND/run_cross_market_nautilus.py" \
   "$CAND/audit_cross_market.py"
-python -m unittest discover -s "$CAND" -p 'test_*.py' -v
+
+# Run only this family's detector plus the shared execution/risk invariants.
+# Unrelated IRX/VWAP/balance experiments may fail independently and must not
+# prevent an otherwise valid cross-market C1 screen.
+for pattern in \
+  test_bar_adapter.py \
+  test_cross_market.py \
+  test_global_allocator.py \
+  test_logic.py \
+  test_portfolio_scdam.py; do
+  python -m unittest discover -s "$CAND" -p "$pattern" -v
+done
 
 run_week() {
   local week="$1"
