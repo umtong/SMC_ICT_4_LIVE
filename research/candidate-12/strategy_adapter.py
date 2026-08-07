@@ -1,6 +1,7 @@
-"""NautilusTrader strategy adapter for Candidate 12 causal plans."""
+"""NautilusTrader adapter for Candidate 12 causal limit-entry plans."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -21,11 +22,10 @@ def build_candidate_strategy(
     starting_nav: Decimal,
 ) -> Any:
     from nautilus_trader.config import StrategyConfig
-    from nautilus_trader.model.data import Bar
+    from nautilus_trader.model.data import Bar, BarType
     from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
     from nautilus_trader.model.events import OrderEvent
     from nautilus_trader.model.identifiers import InstrumentId
-    from nautilus_trader.model.data import BarType
     from nautilus_trader.trading.strategy import Strategy
 
     class CandidateStrategyConfig(StrategyConfig, frozen=True):
@@ -57,7 +57,7 @@ def build_candidate_strategy(
                 self.cache.orders_open_count(
                     instrument_id=self.config.instrument_id,
                     strategy_id=self.id,
-                ),
+                )
             )
 
         def _slot_free(self) -> bool:
@@ -68,7 +68,11 @@ def build_candidate_strategy(
             if account is None:
                 return self.config.starting_nav, self.config.starting_nav
             total = decimal_value(account.balance_total(settlement_currency))
-            free = decimal_value(account.balance_free(settlement_currency), total) if hasattr(account, "balance_free") else total
+            free = (
+                decimal_value(account.balance_free(settlement_currency), total)
+                if hasattr(account, "balance_free")
+                else total
+            )
             return total, free
 
         def _terminal_if_flat(self, ts_ns: int, reason: str) -> None:
@@ -117,7 +121,14 @@ def build_candidate_strategy(
                     instrument_id=self.config.instrument_id,
                     order_side=side,
                     quantity=instrument.make_qty(decision.quantity),
-                    entry_order_type=OrderType.MARKET,
+                    entry_order_type=OrderType.LIMIT,
+                    entry_price=instrument.make_price(plan.expected_entry),
+                    time_in_force=TimeInForce.GTD,
+                    expire_time=(
+                        datetime.fromtimestamp(plan.expire_ts_ns / 1_000_000_000, tz=timezone.utc)
+                        + timedelta(microseconds=1)
+                    ),
+                    entry_post_only=False,
                     tp_order_type=OrderType.LIMIT,
                     tp_price=instrument.make_price(plan.target_price),
                     tp_time_in_force=TimeInForce.GTC,
@@ -143,7 +154,9 @@ def build_candidate_strategy(
                 "scenario": plan.scenario.value,
                 "direction": plan.direction.value,
                 "observed_ts_ns": plan.observed_ts_ns,
-                "entry_order_type": "MARKET",
+                "entry_order_type": "LIMIT_GTD_MARKETABLE_PROTECTED",
+                "entry_post_only": False,
+                "expire_ts_ns": plan.expire_ts_ns,
                 "entry": plan.expected_entry,
                 "stop": plan.stop_price,
                 "target": plan.target_price,
@@ -188,7 +201,7 @@ def build_candidate_strategy(
                 volume=source_volume,
                 taker_buy_volume=taker_buy,
             )
-            allow_entry = self.last_ts_ns >= self.config.evaluation_start_ns and self._slot_free()
+            allow_entry = self.last_ts_ns >= self.config.evaluation_start_ns
             plan = self.logic.on_bar(observation, allow_entry=allow_entry)
             if plan is not None:
                 self._submit_plan(plan)
@@ -200,7 +213,7 @@ def build_candidate_strategy(
                     "ts_event": int(event.ts_event),
                     "client_order_id": str(event.client_order_id),
                     "event": str(event),
-                },
+                }
             )
 
         def on_order_filled(self, event: Any) -> None:
@@ -208,7 +221,7 @@ def build_candidate_strategy(
 
         def on_order_expired(self, event: Any) -> None:
             self._record_order_event(event, "ORDER_EXPIRED")
-            self._terminal_if_flat(int(event.ts_event), "ORDER_EXPIRED_FLAT")
+            self._terminal_if_flat(int(event.ts_event), "GTD_ENTRY_EXPIRED_UNFILLED")
 
         def on_order_canceled(self, event: Any) -> None:
             self._record_order_event(event, "ORDER_CANCELED")
@@ -219,7 +232,9 @@ def build_candidate_strategy(
             record = {"type": "ORDER_DENIED", "event": str(event)}
             self.errors.append(record)
             if self.active_plan is not None:
-                self.logic.mark_plan_rejected(self.active_plan, int(event.ts_event), "ORDER_DENIED", record)
+                self.logic.mark_plan_rejected(
+                    self.active_plan, int(event.ts_event), "ORDER_DENIED", record
+                )
                 self.active_plan = None
 
         def on_order_rejected(self, event: Any) -> None:
@@ -227,14 +242,15 @@ def build_candidate_strategy(
             record = {"type": "ORDER_REJECTED", "event": str(event)}
             self.errors.append(record)
             if self.active_plan is not None:
-                self.logic.mark_plan_rejected(self.active_plan, int(event.ts_event), "ORDER_REJECTED", record)
+                self.logic.mark_plan_rejected(
+                    self.active_plan, int(event.ts_event), "ORDER_REJECTED", record
+                )
                 self.active_plan = None
 
         def on_stop(self) -> None:
             self.cancel_all_orders(self.config.instrument_id)
             if not self.portfolio.is_flat(self.config.instrument_id):
                 self.close_all_positions(self.config.instrument_id)
-
 
     return CandidateStrategy(
         CandidateStrategyConfig(
@@ -243,5 +259,5 @@ def build_candidate_strategy(
             evaluation_start_ns=evaluation_start_ns,
             evaluation_end_ns=evaluation_end_ns,
             starting_nav=starting_nav,
-        ),
+        )
     )

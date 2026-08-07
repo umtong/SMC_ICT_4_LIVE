@@ -1,47 +1,13 @@
-# Candidate 12 — Session Auction Displacement
+# Candidate 12 — New-York raid of completed London buy-side liquidity
 
-## Status
+Candidate 12 now contains one executable scenario rather than a universal pattern detector.
 
-This is an independent candidate under active W1 design validation. It is **not** a success claim until NautilusTrader account-NAV evidence passes the W1 gate.
+1. Freeze the completed 06:00–12:00 UTC London dealing range.
+2. On a weekday, observe the first New-York trade above the frozen London high.
+3. Require a completed five-minute close back inside within three bars.
+4. Wait one additional completed five-minute bar.
+5. Place a 15-minute protected sell limit at the London high.
+6. Invalidate beyond the observed raid extreme plus an ATR buffer.
+7. Target the first discount-side structural objective inside the completed London range.
 
-## Causal scenarios
-
-Only completed session information is tradable. One-minute observations are aggregated causally into completed five-minute bars.
-
-1. **Failed auction**
-   - completed Asia or London range exists;
-   - the next active window accesses one range boundary;
-   - price closes back inside;
-   - internal structure breaks away from the sweep with displacement;
-   - a pullback holds without violating the sweep;
-   - reacceleration emits a plan toward pre-existing structural liquidity.
-2. **Accepted auction**
-   - price sustains multiple closes beyond a completed range;
-   - displacement and directional flow agree;
-   - price retests the accepted boundary or the displacement mean threshold;
-   - the retest holds and reaccelerates toward pre-existing structural liquidity.
-
-A wick, FVG, session time, or structure break alone is never an entry.
-
-## Execution and risk
-
-- NautilusTrader exclusively owns order matching, contingent order lifecycle, fees, margin, positions, and NAV.
-- Entry is market after completed-bar confirmation; target is a post-only limit at structural liquidity; invalidation is stop-market beyond the causal pullback or sweep.
-- Quantity is current whole-account NAV × 3% divided by expected loss per unit, including entry/stop costs and adverse-tick allowance.
-- No nominal cap, score multiplier, or arbitrary strategy leverage cap is added.
-- The strategy submits only when no position and no working entry order exist.
-
-## Efficient validation protocol
-
-`W1` is the sole design gate. W2/W3 and long evaluation are prohibited until W1 simultaneously has enough closed trades, strong post-cost NAV growth, acceptable payoff, and high win rate without liquidation or evidence errors.
-
-```bash
-smc4 doctor
-python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
-python research/candidate-12/run.py \
-  --symbol BTCUSDT \
-  --week W1 \
-  --output artifacts/candidate-12/BTCUSDT-W1
-```
-
-The authoritative outputs are `run.json`, `metrics.json`, `scenario_events.jsonl`, `submitted_plans.json`, `order_lifecycle.json`, `orders.csv`, `positions.csv`, `account.csv`, and `data_manifest.json`.
+NautilusTrader owns fills, contingent orders, fees, margin, positions, and account NAV. Quantity is current whole-account NAV × 3% divided by the complete expected loss per unit. W1 is the only design gate; W2/W3 remain unused unless W1 passes frequency, win-rate, payoff, and post-cost geometric-growth requirements.
