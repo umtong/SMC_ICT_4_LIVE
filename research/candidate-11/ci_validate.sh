@@ -14,7 +14,8 @@ python -m py_compile \
   research/candidate-11/logic.py \
   research/candidate-11/session_engine.py \
   research/candidate-11/run.py \
-  research/candidate-11/run_portfolio_scdam.py
+  research/candidate-11/run_portfolio_scdam.py \
+  research/candidate-11/evidence_audit.py
 python -m unittest discover -s research/candidate-11 -p 'test_*.py' -v
 
 RESULT_DIR="research/candidate-11/results/$WEEK"
@@ -34,7 +35,14 @@ for file in \
   test -s "$PORTFOLIO_RESULT_DIR/$file"
 done
 
-python - "$RESULT_DIR/metrics.json" "$PORTFOLIO_RESULT_DIR/metrics.json" <<'PY'
+python research/candidate-11/evidence_audit.py \
+  "$PORTFOLIO_RESULT_DIR" \
+  --week "$WEEK" \
+  --output "$PORTFOLIO_RESULT_DIR/evidence_audit.json"
+test -s "$PORTFOLIO_RESULT_DIR/evidence_audit.json"
+test -s "$PORTFOLIO_RESULT_DIR/evidence_audit.md"
+
+python - "$RESULT_DIR/metrics.json" "$PORTFOLIO_RESULT_DIR/metrics.json" "$PORTFOLIO_RESULT_DIR/evidence_audit.json" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -46,10 +54,18 @@ for label, path in (("BTC baseline", sys.argv[1]), ("four-market independent SCD
         "week_id", "daily_geometric_growth", "closed_trades", "win_rate",
         "payoff_ratio", "closed_trade_max_drawdown", "submitted_plans",
         "scenario_counts", "symbol_counts", "global_slot_overlap_count",
-        "liquidation_detected", "promising_gate_passed",
-        "complete_gate_passed", "success_claim",
+        "partial_entry_fail_closed_count", "liquidation_detected",
+        "promising_gate_passed", "complete_gate_passed", "success_claim",
     ):
         print(f"{key}={metrics.get(key)}")
+
+audit = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+print("Candidate 11 independent execution-safety audit")
+for key in (
+    "classification", "risk_budget_passed", "global_slot_passed",
+    "partial_entry_protection_passed", "no_liquidation_passed",
+):
+    print(f"{key}={audit.get(key)}")
 PY
 
 if [[ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]]; then
@@ -73,7 +89,9 @@ if [[ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]]; then
     "$PORTFOLIO_RESULT_DIR/order_lifecycle.json" \
     "$PORTFOLIO_RESULT_DIR/orders.csv" \
     "$PORTFOLIO_RESULT_DIR/positions.csv" \
-    "$PORTFOLIO_RESULT_DIR/account.csv"
+    "$PORTFOLIO_RESULT_DIR/account.csv" \
+    "$PORTFOLIO_RESULT_DIR/evidence_audit.json" \
+    "$PORTFOLIO_RESULT_DIR/evidence_audit.md"
   if ! git diff --cached --quiet; then
     git commit -m "candidate-11: record $WEEK portfolio SCDAM evidence [skip ci]"
     git push origin HEAD:research/candidate-11
