@@ -8,7 +8,9 @@ import zipfile
 import pandas as pd
 
 from data_positioning import (
+    NS_PER_FIVE_MINUTES,
     _drop_invalid_positioning_rows,
+    _positioning_cadence_diagnostics,
     _read_metrics_archive,
 )
 
@@ -88,6 +90,55 @@ class PositioningArchiveTest(unittest.TestCase):
         cleaned, invalid = _drop_invalid_positioning_rows(frame)
         self.assertEqual(len(cleaned), 1)
         self.assertEqual(len(invalid), 1)
+
+    def test_publication_second_jitter_does_not_create_a_false_gap(self) -> None:
+        timestamps = pd.to_datetime(
+            [
+                "2025-01-28 12:05:00+00:00",
+                "2025-01-28 12:10:02+00:00",
+                "2025-01-28 12:15:00+00:00",
+            ],
+            utc=True,
+        )
+        timestamp_ns = pd.Series([int(item.value) for item in timestamps])
+        frame = pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "timestamp_ns": timestamp_ns,
+                "interval_timestamp_ns": (
+                    timestamp_ns // NS_PER_FIVE_MINUTES
+                ) * NS_PER_FIVE_MINUTES,
+            }
+        )
+        diagnostics = _positioning_cadence_diagnostics(frame)
+        self.assertEqual(diagnostics["raw_non_300_second_deltas"], 2)
+        self.assertEqual(diagnostics["publication_jitter_rows"], 1)
+        self.assertEqual(
+            diagnostics["maximum_publication_delay_ns"],
+            2_000_000_000,
+        )
+        self.assertEqual(diagnostics["ten_minute_interval_gaps"], 0)
+
+    def test_unlabelled_fifteen_minute_positioning_gap_is_rejected(self) -> None:
+        timestamps = pd.to_datetime(
+            [
+                "2025-01-28 12:05:00+00:00",
+                "2025-01-28 12:20:00+00:00",
+            ],
+            utc=True,
+        )
+        timestamp_ns = pd.Series([int(item.value) for item in timestamps])
+        frame = pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "timestamp_ns": timestamp_ns,
+                "interval_timestamp_ns": (
+                    timestamp_ns // NS_PER_FIVE_MINUTES
+                ) * NS_PER_FIVE_MINUTES,
+            }
+        )
+        with self.assertRaises(RuntimeError):
+            _positioning_cadence_diagnostics(frame)
 
 
 if __name__ == "__main__":
