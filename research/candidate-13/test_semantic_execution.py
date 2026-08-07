@@ -1,27 +1,34 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import unittest
 
-from semantic_execution import (
-    MARKET_ENTRY_SENTINEL_NS,
-    install,
-    is_market_entry_expiry,
+from runner_materializer import (
+    NEW_ORDER_BLOCK,
+    OLD_ORDER_BLOCK,
+    materialize_runner_source,
 )
+from semantic_execution import MARKET_ENTRY_SENTINEL_NS
+
+
+ROOT = Path(__file__).resolve().parent
 
 
 class SemanticExecutionBoundaryTests(unittest.TestCase):
-    def test_market_sentinel_matches_runner_microsecond_rounding(self):
-        value = datetime.fromtimestamp(
-            MARKET_ENTRY_SENTINEL_NS / 1_000_000_000,
-            tz=timezone.utc,
-        ) + timedelta(microseconds=1)
-        self.assertTrue(is_market_entry_expiry(value))
-        self.assertFalse(is_market_entry_expiry(datetime(2025, 1, 1, tzinfo=timezone.utc)))
+    def test_exact_frozen_runner_boundary_materializes_and_compiles(self):
+        source = (ROOT / "run_leadership_scdam_base.py").read_text(encoding="utf-8")
+        materialized = materialize_runner_source(source)
+        self.assertNotIn(OLD_ORDER_BLOCK, materialized)
+        self.assertIn(NEW_ORDER_BLOCK, materialized)
+        self.assertEqual(materialized.count("candidate-13-market-parent"), 1)
+        compile(materialized, "run_leadership_scdam_base.py", "exec")
 
-    def test_order_factory_boundary_is_patchable_and_idempotent(self):
-        install()
-        install()
+    def test_contract_drift_fails_closed(self):
+        with self.assertRaises(RuntimeError):
+            materialize_runner_source("order factory boundary changed")
+
+    def test_market_plan_has_no_live_gtd_expiry(self):
+        self.assertEqual(MARKET_ENTRY_SENTINEL_NS, 946684800000000000)
 
 
 if __name__ == "__main__":
