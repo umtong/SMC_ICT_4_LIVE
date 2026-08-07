@@ -59,11 +59,11 @@ jobs:
           image=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
           docker run --rm --platform linux/amd64 \
             -v "$PWD:/work" -w /work \
-            "$image" bash -lc '
+            "$image" /bin/bash -c '
               set -euo pipefail
-              smc4 doctor
-              python -m compileall -q research/candidate-07
-              python -m unittest discover -s research/candidate-07/tests -p "test_*.py" -v
+              /opt/smc4/.venv/bin/smc4 doctor
+              /opt/smc4/.venv/bin/python -m compileall -q research/candidate-07
+              /opt/smc4/.venv/bin/python -m unittest discover -s research/candidate-07/tests -p "test_*.py" -v
             '
 
       - name: Run frozen BTC Week-1 structural tournament once
@@ -74,9 +74,9 @@ jobs:
           image=ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
           docker run --rm --platform linux/amd64 \
             -v "$PWD:/work" -w /work \
-            "$image" bash -lc '
+            "$image" /bin/bash -c '
               set -euo pipefail
-              python research/candidate-07/run_aggtrade_tournament.py \
+              /opt/smc4/.venv/bin/python research/candidate-07/run_aggtrade_tournament.py \
                 --config research/candidate-07/config.json \
                 --start 2025-12-22 \
                 --end 2025-12-29 \
