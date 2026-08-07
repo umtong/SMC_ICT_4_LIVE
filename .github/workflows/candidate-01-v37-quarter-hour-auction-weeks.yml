@@ -1,0 +1,241 @@
+name: candidate-01-v37-quarter-hour-auction-weeks
+
+on:
+  push:
+    branches: ["research/candidate-01"]
+    paths:
+      - ".github/workflows/candidate-01-v37-quarter-hour-auction-weeks.yml"
+      - "research/candidate-01/quarter_hour_auction_v37.py"
+      - "research/candidate-01/quarter_hour_auction_v37_nautilus_week.py"
+      - "research/candidate-01/candidate_01_v37_gate.py"
+      - "research/candidate-01/candidate_01_v37_compare.py"
+      - "research/candidate-01/candidate_01_v37_protocol.json"
+      - "research/candidate-01/verify_candidate_01_v37_protocol.py"
+      - "research/candidate-01/test_quarter_hour_auction_v37.py"
+      - "research/candidate-01/aggtrade_data.py"
+      - "research/candidate-01/nautilus_tick_plan_backtest.py"
+      - "research/candidate-01/nautilus_plan_backtest.py"
+      - "research/candidate-01/nautilus_execution.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  week1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    outputs:
+      advance: ${{ steps.outputs.outputs.advance }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v37-week1
+          key: candidate-01-v37-BTCUSDT-2021-06-10-2021-06-21-${{ runner.os }}-v1
+      - name: Verify frozen protocol and run first BTC week
+        run: |
+          set -euo pipefail
+          rm -rf artifacts/candidate-01-v37-week1
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python -m compileall -q \
+                research/candidate-01/quarter_hour_auction_v37.py \
+                research/candidate-01/quarter_hour_auction_v37_nautilus_week.py \
+                research/candidate-01/candidate_01_v37_gate.py \
+                research/candidate-01/candidate_01_v37_compare.py \
+                research/candidate-01/verify_candidate_01_v37_protocol.py \
+                research/candidate-01/test_quarter_hour_auction_v37.py
+              python research/candidate-01/verify_candidate_01_v37_protocol.py
+              python research/candidate-01/test_quarter_hour_auction_v37.py
+              python research/candidate-01/quarter_hour_auction_v37_nautilus_week.py \
+                --week 2021-06-14 \
+                --rule both \
+                --cache .cache/candidate-01-v37-week1 \
+                --output artifacts/candidate-01-v37-week1 \
+                --workers 4
+            '
+      - name: Verify, classify and compare week 1
+        run: |
+          set -euo pipefail
+          python3 research/candidate-01/candidate_01_v37_gate.py \
+            --root artifacts/candidate-01-v37-week1/primary \
+            --week 2021-06-14
+          python3 research/candidate-01/candidate_01_v37_gate.py \
+            --root artifacts/candidate-01-v37-week1/control \
+            --week 2021-06-14
+          python3 research/candidate-01/candidate_01_v37_compare.py \
+            --primary-root artifacts/candidate-01-v37-week1/primary \
+            --control-root artifacts/candidate-01-v37-week1/control \
+            --output artifacts/candidate-01-v37-week1/comparison.json
+      - name: Export week 1 decision
+        id: outputs
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          result = json.loads(Path("artifacts/candidate-01-v37-week1/comparison.json").read_text())
+          print(f"advance={'true' if result['advance'] else 'false'}")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v37-week1-${{ github.sha }}
+          path: artifacts/candidate-01-v37-week1
+          if-no-files-found: warn
+          retention-days: 30
+
+  week2:
+    needs: week1
+    if: needs.week1.outputs.advance == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    outputs:
+      advance: ${{ steps.outputs.outputs.advance }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v37-week2
+          key: candidate-01-v37-BTCUSDT-2020-08-13-2020-08-24-${{ runner.os }}-v1
+      - name: Run unchanged second BTC week
+        run: |
+          set -euo pipefail
+          rm -rf artifacts/candidate-01-v37-week2
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python research/candidate-01/verify_candidate_01_v37_protocol.py
+              python research/candidate-01/test_quarter_hour_auction_v37.py
+              python research/candidate-01/quarter_hour_auction_v37_nautilus_week.py \
+                --week 2020-08-17 \
+                --rule both \
+                --cache .cache/candidate-01-v37-week2 \
+                --output artifacts/candidate-01-v37-week2 \
+                --workers 4
+            '
+      - name: Verify, compare and export week 2 decision
+        id: outputs
+        run: |
+          set -euo pipefail
+          python3 research/candidate-01/candidate_01_v37_gate.py \
+            --root artifacts/candidate-01-v37-week2/primary \
+            --week 2020-08-17
+          python3 research/candidate-01/candidate_01_v37_gate.py \
+            --root artifacts/candidate-01-v37-week2/control \
+            --week 2020-08-17
+          python3 research/candidate-01/candidate_01_v37_compare.py \
+            --primary-root artifacts/candidate-01-v37-week2/primary \
+            --control-root artifacts/candidate-01-v37-week2/control \
+            --output artifacts/candidate-01-v37-week2/comparison.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          result = json.loads(Path("artifacts/candidate-01-v37-week2/comparison.json").read_text())
+          print(f"advance={'true' if result['advance'] else 'false'}")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v37-week2-${{ github.sha }}
+          path: artifacts/candidate-01-v37-week2
+          if-no-files-found: warn
+          retention-days: 30
+
+  week3:
+    needs: week2
+    if: needs.week2.outputs.advance == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-01-v37-week3
+          key: candidate-01-v37-BTCUSDT-2025-05-01-2025-05-12-${{ runner.os }}-v1
+      - name: Run unchanged third BTC week
+        run: |
+          set -euo pipefail
+          rm -rf artifacts/candidate-01-v37-week3
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e PYTHONPATH=/workspace/src \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e PYTHONUNBUFFERED=1 \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            "$RESEARCH_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              export PATH=/opt/smc4/.venv/bin:$PATH
+              smc4 doctor
+              python research/candidate-01/verify_candidate_01_v37_protocol.py
+              python research/candidate-01/test_quarter_hour_auction_v37.py
+              python research/candidate-01/quarter_hour_auction_v37_nautilus_week.py \
+                --week 2025-05-05 \
+                --rule both \
+                --cache .cache/candidate-01-v37-week3 \
+                --output artifacts/candidate-01-v37-week3 \
+                --workers 4
+            '
+      - name: Verify and compare week 3
+        run: |
+          set -euo pipefail
+          python3 research/candidate-01/candidate_01_v37_gate.py \
+            --root artifacts/candidate-01-v37-week3/primary \
+            --week 2025-05-05
+          python3 research/candidate-01/candidate_01_v37_gate.py \
+            --root artifacts/candidate-01-v37-week3/control \
+            --week 2025-05-05
+          python3 research/candidate-01/candidate_01_v37_compare.py \
+            --primary-root artifacts/candidate-01-v37-week3/primary \
+            --control-root artifacts/candidate-01-v37-week3/control \
+            --output artifacts/candidate-01-v37-week3/comparison.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-01-v37-week3-${{ github.sha }}
+          path: artifacts/candidate-01-v37-week3
+          if-no-files-found: warn
+          retention-days: 30
