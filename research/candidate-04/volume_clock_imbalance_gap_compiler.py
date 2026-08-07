@@ -251,6 +251,21 @@ def inverse_gap_state(
     )
 
 
+def choose_gap_state(
+    gap: ImbalanceGap,
+    buckets: list[v37.VolumeBucket],
+    thresholds: v37.BucketThresholds,
+) -> GapState | None:
+    """Route exact reclaimed external-pool failure before generic displacement."""
+
+    inverse = inverse_gap_state(gap, buckets, thresholds)
+    return inverse if inverse is not None else informed_gap_state(
+        gap,
+        buckets,
+        thresholds,
+    )
+
+
 def bucket_touches_gap(bucket: v37.VolumeBucket, gap: ImbalanceGap) -> bool:
     return bucket.low <= gap.upper and bucket.high >= gap.lower
 
@@ -267,10 +282,13 @@ def weak_retrace(
     bucket: v37.VolumeBucket,
     state: GapState,
 ) -> bool:
-    directional_counter = -state.gap.side * bucket.imbalance
-    if directional_counter <= 0.0:
-        return abs(bucket.imbalance) <= state.thresholds.imbalance_q75
-    return directional_counter <= state.thresholds.imbalance_q50
+    counter_flow = -state.gap.side * bucket.imbalance
+    counter_return = -state.gap.side * bucket.return_bps
+    return (
+        counter_flow > 0.0
+        and counter_return > 0.0
+        and counter_flow <= state.thresholds.imbalance_q50
+    )
 
 
 def inventory_retained(
@@ -318,9 +336,13 @@ def inventory_resolved(
             - INVENTORY_UNWIND_FRACTION * change
         )
     if state.inventory_route == "LIQUIDATION":
-        if change >= 0.0:
-            return False
-        return bucket.oi_end <= state.source_oi_end * v37.OI_REBUILD_TOLERANCE
+        depleted = state.source_oi_before - state.source_oi_end
+        return (
+            depleted > 0.0
+            and bucket.oi_end
+            <= state.source_oi_end
+            + v37.LIQUIDATION_REBUILD_FRACTION * depleted
+        )
     return False
 
 
@@ -538,13 +560,11 @@ def collect_signals(
             position += 1
             continue
         counts["formed_gaps"] += 1
-        state = informed_gap_state(gap, buckets, thresholds)
-        if state is not None:
+        state = choose_gap_state(gap, buckets, thresholds)
+        if state is not None and state.state == "INFORMED_GAP":
             counts["informed_gap_states"] += 1
-        else:
-            state = inverse_gap_state(gap, buckets, thresholds)
-            if state is not None:
-                counts["inverse_gap_states"] += 1
+        elif state is not None:
+            counts["inverse_gap_states"] += 1
         if state is None:
             position += 1
             continue
@@ -555,12 +575,13 @@ def collect_signals(
             evaluation_end,
             impact_parameters,
         )
+        if intent is None:
+            counts["unresolved_gap_states"] += 1
+            position += 1
+            continue
         next_position = max(position + 1, resolved_position + 1)
         history.extend(buckets[position + 1 : next_position])
         position = next_position
-        if intent is None:
-            counts["unresolved_gap_states"] += 1
-            continue
         intents.append(intent)
         if intent.scenario == INFORMED_GAP_CONTINUATION:
             counts["informed_gap_continuations"] += 1

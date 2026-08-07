@@ -35,6 +35,36 @@ ROUTES: dict[str, dict[str, set[str] | None]] = {
             "MICRO_BALANCE_LIQUIDATION_EXHAUSTION_REVERSAL",
         },
     },
+    "v37": {
+        "full": None,
+        "continuation": {
+            "VOLUME_CLOCK_INFORMED_INVENTORY_PULLBACK_CONTINUATION",
+        },
+        "reversal": {
+            "VOLUME_CLOCK_TRAPPED_INVENTORY_ABSORPTION_REVERSAL",
+            "VOLUME_CLOCK_LIQUIDATION_ABSORPTION_REVERSAL",
+        },
+    },
+    "v38": {
+        "full": None,
+        "continuation": {
+            "VOLUME_CLOCK_INFORMED_GAP_RETEST_CONTINUATION",
+        },
+        "reversal": {
+            "VOLUME_CLOCK_TRAPPED_INVENTORY_INVERSE_GAP_REVERSAL",
+            "VOLUME_CLOCK_LIQUIDATION_INVERSE_GAP_REVERSAL",
+        },
+    },
+    "v41": {
+        "full": None,
+        "continuation": {
+            "DEPTH_NORMALIZED_POSITIVE_INNOVATION_PULLBACK_CONTINUATION",
+        },
+        "reversal": {
+            "EXTERNAL_POOL_NEGATIVE_INNOVATION_TRAPPED_REVERSAL",
+            "EXTERNAL_POOL_NEGATIVE_INNOVATION_LIQUIDATION_REVERSAL",
+        },
+    },
 }
 
 

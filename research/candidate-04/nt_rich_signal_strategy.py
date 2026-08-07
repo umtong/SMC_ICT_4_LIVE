@@ -235,21 +235,23 @@ class RichSignalStrategy(LowImpactExternalLiquidityStrategy):
             cost_rate=cost_rate,
             minimum_net_r=self.config.minimum_target_net_r,
         )
-        if target is not None:
-            target_price = target.price
-            target_net_r = target.net_r
-            target_source = target.source
-        else:
-            projection = self._projection_target(entry, stop, side, cost_rate)
-            if projection is None:
-                self._event(
-                    "RICH_SIGNAL_NO_CAUSAL_TARGET",
-                    scenario,
-                    row,
-                    {"signal": signal, "entry": entry, "stop": stop},
-                )
-                return False
-            target_price, target_net_r, target_source = projection
+        if target is None:
+            self._event(
+                "RICH_SIGNAL_NO_CAUSAL_TARGET",
+                scenario,
+                row,
+                {
+                    "signal": signal,
+                    "entry": entry,
+                    "stop": stop,
+                    "target_contract": "pre_existing_external_liquidity_only",
+                    "projection_fallback_disabled": True,
+                },
+            )
+            return False
+        target_price = target.price
+        target_net_r = target.net_r
+        target_source = target.source
 
         # risk_sized_submit_bracket derives its stop trigger from setup.extreme;
         # invert that relation so the compiler's causal invalidation price is

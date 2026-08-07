@@ -58,7 +58,10 @@ HISTORY_BUCKETS = 144
 MIN_HISTORY_BUCKETS = 36
 PULLBACK_RETAIN_FRACTION = 0.50
 MAX_COUNTER_IMBALANCE_FRACTION = 0.65
-OI_RETENTION = 0.999
+NEW_INVENTORY_RETENTION_FRACTION = 0.80
+NEW_INVENTORY_UNWIND_FRACTION = 0.50
+LIQUIDATION_REBUILD_FRACTION = 0.20
+# Retained for compatibility with older V38 evidence only.
 OI_REBUILD_TOLERANCE = 1.001
 RECLAIM_BUCKETS = 2
 RESUMPTION_BUCKETS = 2
@@ -221,6 +224,8 @@ def build_volume_buckets(
         notional = 0.0
         signed_effort = 0.0
         takes: list[v24.PoolTake] = []
+        reached_target = False
+        last_processed = start - 1
         while end < len(data) and end < start + MAX_BUCKET_BARS:
             row = data.iloc[end]
             minute_notional = max(finite(row["notional_60s"]), 0.0)
@@ -230,12 +235,17 @@ def build_volume_buckets(
             if math.isfinite(minute_flow) and math.isfinite(minute_notional):
                 signed_effort += minute_flow * minute_notional
             takes.extend(external_takes.get(end, ()))
+            last_processed = end
             if notional >= target:
+                reached_target = True
                 break
             end += 1
-        if end >= len(data):
+        if last_processed < start:
             break
-        if notional <= 0.0:
+        end = last_processed
+        if not reached_target or notional <= 0.0:
+            # A volume-clock state exists only after the frozen information
+            # amount has arrived. Partial states cannot enter later thresholds.
             index = end + 1
             continue
         start_price_index = max(start - 1, 0)
@@ -398,11 +408,15 @@ def pullback_retains_displacement(
     shock: VolumeBucket,
     pullback: VolumeBucket,
 ) -> bool:
-    displacement = shock.close - shock.start_price
-    if shock.side * displacement <= 0.0:
+    displacement = shock.side * (shock.close - shock.start_price)
+    counter_price = -shock.side * (pullback.close - shock.close)
+    if displacement <= 0.0 or counter_price <= 0.0:
         return False
-    retained = pullback.close - shock.start_price
-    return shock.side * retained >= PULLBACK_RETAIN_FRACTION * abs(displacement)
+    retained = shock.side * (pullback.close - shock.start_price)
+    return (
+        retained >= PULLBACK_RETAIN_FRACTION * displacement
+        and retained < displacement
+    )
 
 
 def weak_counter_flow(
@@ -410,16 +424,23 @@ def weak_counter_flow(
     pullback: VolumeBucket,
 ) -> bool:
     counter = -shock.side * pullback.imbalance
-    if counter <= 0.0:
-        return abs(pullback.imbalance) <= abs(shock.imbalance)
-    return counter <= MAX_COUNTER_IMBALANCE_FRACTION * abs(shock.imbalance)
+    return (
+        counter > 0.0
+        and counter <= MAX_COUNTER_IMBALANCE_FRACTION * abs(shock.imbalance)
+    )
 
 
 def oi_creation_retained(shock: VolumeBucket, later: VolumeBucket) -> bool:
-    return bool(
-        math.isfinite(later.oi_end)
-        and math.isfinite(shock.oi_end)
-        and later.oi_end >= OI_RETENTION * shock.oi_end
+    if not all(
+        math.isfinite(value)
+        for value in (shock.oi_before, shock.oi_end, later.oi_end)
+    ):
+        return False
+    created = shock.oi_end - shock.oi_before
+    return (
+        created > 0.0
+        and later.oi_end
+        >= shock.oi_before + NEW_INVENTORY_RETENTION_FRACTION * created
     )
 
 
@@ -432,12 +453,25 @@ def route_inventory_resolved(
     shock: VolumeBucket,
     later: VolumeBucket,
 ) -> bool:
-    if not all(math.isfinite(value) for value in (shock.oi_end, later.oi_end)):
+    if not all(
+        math.isfinite(value)
+        for value in (shock.oi_before, shock.oi_end, later.oi_end)
+    ):
         return False
     if route == "NEW_INVENTORY":
-        return later.oi_end < shock.oi_end
+        created = shock.oi_end - shock.oi_before
+        return (
+            created > 0.0
+            and later.oi_end
+            <= shock.oi_end - NEW_INVENTORY_UNWIND_FRACTION * created
+        )
     if route == "LIQUIDATION":
-        return later.oi_end <= OI_REBUILD_TOLERANCE * shock.oi_end
+        depleted = shock.oi_before - shock.oi_end
+        return (
+            depleted > 0.0
+            and later.oi_end
+            <= shock.oi_end + LIQUIDATION_REBUILD_FRACTION * depleted
+        )
     return False
 
 
@@ -564,9 +598,11 @@ def resolve_informed_continuation(
             and oi_creation_retained(shock, resume)
         ):
             continue
+        if resume.end_index + 1 >= len(data):
+            continue
         stop = structural_stop(
             data,
-            pullback.start_index,
+            shock.start_index,
             resume.end_index,
             shock.side,
             impact_parameters,
@@ -642,6 +678,8 @@ def resolve_absorption_reversal(
                 reclaim,
             )
         ):
+            continue
+        if reclaim.end_index + 1 >= len(data):
             continue
         stop = structural_stop(
             data,
@@ -761,7 +799,16 @@ def collect_signals(
                     counts["trapped_inventory_reversals"] += 1
                 else:
                     counts["liquidation_reversals"] += 1
-        position = max(position + 1, resolved_position + 1)
+        if intent is None:
+            # A failed setup does not consume later completed buckets. Each can
+            # seed its own independent state on the next loop iteration.
+            position += 1
+            continue
+        next_position = max(position + 1, resolved_position + 1)
+        # Confirmation buckets consumed by an accepted pattern remain part of
+        # later past-only distributions.
+        history.extend(buckets[position + 1 : next_position])
+        position = next_position
 
     intents.sort(key=lambda item: int(item.signal_index))
     unique: list[Intent] = []
