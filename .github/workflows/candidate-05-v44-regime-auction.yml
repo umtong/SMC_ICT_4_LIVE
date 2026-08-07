@@ -1,0 +1,108 @@
+name: candidate-05-v44-regime-auction
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/strategy_v44_regime_auction.py"
+      - "research/candidate-05/tests/test_strategy_v44_contract.py"
+      - ".github/workflows/candidate-05-v44-regime-auction.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v44-regime-auction
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  frozen-btc-stages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v44
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover -s research/candidate-05/tests -p 'test_*.py' -v
+      - name: Select v44
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-05/strategy.py /tmp/candidate05-strategy.py
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('research/candidate-05/strategy.py'); s=p.read_text()
+          pattern=re.compile(r'^from\s+strategy_v26\s+import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$',re.MULTILINE)
+          m=pattern.search(s)
+          if m is None: raise RuntimeError(f'v26 import not found: {s!r}')
+          exported=m.group(2) or m.group(1)
+          p.write_text(pattern.sub(f'from strategy_v44_regime_auction import RegimeConditionedAuctionStrategy as {exported}',s,count=1))
+          PY
+      - name: Run frozen stages with NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          python research/candidate-05/candidate.py pipeline \
+            --config research/candidate-05/config.json \
+            --weeks research/candidate-05/weeks.json \
+            --cache .cache/candidate-05-v44 \
+            --output "$ROOT" \
+            --max-weeks 3 2>&1 | tee "$ROOT/console.log"
+      - name: Record result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          root=Path('artifacts/candidate-05-v44')
+          def v(d,*names,default=0):
+              for n in names:
+                  if d.get(n) is not None:return d[n]
+              return default
+          rows=[]
+          for p in sorted(root.rglob('metrics.json')):
+              d=json.loads(p.read_text()); growth=float(v(d,'geometric_daily_growth','geometric_daily_nav_growth',default=0) or 0); trades=int(v(d,'trades','trade_count',default=0) or 0); wins=int(v(d,'wins','winning_trades',default=0) or 0); active=int(v(d,'active_days','trading_days',default=0) or 0)
+              integrity=int(d.get('liquidations',0) or 0)==0 and int(d.get('order_rejections',0) or 0)==0 and int(d.get('order_denials',0) or 0)==0 and int(d.get('max_open_positions_observed',0) or 0)<=1 and int(d.get('max_entry_intents_observed',0) or 0)<=1
+              rows.append({'path':str(p),'growth':growth,'total_return':float(v(d,'total_return',default=0) or 0),'trades':trades,'wins':wins,'active_days':active,'max_drawdown':float(v(d,'max_drawdown','maximum_drawdown',default=0) or 0),'integrity':integrity,'pass':integrity and growth>=.01 and trades>=7 and wins>=4 and active>=4})
+          if not rows: decision='IMPLEMENTATION_FAILURE'
+          elif rows[0]['pass'] and len(rows)>=3 and all(x['pass'] for x in rows[:3]): decision='PROMOTE_TO_CONTINUOUS_30D'
+          elif rows[0]['pass']: decision='WEEK1_PASS_LATER_WEEK_FAIL'
+          elif rows[0]['trades']<7: decision='DISCARD_OPPORTUNITY_DENSITY'
+          elif rows[0]['growth']<=0: decision='DISCARD_NEGATIVE_EXPECTANCY'
+          else: decision='DISCARD_PROMOTION_GATE_MISS'
+          out={'schema':'candidate-05-v44-result-v1','engine':'NautilusTrader BacktestNode','strategy':'strategy_v44_regime_auction:RegimeConditionedAuctionStrategy','decision':decision,'rows':rows}
+          (root/'v44_result.json').write_text(json.dumps(out,indent=2,sort_keys=True)); Path('research/candidate-05/V44_RESULT.json').write_text(json.dumps(out,indent=2,sort_keys=True)); print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V44_RESULT.json
+          if ! git diff --cached --quiet; then git commit -m "candidate-05: record v44 controlled result [skip ci]"; git push origin HEAD:research/candidate-05; fi
+      - name: Restore active strategy
+        if: always()
+        run: cp /tmp/candidate05-strategy.py research/candidate-05/strategy.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v44-regime-auction-${{ github.sha }}
+          path: artifacts/candidate-05-v44/**
+          if-no-files-found: error
+          retention-days: 90
