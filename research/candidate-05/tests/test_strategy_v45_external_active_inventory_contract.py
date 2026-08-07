@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 import unittest
 
-from strategy_v45_external_active_inventory import external_setup_from_hybrid
+from external_inventory_wiring_logic import external_setup_from_hybrid
 
 
 ROOT = Path(__file__).resolve().parents[1]
