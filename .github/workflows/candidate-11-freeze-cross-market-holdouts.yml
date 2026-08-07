@@ -1,0 +1,44 @@
+name: Candidate 11 freeze cross-market holdouts
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/cross_market_holdout_freeze_trigger.json"
+      - "research/candidate-11/freeze_cross_market_holdouts.py"
+      - ".github/workflows/candidate-11-freeze-cross-market-holdouts.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-11-freeze-cross-market-holdout-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout latest approved evidence
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Freeze only after C1-C3 gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase origin research/candidate-11
+          python research/candidate-11/freeze_cross_market_holdouts.py
+          if [ -f research/candidate-11/cross_market_holdout_protocol.json ]; then
+            git config user.name "candidate-11-bot"
+            git config user.email "candidate-11-bot@users.noreply.github.com"
+            git add research/candidate-11/cross_market_holdout_protocol.json
+            if ! git diff --cached --quiet; then
+              git commit -m "candidate-11: freeze cross-market holdouts before data"
+              git push origin HEAD:research/candidate-11
+            fi
+          fi
