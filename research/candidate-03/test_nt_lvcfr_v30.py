@@ -104,8 +104,9 @@ class FailedBasisReversionTests(unittest.TestCase):
             ),
             basis(
                 5,
-                futures=(101.7, 102.0, 101.1, 101.6, 0.3),
-                spot=(101.4, 101.8, 101.0, 101.5, 0.15),
+                # A valid long defense must close above its own open.
+                futures=(101.3, 102.0, 101.1, 101.6, 0.3),
+                spot=(101.2, 101.8, 101.0, 101.5, 0.15),
                 basis_bp=3.0,
             ),
         ]
