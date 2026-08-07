@@ -31,13 +31,24 @@ from bar_adapter import build_bars
 from logic import BarObs, Direction, LogicConfig, RiskSizer, TradePlan
 from session_engine import RegionalHandoffAuctionEngine
 
-from smc_ict_4.event_log import write_events
+from smc_ict_4.event_log import EventLogError, write_events
 from smc_ict_4.manifest import create_run_manifest, write_json_atomic
 
 COLUMNS = (
     "open_time", "open", "high", "low", "close", "volume", "close_time",
     "quote_volume", "trades", "taker_buy_volume", "taker_buy_quote_volume", "ignore",
 )
+
+
+def _write_raw_events(path: Path, events: list[Any]) -> Path:
+    """Persist diagnostics before validation; raw events are never success evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        for event in events:
+            stream.write(json.dumps(event.to_dict(), sort_keys=True, ensure_ascii=False) + "\n")
+    temporary.replace(path)
+    return path
 
 
 def _download(url: str, destination: Path, retries: int = 4) -> None:
@@ -595,9 +606,21 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
                 },
             },
         )
-        write_events(output_dir / "scenario_events.jsonl", strategy.logic.events)
+        _write_raw_events(output_dir / "scenario_events.raw.jsonl", strategy.logic.events)
         write_json_atomic(output_dir / "submitted_plans.json", {"plans": strategy.plans})
         write_json_atomic(output_dir / "order_lifecycle.json", {"events": strategy.lifecycle})
+        event_log_error: str | None = None
+        try:
+            write_events(output_dir / "scenario_events.jsonl", strategy.logic.events)
+            metrics["event_log_valid"] = True
+            metrics["event_log_error"] = None
+        except EventLogError as exc:
+            event_log_error = str(exc)
+            metrics["event_log_valid"] = False
+            metrics["event_log_error"] = event_log_error
+            metrics["promising_gate_passed"] = False
+            metrics["complete_gate_passed"] = False
+            metrics["success_claim"] = False
         write_json_atomic(output_dir / "metrics.json", metrics)
         manifest = create_run_manifest(
             run_id=f"candidate-11-{week_id.lower()}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
@@ -612,9 +635,12 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
                 "logic": config["logic"],
                 "execution": config["execution"],
                 "metrics_path": str(output_dir / "metrics.json"),
+                "event_log_valid": metrics["event_log_valid"],
             },
         )
         write_json_atomic(output_dir / "run.json", manifest)
+        if event_log_error is not None:
+            raise EventLogError(event_log_error)
         return metrics
     finally:
         engine.dispose()

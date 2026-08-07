@@ -154,6 +154,42 @@ class TestCausalPlanContract(unittest.TestCase):
         self.engine.mark_trade_terminal(confirmation.ts_ns + 2 * MINUTE_NS, "TEST_EXIT")
         self.assertIsNone(self.engine.active_trade_id)
 
+    def test_far_confirmation_plan_and_rejection_form_one_state_chain(self) -> None:
+        trigger = pool("TRIGGER", Side.HIGH, 100.0, range_id="R", opposite=80.0)
+        target = pool("TARGET", Side.LOW, 80.0, range_id="R", opposite=100.0)
+        self.engine.pools = [trigger, target]
+        confirmation = bar(100 * MINUTE_NS, 104.0, 106.0, 98.0, 100.0, buy=20.0)
+        auction = Auction(
+            pool=trigger,
+            sweep=bar(90 * MINUTE_NS, 99.0, 104.0, 98.0, 101.0, buy=70.0),
+            sweep_index=0,
+            atr=10.0,
+            internal_level=103.0,
+            sweep_extreme=104.0,
+            rejection_seed=True,
+            acceptance_seed=False,
+            reclaim_seen=True,
+            reversal_target_pool_id=target.scenario_id,
+            reversal_target_level=target.level,
+        )
+        self.engine.active = auction
+        self.engine.bars = [confirmation]
+        self.engine._index = 0
+        plan = self.engine._confirm_far(auction, confirmation)
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.engine.mark_rejected(plan, confirmation.ts_ns, "TEST_REJECTION")
+        last_by_scenario = {}
+        for event in self.engine.events:
+            previous = last_by_scenario.get(event.scenario_id)
+            if previous is not None:
+                self.assertEqual(event.previous_state, previous.next_state)
+            last_by_scenario[event.scenario_id] = event
+        self.assertEqual(
+            [(event.previous_state, event.next_state) for event in self.engine.events],
+            [("OBSERVE", "FAR_CONFIRMED"), ("FAR_CONFIRMED", "PENDING_ENTRY"), ("PENDING_ENTRY", "TERMINAL")],
+        )
+
     def test_insufficient_costed_r_is_terminal_not_tuned(self) -> None:
         auction, confirmation = self._auction(Direction.LONG)
         auction.target_price = 108.0

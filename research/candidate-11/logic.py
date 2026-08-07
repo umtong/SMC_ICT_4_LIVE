@@ -1088,7 +1088,7 @@ class CausalAuctionEngine:
         a.elapsed = 0
         self._event(
             a.pool.scenario_id, "FAR_CONFIRMED", a.sweep.ts_ns, bar.ts_ns,
-            "OBSERVE", "PENDING_ENTRY", "RECLAIM_MSS_DISPLACEMENT_TO_PAIRED_DRAW", a.pool.level,
+            "OBSERVE", "FAR_CONFIRMED", "RECLAIM_MSS_DISPLACEMENT_TO_PAIRED_DRAW", a.pool.level,
             {
                 "internal_level": a.internal_level,
                 "draw_side": draw_side.value,
@@ -1211,7 +1211,7 @@ class CausalAuctionEngine:
         a.elapsed = 0
         self._event(
             a.pool.scenario_id, "AAC_CONFIRMED", a.sweep.ts_ns, bar.ts_ns,
-            "OBSERVE", "PENDING_ENTRY", "OUTSIDE_HOLD_CAUSAL_PULLBACK_REACCELERATION", a.pool.level,
+            "OBSERVE", "AAC_CONFIRMED", "OUTSIDE_HOLD_CAUSAL_PULLBACK_REACCELERATION", a.pool.level,
             {
                 "draw_side": side.value,
                 "draw_score": context,
@@ -1351,7 +1351,18 @@ class CausalAuctionEngine:
     def mark_rejected(self, plan: TradePlan, ts_ns: int, reason: str, details: dict[str, Any] | None = None) -> None:
         if self.active is None or self.active.pool.scenario_id != plan.scenario_id:
             return
-        self._event(plan.scenario_id, "ENTRY_PLAN_REJECTED", plan.observed_ts_ns, ts_ns, "CONFIRMED", "TERMINAL", reason, plan.expected_entry, details or {})
+        previous_state = self.active.state
+        self._event(
+            plan.scenario_id,
+            "ENTRY_PLAN_REJECTED",
+            plan.observed_ts_ns,
+            ts_ns,
+            previous_state,
+            "TERMINAL",
+            reason,
+            plan.expected_entry,
+            details or {},
+        )
         self.skips[reason] += 1
         self.active = None
 
