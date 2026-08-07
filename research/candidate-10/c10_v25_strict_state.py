@@ -13,6 +13,7 @@ from c10_v25_model import (
     LiquidityResponseBar,
     LiquidityResponsePlan,
     LiquidityResponseTransition,
+    LiquidityShelf,
 )
 from c10_v25_state import LiquidityResponseStateMachine
 
@@ -20,34 +21,31 @@ from c10_v25_state import LiquidityResponseStateMachine
 class StrictLiquidityResponseStateMachine(LiquidityResponseStateMachine):
     """Preserve one-event-one-scenario identity under all lifecycle states."""
 
-    def _consume_background_crosses(
+    def _record_consumed_crosses(
         self,
+        *,
         bar: LiquidityResponseBar,
+        crossed: list[LiquidityShelf],
+        scenario_id: str,
+        during_active_probe: bool,
+        newly_finalized: bool,
     ) -> list[LiquidityResponseTransition]:
-        if not self.recent_bars or not (
-            self.active_probe is not None or self.cooldown_active
-        ):
-            return []
-        crossed = self._price_crossed_shelves(
-            bar,
-            previous_mid=self.recent_bars[-1].mid_close,
-        )
         if not crossed:
             return []
         self._consume_shelves(crossed)
         count = len(crossed)
-        if self.active_probe is not None:
-            scenario_id = self.active_probe.scenario_id
+        if during_active_probe:
             previous_state = "FAILED_AUCTION_WAIT"
             next_state = "FAILED_AUCTION_WAIT"
             reason = "TRUE_CROSS_CONSUMED_WHILE_SOURCE_EVENT_ACTIVE"
             self.counters["TRUE_CROSS_CONSUMED_DURING_ACTIVE_PROBE"] += count
         else:
-            scenario_id = f"{self.instrument_id}:COOLDOWN:{bar.ts_ns}"
             previous_state = "EVENT_COOLDOWN"
             next_state = "EVENT_COOLDOWN"
             reason = "TRUE_CROSS_CONSUMED_DURING_EVENT_COOLDOWN"
             self.counters["TRUE_CROSS_CONSUMED_DURING_COOLDOWN"] += count
+        if newly_finalized:
+            self.counters["NEWLY_FINALIZED_SHELF_CROSSED_SAME_BAR"] += count
         return [
             self._transition(
                 scenario_id=scenario_id,
@@ -60,6 +58,7 @@ class StrictLiquidityResponseStateMachine(LiquidityResponseStateMachine):
                 details={
                     "source_ids": sorted(shelf.shelf_id for shelf in crossed),
                     "sides": sorted({shelf.side for shelf in crossed}),
+                    "newly_finalized_before_current_bar_decision": newly_finalized,
                 },
             ),
         ]
@@ -118,13 +117,57 @@ class StrictLiquidityResponseStateMachine(LiquidityResponseStateMachine):
         self,
         bar: LiquidityResponseBar,
     ) -> tuple[list[LiquidityResponseTransition], LiquidityResponsePlan | None]:
-        background = self._consume_background_crosses(bar)
-        target_id = (
-            self.active_probe.target_id
-            if self.active_probe is not None
-            else None
+        probe_at_start = self.active_probe
+        cooldown_at_start = self.cooldown_active
+        restricted_at_start = probe_at_start is not None or cooldown_at_start
+        previous_mid = (
+            self.recent_bars[-1].mid_close if self.recent_bars else None
         )
+        scenario_id = (
+            probe_at_start.scenario_id
+            if probe_at_start is not None
+            else f"{self.instrument_id}:COOLDOWN:{bar.ts_ns}"
+        )
+        during_active = probe_at_start is not None
+
+        background: list[LiquidityResponseTransition] = []
+        if restricted_at_start and previous_mid is not None:
+            crossed_before_roll = self._price_crossed_shelves(
+                bar,
+                previous_mid=previous_mid,
+            )
+            background.extend(
+                self._record_consumed_crosses(
+                    bar=bar,
+                    crossed=crossed_before_roll,
+                    scenario_id=scenario_id,
+                    during_active_probe=during_active,
+                    newly_finalized=False,
+                ),
+            )
+
+        target_id = probe_at_start.target_id if probe_at_start is not None else None
         events, plan = super().on_bar(bar)
+
+        # _maybe_roll_formation runs inside the parent after the first scan. A
+        # shelf finalized from strictly prior bars is observable at this bar,
+        # and must still be consumed if this same completed bar crosses it while
+        # another scenario/cooldown owns the global slot.
+        if restricted_at_start and previous_mid is not None:
+            crossed_after_roll = self._price_crossed_shelves(
+                bar,
+                previous_mid=previous_mid,
+            )
+            background.extend(
+                self._record_consumed_crosses(
+                    bar=bar,
+                    crossed=crossed_after_roll,
+                    scenario_id=scenario_id,
+                    during_active_probe=during_active,
+                    newly_finalized=True,
+                ),
+            )
+
         if target_id and any(
             event.reason_code == "PREEXISTING_TARGET_REACHED_BEFORE_CONFIRMATION"
             for event in events
