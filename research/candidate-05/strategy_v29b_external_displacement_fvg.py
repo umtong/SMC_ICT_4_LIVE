@@ -20,7 +20,7 @@ from strategy_v29_external_displacement_fvg import ObservedBar
 
 
 class ExternalDisplacementFvgStrategyV2(ExternalDisplacementFvgStrategy):
-    """Keep v29 logic unchanged and satisfy the frozen ArmedEntryPath contract."""
+    """Keep v29 market logic unchanged and satisfy ArmedEntryPath's contract."""
 
     def _submit_external_fvg(
         self,
@@ -91,7 +91,7 @@ class ExternalDisplacementFvgStrategyV2(ExternalDisplacementFvgStrategy):
 
         details = {
             **watch.details,
-            "implementation_revision": "v29b_armed_entry_path_contract",
+            "implementation_revision": "v29b_armed_entry_path_created_ts_contract",
             "retest_index": self.bar_index,
             "retest_close": bar.close,
             "retest_flow_15s": bar.flow_15s,
@@ -125,7 +125,7 @@ class ExternalDisplacementFvgStrategyV2(ExternalDisplacementFvgStrategy):
             stop=stop,
             atr=atr,
             created_index=watch.breakout_index,
-            expires_index=watch.retest_expires_index,
+            created_ts=bar.ts,
             details=details,
         )
         submitted = self._submit_price_capped_bracket(
