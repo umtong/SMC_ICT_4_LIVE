@@ -178,7 +178,7 @@ class RawOpenBucketCarryContracts(unittest.TestCase):
         )
         self.assertEqual(
             DATA_REVISION,
-            "BINANCE_USDM_BOOKTICKER_COMPLETED_10S_V2_TRUE_STREAMING",
+            "BINANCE_USDM_BOOKTICKER_COMPLETED_10S_V3_NATIVE_L1_SOURCE_TIME",
         )
         self.assertNotIn("list(iterator)", source)
         for forbidden in (
