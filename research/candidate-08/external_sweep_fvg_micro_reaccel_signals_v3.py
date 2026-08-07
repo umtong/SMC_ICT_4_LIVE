@@ -67,7 +67,7 @@ class ExternalSweepFvgMicroConfig(ExternalSweepFvgLegConfig):
         return cls(**{key: values[key] for key in cls.__dataclass_fields__ if key in values})
 
     def validate(self) -> None:
-        super().validate()
+        ExternalSweepFvgLegConfig.validate(self)
         if self.micro_swing_span <= 0:
             raise ValueError("micro_swing_span must be positive")
         if self.micro_confirmation_seconds <= 0 or self.micro_confirmation_seconds % 10:
