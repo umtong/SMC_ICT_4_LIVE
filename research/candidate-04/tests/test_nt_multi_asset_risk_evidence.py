@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
 import pandas as pd
@@ -133,6 +136,53 @@ class MultiAssetRiskEvidenceTests(unittest.TestCase):
         evidence = candidate.reconcile_risk_evidence(positions, events)
         self.assertFalse(evidence.pass_)
         self.assertIn("SOLUSDT", " ".join(evidence.errors))
+
+    def test_nested_strategy_events_and_risk_file_are_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)
+            pd.DataFrame(
+                [
+                    {
+                        "instrument_id": "XRPUSDT-PERP.BINANCE",
+                        "ts_opened": 10,
+                        "realized_pnl": "-250.0 USDT",
+                    }
+                ]
+            ).to_csv(output / "positions.csv", index=False)
+            strategy_dir = output / "strategies" / "XRPUSDT"
+            strategy_dir.mkdir(parents=True)
+            (strategy_dir / "strategy_events.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "event_type": "ENTRY_SUBMITTED",
+                            "ts_event": 10,
+                            "details": {"equity": 10000.0},
+                        }
+                    ]
+                )
+                + "\n"
+            )
+            (output / "metrics.json").write_text(
+                json.dumps(
+                    {
+                        "gate_checks": {"positive_nav": True},
+                        "global_entry_pass": True,
+                    }
+                )
+                + "\n"
+            )
+            metrics = candidate.reconcile_output(output)
+            self.assertTrue(metrics["risk_pass"])
+            self.assertAlmostEqual(
+                metrics["maximum_realized_loss_fraction"],
+                0.025,
+            )
+            risk_path = output / "risk_evidence.json"
+            self.assertTrue(risk_path.exists())
+            risk = json.loads(risk_path.read_text())
+            self.assertTrue(risk["risk_pass"])
+            self.assertEqual(risk["matched_entries"], 1)
 
 
 if __name__ == "__main__":
