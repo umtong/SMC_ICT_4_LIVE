@@ -78,7 +78,7 @@ class InitiativeAuctionGateTests(unittest.TestCase):
             accepted_at_ns=2,
         )
         self.assertEqual(gate.state(Direction.SHORT), latest)
-        self.assertEqual(gate.observe_close(96.0), ())
+        self.assertEqual(gate.observe_close(97.01), ())
         self.assertEqual(gate.observe_close(97.0), (latest,))
 
 
