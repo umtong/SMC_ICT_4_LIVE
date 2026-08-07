@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
-"""Idempotent fail-closed migration for Candidate 11's inclusive GTD bar contract."""
+"""Fail-closed materialization and idempotent migrations for Candidate 11."""
 from __future__ import annotations
 
-from pathlib import Path
+from hashlib import sha256
+from pathlib import Path, PurePosixPath
+import tarfile
+
+
+COMPLEX_ARCHIVE = "complex_runtime.tar.xz"
+COMPLEX_ARCHIVE_SHA256 = "c43e99ed573797c64783c1791480e465ad8e8d8b51b7c4a1c945a0ee1a07076e"
+COMPLEX_FILE_SHA256 = {
+    "complex_engine.py": "9837624b72c1b1ef4a37e819d957365a2124c90f8e3ae849c1b5868971ce28f5",
+    "run_complex_nautilus.py": "a64a0a36cb7fdeb26b3b174e3e1d3233b40380ea62ca9abb65094530234833c1",
+}
 
 
 def replace_once(path: Path, old: str, new: str, label: str) -> bool:
@@ -15,8 +25,68 @@ def replace_once(path: Path, old: str, new: str, label: str) -> bool:
     return True
 
 
+def _safe_member(name: str) -> bool:
+    pure = PurePosixPath(name)
+    return not pure.is_absolute() and ".." not in pure.parts and len(pure.parts) == 1
+
+
+def materialize_complex(root: Path) -> int:
+    """Materialize the exact locally contract-tested synchronized market source."""
+    archive_path = root / COMPLEX_ARCHIVE
+    if not archive_path.exists():
+        missing = [name for name in COMPLEX_FILE_SHA256 if not (root / name).is_file()]
+        if missing:
+            raise SystemExit(f"synchronized complex source is incomplete: {missing}")
+        return 0
+
+    payload = archive_path.read_bytes()
+    actual_archive_hash = sha256(payload).hexdigest()
+    if actual_archive_hash != COMPLEX_ARCHIVE_SHA256:
+        raise SystemExit(
+            "synchronized source archive SHA-256 mismatch: "
+            f"expected={COMPLEX_ARCHIVE_SHA256} actual={actual_archive_hash}",
+        )
+
+    try:
+        with tarfile.open(archive_path, mode="r:xz") as archive:
+            members = archive.getmembers()
+            names = [member.name for member in members]
+            if len(names) != len(set(names)):
+                raise SystemExit("duplicate synchronized source member")
+            if set(names) != set(COMPLEX_FILE_SHA256):
+                raise SystemExit(
+                    "synchronized source member set mismatch: "
+                    f"expected={sorted(COMPLEX_FILE_SHA256)} actual={sorted(names)}",
+                )
+            for member in members:
+                if not member.isfile() or not _safe_member(member.name):
+                    raise SystemExit(f"unsafe synchronized source member: {member.name}")
+                source = archive.extractfile(member)
+                if source is None:
+                    raise SystemExit(f"unreadable synchronized source member: {member.name}")
+                data = source.read()
+                actual = sha256(data).hexdigest()
+                expected = COMPLEX_FILE_SHA256[member.name]
+                if actual != expected:
+                    raise SystemExit(
+                        f"synchronized source hash mismatch for {member.name}: "
+                        f"expected={expected} actual={actual}",
+                    )
+                temporary = root / f".{member.name}.tmp"
+                temporary.write_bytes(data)
+                temporary.replace(root / member.name)
+    except tarfile.TarError as exc:
+        raise SystemExit(f"invalid synchronized source archive: {exc}") from exc
+
+    archive_path.unlink()
+    print("materialized synchronized four-market FAR/AAC source")
+    return len(COMPLEX_FILE_SHA256)
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent
+    changed = materialize_complex(root)
+
     run_path = root / "run.py"
     test_path = root / "test_logic.py"
     logic_path = root / "logic.py"
@@ -33,7 +103,7 @@ def main() -> None:
         if marker not in logic_source:
             raise SystemExit(f"required causal-ledger migration missing: {marker}")
 
-    changed = int(
+    changed += int(
         replace_once(
             run_path,
             "                    expire_time=datetime.fromtimestamp(plan.expire_ts_ns / 1_000_000_000, tz=timezone.utc),",
@@ -47,7 +117,7 @@ def main() -> None:
     new_test = '''    def test_gtd_expiry_uses_timezone_aware_datetime(self) -> None:\n        source = (ROOT / "run.py").read_text(encoding="utf-8")\n        self.assertIn("expire_time=datetime.fromtimestamp(", source)\n        self.assertIn("tz=timezone.utc", source)\n        self.assertIn("+ timedelta(microseconds=1)", source)\n        self.assertNotIn("expire_time=plan.expire_ts_ns", source)\n'''
     changed += int(replace_once(test_path, old_test, new_test, "inclusive GTD contract test"))
 
-    print(f"SCDAM inclusive-GTD migrations applied: {changed}")
+    print(f"Candidate 11 materialization/migrations applied: {changed}")
 
 
 if __name__ == "__main__":
