@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Candidate 15 V4 Nautilus portfolio runner.
-
-The frozen Candidate 14 source is materialized with its session routing, then
-Candidate 15 installs the persistent cross-market initiative family, quarantines
-rejected prior families and preserves the shared execution/account path.
-"""
+"""Candidate 15 V5 Nautilus portfolio runner."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -27,7 +22,9 @@ from portfolio_materializer import materialize_combined_portfolio_source  # noqa
 from quarter_hour_persistent_initiative import (  # noqa: E402,F401
     QHI_ROUTER_KEY,
     PersistentInitiativeContinuationEngine,
-    PersistentQuarterHourRouter,
+)
+from response_qualified_persistent_initiative import (  # noqa: E402,F401
+    ResponseQualifiedPersistentQuarterHourRouter,
 )
 from runner_materializer import materialize_runner_source  # noqa: E402
 from semantic_market_leadership import SemanticMarketLeadershipGate  # noqa: E402

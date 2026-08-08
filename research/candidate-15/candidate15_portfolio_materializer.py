@@ -1,13 +1,8 @@
-"""Candidate 15 V4 portfolio materialization.
+"""Candidate 15 V5 portfolio materialization.
 
-V1--V3 established three fail-closed invariants but the local SCDAM family was
-still too sparse and its only unseen V3 trade failed at the cross-market role
-router.  V4 therefore quarantines that rejected family and evaluates one
-independent scenario family: persistent cross-market initiative followed by a
-fresh post-activation five-minute MSS/displacement/FVG leg.
-
-Candidate 14's Nautilus order, account, cost, current-NAV risk and one-global-slot
-path remain the execution source of truth.
+V5 isolates a timeframe-consistent, response-qualified cross-market initiative
+family. Prior SCDAM and SESSION_I7 plans remain fail-closed. NautilusTrader keeps
+exclusive ownership of fills, costs, account state and the one-global-slot rule.
 """
 from __future__ import annotations
 
@@ -19,7 +14,7 @@ def far_stop_preserves_sweep_invalidation(
     stop: float,
     sweep_invalidation: float | None,
 ) -> bool:
-    """Preserved V3 invariant for future FAR-family reactivation tests."""
+    """Preserved V3 invariant for any future FAR-family reactivation."""
     if sweep_invalidation is None:
         return False
     stop_value = float(stop)
@@ -34,27 +29,17 @@ def far_stop_preserves_sweep_invalidation(
     return False
 
 
-def _replace(
-    source: str,
-    old: str,
-    new: str,
-    *,
-    label: str,
-    expected: int = 1,
-) -> str:
+def _replace(source: str, old: str, new: str, *, label: str, expected: int = 1) -> str:
     count = source.count(old)
     if count != expected:
         raise RuntimeError(
-            f"Candidate 15 V4 portfolio boundary drifted at {label}: "
+            f"Candidate 15 V5 portfolio boundary drifted at {label}: "
             f"expected {expected}, found {count}",
         )
     return source.replace(old, new)
 
 
 def materialize_candidate15_portfolio_source(source: str) -> str:
-    # Historical Binance archives are not perfectly uniform about whether the
-    # first row is a header.  Normalize only after causal row validation; this is
-    # data integrity, not an alpha change.
     source = _replace(
         source,
         '        frame = frame[pd.to_numeric(frame["open_time"], errors="coerce").notna()].copy()\n'
@@ -63,14 +48,11 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
         '        valid_open_time = numeric_open_time.notna()\n'
         '        frame = frame.loc[valid_open_time].copy()\n'
         '        frame["open_time"] = numeric_open_time.loc[valid_open_time].astype("int64")\n'
-        '        # candidate-15-v4-strict-open-time\n'
+        '        # candidate-15-v5-strict-open-time\n'
         '        if len(frame.index) not in (1439, 1440, 1441):',
         label="strict-open-time",
     )
 
-    # Candidate 14 has already installed generic plan-origin lifecycle routing.
-    # Add one portfolio state router and one post-activation engine per market
-    # before event cursors are initialized over self.logic.
     initialization = '''            self.session_logic_key = SESSION_LOGIC_KEY
             self.logic[self.session_logic_key] = SessionAuctionBridge(
                 session_logic_config,
@@ -78,16 +60,18 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
                 logic_key=self.session_logic_key,
             )
             self.sizer = RiskSizer(logic_config.risk_fraction)'''
-    initialization_v4 = '''            self.session_logic_key = SESSION_LOGIC_KEY
+    initialization_v5 = '''            self.session_logic_key = SESSION_LOGIC_KEY
             self.logic[self.session_logic_key] = SessionAuctionBridge(
                 session_logic_config,
                 str(instruments["BTCUSDT"].id),
                 logic_key=self.session_logic_key,
             )
             self.initiative_key = QHI_ROUTER_KEY
-            self.logic[self.initiative_key] = PersistentQuarterHourRouter(logic_config)
+            self.logic[self.initiative_key] = ResponseQualifiedPersistentQuarterHourRouter(
+                logic_config,
+            )
             self.continuation_keys = {
-                symbol: f"{symbol}::C15_PERSISTENT_QH_CONTINUATION"
+                symbol: f"{symbol}::C15_RESPONSE_QUALIFIED_QH_CONTINUATION"
                 for symbol in SYMBOLS
             }
             for symbol, logic_key in self.continuation_keys.items():
@@ -101,8 +85,8 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
     source = _replace(
         source,
         initialization,
-        initialization_v4,
-        label="persistent-initiative-engines",
+        initialization_v5,
+        label="response-qualified-initiative-engines",
     )
 
     source = _replace(
@@ -118,33 +102,27 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
         label="initiative-state-observation",
     )
 
-    # The V3 SCDAM family is not mixed into V4.  It remains alive only as the
-    # external-pool observer used by the independent continuation family's target
-    # selection.  Every emitted core plan receives a terminal lifecycle record.
     source = _replace(
         source,
         "                leadership = self.leadership.decide(\n",
         '''                self._logic_for_plan(plan, symbol).mark_rejected(
                     plan,
                     ts_ns,
-                    "C15_V4_CORE_FAMILY_QUARANTINED",
+                    "C15_V5_CORE_FAMILY_QUARANTINED",
                     {
                         "candidate15_state": "NO_TRADE",
                         "candidate15_policy": "FAILED_FAMILY_QUARANTINE",
-                        "prior_evidence": (
-                            "V3 predeclared screen produced one loss from one trade "
-                            "and retained only two of seven Candidate 13 reference winners"
-                        ),
+                        "prior_evidence": "V3 predeclared screen failed activity and growth",
                     },
                 )
                 self._capture_events(self._logic_key_for_plan(plan, symbol))
                 self.rejections.append({
-                    "type": "C15_V4_CORE_FAMILY_QUARANTINED",
+                    "type": "C15_V5_CORE_FAMILY_QUARANTINED",
                     "observed_ts_ns": plan.observed_ts_ns,
                     "scenario_id": plan.scenario_id,
                     "scenario": plan.scenario.value,
                     "symbol": symbol,
-                    "reason": "C15_V4_CORE_FAMILY_QUARANTINED",
+                    "reason": "C15_V5_CORE_FAMILY_QUARANTINED",
                     "net_structural_r": str(plan.net_r),
                 })
                 continue
@@ -153,9 +131,6 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
         label="core-family-quarantine",
     )
 
-    # Generate only new post-activation legs.  The periodic common-flow event is
-    # never itself an entry.  All candidates still compete through the unchanged
-    # GlobalCandidateMutex.
     source = _replace(
         source,
         '''            # Candidate 12 I7 observes BTC only.  Each complete local
@@ -190,11 +165,9 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
 
             # Candidate 12 I7 observes BTC only.  Each complete local
             # session plan must pass the dedicated four-market session semantic''',
-        label="post-activation-continuation-generation",
+        label="response-qualified-continuation-generation",
     )
 
-    # SESSION_I7 lacks the continuously observed compatible state interface.
-    # Preserve observation evidence but fail closed rather than bypass V4.
     source = _replace(
         source,
         "                        plans.append((session_plan, session_candidate))",
@@ -206,8 +179,8 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
                                 "candidate15_state": "UNRESOLVED",
                                 "candidate15_policy": "FAIL_CLOSED",
                                 "reason": (
-                                    "SESSION_I7 lacks Candidate 15 V4's repeated "
-                                    "cross-market initiative state"
+                                    "SESSION_I7 lacks Candidate 15 V5's timeframe-"
+                                    "consistent repeated cross-market response state"
                                 ),
                             },
                         )
@@ -226,8 +199,9 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
         label="session-family-fail-closed",
     )
 
-    # A rejected contingent child after a parent fill must never leave naked
-    # exposure.  This remains an engine error and cannot pass safety validation.
+    # A post-only parent rejection while the account is still flat is expected
+    # passive non-execution, not an engine failure.  Rejection after any fill is a
+    # protection failure: record an error and flatten immediately.
     source = _replace(
         source,
         '''        def on_order_rejected(self, event: OrderEvent) -> None:
@@ -237,14 +211,28 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
 ''',
         '''        def on_order_rejected(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_REJECTED")
-            self.errors.append({"type": "ORDER_REJECTED", "event": str(event)})
-            # candidate-15-v4-protective-rejection-fail-close
+            ts_ns = int(event.ts_event)
             if self.active_plan is not None and self.active_symbol is not None:
                 instrument_id = instruments[self.active_symbol].id
-                if not self.portfolio.is_flat(instrument_id):
+                account_flat = self.portfolio.is_flat(instrument_id)
+                if self.mutex.state == SlotState.ENTRY_PENDING and account_flat:
+                    self.lifecycle.append({
+                        "type": "PASSIVE_ENTRY_REJECTED_UNFILLED",
+                        "ts_event": ts_ns,
+                        "scenario_id": self.active_plan.scenario_id,
+                        "symbol": self.active_symbol,
+                        "rejected_client_order_id": str(event.client_order_id),
+                    })
+                    self._release_if_terminal(ts_ns, "PASSIVE_ENTRY_REJECTED_UNFILLED")
+                    return
+                self.errors.append({
+                    "type": "PROTECTIVE_OR_FILLED_ORDER_REJECTED",
+                    "event": str(event),
+                })
+                if not account_flat:
                     self.lifecycle.append({
                         "type": "PROTECTIVE_ORDER_REJECTED_FAIL_CLOSED",
-                        "ts_event": int(event.ts_event),
+                        "ts_event": ts_ns,
                         "scenario_id": self.active_plan.scenario_id,
                         "symbol": self.active_symbol,
                         "rejected_client_order_id": str(event.client_order_id),
@@ -255,20 +243,22 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
                     ):
                         self.cancel_all_orders(instrument_id)
                     self.close_all_positions(instrument_id)
-            self._release_if_terminal(int(event.ts_event), "ORDER_REJECTED")
+            else:
+                self.errors.append({"type": "UNATTRIBUTED_ORDER_REJECTED", "event": str(event)})
+            self._release_if_terminal(ts_ns, "ORDER_REJECTED")
 ''',
-        label="protective-order-rejection-fail-close",
+        label="causal-order-rejection-classification",
     )
 
     required = {
-        "candidate-15-v4-strict-open-time": 1,
-        "PersistentQuarterHourRouter(logic_config)": 1,
+        "candidate-15-v5-strict-open-time": 1,
+        "ResponseQualifiedPersistentQuarterHourRouter(": 1,
         "PersistentInitiativeContinuationEngine(": 1,
-        "initiative_state = self.logic[self.initiative_key].on_batch(": 1,
         "plans.append((continuation, continuation_candidate))": 1,
-        "C15_V4_CORE_FAMILY_QUARANTINED": 3,
+        "C15_V5_CORE_FAMILY_QUARANTINED": 3,
         "C15_UNROUTED_SCENARIO_FAMILY": 3,
-        "candidate-15-v4-protective-rejection-fail-close": 1,
+        "PASSIVE_ENTRY_REJECTED_UNFILLED": 3,
+        "PROTECTIVE_ORDER_REJECTED_FAIL_CLOSED": 1,
     }
     bad = {
         token: (source.count(token), expected)
@@ -276,5 +266,5 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
         if source.count(token) != expected
     }
     if bad:
-        raise RuntimeError(f"Candidate 15 V4 routes were not materialized: {bad}")
+        raise RuntimeError(f"Candidate 15 V5 routes were not materialized: {bad}")
     return source

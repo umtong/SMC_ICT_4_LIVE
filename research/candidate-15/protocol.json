@@ -1,86 +1,61 @@
 {
-  "schema": "candidate-15-persistent-cross-market-initiative-v4",
-  "candidate": "candidate-15-v4-persistent-cross-market-initiative-continuation",
+  "schema": "candidate-15-timeframe-consistent-response-initiative-v5",
+  "candidate": "candidate-15-v5-response-qualified-cross-market-continuation",
   "created_utc": "2026-08-08",
   "validation_mode": "exposed_mechanism_development_only",
   "base_candidate": {
     "branch": "research/candidate-14",
     "commit": "0f32715d90f4cf4a8bd252d53407ff20b097bbfb",
-    "role": "frozen Nautilus detector substrate, external pools, execution, costs, portfolio mutex and current-NAV risk path"
+    "role": "frozen Nautilus execution, costs, account, external pools and current-NAV risk path"
   },
-  "project_learning_source": {
-    "branch_observed": "research/candidate-13",
-    "commit_observed": "ff28d0c297f5c9115e9040d654f7611135ad3bc3",
-    "logic_blob": "dcd2cdfe0426b6c68ffba68ad750de7097cab8f6",
-    "use": "Candidate 15 independently integrates and validates the persistent-initiative mechanism; Candidate 13 code or claims are not treated as evidence of profitability."
+  "prior_failure": {
+    "protocol": "candidate-15-persistent-cross-market-initiative-v4",
+    "closed_trades": 104,
+    "wins": 17,
+    "losses": 87,
+    "daily_geometric_growth": -0.019104985267216213,
+    "closed_trade_path_max_drawdown": 0.7205772733454886,
+    "initiative_activations": 1015,
+    "diagnosis": "Five-minute impulse bodies were normalized by one-minute ATR and two same-direction bodies activated state without proving price progress between events."
   },
-  "research_question": "Can repeated cross-market common-flow events identify a persistent information state whose later independent five-minute auction legs remain tradable after realistic costs?",
+  "research_question": "Does correcting state-timeframe units and requiring cross-market price response between flow events isolate genuine persistent information from broad beta noise?",
   "hypothesis": {
-    "state_observation": "At each UTC quarter-hour, inspect the first completed five-minute interval. A common-flow event requires at least three of BTC, ETH, SOL and XRP to exhibit the same directional body, inherited displacement magnitude and same-signed taker-flow proxy.",
-    "activation": "The first event is only a candidate. A second distinct same-direction event within four hours activates persistent initiative. An opposite event invalidates the candidate and terminates an opposite active state.",
-    "state_invalidation": "Terminate on four-hour information expiry or when a majority of accepted markets closes back through the latest confirming impulse origins at a completed five-minute boundary.",
-    "entry_scenario": "The periodic event is never traded. After activation, each market independently requires a fresh five-minute structure break, directional displacement, strict three-candle FVG and passive first consequent-encroachment retracement.",
-    "stop": "Beyond the last opposing five-minute bar or causally protected swing plus inherited ATR buffer.",
-    "target": "Next causally confirmed live external completed-4H or previous-UTC-day pool in the initiative direction.",
-    "independence": "One plan per distinct post-activation five-minute displacement identity; all markets compete through the unchanged global one-slot mutex.",
-    "family_isolation": "V1-V3 SCDAM plans and SESSION_I7 are observed but explicitly rejected. V4 development measures only the independent persistent-initiative family.",
-    "execution_safety": "A rejected protective child after a parent fill cancels remaining orders and immediately flattens residual exposure while preserving an engine-error failure record."
+    "timeframe_consistency": "A current five-minute common-flow impulse is standardized only by ATR from prior completed non-overlapping five-minute bars. The current bar is appended after the decision.",
+    "response_confirmation": "A second same-direction event requires at least three markets common to both events; a majority must advance beyond first-event closes and remain beyond first-event origins, with positive median signed log progress.",
+    "adaptive_horizon": "The active information horizon equals the observed separation between the two confirming events. Fresh qualified responses may update that horizon; a fixed four-hour refresh is removed.",
+    "entry": "The periodic observation remains non-tradable. Only a fresh post-activation five-minute MSS, displacement and strict FVG retracement may enter.",
+    "family_isolation": "V1-V3 SCDAM and SESSION_I7 plans remain terminally rejected. Development measures only the response-qualified continuation family.",
+    "rejection_semantics": "A post-only parent rejection while flat is expected passive non-execution. Any order rejection after fill is an engine error and immediately fail-closes exposure."
   },
   "router": {
     "module": "PERSISTENT_QH_MSS_FVG_CONTINUATION",
+    "state_router": "ResponseQualifiedPersistentQuarterHourRouter",
     "common_flow_breadth": 3,
+    "atr_timeframe_minutes": 5,
+    "atr_uses_current_impulse": false,
     "distinct_events_required": 2,
-    "maximum_event_separation_hours": 4,
-    "initiative_horizon_hours": 4,
+    "common_markets_required": 3,
+    "progress_rule": "positive median signed log return and majority advance",
+    "origin_rule": "majority remains beyond the first confirming origins",
+    "maximum_candidate_event_separation_hours": 4,
+    "active_horizon": "observed_confirmation_span",
     "entry_timeframe_minutes": 5,
     "entry_order": "POST_ONLY_LIMIT_GTD",
     "take_profit_order": "POST_ONLY_LIMIT_GTC",
-    "stop_order": "STOP_MARKET_GTC",
-    "no_trade_states": [
-      "NO_REPEATED_COMMON_FLOW",
-      "INITIATIVE_EXPIRED",
-      "MAJORITY_ORIGIN_REACCEPTANCE",
-      "OPPOSITE_COMMON_FLOW",
-      "POST_ACTIVATION_LEG_INCOMPLETE",
-      "INSUFFICIENT_COSTED_STRUCTURAL_R"
-    ]
+    "stop_order": "STOP_MARKET_GTC"
   },
   "selection": {
-    "seed": 202608081504,
-    "method": "E01-E06 are deliberately reused exposed diagnostic weeks already named by a parallel project branch. They span adverse, strong, high-frequency, mid-regime and recent conditions and can only reject or improve the mechanism; they can never support a success claim.",
+    "seed": 202608081505,
+    "method": "E01-E06 are the same exposed diagnostic weeks used by V4. Reuse is intentional for controlled mechanism comparison and cannot support a success claim.",
     "warmup_days": 3,
     "evaluation_days": 7,
     "intervals": {
-      "E01": {
-        "start": "2021-07-12",
-        "end_exclusive": "2021-07-19",
-        "role": "exposed-adverse-development"
-      },
-      "E02": {
-        "start": "2022-05-09",
-        "end_exclusive": "2022-05-16",
-        "role": "exposed-strong-development"
-      },
-      "E03": {
-        "start": "2022-07-25",
-        "end_exclusive": "2022-08-01",
-        "role": "exposed-frequency-development"
-      },
-      "E04": {
-        "start": "2023-06-20",
-        "end_exclusive": "2023-06-27",
-        "role": "exposed-mid-regime-development"
-      },
-      "E05": {
-        "start": "2024-07-15",
-        "end_exclusive": "2024-07-22",
-        "role": "exposed-frequency-development"
-      },
-      "E06": {
-        "start": "2025-08-11",
-        "end_exclusive": "2025-08-18",
-        "role": "exposed-recent-development"
-      }
+      "E01": {"start": "2021-07-12", "end_exclusive": "2021-07-19", "role": "exposed-adverse-development"},
+      "E02": {"start": "2022-05-09", "end_exclusive": "2022-05-16", "role": "exposed-strong-development"},
+      "E03": {"start": "2022-07-25", "end_exclusive": "2022-08-01", "role": "exposed-frequency-development"},
+      "E04": {"start": "2023-06-20", "end_exclusive": "2023-06-27", "role": "exposed-mid-regime-development"},
+      "E05": {"start": "2024-07-15", "end_exclusive": "2024-07-22", "role": "exposed-frequency-development"},
+      "E06": {"start": "2025-08-11", "end_exclusive": "2025-08-18", "role": "exposed-recent-development"}
     }
   },
   "development_gate": {
@@ -95,12 +70,7 @@
   },
   "execution_lock": {
     "engine": "NautilusTrader 1.230.0",
-    "symbols": [
-      "BTCUSDT",
-      "ETHUSDT",
-      "SOLUSDT",
-      "XRPUSDT"
-    ],
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
     "starting_nav": "100000",
     "risk_fraction": 0.03,
     "global_pending_entry_plus_position_limit": 1,
@@ -109,23 +79,9 @@
     "margin_init": "0.05",
     "margin_maint": "0.025"
   },
-  "research_basis": [
-    {
-      "source": "Cont, Kukanov and Stoikov, The Price Impact of Order Book Events, arXiv:1011.6402",
-      "use": "directional taker-flow agreement is treated as a state observation rather than an entry by itself"
-    },
-    {
-      "source": "Cross-asset order-flow price discovery literature",
-      "use": "cross-market flow effects are short-lived and state dependent, motivating explicit activation and expiry"
-    },
-    {
-      "source": "Crypto price-discovery and lead-lag research",
-      "use": "leadership is allowed to change; the state requires breadth and does not permanently privilege BTC or any altcoin"
-    }
-  ],
   "claim_rules": [
-    "E01-E06 are exposed development periods and cannot support a success claim.",
-    "Passing the development gate only permits a source freeze and newly predeclared confirmation screen.",
-    "A final success claim additionally requires a frozen continuous-account evaluation with realistic costs and no liquidation or unrecoverable account damage."
+    "E01-E06 are exposed development periods and can only reject or improve the mechanism.",
+    "Passing development permits a source freeze and newly predeclared confirmation; it is not success.",
+    "Success requires a frozen continuous-account evaluation with realistic costs and no liquidation or unrecoverable account damage."
   ]
 }
