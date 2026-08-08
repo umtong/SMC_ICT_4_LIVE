@@ -31,6 +31,15 @@ jobs:
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           smc4 doctor
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-12/materialize_i18.py")
+          text = path.read_text(encoding="utf-8")
+          old = "bar(ts(y, m, d, 6, 50), 107.2, 110.5, 107.1, 110.2)"
+          new = "bar(ts(y, m, d, 6, 50), 107.2, 109.0, 107.1, 108.8)"
+          assert text.count(old) == 1, text.count(old)
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
           python research/candidate-12/materialize_i18.py
           python -m compileall -q research/candidate-12
           python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
