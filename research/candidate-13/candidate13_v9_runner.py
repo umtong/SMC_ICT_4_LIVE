@@ -21,12 +21,17 @@ def build_run() -> Any:
     from runner_materializer import materialize_runner_source
     from semantic_logic import install as _install_semantic_logic
     from semantic_market_leadership import SemanticMarketLeadershipGate
+    from semantic_post_gate import amend_after_leadership
     _market_leadership.MarketLeadershipGate = SemanticMarketLeadershipGate
     _install_semantic_logic()
     base = ROOT / 'run_leadership_scdam_base.py'
     source = materialize_runner_source(base.read_text(encoding='utf-8'))
     source = materialize_quarter_hour_source(source)
-    namespace = {'__name__': 'candidate13_v9_quarter_hour_materialized', '__file__': str(base)}
+    namespace = {
+        '__name__': 'candidate13_v9_quarter_hour_materialized',
+        '__file__': str(base),
+        'amend_after_leadership': amend_after_leadership,
+    }
     exec(compile(source, str(base), 'exec'), namespace)
     return namespace['run']
 
@@ -58,7 +63,7 @@ def execute(interval: str, output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     effective = output_dir / 'effective_config.json'
     write_json(effective, config)
-    lock_files = ('quarter_hour_common_flow.py', 'quarter_hour_materializer.py', 'candidate13_v9_runner.py', 'aggregate_v9_development.py', 'protocol-v9-quarter-hour-development.json', 'run_leadership_scdam_base.py', 'runner_materializer.py', 'semantic_logic.py', 'semantic_market_leadership.py', 'logic.py', 'market_leadership.py', 'session_engine.py', 'bar_adapter.py', 'global_allocator.py', 'evidence_audit.py', 'base_config.json')
+    lock_files = ('quarter_hour_common_flow.py', 'quarter_hour_materializer.py', 'candidate13_v9_runner.py', 'aggregate_v9_development.py', 'protocol-v9-quarter-hour-development.json', 'run_leadership_scdam_base.py', 'runner_materializer.py', 'semantic_logic.py', 'semantic_market_leadership.py', 'semantic_post_gate.py', 'logic.py', 'market_leadership.py', 'session_engine.py', 'bar_adapter.py', 'global_allocator.py', 'evidence_audit.py', 'base_config.json')
     write_json(output_dir / 'source_lock.json', {'schema': 'candidate-13-v9-development-source-lock-v1', 'candidate': protocol['candidate'], 'files': {name: {'bytes': (ROOT / name).stat().st_size, 'sha256': sha256((ROOT / name).read_bytes()).hexdigest()} for name in lock_files}})
     run = build_run()
     metrics = run(effective, interval, output_dir)
@@ -83,6 +88,7 @@ def self_test() -> None:
     materialized = materialize_quarter_hour_source(materialize_runner_source(base))
     assert materialized.count('QuarterHourCommonFlowEngine(logic_config)') == 1
     assert materialized.count('plans.append((qh_plan, qh_candidate))') == 1
+    assert materialized.count('candidate-13-v9-strict-open-time') == 1
     config = LogicConfig()
     engine = QuarterHourCommonFlowEngine(config)
     prices = {symbol: 100.0 + index * 10.0 for index, symbol in enumerate(SYMBOLS)}
