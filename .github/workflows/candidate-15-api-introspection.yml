@@ -1,0 +1,114 @@
+name: Candidate 15 Nautilus 1.230 API introspection
+
+on:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - ".github/workflows/candidate-15-api-introspection.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Inspect exact strategy, cache and bracket contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          import inspect
+          from nautilus_trader.cache.cache import Cache
+          from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
+          from nautilus_trader.model.identifiers import InstrumentId, StrategyId, TraderId
+          from nautilus_trader.model.objects import Price, Quantity
+          from nautilus_trader.trading.strategy import Strategy
+          from nautilus_trader.common.factories import OrderFactory
+
+          def show(owner, name):
+              obj = getattr(owner, name)
+              print(f"\n=== {owner.__name__}.{name} ===")
+              try:
+                  print("signature:", inspect.signature(obj))
+              except Exception as exc:
+                  print("signature_error:", type(exc).__name__, exc)
+              print("doc:", obj.__doc__)
+
+          for name in (
+              "modify_order",
+              "close_all_positions",
+              "cancel_all_orders",
+          ):
+              show(Strategy, name)
+
+          for name in sorted(name for name in dir(Cache) if "order" in name.lower()):
+              obj = getattr(Cache, name)
+              if callable(obj):
+                  print(f"\n=== Cache.{name} ===")
+                  try:
+                      print("signature:", inspect.signature(obj))
+                  except Exception as exc:
+                      print("signature_error:", type(exc).__name__, exc)
+                  print("doc:", obj.__doc__)
+
+          show(OrderFactory, "bracket")
+          factory = OrderFactory(
+              trader_id=TraderId("TRADER-001"),
+              strategy_id=StrategyId("STRATEGY-001"),
+              clock=None,
+          )
+          try:
+              orders = factory.bracket(
+                  instrument_id=InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),
+                  order_side=OrderSide.BUY,
+                  quantity=Quantity.from_str("1.000"),
+                  entry_order_type=OrderType.LIMIT,
+                  entry_price=Price.from_str("100.0"),
+                  time_in_force=TimeInForce.GTC,
+                  entry_post_only=True,
+                  tp_order_type=OrderType.LIMIT,
+                  tp_price=Price.from_str("110.0"),
+                  tp_time_in_force=TimeInForce.GTC,
+                  tp_post_only=True,
+                  sl_order_type=OrderType.STOP_MARKET,
+                  sl_trigger_price=Price.from_str("95.0"),
+                  sl_time_in_force=TimeInForce.GTC,
+              )
+              print("\n=== bracket object ===")
+              print("type:", type(orders))
+              print("id:", getattr(orders, "id", None))
+              print("len:", len(orders.orders))
+              for index, order in enumerate(orders.orders):
+                  print(f"\n--- order {index} ---")
+                  print("type:", type(order))
+                  for attr in (
+                      "client_order_id", "order_type", "order_side", "status",
+                      "trigger_price", "price", "is_reduce_only", "parent_order_id",
+                      "linked_order_ids", "contingency_type", "order_list_id",
+                      "instrument_id", "strategy_id", "quantity",
+                  ):
+                      try:
+                          print(attr, repr(getattr(order, attr)))
+                      except Exception as exc:
+                          print(attr, type(exc).__name__, exc)
+                  print("dir_parent_link_attrs:", [
+                      name for name in dir(order)
+                      if any(token in name.lower() for token in ("parent", "linked", "conting", "list"))
+                  ])
+          except Exception as exc:
+              print("bracket_build_error:", type(exc).__name__, exc)
+          PY
