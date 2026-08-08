@@ -1,116 +1,104 @@
-# Candidate 15 V6 — Residual-Laggard Delivery
+# Candidate 15 V7 — Bounded Residual Information Transfer
 
-Candidate 15 is continuing after V5 because V5 exposed a structural ownership
-error rather than merely a weak threshold.
+Candidate 15 continues because V6 produced a material structural improvement but
+not a valid system. Restricting the response state to the sole excluded market
+changed V5's daily geometric growth from about `-2.18%` to `+0.263%`, with
+activity in all six exposed intervals. V6 nevertheless had only 5 wins in 23
+trades, a `31.25%` closed-trade path drawdown, concentrated growth and execution
+safety failures. It is rejected.
 
-- V1 showed that a resolved local auction state cannot be stored forever.
-- V2 made the state a short causal decision lease and exposed a stop moved inside
-  the original sweep invalidation.
-- V3 enforced scenario-terminal sweep invalidation and exposed a faulty static
-  cross-market role decision.
-- V4 created abundant repeated-common-flow continuation activity, but its
-  five-minute impulse was normalized by one-minute ATR and repetition did not
-  require price progress.
-- V5 corrected the timeframe and required actual common-market response. It
-  still lost because every market was allowed to consume a broad state that it
-  may already have created.
+The complete failure lineage is preserved in `V1_FAILURE.md` through
+`V6_FAILURE.md`.
 
-The rejected evidence is preserved in `V1_FAILURE.md` through `V5_FAILURE.md`.
+## Why V6 still failed
 
-## V5 causal attribution
+Causal event→plan→order→position→one-minute path analysis found three distinct
+problems:
 
-The persisted V5 lifecycle, submitted plans, opening order identities and
-Nautilus positions were joined without inventing a new simulator. Of 61 filled
-trades:
+1. A fresh response could replace `accepted_symbols` while retaining the first
+   activation timestamp. A five-minute leg partly formed before refresh could
+   consume the new ownership state.
+2. Sender displacement used ATR from prior completed five-minute bars, while the
+   receiver engine inserted its current bar into ATR before testing itself.
+3. Catch-up parity was often reached before the original stop but normally
+   supplied less than one costed risk unit. It describes transfer completion;
+   it is not a sufficient final take-profit objective.
 
-| Relation to current confirming response | Trades | Wins | Realized PnL |
-|---|---:|---:|---:|
-| Market already in `accepted_symbols` | 53 | 5 | `-107,001.215528` USDT |
-| Sole market excluded from a three-market response | 8 | 3 | `+42,826.148130` USDT |
-
-All three excluded-market wins occurred in E01, so this is concentrated exposed
-development evidence. It does not establish alpha. It does identify a distinct
-mechanism to test: information already delivered versus delayed delivery.
-
-## V6 hypothesis
-
-The response state is not broad permission. It has market ownership.
+## V7 market process
 
 ```text
-first completed 5m common-flow impulse
-  standardized by prior completed 5m ATR
+first completed 5m common-flow event
+       using prior completed 5m ATR
                     ↓
 second same-direction event within 4h
                     ↓
->=3 common markets + positive median signed progress
-+ majority advances + majority holds first origins
+exactly 3 common sender markets
++ positive median signed progress
++ majority advance and origin hold
                     ↓
-response-qualified initiative
+new effective evidence boundary
                     ↓
-accepted_symbols == exactly three markets?
-       ↙                               ↘
-      no                               yes
-NO TRADE: no residual         sole excluded market is
-information receiver          residual information receiver
-                                        ↓
-                       excluded market later completes
-                       fresh post-activation 5m MSS
-                       + displacement + strict FVG
-                                        ↓
-                         passive CE retracement
-                                        ↓
-                   protected same-leg invalidation
-                   + live external 4H/day objective
+sole excluded market is behind sender median?
+       ↙                              ↘
+      no                              yes
+   NO TRADE                  residual receiver remains
+                                      ↓
+                 completely post-evidence fresh 5m MSS
+                 + directional displacement + strict FVG
+                                      ↓
+                 receiver body / weakest sender body
+                         is in [0.5, 1.0)?
+                                      ↓
+                 parity unconsumed and 0–1 costed R ahead?
+                                      ↓
+                      passive CE retracement
+                                      ↓
+              protected same-leg invalidation
+              + live completed-4H/day external target
 ```
 
-The three accepted markets are terminal no-trade for this family. They supplied
-the state evidence and cannot use the same common move again as independent
-continuation permission. A four-market response has no excluded receiver and is
-also no-trade.
+The body interval means the receiver has begun material delivery but has not
+become an equal-or-stronger information owner. The parity interval means catch-up
+is demonstrably mature but incomplete. Both are exposed mechanism-development
+definitions, not independent success evidence.
 
-## What V6 changes
+## Causal and execution contracts
 
-Only portfolio ownership changes:
+- Every activation or accepted refresh resets the effective evidence timestamp.
+- A receiver five-minute bar starting at or before that timestamp is no-trade.
+- Sender and receiver displacement use only prior completed five-minute ATR.
+- Exactly three sender markets are required; four-market agreement has no
+  residual receiver.
+- Sender markets, SCDAM, SESSION_I7 and unbounded residual continuations remain
+  terminally rejected.
+- Entry is post-only limit at the fresh FVG consequent encroachment.
+- Stop stays beyond the receiver leg's protected swing or opposing bar.
+- Final target remains a causally live completed-4H or previous-day pool; parity
+  is state evidence only.
+- Sizing remains current whole-account NAV × 3% planned loss.
+- Across BTC, ETH, SOL and XRP, at most one pending entry or open position exists.
+- NautilusTrader 1.230.0 exclusively owns clocks, orders, fills, fees, margin,
+  positions and NAV.
 
-- the V5 response-qualified state detector is unchanged;
-- all four continuation engines remain observed so rejected plans are visible;
-- only the sole market absent from exactly three accepted markets may compete;
-- every accepted-market continuation receives an explicit terminal
-  `C15_V6_NOT_RESIDUAL_LAGGARD` transition;
-- the approved plan records `candidate15_v6_route`, and aggregation fails the
-  route audit if any submitted market belongs to `accepted_symbols`.
-
-## What V6 does not change
-
-- five-minute MSS, displacement and strict three-candle FVG entry geometry;
-- post-only consequent-encroachment entry and causal GTD expiry;
-- protected swing/opposing-bar invalidation;
-- next live completed-4H or previous-day external objective;
-- realistic maker/taker costs and inherited fill assumptions;
-- current whole-account NAV × 3% planned-loss sizing;
-- one pending entry or open position across all four markets;
-- NautilusTrader ownership of clocks, orders, fills, margin, positions and NAV;
-- the predeclared development gate.
-
-No custom backtester, portfolio simulator, score-based risk multiplier, leverage
-cap, fallback target or post-hoc result filter is added.
+No custom backtester, result-based risk multiplier, leverage cap, fallback target
+or post-hoc trade deletion is introduced.
 
 ## Development protocol
 
-E01-E06 are the same exposed diagnostic weeks used by V4 and V5. They are reused
-to isolate the ownership change and can never support a success claim. The
-unchanged gate requires sufficient activity and interval breadth, positive
-costed growth, adequate win rate and payoff, bounded drawdown, non-concentrated
-growth and complete execution safety.
+E01-E06 are fully exposed and reused only to test the causal timing, unit and
+transfer-state redesign. The unchanged gate requires at least 15 trades in at
+least five intervals, positive costed growth, at least 55% win rate, payoff at
+least 1.2, path drawdown at most 20%, non-concentrated growth and complete safety.
 
 ```bash
 for interval in E01 E02 E03 E04 E05 E06; do
   bash research/candidate-15/run_week.sh "$interval"
 done
-python research/candidate-15/aggregate_v6.py
+python research/candidate-15/aggregate_v7.py
 ```
 
-Only a promising exposed result permits a frozen, newly predeclared confirmation
-screen. Project success still requires one frozen continuous Nautilus account,
-realistic costs, no liquidation or unrecoverable NAV damage, and the project's
-minimum long-run costed growth standard.
+A promising development result permits only a source freeze and newly
+predeclared confirmation. Project success still requires a frozen continuous
+Nautilus account, realistic total costs, sufficient independent opportunity,
+no liquidation or unrecoverable NAV damage, and long-run costed daily geometric
+growth of at least 1%.
