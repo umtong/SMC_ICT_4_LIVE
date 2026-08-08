@@ -1,0 +1,126 @@
+{
+  "candidate": "candidate-08-opening-type-first-pullback-multiasset-nautilus-v2",
+  "description": "Previous-value opening-type router with state-edge persistence, first post-IB pullback, and separate M5 new-leg confirmation across four liquid test markets",
+  "implementation_revision": "OPENING_TYPE_FIRST_PULLBACK_STATE_ROUTER_V2",
+  "random_seed": 4082027,
+  "starting_nav_usdt": 100000.0,
+  "risk_fraction": 0.03,
+  "effective_fee_rate_per_fill": 0.0006,
+  "minimum_net_reward_risk": 1.2,
+  "maximum_hold_minutes": 240,
+  "funding_avoidance_minutes": 5,
+  "assets": {
+    "BTCUSDT": {
+      "instrument_id": "BTCUSDT-PERP.BINANCE",
+      "base_currency": "BTC",
+      "price_precision": 1,
+      "size_precision": 3,
+      "tick_size": "0.1",
+      "size_increment": "0.001",
+      "min_quantity": "0.001"
+    },
+    "ETHUSDT": {
+      "instrument_id": "ETHUSDT-PERP.BINANCE",
+      "base_currency": "ETH",
+      "price_precision": 2,
+      "size_precision": 3,
+      "tick_size": "0.01",
+      "size_increment": "0.001",
+      "min_quantity": "0.001"
+    },
+    "SOLUSDT": {
+      "instrument_id": "SOLUSDT-PERP.BINANCE",
+      "base_currency": "SOL",
+      "price_precision": 3,
+      "size_precision": 1,
+      "tick_size": "0.001",
+      "size_increment": "0.1",
+      "min_quantity": "0.1"
+    },
+    "XRPUSDT": {
+      "instrument_id": "XRPUSDT-PERP.BINANCE",
+      "base_currency": "XRP",
+      "price_precision": 4,
+      "size_precision": 1,
+      "tick_size": "0.0001",
+      "size_increment": "0.1",
+      "min_quantity": "0.1"
+    }
+  },
+  "cost_assumptions": {
+    "maker_fee_rate": 0.0006,
+    "taker_fee_rate": 0.0006,
+    "one_tick_slippage_probability": 1.0,
+    "bar_market_entry_reserve_ticks": 2.0,
+    "latency_ms": {"base": 0, "insert": 0, "update": 0, "cancel": 0},
+    "rationale": "Every fill costs 6 bp. Bar-market entry reserves one synthetic crossing tick and one OneTickSlippageFillModel tick. Stop execution reserves shifted prior-hour ten-second true-range Q99. Official funding, mark price, native liquidation and shared-account NAV remain authoritative.",
+    "actual_funding_settlement": "checksum-verified Binance Vision monthly fundingRate archives with native mark-price settlement",
+    "stop_market_slippage_reserve": "shifted Q99 of completed ten-second true range over the preceding sixty minutes, minimum one tick"
+  },
+  "venue": {
+    "default_leverage": 125,
+    "bar_adaptive_high_low_ordering": true,
+    "liquidation_enabled": true,
+    "liquidation_trigger_ratio": 1.0,
+    "liquidation_cancel_open_orders": true,
+    "runtime_liquidation_switch_supported": true
+  },
+  "pattern_source_config": "config_range_fvg.json",
+  "opening_type_router_config": {
+    "initial_balance_minutes": 30,
+    "opportunity_minutes_after_balance": 180,
+    "displacement_lookback": 12,
+    "displacement_close_location": 0.6666666666666666,
+    "stop_buffer_atr": 0.05,
+    "minimum_stop_distance_atr": 0.1
+  },
+  "scenario_contract": {
+    "market_mechanism": "Previous completed value defines the accepted inventory boundary. A complete session initial balance classifies initiative acceptance versus responsive rejection. State validity is governed by the previous-value edge that defined the state, not by temporary rotation inside the initial balance. A completed pullback and a separate M5 break start a new tradeable auction leg.",
+    "sessions": {
+      "ASIA": "00:00 UTC",
+      "LONDON": "08:00 Europe/London converted to UTC for each local date",
+      "NEW_YORK": "09:30 America/New_York converted to UTC for each local date"
+    },
+    "previous_value": "Exactly 288 contiguous completed M5 bars from the prior UTC day; volume-weighted typical-price VWAP plus/minus one weighted sigma.",
+    "initial_balance": "Exactly six contiguous completed M5 bars at the actual session open.",
+    "initiative_state": "Open drive or open-test-drive remains valid while completed M5 closes stay outside the same previous-value edge, even if price rotates inside the initial balance.",
+    "responsive_state": "Open rejection reverse remains valid while completed M5 closes remain inside the rejected previous-value edge.",
+    "pullback": "A separate completed M5 retests the accepted state edge or initial-balance boundary and closes without invalidating the value state. No volume-contraction filter is used.",
+    "new_leg_confirmation": "A later separate M5 directional displacement closes beyond both the pullback structure and the relevant IB structure, with body and range not below shifted prior-12-M5 medians and a directional outer-third close.",
+    "entry": "First contiguous completed ten-second execution observation after new-leg confirmation. Ten-second data never defines context, state, direction, stop or target.",
+    "stop": "Beyond the first-pullback extreme that defines the new auction leg, plus 0.05 trigger ATR and at least 0.10 ATR from entry. The broader opening state may remain valid after one trade leg fails, but the one-attempt contract prevents re-entry.",
+    "initiative_target": "Exactly one completed initial-balance width beyond the accepted edge, frozen before entry.",
+    "responsive_target": "Opposite edge of the completed previous-day value range, frozen before the session.",
+    "global_selection": "At one timestamp only the highest causal cost-after net reward-risk signal is eligible. Across BTC, ETH, SOL and XRP, pending new entry orders plus open positions never exceed one.",
+    "ten_second_alpha_inputs": false,
+    "parameter_search": "none",
+    "development_data": "The V1 BTC week 2025-08-18 is development data and is excluded. Seed 4082027 selected three untouched Monday-to-Monday weeks before V2 execution, more than twenty-eight days from earlier candidate weeks."
+  },
+  "suites": {
+    "first": [
+      {"name": "screen-01", "start": "2026-01-05T00:00:00Z", "end": "2026-01-12T00:00:00Z"}
+    ],
+    "screen": [
+      {"name": "screen-01", "start": "2026-01-05T00:00:00Z", "end": "2026-01-12T00:00:00Z"},
+      {"name": "screen-02", "start": "2024-08-12T00:00:00Z", "end": "2024-08-19T00:00:00Z"},
+      {"name": "screen-03", "start": "2024-09-30T00:00:00Z", "end": "2024-10-07T00:00:00Z"}
+    ]
+  },
+  "first_window_gate": {
+    "minimum_closed_trades": 5,
+    "cost_after_total_return_positive": true,
+    "minimum_positive_trade_share": 0.5,
+    "maximum_single_positive_pnl_share": 0.5,
+    "no_execution_failures": true,
+    "no_residual_exposure": true
+  },
+  "screen_gate": {
+    "minimum_closed_trades_per_week": 5,
+    "all_three_cost_after_positive": true,
+    "minimum_positive_trade_share": 0.55,
+    "maximum_single_positive_pnl_share": 0.4,
+    "combined_daily_geometric_growth": 0.01,
+    "no_execution_failures": true,
+    "no_residual_exposure": true
+  }
+}
