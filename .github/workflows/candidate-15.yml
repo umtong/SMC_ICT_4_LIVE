@@ -37,9 +37,20 @@ jobs:
         run: |
           set -euo pipefail
           smc4 doctor
-          git diff --quiet \
-            0f32715d90f4cf4a8bd252d53407ff20b097bbfb \
-            -- research/candidate-14
+          base_commit="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          protocol = json.loads(
+              Path("research/candidate-15/protocol.json").read_text(encoding="utf-8")
+          )
+          print(protocol["base_candidate"]["commit"])
+          PY
+          )"
+          git fetch --no-tags origin "$base_commit"
+          git cat-file -e "${base_commit}^{commit}"
+          inherited_tree="$(git rev-parse "${base_commit}:research/candidate-14")"
+          current_tree="$(git rev-parse "HEAD:research/candidate-14")"
+          test "$inherited_tree" = "$current_tree"
           export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
           python -m py_compile research/candidate-15/*.py
           python -m unittest discover \
@@ -56,6 +67,11 @@ jobs:
           assert set(protocol["selection"]["intervals"]) == {"D1", "H1", "S1"}
           assert protocol["execution_lock"]["risk_fraction"] == 0.03
           assert protocol["execution_lock"]["global_pending_entry_plus_position_limit"] == 1
+
+          import run_leadership_scdam
+          from logic import CausalAuctionEngine
+          assert Path(run_leadership_scdam.__file__).resolve().parent.name == "candidate-15"
+          assert getattr(CausalAuctionEngine, "_candidate15_router_installed", False)
           PY
 
   evaluate:
