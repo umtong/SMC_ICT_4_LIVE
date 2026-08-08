@@ -1,0 +1,186 @@
+name: candidate-05-week-long-failure-audit
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/week_long_failure_audit.py"
+      - "research/candidate-05/tests/test_week_long_failure_audit.py"
+      - ".github/workflows/candidate-05-week-long-failure-audit.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-week-long-failure-audit
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  nautilus-runs:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: continuous
+            build_start: "2024-02-28"
+            build_end: "2024-03-30"
+            evaluation_start: "2024-03-01"
+            evaluation_end: "2024-03-30"
+          - label: block-1
+            build_start: "2024-02-28"
+            build_end: "2024-03-06"
+            evaluation_start: "2024-03-01"
+            evaluation_end: "2024-03-06"
+          - label: block-2
+            build_start: "2024-03-05"
+            build_end: "2024-03-12"
+            evaluation_start: "2024-03-07"
+            evaluation_end: "2024-03-12"
+          - label: block-3
+            build_start: "2024-03-11"
+            build_end: "2024-03-18"
+            evaluation_start: "2024-03-13"
+            evaluation_end: "2024-03-18"
+          - label: block-4
+            build_start: "2024-03-17"
+            build_end: "2024-03-24"
+            evaluation_start: "2024-03-19"
+            evaluation_end: "2024-03-24"
+          - label: block-5
+            build_start: "2024-03-23"
+            build_end: "2024-03-30"
+            evaluation_start: "2024-03-25"
+            evaluation_end: "2024-03-30"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      LABEL: ${{ matrix.label }}
+      ROOT: artifacts/week-long/${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and audit contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_week_long_failure_audit.py' -v
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_strategy_v46_no_post_retrace_breakaway_contract.py' -v
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_basis_contract.py' -v
+          python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_positioning_reset_logic.py' -v
+
+      - name: Run exact v46 path through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-05/v40_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start "${{ matrix.build_start }}" \
+            --build-end "${{ matrix.build_end }}" \
+            --evaluation-start "${{ matrix.evaluation_start }}" \
+            --evaluation-end "${{ matrix.evaluation_end }}" \
+            --cache ".cache/candidate-05-week-long-${LABEL}" \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify Nautilus evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          for file in run.json data_manifest.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json; do
+            test -s "$ROOT/$file"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate05-audit-${{ matrix.label }}
+          path: artifacts/week-long/${{ matrix.label }}/**
+          if-no-files-found: error
+          retention-days: 90
+
+  aggregate:
+    needs: nautilus-runs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate05-audit-*
+          path: artifacts/week-long-download
+
+      - name: Normalize downloaded run directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/week-long-input
+          for directory in artifacts/week-long-download/candidate05-audit-*; do
+            test -d "$directory"
+            label="${directory##*/candidate05-audit-}"
+            mkdir -p "artifacts/week-long-input/$label"
+            cp -a "$directory/." "artifacts/week-long-input/$label/"
+          done
+          find artifacts/week-long-input -name metrics.json -print
+
+      - name: Diagnose restart, sampling and dependence effects
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/week_long_failure_audit.py \
+            --root artifacts/week-long-input \
+            --json-output research/candidate-05/WEEK_TO_LONG_FAILURE_RESULT.json \
+            --markdown-output research/candidate-05/WEEK_TO_LONG_FAILURE_RESULT.md
+          python -m json.tool research/candidate-05/WEEK_TO_LONG_FAILURE_RESULT.json
+
+      - name: Commit authoritative audit result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            research/candidate-05/WEEK_TO_LONG_FAILURE_RESULT.json \
+            research/candidate-05/WEEK_TO_LONG_FAILURE_RESULT.md
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-05: record week versus continuous audit [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-week-long-failure-audit-result
+          path: |
+            research/candidate-05/WEEK_TO_LONG_FAILURE_RESULT.json
+            research/candidate-05/WEEK_TO_LONG_FAILURE_RESULT.md
+          if-no-files-found: error
+          retention-days: 90
