@@ -1,0 +1,151 @@
+name: candidate-10-finalize-now
+
+on:
+  push:
+    branches: [research/candidate-10]
+    paths:
+      - .github/workflows/candidate-10-finalize-now.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: candidate-10-finalize-now
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-10
+          fetch-depth: 0
+
+      - name: Wait for final-lineage workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflows=(
+            candidate-10-v49-research.yml
+            candidate-10-v50-research.yml
+            candidate-10-v51-fast.yml
+          )
+          deadline=$(( $(date +%s) + 6000 ))
+          while true; do
+            active=0
+            for workflow in "${workflows[@]}"; do
+              record="$(gh run list \
+                --workflow "${workflow}" \
+                --branch research/candidate-10 \
+                --limit 1 \
+                --json databaseId,status,conclusion,createdAt \
+                --jq 'sort_by(.createdAt) | last // {}')"
+              status="$(jq -r '.status // "missing"' <<<"${record}")"
+              run_id="$(jq -r '.databaseId // empty' <<<"${record}")"
+              printf '%s run=%s status=%s\n' "${workflow}" "${run_id:-none}" "${status}"
+              if [[ "${status}" == "queued" || "${status}" == "in_progress" || "${status}" == "pending" || "${status}" == "waiting" ]]; then
+                active=$((active + 1))
+              fi
+            done
+            if [[ ${active} -eq 0 ]]; then
+              break
+            fi
+            if [[ $(date +%s) -ge ${deadline} ]]; then
+              echo "Upstream wait deadline reached; finalize available completed artifacts." >&2
+              break
+            fi
+            sleep 45
+          done
+
+      - name: Download latest available artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf final-artifacts
+          mkdir -p final-artifacts
+          for workflow in \
+            candidate-10-v49-research.yml \
+            candidate-10-v50-research.yml \
+            candidate-10-v51-fast.yml; do
+            record="$(gh run list \
+              --workflow "${workflow}" \
+              --branch research/candidate-10 \
+              --status completed \
+              --limit 10 \
+              --json databaseId,createdAt,conclusion \
+              --jq 'sort_by(.createdAt) | last // {}')"
+            run_id="$(jq -r '.databaseId // empty' <<<"${record}")"
+            conclusion="$(jq -r '.conclusion // "missing"' <<<"${record}")"
+            if [[ -z "${run_id}" ]]; then
+              echo "No completed run for ${workflow}" >&2
+              continue
+            fi
+            destination="final-artifacts/${workflow%.yml}"
+            mkdir -p "${destination}"
+            printf '%s\n' "${run_id}" > "${destination}/run_id.txt"
+            printf '%s\n' "${conclusion}" > "${destination}/conclusion.txt"
+            gh run download "${run_id}" -D "${destination}" || true
+          done
+
+      - name: Generate strict final verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-10/c10_finalize.py \
+            --artifacts final-artifacts \
+            --output-dir research/candidate-10
+
+      - name: Validate generated verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s research/candidate-10/FINAL_RESEARCH_RESULT.md
+          test -s research/candidate-10/final_research_metrics.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('research/candidate-10/final_research_metrics.json')
+          d=json.loads(p.read_text(encoding='utf-8'))
+          if d.get('schema') != 'candidate-10-final-research-verdict-v4':
+              raise SystemExit('unexpected final schema')
+          markers=[
+              Path('research/candidate-10/TARGET_ACHIEVED.marker'),
+              Path('research/candidate-10/TARGET_NOT_ACHIEVED.marker'),
+          ]
+          if sum(x.is_file() for x in markers) != 1:
+              raise SystemExit('exactly one verdict marker is required')
+          print(json.dumps({
+              'verdict': d.get('verdict'),
+              'success_claim': d.get('success_claim'),
+              'best_continuous_row': d.get('best_continuous_row'),
+              'passing_count': len(d.get('target_passing_rows', [])),
+              'continuous_count': len(d.get('continuous_rows', [])),
+          }, sort_keys=True, default=str))
+          PY
+
+      - name: Commit authoritative final verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          rm -f research/candidate-10/.probe-create-20260808.txt
+          git add -A \
+            research/candidate-10/FINAL_RESEARCH_RESULT.md \
+            research/candidate-10/final_research_metrics.json \
+            research/candidate-10/TARGET_ACHIEVED.marker \
+            research/candidate-10/TARGET_NOT_ACHIEVED.marker \
+            research/candidate-10/.probe-create-20260808.txt
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-10: commit authoritative final research verdict"
+          git push origin HEAD:research/candidate-10
