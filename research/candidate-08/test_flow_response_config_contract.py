@@ -8,7 +8,7 @@ from pathlib import Path
 import unittest
 
 from aggtrade_flow_response import FlowResponseConfig
-from aggtrade_flow_response_auction_signals_v2 import (
+from aggtrade_flow_response_auction_signals_v3 import (
     IMPLEMENTATION_REVISION,
     FlowResponseAuctionConfig,
 )
