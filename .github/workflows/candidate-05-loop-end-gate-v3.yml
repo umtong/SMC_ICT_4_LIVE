@@ -1,0 +1,147 @@
+name: candidate-05-loop-end-gate-v3
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/loop_results/final_untouched.json"
+      - "research/candidate-05/loop_results/final_with_v59.json"
+      - "research/candidate-05/loop_results/multi_asset_final.json"
+      - "research/candidate-05/loop_results/authoritative_multi_asset.json"
+      - "research/candidate-05/loop_results/authoritative_with_liquidation.json"
+      - "research/candidate-05/loop_results/authoritative_with_participation.json"
+      - "research/candidate-05/loop_results/v47_oos.json"
+      - "research/candidate-05/loop_results/v48b_oos.json"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-loop-end-gate-v3
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+          fetch-depth: 0
+      - name: Evaluate all current authoritative untouched outcomes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          directory = Path("research/candidate-05/loop_results")
+          names = [
+              "final_untouched.json",
+              "final_with_v59.json",
+              "multi_asset_final.json",
+              "authoritative_multi_asset.json",
+              "authoritative_with_liquidation.json",
+              "authoritative_with_participation.json",
+              "v47_oos.json",
+              "v48b_oos.json",
+          ]
+          results = {}
+          winners = []
+          for name in names:
+              path = directory / name
+              if not path.exists():
+                  continue
+              value = json.loads(path.read_text())
+              results[name] = value
+              if (
+                  str(value.get("classification", "")).startswith(
+                      "PROJECT_TARGET_REACHED",
+                  )
+                  and bool(value.get("target_reached"))
+              ):
+                  winners.append((name, value))
+
+          def metrics(value):
+              for key in (
+                  "v71_shared_account",
+                  "v69_shared_account",
+                  "v67_shared_account",
+                  "v66_shared_account",
+                  "v61",
+                  "v60",
+                  "metrics",
+              ):
+                  candidate = value.get(key)
+                  if isinstance(candidate, dict):
+                      return candidate
+              return {}
+
+          def score(item):
+              data = metrics(item[1])
+              return (
+                  float(data.get("geometric_daily_growth", 0.0) or 0.0),
+                  int(data.get("trades", 0) or 0),
+                  float(data.get("total_return", 0.0) or 0.0),
+              )
+
+          state = {
+              "schema": "candidate-05-loop-end-gate-v3",
+              "evaluated_at": datetime.now(timezone.utc).isoformat(),
+              "complete": bool(winners),
+              "available_results": sorted(results),
+              "classifications": {
+                  name: value.get("classification")
+                  for name, value in results.items()
+              },
+              "target_contract": {
+                  "minimum_geometric_daily_growth": 0.01,
+                  "minimum_trades": 30,
+                  "execution_integrity_required": True,
+                  "untouched_continuous_evaluation_required": True,
+              },
+          }
+          if winners:
+              winner = max(winners, key=score)
+              state["winner_file"] = winner[0]
+              state["winner"] = winner[1]
+              state["winner_metrics"] = metrics(winner[1])
+              (directory / "loop_complete.json").write_text(
+                  json.dumps(state, indent=2, sort_keys=True, allow_nan=True) + "\n",
+              )
+              stale = directory / "loop_state.json"
+              if stale.exists():
+                  stale.unlink()
+          else:
+              state["next_action"] = (
+                  "CONTINUE_CAUSAL_FAMILY_RESEARCH_AND_UNTOUCHED_VALIDATION"
+              )
+              (directory / "loop_state.json").write_text(
+                  json.dumps(state, indent=2, sort_keys=True, allow_nan=True) + "\n",
+              )
+              stale = directory / "loop_complete.json"
+              if stale.exists():
+                  stale.unlink()
+          print(json.dumps(state, indent=2, sort_keys=True, allow_nan=True))
+          PY
+      - name: Commit current loop completion state
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- research/candidate-05/loop_results/loop_*.json; then
+            exit 0
+          fi
+          git config user.name candidate-05-loop-bot
+          git config user.email candidate-05-loop-bot@users.noreply.github.com
+          git add -A research/candidate-05/loop_results/loop_*.json
+          git commit -m "candidate-05: update current loop completion state"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            git pull --rebase origin research/candidate-05
+            sleep $((attempt*2))
+          done
+          exit 1
