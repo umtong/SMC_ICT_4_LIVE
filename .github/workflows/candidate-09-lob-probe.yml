@@ -12,32 +12,40 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Probe official bookTicker and aggTrades
+      - name: Probe official monthly bookTicker and aggTrades
         shell: bash
         run: |
           set -euo pipefail
-          base='https://data.binance.vision/data/futures/um/daily'
-          for kind in bookTicker aggTrades; do
-            file="BTCUSDT-${kind}-2024-10-14.zip"
-            url="$base/$kind/BTCUSDT/$file"
-            echo "URL=$url"
-            curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 600 -fsSL "$url" -o "/tmp/$file"
-            stat -c "KIND=$kind BYTES=%s" "/tmp/$file"
-            sha256sum "/tmp/$file"
-            unzip -l "/tmp/$file"
-            python - "$kind" "/tmp/$file" <<'PY'
+          base='https://data.binance.vision/data/futures/um/monthly'
+          for month in 2023-05 2023-12 2024-03 2024-04; do
+            for kind in bookTicker aggTrades; do
+              file="BTCUSDT-${kind}-${month}.zip"
+              url="$base/$kind/BTCUSDT/$file"
+              echo "URL=$url"
+              if ! curl --retry 1 --retry-all-errors --connect-timeout 20 --max-time 900 -fsSL "$url" -o "/tmp/$file"; then
+                echo "MISSING kind=$kind month=$month"
+                rm -f "/tmp/$file"
+                continue
+              fi
+              stat -c "KIND=$kind MONTH=$month BYTES=%s" "/tmp/$file"
+              sha256sum "/tmp/$file"
+              unzip -l "/tmp/$file"
+              python - "$kind" "$month" "/tmp/$file" <<'PY'
           import csv, io, sys, zipfile
-          kind, path = sys.argv[1:]
+          kind, month, path = sys.argv[1:]
           with zipfile.ZipFile(path) as z:
               names=[n for n in z.namelist() if n.lower().endswith('.csv')]
-              print('KIND',kind,'CSV_NAMES',names)
+              print('KIND',kind,'MONTH',month,'CSV_NAMES',names)
+              if len(names) != 1:
+                  raise SystemExit('expected exactly one CSV')
               with z.open(names[0]) as raw:
                   reader=csv.reader(io.TextIOWrapper(raw,encoding='utf-8',newline=''))
                   for i,row in enumerate(reader):
-                      print(kind,i,repr(row))
+                      print(kind,month,i,repr(row))
                       if i>=5: break
           PY
+            done
           done
