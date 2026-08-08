@@ -1,0 +1,128 @@
+name: candidate-10-v53-funded-runner-router
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/c10_v53_*.py
+      - .github/workflows/candidate-10-v53-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v53-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CANDIDATE11_COMMIT: f10517d4ccd2a1a8fbd4d31091cbe0e7c3655327
+
+jobs:
+  periods:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period_id: DIAGNOSTIC_2026_H1
+            start: "2026-01-05"
+            end_exclusive: "2026-07-01"
+            evidence_class: inspected_continuous_development
+            timeout: 420
+          - period_id: DEVELOPMENT_2026_07
+            start: "2026-07-06"
+            end_exclusive: "2026-08-01"
+            evidence_class: previously_inspected_continuous_development
+            timeout: 240
+          - period_id: UNTOUCHED_2026_08_TO_DATE
+            start: "2026-08-01"
+            end_exclusive: "2026-08-08"
+            evidence_class: untouched_temporal_holdout_fixed_before_download
+            timeout: 180
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+
+    steps:
+      - name: Checkout candidate-10
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen Candidate 11 source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+
+      - name: Run market-router exact ablation
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ROOT="artifacts/candidate-10-v53/${{ matrix.period_id }}"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v53:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v53
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v53
+              cp /workspace/research/candidate-10/c10_v*.py /tmp/candidate11-v53/
+              cp /workspace/research/candidate-10/test_c10_v*.py /tmp/candidate11-v53/
+              smc4 doctor
+              python /tmp/candidate11-v53/c10_v52_patch.py \
+                /tmp/candidate11-v53/run_leadership_scdam.py
+              python -m py_compile \
+                /tmp/candidate11-v53/c10_v*.py \
+                /tmp/candidate11-v53/run_leadership_scdam.py
+              python -m unittest discover \
+                -s /tmp/candidate11-v53 \
+                -p "test_c10_v*.py" \
+                -v
+
+              BASE="/workspace/artifacts/candidate-10-v53/${{ matrix.period_id }}"
+              python /tmp/candidate11-v53/c10_v53_run.py \
+                --candidate11-dir /tmp/candidate11-v53 \
+                --start "${{ matrix.start }}" \
+                --end-exclusive "${{ matrix.end_exclusive }}" \
+                --variant leadership-gate-funded-runner \
+                --evidence-class "${{ matrix.evidence_class }}" \
+                --output "${BASE}/leadership-gate-funded-runner"
+
+              for variant in \
+                event-rank-one-funded-runner \
+                transfer-state-funded-runner; do
+                mkdir -p "${BASE}/${variant}/data"
+                cp -al "${BASE}/leadership-gate-funded-runner/data/." \
+                  "${BASE}/${variant}/data/"
+                python /tmp/candidate11-v53/c10_v53_run.py \
+                  --candidate11-dir /tmp/candidate11-v53 \
+                  --start "${{ matrix.start }}" \
+                  --end-exclusive "${{ matrix.end_exclusive }}" \
+                  --variant "${variant}" \
+                  --evidence-class "${{ matrix.evidence_class }}" \
+                  --output "${BASE}/${variant}"
+              done
+            '
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v53-${{ matrix.period_id }}-${{ github.sha }}
+          path: artifacts/candidate-10-v53/${{ matrix.period_id }}
+          if-no-files-found: warn
+          retention-days: 14
