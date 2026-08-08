@@ -5,9 +5,9 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from analyze_continuous import _daily_prior_thresholds
 from analyze_continuous import _policy
 from analyze_continuous import _state
+from analyze_continuous_v2 import _daily_prior_thresholds
 
 
 class Candidate30ContractTest(unittest.TestCase):
@@ -46,8 +46,17 @@ class Candidate30ContractTest(unittest.TestCase):
         )
         self.assertEqual(_policy("MIXED_STATE", "REVERSAL"), "NO_POLICY")
 
-    def test_daily_cut_cannot_see_current_day(self) -> None:
-        times = pd.date_range("2024-01-01", periods=16 * 24 * 60, freq="1min", tz="UTC")
+    def test_daily_cut_cannot_see_current_day_at_preserved_resolution(self) -> None:
+        times = pd.date_range(
+            "2024-01-01",
+            periods=16 * 24 * 60,
+            freq="1min",
+            tz="UTC",
+        )
+        # Force the lower-resolution representation which made .asi8 incompatible
+        # with Timestamp.value under pandas 3.
+        if hasattr(times, "as_unit"):
+            times = times.as_unit("us")
         size = len(times)
         base = np.ones(size, dtype=float)
         final_day = times.floor("D") == pd.Timestamp("2024-01-16", tz="UTC")
