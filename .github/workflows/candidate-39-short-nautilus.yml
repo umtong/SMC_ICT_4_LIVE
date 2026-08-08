@@ -1,13 +1,166 @@
-name: candidate-39-short-nautilus
+name: candidate-39-v2-development-nautilus
 
 on:
+  push:
+    branches: ["research/candidate-39"]
+    paths:
+      - "research/candidate-39/**"
+      - ".github/workflows/candidate-39-short-nautilus.yml"
   workflow_dispatch:
+
+concurrency:
+  group: candidate-39-v2-development-nautilus
+  cancel-in-progress: true
 
 permissions:
   contents: read
+  packages: read
+  actions: read
 
 jobs:
-  manual-hold:
+  development-falsification-seven-day:
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-39:research/candidate-35:research/candidate-29:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/c39-v2-development-2026-07-08_2026-07-14
     steps:
-      - run: echo "Candidate 39 workflow temporarily held while an atomic V2 research revision is staged."
+      - uses: actions/checkout@v4
+
+      - name: Restore checksum-verified raw-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/c39-v2-development
+          key: candidate39-binance-2026-07-08_2026-07-14-v1
+
+      - name: Verify environment and V2 causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-39
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import sys
+
+          root = Path("research/candidate-39")
+          count = 0
+          for path in sorted(root.glob("test_*.py")):
+              name = "candidate39_v2_contract_" + path.stem
+              spec = importlib.util.spec_from_file_location(name, path)
+              if spec is None or spec.loader is None:
+                  raise RuntimeError(f"cannot load {path}")
+              module = importlib.util.module_from_spec(spec)
+              sys.modules[name] = module
+              spec.loader.exec_module(module)
+              for test_name in sorted(vars(module)):
+                  test = getattr(module, test_name)
+                  if test_name.startswith("test_") and callable(test):
+                      test()
+                      count += 1
+          assert count == 12, count
+          print(f"candidate39 V2 causal contracts passed: {count}")
+          PY
+
+      - name: Replay one four-asset continuous Nautilus account on development data
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-39/run.py \
+            --config research/candidate-39/config.json \
+            --start 2026-07-08 \
+            --end 2026-07-14 \
+            --cache .cache/c39-v2-development \
+            --workspace .cache/c39-v2-development-work \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify and expose exact development evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$ROOT/metrics.json"
+          test -f "$ROOT/run.json"
+          test -f "$ROOT/data_manifest.json"
+          test -f "$ROOT/strategy_diagnostics.json"
+          python - <<'PY'
+          import json
+          import os
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          manifest = json.loads((root / "data_manifest.json").read_text())
+
+          assert metrics["candidate"] == "candidate-39-causal-auction-state-router-v2"
+          assert metrics["evidence_status"] == "DEVELOPMENT_REPLAY_AFTER_V1_INTERVAL_INSPECTION"
+          assert metrics["non_scalping"] is True
+          assert metrics["universe"] == ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+          assert metrics["single_continuous_account"] is True
+          assert metrics["single_strategy_process"] is True
+          assert metrics["global_entry_or_position_limit"] == 1
+          assert metrics["calendar_days"] == 7
+          assert metrics["intended_holding_horizon_minutes"] == [30, 240]
+          assert diagnostics.get("max_open_positions_observed", 0) <= 1
+          assert diagnostics.get("max_simultaneous_entry_intents", 0) <= 1
+          assert diagnostics.get("global_position_violations", 0) == 0
+          assert diagnostics.get("entry_submissions", 0) == diagnostics.get("limit_entry_submissions", 0)
+          assert manifest["continuous_account"] is True
+          assert manifest["account_restarts"] == 0
+          assert manifest["strategy_restarts"] == 0
+          assert all(record["mode"] == "direct-checksum-verified-binance" for record in metrics["input_records"].values())
+
+          headline = {key: metrics.get(key) for key in (
+              "evaluation_start", "evaluation_end", "ending_nav", "total_return",
+              "geometric_daily_growth", "max_drawdown", "trades", "wins",
+              "losses", "win_rate", "profit_factor", "expectancy_usdt",
+              "active_days", "gate_pass", "position_counts_by_symbol",
+          )}
+          print("C39V2_METRICS_JSON=" + json.dumps(headline, sort_keys=True, allow_nan=False))
+          print("C39V2_GATE_CHECKS_JSON=" + json.dumps(metrics["gate_checks"], sort_keys=True))
+          diagnostic_headline = {key: diagnostics.get(key) for key in (
+              "complete_universe_minutes", "quarter_hour_decisions",
+              "unresolved_episodes", "entry_submissions", "limit_entry_submissions",
+              "entry_expirations", "cost_space_rejections",
+              "non_passive_entry_rejections", "order_rejections",
+              "emergency_flattens", "max_open_positions_observed",
+              "max_simultaneous_entry_intents", "global_position_violations",
+          )}
+          diagnostic_headline["route_counts"] = diagnostics.get("route_counts", {})
+          diagnostic_headline["unresolved_reason_counts"] = diagnostics.get("unresolved_reason_counts", {})
+          print("C39V2_DIAGNOSTICS_JSON=" + json.dumps(diagnostic_headline, sort_keys=True))
+
+          events_path = root / "scenario_events.jsonl"
+          if events_path.is_file():
+              event_types = Counter()
+              states = Counter()
+              for line in events_path.read_text().splitlines():
+                  if not line.strip():
+                      continue
+                  item = json.loads(line)
+                  event_types[str(item.get("event_type", "UNKNOWN"))] += 1
+                  details = item.get("details") or {}
+                  state = details.get("state") or details.get("scenario_state")
+                  if state:
+                      states[str(state)] += 1
+              print("C39V2_EVENT_TYPES_JSON=" + json.dumps(event_types, sort_keys=True))
+              print("C39V2_STATES_JSON=" + json.dumps(states, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate39-v2-development-${{ github.sha }}
+          path: artifacts/c39-v2-development-2026-07-08_2026-07-14/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
