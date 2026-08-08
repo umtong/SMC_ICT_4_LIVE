@@ -1,0 +1,55 @@
+name: candidate-07-binance-1s-kline-probe
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - ".github/workflows/candidate-07-binance-1s-kline-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Probe official Binance Vision USD-M 1s kline archives
+        shell: bash
+        run: |
+          set -u
+          BASE="https://data.binance.vision/data/futures/um"
+          probe() {
+            local url="$1"
+            local output
+            output=$(curl --location --silent --show-error \
+              --connect-timeout 15 --max-time 60 \
+              --range 0-0 --output /dev/null \
+              --write-out '%{http_code}|%{size_download}|%{content_type}|%{url_effective}' \
+              "$url" 2>&1)
+            local status=$?
+            printf '%s|curl_exit=%s|%s\n' "$url" "$status" "$output"
+          }
+
+          for day in \
+            2024-01-01 \
+            2024-06-24 \
+            2025-01-27 \
+            2025-12-22 \
+            2026-06-30; do
+            path="${BASE}/daily/klines/BTCUSDT/1s/BTCUSDT-1s-${day}.zip"
+            probe "$path"
+            probe "${path}.CHECKSUM"
+          done
+
+          for month in \
+            2024-01 \
+            2024-06 \
+            2025-01 \
+            2025-12 \
+            2026-06; do
+            path="${BASE}/monthly/klines/BTCUSDT/1s/BTCUSDT-1s-${month}.zip"
+            probe "$path"
+            probe "${path}.CHECKSUM"
+          done
