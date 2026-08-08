@@ -1,0 +1,204 @@
+name: candidate-03-candidate29-quarter-hour-failed-auction-development
+
+on:
+  push:
+    branches: ["research/candidate-03"]
+    paths:
+      - ".github/workflows/candidate-03-v31-candidate29-quarter-hour-failed-auction.yml"
+      - "research/candidate-03/candidate29_quarter_hour_failed_auction.py"
+      - "research/candidate-03/patch_candidate29_runner_install.py"
+      - "research/candidate-03/test_candidate29_quarter_hour_failed_auction.py"
+      - "research/candidate-03/aggregate_candidate29_quarter_hour_failed_auction.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  FROZEN_SOURCE_COMMIT: dfb180490b141fdafd5b5ac0b52d3dd0b842550d
+  RESULT_REL: research/candidate-03/results/candidate29-quarter-hour-failed-auction-development
+
+concurrency:
+  group: candidate-03-candidate29-quarter-hour-failed-auction-development
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", path: orchestrator}
+      - uses: actions/checkout@v4
+        with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
+      - name: Verify Candidate 29 quarter-hour failed-auction contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          test "$(git -C frozen-source rev-parse HEAD)" = "$FROZEN_SOURCE_COMMIT"
+          cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/candidate29_quarter_hour_failed_auction.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate16_failed_far.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate17_strict_target.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate20_inside_origin_acceptance.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate21_two_close_acceptance_entry.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate22_contested_countertrend.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate24_retire_semantic_rejection_watch.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate29_quarter_hour_failed_auction.py frozen-source/research/candidate-14/
+          python orchestrator/research/candidate-03/patch_candidate16_deep_reentry_call.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate17_strict_target.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate19_semantic_rejection_continuation.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate20_inside_origin_acceptance.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate21_two_close_acceptance_entry.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate22_contested_countertrend.py \
+            frozen-source/research/candidate-14/candidate16_failed_far.py \
+            frozen-source/research/candidate-14/semantic_market_leadership.py
+          python orchestrator/research/candidate-03/patch_candidate24_retire_semantic_rejection_watch.py \
+            frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate22_semantic_test_contract.py \
+            frozen-source/research/candidate-14/test_semantic_market_leadership.py
+          python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
+          python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
+          python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate29_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate16_native_exit_reason.py frozen-source/research/candidate-14/run_leadership_scdam_base.py
+          grep -q 'SCENARIO_KIND = "QUARTER_HOUR_PREVIOUS_RANGE_FAILED_AUCTION"' frozen-source/research/candidate-14/candidate29_quarter_hour_failed_auction.py
+          grep -q 'QUARTER_HOUR_RANGE_SWEEP_RECLAIM_DISPLACEMENT_MARKET' frozen-source/research/candidate-14/candidate29_quarter_hour_failed_auction.py
+          grep -q '_install_candidate29_quarter_hour_failed_auction()' frozen-source/research/candidate-14/run_leadership_scdam.py
+          grep -q 'SEMANTIC_REJECTED_FAR_WATCH_RETIRED' frozen-source/research/candidate-14/candidate16_failed_far.py
+          grep -q 'SEMANTIC_FAR_MODERATE_COUNTERTREND_CONTESTED' frozen-source/research/candidate-14/semantic_market_leadership.py
+          ! grep -q 'SEMANTIC_FAR_TREND_RESUMPTION_SYNCHRONIZED' frozen-source/research/candidate-14/semantic_market_leadership.py
+          export PYTHONPATH="$GITHUB_WORKSPACE/frozen-source/research/candidate-14:$GITHUB_WORKSPACE/frozen-source/src"
+          python -m py_compile frozen-source/research/candidate-14/*.py
+          python -m unittest discover -s frozen-source/research/candidate-14 -p 'test_*.py' -v
+          python -m py_compile orchestrator/research/candidate-03/aggregate_candidate29_quarter_hour_failed_auction.py
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        week: [H01, H02, H03, H04, H05, H06, H07, H08, H09, H10, H11, H12, H13, H14, H15, H16]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", path: orchestrator}
+      - uses: actions/checkout@v4
+        with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
+      - name: Install identical Candidate 29 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/candidate29_quarter_hour_failed_auction.py frozen-source/research/candidate-14/
+          python orchestrator/research/candidate-03/patch_candidate16_deep_reentry_call.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate17_strict_target.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate19_semantic_rejection_continuation.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate20_inside_origin_acceptance.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate21_two_close_acceptance_entry.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate22_contested_countertrend.py \
+            frozen-source/research/candidate-14/candidate16_failed_far.py \
+            frozen-source/research/candidate-14/semantic_market_leadership.py
+          python orchestrator/research/candidate-03/patch_candidate24_retire_semantic_rejection_watch.py \
+            frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
+          python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
+          python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate29_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate16_native_exit_reason.py frozen-source/research/candidate-14/run_leadership_scdam_base.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json').read_text())
+          p['schema']='candidate-29-quarter-hour-previous-range-failed-auction-development-v1'
+          p['candidate']='candidate-29-quarter-hour-previous-range-failed-auction'
+          p['validation_mode']='development_replay'
+          p['selection']['seed']=202608082929
+          p['claim_rules']=[
+              'Development replay only; success_claim is false.',
+              'Candidate 29 does not continue the quarter-hour opening move; it requires a failed trade-through of the completed previous fifteen-minute range.',
+              'The previous range is built only from three already-completed five-minute bars before the clock boundary.',
+              'A plan requires aggressive opening flow, completed edge reclaim and a still-later opposite displacement.',
+              'The target is frozen prior-range equilibrium; invalidation is the observed raid extreme; costs, exact 3% current-NAV risk and one global slot remain unchanged.',
+          ]
+          Path('frozen-source/research/candidate-14/protocol.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Run Candidate 29 ${{ matrix.week }} through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/evidence/${{ matrix.week }}"
+          bash frozen-source/research/candidate-14/run_week.sh "${{ matrix.week }}" "$out"
+          rm -rf "$out/data"
+          for f in metrics.json summary.json audit.json source_lock.json effective_config.json submitted_plans.json order_lifecycle.json scenario_events.jsonl positions.csv account.csv; do test -s "$out/$f"; done
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate29-${{ matrix.week }}
+          path: evidence/${{ matrix.week }}/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  aggregate:
+    if: ${{ always() && needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-03, fetch-depth: 0, path: orchestrator}
+      - uses: actions/download-artifact@v4
+        with: {pattern: "candidate29-H*", path: downloaded}
+      - name: Attribute quarter-hour failed auction and persist decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="orchestrator/$RESULT_REL"
+          rm -rf "$root"; mkdir -p "$root"
+          for week in H01 H02 H03 H04 H05 H06 H07 H08 H09 H10 H11 H12 H13 H14 H15 H16; do
+            src="downloaded/candidate29-$week"; test -d "$src"
+            mkdir -p "$root/$week"; cp -a "$src/." "$root/$week/"
+          done
+          python orchestrator/research/candidate-03/aggregate_candidate29_quarter_hour_failed_auction.py \
+            --root "$root" \
+            --baseline orchestrator/research/candidate-03/results/candidate14-frozen-holdout/aggregate.json \
+            --candidate15 orchestrator/research/candidate-03/results/candidate15-far-execution-development/comparison.json \
+            --candidate17 orchestrator/research/candidate-03/results/candidate17-strict-target-development/aggregate.json \
+            --candidate19 orchestrator/research/candidate-03/results/candidate19-semantic-rejection-continuation-development/aggregate.json \
+            --candidate20 orchestrator/research/candidate-03/results/candidate20-inside-origin-acceptance-development/aggregate.json \
+            --candidate21 orchestrator/research/candidate-03/results/candidate21-two-close-acceptance-entry-development/aggregate.json \
+            --candidate22 orchestrator/research/candidate-03/results/candidate22-contested-countertrend-resolution-development/aggregate.json \
+            --candidate25 orchestrator/research/candidate-03/results/candidate25-clean-allocator-development/aggregate.json \
+            --candidate26 orchestrator/research/candidate-03/results/candidate26-internal-liquidity-raid-development/aggregate.json \
+            --candidate27 orchestrator/research/candidate-03/results/candidate27-quarter-hour-delivery-development/aggregate.json \
+            --candidate28 orchestrator/research/candidate-03/results/candidate28-quarter-hour-internal-reload-development/aggregate.json \
+            --output "$root/aggregate.json"
+          git -C orchestrator config user.name candidate-03-development-bot
+          git -C orchestrator config user.email candidate-03-development-bot@users.noreply.github.com
+          git -C orchestrator add "$RESULT_REL"
+          git -C orchestrator commit -m "candidate-03: record Candidate 29 quarter-hour failed-auction development [skip ci]"
+          git -C orchestrator fetch origin research/candidate-03
+          git -C orchestrator rebase origin/research/candidate-03
+          git -C orchestrator push origin HEAD:research/candidate-03
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate29-quarter-hour-failed-auction-aggregate-${{ github.run_id }}
+          path: |
+            orchestrator/research/candidate-03/results/candidate29-quarter-hour-failed-auction-development/aggregate.json
+            orchestrator/research/candidate-03/results/candidate29-quarter-hour-failed-auction-development/RESULT.md
+          if-no-files-found: warn
+          retention-days: 30
