@@ -32,6 +32,24 @@ class InternalDealingRangeTests(unittest.TestCase):
         os.environ["C10_V50_INTERNAL_DEALING_RANGE"] = "0"
         self.assertFalse(internal_dealing_range_enabled())
 
+    def test_ambiguous_episodes_receive_distinct_evidence_ids(self) -> None:
+        for observed in (100, 200):
+            self.engine._event(
+                "AMBIGUOUS",
+                "AMBIGUOUS_SWEEP",
+                observed,
+                observed,
+                "ARMED",
+                "TERMINAL",
+                "BAR_PATH_UNRESOLVABLE",
+            )
+        self.assertEqual(len(self.engine.events), 2)
+        first = self.engine.events[0].scenario_id
+        second = self.engine.events[1].scenario_id
+        self.assertNotEqual(first, second)
+        self.assertIn("AMBIGUOUS", first)
+        self.assertIn("AMBIGUOUS", second)
+
     def test_high_endpoint_pairs_only_with_preexisting_low(self) -> None:
         self.engine.internal_lows.append((10 * MINUTE_NS, 12 * MINUTE_NS, 90.0))
         self.engine._add_internal_endpoint(
