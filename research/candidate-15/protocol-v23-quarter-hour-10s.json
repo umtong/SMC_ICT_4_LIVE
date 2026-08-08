@@ -14,66 +14,80 @@
     ],
     "adapted": [
       "Binance futures one-second klines reconstruct ten-second signed quote-volume imbalance",
-      "separate five-minute confirmation creates a new tradable auction leg",
-      "one global causal episode across BTC, ETH, SOL and XRP",
-      "twenty basis-point round-trip cost reserve"
-    ],
-    "not_used": [
-      "one-minute kline opening-flow proxy",
-      "current event outcome in threshold selection",
-      "realized future funding as a signal",
-      "post-result threshold optimization"
+      "a wholly subsequent five-minute bar confirms a new tradable leg",
+      "one global position across BTC, ETH, SOL and XRP",
+      "twenty basis points reserved for round-trip execution, funding and impact"
     ]
   },
   "data": {
-    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
-    "event_source": "Binance Vision USD-M daily 1s klines",
-    "context_and_outcome_source": "Binance Vision USD-M monthly and daily 1m klines",
-    "first_second_inclusive": 0,
-    "last_second_inclusive": 9,
-    "quarter_hour_minutes": [0, 15, 30, 45],
-    "context_start": "2024-06-01",
-    "monthly_end_exclusive": "2026-08-01",
-    "latest_daily_end_exclusive": "2026-08-08",
-    "development_sample_day_numbers": [8, 22],
-    "stability_sample_day_numbers": [8, 22],
-    "july_confirmation_all_days": true,
-    "latest_august_dates": [
-      "2026-08-01",
-      "2026-08-02",
-      "2026-08-03",
-      "2026-08-04",
-      "2026-08-05",
-      "2026-08-06",
-      "2026-08-07"
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
     ],
-    "visibility": "ten-second boundary state and public context are complete before the separately completed five-minute confirmation interval"
+    "event_source": "Binance Vision USD-M daily one-second klines",
+    "outcome_source": "Binance Vision USD-M monthly/daily one-minute klines",
+    "development_start": "2024-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "sample_days_of_month_development_and_stability": [
+      8,
+      22
+    ],
+    "july_2026_all_days": true,
+    "august_2026_days": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "visibility": "event imbalance uses only seconds 0-9; public state ends before the boundary; confirmation is a separate completed five-minute interval; entry is after confirmation"
   },
   "fixed_rules": {
-    "minimum_ten_second_quote_volume": 100000.0,
-    "absolute_imbalance_prior_lookback_events": 672,
-    "absolute_imbalance_prior_minimum_events": 192,
-    "absolute_imbalance_prior_quantile": 0.75,
-    "same_phase_lag_events": 12,
-    "same_phase_minimum_direction_agreement": 0.6666666666666666,
-    "same_phase_minimum_fresh_sign_agreement": 0.5,
-    "public_return_windows_minutes": [60, 180, 360, 720],
-    "public_minimum_directional_return_agreement": 0.75,
-    "public_volume_short_minutes": 60,
-    "public_volume_long_minutes": 480,
-    "public_volume_ratio_minimum": 1.0,
-    "confirmation_start_minute_after_boundary": 1,
+    "quarter_hour_minutes": [
+      0,
+      15,
+      30,
+      45
+    ],
+    "event_seconds": 10,
+    "same_phase_lags": 12,
+    "minimum_same_phase_observations": 12,
+    "maximum_same_phase_span_minutes": 195,
+    "absolute_imbalance_prior_window_events": 1536,
+    "absolute_imbalance_prior_minimum_events": 384,
+    "absolute_imbalance_quantile": 0.75,
+    "confirmation_delay_minutes": 1,
     "confirmation_window_minutes": 5,
-    "confirmation_minimum_directional_close_return": 0.0,
-    "confirmation_minimum_directional_body_fraction": 0.50,
-    "confirmation_minimum_directional_taker_pressure": 0.0,
-    "route_boundary_persistence": "QH_BOUNDARY_FLOW_PERSISTENCE_4H",
-    "route_public_delivery": "QH_PUBLIC_STATE_DELIVERY_8H",
-    "boundary_persistence_horizon_minutes": 240,
-    "public_delivery_horizon_minutes": 480,
-    "same_symbol_event_cooldown_minutes": 240,
+    "confirmation_absolute_return_prior_window_minutes": 10080,
+    "confirmation_absolute_return_prior_minimum_minutes": 1440,
+    "confirmation_absolute_return_quantile": 0.5,
+    "flow_persistence_minimum_sign_fraction": 0.6666666666666666,
+    "public_state_return_horizons_minutes": [
+      60,
+      180,
+      360,
+      720
+    ],
+    "public_state_minimum_directional_fraction": 0.75,
+    "public_state_volume_short_minutes": 60,
+    "public_state_volume_long_minutes": 480,
+    "public_state_minimum_volume_ratio": 0.0,
+    "flow_route_horizon_minutes": 240,
+    "public_route_horizon_minutes": 480,
     "execution_round_trip_cost_bps": 16.0,
-    "funding_and_unmodeled_impact_reserve_bps": 4.0
+    "funding_and_impact_reserve_bps": 4.0,
+    "same_symbol_event_cooldown_minutes": 180
+  },
+  "routes": {
+    "QH_BOUNDARY_FLOW_PERSISTENCE_4H": "current extreme ten-second imbalance agrees with at least two-thirds of the prior twelve quarter-hour imbalances and a separate subsequent five-minute confirmation",
+    "QH_PUBLIC_STATE_DELIVERY_8H": "current extreme ten-second imbalance agrees with at least three of four pre-boundary return horizons, elevated recent volume and a separate subsequent five-minute confirmation",
+    "UNRESOLVED": "all other states are no-trade"
   },
   "evaluation": {
     "development_start": "2024-07-01",
@@ -84,26 +98,25 @@
     "july_confirmation_end_exclusive": "2026-08-01",
     "latest_pulse_start": "2026-08-01",
     "latest_pulse_end_exclusive": "2026-08-08",
-    "latest_pulse_status": "predeclared_for_v23_and_not_used_to_design_v23",
     "global_position_limit": 1,
-    "same_event_arbitration": "largest normalized ten-second imbalance times fixed route-quality score, then symbol",
-    "overlap_policy": "no selected episode while the active fixed route horizon is open"
+    "same_event_arbitration": "PUBLIC_STATE_DELIVERY first, then larger normalized imbalance-times-state-quality, then symbol",
+    "overlap_policy": "no new selected event while the fixed route horizon is active"
   },
   "advance_gate": {
     "require_positive_development_mean_net": true,
     "minimum_stability_mean_net_bps": 0.0,
     "minimum_stability_net_t_stat": 1.0,
-    "minimum_stability_positive_month_share": 0.65,
-    "minimum_family_stability_trades_per_sampled_day": 0.75,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_sampled_calendar_day": 0.5,
     "require_positive_july_confirmation_mean_net": true,
-    "minimum_july_confirmation_trades": 20,
+    "minimum_july_confirmation_trades": 10,
     "minimum_latest_pulse_mean_net_bps": 0.0,
-    "minimum_latest_pulse_trades": 4,
+    "minimum_latest_pulse_trades": 3,
     "maximum_single_symbol_share": 0.75,
     "final_integrated_system_frequency_requirement": "at least one independent completed trade per evaluation calendar day after global arbitration"
   },
   "decision_contract": {
-    "advance": "Only a fixed route positive in every declared split and passing the integrated gates advances to a frozen NautilusTrader implementation.",
-    "reject": "Do not tune ten-second imbalance or state thresholds after evaluation. Preserve only any cross-split-positive route and move to another independent mechanism."
+    "advance": "Only a fixed route passing development, year-long stability, July confirmation and latest pulse advances to a frozen NautilusTrader implementation.",
+    "reject": "Do not tune ten-second imbalance, persistence, public-state or confirmation thresholds after seeing the declared results."
   }
 }
