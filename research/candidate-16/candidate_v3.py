@@ -52,8 +52,8 @@ def _serialized_v3_forced_exit(
     """Cancel protection, observe cancellation, then close if still non-flat.
 
     The inherited callback submitted cancel and reduce-only market-close
-    commands together.  A protective child could fill between those commands,
-    leaving a stale reduce-only close which Nautilus correctly rejected.  This
+    commands together. A protective child could fill between those commands,
+    leaving a stale reduce-only close which Nautilus correctly rejected. This
     execution-only repair serializes the same forced-exit intent across bars.
     """
     moment = datetime.fromtimestamp(
@@ -106,7 +106,6 @@ def _serialized_v3_forced_exit(
     active_orders = (
         int(self.cache.orders_open_count(instrument_id=self.config.instrument_id))
         + int(self.cache.orders_inflight_count(instrument_id=self.config.instrument_id))
-        + int(self.cache.orders_active_local_count(instrument_id=self.config.instrument_id))
     )
     if active_orders:
         return
@@ -190,7 +189,7 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
             ],
             "invalidation": "unchanged failed boundary plus failure/trigger extremes",
             "evidence_only_instrumentation": "record rejection event then delegate unchanged handler",
-            "execution_only_repair": "cancel protection, wait for zero active orders, then close only if non-flat",
+            "execution_only_repair": "cancel protection, wait for zero open/inflight orders, then close only if non-flat",
             "runner_snapshot": "candidate-05@e9c858247ef5247bc3f4d8ad3f0de078a7ecebb0",
         },
     )
