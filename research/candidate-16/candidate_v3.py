@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ _ORIGINAL_IMPORTABLE_STRATEGY_CONFIG = (
 # authoritative; this wrapper records the exact Nautilus event and portfolio
 # state immediately before delegating to the unchanged handler.
 _ORIGINAL_ON_ORDER_REJECTED = Candidate16V3Strategy.on_order_rejected
+_ORIGINAL_ON_POSITION_CLOSED = Candidate16V3Strategy.on_position_closed
 
 
 def _record_v3_order_rejection(self: Candidate16V3Strategy, event: Any) -> None:
@@ -44,7 +45,87 @@ def _record_v3_order_rejection(self: Candidate16V3Strategy, event: Any) -> None:
     _ORIGINAL_ON_ORDER_REJECTED(self, event)
 
 
+def _serialized_v3_forced_exit(
+    self: Candidate16V3Strategy,
+    row: dict[str, float | int],
+) -> None:
+    """Cancel protection, observe cancellation, then close if still non-flat.
+
+    The inherited callback submitted cancel and reduce-only market-close
+    commands together.  A protective child could fill between those commands,
+    leaving a stale reduce-only close which Nautilus correctly rejected.  This
+    execution-only repair serializes the same forced-exit intent across bars.
+    """
+    moment = datetime.fromtimestamp(
+        int(row["ts"]) / 1_000_000_000,
+        tz=timezone.utc,
+    )
+    before_funding = (
+        moment.hour in (7, 15, 23)
+        and moment.minute >= self.config.funding_flatten_minute
+    )
+    timed_out = (
+        self.position_open_index >= 0
+        and self.bar_index - self.position_open_index >= self.config.max_hold_bars
+    )
+    evaluation_ended = int(row["ts"]) >= self.config.evaluation_end_ns
+    if not (before_funding or timed_out or evaluation_ended):
+        return
+
+    phase = getattr(self, "_v3_forced_exit_phase", None)
+    if phase is None:
+        self.cancel_all_orders(self.config.instrument_id)
+        self._v3_forced_exit_phase = "CANCEL_REQUESTED"
+        self.diagnostics["candidate16_v3_serialized_exit_requests"] = int(
+            self.diagnostics.get("candidate16_v3_serialized_exit_requests", 0)
+        ) + 1
+        if self.current_scenario_id is not None:
+            self._transition(
+                self.current_scenario_id,
+                "FORCED_DAYTRADE_EXIT",
+                int(row["ts"]),
+                int(row["ts"]),
+                "EXIT_PENDING",
+                "FUNDING_OR_HOLD_OR_EVALUATION_BOUNDARY",
+                float(row["close"]),
+                {
+                    "before_funding": before_funding,
+                    "timed_out": timed_out,
+                    "evaluation_ended": evaluation_ended,
+                    "execution_phase": "CANCEL_REQUESTED",
+                },
+            )
+        return
+
+    if self.portfolio.is_flat(self.config.instrument_id):
+        self._v3_forced_exit_phase = None
+        return
+    if phase == "CLOSE_SUBMITTED":
+        return
+
+    active_orders = (
+        int(self.cache.orders_open_count(instrument_id=self.config.instrument_id))
+        + int(self.cache.orders_inflight_count(instrument_id=self.config.instrument_id))
+        + int(self.cache.orders_active_local_count(instrument_id=self.config.instrument_id))
+    )
+    if active_orders:
+        return
+
+    self.close_all_positions(self.config.instrument_id)
+    self._v3_forced_exit_phase = "CLOSE_SUBMITTED"
+    self.diagnostics["candidate16_v3_serialized_market_closes"] = int(
+        self.diagnostics.get("candidate16_v3_serialized_market_closes", 0)
+    ) + 1
+
+
+def _reset_v3_exit_phase(self: Candidate16V3Strategy, event: Any) -> None:
+    _ORIGINAL_ON_POSITION_CLOSED(self, event)
+    self._v3_forced_exit_phase = None
+
+
 Candidate16V3Strategy.on_order_rejected = _record_v3_order_rejection
+Candidate16V3Strategy._manage_open_position = _serialized_v3_forced_exit
+Candidate16V3Strategy.on_position_closed = _reset_v3_exit_phase
 
 
 def _candidate16_v3_strategy_config(
@@ -79,6 +160,7 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
     result["reused_state_router"] = "research/candidate-16/accepted_failure_router.py"
     result["strategy_path"] = "research/candidate-16/strategy_v3.py"
     result["evidence_instrumentation"] = "exact Nautilus order-rejection events"
+    result["execution_repair"] = "serialized cancel-observe-close forced exit"
     write_json_atomic(args.output.resolve() / "metrics.json", result)
     write_json_atomic(
         args.output.resolve() / "candidate16_contract.json",
@@ -108,6 +190,7 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
             ],
             "invalidation": "unchanged failed boundary plus failure/trigger extremes",
             "evidence_only_instrumentation": "record rejection event then delegate unchanged handler",
+            "execution_only_repair": "cancel protection, wait for zero active orders, then close only if non-flat",
             "runner_snapshot": "candidate-05@e9c858247ef5247bc3f4d8ad3f0de078a7ecebb0",
         },
     )
