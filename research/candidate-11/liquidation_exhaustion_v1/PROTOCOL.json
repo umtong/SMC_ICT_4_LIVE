@@ -1,0 +1,45 @@
+{
+  "schema": "candidate-11-liquidation-exhaustion-v1",
+  "created_utc": "2026-08-09",
+  "status": "DEVELOPMENT_SCREEN_FROZEN",
+  "official_data": {
+    "aggregate_trades": "Binance Vision USD-M daily aggTrades",
+    "forced_orders": "Binance Vision USD-M daily liquidationSnapshot"
+  },
+  "development": {
+    "start": "2023-08-01",
+    "end": "2023-08-14",
+    "calendar_days": 14
+  },
+  "parent_event": {
+    "cascade": "same-side forced-order snapshots separated by at most 10 seconds",
+    "tail": "cascade notional at or above the shifted trailing 24-hour 99th percentile after at least 50 prior cascades",
+    "delivery": "ordinary aggregate-trade flow and price both move in the forced-order direction"
+  },
+  "state_transition": {
+    "route": "failed liquidation auction only",
+    "confirmation": "within 10 seconds after the cascade ends, a strictly later completed second has both opposite active flow and opposite return and has left the cascade extreme",
+    "unresolved": "no opposite initiative means no trade"
+  },
+  "geometry": {
+    "entry": "close of the completed opposite-initiative second",
+    "stop": "cascade trade-price extreme plus one basis-point buffer",
+    "target": "last aggregate-trade close immediately before the cascade",
+    "round_trip_cost_bps": 20.0,
+    "minimum_net_r": 1.15,
+    "maximum_hold_seconds": 300,
+    "same_second_target_and_stop": "stop first"
+  },
+  "screen_gate": {
+    "minimum_executable_episodes": 14,
+    "minimum_target_first_rate": 0.8,
+    "positive_mean_realized_r": true
+  },
+  "known_data_limit": "The public force-order stream exposes only the latest liquidation snapshot per symbol per 1000 ms window, so reported cascade notional is a lower bound.",
+  "limitations": [
+    "diagnostic screen rather than NautilusTrader account",
+    "passing requires a separate NautilusTrader implementation and untouched validation",
+    "no success claim is allowed from this screen"
+  ],
+  "success_claim_allowed": false
+}
