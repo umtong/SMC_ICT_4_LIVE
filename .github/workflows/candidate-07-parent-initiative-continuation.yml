@@ -1,0 +1,161 @@
+name: candidate-07-parent-initiative-continuation
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/diagnose_parent_initiative_continuation.py"
+      - "research/candidate-07/tests/test_parent_initiative_continuation.py"
+      - ".github/workflows/candidate-07-parent-initiative-continuation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify foundation and continuation contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-parent-cont-pyc \
+            python -m compileall -q research/candidate-07
+          python -m unittest \
+            research/candidate-07/tests/test_parent_auction_state.py \
+            research/candidate-07/tests/test_parent_initiative_continuation.py -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+
+      - name: Reproduce frozen initiative-auction evidence
+        run: >-
+          python research/candidate-07/staged_initiative_auction.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --output artifacts/source-initiative
+          --data-root .research-data/candidate-07
+          --max-weeks 3
+
+      - name: Diagnose preemptive parent continuation
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          ROOT=artifacts/parent-continuation
+          python research/candidate-07/diagnose_parent_initiative_continuation.py \
+            --stage week-1 --start 2025-12-22 --end 2025-12-29 \
+            --run-root artifacts/source-initiative/week-1 \
+            --output "$ROOT/week-1" \
+            --data-root .research-data/candidate-07
+          python research/candidate-07/diagnose_parent_initiative_continuation.py \
+            --stage week-2 --start 2025-01-27 --end 2025-02-03 \
+            --run-root artifacts/source-initiative/week-2 \
+            --output "$ROOT/week-2" \
+            --data-root .research-data/candidate-07
+          python research/candidate-07/diagnose_parent_initiative_continuation.py \
+            --stage week-3 --start 2024-06-24 --end 2024-07-01 \
+            --run-root artifacts/source-initiative/week-3 \
+            --output "$ROOT/week-3" \
+            --data-root .research-data/candidate-07
+
+      - name: Build immutable cross-stage structural report
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("artifacts/parent-continuation")
+          frames = []
+          stages = {}
+          for stage in ("week-1", "week-2", "week-3"):
+              frame = pd.read_csv(root / stage / "parent_continuation_paths.csv")
+              frames.append(frame)
+              summary = json.loads(
+                  (root / stage / "parent_continuation_summary.json").read_text()
+              )
+              stages[stage] = summary
+          combined = pd.concat(frames, ignore_index=True)
+          combined.to_csv(root / "parent_continuation_paths_all.csv", index=False)
+          routed = combined[combined["entry_ns"].notna()]
+          outcomes = (
+              routed["continuation_outcome"].value_counts().sort_index().to_dict()
+              if not routed.empty else {}
+          )
+          active_days = (
+              pd.to_datetime(routed["entry_ns"].astype("int64"), unit="ns", utc=True)
+              .dt.date.astype(str).nunique()
+              if not routed.empty else 0
+          )
+          report = {
+              "candidate": "candidate-07-preemptive-parent-initiative-continuation",
+              "source_commit": "${{ github.sha }}",
+              "stages": stages,
+              "combined": {
+                  "counter_initiative_sources": int(len(combined.index)),
+                  "entry_ready": int(len(routed.index)),
+                  "active_days": int(active_days),
+                  "outcomes": outcomes,
+                  "targets": int(outcomes.get("TARGET", 0)),
+                  "stops": int(outcomes.get("STOP", 0)),
+                  "timeouts": int(outcomes.get("TIMEOUT", 0)),
+                  "ambiguous": int(outcomes.get("AMBIGUOUS_SAME_MINUTE", 0)),
+                  "gross_structural_r": float(
+                      routed["continuation_terminal_r"].dropna().sum()
+                  ) if not routed.empty else 0.0,
+              },
+              "promotion_gate": {
+                  "minimum_total_entries": 7,
+                  "minimum_active_days": 4,
+                  "targets_must_exceed_stops": True,
+                  "positive_structural_r": True,
+                  "passed": bool(
+                      len(routed.index) >= 7
+                      and active_days >= 4
+                      and int(outcomes.get("TARGET", 0)) > int(outcomes.get("STOP", 0))
+                      and (
+                          float(routed["continuation_terminal_r"].dropna().sum())
+                          if not routed.empty else 0.0
+                      ) > 0.0
+                  ),
+              },
+          }
+          destination = root / "combined_parent_continuation_diagnostic.json"
+          destination.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+          print(destination.read_text())
+          PY
+
+      - name: Print immutable result
+        if: always()
+        run: |
+          test -f artifacts/parent-continuation/combined_parent_continuation_diagnostic.json
+          cat artifacts/parent-continuation/combined_parent_continuation_diagnostic.json
+
+      - name: Preserve complete parent-continuation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-parent-initiative-continuation-${{ github.sha }}
+          path: |
+            artifacts/source-initiative
+            artifacts/parent-continuation
+          retention-days: 14
+          if-no-files-found: error
