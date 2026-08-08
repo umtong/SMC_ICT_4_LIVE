@@ -1,0 +1,219 @@
+name: external-liquidity-exhaustion-sequential-holdout
+
+on:
+  push:
+    branches: ["research/external-leverage-flow-router"]
+    paths:
+      - ".github/workflows/external-leverage-flow-router-holdout.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: external-liquidity-exhaustion-sequential-holdout
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  sequential-holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/external-leverage-flow-router:research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/external-spot-perp-sequential-holdout
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify frozen implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/external-leverage-flow-router
+          python -m unittest discover \
+            -s research/external-leverage-flow-router/tests \
+            -p 'test_*.py' -v
+          mkdir -p "$ROOT"
+          sha256sum \
+            research/external-leverage-flow-router/config.json \
+            research/external-leverage-flow-router/spot_perp_router.py \
+            research/external-leverage-flow-router/candidate21_strategy.py \
+            research/external-leverage-flow-router/market_entry_strategy.py \
+            research/external-leverage-flow-router/execution_window_ticks.py \
+            research/external-leverage-flow-router/external_backtest.py \
+            > "$ROOT/frozen_implementation.sha256"
+
+      - name: Run frozen sequential untouched evaluation through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/result"
+          python research/external-leverage-flow-router/candidate.py stage \
+            --config research/external-leverage-flow-router/config.json \
+            --build-start 2024-02-24 \
+            --build-end 2024-03-17 \
+            --evaluation-start 2024-02-26 \
+            --evaluation-end 2024-03-17 \
+            --cache .cache/external-spot-perp-sequential-holdout \
+            --output "$ROOT/result" \
+            --validation-mode untouched-sequential-holdout \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Classify untouched economics and integrity
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import pandas as pd
+
+          root = Path(os.environ['ROOT'])
+          result = root / 'result'
+          if not (result / 'metrics.json').exists():
+              decision = {
+                  'classification': 'IMPLEMENTATION_FAILURE',
+                  'console_tail': (root / 'console.log').read_text(errors='replace')[-12000:] if (root / 'console.log').exists() else '',
+              }
+              (root / 'holdout_decision.json').write_text(json.dumps(decision, indent=2))
+              print(json.dumps(decision, indent=2))
+              raise SystemExit(0)
+
+          metrics = json.loads((result / 'metrics.json').read_text())
+          diagnostics = json.loads((result / 'strategy_diagnostics.json').read_text())
+          clock = json.loads((result / 'execution_clock.json').read_text())
+          features = pd.read_csv(result / 'features_clock.csv.gz', compression='gzip')
+          orders = pd.read_csv(result / 'orders.csv')
+          positions = pd.read_csv(result / 'positions.csv')
+
+          observed = pd.to_numeric(features['observed_time_ns'], errors='raise').astype('int64')
+          spot_observed = pd.to_numeric(features['spot_observed_time_ns'], errors='coerce')
+          future_spot = int((spot_observed > observed).fillna(False).sum())
+          tags = orders['tags'].astype(str) if 'tags' in orders else pd.Series('', index=orders.index)
+          entries = orders[tags.str.contains('EXTERNAL_EXHAUSTION_LIMIT_GTD', regex=False)].copy()
+          if entries.empty:
+              fill_fractions = []
+              min_fill_fraction = 1.0
+              max_lifetime_seconds = 0.0
+              limit_breaches = 0
+          else:
+              requested = pd.to_numeric(entries['quantity'], errors='raise')
+              filled = pd.to_numeric(entries['filled_qty'], errors='raise')
+              fill_fractions = (filled / requested).tolist()
+              min_fill_fraction = float(min(fill_fractions))
+              init_ts = pd.to_datetime(entries['ts_init'], utc=True)
+              last_ts = pd.to_datetime(entries['ts_last'], utc=True)
+              max_lifetime_seconds = float((last_ts - init_ts).dt.total_seconds().max())
+              limit_px = pd.to_numeric(entries['price'], errors='coerce')
+              avg_px = pd.to_numeric(entries['avg_px'], errors='coerce')
+              sides = entries['side'].astype(str).str.upper()
+              limit_breaches = int(
+                  (((sides == 'BUY') & (avg_px > limit_px + 1e-9))
+                   | ((sides == 'SELL') & (avg_px < limit_px - 1e-9))).fillna(False).sum()
+              )
+
+          gate = metrics.get('gate_checks', {})
+          execution_integrity = (
+              clock.get('schema') == 'external-actual-aggtrade-execution-windows-v1'
+              and bool(clock.get('source_price_and_quantity_unchanged'))
+              and int(clock.get('selected_rows', 0) or 0) > 100_000
+              and int(clock.get('selected_rows', 0) or 0) == int(metrics.get('execution_tick_count', 0) or 0)
+          )
+          fill_integrity = (
+              entries.empty
+              or (
+                  min_fill_fraction + 1e-12 >= 0.95
+                  and max_lifetime_seconds <= 16.0
+                  and limit_breaches == 0
+              )
+          )
+          integrity = (
+              future_spot == 0
+              and execution_integrity
+              and fill_integrity
+              and bool(gate.get('no_liquidation'))
+              and bool(gate.get('no_order_rejections'))
+              and bool(gate.get('positive_nav'))
+              and bool(gate.get('single_entry_intent'))
+              and bool(gate.get('single_position'))
+              and int(metrics.get('liquidations', 0) or 0) == 0
+              and int(metrics.get('order_rejections', 0) or 0) == 0
+              and int(diagnostics.get('max_simultaneous_entry_intents', 0) or 0) <= 1
+              and int(diagnostics.get('max_open_positions_observed', 0) or 0) <= 1
+              and int(diagnostics.get('entry_worst_fill_breaches', 0) or 0) == 0
+              and float(metrics.get('min_equity', 0.0) or 0.0) > 0.0
+          )
+          trades = int(metrics.get('trades', 0) or 0)
+          total_return = float(metrics.get('total_return', 0.0) or 0.0)
+          gdg = float(metrics.get('geometric_daily_growth', 0.0) or 0.0)
+          if not integrity:
+              classification = 'INVALID_UNTOUCHED_HOLDOUT'
+          elif trades == 0:
+              classification = 'VALID_HOLDOUT_NO_EXECUTABLE_OPPORTUNITY'
+          elif total_return <= 0.0:
+              classification = 'VALID_NEGATIVE_UNTOUCHED_HOLDOUT'
+          elif gdg >= 0.01 and bool(metrics.get('gate_pass')):
+              classification = 'UNTOUCHED_MINIMUM_GATE_PASSED'
+          else:
+              classification = 'POSITIVE_UNTOUCHED_BUT_FULL_GATE_NOT_YET_PASSED'
+
+          decision = {
+              'schema': 'external-liquidity-exhaustion-sequential-holdout-v1',
+              'evaluation': ['2024-02-26', '2024-03-17'],
+              'development_evaluation_preceded_holdout': ['2024-02-19', '2024-02-25'],
+              'parameters_changed_after_development': False,
+              'integrity_pass': integrity,
+              'execution_integrity_pass': execution_integrity,
+              'fill_integrity_pass': fill_integrity,
+              'classification': classification,
+              'future_spot_rows': future_spot,
+              'entry_fill': {
+                  'entry_orders': int(len(entries)),
+                  'fill_fractions': fill_fractions,
+                  'minimum_fill_fraction': min_fill_fraction,
+                  'maximum_order_lifetime_seconds': max_lifetime_seconds,
+                  'price_limit_breaches': limit_breaches,
+              },
+              'positions': int(len(positions)),
+              'metrics': metrics,
+              'strategy_diagnostics': diagnostics,
+              'execution_clock_summary': {
+                  'schema': clock.get('schema'),
+                  'source_rows': clock.get('source_rows'),
+                  'selected_rows': clock.get('selected_rows'),
+                  'selected_fraction': clock.get('selected_fraction'),
+                  'selected_quantity': clock.get('selected_quantity'),
+              },
+          }
+          (root / 'holdout_decision.json').write_text(
+              json.dumps(decision, indent=2, sort_keys=True, allow_nan=True) + '\n'
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify holdout evidence files
+        if: always()
+        shell: bash
+        run: |
+          if test -e "$ROOT/result/metrics.json"; then
+            python -m json.tool "$ROOT/result/metrics.json" >/dev/null
+            python -m json.tool "$ROOT/result/run.json" >/dev/null
+            python -m json.tool "$ROOT/holdout_decision.json" >/dev/null
+            for file in metrics.json run.json account.csv orders.csv positions.csv equity.csv strategy_diagnostics.json scenario_events.jsonl raw_evidence.json features_clock.csv.gz execution_clock.json; do
+              test -e "$ROOT/result/$file"
+            done
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: external-liquidity-exhaustion-sequential-holdout-${{ github.sha }}
+          path: artifacts/external-spot-perp-sequential-holdout/**
+          if-no-files-found: warn
+          retention-days: 90
