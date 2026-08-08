@@ -1,0 +1,104 @@
+{
+  "schema": "candidate-15-v34-liquidity-vacuum-reclaim-v1",
+  "candidate": "candidate-15-v34-liquidity-vacuum-reclaim",
+  "created_utc": "2026-08-09",
+  "research_question": "Do idiosyncratic 30-minute price shocks created with unusually high price impact per unit quote volume reverse after a separately completed reclaim strongly enough to trade back toward the event midpoint after twenty basis points of costs?",
+  "external_mechanism": {
+    "sources": [
+      "Amihud illiquidity and price-impact research",
+      "crypto liquidity-shock and temporary price-pressure studies",
+      "auction-market failed-expansion practice"
+    ],
+    "reused": [
+      "absolute return per quote-notional as a liquidity/impact proxy",
+      "temporary price pressure is more plausible when a shock is idiosyncratic and volume delivery is weak",
+      "direction is reversed only after an independently completed reclaim"
+    ]
+  },
+  "scenario": {
+    "context": "a completed 30-minute move whose absolute prior-only return z-score and Amihud impact z-score are both extreme while quote volume is below its prior median",
+    "state": "the focal market is the unique largest cross-sectional residual shock and no more than two markets share the event direction",
+    "confirmation": "the next completed 15-minute bar moves opposite the event, reclaims at least twenty percent of the event body, closes directionally within its range and has opposite taker pressure",
+    "entry": "confirmation close",
+    "invalidation": "beyond the event extreme plus ten percent of prior 30-minute ATR",
+    "target": "event auction midpoint",
+    "management": "target or stop first; otherwise exit after four hours",
+    "arbitration": "one global open position; choose the largest fixed impact-residual quality"
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and latest daily five-minute klines",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ],
+    "interval": "5m",
+    "start": "2024-04-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": [
+      "2026-08-01",
+      "2026-08-02",
+      "2026-08-03",
+      "2026-08-04",
+      "2026-08-05",
+      "2026-08-06",
+      "2026-08-07"
+    ],
+    "visibility": "impact and residual state use only completed 30-minute bars and prior-only statistics; entry follows a separately completed 15-minute reclaim"
+  },
+  "fixed_rules": {
+    "event_interval_minutes": 30,
+    "return_z_lookback_bars": 336,
+    "return_z_minimum_prior_bars": 168,
+    "absolute_return_z_min": 2.5,
+    "impact_z_lookback_bars": 336,
+    "impact_z_minimum_prior_bars": 168,
+    "impact_z_min": 2.0,
+    "volume_median_lookback_bars": 336,
+    "maximum_volume_ratio": 1.0,
+    "atr_lookback_bars": 48,
+    "residual_shock_z_min": 1.0,
+    "residual_leader_gap_z_min": 0.25,
+    "maximum_directional_breadth": 0.5,
+    "confirmation_minutes": 15,
+    "minimum_reclaim_fraction_of_event_body": 0.2,
+    "minimum_confirmation_body_fraction": 0.5,
+    "minimum_opposite_taker_pressure": 0.0,
+    "stop_atr_buffer": 0.1,
+    "maximum_hold_minutes": 240,
+    "same_symbol_cooldown_minutes": 120,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_bar_target_stop_policy": "STOP_FIRST_CONSERVATIVE"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.25,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 5,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 1,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Only the unchanged liquidity-vacuum reclaim passing every declared split advances to NautilusTrader.",
+    "reject": "Do not tune impact, volume, residual, reclaim, stop or target thresholds after evaluation."
+  }
+}
