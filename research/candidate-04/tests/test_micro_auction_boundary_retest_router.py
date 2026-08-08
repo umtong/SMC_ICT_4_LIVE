@@ -15,14 +15,13 @@ class BoundaryRetestTests(unittest.TestCase):
         close[0] = 90.0
         close[250] = 100.7
         close[251] = 100.3
-        close[252] = 100.8
+        # The completed retest closes only 0.2 ATR inside the reclaimed boundary.
+        close[252] = 100.2
         flow = [0.0] * rows
         ret = [0.0] * rows
         basis = [0.0] * rows
-        # A completed counter-auction after the first re-entry.
         flow[251] = -0.4
         ret[251] = -2.0
-        # The boundary-retest confirmation.
         flow[252] = 0.5 if aligned else -0.5
         ret[252] = 2.0 if aligned else -2.0
         basis[252] = 0.4 if aligned else -0.4
