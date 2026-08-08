@@ -12,11 +12,10 @@ from model import Direction  # noqa: E402
 
 
 class InitiativeAuctionGateTests(unittest.TestCase):
-    def test_failed_short_reversal_owns_all_short_fades_in_leg(self) -> None:
+    def test_failed_short_reversal_owns_fades_while_upper_source_is_accepted(self) -> None:
         gate = InitiativeAuctionGate()
         state = gate.accept_failed_reversal(
             blocked_reversal_direction=Direction.SHORT,
-            opposing_delivery_price=98.0,
             source_scenario_id="failed-short",
             accepted_source_level=101.0,
             accepted_at_ns=10,
@@ -24,28 +23,40 @@ class InitiativeAuctionGateTests(unittest.TestCase):
         self.assertEqual(state.initiative_direction, Direction.LONG)
         self.assertTrue(gate.is_blocked(Direction.SHORT))
         self.assertFalse(gate.is_blocked(Direction.LONG))
-        self.assertEqual(gate.observe_close(98.01), ())
-        self.assertEqual(gate.observe_close(98.0), (state,))
+        self.assertEqual(gate.observe_close(101.01), ())
+        self.assertEqual(gate.observe_close(101.0), (state,))
         self.assertFalse(gate.is_blocked(Direction.SHORT))
 
-    def test_failed_long_reversal_is_symmetric(self) -> None:
+    def test_failed_long_reversal_is_symmetric_below_lower_source(self) -> None:
         gate = InitiativeAuctionGate()
         state = gate.accept_failed_reversal(
             blocked_reversal_direction=Direction.LONG,
-            opposing_delivery_price=102.0,
             source_scenario_id="failed-long",
             accepted_source_level=99.0,
             accepted_at_ns=20,
         )
         self.assertEqual(state.initiative_direction, Direction.SHORT)
-        self.assertEqual(gate.observe_close(101.99), ())
-        self.assertEqual(gate.observe_close(102.0), (state,))
+        self.assertEqual(gate.observe_close(98.99), ())
+        self.assertEqual(gate.observe_close(99.0), (state,))
+
+    def test_failed_trade_target_cannot_release_opposite_initiative(self) -> None:
+        gate = InitiativeAuctionGate()
+        state = gate.accept_failed_reversal(
+            blocked_reversal_direction=Direction.SHORT,
+            source_scenario_id="failed-short",
+            accepted_source_level=101.0,
+            accepted_at_ns=10,
+        )
+        # A failed short's original bearish objective would be below the source.
+        # Reaching an arbitrary lower price is irrelevant until a completed close
+        # actually reclaims the accepted upper source boundary.
+        self.assertEqual(gate.observe_close(101.5), ())
+        self.assertEqual(gate.state(Direction.SHORT), state)
 
     def test_counter_acceptance_transfers_initiative_without_time_expiry(self) -> None:
         gate = InitiativeAuctionGate()
         state = gate.accept_failed_reversal(
             blocked_reversal_direction=Direction.SHORT,
-            opposing_delivery_price=90.0,
             source_scenario_id="old-bull-leg",
             accepted_source_level=100.0,
             accepted_at_ns=1,
@@ -65,14 +76,12 @@ class InitiativeAuctionGateTests(unittest.TestCase):
         gate = InitiativeAuctionGate()
         bullish = gate.accept_failed_reversal(
             blocked_reversal_direction=Direction.SHORT,
-            opposing_delivery_price=90.0,
             source_scenario_id="failed-short-bullish-acceptance",
             accepted_source_level=100.0,
             accepted_at_ns=1,
         )
         bearish, displaced = gate.transfer_on_failed_reversal(
             blocked_reversal_direction=Direction.LONG,
-            opposing_delivery_price=110.0,
             source_scenario_id="failed-long-bearish-acceptance",
             accepted_source_level=99.0,
             accepted_at_ns=2,
@@ -87,21 +96,19 @@ class InitiativeAuctionGateTests(unittest.TestCase):
         gate = InitiativeAuctionGate()
         gate.accept_failed_reversal(
             blocked_reversal_direction=Direction.SHORT,
-            opposing_delivery_price=95.0,
             source_scenario_id="first",
             accepted_source_level=100.0,
             accepted_at_ns=1,
         )
         latest = gate.accept_failed_reversal(
             blocked_reversal_direction=Direction.SHORT,
-            opposing_delivery_price=97.0,
             source_scenario_id="latest",
             accepted_source_level=102.0,
             accepted_at_ns=2,
         )
         self.assertEqual(gate.state(Direction.SHORT), latest)
-        self.assertEqual(gate.observe_close(97.01), ())
-        self.assertEqual(gate.observe_close(97.0), (latest,))
+        self.assertEqual(gate.observe_close(102.01), ())
+        self.assertEqual(gate.observe_close(102.0), (latest,))
 
 
 if __name__ == "__main__":
