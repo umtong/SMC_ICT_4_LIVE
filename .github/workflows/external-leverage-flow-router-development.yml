@@ -43,12 +43,14 @@ jobs:
           import candidate
           import candidate21_strategy
           import features
+          import market_entry_strategy
           from spot_perp_router import ParticipationRoute
           assert getattr(features.load_range, '_external_spot_participation_contract', False)
           assert candidate21_strategy.Candidate21Strategy.__module__ == 'candidate21_strategy'
+          assert market_entry_strategy.MarketEntryStrategy.__module__ == 'market_entry_strategy'
           assert ParticipationRoute.EXTERNAL_LIQUIDITY_EXHAUSTION.value == 'EXTERNAL_LIQUIDITY_EXHAUSTION'
           assert ParticipationRoute.UNRESOLVED.value == 'UNRESOLVED'
-          print('namespace and causal feature wrapper verified')
+          print('namespace, execution adapter, and causal feature wrapper verified')
           PY
 
       - name: Run BTC development screen through NautilusTrader
@@ -108,8 +110,9 @@ jobs:
               'exhaustion_states_expired',
               'exhaustion_target_consumed',
               'exhaustion_geometry_rejected',
-              'exhaustion_fok_entries',
+              'exhaustion_market_entries',
               'entry_submissions',
+              'entry_worst_fill_breaches',
           ]
           funnel = {name: int(diagnostics.get(name, 0) or 0) for name in funnel_names}
           gate = metrics.get('gate_checks', {})
@@ -124,26 +127,36 @@ jobs:
               and int(metrics.get('order_rejections', 0) or 0) == 0
               and int(diagnostics.get('max_simultaneous_entry_intents', 0) or 0) <= 1
               and int(diagnostics.get('max_open_positions_observed', 0) or 0) <= 1
+              and int(diagnostics.get('entry_worst_fill_breaches', 0) or 0) == 0
               and float(metrics.get('min_equity', 0.0) or 0.0) > 0.0
           )
           if not integrity:
               classification = 'INVALID_DEVELOPMENT_RUN'
           elif funnel['exhaustion_states'] == 0:
               classification = 'NO_EXHAUSTION_STATES; REASSESS PARENT MECHANISM'
-          elif funnel['exhaustion_fok_entries'] == 0:
+          elif funnel['exhaustion_market_entries'] == 0:
               classification = 'STATES_OCCURRED_BUT_NO_EXECUTABLE_REVERSAL_LEG'
+          elif int(metrics.get('trades', 0) or 0) == 0:
+              classification = 'ENTRY_SUBMITTED_BUT_NO_REALIZED_TRADE; DIAGNOSE EXECUTION'
           elif float(metrics.get('total_return', 0.0) or 0.0) > 0.0:
               classification = 'POSITIVE_DEVELOPMENT; FREEZE AND MOVE TO UNTOUCHED'
           else:
               classification = 'VALID_NEGATIVE_DEVELOPMENT; DIAGNOSE MECHANISM BEFORE HOLDOUT'
           decision = {
-              'schema': 'external-liquidity-exhaustion-development-v1',
+              'schema': 'external-liquidity-exhaustion-development-v2',
               'evaluation': ['2024-02-19', '2024-02-25'],
               'integrity_pass': integrity,
               'classification': classification,
               'spot_feature_ready_rows': int(ready.sum()),
               'future_spot_rows': future_spot,
               'funnel': funnel,
+              'entry_fill_budget': {
+                  'worst_fill_breaches': int(diagnostics.get('entry_worst_fill_breaches', 0) or 0),
+                  'max_worse_than_budget_bps': float(diagnostics.get('max_entry_worst_fill_slippage_bps', 0.0) or 0.0),
+                  'last_actual_fill': diagnostics.get('last_entry_actual_fill'),
+                  'last_worst_fill_budget': diagnostics.get('last_entry_worst_fill_budget'),
+                  'last_fill_vs_budget_bps': diagnostics.get('last_entry_fill_vs_budget_bps'),
+              },
               'metrics': metrics,
           }
           (root / 'development_decision.json').write_text(
