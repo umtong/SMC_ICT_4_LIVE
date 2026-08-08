@@ -25,15 +25,17 @@ jobs:
           from pathlib import Path
           path = Path("research/candidate-08/session_value_migration_signals_v1.py")
           text = path.read_text(encoding="utf-8")
-          old = '''                diagnostics["SECOND_M15_CLOSE_AND_SESSION_VWAP_MIGRATED"] += 1
-                continue
-
-            direction = attempt.direction
-'''
-          new = '''                diagnostics["SECOND_M15_CLOSE_AND_SESSION_VWAP_MIGRATED"] += 1
-
-            direction = attempt.direction
-'''
+          old = (
+              '                diagnostics["SECOND_M15_CLOSE_AND_SESSION_VWAP_MIGRATED"] += 1\n'
+              '                continue\n'
+              '\n'
+              '            direction = attempt.direction\n'
+          )
+          new = (
+              '                diagnostics["SECOND_M15_CLOSE_AND_SESSION_VWAP_MIGRATED"] += 1\n'
+              '\n'
+              '            direction = attempt.direction\n'
+          )
           count = text.count(old)
           if count != 1:
               raise RuntimeError(f"expected one causal-flow replacement, found {count}")
