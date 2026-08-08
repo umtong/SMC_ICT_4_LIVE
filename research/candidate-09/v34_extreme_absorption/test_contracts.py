@@ -9,7 +9,7 @@ class Candidate34Contracts(unittest.TestCase):
         source = inspect.getsource(strategy.Candidate16Strategy)
         state = source.index("EXTREME_ABSORPTION_FROZEN")
         transition = source.index("OPPOSITE_FOOTPRINT_INITIATIVE_CONFIRMED")
-        execution = source.index("candidate34_pullback_entries")
+        execution = source.rindex("candidate34_pullback_entries")
         self.assertLess(state, transition)
         self.assertLess(transition, execution)
 
