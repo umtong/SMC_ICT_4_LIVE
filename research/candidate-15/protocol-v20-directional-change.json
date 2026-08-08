@@ -1,0 +1,80 @@
+{
+  "schema": "candidate-15-v20-directional-change-intrinsic-time-v1",
+  "candidate": "candidate-15-v20-directional-change-intrinsic-time",
+  "created_utc": "2026-08-08",
+  "research_question": "Can actual close-confirmed directional-change events be routed before entry into accepted intrinsic-time overshoot versus failed leverage-driven transition with enough after-cost stability and independent frequency?",
+  "scenario": {
+    "event_clock": "directional-change intrinsic time rather than fixed physical-time pattern matching",
+    "threshold": "at the start of each intrinsic leg, freeze the larger of prior-only one-hour realized sigma and twice the total screening cost; do not update it until the next directional-change confirmation",
+    "confirmation_price": "the actual completed five-minute close that first exceeds the frozen reversal threshold; theoretical threshold-touch prices are not used",
+    "state_router": {
+      "DC_ACCEPTED_OVERSHOOT": "the directional change is not a perp-only move, spot was aligned, OI is not contracting, and the next completed bar extends with aligned flow, spot, index and peer breadth; trade the new intrinsic direction",
+      "DC_FAILED_TRANSITION_RECLAIM": "the directional change is perp-led with abnormal OI contraction, and the next completed bar fails, OI contraction stops, futures flow flips and spot does not follow; trade back against the failed transition",
+      "UNRESOLVED": "all other directional changes are no-trade"
+    },
+    "exit": "the next opposite directional-change confirmation or a four-hour day-trading cap, whichever occurs first",
+    "geometry_note": "A route surviving this screen must retain the frozen intrinsic threshold as its same-leg geometry when implemented with actual NautilusTrader orders."
+  },
+  "data": {
+    "spot_source": "Binance Vision monthly spot 5m klines",
+    "futures_source": "Binance Vision USD-M monthly futures 5m klines and indexPriceKlines",
+    "state_source": "Binance Vision USD-M daily 5m metrics using base sum_open_interest",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-06-01",
+    "end_exclusive": "2026-08-01",
+    "visibility": "event and state use completed bars only; route confirmation is the separately completed next bar"
+  },
+  "fixed_rules": {
+    "threshold_lookback_bars": 288,
+    "threshold_minimum_prior_bars": 144,
+    "threshold_physical_horizon_bars": 12,
+    "minimum_threshold_total_cost_multiple": 2.0,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "state_rolling_prior_bars": 2016,
+    "state_minimum_prior_bars": 1008,
+    "accepted_event_open_interest_1h_z_min": 0.0,
+    "accepted_event_directional_spot_1h_min": 0.0,
+    "accepted_event_directional_perp_spot_gap_z_max": 1.0,
+    "accepted_confirmation_price_extension_min": 0.0,
+    "accepted_confirmation_open_interest_5m_z_min": -0.25,
+    "accepted_confirmation_directional_futures_taker_pressure_min": 0.0,
+    "accepted_confirmation_directional_spot_follow_min": 0.0,
+    "accepted_confirmation_directional_index_follow_min": 0.0,
+    "accepted_confirmation_peer_spot_breadth_min": 0.50,
+    "failed_event_open_interest_1h_z_max": -1.0,
+    "failed_event_directional_perp_spot_gap_z_min": 1.0,
+    "failed_confirmation_price_extension_max": 0.0,
+    "failed_confirmation_open_interest_5m_z_min": -0.25,
+    "failed_confirmation_directional_futures_taker_pressure_max": 0.0,
+    "failed_confirmation_directional_spot_follow_max": 0.0,
+    "maximum_holding_minutes": 240
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "latest_pulse_start": "2026-07-01",
+    "latest_pulse_end_exclusive": "2026-08-01",
+    "latest_pulse_status": "predeclared_for_v20_but_not_globally_untouched",
+    "global_position_limit": 1,
+    "same_event_arbitration": "same five-minute intrinsic event timestamp chooses the highest fixed context-times-state score",
+    "overlap_policy": "no selected event before the active event-based exit"
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.65,
+    "minimum_stability_trades_per_calendar_day": 1.0,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 20,
+    "maximum_single_symbol_share": 0.75
+  },
+  "decision_contract": {
+    "advance": "Only the frozen intrinsic-time router passing development, year-long stability, latest pulse, costs, frequency and concentration advances to NautilusTrader.",
+    "reject": "Do not optimize the directional-change threshold or state cutoffs after evaluation. Preserve only a route positive across every declared split and move to another independent mechanism."
+  }
+}
