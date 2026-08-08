@@ -229,7 +229,59 @@ def materialize_failed_initiative_source(source: str) -> str:
     )
     source = _replace(
         source,
-        '''        def on_order_denied(self, event: OrderEvent) -> None:
+        '''            self.active_plan: TradePlan | None = None
+            self.active_symbol: str | None = None
+            self.last_ts_ns = 0
+
+        def on_start(self) -> None:''',
+        '''            self.active_plan: TradePlan | None = None
+            self.active_symbol: str | None = None
+            self.last_ts_ns = 0
+            self.protective_exit_pending = False
+
+        def on_start(self) -> None:''',
+        label="protective-market-exit-state",
+    )
+    source = _replace(
+        source,
+        '''        def on_bar(self, bar: Bar) -> None:
+            self.last_ts_ns = int(bar.ts_event)
+            self._release_if_terminal(self.last_ts_ns, "BAR_TERMINAL_SYNC")
+            if self.last_ts_ns >= self.config.evaluation_end_ns:''',
+        '''        def on_bar(self, bar: Bar) -> None:
+            self.last_ts_ns = int(bar.ts_event)
+            if self.protective_exit_pending:
+                if not self.is_exiting():
+                    self.lifecycle.append({
+                        "type": "PROTECTIVE_MARKET_EXIT_RETRY",
+                        "ts_event": self.last_ts_ns,
+                        "scenario_id": None if self.active_plan is None else self.active_plan.scenario_id,
+                        "symbol": self.active_symbol,
+                    })
+                    self.market_exit()
+                return
+            if self.is_exiting():
+                return
+            self._release_if_terminal(self.last_ts_ns, "BAR_TERMINAL_SYNC")
+            if self.last_ts_ns >= self.config.evaluation_end_ns:''',
+        label="protective-market-exit-bar-guard",
+    )
+    source = _replace(
+        source,
+        '''        def on_order_filled(self, event: OrderEvent) -> None:
+            self._record_order_event(event, "ORDER_FILLED")
+            self._release_if_terminal(int(event.ts_event), "ORDER_FILLED")
+
+        def on_order_expired(self, event: OrderEvent) -> None:
+            self._record_order_event(event, "ORDER_EXPIRED")
+            self._fail_close_partial_entry(event)
+            self._release_if_terminal(int(event.ts_event), "ENTRY_EXPIRED")
+
+        def on_order_canceled(self, event: OrderEvent) -> None:
+            self._record_order_event(event, "ORDER_CANCELED")
+            self._release_if_terminal(int(event.ts_event), "ORDER_CANCELED")
+
+        def on_order_denied(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_DENIED")
             self.errors.append({"type": "ORDER_DENIED", "event": str(event)})
             self._release_if_terminal(int(event.ts_event), "ORDER_DENIED")
@@ -239,7 +291,7 @@ def materialize_failed_initiative_source(source: str) -> str:
             self.errors.append({"type": "ORDER_REJECTED", "event": str(event)})
             self._release_if_terminal(int(event.ts_event), "ORDER_REJECTED")
 ''',
-        '''        def _fail_close_unprotected_order_event(
+        '''        def _begin_protective_market_exit(
             self,
             event: OrderEvent,
             event_type: str,
@@ -249,35 +301,85 @@ def materialize_failed_initiative_source(source: str) -> str:
             instrument_id = instruments[self.active_symbol].id
             if self.portfolio.is_flat(instrument_id):
                 return
+            if self.protective_exit_pending or self.is_exiting():
+                return
+            self.protective_exit_pending = True
             self.lifecycle.append({
-                "type": "PROTECTIVE_ORDER_FAILURE_FAIL_CLOSED",
+                "type": "PROTECTIVE_ORDER_FAILURE_MARKET_EXIT",
                 "order_event_type": event_type,
                 "ts_event": int(event.ts_event),
                 "scenario_id": self.active_plan.scenario_id,
                 "symbol": self.active_symbol,
                 "failed_client_order_id": str(event.client_order_id),
             })
-            if self.cache.orders_open_count(
-                instrument_id=instrument_id,
-                strategy_id=self.id,
-            ):
-                self.cancel_all_orders(instrument_id)
-            self.close_all_positions(instrument_id)
+            # candidate-13-v11-protective-failure-fail-close:
+            # delegate cancel/in-flight reconciliation/residual flattening to NautilusTrader.
+            # candidate-13-v11-protective-market-exit
+            self.market_exit()
+
+        def on_order_filled(self, event: OrderEvent) -> None:
+            self._record_order_event(event, "ORDER_FILLED")
+            if self.protective_exit_pending or self.is_exiting():
+                return
+            self._release_if_terminal(int(event.ts_event), "ORDER_FILLED")
+
+        def on_order_expired(self, event: OrderEvent) -> None:
+            self._record_order_event(event, "ORDER_EXPIRED")
+            if self.protective_exit_pending or self.is_exiting():
+                return
+            self._fail_close_partial_entry(event)
+            self._release_if_terminal(int(event.ts_event), "ENTRY_EXPIRED")
+
+        def on_order_canceled(self, event: OrderEvent) -> None:
+            self._record_order_event(event, "ORDER_CANCELED")
+            if self.protective_exit_pending or self.is_exiting():
+                return
+            self._release_if_terminal(int(event.ts_event), "ORDER_CANCELED")
 
         def on_order_denied(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_DENIED")
             self.errors.append({"type": "ORDER_DENIED", "event": str(event)})
-            self._fail_close_unprotected_order_event(event, "ORDER_DENIED")
+            self._begin_protective_market_exit(event, "ORDER_DENIED")
+            if self.protective_exit_pending or self.is_exiting():
+                return
             self._release_if_terminal(int(event.ts_event), "ORDER_DENIED")
 
         def on_order_rejected(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_REJECTED")
             self.errors.append({"type": "ORDER_REJECTED", "event": str(event)})
-            # candidate-13-v11-protective-failure-fail-close
-            self._fail_close_unprotected_order_event(event, "ORDER_REJECTED")
+            self._begin_protective_market_exit(event, "ORDER_REJECTED")
+            if self.protective_exit_pending or self.is_exiting():
+                return
             self._release_if_terminal(int(event.ts_event), "ORDER_REJECTED")
+
+        def post_market_exit(self) -> None:
+            if not self.protective_exit_pending:
+                return
+            flat = self._all_flat()
+            open_orders = self._open_orders()
+            self.lifecycle.append({
+                "type": "PROTECTIVE_MARKET_EXIT_COMPLETE" if flat and open_orders == 0 else "PROTECTIVE_MARKET_EXIT_INCOMPLETE",
+                "ts_event": self.last_ts_ns,
+                "scenario_id": None if self.active_plan is None else self.active_plan.scenario_id,
+                "symbol": self.active_symbol,
+                "flat": flat,
+                "open_orders": open_orders,
+            })
+            if not flat or open_orders:
+                self.errors.append({
+                    "type": "PROTECTIVE_MARKET_EXIT_INCOMPLETE",
+                    "ts_ns": self.last_ts_ns,
+                    "flat": flat,
+                    "open_orders": open_orders,
+                })
+                return
+            self.protective_exit_pending = False
+            self._release_if_terminal(
+                self.last_ts_ns,
+                "PROTECTIVE_MARKET_EXIT_COMPLETE",
+            )
 ''',
-        label="protective-order-failure-fail-close",
+        label="protective-order-failure-market-exit",
     )
     required = (
         "candidate-13-v11-strict-open-time",
@@ -285,6 +387,9 @@ def materialize_failed_initiative_source(source: str) -> str:
         "].on_batch(ts_ns, self.buffer):",
         "plans.append((failure_plan, failure_candidate))",
         "candidate-13-v11-protective-failure-fail-close",
+        "candidate-13-v11-protective-market-exit",
+        "def post_market_exit(self) -> None:",
+        "self.protective_exit_pending = True",
     )
     missing = [token for token in required if source.count(token) != 1]
     if missing:
