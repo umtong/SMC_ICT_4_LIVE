@@ -120,7 +120,7 @@ def _sparse_latency_aligned_trades(paths: list[Path]) -> pd.DataFrame:
                     ).to_numpy(),
                 },
             )
-            chunks.append(work)
+            chunks.append(_select_latency_aligned_rows(work))
         if not chunks:
             raise TickRunnerError(f"empty aggregate-trade archive {path}")
         candidates.append(pd.concat(chunks, ignore_index=True))
