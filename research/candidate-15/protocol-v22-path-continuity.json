@@ -1,0 +1,99 @@
+{
+  "schema": "candidate-15-v22-price-path-continuity-v1",
+  "candidate": "candidate-15-v22-price-path-continuity",
+  "created_utc": "2026-08-08",
+  "research_question": "Does the way intraday information arrives—gradually through a continuous path versus discretely through a leverage shock—predict post-confirmation continuation or reclaim after realistic screening costs?",
+  "scenario": {
+    "context": "a statistically abnormal one-hour futures move normalized by prior-only bipower continuous volatility",
+    "state_router": {
+      "GRADUAL_INFORMATION_DIFFUSION": "the move is distributed across many aligned bars, no single bar dominates, spot/index/peer paths agree, base OI builds and futures aggressor flow persists; interpret as gradual information underreaction",
+      "DISCRETE_LEVERAGE_SHOCK": "one bar dominates the move, spot/index delivery is weak, the perpetual leads and base OI contracts; interpret as a leverage/liquidity shock rather than gradual information",
+      "UNRESOLVED": "mixed path shapes or contradictory state evidence are no-trade"
+    },
+    "independent_confirmation": {
+      "GRADUAL_INFORMATION_DIFFUSION": "the next completed five-minute bar extends with stable OI, aligned futures flow, spot/index follow and peer breadth; trade continuation after that close",
+      "DISCRETE_LEVERAGE_SHOCK": "the next completed bar fails, OI contraction stops, futures flow flips and spot does not follow; trade reclaim after that close"
+    },
+    "exit": "fixed two-hour gradual continuation or one-hour discrete reclaim horizon",
+    "causal_episode": "overlapping one-hour paths on the same symbol are suppressed for two hours; one global position is selected across the four markets"
+  },
+  "data": {
+    "spot_source": "Binance Vision monthly and latest daily spot 5m klines",
+    "futures_source": "Binance Vision USD-M monthly and latest daily futures 5m klines and indexPriceKlines",
+    "state_source": "Binance Vision USD-M daily 5m metrics using base sum_open_interest",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-06-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": ["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"],
+    "visibility": "path and state use completed event bars; trade confirmation is the separately completed next bar"
+  },
+  "fixed_rules": {
+    "path_window_bars": 12,
+    "bipower_lookback_bars": 288,
+    "bipower_minimum_prior_bars": 144,
+    "state_rolling_prior_bars": 2016,
+    "state_minimum_prior_bars": 1008,
+    "gradual_absolute_path_z_min": 2.0,
+    "gradual_path_continuity_min": 0.80,
+    "gradual_dominant_sign_fraction_min": 0.75,
+    "gradual_max_single_bar_share_max": 0.35,
+    "gradual_spot_path_continuity_min": 0.70,
+    "gradual_peer_spot_path_breadth_min": 0.50,
+    "gradual_event_open_interest_1h_z_min": 0.0,
+    "gradual_directional_flow_persistence_min": 0.05,
+    "gradual_confirmation_price_extension_min": 0.0,
+    "gradual_confirmation_open_interest_5m_z_min": -0.25,
+    "gradual_confirmation_directional_futures_taker_pressure_min": 0.0,
+    "gradual_confirmation_directional_spot_follow_min": 0.0,
+    "gradual_confirmation_directional_index_follow_min": 0.0,
+    "gradual_confirmation_peer_spot_breadth_min": 0.50,
+    "discrete_absolute_path_z_min": 2.5,
+    "discrete_max_single_bar_share_min": 0.65,
+    "discrete_spot_delivery_ratio_max": 0.35,
+    "discrete_index_delivery_ratio_max": 0.35,
+    "discrete_event_open_interest_1h_z_max": -1.0,
+    "discrete_directional_current_futures_taker_pressure_min": 0.10,
+    "discrete_confirmation_price_extension_max": 0.0,
+    "discrete_confirmation_open_interest_5m_z_min": -0.25,
+    "discrete_confirmation_directional_futures_taker_pressure_max": 0.0,
+    "discrete_confirmation_directional_spot_follow_max": 0.0,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "continuation_horizon_minutes": 120,
+    "reclaim_horizon_minutes": 60,
+    "same_symbol_event_cooldown_minutes": 120
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_august_pulse_start": "2026-08-01",
+    "latest_august_pulse_end_exclusive": "2026-08-08",
+    "latest_august_pulse_status": "predeclared_for_v22_and_not_used_to_design_v22",
+    "global_position_limit": 1,
+    "same_event_arbitration": "largest fixed path-context-times-state-quality score, then symbol",
+    "overlap_policy": "no selected episode while the active fixed route horizon is open"
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.65,
+    "minimum_family_stability_trades_per_calendar_day": 0.25,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 10,
+    "minimum_latest_august_pulse_mean_net_bps": 0.0,
+    "minimum_latest_august_pulse_trades": 3,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per evaluation calendar day after global arbitration"
+  },
+  "decision_contract": {
+    "advance": "Only a fixed family passing development, year-long stability, July confirmation and the August pulse advances to frozen NautilusTrader implementation.",
+    "reject": "Do not adjust path-shape or state thresholds after evaluation. Preserve only a route positive across every declared split and move to another independent mechanism."
+  }
+}
