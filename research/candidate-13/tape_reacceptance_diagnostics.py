@@ -383,14 +383,16 @@ def main() -> int:
     parser.add_argument("--evidence-json", type=Path, required=True)
     args = parser.parse_args()
 
-    plans = load_plans(args.results_root)
+    submitted_plans = load_plans(args.results_root)
     outcomes = load_outcomes(args.outcomes)
     required_days: dict[str, set[date]] = defaultdict(set)
     matched: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for plan in plans:
+    unmatched_submitted_plan_keys: list[str] = []
+    for plan in submitted_plans:
         key = plan_key(plan)
         if key not in outcomes:
-            raise RuntimeError(f"submitted plan has no fixture outcome: {key}")
+            unmatched_submitted_plan_keys.append(key)
+            continue
         outcome = outcomes[key]
         details = plan.get("details") or {}
         sweep = pd.to_datetime(int(details["sweep_ts_ns"]), unit="ns", utc=True)
@@ -420,8 +422,11 @@ def main() -> int:
             "router_thresholds": "sign and two-consecutive-bar structural states only",
         },
         "coverage": {
-            "plans": len(plans),
+            "submitted_plans_total": len(submitted_plans),
+            "plans": len(matched),
             "matched_outcomes": len(matched),
+            "unmatched_submitted_plans": len(unmatched_submitted_plan_keys),
+            "unmatched_submitted_plan_keys": unmatched_submitted_plan_keys,
             "causal_bar_records": sum(row.get("event_bar_count", 0) > 0 for row in records),
         },
         "records": records,
