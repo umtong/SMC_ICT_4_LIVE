@@ -1,0 +1,281 @@
+name: candidate-05-v46-shared-basis-parity
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v46-shared-basis-parity.yml"
+      - "research/candidate-05/shared_account_backtest_v2.py"
+      - "research/candidate-05/tests/test_shared_account_v46_contract.py"
+      - "research/candidate-05/basis_contract.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v46-shared-basis-parity
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  parity-weak-week-and-conditional-30d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v46-shared-basis-parity
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and feature parity contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover -s research/candidate-05/tests -p 'test_shared_account_v46_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_basis_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_reset_logic.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_global_entry_slot_v4.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_shared_daily_nav_alignment.py' -v
+
+      - name: Freeze exact v46 strategy identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/v46.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_v46_no_post_retrace_breakaway:NoPostRetraceBreakawayStrategy",
+            "experiment_role": "SHARED_FEATURE_SCHEMA_PARITY_REPAIR_ONLY"
+          }
+          JSON
+
+      - name: Run identical single-symbol BTC weak week
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          python research/candidate-05/v40_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2023-09-06 \
+            --build-end 2023-09-14 \
+            --evaluation-start 2023-09-08 \
+            --evaluation-end 2023-09-14 \
+            --cache .cache/candidate-05-v46-shared-basis-parity/single \
+            --output "$ROOT/single" \
+            2>&1 | tee "$ROOT/single-console.log"
+
+      - name: Run identical shared-account weak week
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/v46.json" \
+            --build-start 2023-09-06 \
+            --build-end 2023-09-14 \
+            --evaluation-start 2023-09-08 \
+            --evaluation-end 2023-09-14 \
+            --cache .cache/candidate-05-v46-shared-basis-parity/shared-weak \
+            --output "$ROOT/shared-weak" \
+            2>&1 | tee "$ROOT/shared-weak-console.log"
+
+      - name: Prove BTC feature identity across runners
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import numpy as np
+          import pandas as pd
+
+          root = Path(os.environ["ROOT"])
+          single = pd.read_csv(root / "single/features.csv.gz", compression="gzip")
+          shared = pd.read_csv(
+              root / "shared-weak/symbols/BTCUSDT/features.csv.gz",
+              compression="gzip",
+          )
+          required = {
+              "premium_index",
+              "premium_change_1m",
+              "premium_change_5m",
+              "premium_change_15m",
+              "premium_age_seconds",
+              "basis_ready",
+          }
+          missing_single = sorted(required - set(single.columns))
+          missing_shared = sorted(required - set(shared.columns))
+          if missing_single or missing_shared:
+              raise RuntimeError(
+                  f"basis feature schema mismatch: single={missing_single}, shared={missing_shared}",
+              )
+          if list(single.columns) != list(shared.columns):
+              raise RuntimeError(
+                  "single/shared BTC feature column order differs: "
+                  f"single_only={sorted(set(single)-set(shared))}, "
+                  f"shared_only={sorted(set(shared)-set(single))}",
+              )
+          if not single["observed_time_ns"].equals(shared["observed_time_ns"]):
+              raise RuntimeError("single/shared BTC feature timestamps differ")
+
+          differences = {}
+          for column in single.columns:
+              left = single[column]
+              right = shared[column]
+              if pd.api.types.is_bool_dtype(left) or pd.api.types.is_bool_dtype(right):
+                  mismatch = ~((left == right) | (left.isna() & right.isna()))
+              elif pd.api.types.is_numeric_dtype(left) and pd.api.types.is_numeric_dtype(right):
+                  mismatch = ~pd.Series(
+                      np.isclose(
+                          left.astype(float),
+                          right.astype(float),
+                          rtol=1e-12,
+                          atol=1e-12,
+                          equal_nan=True,
+                      ),
+                  )
+              else:
+                  mismatch = ~((left == right) | (left.isna() & right.isna()))
+              count = int(mismatch.sum())
+              if count:
+                  differences[column] = count
+          if differences:
+              raise RuntimeError(f"single/shared BTC feature values differ: {differences}")
+
+          result = {
+              "schema": "candidate-05-single-shared-feature-parity-v1",
+              "rows": len(single),
+              "columns": len(single.columns),
+              "required_basis_columns": sorted(required),
+              "all_columns_identical": True,
+              "all_values_identical": True,
+          }
+          (root / "feature_parity.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Classify corrected weak-week shared account
+        id: weak
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "shared-weak/metrics.json").read_text())
+          checks = {
+              "integrity": bool(metrics.get("integrity_pass")),
+              "positive_total_return": float(metrics.get("total_return", -1.0)) > 0.0,
+              "at_least_two_positions": int(metrics.get("trades", 0)) >= 2,
+              "positive_expectancy": float(metrics.get("expectancy_usdt", 0.0)) > 0.0,
+              "no_liquidation": int(metrics.get("liquidations", 1)) == 0,
+              "recoverable_drawdown": float(metrics.get("max_drawdown", 1.0)) <= 0.20,
+          }
+          promote = all(checks.values())
+          result = {
+              "schema": "candidate-05-v46-shared-basis-parity-weak-v1",
+              "classification": (
+                  "V46_SHARED_PARITY_WEAK_WEEK_PASSED"
+                  if promote
+                  else "V46_SHARED_PARITY_WEAK_WEEK_MARKET_LOGIC_FAILURE"
+              ),
+              "promote": promote,
+              "checks": checks,
+              "metrics": metrics,
+          }
+          (root / "weak_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"promote={'true' if promote else 'false'}\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run corrected continuous 30-day shared account
+        if: steps.weak.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/v46.json" \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-30 \
+            --cache .cache/candidate-05-v46-shared-basis-parity/shared-30d \
+            --output "$ROOT/shared-30d" \
+            2>&1 | tee "$ROOT/shared-30d-console.log"
+
+      - name: Classify corrected continuous 30-day shared account
+        if: steps.weak.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "shared-30d/metrics.json").read_text())
+          checks = {
+              "integrity": bool(metrics.get("integrity_pass")),
+              "positive_total_return": float(metrics.get("total_return", -1.0)) > 0.0,
+              "positive_expectancy": float(metrics.get("expectancy_usdt", 0.0)) > 0.0,
+              "no_liquidation": int(metrics.get("liquidations", 1)) == 0,
+              "recoverable_drawdown": float(metrics.get("max_drawdown", 1.0)) <= 0.35,
+              "not_single_winner_dependent": float(metrics.get("largest_winner_share", 1.0)) <= 0.55,
+          }
+          result = {
+              "schema": "candidate-05-v46-shared-basis-parity-30d-v1",
+              "classification": (
+                  "V46_SHARED_PARITY_30D_POSITIVE"
+                  if all(checks.values())
+                  else "V46_SHARED_PARITY_30D_MARKET_LOGIC_FAILURE"
+              ),
+              "project_growth_goal_reached": (
+                  all(checks.values())
+                  and float(metrics.get("geometric_daily_growth", -1.0)) >= 0.01
+              ),
+              "checks": checks,
+              "metrics": metrics,
+          }
+          (root / "shared_30d_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "$ROOT" -name errors.log -type f -print -exec cat {} \;
+          test -s "$ROOT/feature_parity.json" || true
+          test -s "$ROOT/shared-weak/metrics.json" || true
+          if test -f "$ROOT/shared-30d/metrics.json"; then
+            python -m json.tool "$ROOT/shared-30d/metrics.json"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v46-shared-basis-parity-${{ github.sha }}
+          path: artifacts/candidate-05-v46-shared-basis-parity/**
+          if-no-files-found: warn
+          retention-days: 90
