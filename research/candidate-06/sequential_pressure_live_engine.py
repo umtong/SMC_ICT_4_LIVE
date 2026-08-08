@@ -51,7 +51,25 @@ class SequentialPressureLiveEngine(SequentialPressureRegimeEngine):
         state_before = self._state
         step = super()._advance(snapshot, z_score, allow_new=allow_new)
         if step.signal is not None and state_before is not None:
+            position_transition = self._transition(
+                state_before,
+                "CONTINUATION_CONFIRMED",
+                "POSITION_CONTEXT",
+                "CONFIRMED_PRESSURE_REGIME_PRESERVED_FOR_CAUSAL_EXIT_MONITORING",
+                snapshot,
+                {"entry_scenario_id": step.signal.scenario_id},
+            )
+            context_transitions = tuple(
+                item for item in step.transitions if item.scenario_id == state_before.scenario_id
+            )
+            entry_transitions = tuple(
+                item for item in step.transitions if item.scenario_id != state_before.scenario_id
+            )
             state_before.state = "POSITION_CONTEXT"
             self._state = state_before
             self._opposite_cusum = 0.0
+            return ScenarioStep(
+                transitions=(*context_transitions, position_transition, *entry_transitions),
+                signal=step.signal,
+            )
         return step

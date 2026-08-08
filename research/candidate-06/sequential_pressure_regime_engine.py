@@ -82,6 +82,37 @@ class SequentialPressureRegimeEngine:
             },
         )
 
+    @staticmethod
+    def _entry_scenario_id(state: _FlowState) -> str:
+        """Return an execution namespace distinct from the pressure context."""
+        return f"{state.scenario_id}:ENTRY"
+
+    @classmethod
+    def _entry_transition(
+        cls,
+        state: _FlowState,
+        snapshot: PrimitiveSnapshot,
+        signal: ScenarioSignal,
+    ) -> ScenarioTransition:
+        """Arm execution only after the completed pullback/resumption sequence."""
+        return ScenarioTransition(
+            scenario_id=cls._entry_scenario_id(state),
+            event_type="SPRC_ENTRY_TRANSITION",
+            previous_state="IDLE",
+            next_state="ENTRY_ARMED",
+            reason_code="SPRC_ENTRY_ARMED_AFTER_COMPLETED_PRESSURE_RESUMPTION",
+            reference_price=signal.reference_entry,
+            details={
+                "context_scenario_id": state.scenario_id,
+                "family": signal.family,
+                "direction": signal.direction,
+                "stop_price": signal.stop_price,
+                "target_price": signal.target_price,
+                "target_reason": signal.target_reason,
+                "decision_ts_ns": snapshot.observation.ts_ns,
+            },
+        )
+
     def _reset(self, snapshot: PrimitiveSnapshot, reason: str) -> ScenarioStep:
         state = self._state
         if state is None:
@@ -213,7 +244,7 @@ class SequentialPressureRegimeEngine:
         ):
             return None
         return ScenarioSignal(
-            scenario_id=state.scenario_id,
+            scenario_id=self._entry_scenario_id(state),
             family="SPRC",
             direction=state.direction,
             observed_ts_ns=observation.ts_ns,
@@ -224,6 +255,7 @@ class SequentialPressureRegimeEngine:
             atr=state.atr,
             liquidity_level=state.midpoint,
             details={
+                "context_scenario_id": state.scenario_id,
                 "pressure_origin": state.origin,
                 "pressure_midpoint": state.midpoint,
                 "pressure_onset_score": state.onset_score,
@@ -331,10 +363,13 @@ class SequentialPressureRegimeEngine:
             {"z_score": z_score},
         )
         signal = self._build_signal(state, snapshot) if allow_new else None
+        transitions = (transition,)
+        if signal is not None:
+            transitions += (self._entry_transition(state, snapshot, signal),)
         self._state = None
         self._opposite_cusum = 0.0
         self._cooldown_until = snapshot.index + int(self.params.get("sprc_cooldown_bars", 2))
-        return ScenarioStep(transitions=(transition,), signal=signal)
+        return ScenarioStep(transitions=transitions, signal=signal)
 
     def observe(self, snapshot: PrimitiveSnapshot, *, allow_new: bool = True) -> ScenarioStep:
         history_window = int(self.params.get("sprc_flow_history", 120))
