@@ -1,0 +1,107 @@
+name: Candidate 11 cross-venue residual transfer
+
+on:
+  push:
+    branches: ["research/candidate-11"]
+    paths:
+      - "research/candidate-11/cross_venue_residual_transfer_v1/**"
+      - ".github/workflows/candidate-11-cross-venue-residual-transfer-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-11-cross-venue-residual-transfer-v1-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CAND: research/candidate-11/cross_venue_residual_transfer_v1
+      VENDOR: vendor/candidate16
+      CACHE: .cache/candidate-11-cross-venue-residual-transfer-v1
+      OUT: artifacts/candidate-11-cross-venue-residual-transfer-v1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: af82ebc64e05aeaf2704eeb3af0709cdbf4c77c2
+          path: vendor/candidate16
+          fetch-depth: 1
+
+      - name: Verify runtime and pure diagnostic contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q "$CAND" "$VENDOR/research/candidate-05"
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/$VENDOR/research/candidate-05:$GITHUB_WORKSPACE/$VENDOR/src"
+          python -m unittest discover -s "$CAND" -p 'test_*.py' -v
+          grep -F 'one parent per cross-venue basis excursion' "$CAND/screen.py"
+          grep -F 'No NAV, portfolio, fill or position state' "$CAND/screen.py"
+
+      - name: Run seven-day official-trade diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT"
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/$VENDOR/research/candidate-05:$GITHUB_WORKSPACE/$VENDOR/src"
+          python "$CAND/screen.py" \
+            --symbol BTCUSDT \
+            --start 2023-08-07 \
+            --end 2023-08-13 \
+            --cache "$CACHE" \
+            --output "$OUT" \
+            2>&1 | tee "$OUT/console.log"
+
+      - name: Apply frozen diagnostic gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root=Path(os.environ["OUT"])
+          summary=json.loads((root/"summary.json").read_text())
+          required={
+              "classification": summary["classification"],
+              "calendar_days": summary["calendar_days"],
+              "parent_excursions": summary["parent_excursions"],
+              "executable_episodes": summary["executable_episodes"],
+              "target_first": summary["target_first"],
+              "stop_first": summary["stop_first"],
+              "timeouts": summary["timeouts"],
+              "target_first_rate": summary["target_first_rate"],
+              "mean_realized_r": summary["mean_realized_r"],
+              "screen_pass": summary["screen_pass"],
+              "success_claim": False,
+          }
+          (root/"SCREEN_AUDIT.json").write_text(
+              json.dumps(required, indent=2, sort_keys=True)+"\n"
+          )
+          print(json.dumps(required, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-11-cross-venue-residual-transfer-v1-${{ github.sha }}
+          path: artifacts/candidate-11-cross-venue-residual-transfer-v1/**
+          if-no-files-found: warn
+          retention-days: 90
