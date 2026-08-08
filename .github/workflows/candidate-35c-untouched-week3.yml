@@ -46,8 +46,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cd "${GITHUB_WORKSPACE:-$PWD}"
+          mkdir -p "$ROOT"
+          exec > >(tee "$ROOT/preflight.log") 2>&1
+          echo "workspace=$PWD"
+          git rev-parse --show-toplevel
+          git cat-file -e "${POLICY_COMMIT}^{commit}"
           test -f "$PREREG"
-          git diff --quiet "$POLICY_COMMIT" HEAD -- \
+          CHANGED="$(git diff --name-only "$POLICY_COMMIT" HEAD -- \
             research/candidate-35/config.json \
             research/candidate-35/router.py \
             research/candidate-35/router_v2.py \
@@ -55,11 +61,15 @@ jobs:
             research/candidate-35/strategy_v2.py \
             research/candidate-35/run.py \
             research/candidate-35/launch.py \
-            research/candidate-35/event_lifecycle_patch.py
+            research/candidate-35/event_lifecycle_patch.py)"
+          if test -n "$CHANGED"; then
+            echo "Frozen policy changed after preregistration:"
+            printf '%s\n' "$CHANGED"
+            exit 1
+          fi
           smc4 doctor
           python -m compileall -q research/candidate-35
           python -m unittest discover -s research/candidate-35 -p 'test_*.py' -v
-          mkdir -p "$ROOT"
           python - <<'PY'
           import hashlib
           import json
@@ -67,26 +77,29 @@ jobs:
           import subprocess
           from pathlib import Path
 
-          prereg = json.loads(Path(os.environ["PREREG"]).read_text())
+          workspace = Path(os.environ.get("GITHUB_WORKSPACE", ".")).resolve()
+          prereg_path = workspace / os.environ["PREREG"]
+          prereg = json.loads(prereg_path.read_text())
           assert prereg["registered_before_data_access"] is True
           assert prereg["policy_source_commit"] == os.environ["POLICY_COMMIT"]
           assert prereg["evaluation_start"] == "2026-07-15"
           assert prereg["evaluation_end"] == "2026-07-21"
           frozen = {}
           for name in prereg["frozen_files"]:
-              data = Path(name).read_bytes()
+              data = (workspace / name).read_bytes()
               frozen[name] = hashlib.sha256(data).hexdigest()
           record = {
               "schema": "candidate35c-frozen-policy-manifest-v1",
               "policy_source_commit": os.environ["POLICY_COMMIT"],
               "execution_commit": subprocess.check_output(
-                  ["git", "rev-parse", "HEAD"], text=True
+                  ["git", "rev-parse", "HEAD"], text=True, cwd=workspace
               ).strip(),
               "evaluation_start": prereg["evaluation_start"],
               "evaluation_end": prereg["evaluation_end"],
               "frozen_file_sha256": frozen,
           }
-          root = Path(os.environ["ROOT"])
+          root = workspace / os.environ["ROOT"]
+          root.mkdir(parents=True, exist_ok=True)
           (root / "frozen_policy_manifest.json").write_text(
               json.dumps(record, indent=2, sort_keys=True) + "\n"
           )
@@ -99,6 +112,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cd "${GITHUB_WORKSPACE:-$PWD}"
           python research/candidate-35/launch.py \
             --config research/candidate-35/config.json \
             --start 2026-07-15 \
@@ -113,6 +127,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cd "${GITHUB_WORKSPACE:-$PWD}"
           test -f "$ROOT/metrics.json"
           test -f "$ROOT/frozen_policy_manifest.json"
           test -f "$ROOT/preregistration.json"
@@ -121,7 +136,8 @@ jobs:
           import os
           from pathlib import Path
 
-          root = Path(os.environ["ROOT"])
+          workspace = Path(os.environ.get("GITHUB_WORKSPACE", ".")).resolve()
+          root = workspace / os.environ["ROOT"]
           x = json.loads((root / "metrics.json").read_text())
           prereg = json.loads((root / "preregistration.json").read_text())
           assert x["evaluation_start"] == prereg["evaluation_start"]
