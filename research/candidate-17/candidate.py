@@ -12,8 +12,12 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 CANDIDATE16 = HERE.parent / "candidate-16"
 CANDIDATE05 = HERE.parent / "candidate-05"
-sys.path.insert(0, str(HERE))
-sys.path.insert(1, str(CANDIDATE16))
+
+# Candidate 16 must own the legacy top-level module name ``strategy`` because
+# strategy_v2 imports Candidate16Config from it. Candidate 17 is exposed through
+# the non-colliding ``candidate17_strategy`` adapter instead.
+sys.path.insert(0, str(CANDIDATE16))
+sys.path.insert(1, str(HERE))
 sys.path.insert(2, str(CANDIDATE05))
 
 from timestamp_contract import install as install_timestamp_contract
@@ -42,8 +46,8 @@ def _candidate17_strategy_config(
 ):
     del strategy_path, config_path
     return _ORIGINAL_IMPORTABLE_STRATEGY_CONFIG(
-        strategy_path="strategy:Candidate17Strategy",
-        config_path="strategy:Candidate17Config",
+        strategy_path="candidate17_strategy:Candidate17Strategy",
+        config_path="candidate17_strategy:Candidate17Config",
         config=config,
     )
 
@@ -65,7 +69,8 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
     result["validation_mode"] = "pre-registered-untouched-week-screen"
     result["reused_runner"] = "research/candidate-05/backtest.py"
     result["reused_execution"] = "research/candidate-16/strategy_v2.py"
-    result["strategy_path"] = "research/candidate-17/strategy.py"
+    result["strategy_path"] = "research/candidate-17/candidate17_strategy.py"
+    result["strategy_implementation"] = "research/candidate-17/strategy.py"
     write_json_atomic(args.output.resolve() / "metrics.json", result)
     write_json_atomic(
         args.output.resolve() / "candidate17_contract.json",
@@ -100,6 +105,9 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
                 "if actual fill has crossed stop, cancel children and fail-close"
             ),
             "positioning_feature": "causal oi_change_5m with metrics age <= 300 seconds",
+            "strategy_import_adapter": (
+                "candidate17_strategy preserves Candidate 16's top-level strategy module"
+            ),
             "runner_snapshot": (
                 "candidate-16-v2@0d43da0256af7d4d2a1aa81dcdb98fec8f625cda"
             ),
