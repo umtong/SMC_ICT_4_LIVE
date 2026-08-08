@@ -58,7 +58,14 @@ class SpotPriceDiscoveryContractTests(unittest.TestCase):
             result.iloc[0]["spot_observed_time"],
             klines.iloc[0]["close_time_dt"],
         )
-        self.assertAlmostEqual(float(result.iloc[-1]["spot_flow_60s"]), 0.3)
+        expected_full_flow = (
+            float(agg.iloc[-1]["signed_notional_60s"])
+            / float(agg.iloc[-1]["notional_60s"])
+        )
+        self.assertAlmostEqual(
+            float(result.iloc[-1]["spot_flow_60s"]),
+            expected_full_flow,
+        )
         self.assertAlmostEqual(float(result.iloc[-1]["spot_flow_15s"]), 0.5)
         self.assertGreater(float(result.iloc[-1]["spot_flow_3m"]), 0.0)
         self.assertTrue(np.isfinite(float(result.iloc[-1]["spot_notional_burst"])))
