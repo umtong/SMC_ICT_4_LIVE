@@ -1,0 +1,287 @@
+name: candidate-05-loop-results-collector
+
+on:
+  workflow_run:
+    workflows:
+      - candidate-05-v55-spot-led-30d
+      - candidate-05-v55-diagnostic-loop
+      - candidate-05-v56-early-flow-91d
+      - candidate-05-v56-oos-comparison
+      - candidate-05-v58-forced-basis-91d
+      - candidate-05-v58-oos-comparison
+      - candidate-05-v47-replay-fixed
+      - candidate-05-v48b-replay-fixed
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-loop-results-collector
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  collect:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.head_branch == 'research/candidate-05'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TARGET_BRANCH: research/candidate-05
+      REPORT_DIR: research/candidate-05/loop_results
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+          fetch-depth: 0
+
+      - name: Download every latest completed decision artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/candidate05-loop-artifacts
+          mkdir -p /tmp/candidate05-loop-artifacts "$REPORT_DIR"
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import urllib.error
+          import urllib.request
+          import zipfile
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          branch = os.environ["TARGET_BRANCH"]
+          destination = Path("/tmp/candidate05-loop-artifacts")
+          workflows = {
+              "v55_dev": "candidate-05-v55-spot-led-30d.yml",
+              "v55_loop": "candidate-05-v55-diagnostic-loop.yml",
+              "v56_dev": "candidate-05-v56-early-flow-91d.yml",
+              "v56_oos": "candidate-05-v56-oos-comparison.yml",
+              "v58_dev": "candidate-05-v58-forced-basis-91d.yml",
+              "v58_oos": "candidate-05-v58-oos-comparison.yml",
+              "v47_replay": "candidate-05-v47-replay-fixed.yml",
+              "v48b_replay": "candidate-05-v48b-replay-fixed.yml",
+          }
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "candidate-05-loop-collector",
+          }
+
+          def api(url: str) -> dict:
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+
+          inventory: dict[str, object] = {}
+          for key, workflow in workflows.items():
+              url = (
+                  f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/runs"
+                  f"?branch={branch.replace('/', '%2F')}&status=completed&per_page=10"
+              )
+              try:
+                  runs = api(url).get("workflow_runs", [])
+              except urllib.error.HTTPError as exc:
+                  inventory[key] = {
+                      "workflow": workflow,
+                      "available": False,
+                      "error": f"HTTP {exc.code}",
+                  }
+                  continue
+              if not runs:
+                  inventory[key] = {
+                      "workflow": workflow,
+                      "available": False,
+                      "error": "NO_COMPLETED_RUN",
+                  }
+                  continue
+              run = runs[0]
+              run_dir = destination / key
+              run_dir.mkdir(parents=True, exist_ok=True)
+              artifacts = api(run["artifacts_url"]).get("artifacts", [])
+              downloaded = []
+              for artifact in artifacts:
+                  if artifact.get("expired"):
+                      continue
+                  archive = run_dir / f"{artifact['id']}.zip"
+                  request = urllib.request.Request(
+                      artifact["archive_download_url"],
+                      headers=headers,
+                  )
+                  with urllib.request.urlopen(request, timeout=180) as response, archive.open("wb") as stream:
+                      shutil.copyfileobj(response, stream)
+                  extract = run_dir / str(artifact["id"])
+                  extract.mkdir(parents=True, exist_ok=True)
+                  with zipfile.ZipFile(archive) as bundle:
+                      bundle.extractall(extract)
+                  archive.unlink()
+                  downloaded.append(
+                      {
+                          "id": artifact["id"],
+                          "name": artifact["name"],
+                          "digest": artifact.get("digest"),
+                          "extract": str(extract),
+                      },
+                  )
+              decision_files = sorted(
+                  str(path)
+                  for path in run_dir.rglob("*.json")
+                  if path.name in {
+                      "v55_decision.json",
+                      "loop_decision.json",
+                      "v56_decision.json",
+                      "paired_decision.json",
+                      "v58_decision.json",
+                      "replay_decision.json",
+                  }
+              )
+              inventory[key] = {
+                  "workflow": workflow,
+                  "available": bool(downloaded),
+                  "run_id": run["id"],
+                  "run_number": run["run_number"],
+                  "head_sha": run["head_sha"],
+                  "conclusion": run["conclusion"],
+                  "created_at": run["created_at"],
+                  "updated_at": run["updated_at"],
+                  "artifacts": downloaded,
+                  "decision_files": decision_files,
+              }
+          Path(os.environ["REPORT_DIR"], "inventory.json").write_text(
+              json.dumps(inventory, indent=2, sort_keys=True) + "\n",
+          )
+          print(json.dumps(inventory, indent=2, sort_keys=True))
+          PY
+
+      - name: Build machine and human loop reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import math
+          import os
+          from pathlib import Path
+          from typing import Any
+
+          report_dir = Path(os.environ["REPORT_DIR"])
+          inventory = json.loads((report_dir / "inventory.json").read_text())
+
+          def load_decision(key: str) -> dict[str, Any] | None:
+              item = inventory.get(key, {})
+              candidates = [Path(path) for path in item.get("decision_files", [])]
+              if not candidates:
+                  return None
+              preferred = {
+                  "v55_dev": "v55_decision.json",
+                  "v55_loop": "loop_decision.json",
+                  "v56_dev": "v56_decision.json",
+                  "v56_oos": "paired_decision.json",
+                  "v58_dev": "v58_decision.json",
+                  "v58_oos": "paired_decision.json",
+                  "v47_replay": "replay_decision.json",
+                  "v48b_replay": "replay_decision.json",
+              }.get(key)
+              selected = next((path for path in candidates if path.name == preferred), candidates[0])
+              try:
+                  return json.loads(selected.read_text())
+              except Exception as exc:
+                  return {"classification": "DECISION_PARSE_FAILURE", "error": str(exc), "path": str(selected)}
+
+          decisions = {key: load_decision(key) for key in inventory}
+          v55 = decisions.get("v55_loop") or decisions.get("v55_dev")
+          v56 = decisions.get("v56_oos")
+          v58 = decisions.get("v58_oos")
+
+          def classification(value: dict[str, Any] | None) -> str | None:
+              return None if value is None else value.get("classification")
+
+          pass_v55 = classification(v55) == "V55_PRICE_DISCOVERY_FAMILY_PASSED_DEV_OOS_AND_CONTINUOUS"
+          pass_v56 = classification(v56) == "V56_FROZEN_PHASE_GATE_REPLICATED_OUT_OF_SAMPLE"
+          pass_v58 = classification(v58) == "V58_FORCED_BASIS_EDGE_REPLICATED_OUT_OF_SAMPLE"
+
+          promotion = {
+              "v55_spot_price_discovery": pass_v55,
+              "v56_early_flow_core": pass_v56,
+              "v58_forced_basis_reversion": pass_v58,
+          }
+          promoted = [name for name, passed in promotion.items() if passed]
+          all_expected_complete = all(
+              inventory.get(key, {}).get("conclusion") in {"success", "failure", "cancelled", "timed_out"}
+              for key in inventory
+          ) and all(inventory.get(key, {}).get("run_id") for key in inventory)
+
+          summary = {
+              "schema": "candidate-05-loop-results-v1",
+              "generated_from_branch": os.environ["TARGET_BRANCH"],
+              "inventory": inventory,
+              "decisions": decisions,
+              "promotion": promotion,
+              "promoted_components": promoted,
+              "all_expected_complete": all_expected_complete,
+              "next_action": (
+                  "RUN_PROMOTED_COMPOSITE_ON_FINAL_UNTOUCHED_PATH"
+                  if promoted
+                  else "NO_COMPONENT_PASSED_OOS_CONTINUE_NEW_CAUSAL_FAMILIES"
+                  if all_expected_complete
+                  else "WAIT_FOR_REMAINING_COMPONENT_RUNS"
+              ),
+          }
+          (report_dir / "latest.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+
+          lines = [
+              "# Candidate 05 loop results",
+              "",
+              f"All expected runs complete: `{all_expected_complete}`",
+              f"Next action: `{summary['next_action']}`",
+              "",
+              "## Promotion state",
+              "",
+          ]
+          for name, passed in promotion.items():
+              lines.append(f"- `{name}`: **{'PASS' if passed else 'FAIL/WAIT'}**")
+          lines.extend(["", "## Latest classifications", ""])
+          for key in sorted(decisions):
+              lines.append(f"- `{key}`: `{classification(decisions[key])}`")
+          lines.extend(["", "## Runs", ""])
+          for key in sorted(inventory):
+              item = inventory[key]
+              lines.append(
+                  f"- `{key}`: run `{item.get('run_id')}`, conclusion `{item.get('conclusion')}`, "
+                  f"sha `{str(item.get('head_sha', ''))[:12]}`",
+              )
+          (report_dir / "latest.md").write_text("\n".join(lines) + "\n")
+          print(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Commit the latest evidence report
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- "$REPORT_DIR"; then
+            echo "No report change"
+            exit 0
+          fi
+          git config user.name "candidate-05-loop-bot"
+          git config user.email "candidate-05-loop-bot@users.noreply.github.com"
+          git add "$REPORT_DIR"
+          git commit -m "candidate-05: collect latest loop evidence"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:"$TARGET_BRANCH"; then
+              exit 0
+            fi
+            git pull --rebase origin "$TARGET_BRANCH"
+            sleep $((attempt * 2))
+          done
+          exit 1
