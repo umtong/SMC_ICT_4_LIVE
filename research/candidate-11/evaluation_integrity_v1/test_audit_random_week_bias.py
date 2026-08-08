@@ -31,6 +31,15 @@ class EvaluationIntegrityTests(unittest.TestCase):
             exact_two_sided_lower_bound(10, 14), 0.418964742816, places=10
         )
 
+    def test_archive_disproves_every_random_week_was_good(self):
+        result = audit(self.snapshot())
+        self.assertFalse(result["all_random_weeks_were_good"])
+        self.assertGreaterEqual(result["archived_short_week_failure_count"], 4)
+        self.assertIn(
+            "SURVIVORSHIP_AND_RESEARCH_MEMORY_BIAS",
+            result["failure_modes"],
+        )
+
     def test_same_opened_weeks_cannot_be_holdout_after_source_revision(self):
         result = audit(self.snapshot())
         self.assertTrue(result["adaptive_reuse"])

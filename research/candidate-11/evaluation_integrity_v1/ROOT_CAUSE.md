@@ -8,12 +8,13 @@ The decisive error was a mismatch between the nominal sampling unit and the econ
 
 ## Proven from repository evidence
 
-1. **Adaptive reuse.** Candidate 13 v2, v3, v4 and final all used W10-W14. Results changed from 1/2, to 1/3, to 2/4, to 7/7 as source logic evolved. The dates were random before first access only.
-2. **Sparse-event inflation.** Candidate 13's 35-day final result contained seven trades. Candidate 11's stronger diagnostic contained eleven. One or two large winners can make a seven-day geometric rate appear exceptional.
-3. **Latent-regime concentration.** Ten of eleven multi-session development trades were shorts. The untouched holdout contained two longs and one short. Calendar separation did not provide scenario-domain separation.
-4. **Uncertainty hidden by point estimates.** Seven wins in seven attempts has an exact 95% win-rate lower bound near 59%, not evidence of a stable 100% process. Nine wins in eleven has a lower bound near 48%.
-5. **Opportunity-density failure.** The combined 56-day continuity context produced 14 trades and about 0.708% daily geometric growth. Even after mixing development and holdout, it remained below the project target.
-6. **Fresh causal scarcity.** The separately frozen second-scale peer-implied fair-value-gap screen generated zero costed events on all three opened mechanism weeks.
+1. **The premise “random weeks always worked” is false.** Candidate 10's pre-result random first week produced -10.57% in v0, -18.48% in v1 and one full-risk loss in v2. Candidate 01 v30's authoritative first BTC week lost 7.18%. The successful short tests are more memorable because only survivors were advanced and discussed.
+2. **Adaptive reuse.** Candidate 13 v2, v3, v4 and final all used W10-W14. Results changed from 1/2, to 1/3, to 2/4, to 7/7 as source logic evolved. The dates were random before first access only.
+3. **Sparse-event inflation.** Candidate 13's 35-day final result contained seven trades. Candidate 11's stronger diagnostic contained eleven. One or two large winners can make a seven-day geometric rate appear exceptional.
+4. **Latent-regime concentration.** Ten of eleven multi-session development trades were shorts. The untouched holdout contained two longs and one short. Calendar separation did not provide scenario-domain separation.
+5. **Uncertainty hidden by point estimates.** Seven wins in seven attempts has an exact 95% win-rate lower bound near 59%, not evidence of a stable 100% process. Nine wins in eleven has a lower bound near 48%.
+6. **Opportunity-density failure.** The combined 56-day continuity context produced 14 trades and about 0.708% daily geometric growth. Even after mixing development and holdout, it remained below the project target.
+7. **Fresh causal scarcity.** The separately frozen second-scale peer-implied fair-value-gap screen generated zero costed events on all three opened mechanism weeks.
 
 ## What is not supported
 

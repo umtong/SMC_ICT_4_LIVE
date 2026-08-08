@@ -104,6 +104,7 @@ def audit(snapshot: dict[str, Any]) -> dict[str, Any]:
     diagnostic = snapshot["multi_session_diagnostic"]
     holdout = snapshot["multi_session_untouched_holdout"]
     combined = snapshot["combined_context"]
+    short_week_failures = snapshot["short_week_failure_archive"]
     target = float(snapshot["project_target_daily_geometric_growth"])
 
     interval_signatures = [tuple(sequence["interval_set"]) for _ in versions]
@@ -164,7 +165,16 @@ def audit(snapshot: dict[str, Any]) -> dict[str, Any]:
     holdout_short_share = direction_share(holdout, "SHORT")
     direction_shift = abs(diagnostic_short_share - holdout_short_share)
 
+    archived_short_week_failures = [
+        item
+        for item in short_week_failures
+        if float(item["daily_geometric_growth"]) <= 0.0
+    ]
+    all_random_weeks_were_good = not archived_short_week_failures
+
     classifications = []
+    if not all_random_weeks_were_good:
+        classifications.append("SURVIVORSHIP_AND_RESEARCH_MEMORY_BIAS")
     if adaptive_reuse:
         classifications.append("ADAPTIVE_REUSE_OF_OPENED_RANDOM_WEEKS")
     if diagnostic_trials < 20:
@@ -187,6 +197,9 @@ def audit(snapshot: dict[str, Any]) -> dict[str, Any]:
         "classification": "RANDOM_WEEK_EVIDENCE_CONTAMINATED_AND_UNDERPOWERED",
         "success_claim": False,
         "random_week_success_is_valid_holdout_evidence": False,
+        "all_random_weeks_were_good": all_random_weeks_were_good,
+        "archived_short_week_failures": archived_short_week_failures,
+        "archived_short_week_failure_count": len(archived_short_week_failures),
         "adaptive_reuse": adaptive_reuse,
         "same_calendar_versions_observed": len(versions),
         "same_calendar_version_results": version_results,
@@ -234,8 +247,11 @@ def audit(snapshot: dict[str, Any]) -> dict[str, Any]:
         },
         "failure_modes": classifications,
         "root_cause": (
-            "Calendar randomization did not create independent validation. "
-            "The same opened weeks were reused across source revisions, sparse "
+            "The archive disproves the premise that random weeks were always "
+            "good: multiple preselected first-week tests were negative. The "
+            "apparent pattern is survivorship across generations. Calendar "
+            "randomization also did not create independent validation. The same "
+            "opened weeks were reused across source revisions, sparse "
             "trades were treated as five weekly samples, and the development "
             "trades concentrated in one short-side latent regime. Fresh data "
             "therefore revealed the base rate and domain shift hidden by the "
@@ -266,6 +282,12 @@ def render_markdown(result: dict[str, Any]) -> str:
         "",
         "## Direct evidence",
         "",
+        (
+            "- The archive contains "
+            f"`{result['archived_short_week_failure_count']}` explicit negative "
+            "short-week generations, so the premise that random weeks always "
+            "worked is false."
+        ),
         (
             f"- The same W10-W14 calendar set was evaluated across "
             f"`{result['same_calendar_versions_observed']}` source generations."
