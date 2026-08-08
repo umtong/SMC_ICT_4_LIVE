@@ -1,0 +1,58 @@
+{
+  "schema": "candidate-15-v16-index-basis-state-transition-v1",
+  "candidate": "candidate-15-v16-index-basis-state-transition",
+  "created_utc": "2026-08-08",
+  "research_question": "Do futures-index dislocations become tradable only after a separate confirmation bar distinguishes reflexive overshoot repair from spot-confirmed price discovery?",
+  "scenario": {
+    "context": "five-minute futures-index basis and relative-return shock under abnormal futures volume",
+    "interaction": "perpetual price departs materially from Binance composite index price",
+    "state_router": {
+      "REFLEXIVE_BASIS_REPAIR": "basis compresses and the index does not follow during the next completed bar; trade reversal",
+      "INDEX_CONFIRMED_DISCOVERY": "index follows, cross-market breadth agrees and basis does not repair during the next completed bar; trade continuation",
+      "UNRESOLVED": "all other transitions are no-trade"
+    },
+    "entry": "confirmation-bar close",
+    "invalidation_target_note": "This is a mechanism screen only; surviving routes must be frozen with event-extreme invalidation and causal index/basis objectives inside NautilusTrader."
+  },
+  "data": {
+    "source": "Binance Vision USD-M futures klines plus indexPriceKlines",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-01-01",
+    "end_exclusive": "2026-05-01"
+  },
+  "fixed_state_rules": {
+    "rolling_prior_bars": 2016,
+    "minimum_prior_bars": 1008,
+    "absolute_basis_z_min": 2.0,
+    "absolute_relative_return_z_min": 1.5,
+    "futures_volume_z_min": 1.0,
+    "absolute_return_sigma_min": 1.5,
+    "basis_repair_fraction_min": 0.35,
+    "index_follow_ratio_max_for_repair": 0.25,
+    "index_follow_ratio_min_for_discovery": 0.25,
+    "basis_repair_fraction_max_for_discovery": 0.25,
+    "cross_market_breadth_min": 0.5,
+    "round_trip_cost_bps": 16.0,
+    "reversal_horizon_minutes": 60,
+    "continuation_horizon_minutes": 120,
+    "same_symbol_event_cooldown_minutes": 60
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-01-01",
+    "evaluation_start": "2025-01-01",
+    "evaluation_end_exclusive": "2026-05-01",
+    "global_position_limit": 1,
+    "same_event_arbitration": "largest state-quality times basis-shock score",
+    "overlap_policy": "no entry while the selected route horizon is active"
+  },
+  "advance_gate": {
+    "minimum_evaluation_mean_net_bps": 0.0,
+    "minimum_evaluation_net_t_stat": 1.0,
+    "minimum_positive_evaluation_month_share": 0.65,
+    "minimum_selected_trades_per_calendar_day": 1.0,
+    "require_positive_development_mean_net": true,
+    "maximum_single_symbol_share": 0.75
+  }
+}
