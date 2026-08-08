@@ -7,6 +7,7 @@ on:
     paths:
       - "research/candidate-15/protocol-v17-open-interest-state.json"
       - "research/candidate-15/diagnose_v17_open_interest.py"
+      - "research/candidate-15/run_v17_open_interest.py"
       - ".github/workflows/candidate-15-v17-open-interest.yml"
 
 permissions:
@@ -41,7 +42,8 @@ jobs:
           smc4 doctor
           python -m py_compile \
             research/candidate-15/diagnose_v16_index_basis.py \
-            research/candidate-15/diagnose_v17_open_interest.py
+            research/candidate-15/diagnose_v17_open_interest.py \
+            research/candidate-15/run_v17_open_interest.py
           PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15" python - <<'PY'
           import json
           from pathlib import Path
@@ -57,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/src"
-          python research/candidate-15/diagnose_v17_open_interest.py \
+          python research/candidate-15/run_v17_open_interest.py \
             --protocol research/candidate-15/protocol-v17-open-interest-state.json \
             --output research/candidate-15/v17/open_interest/results
 
