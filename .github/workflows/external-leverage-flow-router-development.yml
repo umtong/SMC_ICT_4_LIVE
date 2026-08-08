@@ -1,0 +1,173 @@
+name: external-spot-perp-participation-development
+
+on:
+  push:
+    branches: ["research/external-leverage-flow-router"]
+    paths:
+      - "research/external-leverage-flow-router/**"
+      - ".github/workflows/external-leverage-flow-router-development.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: external-spot-perp-participation-development
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/external-leverage-flow-router:research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/external-spot-perp-development
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/external-leverage-flow-router
+          python -m unittest discover \
+            -s research/external-leverage-flow-router/tests \
+            -p 'test_*.py' -v
+          python - <<'PY'
+          import candidate
+          import candidate21_strategy
+          import features
+          from spot_perp_router import ParticipationRoute
+          assert getattr(features.load_range, '_external_spot_participation_contract', False)
+          assert candidate21_strategy.Candidate21Strategy.__module__ == 'candidate21_strategy'
+          assert ParticipationRoute.UNRESOLVED.value == 'UNRESOLVED'
+          print('namespace and causal feature wrapper verified')
+          PY
+
+      - name: Run BTC development screen through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/result"
+          python research/external-leverage-flow-router/candidate.py stage \
+            --config research/external-leverage-flow-router/config.json \
+            --build-start 2024-02-17 \
+            --build-end 2024-02-25 \
+            --evaluation-start 2024-02-19 \
+            --evaluation-end 2024-02-25 \
+            --cache .cache/external-spot-perp-development \
+            --output "$ROOT/result" \
+            --validation-mode development \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Classify economics and state funnel
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import pandas as pd
+
+          root = Path(os.environ['ROOT'])
+          result = root / 'result'
+          if not (result / 'metrics.json').exists():
+              failure = {
+                  'classification': 'IMPLEMENTATION_FAILURE',
+                  'console_tail': (root / 'console.log').read_text(errors='replace')[-12000:] if (root / 'console.log').exists() else '',
+              }
+              (root / 'development_decision.json').write_text(json.dumps(failure, indent=2))
+              print(json.dumps(failure, indent=2))
+              raise SystemExit(0)
+
+          metrics = json.loads((result / 'metrics.json').read_text())
+          diagnostics = json.loads((result / 'strategy_diagnostics.json').read_text())
+          features = pd.read_csv(result / 'features_clock.csv.gz', compression='gzip')
+          observed = pd.to_numeric(features['observed_time_ns'], errors='raise').astype('int64')
+          spot_observed = pd.to_numeric(features['spot_observed_time_ns'], errors='coerce')
+          future_spot = int((spot_observed > observed).fillna(False).sum())
+          ready = features['spot_participation_ready']
+          if ready.dtype != bool:
+              ready = ready.astype(str).str.lower().isin({'true','1','yes'})
+
+          funnel_names = [
+              'spot_perp_parent_breaks',
+              'spot_perp_parent_oi_rejected',
+              'spot_perp_spot_led_states',
+              'spot_perp_perp_crowding_states',
+              'spot_perp_unresolved_states',
+              'spot_perp_later_observations',
+              'spot_perp_spot_led_retests',
+              'spot_perp_spot_led_invalidations',
+              'spot_perp_crowding_failures',
+              'spot_perp_crowding_accepted_without_trade',
+              'spot_perp_states_expired',
+              'spot_perp_target_consumed',
+              'spot_perp_geometry_rejected',
+              'spot_perp_fok_entries',
+              'entry_submissions',
+          ]
+          funnel = {name: int(diagnostics.get(name, 0) or 0) for name in funnel_names}
+          integrity = (
+              bool(metrics.get('integrity_pass'))
+              and future_spot == 0
+              and int(metrics.get('liquidations', 0) or 0) == 0
+              and int(metrics.get('order_rejections', 0) or 0) == 0
+              and int(diagnostics.get('max_simultaneous_entry_intents', 0) or 0) <= 1
+              and int(diagnostics.get('max_open_positions_observed', 0) or 0) <= 1
+              and float(metrics.get('min_equity', 0.0) or 0.0) > 0.0
+          )
+          if not integrity:
+              classification = 'INVALID_DEVELOPMENT_RUN'
+          elif funnel['spot_perp_spot_led_states'] + funnel['spot_perp_perp_crowding_states'] == 0:
+              classification = 'NO_CLASSIFIED_STATES; REASSESS PARENT ECONOMICS'
+          elif funnel['spot_perp_fok_entries'] == 0:
+              classification = 'STATES_OCCURRED_BUT_NO_EXECUTABLE_TRANSITION'
+          elif float(metrics.get('total_return', 0.0) or 0.0) > 0.0:
+              classification = 'POSITIVE_DEVELOPMENT; FREEZE AND MOVE TO UNTOUCHED'
+          else:
+              classification = 'VALID_NEGATIVE_DEVELOPMENT; DIAGNOSE ROUTE BEFORE ANY HOLDOUT'
+          decision = {
+              'schema': 'external-spot-perp-development-v1',
+              'evaluation': ['2024-02-19', '2024-02-25'],
+              'integrity_pass': integrity,
+              'classification': classification,
+              'spot_feature_ready_rows': int(ready.sum()),
+              'future_spot_rows': future_spot,
+              'funnel': funnel,
+              'metrics': metrics,
+          }
+          (root / 'development_decision.json').write_text(
+              json.dumps(decision, indent=2, sort_keys=True, allow_nan=True) + '\n'
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify evidence files
+        if: always()
+        shell: bash
+        run: |
+          if test -e "$ROOT/result/metrics.json"; then
+            python -m json.tool "$ROOT/result/metrics.json" >/dev/null
+            python -m json.tool "$ROOT/result/run.json" >/dev/null
+            python -m json.tool "$ROOT/result/spot_perp_contract.json" >/dev/null
+            python -m json.tool "$ROOT/development_decision.json" >/dev/null
+            for file in metrics.json run.json account.csv orders.csv positions.csv equity.csv strategy_diagnostics.json scenario_events.jsonl raw_evidence.json features_clock.csv.gz execution_clock.json; do
+              test -e "$ROOT/result/$file"
+            done
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: external-spot-perp-development-${{ github.sha }}
+          path: artifacts/external-spot-perp-development/**
+          if-no-files-found: warn
+          retention-days: 90
