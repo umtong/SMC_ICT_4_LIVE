@@ -66,12 +66,12 @@ class FreshInitiativeAcceptanceMixin:
         )
         return all(math.isfinite(self._feature(name)) for name in names)
 
-    def _target_pool(self, side: int, high: float, low: float):
+    def _target_pools(self, side: int, high: float, low: float):
         if side > 0:
             pools = [p for p in self.active_pools.values() if p.kind == "HIGH" and p.level > high]
-            return min(pools, key=lambda p: p.level) if pools else None
+            return sorted(pools, key=lambda p: p.level)
         pools = [p for p in self.active_pools.values() if p.kind == "LOW" and p.level < low]
-        return max(pools, key=lambda p: p.level) if pools else None
+        return sorted(pools, key=lambda p: p.level, reverse=True)
 
     def _geometry(self, *, side: int, observed: float, stop: float, target: float):
         cost = self.config.all_in_cost_bps_each_side / 10_000.0
@@ -136,9 +136,9 @@ class FreshInitiativeAcceptanceMixin:
         self.scenario_counter += 1
         scenario_id = f"c21-fresh-{self.scenario_counter:07d}"
         side, high, low = signal.side, float(row["high"]), float(row["low"])
-        pool = self._target_pool(side, high, low)
+        pools = self._target_pools(side, high, low)
         details = {"side": side, "event_index": self.bar_index, **asdict(evidence)}
-        if pool is None:
+        if not pools:
             self.diagnostics["candidate21_fresh_no_natural_target"] += 1
             self._transition(scenario_id, "FRESH_EVENT_UNRESOLVED", int(row["ts"]), int(row["ts"]),
                              "CLOSED", "NO_PAST_KNOWN_OPPOSING_TARGET", close, details)
@@ -149,15 +149,23 @@ class FreshInitiativeAcceptanceMixin:
             if side > 0 else max(float(x["high"]) for x in recent) + self.config.stop_buffer_atr * atr
         )
         stop = _as_float(self.instrument.make_price(stop_raw))
-        target = _as_float(self.instrument.make_price(pool.level))
-        geometry = self._geometry(side=side, observed=high if side > 0 else low,
-                                  stop=stop, target=target)
-        if geometry is None:
+        selected = None
+        for candidate in pools:
+            candidate_target = _as_float(self.instrument.make_price(candidate.level))
+            candidate_geometry = self._geometry(
+                side=side, observed=high if side > 0 else low,
+                stop=stop, target=candidate_target,
+            )
+            if candidate_geometry is not None:
+                selected = (candidate, candidate_target, candidate_geometry)
+                break
+        if selected is None:
             self.diagnostics["candidate21_fresh_event_geometry_rejected"] += 1
             self._transition(scenario_id, "FRESH_EVENT_UNRESOLVED", int(row["ts"]), int(row["ts"]),
-                             "CLOSED", "EVENT_HAS_NO_POST_COST_GEOMETRY", close,
-                             {**details, "stop": stop, "target": target, "target_pool_id": pool.pool_id})
+                             "CLOSED", "NO_OPPOSING_POOL_PRESERVES_POST_COST_GEOMETRY", close,
+                             {**details, "stop": stop, "opposing_pool_count": len(pools)})
             return
+        pool, target, geometry = selected
         _, event_cap, event_loss, event_r = geometry
         origin = float(self.bars[-2]["close"])
         details.update({
