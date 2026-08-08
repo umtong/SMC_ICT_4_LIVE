@@ -66,7 +66,46 @@ def patch(path: Path) -> None:
         "v45 invalidation before target hierarchy",
     )
 
-    method = '''        def _cancel_pending_entry_after_invalidation(
+    methods = '''        def _enforce_protection_fail_close_after_fill(
+            self,
+            event: OrderEvent,
+        ) -> None:
+            """Close any quantity filled after protective activation failed.
+
+            Nautilus can emit more than one parent fill at the same timestamp.
+            A first partial fill may activate and reject a contingent stop, then
+            a later queued parent fill can arrive after the initial fail-close
+            order.  While the fail-close latch is set, every fill event must
+            leave no open parent and no residual position.
+            """
+            if (
+                not self.protection_activation_fail_close_pending
+                or self.active_plan is None
+                or self.active_symbol is None
+            ):
+                return
+            instrument_id = instruments[self.active_symbol].id
+            if self.cache.orders_open_count(
+                instrument_id=instrument_id,
+                strategy_id=self.id,
+            ):
+                self.cancel_all_orders(instrument_id)
+            if self.portfolio.is_flat(instrument_id):
+                return
+            self.lifecycle.append({
+                "type": "PROTECTIVE_ACTIVATION_FAIL_CLOSE_REASSERTED",
+                "ts_event": int(event.ts_event),
+                "scenario_id": self.active_plan.scenario_id,
+                "symbol": self.active_symbol,
+                "filled_client_order_id": str(event.client_order_id),
+                "reason": (
+                    "a later queued fill arrived while protective activation "
+                    "fail-close ownership remained active"
+                ),
+            })
+            self.close_all_positions(instrument_id)
+
+        def _cancel_pending_entry_after_invalidation(
             self,
             symbol: str,
             observation: BarObs,
@@ -115,8 +154,8 @@ def patch(path: Path) -> None:
     text = replace_once(
         text,
         "        def _cancel_pending_entry_after_target_delivery(\n",
-        method + "        def _cancel_pending_entry_after_target_delivery(\n",
-        "v45 pending-invalidation method",
+        methods + "        def _cancel_pending_entry_after_target_delivery(\n",
+        "v45 execution safety methods",
     )
     text = replace_once(
         text,
@@ -138,6 +177,17 @@ def patch(path: Path) -> None:
                     continue
 ''',
         "v45 pending-invalidation hook",
+    )
+    text = replace_once(
+        text,
+        '''            self.replacement_exit_roles.pop(event.client_order_id, None)
+            self._release_if_terminal(int(event.ts_event), "ORDER_FILLED")
+''',
+        '''            self.replacement_exit_roles.pop(event.client_order_id, None)
+            self._enforce_protection_fail_close_after_fill(event)
+            self._release_if_terminal(int(event.ts_event), "ORDER_FILLED")
+''',
+        "v45 partial-fill fail-close reassertion",
     )
     path.write_text(text, encoding="utf-8")
 
