@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -11,6 +12,15 @@ parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument("--work", type=Path, required=True)
 known, _ = parser.parse_known_args()
 candidate05 = known.work.resolve() / "research" / "candidate-05"
+root = Path(__file__).resolve().parent
+subprocess.run(
+    [
+        sys.executable,
+        str(root / "apply_shared_runner_compat.py"),
+        str(candidate05 / "shared_account_backtest.py"),
+    ],
+    check=True,
+)
 if str(candidate05) not in sys.path:
     sys.path.insert(0, str(candidate05))
 
