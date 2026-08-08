@@ -5,6 +5,7 @@ on:
     branches: ["research/candidate-07"]
     paths:
       - "research/candidate-07/diagnose_parent_initiative_continuation.py"
+      - "research/candidate-07/diagnose_parent_initiative_continuation_extended.py"
       - "research/candidate-07/tests/test_parent_initiative_continuation.py"
       - ".github/workflows/candidate-07-parent-initiative-continuation.yml"
   workflow_dispatch:
@@ -54,28 +55,35 @@ jobs:
           --data-root .research-data/candidate-07
           --max-weeks 3
 
-      - name: Diagnose preemptive parent continuation
+      - name: Diagnose baseline and extended stop windows
         run: |
           set -eu
           export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
-          ROOT=artifacts/parent-continuation
-          python research/candidate-07/diagnose_parent_initiative_continuation.py \
-            --stage week-1 --start 2025-12-22 --end 2025-12-29 \
-            --run-root artifacts/source-initiative/week-1 \
-            --output "$ROOT/week-1" \
-            --data-root .research-data/candidate-07
-          python research/candidate-07/diagnose_parent_initiative_continuation.py \
-            --stage week-2 --start 2025-01-27 --end 2025-02-03 \
-            --run-root artifacts/source-initiative/week-2 \
-            --output "$ROOT/week-2" \
-            --data-root .research-data/candidate-07
-          python research/candidate-07/diagnose_parent_initiative_continuation.py \
-            --stage week-3 --start 2024-06-24 --end 2024-07-01 \
-            --run-root artifacts/source-initiative/week-3 \
-            --output "$ROOT/week-3" \
-            --data-root .research-data/candidate-07
+          for variant in baseline extended; do
+            if [ "$variant" = baseline ]; then
+              SCRIPT=research/candidate-07/diagnose_parent_initiative_continuation.py
+            else
+              SCRIPT=research/candidate-07/diagnose_parent_initiative_continuation_extended.py
+            fi
+            ROOT="artifacts/parent-continuation-$variant"
+            python "$SCRIPT" \
+              --stage week-1 --start 2025-12-22 --end 2025-12-29 \
+              --run-root artifacts/source-initiative/week-1 \
+              --output "$ROOT/week-1" \
+              --data-root .research-data/candidate-07
+            python "$SCRIPT" \
+              --stage week-2 --start 2025-01-27 --end 2025-02-03 \
+              --run-root artifacts/source-initiative/week-2 \
+              --output "$ROOT/week-2" \
+              --data-root .research-data/candidate-07
+            python "$SCRIPT" \
+              --stage week-3 --start 2024-06-24 --end 2024-07-01 \
+              --run-root artifacts/source-initiative/week-3 \
+              --output "$ROOT/week-3" \
+              --data-root .research-data/candidate-07
+          done
 
-      - name: Build immutable cross-stage structural report
+      - name: Build immutable baseline-ablation comparison
         run: |
           python - <<'PY'
           from __future__ import annotations
@@ -83,33 +91,33 @@ jobs:
           from pathlib import Path
           import pandas as pd
 
-          root = Path("artifacts/parent-continuation")
-          frames = []
-          stages = {}
-          for stage in ("week-1", "week-2", "week-3"):
-              frame = pd.read_csv(root / stage / "parent_continuation_paths.csv")
-              frames.append(frame)
-              summary = json.loads(
-                  (root / stage / "parent_continuation_summary.json").read_text()
+          def collect(root: Path) -> dict:
+              frames = []
+              stages = {}
+              for stage in ("week-1", "week-2", "week-3"):
+                  frame = pd.read_csv(root / stage / "parent_continuation_paths.csv")
+                  frames.append(frame)
+                  stages[stage] = json.loads(
+                      (root / stage / "parent_continuation_summary.json").read_text()
+                  )
+              combined = pd.concat(frames, ignore_index=True)
+              combined.to_csv(root / "parent_continuation_paths_all.csv", index=False)
+              routed = combined[combined["entry_ns"].notna()]
+              outcomes = (
+                  routed["continuation_outcome"].value_counts().sort_index().to_dict()
+                  if not routed.empty else {}
               )
-              stages[stage] = summary
-          combined = pd.concat(frames, ignore_index=True)
-          combined.to_csv(root / "parent_continuation_paths_all.csv", index=False)
-          routed = combined[combined["entry_ns"].notna()]
-          outcomes = (
-              routed["continuation_outcome"].value_counts().sort_index().to_dict()
-              if not routed.empty else {}
-          )
-          active_days = (
-              pd.to_datetime(routed["entry_ns"].astype("int64"), unit="ns", utc=True)
-              .dt.date.astype(str).nunique()
-              if not routed.empty else 0
-          )
-          report = {
-              "candidate": "candidate-07-preemptive-parent-initiative-continuation",
-              "source_commit": "${{ github.sha }}",
-              "stages": stages,
-              "combined": {
+              active_days = (
+                  pd.to_datetime(routed["entry_ns"].astype("int64"), unit="ns", utc=True)
+                  .dt.date.astype(str).nunique()
+                  if not routed.empty else 0
+              )
+              structural_r = (
+                  float(routed["continuation_terminal_r"].dropna().sum())
+                  if not routed.empty else 0.0
+              )
+              return {
+                  "stages": stages,
                   "counter_initiative_sources": int(len(combined.index)),
                   "entry_ready": int(len(routed.index)),
                   "active_days": int(active_days),
@@ -118,27 +126,45 @@ jobs:
                   "stops": int(outcomes.get("STOP", 0)),
                   "timeouts": int(outcomes.get("TIMEOUT", 0)),
                   "ambiguous": int(outcomes.get("AMBIGUOUS_SAME_MINUTE", 0)),
-                  "gross_structural_r": float(
-                      routed["continuation_terminal_r"].dropna().sum()
-                  ) if not routed.empty else 0.0,
-              },
-              "promotion_gate": {
-                  "minimum_total_entries": 7,
-                  "minimum_active_days": 4,
-                  "targets_must_exceed_stops": True,
-                  "positive_structural_r": True,
-                  "passed": bool(
-                      len(routed.index) >= 7
-                      and active_days >= 4
-                      and int(outcomes.get("TARGET", 0)) > int(outcomes.get("STOP", 0))
-                      and (
-                          float(routed["continuation_terminal_r"].dropna().sum())
-                          if not routed.empty else 0.0
-                      ) > 0.0
-                  ),
-              },
+                  "gross_structural_r": structural_r,
+                  "promotion_gate": {
+                      "minimum_total_entries": 7,
+                      "minimum_active_days": 4,
+                      "targets_must_exceed_stops": True,
+                      "positive_structural_r": True,
+                      "passed": bool(
+                          len(routed.index) >= 7
+                          and active_days >= 4
+                          and int(outcomes.get("TARGET", 0)) > int(outcomes.get("STOP", 0))
+                          and structural_r > 0.0
+                      ),
+                  },
+              }
+
+          baseline = collect(Path("artifacts/parent-continuation-baseline"))
+          extended = collect(Path("artifacts/parent-continuation-extended"))
+          report = {
+              "candidate": "candidate-07-preemptive-parent-initiative-continuation",
+              "source_commit": "${{ github.sha }}",
+              "controlled_variable": "stop-touch horizon only",
+              "unchanged": [
+                  "counter-initiative source population",
+                  "immutable reversal stop and target competition",
+                  "three completed-bar acceptance",
+                  "failed-continuation stop geometry",
+                  "2.2R continuation target",
+                  "next-minute entry",
+                  "120-minute continuation holding horizon",
+              ],
+              "baseline_five_minute_stop_window": baseline,
+              "ablation_existing_max_hold_stop_window": extended,
+              "decision": (
+                  "PROMOTE_EXTENDED_TO_NAUTILUS_REPLAY"
+                  if extended["promotion_gate"]["passed"]
+                  else "DISCARD_PARENT_CONTINUATION_FAMILY"
+              ),
           }
-          destination = root / "combined_parent_continuation_diagnostic.json"
+          destination = Path("artifacts/parent-continuation-comparison.json")
           destination.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
           print(destination.read_text())
           PY
@@ -146,8 +172,8 @@ jobs:
       - name: Print immutable result
         if: always()
         run: |
-          test -f artifacts/parent-continuation/combined_parent_continuation_diagnostic.json
-          cat artifacts/parent-continuation/combined_parent_continuation_diagnostic.json
+          test -f artifacts/parent-continuation-comparison.json
+          cat artifacts/parent-continuation-comparison.json
 
       - name: Preserve complete parent-continuation evidence
         if: always()
@@ -156,6 +182,8 @@ jobs:
           name: candidate-07-parent-initiative-continuation-${{ github.sha }}
           path: |
             artifacts/source-initiative
-            artifacts/parent-continuation
+            artifacts/parent-continuation-baseline
+            artifacts/parent-continuation-extended
+            artifacts/parent-continuation-comparison.json
           retention-days: 14
           if-no-files-found: error
