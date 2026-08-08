@@ -1,0 +1,105 @@
+name: candidate-16-v17b-nr7-early-contact-repair-study
+
+on:
+  push:
+    branches: ["research/candidate-16-v17-nr7-range-expansion"]
+    paths:
+      - "research/candidate-16/v17_nr7_range_expansion_study_v2.py"
+      - "research/candidate-16/tests/test_v17_nr7_early_contact.py"
+      - ".github/workflows/candidate-16-v17b-nr7-study.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v17b-nr7-early-contact-repair-study
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-and-conditional-holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 320
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v17b-nr7-study
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment, NR7 policy, and early-contact finality
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-16/v9_liquidation_event_study.py \
+            research/candidate-16/v10_open_drive_study.py \
+            research/candidate-16/v17_nr7_range_expansion_study.py \
+            research/candidate-16/v17_nr7_range_expansion_study_v2.py
+          python -m unittest discover \
+            -s research/candidate-16/tests \
+            -p 'test_v17_nr7_range_expansion_study.py' -v
+          python -m unittest discover \
+            -s research/candidate-16/tests \
+            -p 'test_v17_nr7_early_contact.py' -v
+
+      - name: Run checksum-verified frozen NR7 study with finality repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/v17_nr7_range_expansion_study_v2.py \
+            --cache .cache/candidate-16-v17b-nr7 \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify decision and unchanged economic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/study.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root=Path(os.environ['ROOT'])
+          study=json.loads((root/'study.json').read_text())
+          if study.get('role') != 'mechanism and geometry study; no fills, account, portfolio, or NAV claim':
+              raise SystemExit('study role drifted')
+          scenario=study.get('scenario_contract',{})
+          if not scenario.get('first_contact_consumes_both_boundaries') or not scenario.get('first_retest_is_final'):
+              raise SystemExit('NR7 finality drifted')
+          if abs(float(scenario.get('round_trip_cost_rate',-1))-0.002)>1e-12:
+              raise SystemExit('cost drifted')
+          repair=study.get('early_contact_finality',{})
+          if repair.get('policy') != 'any prior-day-boundary contact consumes NR7 state and produces no trade':
+              raise SystemExit('early-contact repair absent')
+          if repair.get('economic_logic_changed'):
+              raise SystemExit('repair changed economics')
+          development=study.get('development',{})
+          holdout=study.get('holdout',{})
+          if not development.get('passed') and holdout.get('opened'):
+              raise SystemExit('holdout opened after development failure')
+          print(json.dumps({
+              'decision':study['decision'],
+              'promote':study['promote'],
+              'funnel':study['funnel'],
+              'development':development,
+              'holdout':holdout,
+          },indent=2,sort_keys=True))
+          PY
+          test -e "$ROOT/development_trades.csv"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v17b-nr7-${{ github.sha }}
+          path: artifacts/candidate-16-v17b-nr7-study/**
+          if-no-files-found: warn
+          retention-days: 90
