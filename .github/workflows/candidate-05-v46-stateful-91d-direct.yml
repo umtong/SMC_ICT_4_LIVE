@@ -40,6 +40,7 @@ jobs:
           python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v46_no_post_retrace_breakaway_contract.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_basis_contract.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_reset_logic.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
 
       - name: Probe required Binance archive coverage
         id: coverage
@@ -67,6 +68,7 @@ jobs:
           }
           rows = []
           missing = {name: [] for name in endpoints}
+          statuses = {name: {} for name in endpoints}
           day = start
           while day <= end:
               stamp = day.isoformat()
@@ -81,26 +83,35 @@ jobs:
                   except Exception as exc:
                       status = f"ERROR:{type(exc).__name__}:{exc}"
                   row[name] = status
+                  statuses[name][stamp] = status
                   if status != 200:
                       missing[name].append(stamp)
               rows.append(row)
               day += timedelta(days=1)
+          non_depth_complete = all(not missing[name] for name in endpoints if name != "bookDepth")
+          depth_gaps_are_explicit_404 = all(
+              statuses["bookDepth"][stamp] == 404
+              for stamp in missing["bookDepth"]
+          )
+          replayable = non_depth_complete and depth_gaps_are_explicit_404
           result = {
-              "schema": "candidate-05-binance-coverage-v1",
+              "schema": "candidate-05-binance-coverage-v2",
               "start": start.isoformat(),
               "end": end.isoformat(),
               "rows": rows,
               "missing": missing,
               "all_required_available": all(not values for values in missing.values()),
+              "replayable_with_explicit_no_trade_depth_gaps": replayable,
+              "depth_gap_policy": "NO_IMPUTATION_FEATURE_UNREADY_NO_NEW_ENTRY",
           }
           root = Path(os.environ["ROOT"])
           (root / "coverage.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-              stream.write(f"complete={'true' if result['all_required_available'] else 'false'}\n")
+              stream.write(f"replayable={'true' if replayable else 'false'}\n")
           print(json.dumps({
               "start": result["start"],
               "end": result["end"],
-              "all_required_available": result["all_required_available"],
+              "replayable": replayable,
               "missing_counts": {key: len(value) for key, value in missing.items()},
               "first_missing": {key: (value[0] if value else None) for key, value in missing.items()},
               "last_missing": {key: (value[-1] if value else None) for key, value in missing.items()},
@@ -108,7 +119,7 @@ jobs:
           PY
 
       - name: Run one uninterrupted 91-day BTC path through NautilusTrader
-        if: steps.coverage.outputs.complete == 'true'
+        if: steps.coverage.outputs.replayable == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -123,14 +134,15 @@ jobs:
             2>&1 | tee "$ROOT/console.log"
 
       - name: Verify authoritative NautilusTrader evidence
-        if: steps.coverage.outputs.complete == 'true'
+        if: steps.coverage.outputs.replayable == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python -m json.tool "$ROOT/metrics.json"
-          for file in run.json data_manifest.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl; do
+          for file in run.json data_manifest.json raw_evidence.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl; do
             test -s "$ROOT/$file"
           done
+          grep -q 'bookDepth_missing_404' "$ROOT/raw_evidence.json"
 
       - uses: actions/upload-artifact@v4
         if: always()
