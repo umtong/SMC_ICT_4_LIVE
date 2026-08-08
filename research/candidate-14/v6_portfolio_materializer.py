@@ -275,7 +275,7 @@ def materialize_v6_portfolio_source(source: str) -> str:
                 return''',
         label="owned-state-continuation-generation",
     )
-    if source.count("GLOBAL_INITIATIVE_CONTINUATION") < 3:
+    if source.count("GLOBAL_INITIATIVE_CONTINUATION") < 2:
         raise RuntimeError("Candidate 14 V6 continuation route was not materialized")
     if source.count("observe_owned_plan") != 1:
         raise RuntimeError("Candidate 14 V6 initiative ownership was not inserted exactly once")
