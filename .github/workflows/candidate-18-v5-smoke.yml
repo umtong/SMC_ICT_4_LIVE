@@ -1,0 +1,230 @@
+name: candidate-18-v5-trade-tick-smoke
+
+on:
+  push:
+    branches: ["research/candidate-18"]
+    paths:
+      - "research/candidate-18/candidate.py"
+      - "research/candidate-18/candidate18_strategy.py"
+      - "research/candidate-18/trade_tick_catalog.py"
+      - "research/candidate-18/trade_tick_emulated_protection_strategy.py"
+      - "research/candidate-18/managed_protection_ioc_strategy.py"
+      - "research/candidate-18/tests/**"
+      - ".github/workflows/candidate-18-v5-smoke.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-18-v5-trade-tick-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  known-protective-rejection-day:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-18:research/candidate-16:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-18-v5-smoke/known-rejection-day
+      CACHE: .cache/candidate-18-v5-smoke/known-rejection-day
+      BUILD_START: "2023-12-22"
+      EVALUATION_START: "2023-12-25"
+      EVALUATION_END: "2023-12-25"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-18 research/candidate-17 research/candidate-16
+          python -m unittest discover -s research/candidate-18/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-17/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v2_contract.py' -v
+
+      - name: Replay the exact v4 protective rejection day on native aggTrades
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-18/candidate.py stage \
+            --config research/candidate-18/config.json \
+            --build-start "$BUILD_START" \
+            --build-end "$EVALUATION_END" \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --cache "$CACHE" \
+            --output "$ROOT" \
+            --validation-mode "v5-trade-tick-smoke-known-rejection-day" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Prove trade-tick execution, local stop release and risk integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import json
+          import math
+          import os
+          import re
+          from datetime import datetime
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diag = json.loads((root / "strategy_diagnostics.json").read_text())
+          tick_manifest = json.loads((root / "trade_tick_manifest.json").read_text())
+          events = [
+              json.loads(line)
+              for line in (root / "scenario_events.jsonl").read_text().splitlines()
+              if line.strip()
+          ]
+          with (root / "orders.csv").open(newline="", encoding="utf-8") as stream:
+              orders = list(csv.DictReader(stream))
+          with (root / "positions.csv").open(newline="", encoding="utf-8") as stream:
+              positions = list(csv.DictReader(stream))
+
+          entries = [
+              row for row in orders
+              if "CANDIDATE18_MANAGED_IOC_ENTRY" in str(row.get("tags", ""))
+          ]
+          stops = [
+              row for row in orders
+              if "CANDIDATE18_TRADE_TICK_EMULATED_STOP" in str(row.get("tags", ""))
+          ]
+          targets = [
+              row for row in orders
+              if "CANDIDATE18_MANAGED_TARGET" in str(row.get("tags", ""))
+          ]
+          entry_fill_qty = sum(float(row.get("filled_qty") or 0.0) for row in entries)
+          stop_capacity = float(diag.get("candidate18_v4_stop_qty_submitted", 0.0))
+          target_capacity = float(diag.get("candidate18_v4_target_qty_submitted", 0.0))
+
+          submissions = [e for e in events if e.get("event_type") == "ENTRY_SUBMITTED"]
+          risks = []
+          by_time = {}
+          malformed_risk = []
+          for event in submissions:
+              details = event.get("details", {})
+              try:
+                  fraction = (
+                      float(details["planned_account_loss_at_worst_fill"])
+                      / float(details["equity"])
+                  )
+              except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                  malformed_risk.append(event.get("scenario_id"))
+                  continue
+              if not math.isfinite(fraction) or fraction < 0.0:
+                  malformed_risk.append(event.get("scenario_id"))
+                  continue
+              risks.append(fraction)
+              by_time[int(event["event_time_ns"])] = event
+
+          def money(text):
+              match = re.search(r"[-+]?\d+(?:\.\d+)?", str(text).replace(",", ""))
+              return float(match.group()) if match else float("nan")
+
+          max_realized_loss = 0.0
+          unmatched_positions = []
+          for position in positions:
+              opened_ns = int(
+                  datetime.fromisoformat(position["ts_opened"]).timestamp()
+                  * 1_000_000_000
+              )
+              candidates = [
+                  event for ts, event in by_time.items()
+                  if 0 <= opened_ns - ts <= 120 * 1_000_000_000
+              ]
+              if not candidates:
+                  unmatched_positions.append(position.get("opening_order_id"))
+                  continue
+              event = min(
+                  candidates,
+                  key=lambda item: opened_ns - int(item["event_time_ns"]),
+              )
+              pnl = money(position.get("realized_pnl"))
+              if math.isfinite(pnl) and pnl < 0.0:
+                  max_realized_loss = max(
+                      max_realized_loss,
+                      -pnl / float(event["details"]["equity"]),
+                  )
+
+          future_reference = [
+              event.get("event_id")
+              for event in events
+              if int(event.get("event_time_ns", 0))
+              > int(event.get("observed_time_ns", 0))
+          ]
+          checks = {
+              "native_trade_ticks_loaded": int(tick_manifest.get("trade_ticks", 0)) > 1_000,
+              "metrics_record_trade_ticks": int(metrics.get("trade_ticks", 0)) == int(tick_manifest.get("trade_ticks", -1)),
+              "bar_matching_disabled": metrics.get("bar_execution") is False,
+              "trade_matching_enabled": metrics.get("trade_execution") is True,
+              "entry_ioc_contract": bool(entries) and all(
+                  row.get("type") == "LIMIT" and row.get("time_in_force") == "IOC"
+                  for row in entries
+              ),
+              "last_price_emulated_stops_exist": bool(stops) and all(
+                  row.get("type") == "STOP_MARKET"
+                  and row.get("emulation_trigger") == "LAST_PRICE"
+                  for row in stops
+              ),
+              "targets_exist": bool(targets),
+              "has_filled_trade": int(metrics.get("trades", 0)) > 0,
+              "fill_quantity_matches_diagnostics": math.isclose(
+                  float(diag.get("candidate18_v4_entry_fill_qty", 0.0)),
+                  entry_fill_qty,
+                  rel_tol=0.0,
+                  abs_tol=1e-8,
+              ),
+              "stop_capacity_covers_fills": stop_capacity + 1e-8 >= entry_fill_qty,
+              "target_capacity_covers_fills": target_capacity + 1e-8 >= entry_fill_qty,
+              "v5_stop_path_exercised": int(diag.get("candidate18_v5_trade_tick_stop_batches", 0)) > 0,
+              "no_protective_rejection": int(diag.get("candidate18_v4_protective_rejections", 0)) == 0,
+              "no_order_rejections": int(diag.get("order_rejections", 0)) == 0,
+              "three_percent_planned_risk": not malformed_risk and max(risks, default=0.0) <= 0.0300000001,
+              "realized_loss_contained": max_realized_loss <= 0.031,
+              "positions_match_signals": not unmatched_positions,
+              "no_future_reference": not future_reference,
+              "single_entry_intent": int(diag.get("max_simultaneous_entry_intents", 0)) <= 1,
+              "single_position": int(diag.get("max_open_positions_observed", 0)) <= 1,
+              "no_liquidation": int(metrics.get("liquidations", 0)) == 0,
+              "positive_equity": float(metrics.get("min_equity", 0.0)) > 0.0,
+          }
+          decision = {
+              "schema": "candidate-18-v5-smoke-v1",
+              "integrity_pass": all(checks.values()),
+              "checks": checks,
+              "trade_ticks": int(tick_manifest.get("trade_ticks", 0)),
+              "entry_rows": len(entries),
+              "stop_rows": len(stops),
+              "target_rows": len(targets),
+              "max_planned_risk_fraction": max(risks, default=0.0),
+              "max_realized_loss_fraction": max_realized_loss,
+              "metrics": metrics,
+              "diagnostics": diag,
+          }
+          (root / "v5_smoke_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True, allow_nan=False) + "\n"
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=False))
+          if not decision["integrity_pass"]:
+              raise SystemExit("Candidate 18 v5 trade-tick smoke failed")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-18-v5-smoke-${{ github.sha }}
+          path: artifacts/candidate-18-v5-smoke/known-rejection-day/**
+          if-no-files-found: warn
+          retention-days: 90
