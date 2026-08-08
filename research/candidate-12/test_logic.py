@@ -312,6 +312,61 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(plan.details["target_semantics"], "PRIOR_ACCEPTANCE_EXPANSION_HIGH")
         self.assertAlmostEqual(plan.target_price, 115.0)
 
+    def test_expired_reacceleration_limit_requires_later_mitigation_and_active_hold(
+        self,
+    ) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(
+            config(min_net_r=1.5, max_stop_atr=100.0),
+            "X",
+        )
+        self.seed_asia(engine)
+        engine._on_five(bar(ts(y, m, d, 6, 5), 103, 104, 102, 103), True)
+        engine._on_five(bar(ts(y, m, d, 6, 10), 103, 112, 103, 110), True)
+        engine._on_five(bar(ts(y, m, d, 6, 15), 110, 115, 105.5, 110), True)
+        self.assertIsNone(
+            engine._on_five(
+                bar(ts(y, m, d, 6, 20), 108, 108.2, 103.5, 105.2),
+                True,
+            )
+        )
+        engine._on_five(bar(ts(y, m, d, 6, 25), 105.2, 106, 104.8, 105.5), True)
+        engine._on_five(bar(ts(y, m, d, 6, 30), 105.5, 109, 105.4, 108.5), True)
+        expired = engine._on_five(
+            bar(ts(y, m, d, 6, 35), 108.5, 110, 106.5, 109),
+            True,
+        )
+        self.assertIsNotNone(expired)
+        assert expired is not None
+        self.assertEqual(expired.entry_order, EntryOrder.LIMIT_GTD)
+        object.__setattr__(engine.config, "min_net_r", 0.65)
+        self.assertTrue(
+            engine.rearm_unfilled_plan(
+                expired,
+                ts(y, m, d, 6, 40),
+            )
+        )
+        state = engine._sources[SessionLabel.ASIA]
+        self.assertTrue(state.high_rearm_watch)
+        self.assertIsNone(
+            engine._on_five(
+                bar(ts(y, m, d, 6, 45), 109, 109.2, 106.4, 107.2),
+                True,
+            )
+        )
+        plan = engine._on_five(
+            bar(ts(y, m, d, 6, 50), 107.2, 109.0, 107.1, 108.8),
+            True,
+        )
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.entry_order, EntryOrder.MARKET)
+        self.assertEqual(
+            plan.details["route"],
+            "UNFILLED_REACCELERATION_LATER_MITIGATION_ACTIVE_HOLD",
+        )
+        self.assertAlmostEqual(plan.target_price, 115.0)
+
     def test_fresh_reacceleration_uses_market_when_close_retains_costed_r(
         self,
     ) -> None:

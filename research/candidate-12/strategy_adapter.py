@@ -1,4 +1,4 @@
-"""NautilusTrader adapter for Candidate 12 I7 causal market/limit plans."""
+"""NautilusTrader adapter for Candidate 12 I18 causal market/limit plans."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -85,12 +85,15 @@ def build_candidate_strategy(
 
         def _terminal_if_flat(self, ts_ns: int, reason: str) -> None:
             if self.active_plan is not None and self._slot_free():
+                terminal_plan = self.active_plan
                 self.logic.mark_trade_terminal(
-                    self.active_plan,
+                    terminal_plan,
                     ts_ns,
                     reason,
                     {"lifecycle_events": len(self.lifecycle)},
                 )
+                if reason == "GTD_ENTRY_EXPIRED_UNFILLED":
+                    self.logic.rearm_unfilled_plan(terminal_plan, ts_ns)
                 self.active_plan = None
 
         def _submit_plan(self, plan: TradePlan) -> None:

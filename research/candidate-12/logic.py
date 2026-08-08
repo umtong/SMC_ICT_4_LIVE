@@ -1,4 +1,4 @@
-"""Causal completed-session auction router for Candidate 12 I17.
+"""Causal completed-session auction router for Candidate 12 I18.
 
 The engine distinguishes economically different interactions with a completed
 Asia or London dealing range instead of forcing one candle pattern onto every
@@ -431,6 +431,12 @@ class SourceState:
     high_failure_bar_low: float | None = None
     high_failure_started_index: int | None = None
     high_failure_scenario_id: str | None = None
+    high_rearm_watch: bool = False
+    high_rearm_entry: float | None = None
+    high_rearm_target: float | None = None
+    high_rearm_started_index: int | None = None
+    high_rearm_mitigation_low: float | None = None
+    high_rearm_scenario_id: str | None = None
 
     outside_low_closes: int = 0
     active_bear_fvg: BearFVG | None = None
@@ -2025,6 +2031,117 @@ class CausalLiquidityAuctionEngine:
         self, state: SourceState, bar: FiveBar, atr: float, allow_entry: bool
     ) -> TradePlan | None:
         source = state.source
+        if state.high_rearm_watch:
+            rearm_entry = state.high_rearm_entry
+            rearm_target = state.high_rearm_target
+            rearm_started = state.high_rearm_started_index
+            rearm_sid = state.high_rearm_scenario_id
+            if (
+                rearm_entry is None
+                or rearm_target is None
+                or rearm_started is None
+                or rearm_sid is None
+            ):
+                state.high_rearm_watch = False
+                self.skips["HIGH_REARM_MISSING_STRUCTURE"] += 1
+                return None
+            if (
+                self._five_index - rearm_started
+                > self.config.acceptance_retest_expiry_bars
+            ):
+                state.high_rearm_watch = False
+                self.skips["HIGH_REARM_EXPIRED"] += 1
+                return None
+            if bar.high >= rearm_target:
+                state.high_rearm_watch = False
+                self.skips["HIGH_REARM_TARGET_PRECONSUMED"] += 1
+                return None
+            if bar.close <= source.high:
+                state.high_rearm_watch = False
+                self.skips["HIGH_REARM_COMPLETED_BOUNDARY_LOST"] += 1
+                return None
+
+            mitigation_low = state.high_rearm_mitigation_low
+            if mitigation_low is None:
+                if bar.low <= rearm_entry:
+                    state.high_rearm_mitigation_low = bar.low
+                    self._emit(
+                        scenario_id=rearm_sid,
+                        event_type="UNFILLED_REACCELERATION_LATER_MITIGATION",
+                        event_time_ns=bar.ts_ns,
+                        observed_time_ns=bar.ts_ns,
+                        next_state="WAIT_ACTIVE_HOLD",
+                        reason_code=(
+                            "PRICE_RETURNED_TO_EXPIRED_PROTECTED_ENTRY_AFTER_MOVING_AWAY"
+                        ),
+                        reference_price=rearm_entry,
+                        details={
+                            "source": source.label.value,
+                            "expired_entry": rearm_entry,
+                            "mitigation_low": bar.low,
+                            "frozen_target": rearm_target,
+                        },
+                    )
+                return None
+
+            state.high_rearm_mitigation_low = min(mitigation_low, bar.low)
+            active_hold = (
+                bar.close > bar.open
+                and bar.body / atr >= self.config.active_retest_body_atr
+                and bar.close_location
+                >= self.config.active_retest_min_close_location
+                and bar.close > rearm_entry
+                and bar.low >= source.high
+            )
+            if not active_hold:
+                return None
+
+            structural_stop = (
+                state.high_rearm_mitigation_low
+                - self.config.fvg_stop_buffer_atr * atr
+            )
+            scenario = (
+                ScenarioKind.ASIA_HIGH_ACCEPTANCE
+                if source.label is SessionLabel.ASIA
+                else ScenarioKind.LONDON_HIGH_ACCEPTANCE
+            )
+            plan = self._costed_plan(
+                scenario_id=rearm_sid,
+                scenario=scenario,
+                direction=Direction.LONG,
+                entry_order=EntryOrder.MARKET,
+                observed_ts_ns=bar.ts_ns,
+                bar=bar,
+                atr=atr,
+                entry_raw=bar.close,
+                stop_raw=structural_stop,
+                target_raw=rearm_target,
+                expire_ts_ns=None,
+                details={
+                    "source": source.label.value,
+                    "route": (
+                        "UNFILLED_REACCELERATION_LATER_MITIGATION_ACTIVE_HOLD"
+                    ),
+                    "session_high": source.high,
+                    "session_low": source.low,
+                    "session_width": source.width,
+                    "expired_protected_entry": rearm_entry,
+                    "later_mitigation_low": state.high_rearm_mitigation_low,
+                    "structural_invalidation": structural_stop,
+                    "decision_body_atr": bar.body / atr,
+                    "decision_close_location": bar.close_location,
+                    "target_semantics": "FROZEN_PRIOR_ACCEPTANCE_EXPANSION_HIGH",
+                },
+            )
+            state.high_rearm_watch = False
+            if plan is None:
+                self.skips["HIGH_REARM_COSTED_PLAN_REJECTED"] += 1
+                return None
+            self.scenario_counts[scenario.value] += 1
+            state.high_plan_emitted = True
+            state.trade_plan_emitted = True
+            return self._emit_plan(plan, allow_entry)
+
         if state.high_plan_emitted:
             return None
         # A deep failure is a separate auction only when the
@@ -2619,6 +2736,55 @@ class CausalLiquidityAuctionEngine:
         five = self._aggregate_five()
         self._minute_parts.clear()
         return self._on_five(five, allow_entry)
+
+    def rearm_unfilled_plan(self, plan: TradePlan, ts_ns: int) -> bool:
+        if (
+            plan.entry_order is not EntryOrder.LIMIT_GTD
+            or plan.details.get("route")
+            != "FVG_BREACH_HELD_BOUNDARY_THEN_FRESH_REACCELERATION_LIMIT"
+        ):
+            return False
+        raw_source = plan.details.get("source")
+        try:
+            label = SessionLabel(str(raw_source))
+        except ValueError:
+            self.skips["HIGH_REARM_UNKNOWN_SOURCE"] += 1
+            return False
+        state = self._sources.get(label)
+        if state is None:
+            self.skips["HIGH_REARM_SOURCE_NOT_LIVE"] += 1
+            return False
+        state.high_plan_emitted = False
+        state.trade_plan_emitted = False
+        state.high_rearm_watch = True
+        state.high_rearm_entry = plan.expected_entry
+        state.high_rearm_target = plan.target_price
+        state.high_rearm_started_index = self._five_index
+        state.high_rearm_mitigation_low = None
+        state.high_rearm_scenario_id = self._next_scenario_id(
+            label,
+            "HIGH-ACCEPTANCE-UNFILLED-REARM",
+        )
+        state.acceptance_phase = "WAIT_UNFILLED_REARM"
+        self._emit(
+            scenario_id=state.high_rearm_scenario_id,
+            event_type="UNFILLED_PROTECTED_ENTRY_REARMED",
+            event_time_ns=ts_ns,
+            observed_time_ns=ts_ns,
+            next_state="WAIT_LATER_MITIGATION",
+            reason_code=(
+                "EXPIRED_UNFILLED_AFTER_PRICE_MOVED_AWAY_REQUIRES_NEW_MITIGATION_HOLD"
+            ),
+            reference_price=plan.expected_entry,
+            details={
+                "source": label.value,
+                "prior_scenario_id": plan.scenario_id,
+                "expired_entry": plan.expected_entry,
+                "frozen_target": plan.target_price,
+                "prior_stop": plan.stop_price,
+            },
+        )
+        return True
 
     def mark_plan_rejected(
         self,
