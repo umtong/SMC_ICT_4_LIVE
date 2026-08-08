@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from aggtrade_acceptance_signals import AcceptanceSignalBundle
-from aggtrade_flow_response_auction_signals_v2 import (
+from aggtrade_flow_response_auction_signals_v3 import (
     ABSORPTION_FAMILY,
     IMPLEMENTATION_REVISION,
     INITIATIVE_FAMILY,
@@ -32,12 +32,13 @@ def _signal(*, scenario_id: str, family: str, timestamp: int):
 
 
 def _path_frame() -> pd.DataFrame:
-    index = pd.date_range("2024-01-01T00:00:10Z", periods=4, freq="10s")
+    periods = 31
+    index = pd.date_range("2024-01-01T00:00:10Z", periods=periods, freq="10s")
     return pd.DataFrame(
         {
-            "high": [100.1, 100.5, 104.2, 105.0],
-            "low": [99.9, 97.7, 99.0, 103.0],
-            "close": [100.0, 98.2, 104.0, 104.5],
+            "high": [100.1, 100.5, 104.2] + [105.0] * (periods - 3),
+            "low": [99.9, 97.7, 99.0] + [103.0] * (periods - 3),
+            "close": [100.0, 98.2, 104.0] + [104.5] * (periods - 3),
         },
         index=index,
     )
