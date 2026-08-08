@@ -33,19 +33,24 @@ from v6_market_leadership import OwnershipMarketLeadershipGate  # noqa: E402
 
 class V6OwnershipGateTests(unittest.TestCase):
     @staticmethod
-    def decision(rank: int) -> LeadershipDecision:
+    def decision(rank: int, direction: str = "LONG") -> LeadershipDecision:
+        sign = 1.0 if direction == "LONG" else -1.0
         return LeadershipDecision(
             approved=True,
             reason="SEMANTIC_FAR_MODERATE_COUNTERTREND_UNANIMOUS",
             leader="BTCUSDT",
             symbol="SOLUSDT",
             scenario="FAR",
-            direction="LONG",
+            direction=direction,
             sweep_ts_ns=1,
             confirmation_ts_ns=2,
-            peer_returns={"BTCUSDT": 0.01, "ETHUSDT": 0.008, "XRPUSDT": 0.006},
+            peer_returns={
+                "BTCUSDT": sign * 0.010,
+                "ETHUSDT": sign * 0.008,
+                "XRPUSDT": sign * 0.006,
+            },
             directional_returns={
-                "BTCUSDT": 0.01,
+                "BTCUSDT": 0.010,
                 "ETHUSDT": 0.008,
                 "SOLUSDT": 0.012,
                 "XRPUSDT": 0.006,
@@ -56,6 +61,7 @@ class V6OwnershipGateTests(unittest.TestCase):
                 "SOLUSDT": -0.4,
                 "XRPUSDT": -0.1,
             },
+            # Frozen MarketLeadershipGate stores this after direction signing.
             candidate_event_move=0.012,
             peer_event_median=0.008,
             confirmation_impulse=1.2,
@@ -84,19 +90,38 @@ class V6OwnershipGateTests(unittest.TestCase):
         self.assertFalse(result.approved)
         self.assertEqual(result.reason, "V6_FAR_REQUIRES_EVENT_DIRECTION_OWNER")
 
-    def test_event_owner_can_transfer_after_preserved_semantics(self) -> None:
+    def test_long_event_owner_can_transfer_after_preserved_semantics(self) -> None:
         gate = OwnershipMarketLeadershipGate(
             ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"),
         )
         with patch.object(
             SemanticMarketLeadershipGate,
             "decide",
-            return_value=self.decision(1),
+            return_value=self.decision(1, "LONG"),
         ):
             result = gate.decide(
                 symbol="SOLUSDT",
                 scenario="FAR",
                 direction="LONG",
+                sweep_ts_ns=1,
+                confirmation_ts_ns=2,
+            )
+        self.assertTrue(result.approved)
+        self.assertEqual(result.reason, "V6_FAR_EVENT_OWNER_CONFIRMS_TRANSFER")
+
+    def test_short_event_owner_uses_already_signed_candidate_move(self) -> None:
+        gate = OwnershipMarketLeadershipGate(
+            ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"),
+        )
+        with patch.object(
+            SemanticMarketLeadershipGate,
+            "decide",
+            return_value=self.decision(1, "SHORT"),
+        ):
+            result = gate.decide(
+                symbol="SOLUSDT",
+                scenario="FAR",
+                direction="SHORT",
                 sweep_ts_ns=1,
                 confirmation_ts_ns=2,
             )
