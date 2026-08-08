@@ -1,0 +1,95 @@
+{
+  "schema": "candidate-15-v32-residual-overreaction-reclaim-v1",
+  "candidate": "candidate-15-v32-residual-overreaction-reclaim",
+  "created_utc": "2026-08-09",
+  "research_question": "Do cross-sectionally idiosyncratic four-hour overreactions reverse after an independently completed fifteen-minute reclaim strongly enough to trade back toward the originating auction midpoint after twenty basis points of costs?",
+  "external_mechanism": {
+    "source": "De Nicola (2021), On the Intraday Behavior of Bitcoin",
+    "reused": [
+      "negative first-order autocorrelation at one-, two- and four-hour frequencies",
+      "larger price movements exhibit stronger subsequent percentage reversals",
+      "overreaction, excess volatility and leverage cascades as candidate mechanisms"
+    ],
+    "adapted": [
+      "cross-sectional residual state across BTC, ETH, SOL and XRP",
+      "direction is not flipped until a separate completed reclaim bar",
+      "target is the midpoint of the originating four-hour auction",
+      "one global position across four assets"
+    ]
+  },
+  "scenario": {
+    "context": "a completed four-hour return with absolute prior-only z-score at least two and displacement at least one and a half four-hour ATRs",
+    "liquidity_objective": "the midpoint of the completed four-hour event auction",
+    "state": "the focal market is the unique largest cross-sectional residual overreaction, at least one ATR from the median and at least a quarter ATR ahead of the second residual",
+    "interaction": "the completed event has above-prior-median quote volume",
+    "confirmation": "the next completed fifteen-minute bar moves opposite the event, reclaims at least ten percent of the event body, closes directionally within its range and has opposite taker pressure",
+    "entry": "confirmation close in the reclaim direction",
+    "invalidation": "beyond the event extreme plus ten percent of prior four-hour ATR",
+    "target": "event auction midpoint",
+    "management": "target or stop first; otherwise exit after eight hours",
+    "arbitration": "one global open position; choose larger residual-overreaction quality"
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and latest daily five-minute klines",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-04-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": [
+      "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04",
+      "2026-08-05", "2026-08-06", "2026-08-07"
+    ],
+    "visibility": "event state uses completed four-hour bars and prior-only rolling statistics; entry follows a separately completed fifteen-minute reclaim"
+  },
+  "fixed_rules": {
+    "event_interval_minutes": 240,
+    "return_z_lookback_bars": 90,
+    "return_z_minimum_prior_bars": 45,
+    "absolute_return_z_min": 2.0,
+    "atr_lookback_bars": 14,
+    "event_displacement_atr_min": 1.5,
+    "volume_median_lookback_bars": 20,
+    "minimum_volume_ratio": 1.0,
+    "residual_overreaction_atr_min": 1.0,
+    "residual_leader_gap_atr_min": 0.25,
+    "confirmation_minutes": 15,
+    "minimum_reclaim_fraction_of_event_body": 0.1,
+    "minimum_confirmation_body_fraction": 0.5,
+    "minimum_opposite_taker_pressure": 0.0,
+    "stop_atr_buffer": 0.1,
+    "maximum_hold_minutes": 480,
+    "same_symbol_cooldown_minutes": 240,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_bar_target_stop_policy": "STOP_FIRST_CONSERVATIVE"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.25,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 5,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 1,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Only the unchanged reclaim scenario passing every declared split advances to NautilusTrader.",
+    "reject": "Do not tune overreaction, residual, reclaim, stop or target thresholds after evaluation."
+  }
+}
