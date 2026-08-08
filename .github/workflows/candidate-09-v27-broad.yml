@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/candidate-09-v27-broad.yml
       - research/candidate-09/v27_bundle/**
+      - research/candidate-09/apply_v27_account_exhaustion_fix.py
 
 permissions:
   contents: write
@@ -68,6 +69,13 @@ jobs:
           cp "$src/nautilus_strategy.py" "$root/nautilus_strategy.py"
           cp "$src/tests/test_accounting_contract.py" "$root/tests/test_accounting_contract.py"
           cp "$src/tests/test_nautilus_contract.py" "$root/tests/test_nautilus_contract.py"
+
+          # Implementation-only lifecycle repair. Once current NAV can no longer
+          # support the instrument's minimum quantity under the unchanged 3% risk
+          # budget, record account exhaustion and stop new entries rather than
+          # terminating the economic evaluation with an exception.
+          python "$src/apply_v27_account_exhaustion_fix.py"
+          cp "$src/apply_v27_account_exhaustion_fix.py" "$root/apply_v27_account_exhaustion_fix.py"
 
       - name: Run contracts and broad-block NautilusTrader evaluation
         shell: bash
