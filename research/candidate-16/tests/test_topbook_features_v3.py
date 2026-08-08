@@ -71,7 +71,7 @@ class TopBookFeatureTests(unittest.TestCase):
         self.assertEqual(values["topbook_bid_queue_response"], 0)
         self.assertEqual(values["topbook_ask_queue_response"], 0)
 
-    def test_ambiguous_refill_and_withdrawal_fails_closed(self) -> None:
+    def test_refill_then_retreat_with_more_adds_than_removes_is_unresolved(self) -> None:
         values = aggregate_records(
             [
                 quote(1, 100.0, 5.0, 101.0, 10.0, 0),
@@ -80,7 +80,7 @@ class TopBookFeatureTests(unittest.TestCase):
                 quote(4, 100.0, 5.0, 102.0, 3.0, 3),
             ],
         )[0]
-        self.assertEqual(values["topbook_ask_queue_response"], -1)
+        self.assertEqual(values["topbook_ask_queue_response"], 0)
         self.assertFalse(values["topbook_ask_persistent_refill"])
 
     def test_minute_boundaries_do_not_share_queue_state(self) -> None:
