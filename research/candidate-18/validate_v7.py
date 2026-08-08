@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 from pathlib import Path
 from typing import Any
 
@@ -51,14 +50,20 @@ def validate(root: Path, period: str) -> dict[str, Any]:
             >= filled_qty,
             "local_stop_orders_observed": bool(local_stops),
             "local_target_orders_observed": bool(local_targets),
-            "target_is_market_if_touched": all(
-                row.get("type") == "MARKET_IF_TOUCHED"
-                for row in local_targets
+            # The order report records the transformed order after an emulated
+            # MIT is released; its executable type is therefore MARKET. The
+            # source contract separately proves that the held order was MIT.
+            "target_release_is_market": all(
+                row.get("type") == "MARKET" for row in local_targets
             ),
             "both_exits_reduce_only": all(
                 str(row.get("is_reduce_only")) == "True"
                 for row in [*local_stops, *local_targets]
             ),
+            "single_exit_family_per_trade": int(
+                diagnostics.get("candidate18_v7_opposite_release_events", 0),
+            )
+            == 0,
             "no_late_reduce_only_race": not list(
                 diagnostics.get(
                     "candidate18_v6_order_rejection_events",
@@ -69,7 +74,7 @@ def validate(root: Path, period: str) -> dict[str, Any]:
     )
     decision.update(
         {
-            "schema": "candidate-18-v7-development-v1",
+            "schema": "candidate-18-v7-development-v2",
             "period": period,
             "checks": checks,
             "integrity_pass": all(checks.values()),

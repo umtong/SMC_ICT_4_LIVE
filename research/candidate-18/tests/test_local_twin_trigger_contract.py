@@ -43,6 +43,29 @@ class LocalTwinTriggerContractTests(unittest.TestCase):
         self.assertIn("CANDIDATE18_V7_LOCAL_TWIN_TARGET", text)
         self.assertNotIn("self.order_factory.limit(", text)
 
+    def test_first_release_cancels_only_opposite_local_family(self) -> None:
+        release = next(
+            node
+            for node in ast.walk(self.tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "on_order_released"
+        )
+        text = ast.unparse(release)
+        self.assertIn("self._cancel_local_family(self._v5_stop_ids)", text)
+        self.assertIn("self._cancel_local_family(self._v5_target_ids)", text)
+        self.assertIn("ClientOrderId.from_str", self.source)
+
+    def test_target_fill_wave_does_not_rearm_duplicate_protection(self) -> None:
+        filled = next(
+            node
+            for node in ast.walk(self.tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "on_order_filled"
+        )
+        text = ast.unparse(filled)
+        self.assertIn("self._managed_open_qty", text)
+        self.assertNotIn("self._submit_pending_protection", text)
+
     def test_no_custom_matching_or_accounting_engine(self) -> None:
         for forbidden in (
             "BacktestEngine",

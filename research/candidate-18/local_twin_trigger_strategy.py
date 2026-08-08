@@ -8,8 +8,10 @@ late and be rejected as reduce-only.
 
 This module keeps both mutually exclusive exits in NautilusTrader's order
 emulator. A real LAST_PRICE TradeTick releases either a reduce-only STOP_MARKET
-or a reduce-only MARKET_IF_TOUCHED as a native MARKET order. The untouched
-sibling is still local, so cancel_all_orders closes it without venue latency.
+or a reduce-only MARKET_IF_TOUCHED as a native MARKET order. The first local
+release cancels the opposite family before it can leave the emulator. Multiple
+same-side tranche exits then complete as one exit wave without re-arming a new
+protective order against fills which are already in flight.
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from typing import Any
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.enums import TriggerType
+from nautilus_trader.model.identifiers import ClientOrderId
 
 from bounded_gtd_entry_strategy import Candidate18Config
 from bounded_gtd_entry_strategy import Candidate18Strategy as _Candidate18V6Strategy
@@ -29,13 +32,22 @@ class Candidate18Strategy(_Candidate18V6Strategy):
 
     def __init__(self, config: Candidate18Config) -> None:
         super().__init__(config=config)
+        self._v7_exit_wave: str | None = None
         self.diagnostics.update(
             {
                 "candidate18_v7_local_twin_batches": 0,
                 "candidate18_v7_local_stop_qty": 0.0,
                 "candidate18_v7_local_target_qty": 0.0,
+                "candidate18_v7_stop_waves": 0,
+                "candidate18_v7_target_waves": 0,
+                "candidate18_v7_opposite_release_events": 0,
             },
         )
+
+    def _clear_trade_state(self) -> None:
+        super()._clear_trade_state()
+        if hasattr(self, "_v7_exit_wave"):
+            self._v7_exit_wave = None
 
     def _submit_pending_protection(self, event: Any | None = None) -> None:
         quantity_value = self._pending_protection_qty
@@ -134,6 +146,61 @@ class Candidate18Strategy(_Candidate18V6Strategy):
             self.diagnostics["candidate18_v7_local_target_qty"],
         ) + quantity_value
         self._pending_protection_qty = 0.0
+
+    def _cancel_local_family(self, identifiers: set[str]) -> None:
+        for identifier in tuple(identifiers):
+            self.cancel_order(ClientOrderId.from_str(identifier))
+
+    def on_order_released(self, event: Any) -> None:
+        client_order_id = str(getattr(event, "client_order_id", ""))
+        if client_order_id in self._v5_target_ids:
+            if self._v7_exit_wave is None:
+                self._v7_exit_wave = "TARGET"
+                self.diagnostics["candidate18_v7_target_waves"] = int(
+                    self.diagnostics["candidate18_v7_target_waves"],
+                ) + 1
+                self._cancel_local_family(self._v5_stop_ids)
+            elif self._v7_exit_wave != "TARGET":
+                self.diagnostics["candidate18_v7_opposite_release_events"] = int(
+                    self.diagnostics["candidate18_v7_opposite_release_events"],
+                ) + 1
+        elif client_order_id in self._v5_stop_ids:
+            if self._v7_exit_wave is None:
+                self._v7_exit_wave = "STOP"
+                self.diagnostics["candidate18_v7_stop_waves"] = int(
+                    self.diagnostics["candidate18_v7_stop_waves"],
+                ) + 1
+                self._cancel_local_family(self._v5_target_ids)
+            elif self._v7_exit_wave != "STOP":
+                self.diagnostics["candidate18_v7_opposite_release_events"] = int(
+                    self.diagnostics["candidate18_v7_opposite_release_events"],
+                ) + 1
+        super().on_order_released(event)
+
+    def on_order_filled(self, event: Any) -> None:
+        client_order_id = str(getattr(event, "client_order_id", ""))
+        if client_order_id not in self._v5_target_ids:
+            super().on_order_filled(event)
+            return
+
+        # All target tranches share one trigger and release as one wave. Do not
+        # re-arm protection after the first target fill because the remaining
+        # original MARKET exits are already in flight. Re-arming here created
+        # the v7 duplicate reduce-only rejection discovered in the native log.
+        fill_qty = _number(getattr(event, "last_qty", 0.0))
+        self._managed_open_qty = max(0.0, self._managed_open_qty - fill_qty)
+        self.diagnostics["candidate18_v4_exit_fill_events"] = int(
+            self.diagnostics["candidate18_v4_exit_fill_events"],
+        ) + 1
+        self.diagnostics["candidate18_v5_target_fill_events"] = int(
+            self.diagnostics["candidate18_v5_target_fill_events"],
+        ) + 1
+        if self._managed_open_qty <= 1e-12:
+            self.cancel_all_orders(self.config.instrument_id)
+            self._protective_ids.clear()
+            self._v5_stop_ids.clear()
+            self._v5_target_ids.clear()
+        return
 
 
 __all__ = ["Candidate18Config", "Candidate18Strategy"]
