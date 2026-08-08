@@ -25,7 +25,7 @@ jobs:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
 
-      - name: Install reviewed I13 source atomically
+      - name: Install reviewed I13 strategy source only
         shell: bash
         run: |
           set -euo pipefail
@@ -34,16 +34,12 @@ jobs:
           python research/candidate-12/materialize_i13.py
           python -m compileall -q research/candidate-12
           python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
-          git rm \
-            research/candidate-12/update-i13.patch \
-            research/candidate-12/materialize_i13.py \
-            .github/workflows/candidate-12-materialize-i13.yml
+          git checkout -- .github/workflows/candidate-12-research.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add \
             research/candidate-12/logic.py \
             research/candidate-12/test_logic.py \
-            research/candidate-12/config.json \
-            .github/workflows/candidate-12-research.yml
+            research/candidate-12/config.json
           git commit -m "candidate-12: install I13 state-priced reacceleration routing"
           git push origin HEAD:research/candidate-12
