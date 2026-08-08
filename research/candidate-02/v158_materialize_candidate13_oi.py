@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Materialize exact Candidate-13 v4 source plus Candidate-02 V158 OI routing."""
+"""Materialize exact Candidate-13 v4 source plus Candidate-02 V158 OI routing.
+
+Candidate 13's v4 protocol was committed after the byte-frozen strategy files.
+The protocol therefore names the earlier strategy freeze while the complete
+runnable snapshot (protocol and wrappers included) lives at a later commit.
+This materializer keeps those concepts separate and verifies every pre-existing
+locked blob before it adds the V158 files.
+"""
 from __future__ import annotations
 
 import argparse
@@ -34,21 +41,60 @@ def write_json(path: Path, value: Any) -> None:
     )
 
 
-def materialize(root: Path, *, source_commit: str) -> dict[str, Any]:
+def verify_candidate13_locked_blobs(
+    root: Path,
+    protocol: dict[str, Any],
+) -> dict[str, str]:
+    locked = protocol.get("locked_source")
+    if not isinstance(locked, dict):
+        raise TypeError("protocol.locked_source must be an object")
+    blobs = locked.get("blobs")
+    if not isinstance(blobs, dict) or not blobs:
+        raise TypeError("protocol.locked_source.blobs must be a non-empty object")
+    verified: dict[str, str] = {}
+    mismatches: list[str] = []
+    for name, expected in sorted(blobs.items()):
+        path = root / str(name)
+        if not path.is_file():
+            mismatches.append(f"{name}: missing")
+            continue
+        actual = git_blob_oid(path.read_bytes())
+        if actual != str(expected):
+            mismatches.append(f"{name}: expected {expected}, actual {actual}")
+        else:
+            verified[str(name)] = actual
+    if mismatches:
+        raise RuntimeError(
+            "Candidate13 v4 snapshot violates its pre-existing frozen blob contract:\n"
+            + "\n".join(mismatches)
+        )
+    return verified
+
+
+def materialize(
+    root: Path,
+    *,
+    source_snapshot_commit: str,
+    strategy_freeze_commit: str,
+) -> dict[str, Any]:
     source = Path(__file__).resolve().parent
+    protocol_path = root / "protocol-v4-regression.json"
+    protocol = load_object(protocol_path)
+
+    protocol_freeze = str(protocol["locked_source"]["strategy_freeze_commit"])
+    if protocol_freeze != strategy_freeze_commit:
+        raise RuntimeError(
+            "Candidate13 v4 strategy-freeze mismatch: "
+            f"protocol={protocol_freeze}, requested={strategy_freeze_commit}"
+        )
+    verified_candidate13_blobs = verify_candidate13_locked_blobs(root, protocol)
+
     for name in V158_FILES:
         origin = source / name
         if not origin.is_file():
             raise FileNotFoundError(origin)
         shutil.copy2(origin, root / name)
 
-    protocol_path = root / "protocol-v4-regression.json"
-    protocol = load_object(protocol_path)
-    expected_freeze = str(protocol["locked_source"]["strategy_freeze_commit"])
-    if expected_freeze != source_commit:
-        raise RuntimeError(
-            f"Candidate13 v4 freeze mismatch: protocol={expected_freeze}, requested={source_commit}"
-        )
     protocol["schema"] = "candidate-02-v158-candidate13-v4-oi-reset-development-v1"
     protocol["candidate"] = "candidate-02-v158-candidate13-v4-oi-reset-router"
     protocol["created_utc"] = "2026-08-09"
@@ -73,7 +119,10 @@ def materialize(root: Path, *, source_commit: str) -> dict[str, Any]:
         ),
     }
     protocol["locked_source"]["origin_branch"] = "research/candidate-13"
-    protocol["locked_source"]["strategy_freeze_commit"] = source_commit
+    # Preserve the protocol's byte-level strategy freeze. The later snapshot is
+    # provenance for the complete runnable package, not a new strategy freeze.
+    protocol["locked_source"]["strategy_freeze_commit"] = strategy_freeze_commit
+    protocol["locked_source"]["materialization_source_commit"] = source_snapshot_commit
     protocol["locked_source"]["enforce_git_blobs"] = True
     for name in V158_FILES:
         payload = (root / name).read_bytes()
@@ -102,10 +151,11 @@ def materialize(root: Path, *, source_commit: str) -> dict[str, Any]:
     write_json(root / "v158_protocol.json", protocol)
 
     manifest = {
-        "schema": "candidate-02-v158-materialization-v1",
-        "candidate13_source_commit": source_commit,
+        "schema": "candidate-02-v158-materialization-v2",
+        "candidate13_materialization_source_commit": source_snapshot_commit,
+        "candidate13_strategy_freeze_commit": strategy_freeze_commit,
         "candidate13_protocol": "protocol-v4-regression.json",
-        "candidate13_locked_blobs": protocol["locked_source"]["blobs"],
+        "candidate13_locked_blobs_verified_before_v158": verified_candidate13_blobs,
         "v158_files": {
             name: {
                 "git_blob": git_blob_oid((root / name).read_bytes()),
@@ -137,9 +187,14 @@ def materialize(root: Path, *, source_commit: str) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--source-snapshot-commit", required=True)
+    parser.add_argument("--strategy-freeze-commit", required=True)
     args = parser.parse_args()
-    result = materialize(args.root.resolve(), source_commit=args.source_commit)
+    result = materialize(
+        args.root.resolve(),
+        source_snapshot_commit=args.source_snapshot_commit,
+        strategy_freeze_commit=args.strategy_freeze_commit,
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
