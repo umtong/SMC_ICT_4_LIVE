@@ -1,0 +1,117 @@
+{
+  "schema": "candidate-15-v25-session-range-delivery-v1",
+  "candidate": "candidate-15-v25-session-range-delivery",
+  "created_utc": "2026-08-09",
+  "research_question": "When a new liquid crypto session opens on one side of the preceding session midpoint, does a causally confirmed 15-minute opening-range break and first retest deliver price to the corresponding preceding-session extreme often enough to support cost-positive day trading?",
+  "external_mechanism": {
+    "ideas_reused": [
+      "opening range breakout after a fixed 15-minute balance",
+      "prior-session midpoint as directional context",
+      "prior-session high or low as the causal liquidity objective",
+      "breakout close plus first retest instead of blind wick entry",
+      "one attempt per session"
+    ],
+    "adaptation": "Asia, London and New York liquidity handoffs are tested on BTCUSDT, ETHUSDT, SOLUSDT and XRPUSDT with cross-market breadth, actual structural stop/target geometry and a single global position.",
+    "not_used": [
+      "post-result session selection",
+      "fixed favorable intrabar sequencing",
+      "multiple entries in one session",
+      "synthetic account NAV"
+    ]
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and daily one-minute klines",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ],
+    "context_start": "2024-06-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "latest_daily_end_exclusive": "2026-08-08",
+    "bar_visibility": "one-minute bar is visible only at its close"
+  },
+  "sessions": {
+    "ASIA": {
+      "start_utc": "00:00",
+      "preceding_range_start_utc_previous_day": "16:00",
+      "preceding_range_end_utc": "00:00",
+      "evaluation_minutes": 360
+    },
+    "LONDON": {
+      "start_utc": "07:00",
+      "preceding_range_start_utc": "00:00",
+      "preceding_range_end_utc": "07:00",
+      "evaluation_minutes": 360
+    },
+    "NEW_YORK": {
+      "start_local": "09:30",
+      "timezone": "America/New_York",
+      "preceding_range_start_utc": "07:00",
+      "preceding_range_end": "session_start",
+      "evaluation_minutes": 300
+    }
+  },
+  "fixed_rules": {
+    "opening_range_minutes": 15,
+    "breakout_window_minutes": 45,
+    "breakout_bar_minutes": 5,
+    "retest_window_minutes": 30,
+    "minimum_opening_range_directional_body_fraction": 0.25,
+    "minimum_opening_range_directional_taker_pressure": 0.0,
+    "minimum_breakout_directional_taker_pressure": 0.0,
+    "minimum_retest_directional_taker_pressure": -0.05,
+    "minimum_cross_market_opening_range_breadth": 0.75,
+    "minimum_net_structural_r": 1.25,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_session_symbol_attempt_limit": 1,
+    "same_bar_stop_and_target_policy": "STOP_FIRST_CONSERVATIVE",
+    "timeout_exit": "last completed one-minute close before the fixed session evaluation horizon"
+  },
+  "scenario": {
+    "context": "new session opens above or below the preceding session midpoint",
+    "liquidity_objective": "corresponding preceding-session high or low",
+    "interaction": "first 15-minute opening balance forms without consuming the objective",
+    "state": "opening-range body, taker pressure and at least three of four peer paths align with the midpoint-selected direction",
+    "transition": "first completed five-minute bar closes outside the opening range with aligned taker pressure",
+    "entry": "first subsequent one-minute retest touches the broken opening-range edge and closes back outside",
+    "invalidation": "opposite opening-range edge",
+    "target": "same-direction preceding-session extreme",
+    "management": "fixed target/stop or session timeout; no re-arm",
+    "no_trade": "target consumed, mixed peer state, no breakout, no first retest or cost-adjusted structural R below 1.25"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "latest_pulse_status": "predeclared_for_v25_and_not_used_to_design_v25",
+    "global_position_limit": 1,
+    "same_session_arbitration": "highest cost-adjusted structural R, then stronger breakout pressure, then symbol",
+    "overlap_policy": "no selected candidate while the current fixed stop/target/timeout trade is active"
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.5,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 10,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 3,
+    "maximum_single_symbol_share": 0.75,
+    "maximum_single_session_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per evaluation calendar day after global arbitration"
+  },
+  "decision_contract": {
+    "advance": "Only the fixed integrated session family passing every declared split advances to NautilusTrader bracket-order validation.",
+    "reject": "Do not optimize session times, opening-range length, breadth, stop, target or R thresholds after seeing the declared results."
+  }
+}
