@@ -1,0 +1,87 @@
+name: candidate-35-liquidation-state-btc-development
+on:
+  push:
+    branches: ["research/candidate-35"]
+    paths:
+      - ".github/workflows/candidate-35-liquidation-state-btc-development.yml"
+  workflow_dispatch:
+concurrency:
+  group: candidate-35-liquidation-state-btc-development
+  cancel-in-progress: true
+permissions:
+  contents: read
+  packages: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-28:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/c35-liquidation-state-btc-2026-07-01_2026-07-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore checksum-verified feature cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/c35-liquidation-state
+          key: candidate35-liquidation-state-btc-2026-07-v1
+      - name: Verify environment and diagnostic boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-28/liquidation_state_diagnostic.py
+          python - <<'PY'
+          from pathlib import Path
+          source=Path('research/candidate-28/liquidation_state_diagnostic.py').read_text()
+          assert 'NautilusTrader strategy is built only if one causal route' in source
+          assert 'round_trip_bps' in source
+          assert 'refractory window' in source
+          assert 'BacktestEngine' not in source
+          PY
+      - name: Run BTC liquidation-state development diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-28/liquidation_state_diagnostic.py \
+            --symbol BTCUSDT \
+            --build-start 2026-06-27 \
+            --build-end 2026-07-15 \
+            --evaluation-start 2026-07-01 \
+            --evaluation-end 2026-07-14 \
+            --round-trip-bps 21.0 \
+            --cache .cache/c35-liquidation-state \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Verify diagnostic-only result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$ROOT/diagnostic.json"
+          test -f "$ROOT/liquidation_state_episodes.csv"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          result=json.loads((root/'diagnostic.json').read_text())
+          assert result['candidate']=='candidate-28-liquidation-state-diagnostic'
+          assert result['symbol']=='BTCUSDT'
+          assert result['evaluation_start']=='2026-07-01'
+          assert result['evaluation_end']=='2026-07-14'
+          assert result['round_trip_bps']==21.0
+          print(json.dumps(result,indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate35-liquidation-state-btc-${{ github.sha }}
+          path: artifacts/c35-liquidation-state-btc-2026-07-01_2026-07-14/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
