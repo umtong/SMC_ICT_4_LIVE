@@ -1,0 +1,146 @@
+name: Candidate 15 V13 signed effort-result diagnostic
+
+on:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - ".github/workflows/candidate-15-v13-signed-effort.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v13-signed-effort-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify role separation and advancement contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-15-v13/diagnose_signed_effort_response.py \
+            research/candidate-15-v13/aggregate_signed_effort_response.py
+          PYTHONPATH=research/candidate-15-v12:research/candidate-15-v13 python - <<'PY'
+          import json
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+          from aggregate_signed_effort_response import aggregate
+
+          source = Path('research/candidate-15-v13/diagnose_signed_effort_response.py').read_text()
+          for token in (
+              'SEPARATELY_COMPLETED_NEXT_BAR_WITH_INDEPENDENT_SAME_OR_OPPOSITE_SIGNED_FLOW_AND_PRICE_PROGRESS',
+              'TRANSITION_CLOSE_NOT_ATTACK_CLOSE',
+              'BAR_TRADE_FLOW_IS_NOT_DISPLAYED_LIQUIDITY',
+              'MAX_NORMALIZED_EFFORT_ONE_PENDING_STATE_AND_ONE_10M_EPISODE',
+          ):
+              assert token in source, token
+          assert 'BacktestEngine' not in source
+          assert 'abs(signed_flow) * volume_ratio' in source
+          assert 'trade_direction = -attack' in source
+
+          with TemporaryDirectory() as root_text:
+              root = Path(root_text)
+              artifacts = root / 'artifacts'
+              output = root / 'output'
+              for interval in ('E01', 'E02', 'E03', 'E04', 'E05', 'E06'):
+                  folder = artifacts / f'candidate15-v13-signed-effort-{interval}'
+                  folder.mkdir(parents=True)
+                  (folder / 'summary.json').write_text(json.dumps({'interval': interval}))
+                  (folder / 'forecasts.json').write_text('[]')
+              result = aggregate(artifacts, output)
+              assert result['classification'] == 'V13_SIGNED_EFFORT_RESULT_REJECTED_OR_UNDERPOWERED'
+              assert result['diagnostic_only_not_account_backtest'] is True
+          PY
+
+  evaluate:
+    needs: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        interval: [E01, E02, E03, E04, E05, E06]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Evaluate ${{ matrix.interval }} signed effort/result states
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-15-v12:research/candidate-15-v13 \
+          python research/candidate-15-v13/diagnose_signed_effort_response.py \
+            "${{ matrix.interval }}" \
+            --output "research/candidate-15-v13/results/${{ matrix.interval }}"
+          rm -rf "research/candidate-15-v13/results/${{ matrix.interval }}/data"
+      - name: Upload interval evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v13-signed-effort-${{ matrix.interval }}
+          path: research/candidate-15-v13/results/${{ matrix.interval }}
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    if: ${{ always() && needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate15-v13-signed-effort-E*
+          path: artifacts
+      - name: Aggregate causal signed-effort evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-15-v13/aggregate_signed_effort_response.py \
+            --artifacts artifacts \
+            --output research/candidate-15-v13/results
+
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-v13-bot
+          git config user.email candidate-15-v13-bot@users.noreply.github.com
+          git add research/candidate-15-v13/results/aggregate.json \
+                  research/candidate-15-v13/results/DIAGNOSTIC.md
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15 v13: persist signed-effort evidence [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v13-signed-effort-aggregate-${{ github.run_id }}
+          path: research/candidate-15-v13/results
+          if-no-files-found: error
+          retention-days: 30
