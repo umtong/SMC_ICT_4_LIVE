@@ -4,60 +4,74 @@ import unittest
 
 from spot_perp_router import (
     ParticipationRoute,
-    classify_parent_participation,
-    perp_crowding_failure_confirmed,
-    spot_led_retest_confirmed,
+    classify_parent_exhaustion,
+    exhaustion_transition_confirmed,
 )
 
 
 class SpotPerpRouterTests(unittest.TestCase):
-    def test_spot_led_requires_spot_edge_acceptance_and_no_premium_widening(self):
-        decision = classify_parent_participation(
+    def test_parent_requires_cross_market_climax_at_external_liquidity(self):
+        decision = classify_parent_exhaustion(
             direction=1,
-            spot_accepted_edge=True,
-            perp_return_bps=8.0,
-            spot_return_bps=11.0,
-            perp_flow=0.25,
-            spot_flow=0.30,
-            basis_change_bps=-0.4,
+            perp_return_bps=48.0,
+            atr_bps=9.0,
+            perp_flow=0.44,
+            spot_return_bps=41.0,
+            spot_flow=0.35,
+            notional_burst=8.0,
+            efficiency=0.08,
+            perp_touched_external_edge=True,
+            spot_touched_external_edge=True,
+            min_return_bps=30.0,
+            min_displacement_atr=4.0,
+            min_perp_flow=0.30,
+            min_spot_flow=0.20,
+            min_notional_burst=5.0,
+            max_efficiency=0.15,
         )
-        self.assertIs(decision.route, ParticipationRoute.SPOT_LED_ACCEPTANCE)
+        self.assertIs(
+            decision.route,
+            ParticipationRoute.EXTERNAL_LIQUIDITY_EXHAUSTION,
+        )
 
-    def test_perp_led_requires_spot_nonconfirmation_and_premium_widening(self):
-        decision = classify_parent_participation(
+    def test_directionally_efficient_shock_is_not_assumed_to_reverse(self):
+        decision = classify_parent_exhaustion(
             direction=-1,
-            spot_accepted_edge=False,
-            perp_return_bps=-14.0,
-            spot_return_bps=-5.0,
-            perp_flow=-0.35,
-            spot_flow=-0.08,
-            basis_change_bps=-1.2,
+            perp_return_bps=-55.0,
+            atr_bps=10.0,
+            perp_flow=-0.51,
+            spot_return_bps=-47.0,
+            spot_flow=-0.39,
+            notional_burst=9.0,
+            efficiency=0.42,
+            perp_touched_external_edge=True,
+            spot_touched_external_edge=True,
+            min_return_bps=30.0,
+            min_displacement_atr=4.0,
+            min_perp_flow=0.30,
+            min_spot_flow=0.20,
+            min_notional_burst=5.0,
+            max_efficiency=0.15,
         )
-        self.assertIs(decision.route, ParticipationRoute.PERP_LED_CROWDING)
+        self.assertIs(decision.route, ParticipationRoute.UNRESOLVED)
 
-    def test_distinct_later_transition_predicates(self):
+    def test_transition_requires_later_structure_and_flow_reversal(self):
         self.assertTrue(
-            spot_led_retest_confirmed(
-                side=1,
-                boundary=100.0,
-                high=103.0,
-                low=100.05,
-                close=102.0,
-                atr=2.0,
-                touch_tolerance_atr=0.10,
-                spot_flow=0.2,
-                perp_flow=0.2,
-                basis_change_bps=-0.1,
+            exhaustion_transition_confirmed(
+                event_direction=1,
+                close=98.5,
+                prior_high=102.0,
+                prior_low=99.0,
+                perp_flow=-0.12,
             ),
         )
-        self.assertTrue(
-            perp_crowding_failure_confirmed(
+        self.assertFalse(
+            exhaustion_transition_confirmed(
                 event_direction=1,
-                boundary=100.0,
-                close=99.5,
-                spot_flow=-0.05,
-                perp_flow=-0.2,
-                basis_change_bps=-0.8,
+                close=98.5,
+                prior_high=102.0,
+                prior_low=99.0,
+                perp_flow=0.12,
             ),
         )
 
