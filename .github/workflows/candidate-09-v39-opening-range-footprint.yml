@@ -8,6 +8,7 @@ on:
       - research/candidate-09/v39_opening_range_footprint/strategy.py
       - research/candidate-09/v39_opening_range_footprint/run_experiment.py
       - research/candidate-09/v39_opening_range_footprint/test_contracts.py
+      - research/candidate-09/v39_opening_range_footprint/apply_minimal_data_contracts.py
   workflow_dispatch:
 
 permissions:
@@ -40,7 +41,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ env.CACHE }}
-          key: candidate-09-v39-opening-range-footprint-v1
+          key: candidate-09-v39-opening-range-footprint-v2
 
       - name: Materialize verified data, footprint state, and completed-auction objectives
         shell: bash
@@ -51,6 +52,7 @@ jobs:
           rm -rf "$ROOT/work" "$ROOT/evidence/latest"
           mkdir -p "$ROOT/work"
           git archive "$SOURCE_SHA" research/candidate-05 research/candidate-16 | tar -x -C "$ROOT/work"
+          python "$ROOT/apply_minimal_data_contracts.py" "$ROOT/work/research/candidate-16/candidate.py"
           mv "$ROOT/work/research/candidate-05/features.py" "$ROOT/work/research/candidate-05/features_base.py"
           mv "$ROOT/work/research/candidate-16/strategy.py" "$ROOT/work/research/candidate-16/strategy_v1.py"
           cp research/candidate-09/v33_footprint_acceptance/features.py "$ROOT/work/research/candidate-05/features.py"
@@ -60,6 +62,7 @@ jobs:
           cp "$ROOT/strategy.py" "$ROOT/work/research/candidate-16/strategy.py"
           test "$(git hash-object "$ROOT/work/research/candidate-05/features_base.py")" = "6c784148effb4e1632c83eb03071f0050579c179"
           test "$(git hash-object "$ROOT/work/research/candidate-16/strategy_v1.py")" = "3dddd221fbd1a7c3c518bb753c88dcffbbdac361"
+          grep -q V39_MINIMAL_OBSERVATION_CONTRACTS "$ROOT/work/research/candidate-16/candidate.py"
 
       - name: Verify environment and complete scenario contracts
         shell: bash
