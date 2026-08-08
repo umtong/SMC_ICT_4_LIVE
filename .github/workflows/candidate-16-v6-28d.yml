@@ -1,0 +1,196 @@
+name: candidate-16-v6-informed-continuation-28d
+
+on:
+  push:
+    branches: ["research/candidate-16-v6-informed-initiative-continuation"]
+    paths:
+      - "research/candidate-16/**"
+      - ".github/workflows/candidate-16-v6-28d.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v6-informed-continuation-28d
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  continuous-account:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v6-28d
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify frozen strategy and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-16
+          python -m unittest discover -s research/candidate-16/tests -p 'test_features_v4b.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_informed_initiative_router_v6.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v6_contract.py' -v
+
+      - name: Verify deterministic non-overlapping 28-day window
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          from hashlib import sha256
+
+          excluded = [
+              (date(2023, 6, 5), date(2023, 6, 11)),
+              (date(2023, 8, 21), date(2023, 8, 27)),
+              (date(2023, 11, 20), date(2023, 11, 26)),
+          ]
+          starts = []
+          cursor = date(2023, 5, 8)
+          while cursor <= date(2024, 3, 4):
+              end = cursor + timedelta(days=27)
+              if end <= date(2024, 3, 31):
+                  overlaps = any(not (end < left or cursor > right) for left, right in excluded)
+                  if not overlaps:
+                      starts.append(cursor)
+              cursor += timedelta(days=7)
+          seed = (
+              "candidate16-v6-informed-initiative-continuation|"
+              "1e99dc52b76d8d48cb263c6e899f62da091f2a8f|"
+              "continuous-28d-1"
+          )
+          digest = sha256(seed.encode()).hexdigest()
+          index = int(digest, 16) % len(starts)
+          if (
+              len(starts) != 32
+              or digest != "983cbb4ef275efb7632045d31477c9cbf75341d515fa92841e68a7fa8ef39b9d"
+              or index != 29
+              or starts[index].isoformat() != "2024-02-19"
+              or (starts[index] + timedelta(days=27)).isoformat() != "2024-03-17"
+          ):
+              raise SystemExit((len(starts), digest, index, starts[index]))
+          print({"eligible_windows": len(starts), "index": index, "start": str(starts[index])})
+          PY
+
+      - name: Run 28-day continuous account through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/candidate_v6.py stage \
+            --config research/candidate-16/config_v6.json \
+            --build-start 2024-02-16 \
+            --build-end 2024-03-17 \
+            --evaluation-start 2024-02-19 \
+            --evaluation-end 2024-03-17 \
+            --cache .cache/candidate-16-v6-28d \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Classify continuous-account result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          join = json.loads((root / "candidate16_v4b_l1_join.json").read_text())
+          integrity = (
+              float(join.get("l1_join_coverage", 0.0)) >= 0.95
+              and int(join.get("strategy_feature_ready_rows", 0)) > 0
+              and int(metrics.get("calendar_days", 0)) == 28
+              and int(metrics.get("liquidations", 0)) == 0
+              and int(diagnostics.get("order_rejections", 0)) == 0
+              and int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1
+              and int(diagnostics.get("max_open_positions_observed", 0)) <= 1
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          if not integrity:
+              classification = "INVALID_28D_CONTINUOUS_ACCOUNT"
+          elif metrics.get("gate_pass", False):
+              classification = "TARGET_GATE_PASSED; REQUIRE_NEXT_UNTOUCHED_CONFIRMATION_AND_NATIVE_FUNDING_AUDIT"
+          elif float(metrics.get("total_return", 0.0)) > 0.0:
+              classification = "POSITIVE_BUT_GATE_FAILED; RETAIN_LOGIC_AND_DIAGNOSE_OPPORTUNITY_DENSITY"
+          else:
+              classification = "VALID_28D_FAILURE; DO_NOT_CLAIM_TARGET"
+          decision = {
+              "schema": "candidate-16-v6-28d-v1",
+              "evaluation": ["2024-02-19", "2024-03-17"],
+              "continuous_account": True,
+              "integrity_pass": integrity,
+              "gate_pass": bool(metrics.get("gate_pass", False)),
+              "classification": classification,
+              "l1_join": join,
+              "metrics": metrics,
+              "state_funnel": {
+                  "cost_exceeding_observations": diagnostics.get("candidate16_v6_cost_exceeding_observations", 0),
+                  "informed_initiatives": diagnostics.get("candidate16_v6_informed_initiatives", 0),
+                  "pullbacks_armed": diagnostics.get("candidate16_v6_pullbacks_armed", 0),
+                  "continuations_confirmed": diagnostics.get("candidate16_v6_continuations_confirmed", 0),
+                  "invalidated": diagnostics.get("candidate16_v6_invalidated", 0),
+                  "expired": diagnostics.get("candidate16_v6_expired", 0),
+                  "no_natural_target": diagnostics.get("candidate16_v6_no_natural_target", 0),
+                  "fok_limit_entries": diagnostics.get("candidate16_v6_fok_limit_entries", 0),
+                  "entry_submissions": diagnostics.get("entry_submissions", 0),
+                  "order_rejections": diagnostics.get("order_rejections", 0),
+                  "protective_fail_closes": diagnostics.get("candidate16_v2_protective_stop_fail_closes", 0)
+              }
+          }
+          (root / "screen_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify continuous evidence and full-or-none entries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          python -m json.tool "$ROOT/screen_decision.json"
+          python -m json.tool "$ROOT/candidate16_v4b_l1_join.json"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path(os.environ["ROOT"])
+          equity = pd.read_csv(root / "equity.csv")
+          if equity.empty or not equity["ts_event"].is_monotonic_increasing:
+              raise SystemExit("invalid continuous equity")
+          orders = pd.read_csv(root / "orders.csv")
+          entries = orders[orders["tags"].astype(str).str.contains("CANDIDATE16_V6_INFORMED_FOK", na=False)]
+          if not entries.empty:
+              if not (entries["type"] == "LIMIT").all():
+                  raise SystemExit("non-LIMIT v6 entry")
+              if not (entries["time_in_force"] == "FOK").all():
+                  raise SystemExit("non-FOK v6 entry")
+              if not (entries["filled_qty"] == entries["quantity"]).all():
+                  raise SystemExit("partial v6 entry fill")
+          PY
+          for file in run.json data_manifest.json raw_evidence.json account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl candidate16_v6_contract.json candidate16_v4b_l1_join.json features.csv.gz; do
+            test -s "$ROOT/$file"
+          done
+          test -e "$ROOT/orders.csv"
+          test -e "$ROOT/positions.csv"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v6-28d-${{ github.sha }}
+          path: artifacts/candidate-16-v6-28d/**
+          if-no-files-found: warn
+          retention-days: 90
