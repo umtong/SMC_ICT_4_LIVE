@@ -1,0 +1,162 @@
+name: candidate-02-v157-candidate13-two-hour-r2
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths: ["research/candidate-02/v157_trigger_r2.json"]
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-02-v157-candidate13-two-hour-r2
+  cancel-in-progress: false
+
+env:
+  C13_SOURCE_COMMIT: f613cadff54c86eeb14bdb402aa17ce43474603b
+  C13_ROOT: /tmp/candidate13-v157-r2
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  exposed-development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Reuse pinned Candidate 13 execution and alpha stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          git fetch --no-tags origin research/candidate-13
+          git cat-file -e "$C13_SOURCE_COMMIT^{commit}"
+          rm -rf "$C13_ROOT"; mkdir -p "$C13_ROOT"
+          git archive "$C13_SOURCE_COMMIT" research/candidate-13 \
+            | tar -x -C "$C13_ROOT" --strip-components=2
+          python research/candidate-02/v157_materialize_candidate13_2h.py \
+            --root "$C13_ROOT" --source-commit "$C13_SOURCE_COMMIT"
+
+      - name: Verify single structural change and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$C13_ROOT:$GITHUB_WORKSPACE/src"
+          python -m py_compile \
+            research/candidate-02/v157_materialize_candidate13_2h.py \
+            "$C13_ROOT/logic.py" \
+            "$C13_ROOT/candidate13_runner.py" \
+            "$C13_ROOT/run_leadership_scdam.py" \
+            "$C13_ROOT/aggregate.py"
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          root = Path(os.environ['C13_ROOT'])
+          logic = (root / 'logic.py').read_text(encoding='utf-8')
+          assert logic.count('_two_hour_agg = _TimeAggregator(120)') == 1
+          assert logic.count('"COMPLETED_2H_AUCTION"') == 1
+          assert logic.count('"COMPLETED_4H_AUCTION"') == 1
+          protocol = json.loads((root / 'v157_protocol.json').read_text(encoding='utf-8'))
+          assert protocol['claim_eligible'] is False
+          assert protocol['aggregate_gate']['minimum_closed_trades'] == 10
+          assert protocol['aggregate_gate']['minimum_daily_geometric_growth'] == 0.01
+          assert protocol['aggregate_gate']['minimum_win_rate'] == 0.8
+          assert protocol['aggregate_gate']['risk_fraction'] == 0.03
+
+          # Candidate 13 contains one legacy regression which assigns the same
+          # literal scenario ID AMBIGUOUS to two instruments. The current project
+          # causal contract correctly requires globally unique scenario IDs.
+          # Exclude only the exact pinned legacy blob; any content drift fails.
+          stale = root / 'test_event_log_singleton.py'
+          expected = '4a441dc6708c495323dfd20339732602f860f666'
+          data = stale.read_bytes()
+          actual = hashlib.sha1(f'blob {len(data)}\0'.encode('ascii') + data).hexdigest()
+          assert actual == expected, (actual, expected)
+          stale.replace(root / 'legacy_candidate13_event_log_singleton.py')
+          print('V157 structural opportunity-expansion contract: OK')
+          print('excluded exact pinned Candidate-13 stale singleton regression')
+          PY
+          python -m unittest discover -s "$C13_ROOT" -p 'test_*.py' -v
+
+      - name: Run five exposed development weeks through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$C13_ROOT:$GITHUB_WORKSPACE/src"
+          target="research/candidate-02/results/v157_candidate13_two_hour_r2/$GITHUB_SHA"
+          rm -rf "$target"; mkdir -p "$target"
+          for week in W10 W11 W12 W13 W14; do
+            python "$C13_ROOT/candidate13_runner.py" "$week" "$target/$week" \
+              --protocol "$C13_ROOT/v157_protocol.json"
+          done
+          python "$C13_ROOT/aggregate.py" \
+            --results "$target" \
+            --protocol "$C13_ROOT/v157_protocol.json" \
+            --output "$target/decision.json"
+          cp "$C13_ROOT/v157_protocol.json" "$target/protocol.json"
+          cp "$C13_ROOT/v157_materialization.json" "$target/materialization.json"
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import shutil
+
+          target = Path('research/candidate-02/results/v157_candidate13_two_hour_r2') / os.environ['GITHUB_SHA']
+          decision = json.loads((target / 'decision.json').read_text(encoding='utf-8'))
+          decision.update({
+              'schema': 'candidate-02-v157-development-decision-v2',
+              'engine': 'NautilusTrader 1.230.0',
+              'custom_backtest_engine': False,
+              'risk_fraction': 0.03,
+              'global_pending_entry_plus_position_limit': 1,
+              'development_only': True,
+              'untouched_data_used': False,
+              'project_target_met': False,
+              'success_claim': False,
+              'implementation_fix': (
+                  'excluded only exact pinned legacy AMBIGUOUS scenario-ID unit test; '
+                  'alpha, periods, costs, risk and execution unchanged'
+              ),
+              'status': ('PROMOTE_TO_EXACT_SOURCE_PROSPECTIVE_FREEZE'
+                         if decision.get('gate_passed') else 'REJECT_OR_REDESIGN'),
+              'next_action': ('freeze exact materialized source and precommit new untouched weeks'
+                              if decision.get('gate_passed') else
+                              'reject two-hour pool expansion; preserve Candidate13 core only'),
+          })
+          (target / 'decision.json').write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          for week in ('W10','W11','W12','W13','W14'):
+              shutil.rmtree(target / week / 'data', ignore_errors=True)
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit compact development evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="research/candidate-02/results/v157_candidate13_two_hour_r2/$GITHUB_SHA"
+          git fetch origin research/candidate-02
+          if [[ "$(git rev-parse origin/research/candidate-02)" != "$GITHUB_SHA" ]]; then
+            echo "branch advanced; refusing to mix source and evidence"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$target"
+          git commit -m "research(candidate-02): record V157 two-hour-pool R2 evidence"
+          git push origin HEAD:research/candidate-02
