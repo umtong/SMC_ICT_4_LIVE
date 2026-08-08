@@ -1,0 +1,175 @@
+name: candidate-02-v143-route-attribution
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths: ["research/candidate-02/v143_trigger.json"]
+
+permissions: {contents: write, packages: read, actions: read}
+concurrency: {group: candidate-02-v143-route-attribution, cancel-in-progress: false}
+
+jobs:
+  v143-attribution:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", fetch-depth: 0}
+
+      - name: Verify engine and route-only ablation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v142_dual_auction_core.py \
+            research/candidate-02/v143_route_ablation_core.py \
+            research/candidate-02/v143_nt_backtest.py
+
+      - name: Download immutable week-one matrix and bars
+        uses: actions/download-artifact@v4
+        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v143-week1, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
+
+      - name: Download immutable week-two matrix
+        uses: actions/download-artifact@v4
+        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v143-week2, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
+
+      - name: Download locked week-two bars
+        uses: actions/download-artifact@v4
+        with: {name: candidate-02-v53-nt-second-week-3c73273b563ee221a0e0b9f4ec3c87077c645edd, path: inputs/v143-week2-source, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31065619489"}
+
+      - name: Materialize fixed inputs and route modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf inputs/v143-week2/.cache
+          mkdir -p inputs/v143-week2/.cache/candidate-02/v143-week2/binance_1m
+          find inputs/v143-week2-source -path '*/binance_1m/*.zip' -type f \
+            -exec cp '{}' inputs/v143-week2/.cache/candidate-02/v143-week2/binance_1m/ \;
+          test "$(find inputs/v143-week2/.cache/candidate-02/v143-week2/binance_1m -name '*.zip' | wc -l)" -eq 10
+          mkdir -p /tmp/v143-config
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          modes=('DUAL','ROTATION_ONLY','CONTINUATION_ONLY')
+          for week in ('week1','week2'):
+              base=json.loads(Path(f'research/candidate-02/v107_{week}_config.json').read_text())
+              for mode in modes:
+                  obj=json.loads(json.dumps(base))
+                  scenario=obj['scenario']
+                  scenario.update({
+                      'volatility_quantile':0.55,
+                      'target_extension':0.0,
+                      'minimum_cost_after_rr':0.65,
+                      'maximum_cost_after_rr':4.0,
+                      'maximum_holding_minutes':60,
+                      'decision_window_minutes':15,
+                      'activation_delay_minutes':1,
+                      'resolution_stop_buffer_atr':0.15,
+                      'continuation_extension':1.0,
+                      'route_mode':mode,
+                  })
+                  tag=mode.lower()
+                  obj['candidate']=f'candidate-02-v143-{tag}'
+                  Path(f'/tmp/v143-config/{week}-{tag}.json').write_text(
+                      json.dumps(obj,indent=2,sort_keys=True)+'\n'
+                  )
+          PY
+
+      - name: Run six NautilusTrader route screens
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in dual rotation_only continuation_only; do
+            for week in week1 week2; do
+              out="artifacts/candidate-02-v143/${mode}/${week}"
+              mkdir -p "$out"
+              set +e
+              python research/candidate-02/v143_nt_backtest.py \
+                --config "/tmp/v143-config/${week}-${mode}.json" \
+                --input-root "inputs/v143-${week}" \
+                --output "$out" \
+                | tee "artifacts-v143-${mode}-${week}.log"
+              status=${PIPESTATUS[0]}
+              set -e
+              echo "$status" > "$out/validation_exit_code.txt"
+              if [[ "$status" != 0 && "$status" != 2 ]]; then exit "$status"; fi
+            done
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          modes=('dual','rotation_only','continuation_only')
+          out={
+              'candidate':'candidate-02-v143-route-attribution',
+              'engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+              'risk_fraction':0.03,
+              'fixed_continuation_extension':1.0,
+              'single_variable':'allowed route after causal competition resolution',
+              'variants':{},
+          }
+          for mode in modes:
+              out['variants'][mode]={
+                  week:json.loads(Path(
+                      f'artifacts/candidate-02-v143/{mode}/{week}/metrics.json'
+                  ).read_text())
+                  for week in ('week1','week2')
+              }
+          passes={mode:all(m['target_met'] for m in weeks.values()) for mode,weeks in out['variants'].items()}
+          out['variant_both_week_pass']=passes
+          passing=[mode for mode,value in passes.items() if value]
+          out['selected_route']=passing[0] if len(passing)==1 else ('dual' if passes['dual'] else None)
+          out['status']='STRUCTURAL_ROUTE_IDENTIFIED' if passing else 'ROUTE_FAMILY_REJECT'
+          Path('artifacts-v143-route-decision.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({
+              'status':out['status'],
+              'selected_route':out['selected_route'],
+              'passes':passes,
+              'metrics':{
+                  mode:{week:{key:metric.get(key) for key in (
+                      'trades','trades_per_day','win_rate','profit_factor_after_cost',
+                      'geometric_daily_growth_after_cost','maximum_mark_to_market_drawdown','target_met')}
+                        for week,metric in weeks.items()}
+                  for mode,weeks in out['variants'].items()
+              },
+          },indent=2,sort_keys=True))
+          PY
+
+      - name: Commit compact attribution evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf compact-v143
+          mkdir compact-v143
+          cp -f artifacts-v143-*.json compact-v143/ 2>/dev/null || true
+          cp -f artifacts-v143-*.log compact-v143/ 2>/dev/null || true
+          cp -a artifacts/candidate-02-v143 compact-v143/ 2>/dev/null || true
+          git fetch origin research/candidate-02
+          if test "$(git rev-parse origin/research/candidate-02)" = "$GITHUB_SHA" \
+             && test -f artifacts-v143-route-decision.json; then
+            destination="research/candidate-02/results/v143_route/$GITHUB_SHA"
+            rm -rf "$destination"
+            mkdir -p "$destination"
+            cp -a compact-v143/. "$destination/"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$destination"
+            git commit -m "research(candidate-02): record v143 route evidence"
+            git push origin HEAD:research/candidate-02
+          fi
+
+      - name: Upload attribution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: "candidate-02-v143-route-${{ github.sha }}", path: compact-v143, if-no-files-found: warn, retention-days: 30, compression-level: 9}
