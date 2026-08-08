@@ -35,6 +35,45 @@ class InternalDealingRangeFailedAuctionEngine(
         self._v50_internal_high_cursor = len(self.internal_highs)
         self._v50_internal_low_cursor = len(self.internal_lows)
 
+    def _event(
+        self,
+        scenario_id: str,
+        event_type: str,
+        event_time_ns: int,
+        observed_time_ns: int,
+        previous_state: str,
+        next_state: str,
+        reason_code: str,
+        reference_price: float | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Give each unresolved both-side sweep its own evidence identity.
+
+        The frozen detector emits the literal scenario id ``AMBIGUOUS`` for
+        every unresolvable both-side bar.  That is harmless to alpha, but a
+        strict event ledger interprets successive unrelated episodes as one
+        broken state chain.  Re-identification changes no detector, market
+        state, order, price, cost or risk decision.
+        """
+
+        if scenario_id == "AMBIGUOUS":
+            scenario_id = (
+                f"{self.instrument_id}-AMBIGUOUS-"
+                f"{int(event_time_ns)}-{int(observed_time_ns)}-"
+                f"{len(self.events)}"
+            )
+        super()._event(
+            scenario_id,
+            event_type,
+            event_time_ns,
+            observed_time_ns,
+            previous_state,
+            next_state,
+            reason_code,
+            reference_price,
+            details,
+        )
+
     def _confirm_internal_pivots(self, observed_ts_ns: int) -> None:
         super()._confirm_internal_pivots(observed_ts_ns)
         if not internal_dealing_range_enabled():
