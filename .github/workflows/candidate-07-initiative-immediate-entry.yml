@@ -1,0 +1,184 @@
+name: candidate-07-initiative-immediate-entry
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/strategy_immediate_causal_entry.py"
+      - "research/candidate-07/backtest_initiative_auction_immediate.py"
+      - "research/candidate-07/candidate_initiative_auction_immediate.py"
+      - "research/candidate-07/staged_initiative_auction_immediate.py"
+      - "research/candidate-07/tests/test_immediate_causal_entry.py"
+      - ".github/workflows/candidate-07-initiative-immediate-entry.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify foundation and immediate-entry contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-immediate-pyc \
+            python -m compileall -q research/candidate-07
+          python -m unittest \
+            research/candidate-07/tests/test_immediate_causal_entry.py \
+            research/candidate-07/tests/test_initiative_auction.py -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+
+      - name: Reproduce delayed-entry control
+        run: >-
+          python research/candidate-07/staged_initiative_auction.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --output artifacts/candidate-07-initiative-entry/delayed
+          --data-root .research-data/candidate-07
+          --max-weeks 3
+
+      - name: Run immediate-entry candidate and gated long evaluation
+        run: >-
+          python research/candidate-07/staged_initiative_auction_immediate.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --output artifacts/candidate-07-initiative-entry/immediate
+          --data-root .research-data/candidate-07
+          --max-weeks 3
+          --run-long
+
+      - name: Audit causal fill ordering and compare stages
+        if: always()
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("artifacts/candidate-07-initiative-entry")
+          output = {
+              "source_commit": "${{ github.sha }}",
+              "candidate": "candidate-07-initiative-immediate-entry",
+              "control": "identical signals/state/geometry with inherited one-minute submission delay",
+              "variant": "submit the same plan at the end of its completed observation callback",
+              "stages": {},
+              "causal_fill_ordering": {},
+          }
+          for stage in ("week-1", "week-2", "week-3", "long-evaluation"):
+              stage_record = {}
+              for variant in ("delayed", "immediate"):
+                  folder = root / variant / stage
+                  metrics_path = folder / "metrics.json"
+                  if not metrics_path.exists():
+                      stage_record[variant] = {"present": False}
+                      continue
+                  metrics = json.loads(metrics_path.read_text())
+                  stage_record[variant] = {
+                      "present": True,
+                      "trades": metrics["trades"],
+                      "wins": metrics["wins"],
+                      "losses": metrics["losses"],
+                      "win_rate": metrics["win_rate"],
+                      "net_return": metrics["net_return"],
+                      "daily_geometric_growth": metrics["daily_geometric_growth"],
+                      "profit_factor": metrics["profit_factor"],
+                      "max_drawdown": metrics["max_drawdown"],
+                      "active_days": metrics["active_days"],
+                      "single_winner_share": metrics["single_winner_share"],
+                      "gate_passed": metrics["weekly_gate"]["passed"],
+                  }
+                  if variant != "immediate":
+                      continue
+                  events_path = folder / "events.jsonl"
+                  trades_path = folder / "trades.csv"
+                  events = [
+                      json.loads(line)
+                      for line in events_path.read_text().splitlines()
+                      if line.strip()
+                  ]
+                  submitted = {
+                      event["scenario_id"]: int(event["event_time_ns"])
+                      for event in events
+                      if event.get("reason_code") == "IMMEDIATE_POST_OBSERVATION_SUBMISSION"
+                  }
+                  trades = pd.read_csv(trades_path)
+                  rows = []
+                  for trade in trades.itertuples(index=False):
+                      scenario_id = str(trade.scenario_id)
+                      if scenario_id not in submitted:
+                          raise RuntimeError(
+                              f"trade lacks immediate-submission event: {scenario_id}"
+                          )
+                      observed_ns = submitted[scenario_id]
+                      opened_ns = int(trade.opened_ns)
+                      closed_ns = int(trade.closed_ns)
+                      if opened_ns <= observed_ns:
+                          raise RuntimeError(
+                              "Nautilus filled the market parent on already-observed "
+                              f"bar data: {scenario_id}, observed={observed_ns}, opened={opened_ns}"
+                          )
+                      if closed_ns <= opened_ns:
+                          raise RuntimeError(
+                              f"noncausal close ordering: {scenario_id}"
+                          )
+                      rows.append({
+                          "scenario_id": scenario_id,
+                          "observed_ns": observed_ns,
+                          "opened_ns": opened_ns,
+                          "entry_latency_seconds": (opened_ns - observed_ns) / 1e9,
+                      })
+                  output["causal_fill_ordering"][stage] = {
+                      "trades_audited": len(rows),
+                      "strictly_after_observation": True,
+                      "minimum_entry_latency_seconds": min(
+                          (row["entry_latency_seconds"] for row in rows),
+                          default=None,
+                      ),
+                      "maximum_entry_latency_seconds": max(
+                          (row["entry_latency_seconds"] for row in rows),
+                          default=None,
+                      ),
+                  }
+              output["stages"][stage] = stage_record
+          destination = root / "immediate_entry_comparison.json"
+          destination.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n")
+          print(destination.read_text())
+          PY
+
+      - name: Print immutable result
+        if: always()
+        run: |
+          find artifacts/candidate-07-initiative-entry \
+            -name metrics.json -print -exec cat {} \;
+          test -f artifacts/candidate-07-initiative-entry/immediate_entry_comparison.json
+          cat artifacts/candidate-07-initiative-entry/immediate_entry_comparison.json
+
+      - name: Preserve complete execution-control evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-initiative-immediate-entry-${{ github.sha }}
+          path: artifacts/candidate-07-initiative-entry
+          retention-days: 14
+          if-no-files-found: error
