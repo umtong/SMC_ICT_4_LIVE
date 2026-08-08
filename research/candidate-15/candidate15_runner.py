@@ -13,9 +13,14 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 CANDIDATE14 = ROOT.parent / "candidate-14"
 PROJECT_ROOT = ROOT.parents[1]
-for path in (ROOT, CANDIDATE14, PROJECT_ROOT / "src"):
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
+# Deterministic import order is part of the candidate identity.  Candidate 15's
+# wrapper must win over Candidate 14's same-named runner, while inherited modules
+# remain available immediately after it.
+for path in (PROJECT_ROOT / "src", CANDIDATE14, ROOT):
+    text = str(path)
+    while text in sys.path:
+        sys.path.remove(text)
+    sys.path.insert(0, text)
 
 from run_leadership_scdam import run  # noqa: E402
 
