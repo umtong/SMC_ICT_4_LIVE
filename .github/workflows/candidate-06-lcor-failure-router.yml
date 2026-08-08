@@ -1,0 +1,175 @@
+name: Candidate 06 LCOR Failed-Ownership Router
+
+on:
+  push:
+    branches:
+      - research/candidate-06
+    paths:
+      - ".github/workflows/candidate-06-lcor-failure-router.yml"
+      - "research/candidate-06/liquidation_cash_ownership_failure_router_engine.py"
+      - "research/candidate-06/test_liquidation_cash_ownership_failure_router_engine.py"
+      - "research/candidate-06/liquidation_cash_ownership_nautilus_runner.py"
+      - "research/candidate-06/run_liquidation_cash_failure_router_matrix.py"
+      - "research/candidate-06/run_liquidation_cash_ownership_validation.py"
+      - "research/candidate-06/run_liquidation_cash_ownership_matrix.py"
+      - "research/candidate-06/liquidation_cash_ownership_relay_engine.py"
+      - "research/candidate-06/causal_inventory_ownership_transfer_engine.py"
+      - "research/candidate-06/cross_venue_data.py"
+      - "research/candidate-06/futures_metrics_data.py"
+      - "research/candidate-06/nautilus_strategy.py"
+      - "research/candidate-06/nautilus_execution.py"
+      - "research/candidate-06/nautilus_lifecycle.py"
+      - "research/candidate-06/config.json"
+      - "src/smc_ict_4/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-lcor-failed-ownership-router
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  failure-router-campaign:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed NautilusTrader environment
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(f"NAUTILUS_VERSION={actual}")
+          PY
+
+      - name: Restore public research data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-06
+          key: candidate-06-lcor-public-data-v1
+          restore-keys: |
+            candidate-06-lcor-public-data-
+            candidate-06-public-data-
+
+      - name: Verify failure-router causality and shared contracts
+        run: |
+          set -euo pipefail
+          for path in \
+            research/candidate-06/liquidation_cash_ownership_failure_router_engine.py \
+            research/candidate-06/test_liquidation_cash_ownership_failure_router_engine.py \
+            research/candidate-06/liquidation_cash_ownership_nautilus_runner.py \
+            research/candidate-06/run_liquidation_cash_failure_router_matrix.py; do
+            test -s "$path"
+          done
+          python -m py_compile \
+            research/candidate-06/liquidation_cash_ownership_failure_router_engine.py \
+            research/candidate-06/test_liquidation_cash_ownership_failure_router_engine.py \
+            research/candidate-06/liquidation_cash_ownership_nautilus_runner.py \
+            research/candidate-06/run_liquidation_cash_failure_router_matrix.py
+          python research/candidate-06/test_liquidation_cash_ownership_failure_router_engine.py
+          python research/candidate-06/test_liquidation_cash_ownership_relay_engine.py
+          python research/candidate-06/test_futures_metrics_data.py
+          python research/candidate-06/test_futures_metrics_timestamp_contract.py
+          python research/candidate-06/test_cross_venue_data_contract.py
+          python research/candidate-06/test_signal_submission_timing_contract.py
+
+      - name: Run W2-first failure-router matrix through NautilusTrader
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/lcor-failure-router-w2-first
+          rm -f artifacts/candidate-06-lcor-failure-router.stdout artifacts/candidate-06-lcor-failure-router.stderr
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts
+          python research/candidate-06/run_liquidation_cash_failure_router_matrix.py \
+            --output artifacts/candidate-06/lcor-failure-router-w2-first \
+            > artifacts/candidate-06-lcor-failure-router.stdout \
+            2> artifacts/candidate-06-lcor-failure-router.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Guarantee terminal failure-router evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-06/lcor-failure-router-w2-first
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > artifacts/candidate-06/lcor-failure-router-w2-first/workflow_exit_code.txt
+          if [ ! -f artifacts/candidate-06/lcor-failure-router-w2-first/summary.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-06/lcor-failure-router-w2-first")
+          payload = {
+              "candidate": "candidate-06-lcor-failure-router-v8.1",
+              "long_evaluation_authorized": False,
+              "selected": None,
+              "terminal_status": "IMPLEMENTATION_OR_RUNTIME_FAILURE_BEFORE_SUMMARY",
+          }
+          (root / "summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+          cp artifacts/candidate-06-lcor-failure-router.stdout artifacts/candidate-06/lcor-failure-router-w2-first/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-06-lcor-failure-router.stderr artifacts/candidate-06/lcor-failure-router-w2-first/workflow_stderr.txt 2>/dev/null || true
+
+      - name: Commit reproducible failure-router evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add -f artifacts/candidate-06/lcor-failure-router-w2-first
+          if [ -f research/candidate-06/config.lcor_failure_router.locked.json ]; then
+            git add -f research/candidate-06/config.lcor_failure_router.locked.json
+          fi
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record candidate-06 LCOR failure-router evidence [candidate-06 evidence]"
+          git push origin HEAD:research/candidate-06
+
+      - name: Upload complete failure-router evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-lcor-failure-router-${{ github.sha }}
+          path: artifacts/candidate-06/lcor-failure-router-w2-first
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce failure-router staged decision
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          exit "$code"
