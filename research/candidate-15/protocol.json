@@ -1,6 +1,6 @@
 {
-  "schema": "candidate-15-beta-coherent-diffusion-lag-v9",
-  "candidate": "candidate-15-v9-beta-coherent-diffusion-lag",
+  "schema": "candidate-15-beta-coherent-diffusion-lag-v10",
+  "candidate": "candidate-15-v10-execution-valid-beta-coherent-diffusion-lag",
   "created_utc": "2026-08-08",
   "validation_mode": "exposed_mechanism_development_only",
   "base_candidate": {
@@ -9,16 +9,16 @@
     "role": "frozen Nautilus execution, costs, account, external pools and current-NAV risk path"
   },
   "prior_failure": {
-    "protocol": "candidate-15-managed-residual-information-transfer-v8",
-    "classification": "CANDIDATE15_V8_INSUFFICIENT_ACTIVITY",
-    "submitted_plans": 22,
-    "closed_trades": 11,
+    "protocol": "candidate-15-beta-coherent-diffusion-lag-v9",
+    "classification": "CANDIDATE15_V9_INSUFFICIENT_ACTIVITY",
+    "submitted_plans": 4,
+    "closed_trades": 2,
     "wins": 1,
-    "losses": 10,
-    "daily_geometric_growth": -0.000174361,
-    "diagnosis": "Equal-weight sender parity confused ordinary cross-asset beta, independent receiver rotation and genuine delayed delivery. Corrected first-event-prior beta diagnostics showed that the only large winner and one unfilled plan alone combined all-horizon under-delivery at confirmation, all-horizon under-delivery at the exact completed receiver MSS clock, and a receiver body between one-half and one weakest-sender body."
+    "losses": 1,
+    "daily_geometric_growth": 0.00434152617714334,
+    "diagnosis": "V9 removed the V8 latent-state false positives but remained sparse. Its E01 short moved favorably and exited at the transfer-completion protection, yet realized a small net loss because the protection used planned entry and only one extra tick, omitting the frozen two-tick adverse STOP_MARKET fill budget. V10 is an execution-validity correction, not an alpha selection change."
   },
-  "research_question": "Does a receiver leg retain positive after-cost alpha when delivery is measured against fixed prior-only cross-asset beta rather than one-for-one sender parity, while sender aggressor flow and receiver MSS flow conversion remain independent causal evidence?",
+  "research_question": "Does the beta-coherent transfer family preserve its observed alpha when transfer-completion protection is calculated from the actual Nautilus position average fill and remains positive after both fees plus the frozen two-tick adverse STOP_MARKET slippage?",
   "hypothesis": {
     "sender_state": "Two distinct completed five-minute common-flow events share exactly three sender markets, positive median signed price progress, majority first-origin hold and same-direction aggressor flow.",
     "beta_estimation": "For each possible receiver, zero-intercept beta to the median five-minute return of the other three markets is fitted at 24, 48, 96 and 192 bars. Every regression ends strictly before the first evidence event; current-event and future returns are excluded.",
@@ -27,9 +27,9 @@
     "geometry_under_delivery": "At the exact completed MSS bar end, not the following one-minute emission clock, all four fixed betas must still imply more receiver progress than observed.",
     "bounded_displacement": "Receiver MSS body must be at least one-half and strictly less than the weakest second-event sender standardized body, distinguishing emerging transfer from noise and independent price discovery.",
     "entry_invalidation_target": "Entry, protected swing/opposing-bar stop and next causally live completed-4H or previous-day liquidity target all belong to the new receiver auction leg.",
-    "management": "After entry, a synchronized completed close reaches the fixed beta-adjusted delivery price or fee-cover activation, then the existing STOP_MARKET is modified to the smallest one-tick-positive cost-cover price without shortening the external target.",
+    "management": "After entry, a synchronized completed close reaches the fixed beta-adjusted delivery price or fee-cover activation. The existing STOP_MARKET is then modified from the actual open-position average fill to a trigger that budgets entry maker fee, exit taker fee, two adverse stop-fill ticks and at least one full net tick; the external target is unchanged.",
     "family_isolation": "V1-V8 failed families, accepted sender markets, nonpositive/incomplete beta, stale clocks and already consumed completion geometry remain no-trade.",
-    "execution_safety": "NautilusTrader exclusively owns orders, fills, fees, positions and NAV; the four instruments share one global pending-entry-or-position slot and current-NAV planned loss remains 3%."
+    "execution_safety": "NautilusTrader exclusively owns orders, fills, fees, positions and NAV. Cost-cover uses the unique open Position.avg_px_open; a missing/non-unique position or live parent-entry remainder fails closed. The four instruments share one global pending-entry-or-position slot and current-NAV planned loss remains 3%."
   },
   "router": {
     "module": "BETA_COHERENT_DIFFUSION_LAG_MSS_FVG",
@@ -62,16 +62,19 @@
     ],
     "prior_completion_consumption": "NO_TRADE",
     "management_observation": "SYNCHRONIZED_COMPLETED_ONE_MINUTE_CLOSE",
-    "management_action": "MODIFY_EXISTING_STOP_MARKET_TO_POSITIVE_COST_COVER",
+    "management_action": "MODIFY_EXISTING_STOP_MARKET_TO_ACTUAL_FILL_POSITIVE_COST_COVER",
     "management_preserves_external_target": true,
     "entry_timeframe_minutes": 5,
     "entry_order": "POST_ONLY_LIMIT_GTD",
     "take_profit_order": "POST_ONLY_LIMIT_GTC",
-    "stop_order": "STOP_MARKET_GTC"
+    "stop_order": "STOP_MARKET_GTC",
+    "management_entry_reference": "NAUTILUS_UNIQUE_OPEN_POSITION_AVG_PX_OPEN",
+    "management_adverse_stop_slippage_ticks": 2,
+    "management_minimum_net_gain_ticks": 1
   },
   "selection": {
     "seed": 202608081508,
-    "method": "E01-E06 are the fully exposed V4-V8 mechanism-development intervals. Reuse verifies that online V9 reproduces the corrected diagnostic state without creating success evidence.",
+    "method": "E01-E06 are the fully exposed V4-V9 mechanism-development intervals. V10 reuses them solely to verify an execution-validity correction against the observed E01 protection defect; no success claim is permitted.",
     "warmup_days": 3,
     "evaluation_days": 7,
     "intervals": {
@@ -131,12 +134,15 @@
     "effective_maker_rate": "0.0004",
     "effective_taker_rate": "0.0008",
     "margin_init": "0.05",
-    "margin_maint": "0.025"
+    "margin_maint": "0.025",
+    "cost_cover_entry_reference": "NAUTILUS_POSITION_AVG_PX_OPEN",
+    "stop_market_adverse_slippage_ticks": 2,
+    "minimum_cost_cover_net_ticks": 1
   },
   "claim_rules": [
-    "E01-E06 are exposed development periods and can only reject or verify the V9 mechanism.",
-    "The corrected V8 beta diagnostic motivated V9 and is development evidence, not success evidence.",
-    "V9 changes latent-state measurement and management completion reference, not costs, risk sizing, global slot, invalidation or external target.",
+    "E01-E06 are exposed development periods and can only reject or verify the V10 mechanism and execution correction.",
+    "V10 changes only transfer-completion protection accounting; beta state selection, entries, invalidation, target, risk and global slot remain frozen from V9.",
+    "Every protection trigger must be derived from the unique actual open-position average fill and remain at least one tick profitable after both fees and two adverse STOP_MARKET ticks.",
     "Passing development permits source freeze and newly predeclared untouched confirmation only.",
     "Success requires a frozen continuous Nautilus account with realistic costs, sufficient independent opportunities, no liquidation or unrecoverable damage, and project-level daily geometric growth of at least 1%."
   ]

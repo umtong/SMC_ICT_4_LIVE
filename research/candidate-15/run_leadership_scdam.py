@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Candidate 15 V9 beta-coherent diffusion-lag Nautilus portfolio runner."""
+"""Candidate 15 V10 execution-valid beta-coherent diffusion-lag runner."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -51,6 +51,10 @@ from candidate15_v8_managed_transfer_materializer import (  # noqa: E402,F401
 from candidate15_v9_beta_transfer_materializer import (  # noqa: E402,F401
     materialize_beta_coherent_transfer_source,
 )
+from candidate15_v10_cost_cover_materializer import (  # noqa: E402,F401
+    materialize_execution_valid_cost_cover_source,
+)
+from positive_cost_cover import positive_cost_cover_trigger  # noqa: E402,F401
 from portfolio_materializer import materialize_combined_portfolio_source  # noqa: E402
 from quarter_hour_persistent_initiative import (  # noqa: E402,F401
     QHI_ROUTER_KEY,
@@ -78,4 +82,5 @@ _SOURCE = materialize_residual_laggard_source(_SOURCE)
 _SOURCE = materialize_bounded_transfer_source(_SOURCE)
 _SOURCE = materialize_managed_transfer_source(_SOURCE)
 _SOURCE = materialize_beta_coherent_transfer_source(_SOURCE)
+_SOURCE = materialize_execution_valid_cost_cover_source(_SOURCE)
 exec(compile(_SOURCE, str(_BASE), "exec"), globals(), globals())
