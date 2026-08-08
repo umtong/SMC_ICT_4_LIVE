@@ -2,12 +2,12 @@
 
 A follower sell-side reacceleration is late delivery when BTC, the benchmark
 price-discovery market, has already completed a full source-range downside
-projection.  The same completed-auction unit already governs local maturity in
+projection. The same completed-auction unit already governs local maturity in
 I30; I31 applies it to broad-market state ownership.
 
 No fitted numeric threshold is introduced: one completed source range is the
-pre-existing structural objective.  All benchmark bars are complete before the
-candidate observation.  This module creates no orders, prices, stops, targets,
+pre-existing structural objective. All benchmark bars are complete before the
+candidate observation. This module creates no orders, prices, stops, targets,
 quantities, fills, or PnL.
 """
 from __future__ import annotations
@@ -42,8 +42,13 @@ class BenchmarkMaturityAuctionRouter(MarketRoleAuctionRouter):
                 source,
             )
             benchmark_frame = self.frames[self.benchmark_symbol].loc[:observed]
+            if benchmark_frame.empty:
+                raise ValueError("benchmark frame is empty at candidate observation")
             benchmark_close = float(benchmark_frame.iloc[-1].close)
-            full_range_floor = benchmark_profile.low - benchmark_profile.width
+            source_width = benchmark_profile.high - benchmark_profile.low
+            if source_width <= 0:
+                raise ValueError("benchmark completed source range is non-positive")
+            full_range_floor = benchmark_profile.low - source_width
         except Exception as exc:
             context["benchmark_maturity_error"] = {
                 "exception": type(exc).__name__,
@@ -60,7 +65,7 @@ class BenchmarkMaturityAuctionRouter(MarketRoleAuctionRouter):
             "benchmark": self.benchmark_symbol,
             "source": source,
             "source_low": benchmark_profile.low,
-            "source_width": benchmark_profile.width,
+            "source_width": source_width,
             "full_range_floor": full_range_floor,
             "completed_close": benchmark_close,
             "full_range_projection_consumed": consumed,
