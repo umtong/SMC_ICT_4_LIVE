@@ -1,0 +1,88 @@
+name: candidate-14-v6-global-initiative
+
+on:
+  push:
+    branches: ["research/candidate-14"]
+    paths:
+      - "research/candidate-14/global_initiative_continuation.py"
+      - "research/candidate-14/v6_market_leadership.py"
+      - "research/candidate-14/v6_portfolio_materializer.py"
+      - "research/candidate-14/run_v6_global_initiative.py"
+      - "research/candidate-14/candidate14_v6_runner.py"
+      - "research/candidate-14/v6_development_protocol.json"
+      - "research/candidate-14/tests/test_v6_global_initiative.py"
+      - ".github/workflows/candidate-14-v6.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify prebuilt environment and V6 contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-14"
+          smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate14-v6-pyc \
+            python -m compileall -q research/candidate-14
+          python -m unittest \
+            research/candidate-14/tests/test_v6_global_initiative.py -v
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+          root = Path("research/candidate-14").resolve()
+          sys.path.insert(0, str(root))
+          from runner_materializer import materialize_runner_source
+          from v6_portfolio_materializer import materialize_v6_portfolio_source
+          source = (root / "run_leadership_scdam_base.py").read_text(encoding="utf-8")
+          materialized = materialize_v6_portfolio_source(materialize_runner_source(source))
+          compile(materialized, str(root / "run_leadership_scdam_base.py"), "exec")
+          assert materialized.count("observe_owned_plan") == 1
+          assert "InitiativeContinuationEngine" in materialized
+          print("V6 materialized portfolio contract: OK")
+          PY
+
+  evaluate:
+    needs: contract
+    strategy:
+      fail-fast: false
+      matrix:
+        week: [D1, D2, D3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm Nautilus foundation
+        run: smc4 doctor
+      - name: Run V6 mechanism screen in NautilusTrader
+        run: >-
+          python research/candidate-14/candidate14_v6_runner.py
+          ${{ matrix.week }}
+          artifacts/candidate-14-v6/${{ matrix.week }}
+      - name: Print immutable V6 result
+        if: always()
+        run: |
+          test -f artifacts/candidate-14-v6/${{ matrix.week }}/summary.json
+          cat artifacts/candidate-14-v6/${{ matrix.week }}/summary.json
+          cat artifacts/candidate-14-v6/${{ matrix.week }}/metrics.json
+          cat artifacts/candidate-14-v6/${{ matrix.week }}/audit.json
+      - name: Preserve complete V6 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-14-v6-${{ matrix.week }}-${{ github.sha }}
+          path: artifacts/candidate-14-v6/${{ matrix.week }}
+          retention-days: 14
+          if-no-files-found: error
