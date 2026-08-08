@@ -1,0 +1,165 @@
+name: candidate-16-v2-displayed-liquidity-screen
+
+on:
+  push:
+    branches: ["research/candidate-16-v2-displayed-liquidity"]
+    paths:
+      - "research/candidate-16/**"
+      - ".github/workflows/candidate-16-v2-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v2-displayed-liquidity-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  causal-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v2-screen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-16
+          python -m unittest discover -s research/candidate-16/tests -p 'test_displayed_liquidity_router_v2.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v2_contract.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_effort_result_router.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Verify deterministic pre-registration date
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          from hashlib import sha256
+
+          seed = (
+              "candidate16-v2-displayed-liquidity|"
+              "91317f522546afd837e330a2bde0f9c05e81b068|independent-week"
+          )
+          mondays = []
+          cursor = date(2022, 1, 3)
+          while cursor <= date(2025, 12, 29):
+              mondays.append(cursor)
+              cursor += timedelta(days=7)
+          index = int(sha256(seed.encode("utf-8")).hexdigest(), 16) % len(mondays)
+          if index != 141 or mondays[index].isoformat() != "2024-09-16":
+              raise SystemExit((index, mondays[index]))
+          print({"candidate_weeks": len(mondays), "index": index, "start": str(mondays[index])})
+          PY
+
+      - name: Run pre-registered untouched BTC week through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/candidate_v2.py stage \
+            --config research/candidate-16/config_v2.json \
+            --build-start 2024-09-13 \
+            --build-end 2024-09-22 \
+            --evaluation-start 2024-09-16 \
+            --evaluation-end 2024-09-22 \
+            --cache .cache/candidate-16-v2 \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Classify screen without changing the gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          integrity = (
+              int(metrics.get("liquidations", 0)) == 0
+              and int(diagnostics.get("order_rejections", 0)) == 0
+              and int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1
+              and int(diagnostics.get("max_open_positions_observed", 0)) <= 1
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          result = {
+              "schema": "candidate-16-v2-screen-v1",
+              "pre_registered_evaluation": ["2024-09-16", "2024-09-22"],
+              "integrity_pass": integrity,
+              "gate_pass": bool(metrics.get("gate_pass", False)),
+              "classification": (
+                  "ADVANCE_UNCHANGED_TO_NEXT_UNTOUCHED_PERIOD"
+                  if integrity and metrics.get("gate_pass", False)
+                  else "DO_NOT_CLAIM_TARGET; ATTRIBUTE_FAILURE_BEFORE_ANY_CHANGE"
+              ),
+              "metrics": metrics,
+              "router_counts": {
+                  "parents": diagnostics.get("candidate16_parent_auctions", 0),
+                  "effort_result_failed": diagnostics.get("candidate16_failed_auctions", 0),
+                  "failure_liquidity_rejected": diagnostics.get(
+                      "candidate16_v2_failure_liquidity_rejected", 0
+                  ),
+                  "failure_frozen": diagnostics.get("candidate16_v2_failure_frozen", 0),
+                  "later_initiatives": diagnostics.get(
+                      "candidate16_v2_failure_initiatives", 0
+                  ),
+                  "initiative_invalidated": diagnostics.get(
+                      "candidate16_v2_failure_initiative_invalidated", 0
+                  ),
+                  "initiative_expired": diagnostics.get(
+                      "candidate16_v2_failure_initiative_expired", 0
+                  ),
+                  "acceptance_liquidity_confirmed": diagnostics.get(
+                      "candidate16_v2_acceptance_liquidity_confirmed", 0
+                  ),
+                  "acceptance_liquidity_rejected": diagnostics.get(
+                      "candidate16_v2_acceptance_liquidity_rejected", 0
+                  ),
+                  "unresolved": diagnostics.get("candidate16_unresolved", 0),
+                  "protective_fail_closes": diagnostics.get(
+                      "candidate16_v2_protective_stop_fail_closes", 0
+                  ),
+                  "natural_objective_rejections": diagnostics.get(
+                      "candidate16_natural_objective_rejections", 0
+                  )
+              }
+          }
+          (root / "screen_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify authoritative evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          python -m json.tool "$ROOT/screen_decision.json"
+          for file in run.json data_manifest.json raw_evidence.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl candidate16_v2_contract.json; do
+            test -s "$ROOT/$file"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v2-screen-${{ github.sha }}
+          path: artifacts/candidate-16-v2-screen/**
+          if-no-files-found: warn
+          retention-days: 90
