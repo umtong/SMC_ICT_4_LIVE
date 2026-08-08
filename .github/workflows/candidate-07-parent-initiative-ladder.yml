@@ -1,0 +1,160 @@
+name: candidate-07-parent-initiative-ladder
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/diagnose_parent_initiative_ladder.py"
+      - "research/candidate-07/tests/test_parent_initiative_ladder.py"
+      - ".github/workflows/candidate-07-parent-initiative-ladder.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify foundation and parent-state contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-parent-ladder-pyc \
+            python -m compileall -q research/candidate-07
+          python -m unittest \
+            research/candidate-07/tests/test_parent_initiative_ladder.py -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+
+      - name: Reproduce frozen initiative-auction evidence
+        run: >-
+          python research/candidate-07/staged_initiative_auction.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --output artifacts/candidate-07-parent-ladder/source
+          --data-root .research-data/candidate-07
+          --max-weeks 3
+
+      - name: Diagnose parent liquidity ladders
+        run: |
+          set -eu
+          ROOT=artifacts/candidate-07-parent-ladder
+          python research/candidate-07/diagnose_parent_initiative_ladder.py \
+            --config research/candidate-07/config.json \
+            --stage week-1 --start 2025-12-22 --end 2025-12-29 \
+            --run-root "$ROOT/source/week-1" \
+            --output "$ROOT/diagnostic/week-1" \
+            --data-root .research-data/candidate-07
+          python research/candidate-07/diagnose_parent_initiative_ladder.py \
+            --config research/candidate-07/config.json \
+            --stage week-2 --start 2025-01-27 --end 2025-02-03 \
+            --run-root "$ROOT/source/week-2" \
+            --output "$ROOT/diagnostic/week-2" \
+            --data-root .research-data/candidate-07
+          python research/candidate-07/diagnose_parent_initiative_ladder.py \
+            --config research/candidate-07/config.json \
+            --stage week-3 --start 2024-06-24 --end 2024-07-01 \
+            --run-root "$ROOT/source/week-3" \
+            --output "$ROOT/diagnostic/week-3" \
+            --data-root .research-data/candidate-07
+
+      - name: Build immutable cross-stage summary
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from math import prod
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("artifacts/candidate-07-parent-ladder")
+          frames = []
+          summaries = {}
+          for stage in ("week-1", "week-2", "week-3"):
+              folder = root / "diagnostic" / stage
+              frame = pd.read_csv(folder / "parent_initiative_features.csv")
+              frame["stage"] = stage
+              frames.append(frame)
+              summaries[stage] = json.loads(
+                  (folder / "parent_initiative_summary.json").read_text()
+              )
+          all_rows = pd.concat(frames, ignore_index=True)
+          all_rows.to_csv(root / "parent_initiative_features_all.csv", index=False)
+
+          def summary(part):
+              returns = part["net_return_on_nav"].astype(float).tolist()
+              return {
+                  "trades": int(len(part.index)),
+                  "wins": int(part["win"].astype(bool).sum()),
+                  "losses": int((~part["win"].astype(bool)).sum()),
+                  "win_rate": float(part["win"].astype(bool).mean()) if len(part.index) else 0.0,
+                  "diagnostic_compounded_recorded_returns": (
+                      prod(1.0 + value for value in returns) - 1.0 if returns else 0.0
+                  ),
+              }
+
+          retained = all_rows[all_rows["retain_under_parent_rule"].astype(bool)]
+          blocked = all_rows[~all_rows["retain_under_parent_rule"].astype(bool)]
+          output = {
+              "source_commit": "${{ github.sha }}",
+              "candidate": "candidate-07-parent-initiative-ladder-diagnostic",
+              "all_absorption": summary(all_rows),
+              "retained_under_parent_rule": summary(retained),
+              "blocked_as_counter_initiative_fade": summary(blocked),
+              "by_stage": {
+                  stage: {
+                      "all": summary(part),
+                      "retained": summary(part[part["retain_under_parent_rule"].astype(bool)]),
+                      "blocked": summary(part[~part["retain_under_parent_rule"].astype(bool)]),
+                  }
+                  for stage, part in all_rows.groupby("stage", sort=True)
+              },
+              "by_direction": {
+                  direction: {
+                      "all": summary(part),
+                      "retained": summary(part[part["retain_under_parent_rule"].astype(bool)]),
+                      "blocked": summary(part[~part["retain_under_parent_rule"].astype(bool)]),
+                  }
+                  for direction, part in all_rows.groupby("direction", sort=True)
+              },
+              "stage_contracts": summaries,
+          }
+          destination = root / "combined_parent_initiative_diagnostic.json"
+          destination.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n")
+          print(destination.read_text())
+          PY
+
+      - name: Print immutable result
+        if: always()
+        run: |
+          find artifacts/candidate-07-parent-ladder -name parent_initiative_summary.json \
+            -print -exec cat {} \;
+          test -f artifacts/candidate-07-parent-ladder/combined_parent_initiative_diagnostic.json
+          cat artifacts/candidate-07-parent-ladder/combined_parent_initiative_diagnostic.json
+
+      - name: Preserve complete diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-parent-initiative-ladder-${{ github.sha }}
+          path: artifacts/candidate-07-parent-ladder
+          retention-days: 14
+          if-no-files-found: error
