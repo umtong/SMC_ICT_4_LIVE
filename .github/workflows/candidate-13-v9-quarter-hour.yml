@@ -1,0 +1,168 @@
+name: Candidate 13 V9 quarter-hour common-flow development
+
+on:
+  push:
+    branches:
+      - research/candidate-13
+    paths:
+      - ".github/workflows/candidate-13-v9-quarter-hour.yml"
+      - "research/candidate-13/candidate13_v9_runner.py"
+      - "research/candidate-13/quarter_hour_common_flow.py"
+      - "research/candidate-13/quarter_hour_materializer.py"
+      - "research/candidate-13/aggregate_v9_development.py"
+      - "research/candidate-13/protocol-v9-quarter-hour-development.json"
+      - "research/candidate-13/run_leadership_scdam_base.py"
+      - "research/candidate-13/runner_materializer.py"
+      - "research/candidate-13/semantic_logic.py"
+      - "research/candidate-13/semantic_market_leadership.py"
+      - "research/candidate-13/logic.py"
+      - "research/candidate-13/market_leadership.py"
+      - "research/candidate-13/session_engine.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-13-v9-quarter-hour-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify environment, materialization and causal occurrence
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-13:$GITHUB_WORKSPACE/src"
+          python -m py_compile research/candidate-13/quarter_hour_common_flow.py research/candidate-13/quarter_hour_materializer.py research/candidate-13/candidate13_v9_runner.py research/candidate-13/aggregate_v9_development.py
+          python research/candidate-13/candidate13_v9_runner.py self-test
+          python -m unittest discover -s research/candidate-13 -p 'test_*.py' -v
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        interval: [E01, E02, E03, E04, E05, E06]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Run NautilusTrader exposed development interval
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-13:$GITHUB_WORKSPACE/src"
+          output="research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}"
+          python research/candidate-13/candidate13_v9_runner.py run "${{ matrix.interval }}" "$output"
+      - name: Remove downloaded market archives
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/data"
+      - name: Upload auditable interval evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate13-v9-${{ matrix.interval }}
+          path: |
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/run.json
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/data_manifest.json
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/metrics.json
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/summary.json
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/audit.json
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/source_lock.json
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/effective_config.json
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/scenario_events.jsonl
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/submitted_plans.json
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/order_lifecycle.json
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/orders.csv
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/positions.csv
+            research/candidate-13/v9/quarter_hour/development/results/${{ matrix.interval }}/account.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: ${{ needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Download fresh interval evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate13-v9-E*
+          path: artifacts
+      - name: Aggregate exposed development evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="research/candidate-13/v9/quarter_hour/development/results"
+          rm -rf "$target"
+          mkdir -p "$target"
+          for interval in E01 E02 E03 E04 E05 E06; do
+            src="artifacts/candidate13-v9-$interval"
+            test -d "$src"
+            mkdir -p "$target/$interval"
+            cp -a "$src/." "$target/$interval/"
+            test -s "$target/$interval/audit.json"
+            test -s "$target/$interval/metrics.json"
+          done
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-13:$GITHUB_WORKSPACE/src"
+          python research/candidate-13/aggregate_v9_development.py \
+            --results "$target" \
+            --protocol research/candidate-13/protocol-v9-quarter-hour-development.json \
+            --output research/candidate-13/v9/quarter_hour/development/aggregate.json
+      - name: Persist commit-scoped evidence when branch is unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-13
+          current_head="$(git rev-parse origin/research/candidate-13)"
+          if [[ "$current_head" != "$GITHUB_SHA" ]]; then
+            echo "branch advanced during V9 run; evidence remains in this run's artifacts"
+            exit 0
+          fi
+          git config user.name "candidate-13-bot"
+          git config user.email "candidate-13-bot@users.noreply.github.com"
+          git add -A research/candidate-13/v9/quarter_hour/development
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-13 v9: record quarter-hour development [skip ci]"
+            git push origin HEAD:research/candidate-13
+          fi
+      - name: Upload aggregate
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate13-v9-quarter-hour-aggregate-${{ github.run_id }}
+          path: |
+            research/candidate-13/v9/quarter_hour/development/aggregate.json
+            research/candidate-13/v9/quarter_hour/development/RESULT.md
+          if-no-files-found: error
+          retention-days: 30
