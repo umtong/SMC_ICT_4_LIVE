@@ -1,0 +1,46 @@
+{
+  "schema": "candidate-11-cross-venue-residual-transfer-v1",
+  "created_utc": "2026-08-09",
+  "status": "DEVELOPMENT_SCREEN_FROZEN",
+  "market": "BTCUSDT perpetual on Binance and Bybit",
+  "official_data": {
+    "binance": "https://data.binance.vision/data/futures/um/daily/aggTrades/BTCUSDT/",
+    "bybit": "https://public.bybit.com/trading/BTCUSDT/"
+  },
+  "development": {
+    "start": "2023-08-07",
+    "end": "2023-08-13",
+    "calendar_days": 7
+  },
+  "parent_event": {
+    "cadence": "completed one-second trades",
+    "basis": "Bybit minus Binance log-price basis relative to the causal trailing one-hour median",
+    "excursion": "absolute residual above 20 bp and the shifted trailing one-hour 99th percentile",
+    "leader": "Bybit return dominates Binance return and aligns with Bybit active flow",
+    "independence": "one parent per basis excursion until residual resets within 5 bp or changes sign"
+  },
+  "transition": {
+    "maximum_wait_seconds": 3,
+    "required": "strictly later Binance active flow and return align with the residual while Bybit does not reverse"
+  },
+  "geometry": {
+    "entry": "Binance close of the completed confirmation second",
+    "target": "Bybit-implied Binance fair value using the pre-existing causal basis baseline",
+    "invalidation": "pre-parent Binance close or the adverse parent-to-confirmation close extreme",
+    "round_trip_cost_bps": 20.0,
+    "minimum_net_r": 1.15,
+    "maximum_hold_seconds": 120,
+    "same_second_target_and_stop": "stop first"
+  },
+  "screen_gate": {
+    "minimum_executable_episodes": 7,
+    "minimum_target_first_rate": 0.8,
+    "positive_mean_realized_r": true
+  },
+  "limitations": [
+    "close-only one-second barrier diagnostic rather than NautilusTrader execution",
+    "screen performance is not an account or success claim",
+    "passing requires promotion to NautilusTrader before fresh validation"
+  ],
+  "success_claim_allowed": false
+}
