@@ -1,0 +1,107 @@
+name: candidate-31b-phase-memory
+on:
+  push:
+    branches: ["research/candidate-31b"]
+    paths: ["research/candidate-31/**", ".github/workflows/candidate-31b-phase-memory.yml"]
+  workflow_dispatch:
+concurrency:
+  group: candidate-31b-phase-memory
+  cancel-in-progress: true
+permissions:
+  contents: read
+  packages: read
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      months: ${{ steps.x.outputs.months }}
+    steps:
+      - id: x
+        shell: bash
+        run: |
+          python - <<'PY'
+          import calendar,json,os
+          from datetime import date,timedelta
+          c=date(2023,10,1); z=[]
+          while c<=date(2026,7,31):
+              e=date(c.year,c.month,calendar.monthrange(c.year,c.month)[1])
+              z.append({'name':f'{c.year:04d}-{c.month:02d}','start':str(c),'end':str(e)})
+              c=e+timedelta(days=1)
+          z.append({'name':'2026-08-tail','start':'2026-08-01','end':'2026-08-02'})
+          assert len(z)==35
+          open(os.environ['GITHUB_OUTPUT'],'a').write('months='+json.dumps(z,separators=(',',':'))+'\n')
+          PY
+  month:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        m: ${{ fromJson(needs.plan.outputs.months) }}
+    env:
+      PYTHONPATH: research/candidate-31:research/candidate-30
+      ROOT: artifacts/c31b/${{ matrix.m.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Contracts and month
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m unittest discover -s research/candidate-31 -p 'test_*.py' -v
+          mkdir -p "$ROOT"
+          python research/candidate-31/build_month_gap_safe.py \
+            --symbol BTCUSDT --core-start "${{ matrix.m.start }}" --core-end "${{ matrix.m.end }}" \
+            --cache ".cache/c31b/${{ matrix.m.name }}" --output "$ROOT" | tee "$ROOT/console.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c31b-${{ matrix.m.name }}-${{ github.sha }}
+          path: artifacts/c31b/${{ matrix.m.name }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+  study:
+    needs: month
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-31:research/candidate-30
+      ROOT: artifacts/c31b-study
+      INPUT: artifacts/c31b-input
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c31b-*-${{ github.sha }}
+          path: artifacts/c31b-input
+      - name: Continuous causal phase-memory study
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find "$INPUT" -name month_manifest.json | wc -l)" -eq 35
+          python -m unittest discover -s research/candidate-31 -p 'test_*.py' -v
+          mkdir -p "$ROOT"
+          python research/candidate-31/analyze_phase_memory.py --input-root "$INPUT" --output "$ROOT" --symbol BTCUSDT | tee "$ROOT/console.log"
+          python - <<'PY'
+          import json
+          x=json.load(open('artifacts/c31b-study/study.json'))
+          assert x['evaluation_start']=='2024-01-01' and x['evaluation_end']=='2026-07-31'
+          assert x['evaluation_calendar_days']==943 and x['continuous_observation_grid'] is True
+          print(json.dumps({'diagnostics':x['diagnostics'],'promoted_routes':x['promoted_routes'],'decision':x['decision']},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate31b-study-${{ github.sha }}
+          path: artifacts/c31b-study/**
+          if-no-files-found: warn
+          retention-days: 90
