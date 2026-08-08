@@ -75,7 +75,8 @@ jobs:
             "$C13_ROOT/quarter_hour_materializer_v9.py" \
             "$C13_ROOT/candidate13_v9_runner.py" \
             "$C13_ROOT/aggregate_v9_development.py" \
-            research/candidate-02/v154_qh_state_test.py
+            research/candidate-02/v154_qh_state_test.py \
+            research/candidate-02/v154_complete_diagnostic.py
           python research/candidate-02/v154_qh_state_test.py
           python - <<'PY'
           from pathlib import Path
@@ -91,154 +92,34 @@ jobs:
           PY
           python -m unittest discover -s "$C13_ROOT" -p 'test_*.py' -v
 
-      - name: Run six exposed intervals through NautilusTrader
+      - name: Run and aggregate all six exposed intervals through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
           export PYTHONPATH="$C13_ROOT:$GITHUB_WORKSPACE/src"
           target="research/candidate-02/results/v154_qh_auction_leg/$GITHUB_SHA"
           rm -rf "$target"
-          mkdir -p "$target"
-          for interval in E01 E02 E03 E04 E05 E06; do
-            output="$target/$interval"
-            mkdir -p "$output"
-            python "$C13_ROOT/candidate13_v9_runner.py" run "$interval" "$output" \
-              | tee "$output/console.log"
-            OUTPUT="$output" INTERVAL="$interval" C13_SOURCE_COMMIT="$C13_SOURCE_COMMIT" python - <<'PY'
-          from collections import Counter
-          from pathlib import Path
-          import json
-          import os
-
-          root = Path(os.environ['OUTPUT'])
-          plans_payload = json.loads((root / 'submitted_plans.json').read_text(encoding='utf-8'))
-          plans = plans_payload.get('plans', [])
-          module = 'QH_INITIATIVE_COMPLETED_AUCTION_LEG'
-          qh = [plan for plan in plans if plan.get('module') == module]
-          violations = []
-          episodes = set()
-          for index, plan in enumerate(qh):
-              details = plan.get('details', {})
-              episode = details.get('independent_episode_key')
-              if not episode or episode in episodes:
-                  violations.append(f'plan[{index}] duplicate or absent independent episode')
-              episodes.add(episode)
-              observed = int(plan['observed_ts_ns'])
-              initiative_end = int(details.get('initiative_end_ts_ns', observed))
-              retrace = int(details.get('fvg_retrace_ts_ns', observed))
-              fresh = int(details.get('fresh_reacceleration_fvg_ts_ns', observed + 1))
-              if not initiative_end < retrace < fresh <= observed:
-                  violations.append(f'plan[{index}] noncausal state chronology')
-              if details.get('entry_model') != 'PASSIVE_FRESH_REACCELERATION_FVG_MIDPOINT':
-                  violations.append(f'plan[{index}] wrong entry model')
-              if details.get('route') != 'COMMON_FLOW_THEN_COMPLETED_AUCTION_LEG':
-                  violations.append(f'plan[{index}] wrong route')
-              sequence = tuple(details.get('state_sequence', ()))
-              if not sequence or sequence[0] != 'COMMON_FLOW_INITIATIVE':
-                  violations.append(f'plan[{index}] missing initiative state')
-              if sequence[-2:] != ('FRESH_REACCELERATION_FVG', 'ENTRY_ARMED'):
-                  violations.append(f'plan[{index}] incomplete terminal states')
-          lifecycle = json.loads((root / 'order_lifecycle.json').read_text(encoding='utf-8')).get('events', [])
-          fail_closed = sum(
-              event.get('type') == 'PROTECTIVE_ORDER_REJECTED_FAIL_CLOSED'
-              for event in lifecycle
-          )
-          audit = {
-              'schema': 'candidate-02-v154-causal-audit-v1',
-              'interval': os.environ['INTERVAL'],
-              'pinned_candidate13_commit': os.environ['C13_SOURCE_COMMIT'],
-              'qh_submitted_plans': len(qh),
-              'independent_qh_episodes': len(episodes),
-              'protective_rejections_fail_closed': fail_closed,
-              'future_information_used': False,
-              'initiative_can_emit_entry': False,
-              'violations': violations,
-              'passed': not violations,
-              'plan_modules': dict(Counter(plan.get('module', 'SCDAM_CORE') for plan in plans)),
-          }
-          (root / 'v154_causal_audit.json').write_text(
-              json.dumps(audit, indent=2, sort_keys=True) + '\n',
-              encoding='utf-8',
-          )
-          if violations:
-              raise SystemExit('\n'.join(violations))
-          print(json.dumps(audit, indent=2, sort_keys=True))
-          PY
-            rm -rf "$output/data"
-            find "$output" -maxdepth 1 -type f \
-              ! -name 'audit.json' \
-              ! -name 'metrics.json' \
-              ! -name 'submitted_plans.json' \
-              ! -name 'closed_trades.json' \
-              ! -name 'order_lifecycle.json' \
-              ! -name 'source_lock.json' \
-              ! -name 'run.json' \
-              ! -name 'data_manifest.json' \
-              ! -name 'v154_causal_audit.json' \
-              -delete
-          done
-
-      - name: Aggregate and classify exposed development evidence
-        shell: bash
-        run: |
-          set -euo pipefail
-          target="research/candidate-02/results/v154_qh_auction_leg/$GITHUB_SHA"
-          python "$C13_ROOT/aggregate_v9_development.py" \
+          python research/candidate-02/v154_complete_diagnostic.py \
+            --candidate13-root "$C13_ROOT" \
             --results "$target" \
             --protocol research/candidate-02/v153_protocol.json \
-            --output "$target/artifacts-v154-family-decision.json"
-          TARGET="$target" C13_SOURCE_COMMIT="$C13_SOURCE_COMMIT" python - <<'PY'
-          from collections import Counter
+            --source-commit "$C13_SOURCE_COMMIT"
+          test -s "$target/artifacts-v154-family-decision.json"
+          python - <<'PY'
           from pathlib import Path
           import json
           import os
-
-          root = Path(os.environ['TARGET'])
-          path = root / 'artifacts-v154-family-decision.json'
-          obj = json.loads(path.read_text(encoding='utf-8'))
-          funnel = Counter()
-          fail_closed = 0
-          qh_plans = 0
-          causal_pass = True
-          for interval in ('E01', 'E02', 'E03', 'E04', 'E05', 'E06'):
-              metrics = json.loads((root / interval / 'metrics.json').read_text(encoding='utf-8'))
-              funnel.update(metrics.get('skip_reasons', {}))
-              causal = json.loads((root / interval / 'v154_causal_audit.json').read_text(encoding='utf-8'))
-              qh_plans += int(causal.get('qh_submitted_plans', 0))
-              fail_closed += int(causal.get('protective_rejections_fail_closed', 0))
-              causal_pass = causal_pass and causal.get('passed') is True
-          classification = obj.get('classification', 'REJECT_OR_REDESIGN')
-          advance = classification == 'ADVANCE_TO_BROADER_EXPOSED_SCREEN' and causal_pass
-          obj.update({
-              'engine': 'NautilusTrader 1.230.0',
-              'custom_backtest_engine': False,
-              'risk_fraction': 0.03,
-              'global_pending_entry_plus_position_limit': 1,
-              'arbitrary_notional_cap': None,
-              'score_risk_multiplier': None,
-              'lineage': {
-                  'candidate13_source_commit': os.environ['C13_SOURCE_COMMIT'],
-                  'candidate02_trigger_commit': os.environ['GITHUB_SHA'],
-                  'alpha_change': 'quarter-hour initiative is context only; a follower must complete a separate delivery, FVG retrace and fresh reacceleration auction leg',
-                  'execution_change': 'fail-close a denied or rejected protective child after parent fill',
-              },
-              'qh_submitted_plans': qh_plans,
-              'protective_rejections_fail_closed': fail_closed,
-              'all_causal_audits_passed': causal_pass,
-              'aggregated_state_funnel': dict(funnel.most_common()),
-              'status': 'ADVANCE_TO_BROADER_EXPOSED_SCREEN' if advance else 'REJECT_OR_REDESIGN',
-              'project_target_met': False,
-              'next_action': (
-                  'run the unchanged V154 source on a broader exposed screen before any untouched validation'
-                  if advance
-                  else 'diagnose the dominant state-transition or geometry failure before redesign; do not tune thresholds'
-              ),
-          })
-          path.write_text(json.dumps(obj, indent=2, sort_keys=True) + '\n', encoding='utf-8')
-          print(json.dumps(obj, indent=2, sort_keys=True))
+          path = Path('research/candidate-02/results/v154_qh_auction_leg') / os.environ['GITHUB_SHA'] / 'artifacts-v154-family-decision.json'
+          result = json.loads(path.read_text(encoding='utf-8'))
+          assert result['status'] == 'REJECT_OR_REDESIGN', result
+          assert result['project_target_met'] is False, result
+          assert result['untouched_data_used'] is False, result
+          assert result['completed_intervals'] == 6, result
+          assert result['all_causal_audits_passed'] is True, result
+          print(json.dumps(result, indent=2, sort_keys=True))
           PY
 
-      - name: Commit compact evidence
+      - name: Commit compact exposed evidence
         shell: bash
         run: |
           set -euo pipefail
@@ -251,5 +132,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$target"
-          git commit -m "research(candidate-02): record v154 auction-leg evidence"
+          git commit -m "research(candidate-02): record v154 auction-leg rejection evidence"
           git push origin HEAD:research/candidate-02
