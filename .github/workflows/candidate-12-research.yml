@@ -1,20 +1,22 @@
-name: candidate-12-i19-w1-then-w12
+name: candidate-12-i20-opening-balance-diagnostic
 
 on:
   push:
     branches: ["research/candidate-12"]
-    paths: [".github/workflows/candidate-12-research.yml"]
+    paths:
+      - ".github/workflows/candidate-12-research.yml"
+      - "research/candidate-12/diagnose_i20.py"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i19-w1-w12
+  group: candidate-12-i20-opening-balance-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  gate:
+  diagnostic:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -23,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify frozen I19 and tests
+      - name: Verify frozen I19 baseline
         shell: bash
         run: |
           set -euo pipefail
@@ -32,67 +34,48 @@ jobs:
           test "$(git hash-object research/candidate-12/test_logic.py)" = "c145bdfcb9576a6675dc354e4ae5f40bb266e5b6"
           test "$(git hash-object research/candidate-12/config.json)" = "160557c044e7fc315fc802bfe7f1c3f974b53374"
           test "$(git hash-object research/candidate-12/strategy_adapter.py)" = "c8f1a2c30fc598bda1b03adaafde3b4a55f50018"
-          python - <<'PY'
-          from pathlib import Path
-          import json
-          c = json.loads(Path("research/candidate-12/config.json").read_text())
-          assert c["schema_version"] == 20
-          assert c["candidate"] == "candidate-12-delayed-low-failed-auction-router"
-          PY
           python -m compileall -q research/candidate-12
           python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
 
-      - name: W1 design gate
+      - name: Reproduce I19 W1 and W12 baseline
         shell: bash
         run: |
           set -euo pipefail
-          O=artifacts/candidate-12/BTCUSDT-W1
-          mkdir -p "$O"
-          python research/candidate-12/run.py --symbol BTCUSDT --week W1 --output "$O" | tee "$O.console.json"
-          python - <<'PY'
-          from pathlib import Path
-          import json
-          m=json.loads(Path("artifacts/candidate-12/BTCUSDT-W1/metrics.json").read_text())
-          assert m["closed_trades"] == 6, m
-          assert m["wins"] == 6 and m["losses"] == 0, m
-          assert m["project_target_gate_passed"] is True, m
-          assert m["risk_budget_passed"] and m["global_slot_passed"], m
-          assert m["event_log_valid"] and not m["engine_errors"], m
-          assert not m["liquidation_detected"], m
-          PY
-
-      - name: W12 only after W1 passes
-        shell: bash
-        run: |
-          set -euo pipefail
-          O=artifacts/candidate-12/BTCUSDT-W12
-          mkdir -p "$O"
-          python research/candidate-12/run.py --symbol BTCUSDT --week W12 --output "$O" | tee "$O.console.json"
-          python - <<'PY'
-          from pathlib import Path
-          import json
-          p=Path("artifacts/candidate-12/BTCUSDT-W12")
-          m=json.loads((p/"metrics.json").read_text())
-          assert m["candidate"] == "candidate-12-delayed-low-failed-auction-router", m
-          assert m["risk_budget_passed"] and m["global_slot_passed"], m
-          assert m["event_log_valid"] and not m["engine_errors"], m
-          assert not m["liquidation_detected"], m
-          print(json.dumps(m, indent=2, sort_keys=True))
-          PY
-
-      - name: Surface evidence
-        if: always()
-        shell: bash
-        run: |
           for W in W1 W12; do
-            F="artifacts/candidate-12/BTCUSDT-${W}/metrics.json"
-            test ! -f "$F" || cat "$F"
+            O="artifacts/candidate-12/BTCUSDT-${W}"
+            mkdir -p "$O"
+            python research/candidate-12/run.py --symbol BTCUSDT --week "$W" --output "$O" | tee "$O.console.json"
           done
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          root = Path("artifacts/candidate-12")
+          w1 = json.loads((root / "BTCUSDT-W1" / "metrics.json").read_text())
+          w12 = json.loads((root / "BTCUSDT-W12" / "metrics.json").read_text())
+          assert w1["closed_trades"] == 6 and w1["wins"] == 6 and w1["losses"] == 0, w1
+          assert w1["project_target_gate_passed"] is True, w1
+          assert w12["closed_trades"] == 4 and w12["wins"] == 4 and w12["losses"] == 0, w12
+          for item in (w1, w12):
+              assert item["risk_budget_passed"] and item["global_slot_passed"], item
+              assert item["event_log_valid"] and not item["engine_errors"], item
+              assert not item["liquidation_detected"], item
+          PY
 
-      - name: Preserve evidence
+      - name: Screen opening-balance value failure and acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-12/diagnose_i20.py \
+            --weeks W1 W12 \
+            --data-dir /tmp/candidate-12-i20-data \
+            --baseline-root artifacts/candidate-12 \
+            --output artifacts/candidate-12/I20-opening-balance-diagnostic.json
+          cat artifacts/candidate-12/I20-opening-balance-diagnostic.json
+
+      - name: Preserve reproducible diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I19-W1-W12-${{ github.sha }}
+          name: candidate-12-I20-opening-balance-diagnostic-${{ github.sha }}
           path: artifacts/candidate-12
           if-no-files-found: warn
