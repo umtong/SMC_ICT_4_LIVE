@@ -1,0 +1,158 @@
+name: candidate-16-v47-shared-audit
+
+on:
+  push:
+    branches: ["research/candidate-16"]
+    paths:
+      - ".github/workflows/candidate-16-v47-shared-audit.yml"
+      - "research/candidate-16/v47_active/shared_account_strategy_variants_v2.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v47-shared-audit
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  shared-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 420
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16/v47_active:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v47-shared-audit
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment, causal contracts, and fixed v47 MRO
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05 research/candidate-16/v47_active
+          python -m unittest research/candidate-05/tests/test_strategy_v47_contract.py -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_timestamp_contract.py' -v
+          python - <<'PY'
+          import shared_account_strategy_variants_v2 as variants
+          from strategy_v47_relative_value import RelativeValueDislocationStrategy
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              cls = variants.final_shared_strategy_class(variants.WINNER, symbol)
+              assert issubclass(cls, RelativeValueDislocationStrategy)
+              assert variants.final_shared_strategy_path(variants.WINNER, symbol).endswith(cls.__name__)
+              print(symbol, cls.__mro__)
+          PY
+
+      - name: Run predeclared seven-day occurrence and economic-geometry audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/v47.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_v47_relative_value:RelativeValueDislocationStrategy",
+            "experiment_role": "CANDIDATE16_FIXED_IMPORT_V47_SHARED_AUDIT"
+          }
+          JSON
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/v47.json" \
+            --build-start 2023-07-07 \
+            --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 \
+            --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-16-v47-shared-audit \
+            --output "$ROOT/week-1" \
+            2>&1 | tee "$ROOT/week-1-console.log"
+
+      - name: Build compact audit and classify without parameter changes
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          path = root / "week-1" / "metrics.json"
+          metrics = json.loads(path.read_text()) if path.exists() else None
+          diagnostics = {}
+          for diag_path in sorted((root / "week-1" / "symbols").glob("*/strategy_diagnostics.json")):
+              diagnostics[diag_path.parent.name] = json.loads(diag_path.read_text())
+          integrity = bool(metrics) and bool(metrics.get("integrity_pass"))
+          trades = int((metrics or {}).get("trades", 0) or 0)
+          total_return = float((metrics or {}).get("total_return", 0.0) or 0.0)
+          growth = float((metrics or {}).get("geometric_daily_growth", 0.0) or 0.0)
+          if not metrics:
+              classification = "IMPLEMENTATION_FAILURE"
+          elif not integrity:
+              classification = "INVALID_EXECUTION_EVIDENCE"
+          elif trades == 0:
+              classification = "NO_EXECUTABLE_OCCURRENCES"
+          elif total_return <= 0.0:
+              classification = "NEGATIVE_ALPHA"
+          elif trades < 7:
+              classification = "POSITIVE_BUT_INSUFFICIENT_OPPORTUNITY_DENSITY"
+          elif growth < 0.01:
+              classification = "POSITIVE_BUT_BELOW_GROWTH_GATE"
+          else:
+              classification = "PROMOTE_TO_PREDECLARED_92D_OOS"
+          result = {
+              "schema": "candidate-16-v47-shared-audit-v1",
+              "strategy": "strategy_v47_relative_value:RelativeValueDislocationStrategy",
+              "engine": "one shared NautilusTrader BacktestNode account",
+              "classification": classification,
+              "metrics": metrics,
+              "diagnostics": diagnostics,
+          }
+          (root / "audit_summary.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Run predeclared 92-day OOS only when short audit earns promotion
+        if: ${{ hashFiles('artifacts/candidate-16-v47-shared-audit/audit_summary.json') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          classification=$(python -c 'import json; print(json.load(open("artifacts/candidate-16-v47-shared-audit/audit_summary.json"))["classification"])')
+          if [ "$classification" != "PROMOTE_TO_PREDECLARED_92D_OOS" ]; then
+            echo "short audit did not earn promotion: $classification"
+            exit 0
+          fi
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/v47.json" \
+            --build-start 2024-05-30 \
+            --build-end 2024-08-31 \
+            --evaluation-start 2024-06-01 \
+            --evaluation-end 2024-08-31 \
+            --cache .cache/candidate-16-v47-shared-oos \
+            --output "$ROOT/oos-92d" \
+            2>&1 | tee "$ROOT/oos-92d-console.log"
+
+      - name: Verify evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/audit_summary.json"
+          test -s "$ROOT/week-1/metrics.json"
+          test -s "$ROOT/week-1/orders.csv"
+          test -s "$ROOT/week-1/positions.csv"
+          test -s "$ROOT/week-1/account.csv"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v47-shared-audit-${{ github.sha }}
+          path: artifacts/candidate-16-v47-shared-audit/**
+          if-no-files-found: warn
+          retention-days: 90
