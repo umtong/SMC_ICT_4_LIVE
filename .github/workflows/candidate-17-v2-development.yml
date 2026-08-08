@@ -1,0 +1,118 @@
+name: candidate-17-v2-development
+
+on:
+  push:
+    branches: ["research/candidate-17"]
+    paths:
+      - "research/candidate-17/**"
+      - ".github/workflows/candidate-17-v2-development.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-17-v2-development
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  known-periods:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: known-2023-12-25
+            build_start: "2023-12-22"
+            build_end: "2023-12-31"
+            evaluation_start: "2023-12-25"
+            evaluation_end: "2023-12-31"
+          - label: known-2024-09-16
+            build_start: "2024-09-13"
+            build_end: "2024-09-22"
+            evaluation_start: "2024-09-16"
+            evaluation_end: "2024-09-22"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-17-v2/${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-17 research/candidate-16
+          python -m unittest discover -s research/candidate-17/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_displayed_liquidity_router_v2.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v2_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Run known development period through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-17/candidate.py stage \
+            --config research/candidate-17/config.json \
+            --build-start "${{ matrix.build_start }}" \
+            --build-end "${{ matrix.build_end }}" \
+            --evaluation-start "${{ matrix.evaluation_start }}" \
+            --evaluation-end "${{ matrix.evaluation_end }}" \
+            --cache ".cache/candidate-17-v2-${{ matrix.label }}" \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Attribute development result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          result = {
+              "schema": "candidate-17-v2-development-v1",
+              "period": "${{ matrix.label }}",
+              "metrics": metrics,
+              "integrity": {
+                  "liquidations": metrics.get("liquidations", 0),
+                  "order_rejections": diagnostics.get("order_rejections", 0),
+                  "max_entry_intents": diagnostics.get("max_simultaneous_entry_intents", 0),
+                  "max_positions": diagnostics.get("max_open_positions_observed", 0),
+              },
+              "routing": {
+                  "initiatives": diagnostics.get("candidate16_v2_failure_initiatives", 0),
+                  "retests_armed": diagnostics.get("candidate17_v2_failure_retests_armed", 0),
+                  "retests_confirmed": diagnostics.get("candidate17_v2_failure_retests_confirmed", 0),
+                  "retests_invalidated": diagnostics.get("candidate17_v2_failure_retests_invalidated", 0),
+                  "retests_expired": diagnostics.get("candidate17_v2_failure_retests_expired", 0),
+                  "cost_geometry_rejections": diagnostics.get("candidate17_v2_cost_dominated_geometry_rejections", 0),
+                  "depletion_confirmations": diagnostics.get("candidate17_depletion_confirmations", 0),
+                  "positioning_rejections": diagnostics.get("candidate17_positioning_rejections", 0),
+              },
+          }
+          (root / "development_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-17-v2-${{ matrix.label }}-${{ github.sha }}
+          path: artifacts/candidate-17-v2/${{ matrix.label }}/**
+          if-no-files-found: warn
+          retention-days: 90
