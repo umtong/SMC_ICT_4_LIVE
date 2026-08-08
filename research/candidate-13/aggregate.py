@@ -167,19 +167,27 @@ def main() -> int:
         "max_drawdown": max_drawdown <= float(gate["maximum_trade_path_drawdown"]),
         "growth_concentration": concentration <= float(gate["maximum_positive_log_growth_share_from_one_week"]),
     }
-    success = all(checks.values())
+    gate_passed = all(checks.values())
     failed = [name for name, passed in checks.items() if not passed]
     classification = (
         "CANDIDATE13_AGGREGATE_GATE_PASSED"
-        if success
+        if gate_passed
         else "CANDIDATE13_AGGREGATE_GATE_FAILED"
     )
 
+    # A numerical gate may be useful in exposed development, but it cannot by
+    # itself become an independent success claim.  Protocol authors must opt
+    # claim eligibility in explicitly; fail closed when the field is absent.
+    claim_eligible = protocol.get("claim_eligible") is True
+    success_claim = gate_passed and claim_eligible
+
     result = {
-        "schema": "candidate-13-aggregate-evidence-v1",
+        "schema": "candidate-13-aggregate-evidence-v2",
         "candidate": protocol["candidate"],
         "classification": classification,
-        "success_claim": success,
+        "gate_passed": gate_passed,
+        "claim_eligible": claim_eligible,
+        "success_claim": success_claim,
         "strategy_parameters_changed_after_holdout_freeze": False,
         "holdout_count": len(holdouts),
         "completed_holdouts": completed,
@@ -209,7 +217,9 @@ def main() -> int:
         "",
         f"**{classification}**",
         "",
-        f"- success_claim: `{success}`",
+        f"- gate_passed: `{gate_passed}`",
+        f"- claim_eligible: `{claim_eligible}`",
+        f"- success_claim: `{success_claim}`",
         f"- daily_geometric_growth: `{pooled_daily:.10f}`",
         f"- pooled_nav_multiple: `{result['pooled_nav_multiple']:.10f}`",
         f"- closed_trades: `{total_trades}`",
