@@ -1,0 +1,145 @@
+name: Candidate 15 V32 residual overreaction reclaim
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - "research/candidate-15/protocol-v32-residual-overreaction-reclaim.json"
+      - "research/candidate-15/diagnose_v32_residual_overreaction_reclaim.py"
+      - ".github/workflows/candidate-15-v32-residual-overreaction-reclaim.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v32-residual-overreaction-reclaim-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 1
+
+      - name: Verify environment and frozen reclaim contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-15/diagnose_v28_adaptive_6h_trend.py \
+            research/candidate-15/diagnose_v32_residual_overreaction_reclaim.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = json.loads(Path(
+              'research/candidate-15/protocol-v32-residual-overreaction-reclaim.json'
+          ).read_text())
+          assert p['schema'] == 'candidate-15-v32-residual-overreaction-reclaim-v1'
+          assert p['evaluation']['global_position_limit'] == 1
+          assert p['fixed_rules']['event_interval_minutes'] == 240
+          assert p['fixed_rules']['confirmation_minutes'] == 15
+          assert p['fixed_rules']['maximum_hold_minutes'] == 480
+          assert p['fixed_rules']['same_bar_target_stop_policy'] == 'STOP_FIRST_CONSERVATIVE'
+          assert p['fixed_rules']['execution_round_trip_cost_bps'] == 16.0
+          assert p['fixed_rules']['funding_and_unmodeled_impact_reserve_bps'] == 4.0
+          PY
+
+      - name: Run residual overreaction reclaim mechanism
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/src"
+          python research/candidate-15/diagnose_v32_residual_overreaction_reclaim.py \
+            --protocol research/candidate-15/protocol-v32-residual-overreaction-reclaim.json \
+            --output research/candidate-15/v32/residual_overreaction_reclaim/results
+
+      - name: Verify causal timing and global chronology
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          from pandas.errors import EmptyDataError
+
+          def read(path):
+              try:
+                  return pd.read_csv(path)
+              except EmptyDataError:
+                  return pd.DataFrame()
+
+          root = Path('research/candidate-15/v32/residual_overreaction_reclaim/results')
+          candidates = read(root / 'all_executable_candidates.csv')
+          if len(candidates.index):
+              event = pd.to_datetime(candidates['event_ts'], utc=True)
+              entry = pd.to_datetime(candidates['entry_ts'], utc=True)
+              exit_ts = pd.to_datetime(candidates['exit_ts'], utc=True)
+              assert ((entry - event) == pd.Timedelta(minutes=15)).all()
+              assert ((exit_ts - entry) <= pd.Timedelta(hours=8)).all()
+              direction = candidates['direction_value'].astype(float)
+              assert (direction * (
+                  candidates['entry_price'].astype(float)
+                  - candidates['initial_stop'].astype(float)
+              ) > 0.0).all()
+              assert (direction * (
+                  candidates['target_price'].astype(float)
+                  - candidates['entry_price'].astype(float)
+              ) > 0.0).all()
+          selected = read(root / 'selected_trades.csv')
+          if len(selected.index) > 1:
+              opened = pd.to_datetime(selected['entry_ts'], utc=True)
+              closed = pd.to_datetime(selected['exit_ts'], utc=True)
+              assert (
+                  opened.iloc[1:].reset_index(drop=True)
+                  >= closed.iloc[:-1].reset_index(drop=True)
+              ).all()
+          PY
+
+      - name: Remove downloaded market archives
+        if: always()
+        shell: bash
+        run: rm -rf research/candidate-15/v32/residual_overreaction_reclaim/results/data
+
+      - name: Persist compact evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          result_dir="research/candidate-15/v32/residual_overreaction_reclaim/results"
+          cp "$result_dir/RESULT.md" research/candidate-15/V32_RESIDUAL_OVERREACTION_RECLAIM_RESULT.md
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-v32-bot
+          git config user.email candidate-15-v32-bot@users.noreply.github.com
+          git add \
+            research/candidate-15/V32_RESIDUAL_OVERREACTION_RECLAIM_RESULT.md \
+            research/candidate-15/v32/residual_overreaction_reclaim/results
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15 v32: persist residual reclaim result [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+
+      - name: Upload compact evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v32-residual-overreaction-reclaim-${{ github.run_id }}
+          path: |
+            research/candidate-15/V32_RESIDUAL_OVERREACTION_RECLAIM_RESULT.md
+            research/candidate-15/v32/residual_overreaction_reclaim/results
+          if-no-files-found: warn
+          retention-days: 30
