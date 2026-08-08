@@ -8,6 +8,9 @@ on:
       - ".github/workflows/candidate-06-lcor-reaccept-failure-halfback.yml"
       - "research/candidate-06/defense_origin_limit.py"
       - "research/candidate-06/test_defense_origin_limit.py"
+      - "research/candidate-06/nautilus_outcome_classification.py"
+      - "research/candidate-06/test_nautilus_outcome_classification.py"
+      - "research/candidate-06/repair_nautilus_outcome_classification.py"
       - "research/candidate-06/liquidation_cash_ownership_reaccept_failure_engine.py"
       - "research/candidate-06/test_liquidation_cash_ownership_reaccept_failure_engine.py"
       - "research/candidate-06/liquidation_cash_reaccept_failure_nautilus_runner.py"
@@ -80,12 +83,16 @@ jobs:
             candidate-06-lcor-public-data-
             candidate-06-public-data-
 
-      - name: Verify half-back causality and shared contracts
+      - name: Repair and verify half-back causality and shared contracts
         run: |
           set -euo pipefail
+          python research/candidate-06/repair_nautilus_outcome_classification.py
           for path in \
             research/candidate-06/defense_origin_limit.py \
             research/candidate-06/test_defense_origin_limit.py \
+            research/candidate-06/nautilus_outcome_classification.py \
+            research/candidate-06/test_nautilus_outcome_classification.py \
+            research/candidate-06/nautilus_lifecycle.py \
             research/candidate-06/liquidation_cash_ownership_reaccept_failure_engine.py \
             research/candidate-06/test_liquidation_cash_ownership_reaccept_failure_engine.py \
             research/candidate-06/liquidation_cash_reaccept_failure_nautilus_runner.py \
@@ -96,12 +103,16 @@ jobs:
           python -m py_compile \
             research/candidate-06/defense_origin_limit.py \
             research/candidate-06/test_defense_origin_limit.py \
+            research/candidate-06/nautilus_outcome_classification.py \
+            research/candidate-06/test_nautilus_outcome_classification.py \
+            research/candidate-06/nautilus_lifecycle.py \
             research/candidate-06/liquidation_cash_ownership_reaccept_failure_engine.py \
             research/candidate-06/test_liquidation_cash_ownership_reaccept_failure_engine.py \
             research/candidate-06/liquidation_cash_reaccept_failure_nautilus_runner.py \
             research/candidate-06/run_liquidation_cash_reaccept_failure_validation.py \
             research/candidate-06/run_liquidation_cash_reaccept_failure_limit_matrix.py
           python research/candidate-06/test_defense_origin_limit.py
+          python research/candidate-06/test_nautilus_outcome_classification.py
           python research/candidate-06/test_liquidation_cash_ownership_reaccept_failure_engine.py
           python research/candidate-06/test_liquidation_cash_ownership_failure_router_engine.py
           python research/candidate-06/test_liquidation_cash_ownership_relay_engine.py
@@ -155,18 +166,19 @@ jobs:
           cp artifacts/candidate-06-lcor-reaccept-failure-halfback.stdout artifacts/candidate-06/lcor-reaccept-failure-halfback-w2-first/workflow_stdout.txt 2>/dev/null || true
           cp artifacts/candidate-06-lcor-reaccept-failure-halfback.stderr artifacts/candidate-06/lcor-reaccept-failure-halfback-w2-first/workflow_stderr.txt 2>/dev/null || true
 
-      - name: Commit reproducible half-back evidence
+      - name: Commit repaired source and reproducible half-back evidence
         if: always() && github.event_name == 'push'
         run: |
           set -euo pipefail
           git config user.name "candidate-06-research-bot"
           git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add -f research/candidate-06/nautilus_lifecycle.py
           git add -f artifacts/candidate-06/lcor-reaccept-failure-halfback-w2-first
           if [ -f research/candidate-06/config.lcor_reaccept_failure_halfback.locked.json ]; then
             git add -f research/candidate-06/config.lcor_reaccept_failure_halfback.locked.json
           fi
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m "Record candidate-06 LCOR half-back evidence [candidate-06 evidence]"
+          git commit -m "Repair target classification and refresh LCOR evidence [candidate-06 evidence]"
           for attempt in 1 2 3; do
             git fetch origin research/candidate-06
             git rebase origin/research/candidate-06
