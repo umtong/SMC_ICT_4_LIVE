@@ -1,0 +1,131 @@
+name: candidate-05-v47-paired-oos
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/loop_results/latest.json"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v47-paired-oos
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.select.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+      - id: select
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          path=Path('research/candidate-05/loop_results/latest.json')
+          run=False
+          if path.exists():
+              value=json.loads(path.read_text())
+              run=bool(value.get('legacy_followups',{}).get('v47_relative_value_needs_paired_oos'))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as stream:stream.write(f"run={'true' if run else 'false'}\n")
+          print({'run':run})
+          PY
+
+  oos:
+    needs: select
+    if: needs.select.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v47-paired-oos
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+          fetch-depth: 0
+      - name: Generate import-safe frozen v47 and untouched command
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python research/candidate-05/prepare_legacy_strategy.py \
+            --pattern 'strategy_v47*.py' \
+            --active-dir research/candidate-05/v47_oos_active \
+            --private-name _candidate05_v47_oos_base
+          python research/candidate-05/prepare_shared_command.py \
+            --workflow .github/workflows/candidate-05-v47-relative-value.yml \
+            --runner research/candidate-05/shared_account_backtest_v2.py \
+            --output "$ROOT" \
+            --cache .cache/candidate-05-v47-paired-oos \
+            --build-start 2024-05-30 \
+            --build-end 2024-08-31 \
+            --evaluation-start 2024-06-01 \
+            --evaluation-end 2024-08-31 \
+            --destination /tmp/v47-oos.sh
+          cat /tmp/v47-oos.sh
+      - name: Run frozen relative-value system in one untouched shared account
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v47_oos_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          bash /tmp/v47-oos.sh 2>&1 | tee "$ROOT/workflow-console.log"
+      - name: Build v47 OOS decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          metrics_files=sorted(root.rglob('metrics.json'))
+          metrics=json.loads(metrics_files[0].read_text()) if metrics_files else None
+          if metrics is None:
+              classification='V47_OOS_NO_AUTHORITATIVE_METRICS'
+              target=False;integrity=False
+          else:
+              integrity=int(metrics.get('liquidations',0))==0 and int(metrics.get('order_rejections',0))==0 and int(metrics.get('order_denials',0))==0 and float(metrics.get('min_equity',0.0))>0.0
+              target=integrity and float(metrics.get('geometric_daily_growth',0.0))>=0.01 and int(metrics.get('trades',0))>=30 and float(metrics.get('total_return',0.0))>0.0
+              positive=integrity and float(metrics.get('total_return',0.0))>0.0 and int(metrics.get('trades',0))>=5
+              classification='PROJECT_TARGET_REACHED_V47_RELATIVE_VALUE_OOS' if target else 'V47_RELATIVE_VALUE_POSITIVE_OOS' if positive else 'V47_RELATIVE_VALUE_FAILED_OOS'
+          result={'schema':'candidate-05-v47-paired-oos-v1','classification':classification,'period':{'evaluation_start':'2024-06-01','evaluation_end':'2024-08-31','selected_before_observation':True},'metrics':metrics,'integrity_pass':integrity,'target_reached':target}
+          (root/'oos_decision.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=True)+'\n')
+          path=Path('research/candidate-05/loop_results/v47_oos.json');path.write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=True)+'\n')
+          print(json.dumps(result,indent=2,sort_keys=True,allow_nan=True))
+          PY
+      - name: Commit v47 OOS evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! test -s research/candidate-05/loop_results/v47_oos.json;then exit 0;fi
+          if git diff --quiet -- research/candidate-05/loop_results/v47_oos.json;then exit 0;fi
+          git config user.name candidate-05-loop-bot
+          git config user.email candidate-05-loop-bot@users.noreply.github.com
+          git add research/candidate-05/loop_results/v47_oos.json
+          git commit -m "candidate-05: record v47 relative-value OOS decision"
+          for attempt in 1 2 3 4 5;do
+            if git push origin HEAD:research/candidate-05;then exit 0;fi
+            git pull --rebase origin research/candidate-05;sleep $((attempt*2))
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v47-paired-oos-${{ github.sha }}
+          path: artifacts/candidate-05-v47-paired-oos/**
+          if-no-files-found: warn
+          retention-days: 90
