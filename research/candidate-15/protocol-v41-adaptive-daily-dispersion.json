@@ -1,0 +1,99 @@
+{
+  "schema": "candidate-15-v41-adaptive-daily-dispersion-v1",
+  "candidate": "candidate-15-v41-adaptive-daily-dispersion",
+  "created_utc": "2026-08-09",
+  "research_question": "Can a prior-only adaptive router decide whether high cross-sectional 24-hour crypto dispersion should continue or reverse, while preserving a complete day-trading scenario and one global position?",
+  "precondition": {
+    "skip_when_any_v33_v40_advance_exists": true
+  },
+  "external_mechanism": {
+    "sources": [
+      "cross-sectional momentum and short-term reversal in cryptocurrencies",
+      "dispersion trading and winner-loser portfolio research",
+      "online expert selection using matured shadow outcomes"
+    ],
+    "reused": [
+      "the largest absolute residual 24-hour winner or loser defines the focal market",
+      "continuation and reversal are distinct mutually exclusive policies",
+      "their own fully matured prior outcomes determine which policy is active",
+      "entry waits for a subsequent completed one-hour confirmation"
+    ]
+  },
+  "scenario": {
+    "context": "at each completed 00:00 UTC boundary, rank the four completed 24-hour returns and require high cross-sectional dispersion",
+    "state": {
+      "DAILY_DISPERSION_MOMENTUM": "trade in the direction of the unique largest absolute residual market",
+      "DAILY_DISPERSION_REVERSAL": "trade opposite the unique largest absolute residual market",
+      "UNRESOLVED": "a route is inactive unless its fully matured 90-day shadow outcomes have positive mean and at least fifty-percent directional accuracy"
+    },
+    "confirmation": "the next completed one-hour bar moves in the selected route direction with directional body and taker pressure",
+    "entry": "confirmation close",
+    "invalidation": "outside the prior 24-hour extreme plus twenty-five percent of prior hourly ATR",
+    "management": "trail the best completed hourly close by one and a half prior hourly ATRs",
+    "exit": "trailing stop or before the next UTC daily boundary",
+    "arbitration": "one active route, one focal market and one global position"
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and latest daily five-minute klines",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2023-12-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": [
+      "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04",
+      "2026-08-05", "2026-08-06", "2026-08-07"
+    ],
+    "visibility": "daily state uses completed returns; route activation uses only shadow trades whose exit is strictly earlier than the new decision; entry follows a separate completed hour"
+  },
+  "fixed_rules": {
+    "decision_hour_utc": 0,
+    "return_horizon_hours": 24,
+    "dispersion_lookback_days": 90,
+    "dispersion_minimum_prior_days": 45,
+    "dispersion_z_min": 1.0,
+    "residual_leader_gap_fraction": 0.15,
+    "shadow_activation_lookback_days": 90,
+    "minimum_matured_shadow_events": 30,
+    "minimum_shadow_mean_net_bps": 0.0,
+    "minimum_shadow_directional_accuracy": 0.5,
+    "confirmation_hours": 1,
+    "minimum_confirmation_body_fraction": 0.5,
+    "minimum_directional_taker_pressure": 0.0,
+    "hourly_atr_lookback": 24,
+    "initial_stop_atr_buffer": 0.25,
+    "trailing_stop_atr": 1.5,
+    "maximum_hold_hours": 23,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_bar_stop_policy": "STOP_FIRST_CONSERVATIVE"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.5,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 10,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 2,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Freeze the shadow activation and selected daily route unchanged, then implement in one NautilusTrader account.",
+    "reject": "Do not tune dispersion, activation, confirmation or stop parameters after evaluation."
+  }
+}
