@@ -1,0 +1,170 @@
+name: Candidate 15 sequential response screen
+
+on:
+  push:
+    branches:
+      - research/candidate-15
+    paths:
+      - "research/candidate-15/**"
+      - ".github/workflows/candidate-15.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify environment, inherited source freeze and router tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          git diff --quiet \
+            0f32715d90f4cf4a8bd252d53407ff20b097bbfb \
+            -- research/candidate-14
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
+          python -m py_compile research/candidate-15/*.py
+          python -m unittest discover \
+            -s research/candidate-15 \
+            -p 'test_*.py' \
+            -v
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("research/candidate-15")
+          protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+          assert protocol["base_candidate"]["commit"] == "0f32715d90f4cf4a8bd252d53407ff20b097bbfb"
+          assert set(protocol["selection"]["intervals"]) == {"D1", "H1", "S1"}
+          assert protocol["execution_lock"]["risk_fraction"] == 0.03
+          assert protocol["execution_lock"]["global_pending_entry_plus_position_limit"] == 1
+          PY
+
+  evaluate:
+    needs: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        interval: [D1, H1, S1]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Run ${{ matrix.interval }} through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash research/candidate-15/run_week.sh "${{ matrix.interval }}"
+      - name: Remove downloaded archives
+        if: always()
+        shell: bash
+        run: rm -rf "research/candidate-15/results/${{ matrix.interval }}/data"
+      - name: Upload auditable interval evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-${{ matrix.interval }}
+          path: research/candidate-15/results/${{ matrix.interval }}
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: ${{ always() && needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Download interval evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate15-*
+          path: artifacts
+      - name: Aggregate and persist the fresh screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-15
+          current_head="$(git rev-parse origin/research/candidate-15)"
+          if [[ "$current_head" != "$GITHUB_SHA" ]]; then
+            echo "stale Candidate 15 run; branch advanced"
+            exit 0
+          fi
+
+          rm -rf research/candidate-15/results
+          for interval in D1 H1 S1; do
+            mkdir -p "research/candidate-15/results/$interval"
+            cp -a "artifacts/candidate15-$interval/." \
+              "research/candidate-15/results/$interval/"
+            for file in \
+              run.json data_manifest.json metrics.json summary.json \
+              effective_config.json submitted_plans.json positions.csv account.csv; do
+              test -s "research/candidate-15/results/$interval/$file"
+            done
+          done
+
+          python research/candidate-15/aggregate.py
+
+          latest_head="$(git ls-remote origin refs/heads/research/candidate-15 | cut -f1)"
+          if [[ "$latest_head" != "$GITHUB_SHA" ]]; then
+            echo "branch advanced during evaluation; evidence remains artifact-only"
+            exit 0
+          fi
+
+          git config user.name "candidate-15-bot"
+          git config user.email "candidate-15-bot@users.noreply.github.com"
+          git add research/candidate-15/aggregate.json \
+                  research/candidate-15/RESULT.md
+          for interval in D1 H1 S1; do
+            git add \
+              "research/candidate-15/results/$interval/run.json" \
+              "research/candidate-15/results/$interval/data_manifest.json" \
+              "research/candidate-15/results/$interval/metrics.json" \
+              "research/candidate-15/results/$interval/summary.json" \
+              "research/candidate-15/results/$interval/effective_config.json" \
+              "research/candidate-15/results/$interval/submitted_plans.json" \
+              "research/candidate-15/results/$interval/positions.csv" \
+              "research/candidate-15/results/$interval/account.csv"
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-15: record Nautilus screening evidence [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+      - name: Upload aggregate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-aggregate-${{ github.run_id }}
+          path: |
+            research/candidate-15/aggregate.json
+            research/candidate-15/RESULT.md
+          if-no-files-found: warn
+          retention-days: 30
