@@ -35,7 +35,7 @@ def write_chunk(root: Path, symbol: str, stamp: str) -> None:
     )
     features = pd.DataFrame(
         {
-            "observed_time_ns": close.astype("int64"),
+            "observed_time_ns": [pd.Timestamp(value).value for value in close],
             "feature_ready": True,
             "flow_60s": 0.1,
         },
