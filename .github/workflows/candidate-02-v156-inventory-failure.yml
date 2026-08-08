@@ -1,0 +1,128 @@
+name: candidate-02-v156-inventory-failure
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths: ["research/candidate-02/v156_trigger.json"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-02-v156-inventory-failure
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  exposed-development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify common foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          test -s research/candidate-02/v53_nt_strategy.py
+          test -s research/candidate-02/v155_informed_inventory_core.py
+          test -s research/candidate-02/v156_inventory_failure_core.py
+          test -s research/candidate-02/v156_nt_backtest.py
+
+      - name: Reuse existing official Binance Vision input collector
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .candidate-02-v46/collect_confirmation_week.py
+          test -s artifacts/candidate-02-v46-confirmation/STATUS_READY_FOR_LOCKED_EVALUATION
+          test -s artifacts/candidate-02-v46-confirmation/manifest.json
+
+      - name: Verify causal source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-02:$GITHUB_WORKSPACE/src"
+          python -m py_compile \
+            research/candidate-02/v156_inventory_failure_core.py \
+            research/candidate-02/v156_nt_backtest.py
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          from v156_inventory_failure_core import InventoryFailureConfig
+          config = json.loads(Path('research/candidate-02/v156_inventory_failure_config.json').read_text())
+          scenario = InventoryFailureConfig.from_mapping(config['scenario'])
+          assert str(config['risk']['risk_fraction']) == '0.03'
+          assert scenario.observation_bars == 6
+          assert scenario.reentry_fraction == 0.5
+          assert scenario.require_oi_nonreinforcement
+          assert scenario.require_top_position_nonreinforcement
+          assert scenario.minimum_cost_after_reward_risk == 0.75
+          assert config['lineage']['parameter_search_performed'] is False
+          print('V156 immutable causal contract: OK')
+          PY
+
+      - name: Run V156 through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-02:$GITHUB_WORKSPACE/src"
+          target="research/candidate-02/results/v156_inventory_failure/$GITHUB_SHA"
+          rm -rf "$target"
+          mkdir -p "$target"
+          set +e
+          python research/candidate-02/v156_nt_backtest.py \
+            --config research/candidate-02/v156_inventory_failure_config.json \
+            --input-root .cache/candidate-02/v46-confirmation \
+            --output "$target" \
+            2>&1 | tee "$target/console.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$rc" > "$target/runner_exit_code.txt"
+          if [[ "$rc" != "0" && "$rc" != "2" ]]; then
+            exit "$rc"
+          fi
+          cp artifacts/candidate-02-v46-confirmation/manifest.json "$target/data_manifest.json"
+          python - <<'PY'
+          from pathlib import Path
+          import json, os
+          target = Path('research/candidate-02/results/v156_inventory_failure') / os.environ['GITHUB_SHA']
+          metrics = json.loads((target / 'metrics.json').read_text())
+          assert metrics['engine'] == 'NautilusTrader 1.230.0'
+          assert metrics['custom_backtest_engine'] is False
+          assert metrics['risk_fraction'] == 0.03
+          assert metrics['project_target_met'] is False
+          assert metrics['data_integrity']['future_information_used'] is False
+          assert metrics['execution_model']['global_pending_entry_plus_position_limit'] == 1
+          print(json.dumps(metrics, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit compact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="research/candidate-02/results/v156_inventory_failure/$GITHUB_SHA"
+          git fetch origin research/candidate-02
+          if [[ "$(git rev-parse origin/research/candidate-02)" != "$GITHUB_SHA" ]]; then
+            echo "branch advanced; preserve result as artifact only"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$target"
+          git commit -m "research(candidate-02): record V156 inventory-failure evidence"
+          git push origin HEAD:research/candidate-02
