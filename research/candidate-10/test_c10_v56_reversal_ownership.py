@@ -8,8 +8,10 @@ from c10_v56_overlay import classify_reversal_ownership
 
 
 def plan(*, trend: float | None, rank: int | None, market_count: int = 4):
-    returns = {f"S{i}": 0.0 for i in range(market_count)}
-    returns["BTCUSDT"] = 0.0
+    if market_count < 1:
+        raise ValueError("market_count must be positive")
+    returns = {"BTCUSDT": 0.0}
+    returns.update({f"S{i}": 0.0 for i in range(market_count - 1)})
     trends = {name: -0.1 for name in returns}
     trends["BTCUSDT"] = trend
     return SimpleNamespace(details={"market_leadership": {
