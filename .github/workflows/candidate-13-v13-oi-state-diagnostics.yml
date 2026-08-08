@@ -9,6 +9,7 @@ on:
       - research/candidate-13/v13_v4_trade_events.json
       - research/candidate-13/oi_inventory_state_diagnostics.py
       - research/candidate-13/oi_inventory_state_diagnostics_v2.py
+      - research/candidate-13/oi_inventory_state_diagnostics_v3.py
       - .github/workflows/candidate-13-v13-oi-state-diagnostics.yml
 
 permissions:
@@ -43,23 +44,32 @@ jobs:
           smc4 doctor
           python -m py_compile \
             research/candidate-13/oi_inventory_state_diagnostics.py \
-            research/candidate-13/oi_inventory_state_diagnostics_v2.py
+            research/candidate-13/oi_inventory_state_diagnostics_v2.py \
+            research/candidate-13/oi_inventory_state_diagnostics_v3.py
           python -m json.tool research/candidate-13/v13_v4_trade_events.json >/dev/null
       - name: Run checksum-verified causal OI diagnostic
         run: |
           set -euo pipefail
-          python research/candidate-13/oi_inventory_state_diagnostics_v2.py \
+          python research/candidate-13/oi_inventory_state_diagnostics_v3.py \
             --events research/candidate-13/v13_v4_trade_events.json \
             --cache /tmp/candidate13-v13-oi-cache \
             --output-json research/candidate-13/v13-oi-state-diagnostics.json \
             --output-md research/candidate-13/V13_OI_STATE_DIAGNOSTICS.md \
             --evidence-json research/candidate-13/v13-oi-raw-evidence.json \
             2>&1 | tee research/candidate-13/V13_OI_STATE_DIAGNOSTIC_RUN.log
-      - name: Verify evidence products
+      - name: Verify evidence products and row accounting
         run: |
           set -euo pipefail
           python -m json.tool research/candidate-13/v13-oi-state-diagnostics.json >/dev/null
           python -m json.tool research/candidate-13/v13-oi-raw-evidence.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('research/candidate-13/v13-oi-state-diagnostics.json').read_text())
+          policy = result['preexisting_policy_counterfactual']
+          assert policy['retained_trades'] + policy['rejected_trades'] == result['coverage']['trades']
+          assert len(set(policy['retained_row_keys'] + policy['rejected_row_keys'])) == result['coverage']['trades']
+          PY
           test -s research/candidate-13/V13_OI_STATE_DIAGNOSTICS.md
           test -s research/candidate-13/V13_OI_STATE_DIAGNOSTIC_RUN.log
       - name: Persist commit-scoped diagnostic evidence
@@ -78,7 +88,7 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "candidate-13 v13: record causal OI-state evidence [skip ci]"
+          git commit -m "candidate-13 v13: record collision-free OI-state evidence [skip ci]"
           git fetch origin research/candidate-13
           test "$(git rev-parse origin/research/candidate-13)" = "$START_SHA"
           git push origin HEAD:research/candidate-13
