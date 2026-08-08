@@ -1,0 +1,215 @@
+name: candidate-08-session-raid-reversal-v2
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-session-raid-reversal-v2"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-session-raid-reversal-v2
+  cancel-in-progress: true
+
+jobs:
+  staged-btc-validation:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.run-session-raid-reversal-v2
+      OUTPUT_DIR: research/candidate-08/evidence/session-raid-reversal-v2
+      FIRST_DIR: research/candidate-08/evidence/session-raid-reversal-v2/first
+      SCREEN_DIR: research/candidate-08/evidence/session-raid-reversal-v2/screen
+      LOG: research/candidate-08/evidence/session-raid-reversal-v2/workflow.log
+      STATUS: research/candidate-08/evidence/session-raid-reversal-v2/exit_status.txt
+      CACHE_DIR: .cache/candidate-08-session-raid-reversal-v2
+      CONFIG: research/candidate-08/config_session_raid_reversal_btc_v2.json
+      PATTERN_CONFIG: research/candidate-08/config_range_fvg.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore checksum-verified market-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/candidate-08-session-raid-reversal-v2
+          key: candidate-08-session-raid-reversal-v2-${{ hashFiles('research/candidate-08/config_session_raid_reversal_btc_v2.json') }}
+          restore-keys: |
+            candidate-08-session-raid-reversal-v2-
+            candidate-08-session-raid-reversal-v1-
+
+      - name: Run corrected frozen first week and conditional two-week extension
+        id: research
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/session_raid_reversal_signals_v1.py \
+              research/candidate-08/session_raid_reversal_execution_v2.py \
+              research/candidate-08/run_session_raid_reversal_nautilus_v2.py
+            python research/candidate-08/test_session_raid_reversal_signals_v1.py -v
+            python research/candidate-08/test_session_raid_reversal_execution_v2.py -v
+            python research/candidate-08/run_session_raid_reversal_nautilus_v2.py \
+              --suite first --config "$CONFIG" --pattern-config "$PATTERN_CONFIG" \
+              --output "$FIRST_DIR" --data-cache "$CACHE_DIR"
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          first = json.loads((Path(os.environ["FIRST_DIR"]) / "suite_metrics.json").read_text())
+          gate = bool(first["window_results"][0].get("first_window_gate_passed", False))
+          (Path(os.environ["OUTPUT_DIR"]) / "promote_screen.txt").write_text("1\n" if gate else "0\n")
+          print(json.dumps({"first_window_gate_passed": gate}, indent=2))
+          PY
+            if [[ "$(cat "$OUTPUT_DIR/promote_screen.txt")" == "1" ]]; then
+              python research/candidate-08/run_session_raid_reversal_nautilus_v2.py \
+                --suite screen --config "$CONFIG" --pattern-config "$PATTERN_CONFIG" \
+                --output "$SCREEN_DIR" --reuse-first-dir "$FIRST_DIR/screen-01" \
+                --data-cache "$CACHE_DIR"
+            fi
+            python - <<'PY'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+
+          output = Path(os.environ["OUTPUT_DIR"])
+          first_dir = Path(os.environ["FIRST_DIR"])
+          screen_dir = Path(os.environ["SCREEN_DIR"])
+          first = json.loads((first_dir / "suite_metrics.json").read_text())
+          result = first["window_results"][0]
+          name = str(result["name"])
+          window = first_dir / name
+          manifest = json.loads((window / "data_manifest.json").read_text())
+          diagnostics = manifest["assets"]["BTCUSDT"]["detector_diagnostics"]
+          rejections = json.loads((window / "detector_rejections.json").read_text())
+          reasons = Counter(str(x.get("reason")) for x in rejections.get("by_symbol", {}).get("BTCUSDT", []))
+          gate = bool(result.get("first_window_gate_passed", False))
+          signals = int(result.get("detector", {}).get("signals", 0))
+          closed = int(result.get("position_metrics", {}).get("closed_trades", 0))
+          execution_failures = int(result.get("execution_failures", 0))
+          checks = dict(result.get("first_window_gate_checks", {}))
+          implementation_clean = (
+              execution_failures == 0
+              and bool(checks.get("entry_causality", False))
+              and bool(checks.get("fill_adjusted_risk_budget_respected", False))
+              and bool(checks.get("planned_risk_budget_respected", False))
+              and bool(checks.get("realized_loss_budget_respected", False))
+              and bool(checks.get("funding_cost_state_is_causal_and_complete", False))
+              and bool(checks.get("no_residual_exposure", False))
+              and bool(checks.get("no_unexpected_or_liquidation_closes", False))
+          )
+          if not gate:
+              if not implementation_clean:
+                  classification = "IMPLEMENTATION_OR_EXECUTION_CONTRACT_FAILURE"
+                  next_action = "FIX_IMPLEMENTATION_ONLY_AND_RERUN_IDENTICAL_FROZEN_WEEK"
+              elif signals == 0:
+                  classification = "CLEAN_LOGIC_FAILURE_NO_TRADEABLE_DIRECT_RAIDS"
+                  next_action = "DISCARD_FAMILY_UNLESS_PREREGISTERED_LOCATION_ABLATION_IS_DOMINANT"
+              elif closed < 3:
+                  classification = "CLEAN_LOGIC_FAILURE_INSUFFICIENT_DIRECT_RAID_FREQUENCY"
+                  next_action = "DISCARD_FAMILY_UNLESS_PREREGISTERED_LOCATION_ABLATION_IS_DOMINANT"
+              elif float(result.get("total_return", 0.0)) <= 0.0:
+                  classification = "CLEAN_LOGIC_FAILURE_DIRECT_RAID_EDGE_NEGATIVE"
+                  next_action = "DISCARD_DIRECT_SESSION_RAID_FAMILY"
+              else:
+                  classification = "FIRST_GATE_FAILED_OTHER_CLEAN_CONTRACT"
+                  next_action = "INSPECT_EXACT_FAILED_GATE_WITHOUT_PARAMETER_TUNING"
+              screen = None
+          else:
+              screen = json.loads((screen_dir / "suite_metrics.json").read_text())
+              suite_gate = bool(screen.get("suite_gate_passed", False))
+              goal = bool(screen.get("goal_met", False))
+              if suite_gate and goal:
+                  classification = "PROMOTE_TO_LONGER_BTC_EVALUATION"
+                  next_action = "RUN_FROZEN_LONGER_BTC_EVALUATION"
+              elif suite_gate:
+                  classification = "THREE_WEEK_GATE_PASSED_BUT_DAILY_GROWTH_GOAL_MISSED"
+                  next_action = "DO_NOT_TUNE;_ANALYZE_STRUCTURAL_GROWTH_LIMIT"
+              else:
+                  classification = "MULTIWEEK_GENERALIZATION_FAILURE"
+                  next_action = "DISCARD_OR_ONE_CAUSAL_ABLATION_FROM_DOMINANT_FAILURE"
+          decision = {
+              "candidate": first.get("candidate"),
+              "classification": classification,
+              "implementation_clean": implementation_clean,
+              "first_window": {
+                  "signals": signals,
+                  "closed_trades": closed,
+                  "wins": int(result.get("position_metrics", {}).get("wins", 0)),
+                  "win_rate": float(result.get("position_metrics", {}).get("win_rate", 0.0)),
+                  "total_return": float(result.get("total_return", 0.0)),
+                  "daily_geometric_growth": float(result.get("daily_geometric_growth", 0.0)),
+                  "maximum_drawdown": float(result.get("maximum_realized_equity_drawdown", 0.0)),
+                  "execution_failures": execution_failures,
+                  "gate_checks": checks,
+                  "gate_passed": gate,
+              },
+              "detector_diagnostics": diagnostics,
+              "top_rejection_reasons": dict(reasons.most_common(20)),
+              "screen_summary": screen,
+              "next_action": next_action,
+              "scenario_change_from_v1": "NONE",
+              "execution_change_from_v1": "TWO_TICK_BAR_MARKET_ENTRY_RESERVE",
+              "scalping_alpha_inputs": False,
+          }
+          (output / "decision.json").write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit implementation and evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- \
+            research/candidate-08/session_raid_reversal_signals_v1.py \
+            research/candidate-08/session_raid_reversal_execution_v2.py \
+            research/candidate-08/test_session_raid_reversal_signals_v1.py \
+            research/candidate-08/test_session_raid_reversal_execution_v2.py \
+            research/candidate-08/run_session_raid_reversal_nautilus_v2.py \
+            research/candidate-08/config_session_raid_reversal_btc_v2.json \
+            research/candidate-08/SESSION_RAID_REVERSAL_V2_PREREGISTRATION.md \
+            "$OUTPUT_DIR" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record session raid reversal V2 evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce reproducible execution
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS_VALUE: ${{ steps.research.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
