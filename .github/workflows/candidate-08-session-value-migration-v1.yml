@@ -1,0 +1,291 @@
+name: candidate-08-session-value-migration-v1
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-session-value-migration-v1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-session-value-migration-v1
+  cancel-in-progress: true
+
+jobs:
+  staged-btc-validation:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.run-session-value-migration-v1
+      OUTPUT_DIR: research/candidate-08/evidence/session-value-migration-v1
+      FIRST_DIR: research/candidate-08/evidence/session-value-migration-v1/first
+      SCREEN_DIR: research/candidate-08/evidence/session-value-migration-v1/screen
+      LOG: research/candidate-08/evidence/session-value-migration-v1/workflow.log
+      STATUS: research/candidate-08/evidence/session-value-migration-v1/exit_status.txt
+      CACHE_DIR: .cache/candidate-08-session-value-migration-v1
+      CONFIG: research/candidate-08/config_session_value_migration_btc_v1.json
+      PATTERN_CONFIG: research/candidate-08/config_range_fvg.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore checksum-verified market-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/candidate-08-session-value-migration-v1
+          key: candidate-08-session-value-migration-v1-${{ hashFiles('research/candidate-08/config_session_value_migration_btc_v1.json') }}
+          restore-keys: |
+            candidate-08-session-value-migration-v1-
+            candidate-08-opening-drive-acceptance-v1-
+            candidate-08-opening-initial-balance-failed-auction-v1-
+
+      - name: Run frozen first week and conditional two-week extension
+        id: research
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          rm -rf "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
+          set +e
+          (
+            set -euo pipefail
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/session_value_migration_signals_v1.py \
+              research/candidate-08/run_session_value_migration_nautilus_v1.py
+            python research/candidate-08/test_session_value_migration_signals_v1.py -v
+            python research/candidate-08/test_session_raid_reversal_execution_v2.py -v
+
+            set +e
+            python research/candidate-08/run_session_value_migration_nautilus_v1.py \
+              --suite first --config "$CONFIG" --pattern-config "$PATTERN_CONFIG" \
+              --output "$FIRST_DIR" --data-cache "$CACHE_DIR"
+            first_status=$?
+            set -e
+            printf '%s\n' "$first_status" > "$OUTPUT_DIR/first_command_status.txt"
+
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          first_dir = Path(os.environ["FIRST_DIR"])
+          suite_path = first_dir / "suite_metrics.json"
+          metrics_path = first_dir / "screen-01" / "metrics.json"
+          if suite_path.exists():
+              payload = json.loads(suite_path.read_text())
+              gate = bool(payload["window_results"][0].get("first_window_gate_passed", False))
+          elif metrics_path.exists():
+              payload = json.loads(metrics_path.read_text())
+              gate = bool(payload.get("first_window_gate_passed", False))
+          else:
+              raise RuntimeError("first-window metrics were not produced")
+          Path(os.environ["OUTPUT_DIR"]).joinpath("promote_screen.txt").write_text(
+              "1\n" if gate else "0\n"
+          )
+          print(json.dumps({"first_window_gate_passed": gate}, indent=2))
+          PY
+
+            screen_status=0
+            if [[ "$(cat "$OUTPUT_DIR/promote_screen.txt")" == "1" ]]; then
+              set +e
+              python research/candidate-08/run_session_value_migration_nautilus_v1.py \
+                --suite screen --config "$CONFIG" --pattern-config "$PATTERN_CONFIG" \
+                --output "$SCREEN_DIR" --reuse-first-dir "$FIRST_DIR" \
+                --data-cache "$CACHE_DIR"
+              screen_status=$?
+              set -e
+            fi
+            printf '%s\n' "$screen_status" > "$OUTPUT_DIR/screen_command_status.txt"
+
+            python - <<'PY'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+
+          output = Path(os.environ["OUTPUT_DIR"])
+          first_dir = Path(os.environ["FIRST_DIR"])
+          screen_dir = Path(os.environ["SCREEN_DIR"])
+
+          def read(path):
+              return json.loads(path.read_text()) if path.exists() else None
+
+          def implementation_clean(metrics):
+              checks = dict(metrics.get("first_window_gate_checks", {}))
+              if checks:
+                  return (
+                      int(metrics.get("execution_failures", 0)) == 0
+                      and bool(checks.get("entry_causality", False))
+                      and bool(checks.get("fill_adjusted_risk_budget_respected", False))
+                      and bool(checks.get("planned_risk_budget_respected", False))
+                      and bool(checks.get("realized_loss_budget_respected", False))
+                      and bool(checks.get("funding_cost_state_is_causal_and_complete", False))
+                      and bool(checks.get("no_residual_exposure", False))
+                      and bool(checks.get("no_unexpected_or_liquidation_closes", False))
+                  )
+              contract = dict(metrics.get("contract_checks", {}))
+              return (
+                  int(metrics.get("execution_failures", 0)) == 0
+                  and int(contract.get("entry_fill_before_signal_count", 0)) == 0
+                  and int(contract.get("fill_adjusted_loss_over_budget_count", 0)) == 0
+                  and int(contract.get("planned_loss_over_budget_count", 0)) == 0
+                  and int(contract.get("realized_loss_over_budget_count", 0)) == 0
+                  and int(contract.get("missing_funding_cost_state_count", 0)) == 0
+                  and int(metrics.get("unexpected_or_liquidation_closes", 0)) == 0
+                  and int(metrics.get("open_orders_after_run", 0)) == 0
+                  and int(metrics.get("open_positions_after_run", 0)) == 0
+              )
+
+          def compact(metrics):
+              return {
+                  "window": metrics.get("window"),
+                  "signals": int(metrics.get("detector", {}).get("signals", 0)),
+                  "closed_trades": int(metrics.get("position_metrics", {}).get("closed_trades", 0)),
+                  "wins": int(metrics.get("position_metrics", {}).get("wins", 0)),
+                  "win_rate": float(metrics.get("position_metrics", {}).get("win_rate", 0.0)),
+                  "total_return": float(metrics.get("total_return", 0.0)),
+                  "daily_geometric_growth": float(metrics.get("daily_geometric_growth", 0.0)),
+                  "maximum_drawdown": float(metrics.get("maximum_realized_equity_drawdown", 0.0)),
+                  "implementation_clean": implementation_clean(metrics),
+                  "gate_passed": bool(metrics.get("first_window_gate_passed", False)),
+              }
+
+          first_suite = read(first_dir / "suite_metrics.json")
+          first_metrics = read(first_dir / "screen-01" / "metrics.json")
+          if first_metrics is None:
+              raise RuntimeError("first metrics missing during decision")
+          first_gate = bool(first_metrics.get("first_window_gate_passed", False))
+          first_clean = implementation_clean(first_metrics)
+          manifest = read(first_dir / "screen-01" / "data_manifest.json") or {}
+          diagnostics = (
+              manifest.get("assets", {}).get("BTCUSDT", {}).get("detector_diagnostics", {})
+          )
+          rejection_payload = read(first_dir / "screen-01" / "detector_rejections.json") or {}
+          reasons = Counter(
+              str(item.get("reason"))
+              for item in rejection_payload.get("by_symbol", {}).get("BTCUSDT", [])
+          )
+
+          screen_suite = read(screen_dir / "suite_metrics.json")
+          screen_metrics = [
+              read(path) for path in sorted(screen_dir.glob("screen-*/metrics.json"))
+          ]
+          screen_metrics = [item for item in screen_metrics if item is not None]
+          first_command_status = int((output / "first_command_status.txt").read_text().strip())
+          screen_command_status = int((output / "screen_command_status.txt").read_text().strip())
+
+          if not first_gate:
+              signals = int(first_metrics.get("detector", {}).get("signals", 0))
+              closed = int(first_metrics.get("position_metrics", {}).get("closed_trades", 0))
+              if not first_clean:
+                  classification = "IMPLEMENTATION_OR_EXECUTION_CONTRACT_FAILURE_FIRST_WEEK"
+                  next_action = "FIX_IMPLEMENTATION_ONLY_AND_RERUN_IDENTICAL_FROZEN_WEEK"
+              elif signals == 0:
+                  classification = "CLEAN_LOGIC_FAILURE_NO_TRADEABLE_VALUE_MIGRATION"
+                  next_action = "REJECT_SESSION_VALUE_MIGRATION_V1"
+              elif closed < 3:
+                  classification = "CLEAN_LOGIC_FAILURE_INSUFFICIENT_VALUE_MIGRATION_FREQUENCY"
+                  next_action = "REJECT_SESSION_VALUE_MIGRATION_V1"
+              elif float(first_metrics.get("total_return", 0.0)) <= 0.0:
+                  classification = "CLEAN_LOGIC_FAILURE_VALUE_MIGRATION_EDGE_NEGATIVE"
+                  next_action = "REJECT_SESSION_VALUE_MIGRATION_V1"
+              else:
+                  classification = "FIRST_GATE_FAILED_OTHER_CLEAN_CONTRACT"
+                  next_action = "INSPECT_EXACT_FAILED_GATE_WITHOUT_PARAMETER_TUNING"
+          elif screen_suite is not None:
+              if bool(screen_suite.get("suite_gate_passed", False)) and bool(screen_suite.get("goal_met", False)):
+                  classification = "PROMOTE_TO_LONGER_BTC_EVALUATION"
+                  next_action = "RUN_FROZEN_LONGER_BTC_EVALUATION"
+              elif bool(screen_suite.get("suite_gate_passed", False)):
+                  classification = "THREE_WEEK_GATE_PASSED_DAILY_GROWTH_GOAL_MISSED"
+                  next_action = "DO_NOT_TUNE;_ANALYZE_STRUCTURAL_GROWTH_LIMIT"
+              else:
+                  classification = "MULTIWEEK_GENERALIZATION_FAILURE"
+                  next_action = "REJECT_OR_ONE_CAUSAL_ABLATION_FROM_DOMINANT_FAILURE"
+          else:
+              clean_windows = [implementation_clean(item) for item in screen_metrics]
+              if screen_metrics and not all(clean_windows):
+                  classification = "PARTIAL_SCREEN_IMPLEMENTATION_OR_RISK_CONTRACT_FAILURE"
+                  next_action = "SEPARATE_DIRECTIONAL_OUTCOMES_FROM_EXECUTION_CONTRACT"
+              elif screen_metrics and all(float(item.get("total_return", 0.0)) <= 0.0 for item in screen_metrics):
+                  classification = "PARTIAL_SCREEN_CLEAN_LOGIC_FAILURE"
+                  next_action = "REJECT_SESSION_VALUE_MIGRATION_V1"
+              else:
+                  classification = "SCREEN_RUN_INCOMPLETE_WITH_REPRODUCIBLE_WINDOW_EVIDENCE"
+                  next_action = "FIX_RUNNER_OR_EVIDENCE_ONLY_AND_RESUME_FROZEN_SCREEN"
+
+          decision = {
+              "candidate": first_metrics.get("candidate"),
+              "classification": classification,
+              "first_window": compact(first_metrics),
+              "first_suite_summary": first_suite,
+              "screen_windows": [compact(item) for item in screen_metrics],
+              "screen_suite_summary": screen_suite,
+              "first_command_status": first_command_status,
+              "screen_command_status": screen_command_status,
+              "detector_diagnostics": diagnostics,
+              "top_rejection_reasons": dict(reasons.most_common(20)),
+              "next_action": next_action,
+              "scenario_family": "SESSION_PREVIOUS_DAY_VALUE_MIGRATION_CONTINUATION",
+              "ten_second_alpha_inputs": False,
+              "goal_verified": bool(
+                  screen_suite is not None
+                  and screen_suite.get("suite_gate_passed", False)
+                  and screen_suite.get("goal_met", False)
+              ),
+          }
+          (output / "decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          ) 2>&1 | tee "$LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$STATUS"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit implementation and evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER"
+          git add -A -- \
+            research/candidate-08/session_value_migration_signals_v1.py \
+            research/candidate-08/test_session_value_migration_signals_v1.py \
+            research/candidate-08/run_session_value_migration_nautilus_v1.py \
+            research/candidate-08/config_session_value_migration_btc_v1.json \
+            research/candidate-08/SESSION_VALUE_MIGRATION_V1_PREREGISTRATION.md \
+            research/candidate-08/OPENING_DRIVE_ACCEPTANCE_V1_RESULT.md \
+            "$OUTPUT_DIR" "$MARKER"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record session value migration V1 evidence [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
+            git rebase --abort || true
+            sleep $((attempt * 4))
+          done
+          exit 1
+
+      - name: Enforce reproducible execution
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS_VALUE: ${{ steps.research.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
