@@ -1,0 +1,150 @@
+name: candidate-02-v150-third-untouched-holdout
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths: ["research/candidate-02/v150_trigger.json"]
+
+permissions: {contents: write, packages: read, actions: read}
+concurrency: {group: candidate-02-v150-third-holdout, cancel-in-progress: false}
+
+jobs:
+  v150-third:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", fetch-depth: 0}
+      - name: Verify and lock surviving candidate
+        id: lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          mkdir -p /tmp/v150
+          python - <<'PY'
+          import json,os
+          from datetime import date,timedelta
+          from pathlib import Path
+          paths=sorted(Path('.').glob('research/candidate-02/results/v148_holdout/*/artifacts-v148-decision.json'))
+          out={'candidate':'candidate-02-v150-third-untouched-holdout','engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':0.03,'selection_before_date_reveal':True}
+          if not paths:
+              out.update({'status':'NO_V148_DECISION','has_candidate':False})
+          else:
+              prior=json.loads(paths[-1].read_text()); out['source_v148_path']=str(paths[-1])
+              allowed={'SECOND_PROSPECTIVE_PASS':'THIRD_SAME_CANDIDATE','FIRST_NEW_GENERATION_PASS':'SECOND_SAME_NEW_CANDIDATE'}
+              if prior.get('status') not in allowed:
+                  out.update({'status':'NO_ELIGIBLE_V148_SURVIVOR','has_candidate':False,'v148_status':prior.get('status')})
+              else:
+                  family=prior['selected_family']; runner=prior['selected_runner']; scenario=prior['selected_scenario']; stage=allowed[prior['status']]
+                  excluded={'2024-12-30','2025-03-03',*prior.get('previous_revealed_weeks',[]),prior['holdout_week_start']}
+                  earliest=date(2024,12,9) if family=='v146' else date(2024,11,4)
+                  weeks=[]; current=earliest
+                  while current<=date(2025,2,24):
+                      if current.isoformat() not in excluded: weeks.append(current)
+                      current+=timedelta(days=7)
+                  key=os.environ['GITHUB_SHA']+family+stage
+                  week=weeks[int.from_bytes(key.encode(),'little')%len(weeks)]
+                  out.update({'status':'LOCKED_BEFORE_REVEAL','has_candidate':True,'stage':stage,'selected_family':family,'selected_variant':prior.get('selected_variant'),'selected_runner':runner,'selected_scenario':scenario,'previous_revealed_weeks':sorted(excluded-{'2024-12-30','2025-03-03'}),'holdout_week_start':week.isoformat(),'week_selection':'trigger SHA plus locked family and stage modulo untouched Mondays'})
+          Path('artifacts-v150-lock.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as fh:
+              fh.write(f"has_candidate={'true' if out.get('has_candidate') else 'false'}\n")
+              if out.get('has_candidate'):
+                  fh.write(f"runner={out['selected_runner']}\n"); fh.write(f"week_start={out['holdout_week_start']}\n"); fh.write(f"stage={out['stage']}\n")
+          PY
+
+      - name: Download immutable causal matrix
+        if: steps.lock.outputs.has_candidate == 'true'
+        uses: actions/download-artifact@v4
+        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v150, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
+
+      - name: Reveal and download bounded raw history
+        if: steps.lock.outputs.has_candidate == 'true'
+        shell: bash
+        env: {WEEK_START: "${{ steps.lock.outputs.week_start }}"}
+        run: |
+          set -euo pipefail
+          rm -rf inputs/v150/.cache
+          mkdir -p inputs/v150/.cache/candidate-02/v150-holdout/binance_1m /tmp/v150/download
+          python - <<'PY'
+          import calendar,os
+          from datetime import date,timedelta
+          from pathlib import Path
+          week=date.fromisoformat(os.environ['WEEK_START']); final=week+timedelta(days=7)
+          base='https://data.binance.vision/data/futures/um'; out=Path('inputs/v150/.cache/candidate-02/v150-holdout/binance_1m'); commands=[]
+          cursor=date(2024,9,1)
+          while True:
+              last=date(cursor.year,cursor.month,calendar.monthrange(cursor.year,cursor.month)[1])
+              if last<date(week.year,week.month,1):
+                  token=f'{cursor.year:04d}-{cursor.month:02d}'; name=f'BTCUSDT-1m-{token}.zip'; commands.append((f'{base}/monthly/klines/BTCUSDT/1m/{name}',out/name)); cursor=date(cursor.year+1,1,1) if cursor.month==12 else date(cursor.year,cursor.month+1,1)
+              else: break
+          day=date(week.year,week.month,1)
+          while day<=final:
+              name=f'BTCUSDT-1m-{day.isoformat()}.zip'; commands.append((f'{base}/daily/klines/BTCUSDT/1m/{name}',out/name)); day+=timedelta(days=1)
+          Path('/tmp/v150/downloads.tsv').write_text('\n'.join(f'{u}\t{p}' for u,p in commands)+'\n')
+          PY
+          cat /tmp/v150/downloads.tsv | xargs -P 8 -n 2 bash -c 'curl --fail --location --retry 5 --retry-delay 2 "$0" -o "$1"'
+
+      - name: Materialize locked config and run NautilusTrader
+        if: steps.lock.outputs.has_candidate == 'true'
+        shell: bash
+        env: {RUNNER: "${{ steps.lock.outputs.runner }}"}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('artifacts-v150-lock.json').read_text()); base=json.loads(Path('research/candidate-02/v107_week1_config.json').read_text())
+          base['candidate']=f"candidate-02-v150-{lock['selected_family']}-{lock['stage'].lower()}"; base['scenario'].update(lock['selected_scenario']); base['validation']['first_week_start']=lock['holdout_week_start']
+          Path('/tmp/v150/config.json').write_text(json.dumps(base,indent=2,sort_keys=True)+'\n')
+          assert float(base['risk']['risk_fraction'])==0.03 and base['risk']['maximum_notional_cap'] is None
+          PY
+          mkdir -p artifacts/candidate-02-v150/holdout
+          set +e
+          python "$RUNNER" --config /tmp/v150/config.json --input-root inputs/v150 --output artifacts/candidate-02-v150/holdout | tee artifacts-v150-holdout.log
+          status=${PIPESTATUS[0]}; set -e; echo "$status" > artifacts/candidate-02-v150/holdout/validation_exit_code.txt
+          if [[ "$status" != 0 && "$status" != 2 ]]; then exit "$status"; fi
+
+      - name: Finalize decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out=json.loads(Path('artifacts-v150-lock.json').read_text()); p=Path('artifacts/candidate-02-v150/holdout/metrics.json')
+          if not out.get('has_candidate'): out['target_met']=False
+          elif p.exists():
+              m=json.loads(p.read_text()); out['metrics']=m; out['target_met']=bool(m['target_met'])
+              if out['stage']=='THIRD_SAME_CANDIDATE': out['status']='THIRD_PROSPECTIVE_PASS' if m['target_met'] else 'THIRD_PROSPECTIVE_REJECT'
+              else: out['status']='SECOND_NEW_GENERATION_PASS' if m['target_met'] else 'SECOND_NEW_GENERATION_REJECT'
+          else: out['status']='HOLDOUT_EXECUTION_ERROR'; out['target_met']=False
+          Path('artifacts-v150-decision.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'status':out['status'],'family':out.get('selected_family'),'week':out.get('holdout_week_start'),'metrics':{k:out.get('metrics',{}).get(k) for k in ('trades','trades_per_day','win_rate','profit_factor_after_cost','geometric_daily_growth_after_cost','maximum_mark_to_market_drawdown','target_met')}},indent=2,sort_keys=True))
+          PY
+
+      - name: Commit evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf compact-v150; mkdir compact-v150
+          cp -f artifacts-v150-*.json compact-v150/ 2>/dev/null || true; cp -f artifacts-v150-*.log compact-v150/ 2>/dev/null || true; cp -a artifacts/candidate-02-v150 compact-v150/ 2>/dev/null || true
+          git fetch origin research/candidate-02
+          if test "$(git rev-parse origin/research/candidate-02)" = "$GITHUB_SHA" && test -f artifacts-v150-decision.json; then
+            d="research/candidate-02/results/v150_holdout/$GITHUB_SHA"; mkdir -p "$d"; cp -a compact-v150/. "$d/"; git config user.name github-actions[bot]; git config user.email 41898282+github-actions[bot]@users.noreply.github.com; git add "$d"; git commit -m "research(candidate-02): record third holdout evidence"; git push origin HEAD:research/candidate-02
+          fi
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: "candidate-02-v150-third-${{ github.sha }}", path: compact-v150, if-no-files-found: warn, retention-days: 30, compression-level: 9}
