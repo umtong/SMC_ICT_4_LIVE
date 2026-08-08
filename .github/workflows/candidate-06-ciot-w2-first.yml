@@ -1,0 +1,174 @@
+name: Candidate 06 CIOT W2-First Campaign
+
+on:
+  push:
+    branches: [research/candidate-06]
+    paths:
+      - ".github/workflows/candidate-06-ciot-w2-first.yml"
+      - "research/candidate-06/causal_inventory_ownership_transfer_engine.py"
+      - "research/candidate-06/causal_inventory_ownership_nautilus_runner.py"
+      - "research/candidate-06/run_causal_inventory_ownership_validation.py"
+      - "research/candidate-06/run_causal_inventory_ownership_matrix.py"
+      - "research/candidate-06/test_causal_inventory_ownership_transfer_engine.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-ciot-w2-first
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  evaluate:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed NautilusTrader environment
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(f"NAUTILUS_VERSION={actual}")
+          PY
+
+      - name: Verify CIOT causal and Nautilus contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-06/causal_inventory_ownership_transfer_engine.py \
+            research/candidate-06/causal_inventory_ownership_nautilus_runner.py \
+            research/candidate-06/run_causal_inventory_ownership_validation.py \
+            research/candidate-06/run_causal_inventory_ownership_matrix.py \
+            research/candidate-06/test_causal_inventory_ownership_transfer_engine.py
+          python research/candidate-06/test_causal_inventory_ownership_transfer_engine.py
+          python research/candidate-06/test_signal_submission_timing_contract.py
+          python research/candidate-06/test_futures_metrics_data.py
+          python research/candidate-06/test_futures_metrics_timestamp_contract.py
+          python research/candidate-06/test_cross_venue_data_contract.py
+          python - <<'PY'
+          import inspect
+          from causal_inventory_ownership_transfer_engine import CausalInventoryOwnershipTransferEngine
+          from causal_inventory_ownership_nautilus_runner import run_causal_inventory_ownership_nautilus_backtest
+          from run_causal_inventory_ownership_matrix import VARIANTS, main
+
+          logic = inspect.getsource(CausalInventoryOwnershipTransferEngine)
+          runner = inspect.getsource(run_causal_inventory_ownership_nautilus_backtest)
+          campaign = inspect.getsource(main)
+          assert 'event_type="CIOT_ENTRY_TRANSITION"' in logic
+          assert 'previous_state="IDLE"' in logic
+          assert 'next_state="ENTRY_ARMED"' in logic
+          assert "COUNTER_INVENTORY_REBUILT_AFTER_FORCED_REMOVAL" in logic
+          assert "PERPETUAL_ACCEPTED_AFTER_STRICTLY_EARLIER_SPOT_DISCOVERY" in logic
+          assert "FIRST_OPPOSING_FLOW_PULLBACK_HELD_NEW_OWNER_BOUNDARY" in logic
+          assert "NO_STILL_LIVE_OWNED_OBJECTIVE_WITH_SUFFICIENT_SPACE" in logic
+          assert "BacktestEngine" in runner
+          assert "engine.add_instrument" in runner
+          assert "engine.add_data" in runner
+          assert "engine.add_strategy" in runner
+          assert "week_index = 1" not in campaign
+          assert any(item[0] == "ciot_full_ownership_transfer" for item in VARIANTS)
+          assert all(item[-1] is False for item in VARIANTS[-2:])
+          print("CIOT chronology, ablation, risk and Nautilus-only execution contracts verified")
+          PY
+
+      - name: Run fresh W2-first CIOT matrix
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/ciot-w2-first
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts
+          python research/candidate-06/run_causal_inventory_ownership_matrix.py \
+            --output artifacts/candidate-06/ciot-w2-first \
+            > artifacts/candidate-06-ciot-w2-first.stdout \
+            2> artifacts/candidate-06-ciot-w2-first.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Guarantee terminal evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p artifacts/candidate-06/ciot-w2-first
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > artifacts/candidate-06/ciot-w2-first/workflow_exit_code.txt
+          cp artifacts/candidate-06-ciot-w2-first.stdout artifacts/candidate-06/ciot-w2-first/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-06-ciot-w2-first.stderr artifacts/candidate-06/ciot-w2-first/workflow_stderr.txt 2>/dev/null || true
+          if [ ! -f artifacts/candidate-06/ciot-w2-first/summary.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-06/ciot-w2-first")
+          payload = {
+              "long_evaluation_authorized": False,
+              "selected": None,
+              "terminal_status": "IMPLEMENTATION_OR_DATA_FAILURE_BEFORE_SUMMARY",
+          }
+          (root / "summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+          echo "--- CIOT SUMMARY ---"
+          cat artifacts/candidate-06/ciot-w2-first/SUMMARY.md 2>/dev/null || cat artifacts/candidate-06/ciot-w2-first/summary.json
+
+      - name: Commit source lock and complete evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add -f artifacts/candidate-06/ciot-w2-first
+          if [ -f research/candidate-06/config.ciot.locked.json ]; then
+            git add -f research/candidate-06/config.ciot.locked.json
+          fi
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Evaluate candidate-06 CIOT ownership transfer [candidate-06 evidence]"
+          git pull --rebase origin research/candidate-06
+          git push origin HEAD:research/candidate-06
+
+      - name: Upload complete evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-ciot-w2-first-${{ github.sha }}
+          path: artifacts/candidate-06/ciot-w2-first
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce research verdict
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          exit "$code"
