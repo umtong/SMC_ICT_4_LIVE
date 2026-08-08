@@ -7,6 +7,7 @@ on:
       - .github/workflows/candidate-09-v29-depth.yml
       - research/candidate-09/v29_depth_router/state_engine.py
       - research/candidate-09/v29_depth_router/data_loader.py
+      - research/candidate-09/v29_depth_router/apply_missing_depth_contract.py
       - research/candidate-09/v29_depth_router/config.json
       - research/candidate-09/v29_depth_router/tests/**
 
@@ -39,7 +40,9 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .cache/candidate-09-v29-depth
-          key: candidate-09-v29-depth-v1
+          key: candidate-09-v29-depth-v2
+          restore-keys: |
+            candidate-09-v29-depth-v1
 
       - name: Materialize verified Nautilus runner and contracts
         shell: bash
@@ -47,6 +50,7 @@ jobs:
           set -euo pipefail
           src=research/candidate-09
           root=$src/v29_depth_router
+          python "$root/apply_missing_depth_contract.py"
           cp "$src/run.py" "$root/run.py"
           cp "$src/nautilus_strategy.py" "$root/nautilus_strategy.py"
           cp "$src/tests/test_accounting_contract.py" "$root/tests/test_accounting_contract.py"
