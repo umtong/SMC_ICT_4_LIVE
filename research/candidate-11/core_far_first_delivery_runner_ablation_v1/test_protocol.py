@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# Connector-triggered rerun after restoring the locked materializer source.
 import importlib.util
 import json
 from pathlib import Path
