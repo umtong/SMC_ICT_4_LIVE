@@ -1,0 +1,102 @@
+name: candidate-18-v7-local-twin-trigger-development
+
+on:
+  push:
+    branches: ["research/candidate-18"]
+    paths:
+      - "research/candidate-18/local_twin_trigger_strategy.py"
+      - "research/candidate-18/candidate18_strategy.py"
+      - "research/candidate-18/candidate_v7.py"
+      - "research/candidate-18/validate_v7.py"
+      - "research/candidate-18/tests/**"
+      - ".github/workflows/candidate-18-v7-development.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-18-v7-local-twin-trigger-development
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  regression:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: known-2023-12
+            build_start: "2023-12-22"
+            evaluation_start: "2023-12-25"
+            evaluation_end: "2023-12-31"
+          - name: viewed-v1-week-1
+            build_start: "2024-07-05"
+            evaluation_start: "2024-07-08"
+            evaluation_end: "2024-07-14"
+          - name: viewed-v1-week-2
+            build_start: "2023-10-13"
+            evaluation_start: "2023-10-16"
+            evaluation_end: "2023-10-22"
+
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+
+    env:
+      PYTHONPATH: research/candidate-18:research/candidate-16:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-18-v7-development/${{ matrix.name }}
+      CACHE: .cache/candidate-18-v7-development/${{ matrix.name }}
+      PERIOD_NAME: ${{ matrix.name }}
+      BUILD_START: ${{ matrix.build_start }}
+      EVALUATION_START: ${{ matrix.evaluation_start }}
+      EVALUATION_END: ${{ matrix.evaluation_end }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-18 research/candidate-17 research/candidate-16
+          python -m unittest discover -s research/candidate-18/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-17/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v2_contract.py' -v
+
+      - name: Run local twin-trigger development period
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-18/candidate_v7.py stage \
+            --config research/candidate-18/config.json \
+            --build-start "$BUILD_START" \
+            --build-end "$EVALUATION_END" \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --cache "$CACHE" \
+            --output "$ROOT" \
+            --validation-mode "v7-local-twin-development-$PERIOD_NAME" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify local exits, risk and causality
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-18/validate_v7.py \
+            --root "$ROOT" \
+            --period "$PERIOD_NAME"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-18-v7-development-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-18-v7-development/${{ matrix.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
