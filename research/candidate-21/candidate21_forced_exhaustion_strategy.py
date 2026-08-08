@@ -1,16 +1,34 @@
-"""Forced-flow exhaustion reversal on the inherited Nautilus FOK path."""
+"""Cost-aware forced-flow exhaustion reversal on NautilusTrader.
+
+A deleveraging impulse is only an event.  A strictly later bar must show that
+same-side aggression is being absorbed by displayed liquidity.  At that moment
+no reversal close is consumed: a native STOP_LIMIT bracket is armed beyond the
+exhaustion bar.  A later price crossing is therefore both confirmation and
+entry, while FOK preserves all-or-none protection and the pre-shock origin is
+frozen as the natural target.
+"""
 from __future__ import annotations
 
 from dataclasses import asdict
 import math
 
+from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderType
+from nautilus_trader.model.enums import TimeInForce
+
 from fok_capped_strategy import Candidate18Config
 from fok_capped_strategy import Candidate18Strategy as Candidate18FokStrategy
-from forced_exhaustion_router import ForcedDecision, ForcedEpisode, ForcedObservation
-from forced_exhaustion_router import ForcedResponseThresholds, ForcedShockEvidence
-from forced_exhaustion_router import ForcedShockThresholds, advance_forced_episode
+from forced_exhaustion_router import ForcedDecision
+from forced_exhaustion_router import ForcedEpisode
+from forced_exhaustion_router import ForcedObservation
+from forced_exhaustion_router import ForcedResponseThresholds
+from forced_exhaustion_router import ForcedShockEvidence
+from forced_exhaustion_router import ForcedShockThresholds
+from forced_exhaustion_router import advance_forced_episode
 from forced_exhaustion_router import classify_forced_shock
-from logic import Pool, net_r_at_price, planned_loss_per_unit
+from logic import floor_quantity
+from logic import net_r_at_price
+from logic import planned_loss_per_unit
 from strategy_base import PendingSetup
 
 
@@ -27,7 +45,7 @@ class Candidate21ForcedConfig(Candidate18Config, frozen=True):
 
 
 class Candidate21ForcedStrategy(Candidate18FokStrategy):
-    """Detect deleveraging, then require separate exhaustion and reprice bars."""
+    """Arm a cost-viable reversal only after causal forced-flow exhaustion."""
 
     def __init__(self, config: Candidate21ForcedConfig) -> None:
         super().__init__(config=config)
@@ -44,16 +62,21 @@ class Candidate21ForcedStrategy(Candidate18FokStrategy):
             config.forced_min_reverse_efficiency,
         )
         self.forced_episode: ForcedEpisode | None = None
-        self.diagnostics.update({
-            "candidate21_forced_events_armed": 0,
-            "candidate21_forced_events_not_ready": 0,
-            "candidate21_forced_exhaustions": 0,
-            "candidate21_forced_reprices": 0,
-            "candidate21_forced_invalidated": 0,
-            "candidate21_forced_expired": 0,
-            "candidate21_forced_geometry_rejected": 0,
-            "candidate21_forced_fok_entries": 0,
-        })
+        self.diagnostics.update(
+            {
+                "candidate21_forced_events_armed": 0,
+                "candidate21_forced_events_not_ready": 0,
+                "candidate21_forced_event_geometry_eligible": 0,
+                "candidate21_forced_event_geometry_rejected": 0,
+                "candidate21_forced_exhaustions": 0,
+                "candidate21_forced_reprices": 0,
+                "candidate21_forced_invalidated": 0,
+                "candidate21_forced_expired": 0,
+                "candidate21_forced_geometry_rejected": 0,
+                "candidate21_forced_fok_entries": 0,
+                "candidate21_forced_stop_limit_fok_entries": 0,
+            },
+        )
 
     def _clear_trade_state(self) -> None:
         super()._clear_trade_state()
@@ -69,14 +92,101 @@ class Candidate21ForcedStrategy(Candidate18FokStrategy):
         return (
             self._feature("metrics_ready") > 0.5
             and self._feature("basis_ready") > 0.5
-            and all(math.isfinite(self._feature(name)) for name in (
-                "oi_change_15m", "premium_change_5m", "premium_change_1m"
-            ))
+            and all(
+                math.isfinite(self._feature(name))
+                for name in (
+                    "oi_change_15m",
+                    "premium_change_5m",
+                    "premium_change_1m",
+                )
+            )
         )
 
     @staticmethod
     def _depth_field(side: int) -> str:
         return "bid_depth_change_1_1m" if side > 0 else "ask_depth_change_1_1m"
+
+    def _planned_geometry(
+        self,
+        *,
+        side: int,
+        signal: float,
+        stop: float,
+        target: float,
+        atr: float,
+        stop_entry: bool,
+    ) -> tuple[float, float, float, float]:
+        """Return trigger, worst fill, planned loss and target net R."""
+        structural_risk = abs(signal - stop)
+        if (
+            side not in (-1, 1)
+            or not all(math.isfinite(value) for value in (signal, stop, target, atr))
+            or signal <= 0.0
+            or stop <= 0.0
+            or target <= 0.0
+            or atr <= 0.0
+            or structural_risk <= 0.0
+        ):
+            return math.nan, math.nan, math.nan, -math.inf
+        trigger = signal + side * self.config.entry_rearm_atr * atr if stop_entry else signal
+        entry_limit = trigger + (
+            side * self.config.entry_limit_risk_expansion * abs(trigger - stop)
+        )
+        geometry = (
+            stop < trigger <= entry_limit < target
+            if side > 0
+            else target < entry_limit <= trigger < stop
+        )
+        if not geometry:
+            return trigger, entry_limit, math.nan, -math.inf
+        cost_rate = self.config.all_in_cost_bps_each_side / 10_000.0
+        slippage_rate = self.config.adverse_slippage_bps_each_side / 10_000.0
+        planned_loss = planned_loss_per_unit(
+            entry_limit,
+            stop,
+            side,
+            cost_rate,
+            slippage_rate,
+        )
+        if not math.isfinite(planned_loss) or planned_loss <= 0.0:
+            return trigger, entry_limit, planned_loss, -math.inf
+        target_r = net_r_at_price(
+            entry_limit,
+            target,
+            side,
+            planned_loss,
+            cost_rate,
+        )
+        return trigger, entry_limit, planned_loss, target_r
+
+    def _event_has_tradeable_geometry(
+        self,
+        *,
+        direction: int,
+        close: float,
+        high: float,
+        low: float,
+        origin: float,
+        atr: float,
+    ) -> tuple[bool, dict[str, float]]:
+        """Reject an event when even an immediate reversal cannot pay costs."""
+        side = -direction
+        stop = (low if side > 0 else high) - side * self.config.stop_buffer_atr * atr
+        trigger, entry_limit, planned_loss, target_r = self._planned_geometry(
+            side=side,
+            signal=close,
+            stop=stop,
+            target=origin,
+            atr=atr,
+            stop_entry=False,
+        )
+        return target_r >= self.config.min_target_net_r, {
+            "optimistic_stop": stop,
+            "optimistic_trigger": trigger,
+            "optimistic_entry_limit": entry_limit,
+            "optimistic_planned_loss_per_unit": planned_loss,
+            "optimistic_target_net_r": target_r,
+        }
 
     def _detect_sweep(self, row: dict[str, float | int], previous_close: float) -> None:
         del previous_close
@@ -108,6 +218,19 @@ class Candidate21ForcedStrategy(Candidate18FokStrategy):
         low = min(float(item["low"]) for item in leg)
         if (direction > 0 and high <= origin) or (direction < 0 and low >= origin):
             return
+
+        geometry_ok, geometry_details = self._event_has_tradeable_geometry(
+            direction=direction,
+            close=close,
+            high=high,
+            low=low,
+            origin=origin,
+            atr=atr,
+        )
+        if not geometry_ok:
+            self.diagnostics["candidate21_forced_event_geometry_rejected"] += 1
+            return
+        self.diagnostics["candidate21_forced_event_geometry_eligible"] += 1
 
         self.scenario_counter += 1
         scenario_id = f"c21-forced-{self.scenario_counter:07d}"
@@ -142,6 +265,7 @@ class Candidate21ForcedStrategy(Candidate18FokStrategy):
             "shock_oi_change_15m": evidence.oi_change_15m,
             "shock_premium_change_5m": evidence.premium_change_5m,
             "natural_target": origin,
+            **geometry_details,
         }
         self.forced_episode = state
         self.pending = PendingSetup(
@@ -162,9 +286,14 @@ class Candidate21ForcedStrategy(Candidate18FokStrategy):
         )
         self.diagnostics["candidate21_forced_events_armed"] += 1
         self._transition(
-            scenario_id, "FORCED_FLOW_EVENT_OPENED", int(row["ts"]),
-            int(row["ts"]), state.decision.value,
-            "DELEVERAGING_IMPULSE_IS_AN_EVENT_NOT_AN_ENTRY", close, details,
+            scenario_id,
+            "FORCED_FLOW_EVENT_OPENED",
+            int(row["ts"]),
+            int(row["ts"]),
+            state.decision.value,
+            "DELEVERAGING_IMPULSE_IS_AN_EVENT_NOT_AN_ENTRY",
+            close,
+            details,
         )
 
     def _process_pending(self, row: dict[str, float | int]) -> bool:
@@ -189,7 +318,8 @@ class Candidate21ForcedStrategy(Candidate18FokStrategy):
             state,
             ForcedObservation(
                 bar_index=self.bar_index,
-                high=float(row["high"]), low=float(row["low"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
                 close=float(row["close"]),
                 flow_60s=self._feature("flow_60s"),
                 flow_3m=self._feature("flow_3m"),
@@ -203,81 +333,154 @@ class Candidate21ForcedStrategy(Candidate18FokStrategy):
             self.response_thresholds,
         )
         self.forced_episode = state
-        setup.sweep_extreme = state.latest_high if state.shock_direction > 0 else state.latest_low
+        setup.sweep_extreme = (
+            state.latest_high if state.shock_direction > 0 else state.latest_low
+        )
         terminal = asdict(state)
         terminal["decision"] = state.decision.value
         setup.details["latest_forced_flow_state"] = terminal
-        if previous is ForcedDecision.WAITING_EXHAUSTION and state.decision is ForcedDecision.WAITING_REVERSAL:
-            self.diagnostics["candidate21_forced_exhaustions"] += 1
         self._transition(
-            setup.scenario_id, "FORCED_FLOW_OBSERVED", int(row["ts"]),
-            int(row["ts"]), state.decision.value, state.reason,
-            float(row["close"]), setup.details,
+            setup.scenario_id,
+            "FORCED_FLOW_OBSERVED",
+            int(row["ts"]),
+            int(row["ts"]),
+            state.decision.value,
+            state.reason,
+            float(row["close"]),
+            setup.details,
         )
-        if state.decision in (ForcedDecision.WAITING_EXHAUSTION, ForcedDecision.WAITING_REVERSAL):
+
+        if (
+            previous is ForcedDecision.WAITING_EXHAUSTION
+            and state.decision is ForcedDecision.WAITING_REVERSAL
+        ):
+            self.diagnostics["candidate21_forced_exhaustions"] += 1
+            setup.details["terminal_exhaustion_state"] = terminal
+            return self._submit_exhaustion_rearm(setup, state, row)
+        if state.decision in (
+            ForcedDecision.WAITING_EXHAUSTION,
+            ForcedDecision.WAITING_REVERSAL,
+        ):
             return True
         if state.decision is ForcedDecision.INVALIDATED:
             self.diagnostics["candidate21_forced_invalidated"] += 1
-            self.pending = self.forced_episode = None
+            self.pending = None
+            self.forced_episode = None
             return True
         if state.decision is ForcedDecision.EXPIRED:
             self.diagnostics["candidate21_forced_expired"] += 1
-            self.pending = self.forced_episode = None
+            self.pending = None
+            self.forced_episode = None
             return True
 
+        # This path remains for replay compatibility, but the live policy arms
+        # at exhaustion so a completed reversal bar cannot consume the target.
         self.diagnostics["candidate21_forced_reprices"] += 1
-        setup.details["terminal_forced_flow_state"] = terminal
+        self.pending = None
         self.forced_episode = None
-        return self._submit_natural_target(setup, row)
+        return True
 
-    def _submit_natural_target(self, setup: PendingSetup, row: dict[str, float | int]) -> bool:
+    def _submit_exhaustion_rearm(
+        self,
+        setup: PendingSetup,
+        state: ForcedEpisode,
+        row: dict[str, float | int],
+    ) -> bool:
         side = setup.side
         atr = self._atr()
-        signal = float(row["close"])
+        exhaustion_signal = float(row["high"]) if side > 0 else float(row["low"])
         stop = setup.sweep_extreme - side * self.config.stop_buffer_atr * atr
-        structural_risk = abs(signal - stop)
-        cap = max(
-            self.config.entry_rearm_atr * atr,
-            self.config.entry_limit_risk_expansion * structural_risk,
-        )
-        entry_limit = signal + side * cap
         target = float(setup.details["natural_target"])
-        cost = self.config.all_in_cost_bps_each_side / 10_000.0
-        slip = self.config.adverse_slippage_bps_each_side / 10_000.0
-        loss = planned_loss_per_unit(entry_limit, stop, side, cost, slip)
-        target_r = net_r_at_price(entry_limit, target, side, loss, cost)
-        geometry = (
-            stop < signal < entry_limit < target if side > 0
-            else target < entry_limit < signal < stop
+        trigger, entry_limit, planned_loss, target_r = self._planned_geometry(
+            side=side,
+            signal=exhaustion_signal,
+            stop=stop,
+            target=target,
+            atr=atr,
+            stop_entry=True,
         )
-        if not geometry or not math.isfinite(loss) or target_r < self.config.min_target_net_r:
+        if (
+            not math.isfinite(planned_loss)
+            or planned_loss <= 0.0
+            or target_r < self.config.min_target_net_r
+        ):
             self.diagnostics["candidate21_forced_geometry_rejected"] += 1
-            self._expire_pending(row, "PRE_SHOCK_OBJECTIVE_NOT_EXECUTABLE_AFTER_COSTS")
+            self._expire_pending(
+                row,
+                "EXHAUSTION_REARM_BELOW_MINIMUM_NET_R_AFTER_COSTS",
+            )
             return False
 
-        natural_pool = Pool(
-            pool_id=f"target-{setup.scenario_id}",
-            kind="HIGH" if side > 0 else "LOW",
-            level=target,
-            event_time_ns=int(row["ts"]),
-            observed_time_ns=int(row["ts"]),
-            source="FROZEN_PRE_SHOCK_ORIGIN",
-            strength=1,
-            created_index=self.bar_index,
+        equity = self._equity_value()
+        risk_budget = equity * self.config.risk_fraction
+        quantity_value = floor_quantity(
+            risk_budget / planned_loss,
+            int(self.instrument.size_precision),
         )
-        saved_pools = self.active_pools
-        saved_branch = setup.branch
-        self.active_pools = {natural_pool.pool_id: natural_pool}
-        setup.branch = "REJECTION"
-        try:
-            submitted = super()._submit_entry(setup, row)
-        finally:
-            setup.branch = saved_branch
-            self.active_pools = saved_pools
-        if submitted:
-            self.current_branch = "FORCED_EXHAUSTION_REVERSAL"
-            self.diagnostics["candidate21_forced_fok_entries"] += 1
-        return submitted
+        if quantity_value <= 0.0 or quantity_value * entry_limit < 10.0:
+            self._expire_pending(row, "FORCED_FLOW_QUANTITY_BELOW_MINIMUM")
+            return False
+
+        order_side = OrderSide.BUY if side > 0 else OrderSide.SELL
+        order_list = self.order_factory.bracket(
+            instrument_id=self.config.instrument_id,
+            order_side=order_side,
+            quantity=self.instrument.make_qty(quantity_value),
+            time_in_force=TimeInForce.FOK,
+            entry_order_type=OrderType.STOP_LIMIT,
+            entry_trigger_price=self.instrument.make_price(trigger),
+            entry_price=self.instrument.make_price(entry_limit),
+            entry_post_only=False,
+            entry_tags=["ENTRY", "CANDIDATE21_FORCED_EXHAUSTION_STOP_FOK"],
+            tp_price=self.instrument.make_price(target),
+            sl_trigger_price=self.instrument.make_price(stop),
+        )
+        self.submit_order_list(order_list)
+        self.entry_pending = True
+        self.entry_pending_index = self.bar_index
+        self.last_entry_index = self.bar_index
+        self.current_scenario_id = setup.scenario_id
+        self.current_branch = "FORCED_EXHAUSTION_REVERSAL"
+        self.current_pool_level = target
+        self.pending = None
+        self.forced_episode = None
+        self.diagnostics["entry_submissions"] += 1
+        self.diagnostics["candidate21_forced_fok_entries"] += 1
+        self.diagnostics["candidate21_forced_stop_limit_fok_entries"] += 1
+        self.diagnostics["max_simultaneous_entry_intents"] = max(
+            int(self.diagnostics["max_simultaneous_entry_intents"]),
+            1,
+        )
+        self._transition(
+            setup.scenario_id,
+            "ENTRY_SUBMITTED",
+            int(row["ts"]),
+            int(row["ts"]),
+            "ENTRY_PENDING",
+            "EXHAUSTION_CONFIRMED_STOP_LIMIT_REARM",
+            trigger,
+            {
+                **setup.details,
+                "side": side,
+                "exhaustion_bar_index": self.bar_index,
+                "entry_trigger": trigger,
+                "entry_limit_worst_fill": entry_limit,
+                "entry_order_type": "STOP_LIMIT",
+                "entry_time_in_force": "FOK",
+                "entry_all_or_none": True,
+                "stop": stop,
+                "target": target,
+                "target_source": "FROZEN_PRE_SHOCK_ORIGIN",
+                "target_net_r": target_r,
+                "quantity": quantity_value,
+                "equity": equity,
+                "risk_budget": risk_budget,
+                "planned_loss_per_unit_at_worst_fill": planned_loss,
+                "planned_account_loss_at_worst_fill": quantity_value * planned_loss,
+                "exhaustion_state": asdict(state),
+            },
+        )
+        return True
 
 
 __all__ = ["Candidate21ForcedConfig", "Candidate21ForcedStrategy"]
