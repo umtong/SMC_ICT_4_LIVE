@@ -1,0 +1,93 @@
+name: external-auction-acceptance-screen
+
+on:
+  push:
+    branches: ["research/external-leverage-flow-router"]
+    paths:
+      - "research/external-leverage-flow-router/external_auction_acceptance_screen.py"
+      - "research/external-leverage-flow-router/cross_asset_transfer_screen_fixed.py"
+      - ".github/workflows/external-auction-acceptance-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: external-auction-acceptance-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  fixed-auction-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/external-leverage-flow-router:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/external-auction-acceptance-screen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and frozen contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile \
+            research/external-leverage-flow-router/external_auction_acceptance_screen.py
+          python - <<'PY'
+          import external_auction_acceptance_screen as screen
+          assert screen.SYMBOLS == ('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT')
+          assert screen.BAR_MINUTES == 15
+          assert screen.PRIOR_BALANCE_BARS == 16
+          assert screen.HORIZONS_BARS == (1, 2, 4, 8, 16)
+          assert screen.ROUND_TRIP_HURDLE_BPS == 20.0
+          print('external auction screen contract verified')
+          PY
+
+      - name: Run predeclared 2023 three-month development screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/external-leverage-flow-router/external_auction_acceptance_screen.py \
+            --start 2023-06-01 \
+            --end 2023-08-31 \
+            --cache .cache/external-auction-acceptance \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify causal evidence
+        if: always()
+        shell: bash
+        run: |
+          if test -e "$ROOT/auction_screen.json"; then
+            python -m json.tool "$ROOT/auction_screen.json" >/dev/null
+            python -m json.tool "$ROOT/raw_evidence.json" >/dev/null
+            test -e "$ROOT/auction_events.csv"
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('artifacts/external-auction-acceptance-screen/auction_screen.json').read_text())
+          assert report['development_period'] == ['2023-06-01', '2023-08-31']
+          assert report['entry_timing'] == 'strictly later 15-minute open'
+          assert report['round_trip_hurdle_bps'] == 20.0
+          assert report['event_count'] > 0
+          print(json.dumps({
+              'event_count': report['event_count'],
+              'event_counts': report['event_counts'],
+              'promising_fixed_cells': report['promising_fixed_cells'],
+          }, indent=2))
+          PY
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: external-auction-acceptance-screen-${{ github.sha }}
+          path: artifacts/external-auction-acceptance-screen/**
+          if-no-files-found: warn
+          retention-days: 90
