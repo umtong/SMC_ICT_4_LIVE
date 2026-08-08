@@ -1,0 +1,156 @@
+name: candidate-12-materialize-i14a
+
+on:
+  push:
+    branches: ["research/candidate-12"]
+    paths:
+      - ".github/workflows/candidate-12-materialize-i14a.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-12-materialize-i14a
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Install I14a boundary-hold reacceleration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("research/candidate-12")
+          p = root / "logic.py"
+          text = p.read_text(encoding="utf-8")
+          assert 'Candidate 12 I13.' in text
+
+          active = '''                and bar.close_location >= self.config.active_retest_min_close_location
+                          and bar.close > state.active_fvg.upper
+                      )
+          '''
+          assert text.count(active) == 1, text.count(active)
+          text = text.replace(
+              active,
+              '''                and bar.close_location >= self.config.active_retest_min_close_location
+                          and bar.close > state.active_fvg.upper
+                          and bar.low >= source.high
+                      )
+          ''',
+              1,
+          )
+
+          old = '''            # The first completed mitigation consumes this acceptance attempt.
+                      # A weak/indecisive mitigation is not a trade, but it is still the
+                      # causal event which can later make an Asia re-acceptance eligible.
+                      state.initial_acceptance_attempted = True
+                      state.acceptance_phase = "MONITOR_FAILURE"
+                      sid = state.acceptance_scenario_id
+                      if sid is None:
+                          sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE")
+                          state.acceptance_scenario_id = sid
+                      if not active and not passive:
+                          self.skips["FVG_RETEST_NOT_EXECUTABLE"] += 1
+                          self._emit(
+                              scenario_id=sid,
+                              event_type="ACCEPTED_FVG_RETEST_REJECTED",
+                              event_time_ns=bar.ts_ns,
+                              observed_time_ns=bar.ts_ns,
+                              next_state="MONITOR_FAILURE",
+                              reason_code="FIRST_FVG_MITIGATION_LACKED_ACTIVE_HOLD_OR_PASSIVE_EXHAUSTION",
+                              reference_price=state.active_fvg.upper,
+                              details={
+                                  "source": source.label.value,
+                                  "retest_body_atr": bar.body / atr,
+                                  "retest_close_location": bar.close_location,
+                                  "retest_close": bar.close,
+                              },
+                          )
+                          return None
+          '''
+          assert text.count(old) == 1, text.count(old)
+          new = '''            # An unresolved first mitigation is not confirmation and is not
+                      # terminal.  It starts a new auction leg which must create a fresh
+                      # bullish FVG before continuation can be traded.
+                      state.initial_acceptance_attempted = True
+                      sid = state.acceptance_scenario_id
+                      if sid is None:
+                          sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE")
+                          state.acceptance_scenario_id = sid
+                      if not active and not passive:
+                          state.acceptance_phase = "WAIT_REACCELERATION"
+                          state.acceptance_started_index = self._five_index
+                          state.acceptance_pullback_low = bar.low
+                          boundary_breached = bar.low < source.high
+                          self.skips["FVG_RETEST_NOT_EXECUTABLE"] += 1
+                          self._emit(
+                              scenario_id=sid,
+                              event_type="ACCEPTED_FVG_RETEST_REJECTED",
+                              event_time_ns=bar.ts_ns,
+                              observed_time_ns=bar.ts_ns,
+                              next_state="WAIT_REACCELERATION",
+                              reason_code=(
+                                  "ACTIVE_RETEST_REENTERED_COMPLETED_RANGE"
+                                  if boundary_breached
+                                  else "FIRST_FVG_MITIGATION_LACKED_ACTIVE_HOLD_OR_PASSIVE_EXHAUSTION"
+                              ),
+                              reference_price=state.active_fvg.upper,
+                              details={
+                                  "source": source.label.value,
+                                  "session_high": source.high,
+                                  "boundary_breached": boundary_breached,
+                                  "pullback_low": bar.low,
+                                  "retest_body_atr": bar.body / atr,
+                                  "retest_close_location": bar.close_location,
+                                  "retest_close": bar.close,
+                              },
+                          )
+                          return None
+                      state.acceptance_phase = "MONITOR_FAILURE"
+          '''
+          text = text.replace(old, new, 1)
+          text = text.replace('Candidate 12 I13.', 'Candidate 12 I14a.', 1)
+          p.write_text(text, encoding="utf-8")
+
+          cfg_path = root / "config.json"
+          cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+          cfg["schema_version"] = 14
+          cfg["candidate"] = "candidate-12-boundary-hold-reacceleration-router"
+          sel = cfg["selection"]
+          sel["weeks"]["W12"] = {"start": "2025-12-24", "end_exclusive": "2025-12-31"}
+          if "W12" not in sel["development_weeks"]:
+              sel["development_weeks"].append("W12")
+          sel["confirmation_week"] = None
+          sel["implementation_week"] = "W12"
+          sel["diagnosis_week"] = "W12"
+          sel["selection_rule"] = (
+              "W1-W12 are exposed evidence. I14a requires an active high-acceptance "
+              "retest to hold the completed boundary intrabar. An unresolved first "
+              "mitigation is no longer terminal and must form a fresh bullish FVG as "
+              "a new auction leg. No numeric threshold, target, risk, cost, or execution "
+              "assumption was relaxed."
+          )
+          cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+          PY
+          python -m compileall -q research/candidate-12
+          python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-12/logic.py research/candidate-12/config.json
+          git commit -m "candidate-12: require completed-boundary hold before continuation"
+          git push origin HEAD:research/candidate-12
