@@ -1,0 +1,176 @@
+name: candidate-19-untouched-btc
+
+on:
+  push:
+    branches: ["research/candidate-19"]
+    paths:
+      - ".github/workflows/candidate-19-holdout.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-19-untouched-btc
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  untouched-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-19-holdout-1
+      FROZEN_SHA: 4a377130b0ef50e28676787c89f410b3ea1c69e0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify frozen strategy and deterministic period
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/candidate19.sha256 <<'EOF'
+          96f0f473ff3d894d3e765eee614b45e17a5f8aee2b56ac80450e61458891c199  research/candidate-19/config.json
+          d220c97becda70cb2c75fdc85077a5b866bd35d9c31c9e0f69f9dc5477a8cad9  research/candidate-19/candidate.py
+          a4de5c192d8bfcfdaacd3fd67a0f6468ed3e119641712e1c18de6201e63a487c  research/candidate-19/candidate19_strategy.py
+          95d7161e31012b8b26ea8b4282aedbef9b1f5be0687d6e58be6fc163865e427a  research/candidate-19/shock_transmission_router.py
+          f97a00c98b1080b203d5d7c457f3fc67ea223109646c6b034882a5a4ca38f1a0  research/candidate-19/transmission_strategy.py
+          EOF
+          sha256sum -c /tmp/candidate19.sha256
+          python - <<'PY'
+          from datetime import date, timedelta
+          from hashlib import sha256
+          seed = (
+              "candidate19-shock-transmission-fok|"
+              "4a377130b0ef50e28676787c89f410b3ea1c69e0|untouched-week-1"
+          )
+          mondays = []
+          cursor = date(2025, 1, 6)
+          while cursor <= date(2025, 12, 22):
+              mondays.append(cursor)
+              cursor += timedelta(days=7)
+          index = int(sha256(seed.encode("utf-8")).hexdigest(), 16) % len(mondays)
+          actual = (len(mondays), index, mondays[index])
+          expected = (51, 37, date(2025, 9, 22))
+          if actual != expected:
+              raise SystemExit({"expected": expected, "actual": actual})
+          print({"candidate_weeks": len(mondays), "index": index, "start": str(mondays[index])})
+          PY
+
+      - name: Verify environment and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-19
+          python -m unittest discover -s research/candidate-19/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-18/tests -p 'test_fok_execution_contract.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_displayed_liquidity_router_v2.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Run untouched BTC week through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-19/candidate.py stage \
+            --config research/candidate-19/config.json \
+            --build-start 2025-09-19 \
+            --build-end 2025-09-28 \
+            --evaluation-start 2025-09-22 \
+            --evaluation-end 2025-09-28 \
+            --cache .cache/candidate-19-holdout-1 \
+            --output "$ROOT" \
+            --validation-mode "untouched-deterministic-2025" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Make authoritative holdout decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          raw = json.loads((root / "raw_evidence.json").read_text())
+          expected_days = {
+              f"2025-09-{day:02d}" for day in range(19, 29)
+          }
+          book_days = {
+              row["day"] for row in raw if row.get("endpoint") == "bookDepth"
+          }
+          data_ready = (
+              expected_days.issubset(book_days)
+              and int(diagnostics.get("feature_stale_bars", 0)) == 0
+          )
+          integrity = (
+              int(metrics.get("liquidations", 0)) == 0
+              and int(diagnostics.get("order_rejections", 0)) == 0
+              and int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1
+              and int(diagnostics.get("max_open_positions_observed", 0)) <= 1
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          gate = bool(metrics.get("gate_pass", False))
+          result = {
+              "schema": "candidate-19-untouched-v1",
+              "strategy_sha": os.environ["FROZEN_SHA"],
+              "selection_seed": (
+                  "candidate19-shock-transmission-fok|"
+                  "4a377130b0ef50e28676787c89f410b3ea1c69e0|untouched-week-1"
+              ),
+              "evaluation": ["2025-09-22", "2025-09-28"],
+              "data_ready": data_ready,
+              "integrity_pass": integrity,
+              "gate_pass": gate,
+              "classification": (
+                  "WEEKLY_GATE_PASSED; REQUIRE_MORE_UNTOUCHED_PERIODS"
+                  if data_ready and integrity and gate
+                  else "FAILED_UNTOUCHED_GATE; DO_NOT_CLAIM_TARGET"
+              ),
+              "metrics": metrics,
+              "routing": {
+                  key: diagnostics.get(key, 0)
+                  for key in (
+                      "candidate18_initiative_sustained",
+                      "candidate18_initiative_shock",
+                      "candidate19_shock_transmissions_armed",
+                      "candidate19_shock_transmission_observations",
+                      "candidate19_shock_transmissions_confirmed",
+                      "candidate19_shock_transmissions_invalidated",
+                      "candidate19_shock_transmissions_expired",
+                      "candidate19_shock_absorption_invalidations",
+                      "candidate18_fok_limit_entries",
+                  )
+              },
+          }
+          (root / "holdout_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify authoritative evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          python -m json.tool "$ROOT/holdout_decision.json"
+          for file in run.json data_manifest.json raw_evidence.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl candidate19_contract.json; do
+            test -s "$ROOT/$file"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-19-holdout-1-${{ github.sha }}
+          path: artifacts/candidate-19-holdout-1/**
+          if-no-files-found: warn
+          retention-days: 90
