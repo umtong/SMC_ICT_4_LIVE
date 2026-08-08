@@ -1,0 +1,110 @@
+name: candidate-12-materialize-i14b
+
+on:
+  push:
+    branches: ["research/candidate-12"]
+    paths:
+      - ".github/workflows/candidate-12-materialize-i14b.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-12-materialize-i14b
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Install I14b same-leg invalidation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("research/candidate-12")
+          p = root / "logic.py"
+          text = p.read_text(encoding="utf-8")
+          assert 'Candidate 12 I14a.' in text
+          start = text.index('        if state.acceptance_phase == "WAIT_REACCELERATION":\n')
+          end = text.index('        return None\n\n    def _on_five', start)
+          branch = text[start:end]
+          anchor = '''            prior_peak = state.acceptance_peak or source.high
+
+                      # A fresh FVG after the first mitigation failure is completed
+          '''
+          assert branch.count(anchor) == 1, branch.count(anchor)
+          branch = branch.replace(
+              anchor,
+              '''            prior_peak = state.acceptance_peak or source.high
+                      assert state.acceptance_pullback_low is not None
+                      reacceleration_invalidation = (
+                          min(state.acceptance_pullback_low, fresh.lower)
+                          - self.config.fvg_stop_buffer_atr * atr
+                      )
+
+                      # A fresh FVG after the first mitigation failure is completed
+          ''',
+              1,
+          )
+          old_stop = 'stop_raw=fresh.lower - self.config.fvg_stop_buffer_atr * atr,'
+          assert branch.count(old_stop) == 2, branch.count(old_stop)
+          branch = branch.replace(old_stop, 'stop_raw=reacceleration_invalidation,')
+          detail = '                    "initial_pullback_low": state.acceptance_pullback_low,\n'
+          assert branch.count(detail) == 2, branch.count(detail)
+          branch = branch.replace(
+              detail,
+              detail + '                    "structural_invalidation": reacceleration_invalidation,\n',
+          )
+          text = text[:start] + branch + text[end:]
+          text = text.replace('Candidate 12 I14a.', 'Candidate 12 I14b.', 1)
+          p.write_text(text, encoding="utf-8")
+
+          tests_path = root / "test_logic.py"
+          tests = tests_path.read_text(encoding="utf-8")
+          tests = tests.replace(
+              'config(min_net_r=3.0), "X"',
+              'config(min_net_r=1.5), "X"',
+              1,
+          )
+          tests = tests.replace(
+              'config(min_net_r=1.0), "X"',
+              'config(min_net_r=0.7), "X"',
+              1,
+          )
+          tests_path.write_text(tests, encoding="utf-8")
+
+          cfg_path = root / "config.json"
+          cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+          cfg["schema_version"] = 15
+          cfg["candidate"] = "candidate-12-same-leg-reacceleration-router"
+          sel = cfg["selection"]
+          sel["selection_rule"] = (
+              "W1-W12 are exposed evidence. I14b keeps I14a boundary-hold logic, but "
+              "prices fresh reacceleration against the original failed-mitigation pullback "
+              "low. Entry, invalidation, and target therefore belong to the same auction "
+              "leg. The existing costed min_net_r decides market entry, protected limit, "
+              "or no trade; no threshold or risk budget was relaxed."
+          )
+          cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+          PY
+          python -m compileall -q research/candidate-12
+          python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-12/logic.py research/candidate-12/test_logic.py research/candidate-12/config.json
+          git commit -m "candidate-12: align reacceleration invalidation with pullback leg"
+          git push origin HEAD:research/candidate-12
