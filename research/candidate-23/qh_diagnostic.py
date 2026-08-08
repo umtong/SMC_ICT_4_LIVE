@@ -36,8 +36,16 @@ import numpy as np
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
+CANDIDATE16 = HERE.parent / "candidate-16"
 CANDIDATE05 = HERE.parent / "candidate-05"
-sys.path.insert(0, str(CANDIDATE05))
+sys.path.insert(0, str(CANDIDATE16))
+sys.path.insert(1, str(CANDIDATE05))
+
+from timestamp_contract import install as install_timestamp_contract
+from wrangler_contract import install as install_wrangler_contract
+
+install_timestamp_contract()
+install_wrangler_contract()
 
 from features import load_range
 
