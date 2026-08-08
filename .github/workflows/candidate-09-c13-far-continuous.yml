@@ -1,0 +1,180 @@
+name: Candidate 09 Candidate 13 FAR-only continuous account
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths:
+      - .github/workflows/candidate-09-c13-far-continuous.yml
+      - research/candidate-09/c13_far_continuous/apply_far_only.py
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-c13-far-continuous
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09-c13-continuous
+          key: candidate-09-c13-monthly-klines-v2
+          restore-keys: |
+            candidate-09-c13-monthly-klines-v1
+
+      - name: Materialize exact Candidate 13 blobs and FAR-only ablation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin research/candidate-11 research/candidate-13
+          root=research/candidate-09/c13_far_continuous
+          source=$root/source
+          rm -rf "$source" "$root/result"
+          mkdir -p "$source"
+          materialize() {
+            local oid="$1" name="$2"
+            git cat-file blob "$oid" > "$source/$name"
+            test "$(git hash-object "$source/$name")" = "$oid"
+          }
+          materialize c2ce386a42956c22039f0bf7490cf9493ab51003 bar_adapter.py
+          materialize 6dcc95a4f02a0613ad7c72ff0b738cee4b640fc4 global_allocator.py
+          materialize 08ac6c0119c2e83039c864ff3a0aff06d6a75c75 logic.py
+          materialize 272b1aee7468cbbd6b79a4bc6c8e421e93df6bf0 market_leadership.py
+          materialize 21180b2397f0ee63c887079764df1ee94e426a03 session_engine.py
+          materialize e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f run_leadership_scdam.py
+          materialize 990dd8986246a7dac8d5c619ef930ffd54ba430e evidence_audit.py
+          materialize 050b5b9413c22e4fc2ef247cc2b272657ff66f38 base_config.json
+          cp research/candidate-09/c13_continuous/apply_monthly_loader.py "$root/apply_monthly_loader_runtime.py"
+          cp research/candidate-09/c13_continuous/run_continuous.py "$root/run_continuous.py"
+          python "$root/apply_monthly_loader_runtime.py"
+          python "$root/apply_far_only.py"
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('research/candidate-09/c13_far_continuous/run_continuous.py')
+          text=p.read_text()
+          text=text.replace('candidate-09-c13-continuous-price-discovery','candidate-09-c13-far-only-continuous')
+          text=text.replace('frozen candidate-13 dynamic price-discovery auction transfer','frozen candidate-13 FAR-only dynamic price-discovery auction transfer')
+          p.write_text(text)
+          PY
+          test "$(grep -c FAR_ONLY_ABLATION "$source/run_leadership_scdam.py")" -ge 3
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root=Path('research/candidate-09/c13_far_continuous')
+          source=root/'source'
+          names=('bar_adapter.py','global_allocator.py','logic.py','market_leadership.py','session_engine.py','run_leadership_scdam.py','evidence_audit.py','base_config.json')
+          files={name:{'sha256':hashlib.sha256((source/name).read_bytes()).hexdigest(),'bytes':(source/name).stat().st_size} for name in names}
+          manifest={'baseline_source':'Candidate 13 exact evidence-locked blobs','single_ablation':'AAC plans rejected; FAR unchanged','economic_logic_changed_only_by_family_removal':True,'files':files}
+          (root/'source_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Verify monthly transport against official daily rows
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09/c13_far_continuous
+          export PYTHONPATH="$GITHUB_WORKSPACE/$root/source:$GITHUB_WORKSPACE/src"
+          python - <<'PY'
+          import importlib.util, json, sys
+          from datetime import date
+          from pathlib import Path
+          import pandas as pd
+          root=Path('research/candidate-09/c13_far_continuous')
+          source=root/'source'
+          sys.path.insert(0,str(source.resolve()))
+          # Exact daily source is recovered from the immutable blob before the monthly patch.
+          blob='e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f'
+          daily_path=root/'run_leadership_scdam_daily.py'
+          import subprocess
+          daily_path.write_bytes(subprocess.check_output(['git','cat-file','blob',blob]))
+          def load(name,path):
+              spec=importlib.util.spec_from_file_location(name,path)
+              module=importlib.util.module_from_spec(spec)
+              sys.modules[name]=module
+              spec.loader.exec_module(module)
+              return module
+          daily=load('c13_far_daily',daily_path)
+          monthly=load('c13_far_monthly',source/'run_leadership_scdam.py')
+          cache=Path('.cache/candidate-09-c13-continuous')
+          records=[]
+          for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'):
+              d,_=daily.load_symbol_bars(symbol,date(2023,3,20),date(2023,3,20),cache)
+              m,_=monthly.load_symbol_bars(symbol,date(2023,3,20),date(2023,3,20),cache)
+              pd.testing.assert_frame_equal(d,m,check_exact=True)
+              records.append({'symbol':symbol,'rows':len(d)})
+          (root/'transport_parity.json').write_text(json.dumps(records,indent=2)+'\n')
+          daily_path.unlink()
+          PY
+
+      - name: Run one continuous 2022 through 2025 FAR-only account
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09/c13_far_continuous
+          export PYTHONPATH="$GITHUB_WORKSPACE/$root/source:$GITHUB_WORKSPACE/src"
+          smc4 doctor | tee "$root/doctor.txt"
+          python -m compileall -q "$root"
+          mkdir -p "$root/result" .cache/candidate-09-c13-continuous
+          ln -s "$GITHUB_WORKSPACE/.cache/candidate-09-c13-continuous" "$root/result/data"
+          python "$root/run_continuous.py" |& tee "$root/run.txt"
+          rm -f "$root/result/data"
+          [[ -f "$root/result/scenario_events.jsonl" ]] && gzip -f "$root/result/scenario_events.jsonl"
+
+      - name: Preserve FAR-only evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-c13-far-${{ github.run_id }}
+          path: research/candidate-09/c13_far_continuous
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit compact FAR-only decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09/c13_far_continuous
+          [[ -f "$root/result/FINAL_DECISION.json" ]] || exit 0
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/result"
+          for name in FINAL_DECISION.json metrics.json audit.json positions.csv orders.csv account.csv plans.json order_lifecycle.json data_manifest.json run.json; do
+            [[ -f "$root/result/$name" ]] && cp "$root/result/$name" "$tmp/result/$name"
+          done
+          for name in continuous_config.json source_manifest.json transport_parity.json doctor.txt run.txt; do
+            [[ -f "$root/$name" ]] && cp "$root/$name" "$tmp/$name"
+          done
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name candidate-09-research-bot
+          git config user.email candidate-09-research-bot@users.noreply.github.com
+          git fetch origin "$GITHUB_REF_NAME"
+          git reset --hard "origin/$GITHUB_REF_NAME"
+          rm -rf "$root/result"
+          mkdir -p "$root/result"
+          cp -a "$tmp/result/." "$root/result/"
+          for name in continuous_config.json source_manifest.json transport_parity.json doctor.txt run.txt; do
+            [[ -f "$tmp/$name" ]] && cp "$tmp/$name" "$root/$name"
+          done
+          git add "$root/result" "$root/continuous_config.json" "$root/source_manifest.json" "$root/transport_parity.json" "$root/doctor.txt" "$root/run.txt"
+          git diff --cached --quiet && exit 0
+          status=$(python -c "import json;print(json.load(open('$root/result/FINAL_DECISION.json'))['status'])")
+          git commit -m "candidate-09 Candidate 13 FAR-only: ${status}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
