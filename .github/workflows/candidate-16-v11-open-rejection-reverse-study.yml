@@ -1,0 +1,129 @@
+name: candidate-16-v11-external-open-rejection-reverse-study
+
+on:
+  push:
+    branches: ["research/candidate-16-v11-open-rejection-reverse"]
+    paths:
+      - "research/candidate-16/v11_open_rejection_reverse_study.py"
+      - "research/candidate-16/v11_open_rejection_reverse_study_v2.py"
+      - "research/candidate-16/tests/test_v11_open_rejection_reverse_study.py"
+      - ".github/workflows/candidate-16-v11-open-rejection-reverse-study.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v11-external-open-rejection-reverse-study
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-and-conditional-holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 320
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v11-open-rejection-reverse-study
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment, external profile reuse, and policy contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-16/v9_liquidation_event_study.py \
+            research/candidate-16/v10_open_drive_study.py \
+            research/candidate-16/v11_open_rejection_reverse_study.py \
+            research/candidate-16/v11_open_rejection_reverse_study_v2.py
+          python -m unittest discover \
+            -s research/candidate-16/tests \
+            -p 'test_v11_open_rejection_reverse_study.py' -v
+
+      - name: Run checksum-verified 2023 development and conditional 2024 holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/v11_open_rejection_reverse_study_v2.py \
+            --cache .cache/candidate-16-v11-open-rejection-reverse \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify frozen decision and evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/study.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          study = json.loads((root / "study.json").read_text())
+          if study.get("role") != "mechanism and geometry study; no fills, account, portfolio, or NAV claim":
+              raise SystemExit("study role drifted")
+          reuse = study.get("external_reuse", {})
+          if reuse.get("profile_algorithm") != "bfolkens/py-market-profile BSD-3-Clause":
+              raise SystemExit("external profile reuse drifted")
+          if set(study.get("data", {}).get("symbols", [])) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
+              raise SystemExit("symbol set drifted")
+          if study.get("data", {}).get("years") != [2023, 2024]:
+              raise SystemExit("development/holdout years drifted")
+          profile = study.get("profile_contract", {})
+          if int(profile.get("rows", 0)) != 100 or abs(float(profile.get("value_area_pct", 0.0)) - 0.70) > 1e-12:
+              raise SystemExit("profile contract drifted")
+          scenario = study.get("scenario_contract", {})
+          if not scenario.get("no_order_on_reentry"):
+              raise SystemExit("reentry evidence was reused as entry")
+          if abs(float(scenario.get("round_trip_cost_rate", -1.0)) - 0.002) > 1e-12:
+              raise SystemExit("cost screen drifted")
+          if float(scenario.get("minimum_target_net_r", -1.0)) != 1.0:
+              raise SystemExit("POC target geometry drifted")
+          if int(scenario.get("global_entry_or_position_slot", 99)) != 1:
+              raise SystemExit("global slot contract drifted")
+          serialization = study.get("evidence_serialization", {})
+          if serialization.get("method") != "dataclasses.asdict" or serialization.get("economic_logic_changed"):
+              raise SystemExit("evidence serialization contract failed")
+          development = study.get("development", {})
+          holdout = study.get("holdout", {})
+          if not development.get("passed") and holdout.get("opened"):
+              raise SystemExit("holdout was opened after development failed")
+          if not all(int(value) >= 700 for value in study.get("profile_counts", {}).values()):
+              raise SystemExit("prior-day profiles incomplete")
+          print(json.dumps({
+              "decision": study["decision"],
+              "promote": study["promote"],
+              "funnel": study["funnel"],
+              "development": development,
+              "holdout": holdout,
+              "global_slot_conflicts_skipped": study["global_slot_conflicts_skipped"],
+          }, indent=2, sort_keys=True))
+          PY
+          test -e "$ROOT/development_trades.csv"
+          if python - <<'PY'
+          import json,os
+          from pathlib import Path
+          study=json.loads((Path(os.environ['ROOT'])/'study.json').read_text())
+          raise SystemExit(0 if study['holdout']['opened'] else 1)
+          PY
+          then
+            test -e "$ROOT/holdout_trades.csv"
+          else
+            test ! -e "$ROOT/holdout_trades.csv"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v11-open-rejection-reverse-${{ github.sha }}
+          path: artifacts/candidate-16-v11-open-rejection-reverse-study/**
+          if-no-files-found: warn
+          retention-days: 90
