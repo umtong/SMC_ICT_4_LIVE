@@ -27,7 +27,6 @@ jobs:
       SMC4_PREBUILT_ENV: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
-      C13_SOURCE_SHA: c720d1493b26cf55c50ead4156b52fde1435edc7
 
     steps:
       - uses: actions/checkout@v4
@@ -37,53 +36,62 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .cache/candidate-09-c13-continuous
-          key: candidate-09-c13-monthly-klines-v1
+          key: candidate-09-c13-monthly-klines-v2
+          restore-keys: |
+            candidate-09-c13-monthly-klines-v1
 
-      - name: Materialize exact frozen Candidate 13 source
+      - name: Materialize exact source blobs that produced the Candidate 13 evidence
         shell: bash
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git fetch origin "$C13_SOURCE_SHA"
+          git fetch --no-tags origin research/candidate-11 research/candidate-13
           root=research/candidate-09/c13_continuous
-          rm -rf "$root/source" "$root/result" "$root/parity"
-          mkdir -p "$root/source" "$root/parity"
-          tmp=$(mktemp -d)
-          git archive "$C13_SOURCE_SHA" research/candidate-13 | tar -x -C "$tmp"
-          cp -a "$tmp/research/candidate-13/." "$root/source/"
-          cp "$root/source/run_leadership_scdam_base.py" "$root/source/run_leadership_scdam_base_daily.py"
-          python "$root/apply_monthly_loader.py"
+          source=$root/source
+          rm -rf "$source" "$root/result" "$root/parity"
+          mkdir -p "$source" "$root/parity"
+
+          materialize() {
+            local oid="$1" name="$2"
+            git cat-file blob "$oid" > "$source/$name"
+            test "$(git hash-object "$source/$name")" = "$oid"
+          }
+          materialize c2ce386a42956c22039f0bf7490cf9493ab51003 bar_adapter.py
+          materialize 6dcc95a4f02a0613ad7c72ff0b738cee4b640fc4 global_allocator.py
+          materialize 08ac6c0119c2e83039c864ff3a0aff06d6a75c75 logic.py
+          materialize 272b1aee7468cbbd6b79a4bc6c8e421e93df6bf0 market_leadership.py
+          materialize 21180b2397f0ee63c887079764df1ee94e426a03 session_engine.py
+          materialize e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f run_leadership_scdam.py
+          materialize 990dd8986246a7dac8d5c619ef930ffd54ba430e evidence_audit.py
+          materialize 050b5b9413c22e4fc2ef247cc2b272657ff66f38 base_config.json
+          cp "$source/run_leadership_scdam.py" "$source/run_leadership_scdam_daily.py"
+
           python - <<'PY'
           import hashlib, json
           from pathlib import Path
-          root = Path('research/candidate-09/c13_continuous')
-          protocol = json.loads((root/'source/protocol.json').read_text())
-          locked = protocol['locked_source']['blobs']
-          actual = {}
-          for name, expected in locked.items():
-              path = root/'source'/name
-              payload = path.read_bytes()
-              header = f'blob {len(payload)}\0'.encode()
-              oid = hashlib.sha1(header + payload).hexdigest()
-              actual[name] = {
-                  'expected_git_blob': expected,
-                  'actual_git_blob': oid,
-                  'matched': oid == expected,
-                  'sha256': hashlib.sha256(payload).hexdigest(),
-                  'bytes': len(payload),
-              }
-          manifest = {
-              'source_branch': 'research/candidate-13',
-              'source_commit': 'c720d1493b26cf55c50ead4156b52fde1435edc7',
-              'locked_logic_all_matched': all(item['matched'] for item in actual.values()),
-              'locked_files': actual,
-              'transport_patch': 'apply_monthly_loader.py',
-              'transport_only': True,
+          root=Path('research/candidate-09/c13_continuous')
+          source=root/'source'
+          locked={
+            'bar_adapter.py':'c2ce386a42956c22039f0bf7490cf9493ab51003',
+            'global_allocator.py':'6dcc95a4f02a0613ad7c72ff0b738cee4b640fc4',
+            'logic.py':'08ac6c0119c2e83039c864ff3a0aff06d6a75c75',
+            'market_leadership.py':'272b1aee7468cbbd6b79a4bc6c8e421e93df6bf0',
+            'session_engine.py':'21180b2397f0ee63c887079764df1ee94e426a03',
+            'run_leadership_scdam.py':'e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f',
+            'evidence_audit.py':'990dd8986246a7dac8d5c619ef930ffd54ba430e',
+            'base_config.json':'050b5b9413c22e4fc2ef247cc2b272657ff66f38',
           }
-          (root/'source_manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True)+'\n')
+          files={}
+          for name,oid in locked.items():
+              payload=(source/name).read_bytes()
+              actual=hashlib.sha1(f'blob {len(payload)}\0'.encode()+payload).hexdigest()
+              files[name]={'expected_git_blob':oid,'actual_git_blob':actual,'matched':actual==oid,'sha256':hashlib.sha256(payload).hexdigest(),'bytes':len(payload)}
+          manifest={'source_origin':'research/candidate-11 locked blobs recorded by Candidate 13 evidence','locked_logic_all_matched':all(v['matched'] for v in files.values()),'locked_files':files,'transport_patch':'apply_monthly_loader.py','transport_only':True}
+          (root/'source_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
           if not manifest['locked_logic_all_matched']:
-              raise SystemExit('frozen Candidate 13 source mismatch')
+              raise SystemExit('locked source mismatch')
           PY
+          python "$root/apply_monthly_loader.py"
 
       - name: Verify monthly transport against official daily rows
         shell: bash
@@ -92,12 +100,10 @@ jobs:
           root=research/candidate-09/c13_continuous
           export PYTHONPATH="$GITHUB_WORKSPACE/$root/source:$GITHUB_WORKSPACE/src"
           python - <<'PY'
-          import importlib.util
-          import sys
+          import importlib.util, json, sys
           from datetime import date
           from pathlib import Path
           import pandas as pd
-
           root=Path('research/candidate-09/c13_continuous')
           source=root/'source'
           sys.path.insert(0,str(source.resolve()))
@@ -107,8 +113,8 @@ jobs:
               sys.modules[name]=module
               spec.loader.exec_module(module)
               return module
-          daily=load('c13_daily_transport',source/'run_leadership_scdam_base_daily.py')
-          monthly=load('c13_monthly_transport',source/'run_leadership_scdam_base.py')
+          daily=load('c13_daily_transport',source/'run_leadership_scdam_daily.py')
+          monthly=load('c13_monthly_transport',source/'run_leadership_scdam.py')
           cache=Path('.cache/candidate-09-c13-continuous')
           records=[]
           for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'):
@@ -116,7 +122,6 @@ jobs:
               m,_=monthly.load_symbol_bars(symbol,date(2023,3,20),date(2023,3,20),cache)
               pd.testing.assert_frame_equal(d,m,check_exact=True)
               records.append({'symbol':symbol,'rows':len(d),'first':str(d.index[0]),'last':str(d.index[-1])})
-          import json
           (root/'transport_parity.json').write_text(json.dumps(records,indent=2)+'\n')
           PY
 
@@ -134,7 +139,7 @@ jobs:
           rm -f "$root/result/data"
           [[ -f "$root/result/scenario_events.jsonl" ]] && gzip -f "$root/result/scenario_events.jsonl"
 
-      - name: Preserve compact continuous evidence
+      - name: Preserve continuous evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
