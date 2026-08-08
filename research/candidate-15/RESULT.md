@@ -1,46 +1,66 @@
-# Candidate 15 V3 scenario-terminal invalidation
+# Candidate 15 V4 persistent cross-market initiative
 
-**CANDIDATE15_V3_INSUFFICIENT_ACTIVITY**
+**CANDIDATE15_V4_DEVELOPMENT_REJECTED**
 
+- development_only: `True`
 - success_claim: `False`
 - continuous_account_evidence: `False`
-- weekly_reset_screen: `True`
-
-## Predeclared V3 confirmation
-- daily_geometric_growth: `-0.000876561604788197`
-- weekly_reset_nav_multiple: `0.9697731408`
-- closed_trades: `1`
-- wins / losses: `0 / 1`
-- win_rate: `0.0`
-- maximum_interval_closed_trade_drawdown: `0.030226859232`
-
-## Contaminated diagnostic replays
-- V2 mechanism replay trades W/L: `1` / `1/0`
-- Candidate 13 reference replay trades W/L: `2` / `2/0`
-- Candidate 13 reference replay daily_geo: `0.0022834081699822993`
+- weekly_reset_nav_multiple: `0.4445051557`
+- daily_geometric_growth: `-0.019119469406366066`
+- closed_trades: `104`
+- wins / losses: `17 / 87`
+- win_rate: `0.16346153846153846`
+- payoff_ratio: `4.214434084721173`
+- active_intervals: `6`
+- closed_trade_path_max_drawdown: `0.7210205412711269`
+- maximum_positive_log_growth_share_from_one_interval: `0.8784891865996702`
+- module_counts: `{'PERSISTENT_QH_MSS_FVG_CONTINUATION': 177}`
 
 ## Interval evidence
-- M1 [contaminated-v2-mechanism-replay] (2026-04-06): daily_geo=0.006342015916146138, trades=1, W/L=1/0, router={'C15_ACCEPTANCE': 49, 'C15_FAILURE': 173, 'C15_RESOLUTION_STALE': 207}
-- M2 [contaminated-v2-mechanism-replay] (2025-12-01): daily_geo=0.0, trades=0, W/L=0/0, router={'C15_ACCEPTANCE': 86, 'C15_FAILURE': 176, 'C15_RESOLUTION_STALE': 235, 'C15_STOP_INSIDE_SWEEP_INVALIDATION': 1}
-- C1 [contaminated-candidate13-reference-replay] (2023-03-20): daily_geo=0.0062151400745527885, trades=1, W/L=1/0, router={'C15_ACCEPTANCE': 44, 'C15_FAILURE': 146, 'C15_RESOLUTION_STALE': 175}
-- C2 [contaminated-candidate13-reference-replay] (2023-06-20): daily_geo=0.0, trades=0, W/L=0/0, router={'C15_ACCEPTANCE': 54, 'C15_FAILURE': 133, 'C15_RESOLUTION_STALE': 176, 'C15_UNROUTED_SCENARIO_FAMILY': 3}
-- C3 [contaminated-candidate13-reference-replay] (2024-09-17): daily_geo=0.0, trades=0, W/L=0/0, router={'C15_ACCEPTANCE': 84, 'C15_FAILURE': 174, 'C15_RESOLUTION_STALE': 236, 'C15_STOP_INSIDE_SWEEP_INVALIDATION': 1}
-- C4 [contaminated-candidate13-reference-replay] (2024-12-31): daily_geo=0.005221705862516899, trades=1, W/L=1/0, router={'C15_ACCEPTANCE': 66, 'C15_FAILURE': 193, 'C15_RESOLUTION_STALE': 235}
-- C5 [contaminated-candidate13-reference-replay] (2025-04-14): daily_geo=0.0, trades=0, W/L=0/0, router={'C15_ACCEPTANCE': 76, 'C15_FAILURE': 188, 'C15_RESOLUTION_STALE': 246, 'C15_STOP_INSIDE_SWEEP_INVALIDATION': 1}
-- V1 [predeclared-v3-confirmation] (2026-02-09): daily_geo=-0.004375131153670638, trades=1, W/L=0/1, router={'C15_ACCEPTANCE': 68, 'C15_FAILURE': 185, 'C15_RESOLUTION_STALE': 240, 'C15_UNROUTED_SCENARIO_FAMILY': 2}
-- V2 [predeclared-v3-confirmation] (2025-11-03): daily_geo=0.0, trades=0, W/L=0/0, router={'C15_ACCEPTANCE': 106, 'C15_FAILURE': 189, 'C15_RESOLUTION_STALE': 267, 'C15_STOP_INSIDE_SWEEP_INVALIDATION': 3}
-- V3 [predeclared-v3-confirmation] (2025-09-15): daily_geo=0.0, trades=0, W/L=0/0, router={'C15_ACCEPTANCE': 74, 'C15_FAILURE': 162, 'C15_RESOLUTION_STALE': 211, 'C15_STOP_INSIDE_SWEEP_INVALIDATION': 2}
-- V4 [predeclared-v3-confirmation] (2025-06-16): daily_geo=0.0, trades=0, W/L=0/0, router={'C15_ACCEPTANCE': 101, 'C15_FAILURE': 148, 'C15_RESOLUTION_STALE': 217}
-- V5 [predeclared-v3-confirmation] (2025-03-10): daily_geo=0.0, trades=0, W/L=0/0, router={'C15_ACCEPTANCE': 89, 'C15_FAILURE': 198, 'C15_RESOLUTION_STALE': 263}
+- E01 (2021-07-12): daily_geo=0.05355510544044858, trades=19, W/L=5/14, initiative_activations=177, continuation_plans=111
+- E02 (2022-05-09): daily_geo=-0.00013681884873088123, trades=9, W/L=2/7, initiative_activations=170, continuation_plans=118
+- E03 (2022-07-25): daily_geo=-0.0708026149584505, trades=25, W/L=3/22, initiative_activations=180, continuation_plans=139
+- E04 (2023-06-20): daily_geo=-0.021231476076162534, trades=14, W/L=1/13, initiative_activations=171, continuation_plans=138
+- E05 (2024-07-15): daily_geo=0.007242181472998862, trades=18, W/L=5/13, initiative_activations=168, continuation_plans=132
+- E06 (2025-08-11): daily_geo=-0.07705254739870067, trades=19, W/L=1/18, initiative_activations=149, continuation_plans=175
 
-## Checks
+## Development checks
 - all_intervals_present: `True`
-- five_predeclared_confirmation_intervals: `True`
-- confirmation_activity: `False`
+- minimum_closed_trades: `True`
+- minimum_active_intervals: `True`
 - positive_costed_growth: `False`
-- project_growth_threshold: `False`
-- win_rate_at_least_0_65: `False`
-- maximum_interval_drawdown_at_most_0_20: `True`
-- safety: `True`
+- minimum_win_rate: `False`
+- minimum_payoff_ratio: `True`
+- maximum_closed_trade_path_drawdown: `False`
+- growth_not_concentrated: `False`
+- safety: `False`
+- only_v4_module_submitted: `True`
 
-Classification uses only V1-V5. M1/M2 and C1-C5 are contaminated diagnostics. The confirmation weeks do not form one continuous account path.
+## Highest-volume diagnostic skips
+- QHI_CONTINUATION_WITHOUT_ACTIVE_INITIATIVE: `43040`
+- QHI_CONTINUATION_MSS_DISPLACEMENT_INCOMPLETE: `18307`
+- QHI_CONTINUATION_BAR_NOT_AFTER_ACTIVATION: `4036`
+- QHI_COMMON_FLOW_BREADTH_BELOW_THREE: `2804`
+- QHI_CONTINUATION_STRICT_FVG_ABSENT: `2318`
+- SESSION_DECISION_WINDOW_EXPIRED: `739`
+- QHI_CONTINUATION_WARMUP: `256`
+- QHI_CONTINUATION_EXTERNAL_TARGET_ABSENT: `250`
+- SWEEP_ACTIVITY_OR_PENETRATION: `161`
+- NO_AGGRESSOR_FLOW_AT_SWEEP: `157`
+- FRAMED_TARGET_REACHED_BEFORE_CONFIRMATION: `123`
+- QHI_CONTINUATION_INSUFFICIENT_COSTED_STRUCTURAL_R: `76`
+- LOW_RECLAIM_LACKED_BULLISH_DISPLACEMENT: `21`
+- C15_V4_CORE_FAMILY_QUARANTINED: `17`
+- HIGH_RECLAIM_LACKED_DISPLACEMENT: `14`
+- QHI_WARMUP_OR_INCOMPLETE_WINDOW: `12`
+- INSUFFICIENT_COSTED_STRUCTURAL_R: `12`
+- NO_CAUSAL_INTERNAL_STRUCTURE: `11`
+- FVG_RETEST_NOT_EXECUTABLE: `7`
+- HIGH_BOUNDARY_ACCEPTED_NOT_RECLAIMED: `7`
+- LOW_BOUNDARY_ACCEPTED_NOT_RECLAIMED: `7`
+- REVERSAL_TARGET_NO_LONGER_LIVE: `7`
+- AMBIGUOUS_EXTERNAL_DRAW: `6`
+- LOW_REJECTION_LACKED_BULLISH_MSS: `6`
+- OUTSIDE_EVALUATION_WINDOW: `5`
+
+E01-E06 are exposed mechanism-development intervals. This result cannot support a success claim.
