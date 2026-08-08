@@ -20,19 +20,20 @@ python -m py_compile \
   "$CAND/semantic_logic.py" \
   "$CAND/semantic_market_leadership.py" \
   "$CAND/auction_origin_ownership.py" \
+  "$CAND/aac_entry_ownership.py" \
   "$CAND/runner_materializer.py" \
   "$CAND/portfolio_materializer.py" \
   "$CAND/run_leadership_scdam.py" \
   "$CAND/evidence_audit.py" \
   "$CAND/candidate14_runner.py" \
-  "$CAND/candidate14_v6_runner.py" \
+  "$CAND/candidate14_v7_runner.py" \
   "$CAND/continuous_aggregate.py" \
-  "$CAND/v6_continuous_aggregate.py" \
+  "$CAND/diagnostic_continuous_aggregate.py" \
   "$CAND/aggregate.py"
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
-python "$CAND/candidate14_v6_runner.py" "$WEEK" "$OUT"
+python "$CAND/candidate14_v7_runner.py" "$WEEK" "$OUT"
 
 for file in \
   run.json data_manifest.json metrics.json summary.json audit.json audit.md \
