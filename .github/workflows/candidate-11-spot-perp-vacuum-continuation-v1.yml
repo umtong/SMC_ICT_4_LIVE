@@ -78,38 +78,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import json, math, os
-          from pathlib import Path
-          import pandas as pd
-          root=Path(os.environ["OUT"])/"DEVELOPMENT"
-          m=json.loads((root/"metrics.json").read_text()); d=json.loads((root/"strategy_diagnostics.json").read_text())
-          p=pd.read_csv(root/"positions.csv"); col="realized_pnl" if "realized_pnl" in p else "pnl"; pnls=[]
-          for value in p.get(col, []):
-              try: x=float(str(value).split()[0].replace(",", ""))
-              except ValueError: continue
-              if math.isfinite(x): pnls.append(x)
-          w=[x for x in pnls if x>0]; l=[x for x in pnls if x<0]
-          payoff=((sum(w)/len(w))/abs(sum(l)/len(l))) if w and l else (float("inf") if w else 0.0)
-          f=pd.read_csv(root/"features.csv.gz")
-          ready=int(f["spot_perp_feature_ready"].fillna(False).astype(bool).sum())
-          checks={
-              "spot_perp_information_present": ready>0,
-              "minimum_closed_trades": int(m.get("trades",0))>=12,
-              "minimum_win_rate": float(m.get("win_rate",0.0))>=0.80,
-              "minimum_payoff_ratio": payoff>=1.20,
-              "minimum_daily_geometric_growth": float(m.get("geometric_daily_growth",0.0))>=0.01,
-              "maximum_drawdown": float(m.get("max_drawdown",1.0))<=0.20,
-              "no_liquidation": int(m.get("liquidations",0))==0,
-              "no_order_rejections": int(d.get("order_rejections",0))==0,
-              "global_slot": int(d.get("max_simultaneous_entry_intents",99))<=1 and int(d.get("max_open_positions_observed",99))<=1,
-          }
-          gate=all(checks.values())
-          result={"classification":"DEVELOPMENT_GATE_PASSED" if gate else "GOAL_NOT_MET","gate_passed":gate,"success_claim":False,"checks":checks,"payoff_ratio":payoff,"spot_perp_feature_ready_rows":ready,"metrics":m,"diagnostics":d}
-          out=Path(os.environ["OUT"]); (out/"DEVELOPMENT_AUDIT.json").write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=True)+"\n")
-          print(json.dumps(result,indent=2,sort_keys=True,allow_nan=True))
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as stream: stream.write(f"gate={'true' if gate else 'false'}\n")
-          PY
+          python "$SPOT/audit_account.py" \
+            --root "$OUT/DEVELOPMENT" \
+            --output "$OUT/DEVELOPMENT_AUDIT.json" \
+            --schema candidate-11-spot-perp-vacuum-development-v1 \
+            --minimum-trades 12
+          gate="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["gate_passed"]).lower())' "$OUT/DEVELOPMENT_AUDIT.json")"
+          echo "gate=$gate" >> "$GITHUB_OUTPUT"
 
       - name: Run source-frozen fresh account only after development success
         if: steps.development.outputs.gate == 'true'
@@ -134,24 +109,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import json,math,os
-          from pathlib import Path
-          import pandas as pd
-          root=Path(os.environ["OUT"])/"FRESH"; m=json.loads((root/"metrics.json").read_text()); d=json.loads((root/"strategy_diagnostics.json").read_text())
-          p=pd.read_csv(root/"positions.csv"); col="realized_pnl" if "realized_pnl" in p else "pnl"; pnls=[]
-          for value in p.get(col,[]):
-              try:x=float(str(value).split()[0].replace(",",""))
-              except ValueError:continue
-              if math.isfinite(x):pnls.append(x)
-          w=[x for x in pnls if x>0];l=[x for x in pnls if x<0];payoff=((sum(w)/len(w))/abs(sum(l)/len(l))) if w and l else (float("inf") if w else 0.0)
-          checks={"minimum_closed_trades":int(m.get("trades",0))>=8,"minimum_win_rate":float(m.get("win_rate",0.0))>=0.80,"minimum_payoff_ratio":payoff>=1.20,"minimum_daily_geometric_growth":float(m.get("geometric_daily_growth",0.0))>=0.01,"maximum_drawdown":float(m.get("max_drawdown",1.0))<=0.20,"no_liquidation":int(m.get("liquidations",0))==0,"no_order_rejections":int(d.get("order_rejections",0))==0,"global_slot":int(d.get("max_simultaneous_entry_intents",99))<=1 and int(d.get("max_open_positions_observed",99))<=1}
-          gate=all(checks.values()); result={"classification":"FRESH_GATE_PASSED" if gate else "GOAL_NOT_MET","gate_passed":gate,"success_claim":False,"checks":checks,"payoff_ratio":payoff,"metrics":m,"diagnostics":d}
-          (Path(os.environ["OUT"])/"FRESH_AUDIT.json").write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=True)+"\n"); print(json.dumps(result,indent=2,sort_keys=True,allow_nan=True))
-          PY
+          python "$SPOT/audit_account.py" \
+            --root "$OUT/FRESH" \
+            --output "$OUT/FRESH_AUDIT.json" \
+            --schema candidate-11-spot-perp-vacuum-fresh-v1 \
+            --minimum-trades 8
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: candidate-11-spot-perp-vacuum-continuation-v1-${{ github.sha }}
           path: artifacts/candidate-11-spot-perp-vacuum-continuation-v1/**
+          if-no-files-found: warn
           retention-days: 90
