@@ -1,0 +1,303 @@
+name: Candidate 06 CIRB Discharge Half-Back
+
+on:
+  push:
+    branches: [research/candidate-06]
+    paths:
+      - ".github/workflows/candidate-06-cirb-discharge-halfback.yml"
+      - "research/candidate-06/register_cirb_discharge_half_back.py"
+      - "research/candidate-06/test_cirb_discharge_half_back.py"
+      - "research/candidate-06/defense_origin_limit.py"
+      - "research/candidate-06/nautilus_execution.py"
+      - "research/candidate-06/crowding_inventory_response_engine.py"
+      - "research/candidate-06/crowding_inventory_response_nautilus_runner.py"
+      - "research/candidate-06/run_crowding_inventory_response_validation.py"
+      - "research/candidate-06/run_crowding_inventory_response_matrix.py"
+      - "research/candidate-06/config.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-cirb-discharge-halfback
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  w2-first:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+      ROOT: artifacts/candidate-06/cirb-discharge-halfback-w2-first
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify environment and register implementation
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          assert version("nautilus_trader") == "1.230.0"
+          PY
+          python research/candidate-06/register_cirb_discharge_half_back.py
+          python -m py_compile \
+            research/candidate-06/defense_origin_limit.py \
+            research/candidate-06/register_cirb_discharge_half_back.py \
+            research/candidate-06/test_cirb_discharge_half_back.py \
+            research/candidate-06/crowding_inventory_response_engine.py \
+            research/candidate-06/crowding_inventory_response_nautilus_runner.py \
+            research/candidate-06/run_crowding_inventory_response_validation.py
+          python research/candidate-06/test_defense_origin_limit.py
+          python research/candidate-06/test_cirb_discharge_half_back.py
+          python research/candidate-06/test_crowding_inventory_response_engine.py
+
+      - name: Restore research data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-06
+          key: candidate-06-cirb-halfback-public-data-v1
+          restore-keys: |
+            candidate-06-cirb-public-data-
+            candidate-06-public-data-
+
+      - name: Build predeclared W2 configs
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/configs" "$ROOT/runs" "$SMC4_RESEARCH_DATA"
+          python - <<'PY'
+          import copy
+          import json
+          import sys
+          from pathlib import Path
+
+          candidate = Path("research/candidate-06")
+          sys.path.insert(0, str(candidate.resolve()))
+          from run_crowding_inventory_response_matrix import _base
+
+          root = Path("artifacts/candidate-06/cirb-discharge-halfback-w2-first")
+          raw = json.loads((candidate / "config.json").read_text())
+          base = _base(raw)
+          base["candidate"] = "candidate-06-cirb-discharge-half-back-v6.1"
+          base["version"] = "6.1.0"
+          base["validation"]["stage"] = "cirb_discharge_half_back_w2_first"
+          base["logic"].update({
+              "cirb_use_all_account_composition": True,
+              "cirb_enable_discharge_response": True,
+              "cirb_enable_counter_inventory_continuation": True,
+              "cirb_entry_auction_period_minutes": 5,
+              "minimum_net_rr_after_entry_delay": 0.60,
+              "signal_submission_timing": "ON_SIGNAL_CLOSE",
+          })
+          variants = {
+              "market": ("MARKET_ON_RESPONSE_CLOSE", 0.65),
+              "halfback_065": ("CROWD_DISCHARGE_HALF_BACK_LIMIT", 0.65),
+              "halfback_100": ("CROWD_DISCHARGE_HALF_BACK_LIMIT", 1.0),
+          }
+          for name, (mode, fill_probability) in variants.items():
+              config = copy.deepcopy(base)
+              config["candidate_variant"] = name
+              config["logic"]["cirb_discharge_reversal_entry_execution"] = mode
+              config["execution"]["prob_fill_on_limit_touch"] = fill_probability
+              (root / "configs" / f"{name}.json").write_text(
+                  json.dumps(config, indent=2, sort_keys=True) + "\n"
+              )
+          PY
+
+      - name: Run W2 variants through NautilusTrader
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          overall=0
+          for name in market halfback_065 halfback_100; do
+            out="$ROOT/runs/$name"
+            mkdir -p "$out"
+            python research/candidate-06/run_crowding_inventory_response_validation.py \
+              --config "$ROOT/configs/$name.json" \
+              --output "$out" \
+              --week-index 1 \
+              --allow-gate-fail \
+              > "$out/workflow_stdout.txt" \
+              2> "$out/workflow_stderr.txt"
+            code=$?
+            printf '%s\n' "$code" > "$out/process_exit_code.txt"
+            if [ "$code" -ne 0 ]; then overall=5; fi
+          done
+          echo "exit_code=$overall" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Summarize parent identity, native execution, and outcomes
+        if: always()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-06/cirb-discharge-halfback-w2-first")
+          parent_reason = "CROWD_DISCHARGE_REVERSAL_ENTRY_ARMED"
+          mode = "CROWD_DISCHARGE_HALF_BACK_LIMIT"
+
+          def load(path, default):
+              return json.loads(path.read_text()) if path.exists() else default
+
+          def events(run):
+              path = run / "scenario_events.jsonl"
+              return [json.loads(x) for x in path.read_text().splitlines() if x.strip()] if path.exists() else []
+
+          def signatures(run):
+              result = {}
+              for event in events(run):
+                  if event.get("reason_code") != parent_reason:
+                      continue
+                  d = event.get("details", {})
+                  result[int(event["event_time_ns"])] = (
+                      event.get("scenario_id"), event.get("reference_price"),
+                      d.get("stop"), d.get("target"), d.get("target_reason"),
+                      d.get("crowding_branch"), d.get("shock_sign"),
+                  )
+              return result
+
+          baseline = signatures(root / "runs" / "market")
+          records = []
+          for name in ("market", "halfback_065", "halfback_100"):
+              run = root / "runs" / name
+              metrics = load(run / "metrics.json", {})
+              ev = events(run)
+              trades = load(run / "trades.json", {"trades": []}).get("trades", [])
+              candidate = signatures(run)
+              common = sorted(set(baseline) & set(candidate))
+              exact = [ts for ts in common if baseline[ts] == candidate[ts]]
+              halfback_trades = [t for t in trades if t.get("entry_execution_mode") == mode]
+              records.append({
+                  "name": name,
+                  "process_exit_code": int((run / "process_exit_code.txt").read_text().strip()) if (run / "process_exit_code.txt").exists() else 99,
+                  "metrics": metrics,
+                  "reason_counts": dict(Counter(str(e.get("reason_code", "UNKNOWN")) for e in ev)),
+                  "parent_identity": {
+                      "baseline_parent_entries": len(baseline),
+                      "candidate_parent_entries": len(candidate),
+                      "common_event_times": common,
+                      "exact_event_times": exact,
+                      "passed": bool(exact) and len(exact) == len(common),
+                  },
+                  "halfback_trade_count": len(halfback_trades),
+                  "halfback_trades": halfback_trades,
+              })
+          primary = next(r for r in records if r["name"] == "halfback_065")
+          upper = next(r for r in records if r["name"] == "halfback_100")
+
+          def classify(record):
+              m = record["metrics"]
+              if record["process_exit_code"] != 0 or not m:
+                  return "IMPLEMENTATION_OR_DATA_FAILURE"
+              if record["reason_counts"].get(parent_reason, 0) == 0:
+                  return "NO_CROWD_DISCHARGE_REVERSAL"
+              if not record["parent_identity"]["passed"]:
+                  return "PARENT_SIGNAL_IDENTITY_CHANGED"
+              entries = int(m.get("diagnostics", {}).get("entries_submitted", 0))
+              trades = int(m.get("trades", 0))
+              if entries == 0:
+                  return "PLACEMENT_REJECTED_BEFORE_NATIVE_ORDER"
+              if trades == 0:
+                  return "LIMIT_UNFILLED_OR_UNCLOSED"
+              if record["name"] != "market" and record["halfback_trade_count"] == 0:
+                  return "TRADE_WITHOUT_HALFBACK_IDENTITY"
+              if float(m.get("net_pnl_after_cost", 0.0)) <= 0.0 or int(m.get("wins", 0)) == 0:
+                  return "NEGATIVE_AFTER_COST"
+              return "POSITIVE_NATIVE_EXECUTION"
+
+          for record in records:
+              record["classification"] = classify(record)
+          primary_pass = primary["classification"] == "POSITIVE_NATIVE_EXECUTION"
+          if any(r["classification"] == "IMPLEMENTATION_OR_DATA_FAILURE" for r in records):
+              terminal = "IMPLEMENTATION_OR_DATA_FAILURE"
+          elif primary_pass:
+              terminal = "W2_HALFBACK_MECHANISM_PASSED"
+          elif primary["classification"] == "LIMIT_UNFILLED_OR_UNCLOSED" and upper["classification"] == "POSITIVE_NATIVE_EXECUTION":
+              terminal = "REALISTIC_FILL_MODEL_REJECTED_TOUCH_UPPER_BOUND_PASSED"
+          elif primary["classification"] == "LIMIT_UNFILLED_OR_UNCLOSED" and upper["classification"] == "LIMIT_UNFILLED_OR_UNCLOSED":
+              terminal = "HALFBACK_NOT_EXECUTED_IN_CAUSAL_AUCTION"
+          else:
+              terminal = "W2_HALFBACK_MECHANISM_REJECTED"
+          summary = {
+              "candidate": "candidate-06-cirb-discharge-half-back-v6.1",
+              "terminal_status": terminal,
+              "w2_mechanism_passed": primary_pass,
+              "long_evaluation_authorized": False,
+              "records": records,
+          }
+          (root / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          lines = [
+              "# CIRB Crowd-Discharge Half-Back W2",
+              "",
+              f"Terminal status: `{terminal}`",
+              "",
+              "|variant|geom/day|trades|wins|net PnL|entries|classification|",
+              "|---|---:|---:|---:|---:|---:|---|",
+          ]
+          for r in records:
+              m = r["metrics"]
+              lines.append(
+                  "|{name}|{growth:.6%}|{trades}|{wins}|{net}|{entries}|{classification}|".format(
+                      name=r["name"],
+                      growth=float(m.get("geometric_daily_nav_growth", 0.0)),
+                      trades=m.get("trades"), wins=m.get("wins"),
+                      net=m.get("net_pnl_after_cost"),
+                      entries=m.get("diagnostics", {}).get("entries_submitted"),
+                      classification=r["classification"],
+                  )
+              )
+          (root / "SUMMARY.md").write_text("\n".join(lines) + "\n")
+          PY
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=5; fi
+          printf '%s\n' "$code" > "$ROOT/workflow_exit_code.txt"
+
+      - name: Commit implementation and evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add research/candidate-06/defense_origin_limit.py
+          git add -f "$ROOT"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Validate CIRB discharge half-back W2 [candidate-06 evidence]"
+          git pull --rebase origin research/candidate-06
+          git push origin HEAD:research/candidate-06
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-cirb-discharge-halfback-${{ github.sha }}
+          path: artifacts/candidate-06/cirb-discharge-halfback-w2-first
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce implementation validity
+        if: always()
+        run: |
+          code=$(cat "$ROOT/workflow_exit_code.txt" 2>/dev/null || printf '5')
+          exit "$code"
