@@ -1,0 +1,128 @@
+name: Candidate 15 V44 cross-branch component integration
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - "research/candidate-15/protocol-v44-cross-branch-component-integration.json"
+      - "research/candidate-15/diagnose_v44_cross_branch_component_integration.py"
+      - ".github/workflows/candidate-15-v44-cross-branch-component-integration.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-15-v44-cross-branch-component-integration-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 0
+
+      - name: Fetch candidate branches and verify frozen contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/research/candidate-*:refs/remotes/origin/research/candidate-*'
+          python -m py_compile research/candidate-15/diagnose_v44_cross_branch_component_integration.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = json.loads(Path(
+              'research/candidate-15/protocol-v44-cross-branch-component-integration.json'
+          ).read_text())
+          assert p['schema'] == 'candidate-15-v44-cross-branch-component-integration-v1'
+          assert p['fixed_selection']['minimum_component_split_trades'] == 5
+          assert p['fixed_selection']['maximum_components'] == 12
+          assert p['fixed_selection']['maximum_components_per_candidate'] == 2
+          assert p['fixed_selection']['episode_bucket_minutes'] == 30
+          assert p['fixed_selection']['global_position_limit'] == 1
+          assert p['advance_gate']['minimum_loaded_components'] == 2
+          assert p['advance_gate']['minimum_combined_confirmation_trades_per_day'] == 0.5
+          PY
+
+      - name: Run cross-branch component integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-15/diagnose_v44_cross_branch_component_integration.py \
+            --protocol research/candidate-15/protocol-v44-cross-branch-component-integration.json \
+            --output research/candidate-15/v44/cross_branch_component_integration/results
+
+      - name: Verify source locks, deduplication and one global slot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+          from pandas.errors import EmptyDataError
+
+          root = Path(
+              'research/candidate-15/v44/cross_branch_component_integration/results'
+          )
+          summary = json.loads((root / 'summary.json').read_text())
+          if summary['classification'] == 'V44_SKIPPED_EXISTING_NAUTILUS_ADVANCE':
+              assert summary['existing_advance_versions']
+              raise SystemExit(0)
+          lock = json.loads((root / 'source_component_lock.json').read_text())
+          assert summary['loaded_component_count'] == len(lock['loaded_components'])
+          for audit in lock['component_audits']:
+              if audit['status'] == 'LOADED':
+                  assert audit['selected_blob']
+                  assert audit['selected_path'].endswith('.csv')
+          def read(path):
+              try:
+                  return pd.read_csv(path)
+              except EmptyDataError:
+                  return pd.DataFrame()
+          episode = read(root / 'episode_deduplicated_proposals.csv')
+          if len(episode.index):
+              assert not episode.duplicated(['symbol', 'episode_bucket']).any()
+          selected = read(root / 'selected_integrated_trades.csv')
+          if len(selected.index) > 1:
+              opened = pd.to_datetime(selected['entry_ts'], utc=True)
+              closed = pd.to_datetime(selected['exit_ts'], utc=True)
+              assert (
+                  opened.iloc[1:].reset_index(drop=True)
+                  >= closed.iloc[:-1].reset_index(drop=True)
+              ).all()
+          PY
+
+      - name: Persist compact integration evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          result_dir="research/candidate-15/v44/cross_branch_component_integration/results"
+          cp "$result_dir/RESULT.md" research/candidate-15/V44_CROSS_BRANCH_COMPONENT_INTEGRATION_RESULT.md
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-v44-bot
+          git config user.email candidate-15-v44-bot@users.noreply.github.com
+          git add \
+            research/candidate-15/V44_CROSS_BRANCH_COMPONENT_INTEGRATION_RESULT.md \
+            research/candidate-15/v44/cross_branch_component_integration/results
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15 v44: persist cross-branch component integration [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+
+      - name: Upload compact evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v44-cross-branch-component-integration-${{ github.run_id }}
+          path: |
+            research/candidate-15/V44_CROSS_BRANCH_COMPONENT_INTEGRATION_RESULT.md
+            research/candidate-15/v44/cross_branch_component_integration/results
+          if-no-files-found: warn
+          retention-days: 30
