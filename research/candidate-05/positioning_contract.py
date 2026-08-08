@@ -36,6 +36,39 @@ def _as_utc_nanoseconds(values: pd.Series) -> pd.Series:
     return parsed.astype("datetime64[ns, UTC]")
 
 
+def _retain_archive_partition(
+    raw: pd.DataFrame,
+    *,
+    partition_day: date,
+    source: Path | str,
+) -> pd.DataFrame:
+    """Keep only observations owned by a daily archive's UTC partition.
+
+    Binance daily metrics archives can contain a boundary observation from an
+    adjacent UTC day.  Concatenating adjacent files without assigning partition
+    ownership can therefore create the same nominal observation timestamp with
+    different values.  The archive filename is the authoritative partition key:
+    a row is retained only when its ``create_time`` UTC date matches that key.
+
+    This is deterministic, causal, and independent of file concatenation order.
+    Conflicts which remain *inside* a partition are still rejected downstream.
+    """
+    if "create_time" not in raw.columns:
+        raise RuntimeError(f"metrics frame from {source} has no create_time column")
+    if not isinstance(raw["create_time"].dtype, pd.DatetimeTZDtype):
+        raise RuntimeError(
+            f"metrics create_time from {source} is not timezone-aware: "
+            f"{raw['create_time'].dtype}",
+        )
+    owned = raw.loc[raw["create_time"].dt.date == partition_day].copy()
+    if owned.empty:
+        raise RuntimeError(
+            f"metrics archive {source} contains no rows owned by UTC partition "
+            f"{partition_day.isoformat()}",
+        )
+    return owned
+
+
 def _download_metrics(symbol: str, day: date, cache: Path):
     stamp = day.isoformat()
     filename = f"{symbol}-metrics-{stamp}.zip"
@@ -63,12 +96,18 @@ def _download_metrics(symbol: str, day: date, cache: Path):
     return archive, checksum, evidence
 
 
-def _read_metrics(path: Path) -> pd.DataFrame:
+def _read_metrics(path: Path, *, partition_day: date | None = None) -> pd.DataFrame:
     raw = pd.read_csv(path, compression="zip")
     required = {"create_time", "symbol", *_METRICS_COLUMNS}
     if not required.issubset(raw.columns):
         raise RuntimeError(f"unexpected metrics schema in {path}: {list(raw.columns)}")
     raw["create_time"] = _as_utc_nanoseconds(raw["create_time"])
+    if partition_day is not None:
+        raw = _retain_archive_partition(
+            raw,
+            partition_day=partition_day,
+            source=path,
+        )
     for column in _METRICS_COLUMNS:
         raw[column] = pd.to_numeric(raw[column], errors="raise")
     raw = raw.sort_values("create_time")
@@ -83,10 +122,10 @@ def _read_metrics(path: Path) -> pd.DataFrame:
 def _deduplicate_combined_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
     """Collapse identical daily-boundary observations and reject conflicts.
 
-    Binance daily metrics archives can repeat the same five-minute observation
-    at an adjacent file boundary.  An exact duplicate carries no new information
-    and is normalized to one row.  Conflicting values at the same timestamp are
-    an evidence-integrity failure and are never selected by file order.
+    Exact duplicates carry no new information and are normalized to one row.
+    Conflicting values at the same timestamp are an evidence-integrity failure
+    and are never selected by file order.  Normal daily-boundary spillovers are
+    removed earlier by :func:`_retain_archive_partition`.
     """
     frame = metrics.sort_values("metrics_observed_time", kind="stable").copy()
     duplicated = frame["metrics_observed_time"].duplicated(keep=False)
@@ -156,7 +195,7 @@ def load_range(
     day = start
     while day <= end:
         archive, checksum, item = _download_metrics(symbol, day, cache)
-        metric_frames.append(_read_metrics(archive))
+        metric_frames.append(_read_metrics(archive, partition_day=day))
         manifest_files.extend([archive, checksum])
         evidence.append(item)
         day += timedelta(days=1)
