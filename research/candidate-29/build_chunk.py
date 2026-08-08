@@ -5,6 +5,12 @@ Raw Binance archives are checksum verified by the inherited Candidate 05
 contracts. Each chunk includes a short pre-period warmup, but only rows whose
 completed-bar observation time falls inside the requested core interval are
 published. The final account is not run here and is never reset by chunk.
+
+Binance metrics archives occasionally overlap at a UTC day boundary and the two
+archives can carry different values for the same five-minute timestamp.  File
+order is not an admissible tie-break.  Candidate 29b gives each raw observation
+to the archive whose filename date equals that observation's ``create_time``
+date, then applies the inherited duplicate/conflict checks to the owned rows.
 """
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ from dataclasses import asdict
 from datetime import date, timedelta
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -23,6 +30,7 @@ HERE = Path(__file__).resolve().parent
 CANDIDATE05 = HERE.parent / "candidate-05"
 sys.path.insert(0, str(CANDIDATE05))
 
+import positioning_contract as _positioning_contract
 from timestamp_contract import install as install_timestamp_contract
 from wrangler_contract import install as install_wrangler_contract
 from positioning_contract import install as install_positioning_contract
@@ -34,6 +42,46 @@ install_wrangler_contract()
 install_positioning_contract()
 install_basis_contract()
 install_book_depth_gap_contract()
+
+_METRICS_OWNER_RE = re.compile(r"-metrics-(\d{4}-\d{2}-\d{2})\.zip$")
+_ORIGINAL_READ_METRICS = _positioning_contract._read_metrics
+
+
+def _metrics_owner_day(path: Path) -> date:
+    match = _METRICS_OWNER_RE.search(path.name)
+    if match is None:
+        raise RuntimeError(f"cannot infer metrics archive day from {path.name}")
+    return date.fromisoformat(match.group(1))
+
+
+def _keep_owned_metrics(frame: pd.DataFrame, owner_day: date) -> pd.DataFrame:
+    """Keep only observations causally owned by the archive's UTC filename day."""
+    if "metrics_observed_time" not in frame.columns:
+        raise RuntimeError("metrics frame lacks metrics_observed_time")
+    observed = pd.to_datetime(frame["metrics_observed_time"], utc=True, errors="raise")
+    create_time = observed - pd.Timedelta(minutes=5)
+    owned = frame.loc[create_time.dt.date == owner_day].copy()
+    if owned.empty:
+        raise RuntimeError(f"metrics archive produced no rows owned by {owner_day}")
+    owned_observed = pd.to_datetime(
+        owned["metrics_observed_time"],
+        utc=True,
+        errors="raise",
+    )
+    if owned_observed.duplicated().any() or not owned_observed.is_monotonic_increasing:
+        raise RuntimeError(f"owned metrics rows are not unique and monotonic for {owner_day}")
+    return owned
+
+
+def _read_metrics_owned(path: Path) -> pd.DataFrame:
+    frame = _ORIGINAL_READ_METRICS(path)
+    return _keep_owned_metrics(frame, _metrics_owner_day(path))
+
+
+# Patch only the raw daily-file ownership boundary.  The inherited positioning
+# feature calculation, observation delay, as-of join and freshness checks stay
+# unchanged.
+_positioning_contract._read_metrics = _read_metrics_owned
 
 from features import load_range
 from features import sha256_file
@@ -159,14 +207,15 @@ def build_chunk(
 
     endpoints = Counter(item.endpoint for item in evidence)
     manifest = {
-        "schema_version": 1,
-        "candidate": "candidate-29-continuous-replay",
+        "schema_version": 2,
+        "candidate": "candidate-29b-continuous-replay",
         "symbol": symbol,
         "core_start": core_start.isoformat(),
         "core_end": core_end.isoformat(),
         "build_start": build_start.isoformat(),
         "build_end": build_end.isoformat(),
         "warmup_days": warmup_days,
+        "metrics_boundary_policy": "create_time_owned_by_filename_utc_day",
         "calendar_days": (core_end - core_start).days + 1,
         "rows": len(klines),
         "first_observed_time_ns": int(feature_ns.iloc[0]),
