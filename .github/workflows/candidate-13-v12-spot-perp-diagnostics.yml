@@ -29,6 +29,10 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,10 +40,8 @@ jobs:
       - name: Verify common research environment
         run: smc4 doctor
       - name: Run frozen spot-perpetual state diagnostic
-        id: diagnostic
-        continue-on-error: true
         run: |
-          set -o pipefail
+          set -euo pipefail
           python research/candidate-13/spot_perp_state_diagnostics_v2.py \
             --protocol research/candidate-13/protocol-v11-quarter-hour-failed-initiative-development.json \
             --results-root research/candidate-13/v11/failed_initiative/development/results \
@@ -48,21 +50,16 @@ jobs:
             --output-md research/candidate-13/V12_SPOT_PERP_DIAGNOSTICS.md \
             2>&1 | tee research/candidate-13/V12_SPOT_PERP_DIAGNOSTIC_RUN.log
       - name: Persist commit-scoped diagnostic evidence when branch is unchanged
-        if: always()
         env:
           START_SHA: ${{ github.sha }}
         run: |
-          git config user.name candidate-13-bot
-          git config user.email candidate-13-bot@users.noreply.github.com
-          git add research/candidate-13/V12_SPOT_PERP_DIAGNOSTIC_RUN.log
-          for path in \
+          set -euo pipefail
+          git config --global user.name candidate-13-bot
+          git config --global user.email candidate-13-bot@users.noreply.github.com
+          git add \
+            research/candidate-13/V12_SPOT_PERP_DIAGNOSTIC_RUN.log \
             research/candidate-13/v12-spot-perp-diagnostics.json \
             research/candidate-13/V12_SPOT_PERP_DIAGNOSTICS.md
-          do
-            if test -f "$path"; then
-              git add "$path"
-            fi
-          done
           if git diff --cached --quiet; then
             exit 0
           fi
@@ -70,6 +67,3 @@ jobs:
           git fetch origin research/candidate-13
           test "$(git rev-parse origin/research/candidate-13)" = "$START_SHA"
           git push origin HEAD:research/candidate-13
-      - name: Enforce diagnostic success
-        if: always()
-        run: test "${{ steps.diagnostic.outcome }}" = "success"
