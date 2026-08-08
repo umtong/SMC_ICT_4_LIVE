@@ -8,6 +8,7 @@ on:
       - research/candidate-09/v32_depth_initiative/strategy.py
       - research/candidate-09/v32_depth_initiative/run_experiment.py
       - research/candidate-09/v32_depth_initiative/test_strategy.py
+      - research/candidate-09/v32_depth_initiative/apply_flat_rejection_fix.py
   workflow_dispatch:
 
 permissions:
@@ -53,6 +54,7 @@ jobs:
           git archive "$SOURCE_SHA" research/candidate-05 research/candidate-16 | tar -x -C "$ROOT/work"
           mv "$ROOT/work/research/candidate-16/strategy.py" "$ROOT/work/research/candidate-16/strategy_v1.py"
           cp "$ROOT/strategy.py" "$ROOT/work/research/candidate-16/strategy.py"
+          python "$ROOT/apply_flat_rejection_fix.py" "$ROOT/work/research/candidate-16/strategy.py"
           test "$(git hash-object "$ROOT/work/research/candidate-16/strategy_v1.py")" = "3dddd221fbd1a7c3c518bb753c88dcffbbdac361"
           test "$(git hash-object "$ROOT/work/research/candidate-16/effort_result_router.py")" = "e3fd98a5602f499f441ee96e72bd8fdc76376899"
 
@@ -62,7 +64,7 @@ jobs:
           set -euo pipefail
           export PYTHONPATH="$GITHUB_WORKSPACE/$ROOT/work/research/candidate-16:$GITHUB_WORKSPACE/$ROOT/work/research/candidate-05:$GITHUB_WORKSPACE/src"
           smc4 doctor | tee "$ROOT/doctor.txt"
-          python -m compileall -q "$ROOT/strategy.py" "$ROOT/run_experiment.py" "$ROOT/work/research/candidate-16" "$ROOT/work/research/candidate-05"
+          python -m compileall -q "$ROOT/strategy.py" "$ROOT/run_experiment.py" "$ROOT/apply_flat_rejection_fix.py" "$ROOT/work/research/candidate-16" "$ROOT/work/research/candidate-05"
           python "$ROOT/test_strategy.py"
           python -m unittest discover -s "$ROOT/work/research/candidate-16/tests" -p 'test_effort_result_router.py' -v
           python -m unittest discover -s "$ROOT/work/research/candidate-05/tests" -p 'test_book_depth_gap_contract.py' -v
