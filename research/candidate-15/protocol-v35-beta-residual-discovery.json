@@ -1,0 +1,106 @@
+{
+  "schema": "candidate-15-v35-beta-residual-discovery-v1",
+  "candidate": "candidate-15-v35-beta-residual-discovery",
+  "created_utc": "2026-08-09",
+  "research_question": "Does a prior-only beta-adjusted 24-hour residual trend identify focal-market price discovery that continues after a separately completed fifteen-minute confirmation and twenty basis points of costs?",
+  "external_mechanism": {
+    "sources": [
+      "cross-sectional momentum and residual-momentum research",
+      "dynamic crypto lead-lag and price-discovery studies",
+      "V26 residual OI position-buildup continuation evidence"
+    ],
+    "reused": [
+      "remove the current common crypto factor with prior-only rolling beta",
+      "trade only the unique residual leader rather than the market-wide beta move",
+      "require high notional participation, aligned taker pressure and a later confirmation",
+      "use causal volatility trailing management"
+    ]
+  },
+  "scenario": {
+    "context": "completed thirty-minute returns for all four markets and a prior-only seven-day beta to the median of the three peer returns",
+    "state": "the focal market is the unique largest absolute z-score of its rolling twenty-four-hour beta residual, at least one and a half standard deviations from its prior distribution",
+    "interaction": "the current thirty-minute residual return, body, quote volume and taker pressure all align with the twenty-four-hour residual direction",
+    "confirmation": "the next completed fifteen-minute bar extends in the residual direction with a directional body and aligned taker pressure",
+    "entry": "confirmation close",
+    "invalidation": "outside the current thirty-minute event extreme plus ten percent of prior thirty-minute ATR",
+    "management": "trail the best completed thirty-minute close by one and a half prior ATRs",
+    "exit": "trailing stop or six-hour cap",
+    "arbitration": "one global open position; choose the largest fixed residual-quality score"
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and latest daily five-minute klines",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ],
+    "interval": "5m",
+    "start": "2024-04-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": [
+      "2026-08-01",
+      "2026-08-02",
+      "2026-08-03",
+      "2026-08-04",
+      "2026-08-05",
+      "2026-08-06",
+      "2026-08-07"
+    ],
+    "visibility": "beta, residual distribution and volume threshold use rows strictly before the event; event state is completed before a separate confirmation"
+  },
+  "fixed_rules": {
+    "event_interval_minutes": 30,
+    "beta_lookback_bars": 336,
+    "beta_minimum_prior_bars": 168,
+    "residual_horizon_bars": 48,
+    "residual_z_lookback_bars": 1440,
+    "residual_z_minimum_prior_bars": 672,
+    "absolute_residual_z_min": 1.5,
+    "residual_leader_gap_z_min": 0.25,
+    "event_residual_atr_min": 0.2,
+    "minimum_body_fraction": 0.5,
+    "volume_median_lookback_bars": 336,
+    "minimum_volume_ratio": 1.0,
+    "minimum_directional_taker_pressure": 0.0,
+    "atr_lookback_bars": 48,
+    "confirmation_minutes": 15,
+    "minimum_confirmation_body_fraction": 0.5,
+    "initial_stop_atr_buffer": 0.1,
+    "trailing_stop_atr": 1.5,
+    "maximum_hold_minutes": 360,
+    "same_symbol_cooldown_minutes": 240,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_bar_stop_policy": "STOP_FIRST_CONSERVATIVE"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.5,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 10,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 2,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Only the unchanged residual-discovery route passing every declared split advances to NautilusTrader.",
+    "reject": "Do not tune beta, residual horizon, z-score, confirmation or stop thresholds after evaluation."
+  }
+}
