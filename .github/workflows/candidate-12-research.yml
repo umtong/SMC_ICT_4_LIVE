@@ -1,31 +1,31 @@
-name: candidate-12-i22-causal-microstate-diagnostic
+name: candidate-12-i23-cross-market-delivery-diagnostic
 
 on:
   push:
     branches: ["research/candidate-12"]
     paths:
       - ".github/workflows/candidate-12-research.yml"
-      - "research/candidate-12/diagnose_i22_microstate.py"
+      - "research/candidate-12/diagnose_i23_crossmarket.py"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i22-microstate-${{ github.sha }}
+  group: candidate-12-i23-cross-market-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
   diagnostic:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user root
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify unchanged I19 baseline and causal diagnostic
+      - name: Verify unchanged I19 strategy and diagnostic
         shell: bash
         run: |
           set -euo pipefail
@@ -36,11 +36,6 @@ jobs:
           test "$(git hash-object research/candidate-12/strategy_adapter.py)" = "c8f1a2c30fc598bda1b03adaafde3b4a55f50018"
           python -m compileall -q research/candidate-12
           python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
-          python - <<'PY'
-          import pandas as pd
-          import pyarrow
-          print({"pandas": pd.__version__, "pyarrow": pyarrow.__version__})
-          PY
 
       - name: Reproduce I19 W1 and W12 baseline
         shell: bash
@@ -65,22 +60,21 @@ jobs:
               assert not item["liquidation_detected"], item
           PY
 
-      - name: Run causal microstructure-state screen
+      - name: Screen cross-market delivery states
         shell: bash
         run: |
           set -euo pipefail
-          python research/candidate-12/diagnose_i22_microstate.py \
+          python research/candidate-12/diagnose_i23_crossmarket.py \
             --weeks W1 W12 \
-            --data-dir /tmp/candidate-12-i22-market \
-            --feature-dir /tmp/candidate-12-i22-features \
+            --data-dir /tmp/candidate-12-i23-data \
             --baseline-root artifacts/candidate-12 \
-            --output artifacts/candidate-12/I22-causal-microstate.json
-          cat artifacts/candidate-12/I22-causal-microstate.json
+            --output artifacts/candidate-12/I23-cross-market-delivery.json
+          cat artifacts/candidate-12/I23-cross-market-delivery.json
 
       - name: Preserve reproducible diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I22-causal-microstate-${{ github.sha }}
+          name: candidate-12-I23-cross-market-delivery-${{ github.sha }}
           path: artifacts/candidate-12
           if-no-files-found: warn
