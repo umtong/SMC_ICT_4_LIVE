@@ -12,13 +12,22 @@ on:
 
 permissions:
   contents: write
+  packages: read
+
+concurrency:
+  group: candidate-13-v12-spot-perp-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   diagnose:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
-      image: ghcr.io/umtong/smc-ict-4-research:py313-nautilus-1.230.0
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
