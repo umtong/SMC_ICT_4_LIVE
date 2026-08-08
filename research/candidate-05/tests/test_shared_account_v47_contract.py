@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-import shared_account_backtest as base_runner
+# Import the adapter first so it installs the same feature contracts as the
+# executable runner before shared_account_backtest captures features.load_range.
 from shared_account_backtest_v47 import V47_WINNER
 from shared_account_backtest_v47 import _strategy_path
+import shared_account_backtest as base_runner
 from shared_account_v47_variants import FinalSharedV47BTCUSDTStrategy
 from shared_account_v47_variants import v47_shared_strategy_path
 from strategy_global_slot_wrappers_v4 import SharedAccountEntryLifecycleMixin
