@@ -58,6 +58,9 @@ from candidate15_v11_completed_auction_materializer import (  # noqa: E402,F401
     completed_source_auction_family,
     materialize_v11_completed_auction_router_source,
 )
+from candidate15_v11_market_leadership import (  # noqa: E402
+    Candidate15V11SemanticMarketLeadershipGate,
+)
 from positive_cost_cover import positive_cost_cover_trigger  # noqa: E402,F401
 from portfolio_materializer import materialize_combined_portfolio_source  # noqa: E402
 from quarter_hour_persistent_initiative import (  # noqa: E402,F401
@@ -68,16 +71,15 @@ from response_qualified_persistent_initiative import (  # noqa: E402,F401
     ResponseQualifiedPersistentQuarterHourRouter,
 )
 from runner_materializer import materialize_runner_source  # noqa: E402
-from c13_semantic_market_leadership_v16 import (  # noqa: E402
+from c13_semantic_market_leadership_v16 import (  # noqa: E402,F401
     FAR_ROTATION_SOURCE_NOT_TRANSFER,
-    SemanticMarketLeadershipGate as Candidate13V16SemanticMarketLeadershipGate,
 )
 from c13_semantic_logic_v15 import install as _install_candidate13_v15_logic  # noqa: E402
 from semantic_logic import install as _install_semantic_logic  # noqa: E402
 from candidate15_logic import install as _install_candidate15_logic  # noqa: E402
 
 
-_market_leadership.MarketLeadershipGate = Candidate13V16SemanticMarketLeadershipGate
+_market_leadership.MarketLeadershipGate = Candidate15V11SemanticMarketLeadershipGate
 _install_semantic_logic()
 _install_candidate13_v15_logic()
 _install_candidate15_logic()
