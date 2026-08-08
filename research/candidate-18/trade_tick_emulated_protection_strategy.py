@@ -25,12 +25,22 @@ class Candidate18Strategy(_Candidate18V4Strategy):
 
     def __init__(self, config: Candidate18Config) -> None:
         super().__init__(config=config)
+        self._v5_stop_ids: set[str] = set()
+        self._v5_target_ids: set[str] = set()
         self.diagnostics.update(
             {
                 "candidate18_v5_trade_tick_stop_batches": 0,
                 "candidate18_v5_trade_tick_stop_qty": 0.0,
+                "candidate18_v5_stop_fill_events": 0,
+                "candidate18_v5_target_fill_events": 0,
             },
         )
+
+    def _clear_trade_state(self) -> None:
+        super()._clear_trade_state()
+        if hasattr(self, "_v5_stop_ids"):
+            self._v5_stop_ids.clear()
+            self._v5_target_ids.clear()
 
     def _submit_pending_protection(self, event: Any | None = None) -> None:
         quantity_value = self._pending_protection_qty
@@ -82,9 +92,11 @@ class Candidate18Strategy(_Candidate18V4Strategy):
             reduce_only=True,
             tags=["CANDIDATE18_MANAGED_TARGET", *tags],
         )
-        self._protective_ids.update(
-            {str(stop_order.client_order_id), str(target_order.client_order_id)},
-        )
+        stop_id = str(stop_order.client_order_id)
+        target_id = str(target_order.client_order_id)
+        self._protective_ids.update({stop_id, target_id})
+        self._v5_stop_ids.add(stop_id)
+        self._v5_target_ids.add(target_id)
         self.submit_order(stop_order)
         self.submit_order(target_order)
         self.diagnostics["candidate18_v4_protection_batches"] = int(
@@ -103,6 +115,52 @@ class Candidate18Strategy(_Candidate18V4Strategy):
             self.diagnostics["candidate18_v5_trade_tick_stop_qty"],
         ) + quantity_value
         self._pending_protection_qty = 0.0
+
+    def on_order_filled(self, event: Any) -> None:
+        client_order_id = str(getattr(event, "client_order_id", ""))
+        fill_qty = _number(getattr(event, "last_qty", 0.0))
+        if client_order_id == self._managed_entry_id:
+            super().on_order_filled(event)
+            return
+
+        if client_order_id in self._v5_stop_ids:
+            # A released MARKET order can fill over several TradeTicks. Keep the
+            # same order alive until the whole protected tranche is flat instead
+            # of canceling it and racing a second flatten order against it.
+            self._managed_open_qty = max(0.0, self._managed_open_qty - fill_qty)
+            self.diagnostics["candidate18_v4_exit_fill_events"] = int(
+                self.diagnostics["candidate18_v4_exit_fill_events"],
+            ) + 1
+            self.diagnostics["candidate18_v5_stop_fill_events"] = int(
+                self.diagnostics["candidate18_v5_stop_fill_events"],
+            ) + 1
+            if self._managed_open_qty <= 1e-12:
+                self.cancel_all_orders(self.config.instrument_id)
+                self._protective_ids.clear()
+                self._v5_stop_ids.clear()
+                self._v5_target_ids.clear()
+            return
+
+        if client_order_id in self._v5_target_ids:
+            # A favorable target partial fill changes the position quantity.
+            # Cancel the stale sibling capacities and protect only the remainder.
+            self._managed_open_qty = max(0.0, self._managed_open_qty - fill_qty)
+            self.diagnostics["candidate18_v4_exit_fill_events"] = int(
+                self.diagnostics["candidate18_v4_exit_fill_events"],
+            ) + 1
+            self.diagnostics["candidate18_v5_target_fill_events"] = int(
+                self.diagnostics["candidate18_v5_target_fill_events"],
+            ) + 1
+            self.cancel_all_orders(self.config.instrument_id)
+            self._protective_ids.clear()
+            self._v5_stop_ids.clear()
+            self._v5_target_ids.clear()
+            if self._managed_open_qty > 1e-12:
+                self._pending_protection_qty = self._managed_open_qty
+                self._submit_pending_protection(event)
+            return
+
+        super().on_order_filled(event)
 
 
 __all__ = ["Candidate18Config", "Candidate18Strategy"]
