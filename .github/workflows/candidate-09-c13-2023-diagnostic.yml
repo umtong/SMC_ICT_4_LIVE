@@ -1,0 +1,100 @@
+name: Candidate 09 Candidate 13 2023 continuous diagnostic
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths:
+      - .github/workflows/candidate-09-c13-2023-diagnostic.yml
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, far-only]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09-c13-continuous
+          key: candidate-09-c13-monthly-klines-v2
+          restore-keys: candidate-09-c13-monthly-klines-v1
+
+      - name: Materialize exact evidence-locked source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin research/candidate-11 research/candidate-13
+          variant='${{ matrix.variant }}'
+          root="research/candidate-09/c13_2023_${variant}"
+          source="$root/source"
+          rm -rf "$root"; mkdir -p "$source"
+          materialize() { local oid="$1" name="$2"; git cat-file blob "$oid" > "$source/$name"; test "$(git hash-object "$source/$name")" = "$oid"; }
+          materialize c2ce386a42956c22039f0bf7490cf9493ab51003 bar_adapter.py
+          materialize 6dcc95a4f02a0613ad7c72ff0b738cee4b640fc4 global_allocator.py
+          materialize 08ac6c0119c2e83039c864ff3a0aff06d6a75c75 logic.py
+          materialize 272b1aee7468cbbd6b79a4bc6c8e421e93df6bf0 market_leadership.py
+          materialize 21180b2397f0ee63c887079764df1ee94e426a03 session_engine.py
+          materialize e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f run_leadership_scdam.py
+          materialize 990dd8986246a7dac8d5c619ef930ffd54ba430e evidence_audit.py
+          materialize 050b5b9413c22e4fc2ef247cc2b272657ff66f38 base_config.json
+          cp research/candidate-09/c13_continuous/apply_monthly_loader.py "$root/apply_monthly_loader.py"
+          cp research/candidate-09/c13_continuous/run_continuous.py "$root/run_continuous.py"
+          python "$root/apply_monthly_loader.py"
+          if [[ "$variant" == 'far-only' ]]; then
+            cp research/candidate-09/c13_far_continuous/apply_far_only.py "$root/apply_far_only.py"
+            python "$root/apply_far_only.py"
+          fi
+          python - "$root" "$variant" <<'PY'
+          from pathlib import Path
+          import sys
+          root=Path(sys.argv[1]); variant=sys.argv[2]
+          p=root/'run_continuous.py'; text=p.read_text()
+          text=text.replace('start = "2022-01-01"','start = "2023-01-01"')
+          text=text.replace('end_exclusive = "2026-01-01"','end_exclusive = "2024-01-01"')
+          text=text.replace('candidate-09-c13-continuous-price-discovery',f'candidate-09-c13-2023-{variant}')
+          text=text.replace('active_months >= 36','active_months >= 10')
+          p.write_text(text)
+          PY
+
+      - name: Run 2023 continuous diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          variant='${{ matrix.variant }}'
+          root="research/candidate-09/c13_2023_${variant}"
+          export PYTHONPATH="$GITHUB_WORKSPACE/$root/source:$GITHUB_WORKSPACE/src"
+          smc4 doctor | tee "$root/doctor.txt"
+          python -m compileall -q "$root"
+          mkdir -p "$root/result" .cache/candidate-09-c13-continuous
+          ln -s "$GITHUB_WORKSPACE/.cache/candidate-09-c13-continuous" "$root/result/data"
+          python "$root/run_continuous.py" |& tee "$root/run.txt"
+          rm -f "$root/result/data"
+          [[ -f "$root/result/scenario_events.jsonl" ]] && gzip -f "$root/result/scenario_events.jsonl"
+
+      - name: Preserve diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-c13-2023-${{ matrix.variant }}-${{ github.run_id }}
+          path: research/candidate-09/c13_2023_${{ matrix.variant }}
+          if-no-files-found: error
+          retention-days: 30
