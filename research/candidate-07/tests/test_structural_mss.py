@@ -71,7 +71,9 @@ def episode(
             92 * NS_PER_MINUTE,
         )
         source_level, extreme = 99.0, 98.0
-        internal, external = 105.0, 110.0
+        # Keep the synthetic target far enough beyond the retest close that the
+        # unchanged 1.25R economic geometry contract can legitimately pass.
+        internal, external = 106.0, 110.0
     else:
         boundary = MinuteSwing(
             "1ML-boundary",
@@ -81,7 +83,7 @@ def episode(
             92 * NS_PER_MINUTE,
         )
         source_level, extreme = 101.0, 102.0
-        internal, external = 95.0, 90.0
+        internal, external = 94.0, 90.0
     return _StructuralEpisode(
         scenario_id="structural-episode",
         direction=direction,
@@ -191,7 +193,7 @@ class StructuralMSSRouterTests(unittest.TestCase):
         warm(router)
         router._structural_episode = episode()
         result = router.observe_minute(
-            bar(101, open_=101.0, high=105.2, low=100.9, close=104.8)
+            bar(101, open_=101.0, high=106.2, low=100.9, close=105.8)
         )
         self.assertIsNone(result.plan)
         self.assertEqual(
