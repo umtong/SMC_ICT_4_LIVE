@@ -14,12 +14,10 @@ class Candidate34Contracts(unittest.TestCase):
         self.assertLess(transition, execution)
 
     def test_single_ablation_is_explicit(self):
-        annotations = strategy.Candidate16Config.__annotations__
-        self.assertIn("candidate34_require_extreme_absorption", annotations)
-        self.assertTrue(
-            strategy.Candidate16Config.model_fields[
-                "candidate34_require_extreme_absorption"
-            ].default
+        source = inspect.getsource(strategy.Candidate16Config)
+        self.assertIn(
+            "candidate34_require_extreme_absorption: bool = True",
+            source,
         )
 
     def test_failed_auction_is_not_immediate_entry(self):
