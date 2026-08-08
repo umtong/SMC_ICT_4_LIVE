@@ -24,6 +24,7 @@ strategy_module = importlib.import_module("strategy")
 if Path(strategy_module.__file__).resolve() != (HERE / "strategy.py").resolve():
     raise RuntimeError(f"Candidate 35 strategy collision: {strategy_module.__file__}")
 
+import event_lifecycle_patch  # noqa: F401,E402 -- installs corrected callback
 from chunk_assembly import SYMBOLS, assemble_universe, sha256_file
 
 spec = importlib.util.spec_from_file_location("candidate35_direct_runner", HERE / "run.py")
