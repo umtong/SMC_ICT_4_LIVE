@@ -1,0 +1,38 @@
+name: candidate-08-align-flow-response-v3-imports
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-align-flow-response-v3-imports"
+
+permissions:
+  contents: write
+
+jobs:
+  align-v3-imports:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Align all active flow-response contracts with V3
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-08/.workflow-staging
+          python -c 'from pathlib import Path; files=[Path("research/candidate-08/test_flow_response_config_contract.py"),Path("research/candidate-08/test_run_flow_response_staged_validation.py"),Path("research/candidate-08/run_flow_response_staged_validation.py")]; old="aggtrade_flow_response_auction_signals_v2"; new="aggtrade_flow_response_auction_signals_v3"; [(lambda s,p: (s.count(old)==1) or (_ for _ in ()).throw(RuntimeError(f"unexpected V2 count in {p}: {s.count(old)}")))(p.read_text(encoding="utf-8"),p) for p in files]; [p.write_text(p.read_text(encoding="utf-8").replace(old,new),encoding="utf-8") for p in files]; source=Path(".github/workflows/candidate-08-auction-router-nautilus-v4.yml"); s=source.read_text(encoding="utf-8"); assert s.count(old)==1; Path("research/candidate-08/.workflow-staging/candidate-08-auction-router-nautilus-v4.yml").write_text(s.replace(old,new),encoding="utf-8")'
+          python -m py_compile research/candidate-08/test_flow_response_config_contract.py research/candidate-08/test_run_flow_response_staged_validation.py research/candidate-08/run_flow_response_staged_validation.py
+          grep -R "aggtrade_flow_response_auction_signals_v2" research/candidate-08/test_flow_response_config_contract.py research/candidate-08/test_run_flow_response_staged_validation.py research/candidate-08/run_flow_response_staged_validation.py && exit 1 || true
+          rm -f research/candidate-08/.run-align-flow-response-v3-imports
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- research/candidate-08/test_flow_response_config_contract.py research/candidate-08/test_run_flow_response_staged_validation.py research/candidate-08/run_flow_response_staged_validation.py research/candidate-08/.workflow-staging/candidate-08-auction-router-nautilus-v4.yml research/candidate-08/.run-align-flow-response-v3-imports
+          git commit -m "candidate-08: align active flow-response contracts with V3 [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
+            git rebase --abort || true
+            sleep $((attempt * 3))
+          done
+          exit 1
