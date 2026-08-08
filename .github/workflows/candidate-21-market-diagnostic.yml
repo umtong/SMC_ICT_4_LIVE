@@ -1,0 +1,155 @@
+name: candidate-21-market-diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research/candidate-21"]
+    paths:
+      - "research/candidate-21/candidate21_market_strategy.py"
+      - "research/candidate-21/candidate21_market_backtest.py"
+      - "research/candidate-21/candidate_market.py"
+      - "research/candidate-21/latency_aligned_tick_clock.py"
+      - ".github/workflows/candidate-21-market-diagnostic.yml"
+
+concurrency:
+  group: candidate-21-market-diagnostic
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify market-attribution contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-21
+          python - <<'PY'
+          from candidate21_market_strategy import Candidate21MarketDiagnosticConfig
+          from candidate21_market_strategy import Candidate21MarketDiagnosticStrategy
+          from candidate21_market_backtest import run_backtest
+          assert Candidate21MarketDiagnosticConfig is not None
+          assert Candidate21MarketDiagnosticStrategy is not None
+          assert callable(run_backtest)
+          PY
+          python -m unittest discover -s research/candidate-21/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-18/tests -p 'test_fok_execution_contract.py' -v
+
+  observed-development:
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: known-2023-12-25
+            build_start: "2023-12-22"
+            build_end: "2023-12-31"
+            evaluation_start: "2023-12-25"
+            evaluation_end: "2023-12-31"
+          - name: viewed-2024-07-08
+            build_start: "2024-07-05"
+            build_end: "2024-07-14"
+            evaluation_start: "2024-07-08"
+            evaluation_end: "2024-07-14"
+          - name: viewed-2023-10-16
+            build_start: "2023-10-13"
+            build_end: "2023-10-22"
+            evaluation_start: "2023-10-16"
+            evaluation_end: "2023-10-22"
+          - name: viewed-2025-09-22
+            build_start: "2025-09-19"
+            build_end: "2025-09-28"
+            evaluation_start: "2025-09-22"
+            evaluation_end: "2025-09-28"
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-21/market-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run market-entry alpha attribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          mkdir -p "$ROOT"
+          python research/candidate-21/candidate_market.py stage \
+            --config research/candidate-21/config.json \
+            --build-start "${{ matrix.build_start }}" \
+            --build-end "${{ matrix.build_end }}" \
+            --evaluation-start "${{ matrix.evaluation_start }}" \
+            --evaluation-end "${{ matrix.evaluation_end }}" \
+            --cache ".cache/candidate-21/market/${{ matrix.name }}" \
+            --output "$ROOT" \
+            --validation-mode "development-entry-attribution" \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Verify attribution and summarize
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          clock = json.loads((root / "execution_clock.json").read_text())
+          contract = json.loads((root / "candidate21_market_contract.json").read_text())
+          if contract.get("entry_change") != "FOK_LIMIT_TO_MARKET_FOR_ATTRIBUTION_ONLY":
+              raise SystemExit(contract)
+          if contract.get("alpha_change_from_response_router") != "NONE":
+              raise SystemExit(contract)
+          if clock.get("selection_offset_ns") != 300_000_000:
+              raise SystemExit(clock)
+          if clock.get("modeled_order_latency_ns") != 250_000_000:
+              raise SystemExit(clock)
+          if not clock.get("strictly_increasing") or not clock.get("actual_prices_only"):
+              raise SystemExit(clock)
+          keys = (
+              "candidate21_clock_events_armed",
+              "candidate21_response_classified",
+              "candidate21_response_acceptance",
+              "candidate21_response_failed_auction",
+              "candidate21_response_unresolved",
+              "candidate21_natural_target_geometry_rejected",
+              "candidate21_market_diagnostic_entries",
+              "entry_submissions",
+              "order_rejections",
+              "max_open_positions_observed",
+          )
+          summary = {
+              "metrics": metrics,
+              "clock": clock,
+              "contract": contract,
+              "routing": {key: diagnostics.get(key, 0) for key in keys},
+          }
+          (root / "candidate21_market_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-21-market-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-21/market-${{ matrix.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
