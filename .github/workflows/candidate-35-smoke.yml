@@ -15,7 +15,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 90
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -25,6 +25,11 @@ jobs:
       ROOT: artifacts/c35-smoke
     steps:
       - uses: actions/checkout@v4
+      - name: Restore verified raw-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/c35-smoke
+          key: candidate35-binance-2026-07-01-v1
       - name: Verify environment and pure contracts
         shell: bash
         run: |
@@ -40,7 +45,7 @@ jobs:
           python research/candidate-35/launch.py \
             --config research/candidate-35/config.json \
             --start 2026-07-01 \
-            --end 2026-07-07 \
+            --end 2026-07-01 \
             --cache .cache/c35-smoke \
             --workspace .cache/c35-smoke-work \
             --output "$ROOT" \
