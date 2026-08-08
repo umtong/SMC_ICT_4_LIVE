@@ -1,0 +1,192 @@
+name: candidate-21-event-time-development
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research/candidate-21"]
+    paths:
+      - "research/candidate-21/event_time_router.py"
+      - "research/candidate-21/event_time_data.py"
+      - "research/candidate-21/candidate21_event_strategy.py"
+      - "research/candidate-21/candidate21_event_backtest.py"
+      - "research/candidate-21/candidate_event.py"
+      - "research/candidate-21/tests/test_event_time.py"
+      - ".github/workflows/candidate-21-event-time-development.yml"
+
+concurrency:
+  group: candidate-21-event-time-development
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify event-time contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-21
+          python -m unittest discover -s research/candidate-21/tests -p 'test_event_time.py' -v
+          python -m unittest discover -s research/candidate-21/tests -p 'test_*.py' -v
+          python - <<'PY'
+          from candidate21_event_backtest import run_backtest
+          from candidate21_event_strategy import Candidate21EventConfig
+          from candidate21_event_strategy import Candidate21EventStrategy
+          assert callable(run_backtest)
+          assert Candidate21EventConfig is not None
+          assert Candidate21EventStrategy is not None
+          PY
+
+  observed-development:
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: viewed-2023-10-16
+            build_start: "2023-10-13"
+            build_end: "2023-10-22"
+            evaluation_start: "2023-10-16"
+            evaluation_end: "2023-10-22"
+          - name: known-2023-12-25
+            build_start: "2023-12-22"
+            build_end: "2023-12-31"
+            evaluation_start: "2023-12-25"
+            evaluation_end: "2023-12-31"
+          - name: viewed-2024-07-08
+            build_start: "2024-07-05"
+            build_end: "2024-07-14"
+            evaluation_start: "2024-07-08"
+            evaluation_end: "2024-07-14"
+          - name: viewed-2025-09-22
+            build_start: "2025-09-19"
+            build_end: "2025-09-28"
+            evaluation_start: "2025-09-22"
+            evaluation_end: "2025-09-28"
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-21/event-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run native 10-second event-time policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          mkdir -p "$ROOT"
+          python research/candidate-21/candidate_event.py stage \
+            --config research/candidate-21/config.json \
+            --build-start "${{ matrix.build_start }}" \
+            --build-end "${{ matrix.build_end }}" \
+            --evaluation-start "${{ matrix.evaluation_start }}" \
+            --evaluation-end "${{ matrix.evaluation_end }}" \
+            --cache ".cache/candidate-21/event/${{ matrix.name }}" \
+            --output "$ROOT" \
+            --validation-mode "development-native-10s-event-time" \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Verify event-time execution and summarize
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads(
+              (root / "strategy_diagnostics.json").read_text()
+          )
+          data = json.loads(
+              (root / "event_time_data_contract.json").read_text()
+          )
+          contract = json.loads(
+              (root / "candidate21_event_contract.json").read_text()
+          )
+          if data.get("bar_interval_seconds") != 10:
+              raise SystemExit(data)
+          if "10-SECOND-LAST" not in str(data.get("bar_type")):
+              raise SystemExit(data)
+          if data.get("execution_selection_offset_ns") != 300_000_000:
+              raise SystemExit(data)
+          if data.get("modeled_order_latency_ns") != 250_000_000:
+              raise SystemExit(data)
+          if not data.get("actual_prices_only"):
+              raise SystemExit(data)
+          if not data.get("strictly_increasing_bars"):
+              raise SystemExit(data)
+          if not data.get("strictly_increasing_ticks"):
+              raise SystemExit(data)
+          if int(data.get("bar_count", 0)) < 80_000:
+              raise SystemExit(data)
+          if int(data.get("fallback_ticks", 0)) != 0:
+              raise SystemExit(data)
+          if contract.get("completed_minute_alpha_reused") is not False:
+              raise SystemExit(contract)
+          keys = (
+              "candidate21_event_boundaries_seen",
+              "candidate21_event_attacks_armed",
+              "candidate21_event_attacks_rejected",
+              "candidate21_event_acceptance",
+              "candidate21_event_failed_auction",
+              "candidate21_event_unresolved",
+              "candidate21_event_target_consumed",
+              "candidate21_event_geometry_rejected",
+              "candidate21_event_market_entries",
+              "entry_submissions",
+              "order_rejections",
+              "max_open_positions_observed",
+          )
+          summary = {
+              "metrics": metrics,
+              "data": data,
+              "contract": contract,
+              "routing": {
+                  key: diagnostics.get(key, 0)
+                  for key in keys
+              },
+          }
+          (root / "candidate21_event_summary.json").write_text(
+              json.dumps(
+                  summary,
+                  indent=2,
+                  sort_keys=True,
+                  allow_nan=True,
+              )
+              + "\n"
+          )
+          print(
+              json.dumps(
+                  summary,
+                  indent=2,
+                  sort_keys=True,
+                  allow_nan=True,
+              )
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-21-event-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-21/event-${{ matrix.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
