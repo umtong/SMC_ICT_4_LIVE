@@ -17,16 +17,17 @@ CANDIDATE17 = HERE.parent / "candidate-17"
 CANDIDATE16 = HERE.parent / "candidate-16"
 CANDIDATE05 = HERE.parent / "candidate-05"
 
-for path in (
-    HERE,
-    CANDIDATE20,
-    CANDIDATE19,
-    CANDIDATE18,
-    CANDIDATE17,
-    CANDIDATE16,
-    CANDIDATE05,
-):
-    sys.path.insert(0, str(path))
+# Candidate 16 must precede Candidate 05 because Candidate 17 imports the
+# unqualified module name ``strategy_v2`` and that name exists in both trees.
+# This is the same precedence contract used by the validated Candidate 20
+# entry point; the remaining paths expose the inherited execution chain.
+sys.path.insert(0, str(CANDIDATE16))
+sys.path.insert(1, str(HERE))
+sys.path.insert(2, str(CANDIDATE20))
+sys.path.insert(3, str(CANDIDATE19))
+sys.path.insert(4, str(CANDIDATE18))
+sys.path.insert(5, str(CANDIDATE17))
+sys.path.insert(6, str(CANDIDATE05))
 
 from timestamp_contract import install as install_timestamp_contract
 from wrangler_contract import install as install_wrangler_contract
