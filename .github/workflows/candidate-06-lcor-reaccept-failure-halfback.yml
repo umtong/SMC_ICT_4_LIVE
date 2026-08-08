@@ -167,7 +167,14 @@ jobs:
           fi
           if git diff --cached --quiet; then exit 0; fi
           git commit -m "Record candidate-06 LCOR half-back evidence [candidate-06 evidence]"
-          git push origin HEAD:research/candidate-06
+          for attempt in 1 2 3; do
+            git fetch origin research/candidate-06
+            git rebase origin/research/candidate-06
+            if git push origin HEAD:research/candidate-06; then
+              exit 0
+            fi
+          done
+          exit 1
 
       - name: Upload complete half-back evidence
         if: always()
