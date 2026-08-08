@@ -1,0 +1,182 @@
+name: candidate-10-v39-entry-auction-acceptance
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/c10_v39_*.py
+      - research/candidate-10/test_c10_v39_entry_auction.py
+      - .github/workflows/candidate-10-v39-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v39-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CANDIDATE11_COMMIT: f10517d4ccd2a1a8fbd4d31091cbe0e7c3655327
+
+jobs:
+  weeks:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - week_id: CONTROL_FAST_REVERSALS
+            week_start: "2022-07-09"
+            evidence_class: controlled_micro_protection
+          - week_id: CONTROL_FAST_HOLDOUT_LOSS
+            week_start: "2022-03-21"
+            evidence_class: controlled_accepted_but_failed
+          - week_id: CONTROL_PIVOT_AVAILABLE
+            week_start: "2023-06-27"
+            evidence_class: controlled_fill_bar_failure
+          - week_id: CONTROL_WINNER
+            week_start: "2023-04-11"
+            evidence_class: controlled_winner_preservation
+          - week_id: CONTROL_IMMEDIATE_FAILURES
+            week_start: "2024-10-14"
+            evidence_class: controlled_fill_bar_failure
+          - week_id: CONTROL_XRP_FAILURE
+            week_start: "2023-09-18"
+            evidence_class: controlled_fill_bar_failure
+          # Deterministic untouched selection. SHA256 seed text:
+          # candidate-10-v39-entry-auction-acceptance
+          - week_id: NEW_V39A
+            week_start: "2024-05-06"
+            evidence_class: untouched_holdout
+          - week_id: NEW_V39B
+            week_start: "2024-02-12"
+            evidence_class: untouched_holdout
+          - week_id: NEW_V39C
+            week_start: "2024-07-29"
+            evidence_class: untouched_holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout candidate-10
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen Candidate 11 source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+
+      - name: Run entry-auction acceptance factorial
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ROOT="artifacts/candidate-10-v39/${{ matrix.week_id }}"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v39:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v39
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v39
+              for file in \
+                c10_v27_overlay.py c10_v27_patch.py \
+                c10_v28_overlay.py c10_v28_patch.py \
+                c10_v29_overlay.py c10_v29_patch.py \
+                c10_v33_overlay.py \
+                c10_v36_overlay.py c10_v36_state.py c10_v36_patch.py \
+                c10_v37_overlay.py c10_v37_state.py c10_v37_patch.py \
+                c10_v38_overlay.py c10_v38_state.py c10_v38_patch.py \
+                c10_v39_overlay.py c10_v39_state.py \
+                c10_v39_patch.py c10_v39_run.py \
+                test_c10_v27_overlay.py test_c10_v28_overlay.py \
+                test_c10_v29_overlay.py test_c10_v33_overlay.py \
+                test_c10_v36_state.py test_c10_v37_protection.py \
+                test_c10_v38_micro_pivot.py \
+                test_c10_v39_entry_auction.py; do
+                cp "/workspace/research/candidate-10/${file}" /tmp/candidate11-v39/
+              done
+              smc4 doctor
+              python /tmp/candidate11-v39/c10_v39_patch.py \
+                /tmp/candidate11-v39/run_leadership_scdam.py
+              python -m py_compile \
+                /tmp/candidate11-v39/c10_v27_overlay.py \
+                /tmp/candidate11-v39/c10_v27_patch.py \
+                /tmp/candidate11-v39/c10_v28_overlay.py \
+                /tmp/candidate11-v39/c10_v28_patch.py \
+                /tmp/candidate11-v39/c10_v29_overlay.py \
+                /tmp/candidate11-v39/c10_v29_patch.py \
+                /tmp/candidate11-v39/c10_v33_overlay.py \
+                /tmp/candidate11-v39/c10_v36_overlay.py \
+                /tmp/candidate11-v39/c10_v36_state.py \
+                /tmp/candidate11-v39/c10_v36_patch.py \
+                /tmp/candidate11-v39/c10_v37_overlay.py \
+                /tmp/candidate11-v39/c10_v37_state.py \
+                /tmp/candidate11-v39/c10_v37_patch.py \
+                /tmp/candidate11-v39/c10_v38_overlay.py \
+                /tmp/candidate11-v39/c10_v38_state.py \
+                /tmp/candidate11-v39/c10_v38_patch.py \
+                /tmp/candidate11-v39/c10_v39_overlay.py \
+                /tmp/candidate11-v39/c10_v39_state.py \
+                /tmp/candidate11-v39/c10_v39_patch.py \
+                /tmp/candidate11-v39/c10_v39_run.py \
+                /tmp/candidate11-v39/run_leadership_scdam.py
+              python -m unittest discover \
+                -s /tmp/candidate11-v39 \
+                -p "test_c10_v*.py" \
+                -v
+
+              BASE="/workspace/artifacts/candidate-10-v39/${{ matrix.week_id }}"
+              python /tmp/candidate11-v39/c10_v39_run.py \
+                --candidate11-dir /tmp/candidate11-v39 \
+                --week-start "${{ matrix.week_start }}" \
+                --variant original-stop \
+                --output "${BASE}/original-stop"
+
+              for variant in \
+                entry-side-micro-pivot \
+                fill-bar-acceptance \
+                combined-acceptance-micro-pivot; do
+                mkdir -p "${BASE}/${variant}/data"
+                cp -al "${BASE}/original-stop/data/." \
+                  "${BASE}/${variant}/data/"
+                python /tmp/candidate11-v39/c10_v39_run.py \
+                  --candidate11-dir /tmp/candidate11-v39 \
+                  --week-start "${{ matrix.week_start }}" \
+                  --variant "${variant}" \
+                  --output "${BASE}/${variant}"
+              done
+            '
+
+      - name: Record evidence class
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts/candidate-10-v39/${{ matrix.week_id }}
+          printf '%s\n' '${{ matrix.evidence_class }}' > \
+            artifacts/candidate-10-v39/${{ matrix.week_id }}/evidence_class.txt
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v39-${{ matrix.week_id }}-${{ github.sha }}
+          path: artifacts/candidate-10-v39/${{ matrix.week_id }}
+          if-no-files-found: warn
+          retention-days: 14
