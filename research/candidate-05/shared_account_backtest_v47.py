@@ -7,6 +7,13 @@ only the importable strategy path for the explicitly named v47 winner.
 """
 from __future__ import annotations
 
+from order_failure_idempotency_contract import install as install_failure_idempotency
+
+# Long shared replays may deliver an identical order-failure callback twice at
+# shutdown.  Suppress only that exact duplicate before any strategy modules are
+# imported; the first callback remains fully authoritative.
+install_failure_idempotency()
+
 import shared_account_backtest_v2 as _v2
 import shared_account_backtest as _base
 from shared_account_strategy_variants_v2 import final_shared_strategy_path as _original_path
