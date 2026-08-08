@@ -6,12 +6,49 @@ import argparse
 from datetime import date
 import json
 from pathlib import Path
+import sys
 from typing import Any
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+CANDIDATE29 = ROOT / "candidate-29"
+CANDIDATE19 = ROOT / "candidate-19"
+CANDIDATE18 = ROOT / "candidate-18"
+CANDIDATE17 = ROOT / "candidate-17"
+CANDIDATE16 = ROOT / "candidate-16"
+CANDIDATE05 = ROOT / "candidate-05"
+V54_ACTIVE = CANDIDATE05 / "v54_active"
+
+# v54's top-level ``strategy`` must resolve to v54_active, while Candidate 17's
+# historical ``strategy_v2`` must resolve to Candidate 16 rather than the
+# unrelated Candidate 05 module with the same name.
+_MODULE_PRECEDENCE = (
+    HERE,
+    V54_ACTIVE,
+    CANDIDATE29,
+    CANDIDATE19,
+    CANDIDATE18,
+    CANDIDATE17,
+    CANDIDATE16,
+    CANDIDATE05,
+)
+for path in _MODULE_PRECEDENCE:
+    value = str(path)
+    while value in sys.path:
+        sys.path.remove(value)
+sys.path[:0] = [str(path) for path in _MODULE_PRECEDENCE]
 
 import run_continuous as _continuous
 from nautilus_trader.config import ImportableStrategyConfig
 
-CANDIDATE05 = Path(__file__).resolve().parents[1] / "candidate-05"
+# run_continuous in the source evidence branch predates the module-collision
+# repair and mutates sys.path at import time. Reassert the exact v54 dependency
+# precedence before Nautilus dynamically imports the strategy class.
+for path in _MODULE_PRECEDENCE:
+    value = str(path)
+    while value in sys.path:
+        sys.path.remove(value)
+sys.path[:0] = [str(path) for path in _MODULE_PRECEDENCE]
 
 
 def _v54_strategy_config(
@@ -39,7 +76,7 @@ def run(
     end: date,
     config_path: Path,
 ) -> dict[str, Any]:
-    # The shared runner retains exact chunk/hash/grid/account contracts.  Only
+    # The shared runner retains exact chunk/hash/grid/account contracts. Only
     # its import target is changed from Candidate 19 to the frozen v54 class.
     _continuous._strategy_config = _v54_strategy_config
     result = _continuous.run(
