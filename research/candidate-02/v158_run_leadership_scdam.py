@@ -6,16 +6,48 @@ from datetime import date
 import json
 from pathlib import Path
 from typing import Any
+from urllib.request import Request, urlopen
 
 import market_leadership as _market_leadership
 from runner_materializer_v4 import materialize_runner_source
 from semantic_logic import install as _install_semantic_logic
 from semantic_post_gate import amend_after_leadership
 from v158_oi_router import (
+    CausalOIRouter,
     OIGatedSemanticMarketLeadershipGate,
     ROUTER,
     write_summary,
 )
+
+
+def _download_with_payload_contract(url: str, path: Path) -> None:
+    """Download Binance evidence without rejecting valid short CHECKSUM files.
+
+    ZIP archives retain the inherited minimum-size guard. A checksum is a short
+    text payload by design, so existence and at least one byte are sufficient;
+    its content is subsequently parsed and verified against the archive hash by
+    ``CausalOIRouter._archive``.
+    """
+    minimum_bytes = 1 if url.endswith(".CHECKSUM") else 100
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size >= minimum_bytes:
+        return
+    request = Request(url, headers={"User-Agent": "SMC-ICT-4-candidate-02-v158"})
+    with urlopen(request, timeout=60) as response:  # noqa: S310 fixed HTTPS host
+        payload = response.read()
+    if len(payload) < minimum_bytes:
+        raise RuntimeError(
+            f"unexpectedly small response from {url}: "
+            f"{len(payload)} < {minimum_bytes} bytes"
+        )
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_bytes(payload)
+    temporary.replace(path)
+
+
+# Implementation-only repair. Market state, dates, OI threshold, execution,
+# costs, current-NAV 3% sizing and the global account mutex are unchanged.
+CausalOIRouter._download = staticmethod(_download_with_payload_contract)
 
 _market_leadership.MarketLeadershipGate = OIGatedSemanticMarketLeadershipGate
 _install_semantic_logic()
@@ -64,6 +96,9 @@ def run(config_path: Path, week_id: str, output_dir: Path) -> dict[str, Any]:
             "far_maximum_oi_change_15m": 0.001,
             "risk_fraction_changed": False,
             "execution_changed": False,
+            "implementation_fix": (
+                "valid short Binance CHECKSUM payloads no longer fail the ZIP-size guard"
+            ),
         },
     })
     _write_json(output_dir / "metrics.json", metrics)
