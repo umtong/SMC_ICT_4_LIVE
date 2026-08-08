@@ -1,0 +1,222 @@
+name: candidate-10-v57-internal-funding-checkpoint
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/c10_v57_*.py
+      - research/candidate-10/test_c10_v57_checkpoint.py
+      - .github/workflows/candidate-10-v57-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CANDIDATE11_COMMIT: f10517d4ccd2a1a8fbd4d31091cbe0e7c3655327
+
+jobs:
+  controls:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period_id: CONTROL_FAST
+            start: "2022-07-09"
+            end_exclusive: "2022-07-16"
+          - period_id: CONTROL_EQUILIBRIUM
+            start: "2023-04-11"
+            end_exclusive: "2023-04-18"
+          - period_id: CONTROL_DENSE
+            start: "2024-03-18"
+            end_exclusive: "2024-03-25"
+          - period_id: CONTROL_IMMEDIATE
+            start: "2024-10-14"
+            end_exclusive: "2024-10-21"
+          - period_id: CONTROL_EXTERNAL_WINNER
+            start: "2025-01-25"
+            end_exclusive: "2025-02-01"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 160
+
+    steps:
+      - name: Checkout candidate-10
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen Candidate 11 source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+
+      - name: Run funding-checkpoint exact comparison
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ROOT="artifacts/candidate-10-v57/${{ matrix.period_id }}"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v57:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v57
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v57
+              cp /workspace/research/candidate-10/c10_v*.py /tmp/candidate11-v57/
+              cp /workspace/research/candidate-10/test_c10_v*.py /tmp/candidate11-v57/
+              smc4 doctor
+              python /tmp/candidate11-v57/c10_v57_patch.py \
+                /tmp/candidate11-v57/run_leadership_scdam.py
+              python -m py_compile \
+                /tmp/candidate11-v57/c10_v*.py \
+                /tmp/candidate11-v57/run_leadership_scdam.py
+              python -m unittest discover \
+                -s /tmp/candidate11-v57 \
+                -p "test_c10_v*.py" \
+                -v
+
+              BASE="/workspace/artifacts/candidate-10-v57/${{ matrix.period_id }}"
+              python /tmp/candidate11-v57/c10_v57_run.py \
+                --candidate11-dir /tmp/candidate11-v57 \
+                --start "${{ matrix.start }}" \
+                --end-exclusive "${{ matrix.end_exclusive }}" \
+                --variant source-equilibrium-funding-checkpoint \
+                --evidence-class controlled_checkpoint_attribution \
+                --output "${BASE}/source-equilibrium-funding-checkpoint"
+
+              mkdir -p "${BASE}/internal-liquidity-funding-checkpoint/data"
+              cp -al "${BASE}/source-equilibrium-funding-checkpoint/data/." \
+                "${BASE}/internal-liquidity-funding-checkpoint/data/"
+              python /tmp/candidate11-v57/c10_v57_run.py \
+                --candidate11-dir /tmp/candidate11-v57 \
+                --start "${{ matrix.start }}" \
+                --end-exclusive "${{ matrix.end_exclusive }}" \
+                --variant internal-liquidity-funding-checkpoint \
+                --evidence-class controlled_checkpoint_attribution \
+                --output "${BASE}/internal-liquidity-funding-checkpoint"
+            '
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v57-${{ matrix.period_id }}-${{ github.sha }}
+          path: artifacts/candidate-10-v57/${{ matrix.period_id }}
+          if-no-files-found: warn
+          retention-days: 14
+
+  periods:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period_id: DIAGNOSTIC_2026_H1
+            start: "2026-01-05"
+            end_exclusive: "2026-07-01"
+            evidence_class: inspected_continuous_development
+            timeout: 440
+          - period_id: DEVELOPMENT_2026_07
+            start: "2026-07-06"
+            end_exclusive: "2026-08-01"
+            evidence_class: previously_inspected_continuous_development
+            timeout: 260
+          - period_id: UNTOUCHED_2026_08_01_TO_07
+            start: "2026-08-01"
+            end_exclusive: "2026-08-07"
+            evidence_class: untouched_temporal_holdout_fixed_before_download
+            timeout: 200
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+
+    steps:
+      - name: Checkout candidate-10
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen Candidate 11 source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+
+      - name: Run continuous funding-checkpoint comparison
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ROOT="artifacts/candidate-10-v57/${{ matrix.period_id }}"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v57:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v57
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v57
+              cp /workspace/research/candidate-10/c10_v*.py /tmp/candidate11-v57/
+              cp /workspace/research/candidate-10/test_c10_v*.py /tmp/candidate11-v57/
+              smc4 doctor
+              python /tmp/candidate11-v57/c10_v57_patch.py \
+                /tmp/candidate11-v57/run_leadership_scdam.py
+              python -m py_compile \
+                /tmp/candidate11-v57/c10_v*.py \
+                /tmp/candidate11-v57/run_leadership_scdam.py
+              python -m unittest discover \
+                -s /tmp/candidate11-v57 \
+                -p "test_c10_v*.py" \
+                -v
+
+              BASE="/workspace/artifacts/candidate-10-v57/${{ matrix.period_id }}"
+              python /tmp/candidate11-v57/c10_v57_run.py \
+                --candidate11-dir /tmp/candidate11-v57 \
+                --start "${{ matrix.start }}" \
+                --end-exclusive "${{ matrix.end_exclusive }}" \
+                --variant source-equilibrium-funding-checkpoint \
+                --evidence-class "${{ matrix.evidence_class }}" \
+                --output "${BASE}/source-equilibrium-funding-checkpoint"
+
+              mkdir -p "${BASE}/internal-liquidity-funding-checkpoint/data"
+              cp -al "${BASE}/source-equilibrium-funding-checkpoint/data/." \
+                "${BASE}/internal-liquidity-funding-checkpoint/data/"
+              python /tmp/candidate11-v57/c10_v57_run.py \
+                --candidate11-dir /tmp/candidate11-v57 \
+                --start "${{ matrix.start }}" \
+                --end-exclusive "${{ matrix.end_exclusive }}" \
+                --variant internal-liquidity-funding-checkpoint \
+                --evidence-class "${{ matrix.evidence_class }}" \
+                --output "${BASE}/internal-liquidity-funding-checkpoint"
+            '
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v57-${{ matrix.period_id }}-${{ github.sha }}
+          path: artifacts/candidate-10-v57/${{ matrix.period_id }}
+          if-no-files-found: warn
+          retention-days: 14
