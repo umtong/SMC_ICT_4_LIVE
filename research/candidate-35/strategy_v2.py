@@ -1,8 +1,9 @@
-"""Candidate 35b strategy adapter.
+"""Candidate 35c strategy adapter.
 
 This module keeps Candidate 35's verified NautilusTrader account, global slot,
 risk sizing and persistence.  It replaces only the trading policy with the
-cross-context, sponsored, cost-aware continuation router.
+cross-context continuation router that preserves the frozen structural
+invalidation before costs and quantity are evaluated.
 """
 from __future__ import annotations
 
@@ -23,11 +24,13 @@ class Candidate35V2Config(LegacyCandidate35Config, frozen=True):
     min_sponsored_flow: float = 0.02
     min_sponsored_return_bps: float = 0.50
     min_net_reward_r: float = 1.25
+    min_stop_atr: float = 0.42
+    stop_buffer_atr: float = 0.10
     allow_reversal: bool = False
 
 
 class Candidate35V2Strategy(LegacyCandidate35Strategy):
-    """One-account Candidate 35b policy with unchanged Nautilus execution."""
+    """One-account Candidate 35c policy with unchanged Nautilus execution."""
 
     def __init__(self, config: Candidate35V2Config) -> None:
         super().__init__(config=config)
@@ -48,6 +51,8 @@ class Candidate35V2Strategy(LegacyCandidate35Strategy):
             min_sponsored_flow=config.min_sponsored_flow,
             min_sponsored_return_bps=config.min_sponsored_return_bps,
             min_net_reward_r=config.min_net_reward_r,
+            min_stop_atr=config.min_stop_atr,
+            stop_buffer_atr=config.stop_buffer_atr,
             all_in_cost_bps_each_side=config.all_in_cost_bps_each_side,
             adverse_slippage_bps_each_side=config.adverse_slippage_bps_each_side,
             funding_reserve_bps=config.funding_reserve_bps,
@@ -55,8 +60,8 @@ class Candidate35V2Strategy(LegacyCandidate35Strategy):
         )
         self.diagnostics.update(
             {
-                "policy_version": "candidate-35b",
-                "policy": "CROSS_CONTEXT_SPONSORED_COST_AWARE_CONTINUATION",
+                "policy_version": "candidate-35c",
+                "policy": "STRUCTURAL_INVALIDATION_PERSISTENT_CONTINUATION",
                 "economic_rejections_at_submit": 0,
             },
         )
