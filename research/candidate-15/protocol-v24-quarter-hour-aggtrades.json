@@ -1,0 +1,111 @@
+{
+  "schema": "candidate-15-v24-quarter-hour-aggtrades-btc-screen-v1",
+  "candidate": "candidate-15-v24-quarter-hour-aggtrades-btc-screen",
+  "created_utc": "2026-08-09",
+  "research_question": "Does exact BTC perpetual taker order imbalance in seconds 0-9 of quarter-hour openings, followed by either immediate 10-59 second confirmation or a short reversal inside an aligned public state, predict cost-positive four-to-eight-hour returns strongly enough to justify four-asset expansion?",
+  "implementation_reason": {
+    "v23_data_failure": "Binance USD-M one-second kline archives do not exist for the required history.",
+    "replacement": "Stream official daily aggTrades archives and retain only each quarter-hour opening minute.",
+    "outcome_origin": "event-minute close after observing seconds 10-59"
+  },
+  "data": {
+    "symbols": [
+      "BTCUSDT"
+    ],
+    "event_source": "Binance Vision USD-M daily aggTrades",
+    "context_and_outcome_source": "Binance Vision USD-M monthly/daily 1m klines",
+    "context_start": "2024-06-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "latest_daily_end_exclusive": "2026-08-08",
+    "development_dates": [
+      "2024-08-20",
+      "2024-10-22",
+      "2024-12-24",
+      "2025-02-08",
+      "2025-04-22"
+    ],
+    "stability_dates": [
+      "2025-07-08",
+      "2025-09-22",
+      "2025-12-08",
+      "2026-03-22",
+      "2026-06-08"
+    ],
+    "july_confirmation_dates": [
+      "2026-07-03",
+      "2026-07-10",
+      "2026-07-17",
+      "2026-07-24"
+    ],
+    "latest_august_dates": [
+      "2026-08-01",
+      "2026-08-02",
+      "2026-08-03",
+      "2026-08-04",
+      "2026-08-05",
+      "2026-08-06",
+      "2026-08-07"
+    ],
+    "visibility": "seconds 0-9 define state; seconds 10-59 define an independent event-minute transition; entry is the final trade of that minute"
+  },
+  "fixed_rules": {
+    "minimum_ten_second_quote_volume": 100000.0,
+    "minimum_first_window_observed_seconds": 9,
+    "minimum_confirmation_observed_seconds": 40,
+    "absolute_imbalance_prior_lookback_events": 672,
+    "absolute_imbalance_prior_minimum_events": 192,
+    "absolute_imbalance_prior_quantile": 0.75,
+    "confirmation_abs_return_prior_lookback_events": 672,
+    "confirmation_abs_return_prior_minimum_events": 192,
+    "confirmation_abs_return_prior_quantile": 0.5,
+    "recent_quarter_hour_lag_events": 12,
+    "recent_quarter_hour_maximum_span_minutes": 195,
+    "recent_flow_minimum_direction_agreement": 0.6666666666666666,
+    "public_return_windows_minutes": [
+      60,
+      180,
+      360,
+      720
+    ],
+    "public_minimum_directional_return_agreement": 0.75,
+    "public_volume_ratio_minimum": 1.0,
+    "immediate_confirmation_body_fraction_minimum": 0.25,
+    "route_immediate_confirmation": "QH_10S_IMMEDIATE_CONFIRMATION_4H",
+    "route_short_reversal_delivery": "QH_10S_SHORT_REVERSAL_MEDIUM_DELIVERY_8H",
+    "immediate_horizon_minutes": 240,
+    "short_reversal_horizon_minutes": 480,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1,
+    "same_event_arbitration": "short-reversal delivery first, then larger normalized imbalance times route quality",
+    "overlap_policy": "no new selected event while the fixed route horizon is active",
+    "screen_scope": "BTC-only exact-data mechanism screen; a pass requires immediate four-asset expansion before Nautilus promotion"
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_family_stability_trades_per_sampled_day": 1.0,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 8,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 3,
+    "maximum_single_symbol_share": 1.0,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per evaluation calendar day across the four-asset global account"
+  },
+  "decision_contract": {
+    "advance": "A fixed route positive in all four splits and passing the BTC screen expands unchanged to BTC, ETH, SOL and XRP.",
+    "reject": "Do not tune the exact order-imbalance, event-minute transition or public-state thresholds after seeing these results."
+  }
+}
