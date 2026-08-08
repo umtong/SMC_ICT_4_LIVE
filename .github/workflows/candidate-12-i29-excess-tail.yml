@@ -1,0 +1,130 @@
+name: candidate-12-i29-excess-tail-auction-router
+
+on:
+  push:
+    branches: ["research/candidate-12"]
+    paths:
+      - ".github/workflows/candidate-12-i29-excess-tail.yml"
+      - "research/candidate-12/auction_profile_router.py"
+      - "research/candidate-12/auction_profile_router_i29.py"
+      - "research/candidate-12/test_auction_profile_router.py"
+      - "research/candidate-12/test_auction_profile_router_i29.py"
+      - "research/candidate-12/run_i29_excess_tail_router.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-12-i29-excess-tail-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  w1-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify frozen I19 and I27 execution contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          test "$(git hash-object research/candidate-12/logic.py)" = "848b278d492249cee867f4c8978a1e62086b6d45"
+          test "$(git hash-object research/candidate-12/test_logic.py)" = "c145bdfcb9576a6675dc354e4ae5f40bb266e5b6"
+          test "$(git hash-object research/candidate-12/config.json)" = "160557c044e7fc315fc802bfe7f1c3f974b53374"
+          test "$(git hash-object research/candidate-12/strategy_adapter.py)" = "c8f1a2c30fc598bda1b03adaafde3b4a55f50018"
+          test "$(git hash-object research/candidate-12/run_i27_portfolio.py)" = "b0504d2478bab8b3fb9ad0639e5b5ed244b5252d"
+          python -m compileall -q research/candidate-12
+          python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+
+      - name: Run W1 continuous four-market excess-tail router
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT=artifacts/candidate-12/I29-EXCESS-TAIL-W1
+          mkdir -p "$OUTPUT"
+          python research/candidate-12/run_i29_excess_tail_router.py \
+            --week W1 \
+            --output "$OUTPUT" | tee "$OUTPUT.console.json"
+
+      - name: Enforce W1 before any W12 access
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          root = Path("artifacts/candidate-12/I29-EXCESS-TAIL-W1")
+          m = json.loads((root / "metrics.json").read_text())
+          r = json.loads((root / "global_rejections.json").read_text())["rejections"]
+          assert m["risk_budget_passed"] is True, m
+          assert m["global_slot_passed"] is True, m
+          assert m["event_logs_valid"] is True, m
+          assert m["engine_errors"] == [], m
+          assert m["liquidation_detected"] is False, m
+          assert m["project_target_gate_passed"] is True, m
+          reasons = {x.get("reason") for x in r if x.get("type") == "AUCTION_PROFILE_ROUTED_REJECTED"}
+          assert "MIGRATED_HIGH_RAID_DID_NOT_CLEAR_EXCESS_TAIL" in reasons, reasons
+          print(json.dumps({"metrics": m, "router_reasons": sorted(reasons)}, indent=2, sort_keys=True))
+          PY
+
+      - name: Preserve W1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-I29-excess-tail-W1-${{ github.sha }}
+          path: artifacts/candidate-12/I29-EXCESS-TAIL-W1
+          if-no-files-found: warn
+
+  w12-gate:
+    needs: w1-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run W12 only after W1 passed
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          OUTPUT=artifacts/candidate-12/I29-EXCESS-TAIL-W12
+          mkdir -p "$OUTPUT"
+          python research/candidate-12/run_i29_excess_tail_router.py \
+            --week W12 \
+            --output "$OUTPUT" | tee "$OUTPUT.console.json"
+
+      - name: Enforce W12 target gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          m = json.loads(
+              Path("artifacts/candidate-12/I29-EXCESS-TAIL-W12/metrics.json").read_text()
+          )
+          assert m["risk_budget_passed"] is True, m
+          assert m["global_slot_passed"] is True, m
+          assert m["event_logs_valid"] is True, m
+          assert m["engine_errors"] == [], m
+          assert m["liquidation_detected"] is False, m
+          assert m["project_target_gate_passed"] is True, m
+          print(json.dumps(m, indent=2, sort_keys=True))
+          PY
+
+      - name: Preserve W12 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-I29-excess-tail-W12-${{ github.sha }}
+          path: artifacts/candidate-12/I29-EXCESS-TAIL-W12
+          if-no-files-found: warn
