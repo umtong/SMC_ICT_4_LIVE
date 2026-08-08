@@ -44,7 +44,8 @@ class _Portfolio:
 
 
 class _BaseHarness:
-    def __init__(self) -> None:
+    def __init__(self, config=None) -> None:
+        del config
         self.config = SimpleNamespace(
             trade_start_ns=100,
             trade_end_ns=1_000,
@@ -84,7 +85,8 @@ class _BaseHarness:
 
 
 class _Harness(ClockAlertCausalEntryMixin, _BaseHarness):
-    pass
+    def __init__(self) -> None:
+        super().__init__(None)
 
 
 def _plan(observed: int):
