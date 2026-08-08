@@ -26,7 +26,7 @@ binding.
 
 ```bash
 python -m unittest discover -s research/candidate-35 -p 'test_*.py' -v
-python research/candidate-35/run.py \
+python research/candidate-35/launch.py \
   --config research/candidate-35/config.json \
   --start 2026-07-01 --end 2026-07-07 \
   --cache .cache/c35 --workspace .cache/c35-work \
@@ -34,4 +34,5 @@ python research/candidate-35/run.py \
 ```
 
 For long validation, build checksum-verified monthly chunks with
-`build_chunk.py`, then pass their common root to `run.py --input-root`.
+`build_chunk.py`, then replay the common root through
+`run_continuous.py --input-root`.

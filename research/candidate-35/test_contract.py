@@ -37,6 +37,13 @@ class Candidate35ContractTest(unittest.TestCase):
         self.assertIn("max_open_positions_observed", source)
         self.assertIn("global_position_violations", source)
 
+    def test_launcher_preloads_candidate35_strategy(self) -> None:
+        source = (HERE / "launch.py").read_text(encoding="utf-8")
+        self.assertIn('importlib.import_module("strategy")', source)
+        self.assertIn('HERE / "strategy.py"', source)
+        self.assertIn('spec_from_file_location("candidate35_direct_runner"', source)
+        self.assertIn("klines.csv.gz", source)
+
 
 if __name__ == "__main__":
     unittest.main()
