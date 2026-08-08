@@ -15,7 +15,7 @@
     "require_continuous_account_path": true,
     "risk_fraction": 0.03
   },
-  "candidate": "candidate-14-v6-auction-origin-ownership",
+  "candidate": "candidate-14-v8-explicit-acceptance-failure",
   "created_utc": "2026-08-08",
   "evidence_role": "post-holdout-controlled-development-diagnostic",
   "execution_lock": {
@@ -39,25 +39,29 @@
     "weekly_reset_allowed": false
   },
   "hypothesis": {
-    "causal_defect": "The detector can seed both rejection and acceptance for one liquidity event, while the preserved ordinary FAR transition checks only rejection_seed. This permits an acceptance-origin or unresolved mixed auction to be silently relabelled by generic reclaim, MSS and displacement.",
-    "single_strategy_change": "Ordinary FAR is eligible only when rejection_seed is true and acceptance_seed is false. A mixed or acceptance-origin event remains non-FAR until a future independent candidate defines and observes an explicit acceptance-failure transition.",
-    "unchanged": "Liquidity detection, pool identity, draw resolution, market-leadership semantics, FAR confirmation geometry, entry, stop, target, costs, current-NAV 3% sizing, session I7 module, global arbitration and NautilusTrader execution/accounting are unchanged.",
-    "interpretation_rule": "The interval was previously inspected as Candidate 14 L1. It is reused only to test whether the categorical transition explains the observed failure mechanism; no result from this branch can establish success."
+    "preserved_v6_state": "Ordinary FAR remains eligible only from an exclusively rejection-framed auction.",
+    "v7_rejected_observation": "Replacing the inherited second-pullback limit with confirmation-time AAC market entry produced two AAC trades and both lost. The improvement in aggregate NAV came from four no-trades, not positive AAC expectancy.",
+    "causal_defect": "The current AAC label does not distinguish durable inventory transfer from temporary outside acceptance. A deep boundary re-entry is evidence against acceptance, but the same bar cannot both reveal failure and own a reversal.",
+    "single_state_space_change": "The incomplete AAC continuation branch remains flat. For any acceptance-origin event, first record the frozen deep boundary re-entry. Only a later completed opposite initiative through that failure bar, with the existing displacement/flow/location rules, may own a reversal. Invalidation belongs beyond the failure-bar extreme and the target must be a still-live opposing external draw.",
+    "unchanged": "Liquidity detection, pool identity, source boundary, opposing target selection, displacement thresholds, market-leadership semantics, costs, current-NAV 3% sizing, Session I7, global arbitration and NautilusTrader execution/accounting are unchanged.",
+    "interpretation_rule": "The interval was previously inspected. V8 is a mechanism diagnostic and cannot establish success regardless of performance."
   },
   "locked_source": {
     "blobs": {
+      "acceptance_resolution_v8.py": "bdf3f9108d2dba066d4663a62865dec82eea70bc",
       "auction_origin_ownership.py": "57cbb49e48fdebc01eb310ea12fc9e039bf972e1",
       "bar_adapter.py": "c2ce386a42956c22039f0bf7490cf9493ab51003",
       "base_config.json": "050b5b9413c22e4fc2ef247cc2b272657ff66f38",
-      "candidate14_v6_runner.py": "46326510ce6eb56c09adff83a241c6fc4a456bf6",
+      "candidate14_v8_runner.py": "29e63d2b4ecd883613aa0f08fe21e122f63a5d4c",
+      "diagnostic_continuous_aggregate.py": "f3e77e2c503fcd479f9cbe0df29e952c35f90410",
       "evidence_audit.py": "990dd8986246a7dac8d5c619ef930ffd54ba430e",
       "global_allocator.py": "6dcc95a4f02a0613ad7c72ff0b738cee4b640fc4",
       "logic.py": "08ac6c0119c2e83039c864ff3a0aff06d6a75c75",
       "market_leadership.py": "272b1aee7468cbbd6b79a4bc6c8e421e93df6bf0",
       "portfolio_materializer.py": "94e0921c447dca99f17fca15163909f563bfd0b3",
-      "run_leadership_scdam.py": "74773d038107cb95a51e2c78070291b01e3b94e2",
+      "run_leadership_scdam.py": "6db9e48d8a6510cd55a899e1aa9ef209ac0fd88e",
       "run_leadership_scdam_base.py": "e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f",
-      "run_week.sh": "cc03caa8152ca2b0a242a009f1591c3af572707e",
+      "run_week.sh": "20d5f1d8f11d1bdeb7c21f50e2a1a14fafa00156",
       "runner_materializer.py": "7455c41ffa88f68e814256e37aa8a01d06af3bcd",
       "semantic_execution.py": "a463710a65b0f85b290bb1424c350f720d394925",
       "semantic_logic.py": "055e64acbb1c414ca80ef385b415827ba2eacc5f",
@@ -65,13 +69,12 @@
       "session_auction_bridge.py": "c1aa6f9379cec6ddc4f65e30f6da93a7c6fd7054",
       "session_auction_i7.py": "4bee42001707b26f89df09ab6080e118afb3a106",
       "session_engine.py": "21180b2397f0ee63c887079764df1ee94e426a03",
-      "session_i7_config.json": "a5183552aa637bea29cbb15bc65530ab38f9b644",
-      "v6_continuous_aggregate.py": "758cd6f21a43cd2671e132c4df5a8b9791cd45ef"
+      "session_i7_config.json": "a5183552aa637bea29cbb15bc65530ab38f9b644"
     },
-    "origin_branch": "research/candidate-14@48434c51b3a620be61a15fd2a91cab75c9351087"
+    "origin_branch": "research/candidate-14-v6-origin-ownership@03b12123c8d4e2f62246cc70c99e4024d963674c"
   },
-  "research_question": "When one 84-day NautilusTrader account is replayed unchanged except for exclusive FAR auction-origin ownership, are the mixed-origin losses removed without creating new logic, execution or opportunity failures?",
-  "schema": "candidate-14-v6-development-origin-ownership-v1",
+  "research_question": "Does replacing the unresolved AAC continuation label with an explicit two-stage failure transition create independently owned, cost-executable reversals without reintroducing mixed-origin same-bar relabelling?",
+  "schema": "candidate-14-v8-development-explicit-acceptance-failure-v1",
   "selection": {
     "evaluation_days": 84,
     "holdouts": {
@@ -81,20 +84,21 @@
         "start": "2026-05-11"
       }
     },
-    "method": "Controlled replay of the previously inspected Candidate 14 L1 interval. Dates, data, costs, risk, execution and all other strategy rules are unchanged so the one categorical transition can be isolated. This interval is permanently ineligible for a success claim or future holdout use.",
-    "seed": 202608081406,
+    "method": "Controlled replay of the previously inspected Candidate 14 L1 interval. V6 is the source baseline; V7 supplies rejection evidence for immediate AAC continuation. L1 is permanently ineligible for a success claim or future holdout use.",
+    "seed": 202608081408,
     "warmup_days": 3
   },
   "strategy_change_control": {
-    "base_branch_head": "48434c51b3a620be61a15fd2a91cab75c9351087",
+    "base_branch_head": "03b12123c8d4e2f62246cc70c99e4024d963674c",
     "claim_allowed": false,
     "changed_strategy_files": [
-      "auction_origin_ownership.py",
+      "acceptance_resolution_v8.py",
       "run_leadership_scdam.py"
     ],
     "diagnostic_interval_outcomes_previously_inspected": true,
-    "single_change": "ordinary FAR requires exclusive rejection origin",
-    "unchanged_execution_and_risk": true
+    "single_change": "replace incomplete AAC continuation with later-initiative accepted-auction failure resolution",
+    "unchanged_execution_and_risk": true,
+    "v7_evidence_commit": "3b8728119cb20ff81ef142193f35d55071dc731a"
   },
   "validation_mode": "diagnostic"
 }
