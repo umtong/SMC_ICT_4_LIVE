@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply v64 execution contracts and replace its detector with v65 resolution."""
+"""Apply v64 execution fail-close contracts and replace its detector with v65."""
 from __future__ import annotations
 
 import argparse
