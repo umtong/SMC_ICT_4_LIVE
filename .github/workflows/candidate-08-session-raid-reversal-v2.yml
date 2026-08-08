@@ -62,9 +62,11 @@ jobs:
             smc4 doctor
             python -m compileall -q \
               research/candidate-08/session_raid_reversal_signals_v1.py \
+              research/candidate-08/session_raid_reversal_signals_v2.py \
               research/candidate-08/session_raid_reversal_execution_v2.py \
               research/candidate-08/run_session_raid_reversal_nautilus_v2.py
             python research/candidate-08/test_session_raid_reversal_signals_v1.py -v
+            python research/candidate-08/test_session_raid_reversal_signals_v2.py -v
             python research/candidate-08/test_session_raid_reversal_execution_v2.py -v
             python research/candidate-08/run_session_raid_reversal_nautilus_v2.py \
               --suite first --config "$CONFIG" --pattern-config "$PATTERN_CONFIG" \
@@ -80,7 +82,7 @@ jobs:
             if [[ "$(cat "$OUTPUT_DIR/promote_screen.txt")" == "1" ]]; then
               python research/candidate-08/run_session_raid_reversal_nautilus_v2.py \
                 --suite screen --config "$CONFIG" --pattern-config "$PATTERN_CONFIG" \
-                --output "$SCREEN_DIR" --reuse-first-dir "$FIRST_DIR/screen-01" \
+                --output "$SCREEN_DIR" --reuse-first-dir "$FIRST_DIR" \
                 --data-cache "$CACHE_DIR"
             fi
             python - <<'PY'
@@ -165,7 +167,7 @@ jobs:
               "screen_summary": screen,
               "next_action": next_action,
               "scenario_change_from_v1": "NONE",
-              "execution_change_from_v1": "TWO_TICK_BAR_MARKET_ENTRY_RESERVE",
+              "execution_change_from_v1": "TWO_TICK_BAR_MARKET_ENTRY_RESERVE_AND_CONTIGUOUS_NEXT_BUCKET",
               "scalping_alpha_inputs": False,
           }
           (output / "decision.json").write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
@@ -188,8 +190,10 @@ jobs:
           rm -f "$MARKER"
           git add -A -- \
             research/candidate-08/session_raid_reversal_signals_v1.py \
+            research/candidate-08/session_raid_reversal_signals_v2.py \
             research/candidate-08/session_raid_reversal_execution_v2.py \
             research/candidate-08/test_session_raid_reversal_signals_v1.py \
+            research/candidate-08/test_session_raid_reversal_signals_v2.py \
             research/candidate-08/test_session_raid_reversal_execution_v2.py \
             research/candidate-08/run_session_raid_reversal_nautilus_v2.py \
             research/candidate-08/config_session_raid_reversal_btc_v2.json \

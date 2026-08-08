@@ -1,7 +1,8 @@
 """NautilusTrader runner for direct Session Raid Reversal V2.
 
-V2 keeps the V1 market scenario unchanged and corrects only the deterministic bar-market entry
-cost used before three-percent current-shared-NAV sizing.
+V2 keeps the V1 market scenario unchanged. It corrects deterministic bar-market entry cost and
+requires the execution observation to be the contiguous next ten-second bucket after the completed
+raid/reclaim bar.
 """
 
 from __future__ import annotations
@@ -24,14 +25,14 @@ from session_raid_reversal_execution_v2 import (
     BarMarketRiskCompleteStrategy,
     reprice_signal_bundle_for_bar_market,
 )
-from session_raid_reversal_signals_v1 import (
-    SIGNAL_REVISION as V1_SIGNAL_REVISION,
+from session_raid_reversal_signals_v2 import (
+    SIGNAL_REVISION as SOURCE_SIGNAL_REVISION,
     build_session_raid_reversal_signals,
 )
 
 
 IMPLEMENTATION_REVISION = "SESSION_RAID_REVERSAL_V2"
-SIGNAL_REVISION = "SESSION_RAID_REVERSAL_SIGNALS_V2_SAME_LOGIC_TWO_TICK_ENTRY_COST"
+SIGNAL_REVISION = "SESSION_RAID_REVERSAL_SIGNALS_V2_CAUSAL_NEXT_BUCKET_TWO_TICK_ENTRY_COST"
 EXECUTION_ADAPTER_REVISION = "SESSION_RAID_REVERSAL_EXECUTION_LABELS_V2"
 _ACTIVE_DAY_CONFIG = None
 _ORIGINAL_GLOBAL_SIGNAL_SUMMARY = base._global_signal_summary
@@ -66,7 +67,7 @@ class SessionRaidReversalExecutionStrategy(BarMarketRiskCompleteStrategy):
         intent = self.trade_intents[-1]
         intent["scenario_family"] = str(signal.scenario_family)
         intent["signal_implementation_revision"] = SIGNAL_REVISION
-        intent["source_signal_revision"] = V1_SIGNAL_REVISION
+        intent["source_signal_revision"] = SOURCE_SIGNAL_REVISION
         intent["execution_adapter_revision"] = EXECUTION_ADAPTER_REVISION
         intent["execution_risk_revision"] = EXECUTION_RISK_REVISION
         intent["candidate_time_horizon"] = "INTRADAY_TENS_OF_MINUTES_TO_SIX_HOURS"
@@ -82,7 +83,7 @@ def _global_signal_summary(signals_by_time_ns):
                 sorted(Counter(signal.scenario_family for signal in materialized).items())
             ),
             "signal_implementation_revision": SIGNAL_REVISION,
-            "source_signal_revision": V1_SIGNAL_REVISION,
+            "source_signal_revision": SOURCE_SIGNAL_REVISION,
             "execution_risk_revision": EXECUTION_RISK_REVISION,
             "day_trading_timeframe_contract": (
                 "H4_DRAW_TO_OPPOSITE_COMPLETED_SOURCE_SESSION_LIQUIDITY_VIA_COMPLETED_15M_RAID_RECLAIM"
@@ -105,7 +106,7 @@ def _suite_summary(
     summary.update(
         {
             "signal_implementation_revision": SIGNAL_REVISION,
-            "source_signal_revision": V1_SIGNAL_REVISION,
+            "source_signal_revision": SOURCE_SIGNAL_REVISION,
             "execution_adapter_revision": EXECUTION_ADAPTER_REVISION,
             "execution_risk_revision": EXECUTION_RISK_REVISION,
             "by_scenario_family": dict(sorted(family_counts.items())),
