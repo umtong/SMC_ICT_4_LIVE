@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""Candidate 15 Nautilus portfolio runner.
+
+The frozen Candidate 14 detector/execution/portfolio path is reused.  Candidate
+15 installs only the sequential local auction-state router before the inherited
+runner is materialized.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+
+HERE = Path(__file__).resolve().parent
+CANDIDATE14 = HERE.parent / "candidate-14"
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+if str(CANDIDATE14) not in sys.path:
+    sys.path.insert(1, str(CANDIDATE14))
+
+import market_leadership as _market_leadership  # noqa: E402
+from portfolio_materializer import materialize_combined_portfolio_source  # noqa: E402
+from runner_materializer import materialize_runner_source  # noqa: E402
+from semantic_market_leadership import SemanticMarketLeadershipGate  # noqa: E402
+from semantic_logic import install as _install_semantic_logic  # noqa: E402
+from candidate15_logic import install as _install_candidate15_logic  # noqa: E402
+
+
+_market_leadership.MarketLeadershipGate = SemanticMarketLeadershipGate
+_install_semantic_logic()
+_install_candidate15_logic()
+
+_BASE = CANDIDATE14 / "run_leadership_scdam_base.py"
+_SOURCE = _BASE.read_text(encoding="utf-8")
+_SOURCE = materialize_runner_source(_SOURCE)
+_SOURCE = materialize_combined_portfolio_source(_SOURCE)
+exec(compile(_SOURCE, str(_BASE), "exec"), globals(), globals())
