@@ -1,0 +1,96 @@
+name: candidate-21-forced-exhaustion-alt-screen
+
+on:
+  push:
+    branches: ["research/candidate-21"]
+    paths:
+      - "research/candidate-21/forced_exhaustion_router.py"
+      - "research/candidate-21/candidate21_forced_exhaustion_strategy.py"
+      - "research/candidate-21/candidate21_forced_exhaustion.py"
+      - "research/candidate-21/config_forced_eth.json"
+      - "research/candidate-21/config_forced_sol.json"
+      - "research/candidate-21/config_forced_xrp.json"
+      - ".github/workflows/candidate-21-forced-exhaustion-alt-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-21-forced-exhaustion-alt-screen
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  alt-development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - symbol: ETHUSDT
+            config: research/candidate-21/config_forced_eth.json
+          - symbol: SOLUSDT
+            config: research/candidate-21/config_forced_sol.json
+          - symbol: XRPUSDT
+            config: research/candidate-21/config_forced_xrp.json
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-21-forced-alt/${{ matrix.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and execution contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-21
+          python -m unittest discover -s research/candidate-21/tests -p 'test_forced_exhaustion_router.py' -v
+
+      - name: Run viewed alt development week
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-21/candidate21_forced_exhaustion.py stage \
+            --config "${{ matrix.config }}" \
+            --build-start "2025-09-19" \
+            --build-end "2025-09-28" \
+            --evaluation-start "2025-09-22" \
+            --evaluation-end "2025-09-28" \
+            --cache ".cache/candidate-21-forced-alt/${{ matrix.symbol }}" \
+            --output "$ROOT" \
+            --validation-mode "development-alt-forced-flow-screen" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Summarize cost geometry and native execution
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT']);out={'root':str(root),'completed':(root/'metrics.json').exists()}
+          if (root/'metrics.json').exists():out['metrics']=json.loads((root/'metrics.json').read_text())
+          if (root/'strategy_diagnostics.json').exists():
+              d=json.loads((root/'strategy_diagnostics.json').read_text())
+              keys=('candidate21_forced_event_geometry_eligible','candidate21_forced_event_geometry_rejected','candidate21_forced_events_armed','candidate21_forced_exhaustions','candidate21_forced_geometry_rejected','candidate21_forced_stop_limit_fok_entries','entry_submissions','order_rejections','max_open_positions_observed','max_simultaneous_entry_intents')
+              out['routing']={k:d.get(k,0) for k in keys}
+          (root/'candidate21_forced_alt_summary.json').write_text(json.dumps(out,indent=2,sort_keys=True,allow_nan=True)+'\n')
+          print(json.dumps(out,indent=2,sort_keys=True,allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-21-forced-alt-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-21-forced-alt/${{ matrix.symbol }}/**
+          if-no-files-found: warn
+          retention-days: 90
