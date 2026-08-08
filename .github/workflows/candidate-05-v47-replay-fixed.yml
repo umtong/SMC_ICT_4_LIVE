@@ -1,0 +1,182 @@
+name: candidate-05-v47-replay-fixed
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v47-replay-fixed.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v47-replay-fixed
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  shared-account-replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v47-replay-fixed
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and locate frozen v47 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python - <<'PY'
+          from pathlib import Path
+          files = sorted(Path("research/candidate-05").glob("strategy_v47*.py"))
+          if not files:
+              raise SystemExit("no frozen strategy_v47 source exists")
+          print("\n".join(str(path) for path in files))
+          PY
+
+      - name: Generate import-safe isolated v47 shim and unchanged command
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-05/v47_fixed_active "$ROOT"
+          python - <<'PY'
+          import ast
+          import json
+          import re
+          from pathlib import Path
+
+          parent = Path("research/candidate-05")
+          modules = sorted(parent.glob("strategy_v47*.py"))
+          selected = None
+          exported = None
+          for path in modules:
+              tree = ast.parse(path.read_text())
+              classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
+              aliases = []
+              for node in tree.body:
+                  if not isinstance(node, ast.Assign):
+                      continue
+                  if any(isinstance(target, ast.Name) and target.id == "LiquidityResponseStrategy" for target in node.targets):
+                      if isinstance(node.value, ast.Name):
+                          aliases.append(node.value.id)
+              if aliases and aliases[-1] in classes:
+                  selected = path
+                  exported = aliases[-1]
+                  break
+          if selected is None:
+              # Fall back to the only v47 module and its last Strategy subclass.
+              if len(modules) != 1:
+                  raise SystemExit(f"cannot unambiguously choose v47: {modules}")
+              selected = modules[0]
+              tree = ast.parse(selected.read_text())
+              candidates = [
+                  node.name for node in tree.body
+                  if isinstance(node, ast.ClassDef) and node.name.endswith("Strategy")
+              ]
+              if not candidates:
+                  raise SystemExit(f"no Strategy class in {selected}")
+              exported = candidates[-1]
+
+          module_name = selected.stem
+          shim = f'''"""Generated import-safe shim for frozen {module_name}."""\nfrom __future__ import annotations\nimport importlib.util\nfrom pathlib import Path\nimport sys\n_PARENT = Path(__file__).resolve().parents[1]\n_BASE_PATH = _PARENT / "strategy.py"\n_SPEC = importlib.util.spec_from_file_location("_candidate05_v47_fixed_base", _BASE_PATH)\nif _SPEC is None or _SPEC.loader is None:\n    raise RuntimeError(f"cannot load base strategy from {{_BASE_PATH}}")\n_BASE = importlib.util.module_from_spec(_SPEC)\nsys.modules[_SPEC.name] = _BASE\n_SPEC.loader.exec_module(_BASE)\n_WRAPPER = sys.modules[__name__]\nsys.modules["strategy"] = _BASE\ntry:\n    from {module_name} import {exported} as _Candidate\nfinally:\n    sys.modules["strategy"] = _WRAPPER\nLiquidityResponseConfig = _BASE.LiquidityResponseConfig\nLiquidityResponseStrategy = _Candidate\n__all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]\n'''
+          active = parent / "v47_fixed_active"
+          (active / "strategy.py").write_text(shim)
+
+          workflow = Path(".github/workflows/candidate-05-v47-relative-value.yml").read_text()
+          lines = workflow.splitlines()
+          command_lines = []
+          collecting = False
+          command_indent = None
+          for line in lines:
+              if not collecting and "shared_account_backtest" in line and line.lstrip().startswith("python "):
+                  collecting = True
+                  command_indent = len(line) - len(line.lstrip())
+              if collecting:
+                  current_indent = len(line) - len(line.lstrip())
+                  if command_lines and line.strip() and current_indent < command_indent:
+                      break
+                  if not line.strip():
+                      break
+                  command_lines.append(line.strip())
+                  if not line.rstrip().endswith("\\"):
+                      break
+          if not command_lines:
+              raise SystemExit("could not recover the frozen shared-account command")
+          command = "\n".join(command_lines)
+          command = re.sub(
+              r"--output(?:=|\s+)(?:\"[^\"]*\"|'[^']*'|\S+)",
+              '--output "$ROOT"',
+              command,
+          )
+          command = re.sub(
+              r"--cache(?:=|\s+)(?:\"[^\"]*\"|'[^']*'|\S+)",
+              '--cache .cache/candidate-05-v47-replay-fixed',
+              command,
+          )
+          Path("/tmp/v47-command.sh").write_text(
+              "set -euo pipefail\n" + command + "\n",
+          )
+          print(json.dumps({
+              "strategy_module": module_name,
+              "strategy_class": exported,
+              "command": command,
+          }, indent=2))
+          PY
+          cat /tmp/v47-command.sh
+
+      - name: Run frozen relative-value system in one shared Nautilus account
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v47_fixed_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          bash /tmp/v47-command.sh 2>&1 | tee "$ROOT/console.log"
+
+      - name: Inventory resulting authoritative metrics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics_files = sorted(root.rglob("metrics.json"))
+          payload = {
+              "schema": "candidate-05-v47-replay-fixed-v1",
+              "metrics": [
+                  {
+                      "path": str(path),
+                      "value": json.loads(path.read_text()),
+                  }
+                  for path in metrics_files
+              ],
+          }
+          payload["classification"] = (
+              "V47_MARKET_LOGIC_EXECUTED"
+              if metrics_files
+              else "V47_STILL_BLOCKED_BEFORE_MARKET_EVALUATION"
+          )
+          (root / "replay_decision.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v47-replay-fixed-${{ github.sha }}
+          path: artifacts/candidate-05-v47-replay-fixed/**
+          if-no-files-found: warn
+          retention-days: 90
