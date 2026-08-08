@@ -1,0 +1,109 @@
+name: candidate-05-new-family-smoke-v2
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-new-family-smoke-v2.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-new-family-smoke-v2
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile and run all current pure and structural contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          export PYTHONPATH=research/candidate-05
+          for pattern in \
+            test_spot_price_discovery_contract.py \
+            test_spot_led_repricing_logic.py \
+            test_strategy_v55_contract.py \
+            test_flow_maturity_logic.py \
+            test_strategy_v56_contract.py \
+            test_basis_dislocation_logic.py \
+            test_strategy_v58_contract.py \
+            test_strategy_v59_contract.py \
+            test_funding_reset_logic.py \
+            test_strategy_v62_contract.py \
+            test_liquidation_exhaustion_logic.py \
+            test_strategy_v68_contract.py \
+            test_select_promoted_components.py \
+            test_select_promoted_components_v2.py \
+            test_strategy_v60_composite_contract.py \
+            test_strategy_v61_composite_contract.py \
+            test_strategy_v66_composite_contract.py \
+            test_strategy_v69_composite_contract.py \
+            test_strategy_v46_no_post_retrace_breakaway_contract.py \
+            test_book_depth_gap_contract.py \
+            test_positioning_contract.py; do
+              python -m unittest discover -s research/candidate-05/tests -p "$pattern" -v
+          done
+
+      - name: Import every single-family active shim
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A expected=(
+            [v55_active]=SpotLedPriceDiscoveryStrategy
+            [v56_active]=EarlyFlowFirstRetraceStrategy
+            [v58_active]=ForcedBasisReversionStrategy
+            [v59_active]=SpotBoundaryRetestStrategy
+            [v62_active]=PostFundingForcedResetStrategy
+            [v68_active]=LiquidationExhaustionStrategy
+          )
+          for active in "${!expected[@]}"; do
+            PYTHONPATH="research/candidate-05/$active:research/candidate-05" \
+            EXPECTED="${expected[$active]}" python - <<'PY'
+          import os
+          import strategy
+          print(strategy.LiquidityResponseStrategy)
+          assert strategy.LiquidityResponseStrategy.__name__ == os.environ["EXPECTED"]
+          PY
+          done
+
+      - name: Import all 63 six-family component subsets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from itertools import combinations
+          from pathlib import Path
+          components = ["v55", "v56", "v58", "v59", "v62", "v68"]
+          lines = []
+          for size in range(1, len(components) + 1):
+              for subset in combinations(components, size):
+                  lines.append(",".join(sorted(subset)))
+          Path("/tmp/v69-subsets.txt").write_text("\n".join(lines) + "\n")
+          print(len(lines))
+          PY
+          while IFS= read -r components; do
+            CANDIDATE05_COMPONENTS="$components" \
+            PYTHONPATH=research/candidate-05/v69_active:research/candidate-05 \
+            python - <<'PY'
+          import os
+          import strategy
+          from strategy_v46_no_post_retrace_breakaway import NoPostRetraceBreakawayStrategy
+          cls = strategy.LiquidityResponseStrategy
+          assert cls.mro().count(NoPostRetraceBreakawayStrategy) == 1
+          assert tuple(sorted(os.environ["CANDIDATE05_COMPONENTS"].split(","))) == cls.PROMOTED_COMPONENTS
+          print(os.environ["CANDIDATE05_COMPONENTS"], [item.__name__ for item in cls.mro()])
+          PY
+          done < /tmp/v69-subsets.txt
