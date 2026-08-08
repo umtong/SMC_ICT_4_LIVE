@@ -1,0 +1,196 @@
+name: candidate-16-v5b-fok-price-cap-screen
+
+on:
+  push:
+    branches: ["research/candidate-16-v5b-fok-price-cap"]
+    paths:
+      - "research/candidate-16/**"
+      - ".github/workflows/candidate-16-v5b-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v5b-fok-price-cap-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  causal-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v5b-screen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify frozen economics and FOK implementation repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-16
+          python -m unittest discover -s research/candidate-16/tests -p 'test_features_v4b.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_crowded_initiative_router_v5.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v5_contract.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v5b_execution.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Verify same pre-registered evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          from hashlib import sha256
+          seed = (
+              "candidate16-v5-crowded-initiative-rejection|"
+              "ed817d350ce3415729faada3e7dbae3e56afcae9|"
+              "independent-week-1"
+          )
+          mondays = []
+          cursor = date(2023, 5, 22)
+          while cursor <= date(2024, 3, 18):
+              build_start = cursor - timedelta(days=3)
+              build_end = cursor + timedelta(days=6)
+              if (
+                  build_start.year == cursor.year == build_end.year
+                  and build_start.month == cursor.month == build_end.month
+                  and cursor != date(2023, 11, 20)
+              ):
+                  mondays.append(cursor)
+              cursor += timedelta(days=7)
+          digest = sha256(seed.encode()).hexdigest()
+          index = int(digest, 16) % len(mondays)
+          if (
+              len(mondays) != 31
+              or digest != "d10a3397bde9c15d8c48aed90c45d9f9c3f1a3f522aca83f3b759110b25a58ab"
+              or index != 1
+              or mondays[index].isoformat() != "2023-06-05"
+          ):
+              raise SystemExit((len(mondays), digest, index, mondays[index]))
+          print({"implementation_repair_only": True, "start": str(mondays[index])})
+          PY
+
+      - name: Run identical BTC week through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/candidate_v5b.py stage \
+            --config research/candidate-16/config_v5.json \
+            --build-start 2023-06-02 \
+            --build-end 2023-06-11 \
+            --evaluation-start 2023-06-05 \
+            --evaluation-end 2023-06-11 \
+            --cache .cache/candidate-16-v5b \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Classify valid economics and state funnel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          join = json.loads((root / "candidate16_v4b_l1_join.json").read_text())
+          integrity = (
+              float(join.get("l1_join_coverage", 0.0)) >= 0.95
+              and int(join.get("strategy_feature_ready_rows", 0)) > 0
+              and int(metrics.get("liquidations", 0)) == 0
+              and int(diagnostics.get("order_rejections", 0)) == 0
+              and int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1
+              and int(diagnostics.get("max_open_positions_observed", 0)) <= 1
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          if not integrity:
+              classification = "INVALID_SCREEN; EXECUTION_REPAIR_INTEGRITY_FAILURE"
+          elif metrics.get("gate_pass", False):
+              classification = "ADVANCE_UNCHANGED_TO_NEXT_UNTOUCHED_PERIOD"
+          else:
+              classification = "DO_NOT_CLAIM_TARGET; VALID_CROWDED_INITIATIVE_SCREEN_FAILED_GATE"
+          decision = {
+              "schema": "candidate-16-v5b-screen-v1",
+              "pre_registered_evaluation": ["2023-06-05", "2023-06-11"],
+              "implementation_repair_only": True,
+              "integrity_pass": integrity,
+              "gate_pass": bool(metrics.get("gate_pass", False)),
+              "classification": classification,
+              "l1_join": join,
+              "metrics": metrics,
+              "state_funnel": {
+                  "cost_exceeding_observations": diagnostics.get("candidate16_v5_cost_exceeding_observations", 0),
+                  "crowded_shocks": diagnostics.get("candidate16_v5_crowded_shocks", 0),
+                  "failures_confirmed": diagnostics.get("candidate16_v5_failures_confirmed", 0),
+                  "failures_invalidated": diagnostics.get("candidate16_v5_failures_invalidated", 0),
+                  "failures_expired": diagnostics.get("candidate16_v5_failures_expired", 0),
+                  "no_natural_target": diagnostics.get("candidate16_v5_no_natural_target", 0),
+                  "fok_limit_entries": diagnostics.get("candidate16_v5b_fok_limit_entries", 0),
+                  "entry_submissions": diagnostics.get("entry_submissions", 0),
+                  "order_rejections": diagnostics.get("order_rejections", 0),
+                  "protective_fail_closes": diagnostics.get("candidate16_v2_protective_stop_fail_closes", 0)
+              }
+          }
+          (root / "screen_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify authoritative evidence and full-or-none entries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          python -m json.tool "$ROOT/screen_decision.json"
+          python -m json.tool "$ROOT/candidate16_v4b_l1_join.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path(os.environ["ROOT"])
+          evidence = json.loads((root / "raw_evidence.json").read_text())
+          l1 = [item for item in evidence if item.get("endpoint") == "immutable_external_bookticker_1m"]
+          if len(l1) != 1:
+              raise SystemExit(f"expected one immutable L1 artifact, found {len(l1)}")
+          if l1[0].get("dataset_commit") != "2c8dce40261855c7b57113f5a157bbeb82280bb8":
+              raise SystemExit("L1 dataset commit drifted")
+          if l1[0].get("sha256") != "274eb8e87c7d7185a0162271144b30a0e387ae496fe657c6af83833448f08624":
+              raise SystemExit("L1 dataset checksum drifted")
+          orders = pd.read_csv(root / "orders.csv")
+          entries = orders[orders["tags"].astype(str).str.contains("CANDIDATE16_V5B_FOK_PRICE_CAP", na=False)]
+          if not entries.empty:
+              if not (entries["type"] == "LIMIT").all():
+                  raise SystemExit("non-LIMIT v5b entry")
+              if not (entries["time_in_force"] == "FOK").all():
+                  raise SystemExit("non-FOK v5b entry")
+              if not (entries["filled_qty"] == entries["quantity"]).all():
+                  raise SystemExit("partial v5b entry fill")
+          PY
+          for file in run.json data_manifest.json raw_evidence.json account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl candidate16_v5b_contract.json candidate16_v4b_l1_join.json features.csv.gz; do
+            test -s "$ROOT/$file"
+          done
+          test -e "$ROOT/orders.csv"
+          test -e "$ROOT/positions.csv"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v5b-screen-${{ github.sha }}
+          path: artifacts/candidate-16-v5b-screen/**
+          if-no-files-found: warn
+          retention-days: 90
