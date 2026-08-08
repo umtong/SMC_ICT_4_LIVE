@@ -1,0 +1,142 @@
+name: candidate-16-v3-next-source-development
+
+on:
+  push:
+    branches: ["research/candidate-16"]
+    paths:
+      - "research/candidate-16/candidate_v3.py"
+      - "research/candidate-16/strategy_v3.py"
+      - "research/candidate-16/tests/test_strategy_v3.py"
+      - ".github/workflows/candidate-16-v3-next-source-development.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v3-next-source-development
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v3-next-source-development
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify reused state router and single target-role change
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-16
+          python -m unittest discover -s research/candidate-16/tests -p 'test_accepted_failure_router.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_contract.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v3.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_timestamp_contract.py' -v
+          python - <<'PY'
+          from strategy import Candidate16Strategy
+          from strategy_v3 import Candidate16V3Strategy
+          assert issubclass(Candidate16V3Strategy, Candidate16Strategy)
+          assert Candidate16V3Strategy._detect_sweep is Candidate16Strategy._detect_sweep
+          assert Candidate16V3Strategy._process_pending is Candidate16Strategy._process_pending
+          assert Candidate16V3Strategy._submit_resolution_entry is not Candidate16Strategy._submit_resolution_entry
+          PY
+
+      - name: Run opened BTC development week through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/candidate_v3.py stage \
+            --config research/candidate-16/config.json \
+            --build-start 2025-02-07 \
+            --build-end 2025-02-16 \
+            --evaluation-start 2025-02-10 \
+            --evaluation-end 2025-02-16 \
+            --cache .cache/candidate-16-v3 \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Classify development evidence without target or threshold tuning
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          integrity = (
+              int(metrics.get("liquidations", 0)) == 0
+              and int(diagnostics.get("order_rejections", 0)) == 0
+              and int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1
+              and int(diagnostics.get("max_open_positions_observed", 0)) <= 1
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          trades = int(metrics.get("trades", 0))
+          total_return = float(metrics.get("total_return", 0.0))
+          gate_pass = bool(metrics.get("gate_pass", False))
+          if not integrity:
+              classification = "TECHNICAL_OR_EXECUTION_INTEGRITY_FAILURE"
+          elif gate_pass:
+              classification = "DEVELOPMENT_GATE_PASSED_FREEZE_FOR_NEW_UNTOUCHED_EVIDENCE"
+          elif trades == 0:
+              classification = "NEXT_SOURCE_TARGET_DOMAIN_NOT_EXECUTABLE"
+          elif total_return > 0.0:
+              classification = "MECHANISM_POSITIVE_BUT_PROJECT_GATE_NOT_REACHED"
+          else:
+              classification = "STRUCTURAL_REJECTION"
+          result = {
+              "schema": "candidate-16-v3-next-source-development-v1",
+              "data_role": "OPENED_DEVELOPMENT",
+              "evaluation": ["2025-02-10", "2025-02-16"],
+              "single_changed_role": "delivery_objective",
+              "integrity_pass": integrity,
+              "gate_pass": gate_pass,
+              "classification": classification,
+              "metrics": metrics,
+              "router_counts": {
+                  key: value
+                  for key, value in diagnostics.items()
+                  if key.startswith("candidate16_v2_")
+                  or key.startswith("candidate16_v3_")
+              },
+              "fresh_validation_authorized": gate_pass,
+              "success_claim": False,
+          }
+          (root / "development_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify authoritative evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          python -m json.tool "$ROOT/development_decision.json"
+          for file in run.json data_manifest.json raw_evidence.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl candidate16_contract.json; do
+            test -s "$ROOT/$file"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v3-next-source-development-${{ github.sha }}
+          path: artifacts/candidate-16-v3-next-source-development/**
+          if-no-files-found: warn
+          retention-days: 90
