@@ -1,10 +1,10 @@
-name: Candidate 15 V11 atomic family integration materialization
+name: Candidate 15 V11 beta plus completed-source auction integration
 
 on:
   push:
     branches: [research/candidate-15]
     paths:
-      - "research/candidate-15/v11patch.tar.xz"
+      - "research/candidate-15/**"
       - ".github/workflows/candidate-15.yml"
   workflow_dispatch:
 
@@ -13,15 +13,14 @@ permissions:
   packages: read
 
 concurrency:
-  group: candidate-15-v11-materialize
+  group: candidate-15-v11-${{ github.sha }}
   cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-  C13: d5da29f4625340ad8f5652630f3dcb8ec3477add
 
 jobs:
-  materialize:
+  static:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     container:
@@ -35,55 +34,39 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Materialize source-locked V11
+      - name: Verify frozen environment and V11 contracts
         shell: bash
         run: |
           set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          payload="research/candidate-15/v11patch.tar.xz"
-          echo "cd1703864b9094c757b5329947502e69bc066db228bb12cf9e2780365abc79e1  $payload" | sha256sum -c -
-          tar -xJf "$payload"
-          git checkout -- .github/workflows/candidate-15.yml
-          rm -f "$payload"
-          git fetch --no-tags origin "$C13"
-          tmp="$(mktemp -d)"
-          trap 'rm -rf "$tmp"' EXIT
-          fetch_locked() {
-            local src="$1" expected="$2" dst="$3"
-            git show "$C13:research/candidate-13/$src" > "$tmp/$src"
-            test "$(git hash-object "$tmp/$src")" = "$expected"
-            cp "$tmp/$src" "$dst"
-          }
-          CAND=research/candidate-15
-          fetch_locked semantic_market_leadership.py 3c04fa19684897647248cff720a038787dfdfeba "$CAND/c13_semantic_market_leadership_v3.py"
-          fetch_locked semantic_market_leadership_v4.py 946d84dee4298839efff4ccd10e97b57ead9325b "$CAND/c13_semantic_market_leadership_v4.py"
-          fetch_locked semantic_market_leadership_v16.py 41342d2bbef94ca2a47799a6d20688b87ee49788 "$CAND/c13_semantic_market_leadership_v16.py"
-          fetch_locked semantic_logic.py cdc606415dccf36a14605dbccd555889c9f9e07c "$CAND/c13_semantic_logic_base.py"
-          fetch_locked semantic_logic_v15.py b260b44533d1475bb69a0af012e08b558e04db4f "$CAND/c13_semantic_logic_v15.py"
-          sed -i 's/from semantic_market_leadership import (/from c13_semantic_market_leadership_v3 import (/' "$CAND/c13_semantic_market_leadership_v4.py"
-          sed -i 's/from semantic_market_leadership import FAR_ROTATION_DISPLACEMENT/from c13_semantic_market_leadership_v3 import FAR_ROTATION_DISPLACEMENT/' "$CAND/c13_semantic_market_leadership_v16.py"
-          sed -i 's/from semantic_market_leadership_v4 import (/from c13_semantic_market_leadership_v4 import (/' "$CAND/c13_semantic_market_leadership_v16.py"
-          sed -i 's/from semantic_logic import (/from c13_semantic_logic_base import (/' "$CAND/c13_semantic_logic_v15.py"
-          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
           smc4 doctor
-          python -m py_compile \
-            "$CAND/c13_semantic_market_leadership_v3.py" \
-            "$CAND/c13_semantic_market_leadership_v4.py" \
-            "$CAND/c13_semantic_market_leadership_v16.py" \
-            "$CAND/c13_semantic_logic_base.py" \
-            "$CAND/c13_semantic_logic_v15.py" \
-            "$CAND/candidate15_v11_completed_auction_materializer.py" \
-            "$CAND/run_leadership_scdam_v11.py" \
-            "$CAND/candidate15_v11_runner.py" \
-            "$CAND/aggregate_v11.py"
-          python -m unittest discover -s "$CAND" -p 'test_*.py' -v
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          base_commit="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('research/candidate-15/protocol-v11.json').read_text())['base_candidate']['commit'])
+          PY
+          )"
+          git fetch --no-tags origin "$base_commit"
+          test "$(git rev-parse "${base_commit}:research/candidate-14")" = "$(git rev-parse "HEAD:research/candidate-14")"
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
+          python -m py_compile research/candidate-15/*.py
+          python -m unittest discover -s research/candidate-15 -p 'test_*.py' -v
           python - <<'PY'
           import json
           from pathlib import Path
           p=json.loads(Path('research/candidate-15/protocol-v11.json').read_text())
           assert p['schema']=='candidate-15-v11-beta-plus-completed-source-auction-router-v1'
+          assert set(p['selection']['intervals'])=={'E01','E02','E03','E04','E05','E06'}
+          assert p['execution_lock']['risk_fraction']==0.03
+          assert p['execution_lock']['global_pending_entry_plus_position_limit']==1
           assert p['router']['candidate13_freeze_commit']=='d5da29f4625340ad8f5652630f3dcb8ec3477add'
           assert p['router']['candidate13_missed_retrace_rearm'] is False
+          assert set(p['router']['families'])=={
+            'BETA_COHERENT_DIFFUSION_LAG',
+            'COMPLETED_SOURCE_FAILED_AUCTION',
+            'COMPLETED_SOURCE_ACCEPTED_AUCTION',
+            'UNRESOLVED_NO_TRADE',
+          }
           import run_leadership_scdam_v11 as r
           s=r._SOURCE
           for token,n in {
@@ -95,10 +78,90 @@ jobs:
           for token in ('REARM_AFTER_MISSED_RETRACE','rearmed_parent','V17_REARM'):
             assert token not in s
           PY
-          git config user.name candidate-15-research
-          git config user.email candidate-15-research@users.noreply.github.com
-          git add -A
-          git commit -m "candidate-15: integrate V11 completed-source auction families"
+
+  evaluate:
+    needs: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        interval: [E01, E02, E03, E04, E05, E06]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Run ${{ matrix.interval }} through NautilusTrader
+        shell: bash
+        run: bash research/candidate-15/run_v11_interval.sh "${{ matrix.interval }}"
+      - name: Diagnose passive-parent first passage
+        shell: bash
+        run: python research/candidate-15/analyze_pending_invalidation.py "research/candidate-15/results/${{ matrix.interval }}"
+      - name: Remove downloaded archives
+        if: always()
+        shell: bash
+        run: rm -rf "research/candidate-15/results/${{ matrix.interval }}/data"
+      - name: Upload interval evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v11-${{ matrix.interval }}
+          path: research/candidate-15/results/${{ matrix.interval }}
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: ${{ always() && needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate15-v11-E*
+          path: artifacts
+      - name: Aggregate and persist V11 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          intervals=(E01 E02 E03 E04 E05 E06)
           git fetch origin research/candidate-15
-          test "$(git rev-parse origin/research/candidate-15)" = "$GITHUB_SHA"
-          git push origin HEAD:research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          rm -rf research/candidate-15/results
+          for interval in "${intervals[@]}"; do
+            mkdir -p "research/candidate-15/results/$interval"
+            cp -a "artifacts/candidate15-v11-$interval/." "research/candidate-15/results/$interval/"
+            for file in run.json data_manifest.json metrics.json summary.json effective_config.json submitted_plans.json order_lifecycle.json orders.csv positions.csv account.csv scenario_events.jsonl scenario_events.raw.jsonl; do
+              test -s "research/candidate-15/results/$interval/$file"
+            done
+          done
+          python research/candidate-15/aggregate_v11.py
+          [[ "$(git ls-remote origin refs/heads/research/candidate-15 | cut -f1)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-bot
+          git config user.email candidate-15-bot@users.noreply.github.com
+          git add research/candidate-15/aggregate.json research/candidate-15/RESULT.md
+          for interval in "${intervals[@]}"; do
+            git add "research/candidate-15/results/$interval/"{run.json,data_manifest.json,metrics.json,summary.json,effective_config.json,submitted_plans.json,order_lifecycle.json,orders.csv,positions.csv,account.csv,pending_path_diagnostics.json}
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-15: record V11 integration evidence [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v11-aggregate-${{ github.run_id }}
+          path: |
+            research/candidate-15/aggregate.json
+            research/candidate-15/RESULT.md
+          if-no-files-found: warn
+          retention-days: 30
