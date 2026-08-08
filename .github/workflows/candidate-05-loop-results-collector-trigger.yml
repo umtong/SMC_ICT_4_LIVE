@@ -1,0 +1,21 @@
+name: candidate-05-loop-results-collector-trigger
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-loop-results-collector-trigger.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch the collector once for already completed runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run candidate-05-loop-results-collector.yml --ref research/candidate-05
