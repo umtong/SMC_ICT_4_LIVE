@@ -76,6 +76,10 @@ class LiquidationFailureTests(unittest.TestCase):
         rows = 270
         open_time = pd.date_range("2023-01-01", periods=rows, freq="min", tz="UTC")
         close = [100.0] * rows
+        # Make the completed 240-minute parent move positive at the original
+        # liquidation-reentry outcome.  This is required by the V58 contract.
+        close[0] = 90.0
+        close[1] = 90.0
         close[240] = 108.0
         close[241] = 99.5
         close[242] = 100.0
