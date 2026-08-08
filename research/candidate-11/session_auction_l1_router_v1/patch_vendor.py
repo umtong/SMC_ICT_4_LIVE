@@ -13,12 +13,48 @@ def replace_exact(text: str, old: str, new: str, *, expected: int, label: str) -
     return text.replace(old, new)
 
 
+def patch_parent_router(path: Path, *, remove_interaction_book: bool) -> None:
+    text = path.read_text(encoding="utf-8")
+    text = replace_exact(
+        text,
+        '            if pool.kind == "HIGH"\n            and self.bar_index - pool.created_index >= min_age',
+        '            if pool.kind == "HIGH"\n            and pool.source.startswith("SESSION_4H:")\n            and self.bar_index - pool.created_index >= min_age',
+        expected=1,
+        label=f"session high parent in {path.name}",
+    )
+    text = replace_exact(
+        text,
+        '            if pool.kind == "LOW"\n            and self.bar_index - pool.created_index >= min_age',
+        '            if pool.kind == "LOW"\n            and pool.source.startswith("SESSION_4H:")\n            and self.bar_index - pool.created_index >= min_age',
+        expected=1,
+        label=f"session low parent in {path.name}",
+    )
+    if remove_interaction_book:
+        text = replace_exact(
+            text,
+            '        self._accumulate_displayed_state(self.pending, direction)\n',
+            '        # Interaction-bar L1 defines no independent state evidence.\n',
+            expected=1,
+            label=f"interaction-bar L1 removal in {path.name}",
+        )
+    immediate = '''        self.parent_auction = observe(\n            self.parent_auction,\n            self._router_observation(row, direction),\n            self.router_thresholds,\n        )\n        if self.parent_auction.decision is not AuctionDecision.PENDING:\n            self._complete_parent(row)\n'''
+    text = replace_exact(
+        text,
+        immediate,
+        '        # The interaction bar defines the parent event only.\n        # Independent state evidence begins with the next completed bar.\n',
+        expected=1,
+        label=f"post-interaction state evidence in {path.name}",
+    )
+    path.write_text(text, encoding="utf-8")
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: patch_vendor.py VENDOR_ROOT")
     root = Path(sys.argv[1])
     base = root / "research/candidate-05/strategy_base.py"
-    router = root / "research/candidate-16/strategy.py"
+    router_v1 = root / "research/candidate-16/strategy.py"
+    router_v2 = root / "research/candidate-16/strategy_v2.py"
 
     base_text = base.read_text(encoding="utf-8")
     base_text = replace_exact(
@@ -44,29 +80,10 @@ def main() -> None:
     )
     base.write_text(base_text, encoding="utf-8")
 
-    router_text = router.read_text(encoding="utf-8")
-    router_text = replace_exact(
-        router_text,
-        '            if pool.kind == "HIGH"\n            and self.bar_index - pool.created_index >= min_age',
-        '            if pool.kind == "HIGH"\n            and pool.source.startswith("SESSION_4H:")\n            and self.bar_index - pool.created_index >= min_age',
-        expected=1,
-        label="session high parent",
-    )
-    router_text = replace_exact(
-        router_text,
-        '            if pool.kind == "LOW"\n            and self.bar_index - pool.created_index >= min_age',
-        '            if pool.kind == "LOW"\n            and pool.source.startswith("SESSION_4H:")\n            and self.bar_index - pool.created_index >= min_age',
-        expected=1,
-        label="session low parent",
-    )
-    immediate = '''        self.parent_auction = observe(\n            self.parent_auction,\n            self._router_observation(row, direction),\n            self.router_thresholds,\n        )\n        if self.parent_auction.decision is not AuctionDecision.PENDING:\n            self._complete_parent(row)\n'''
-    router_text = replace_exact(
-        router_text,
-        immediate,
-        '        # The interaction bar defines the parent event only.\n        # Independent state evidence begins with the next completed bar.\n',
-        expected=1,
-        label="post-interaction state evidence",
-    )
+    patch_parent_router(router_v1, remove_interaction_book=False)
+    patch_parent_router(router_v2, remove_interaction_book=True)
+
+    router_text = router_v1.read_text(encoding="utf-8")
     router_text = replace_exact(
         router_text,
         '            if pool.kind == objective_kind\n            and side * (pool.level - entry) > 0.0',
@@ -74,10 +91,11 @@ def main() -> None:
         expected=1,
         label="session-only candidate objective",
     )
-    router.write_text(router_text, encoding="utf-8")
+    router_v1.write_text(router_text, encoding="utf-8")
 
     print(base)
-    print(router)
+    print(router_v1)
+    print(router_v2)
 
 
 if __name__ == "__main__":
