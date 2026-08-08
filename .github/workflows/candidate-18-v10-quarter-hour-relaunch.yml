@@ -1,0 +1,176 @@
+name: candidate-18-v10-quarter-hour-relaunch
+
+on:
+  push:
+    branches: ["research/candidate-18"]
+    paths:
+      - ".github/workflows/candidate-18-v10-quarter-hour-relaunch.yml"
+      - "research/candidate-18/quarter_hour_relaunch_logic.py"
+      - "research/candidate-18/quarter_hour_relaunch_strategy.py"
+      - "research/candidate-18/candidate18_quarter_hour_relaunch_strategy.py"
+      - "research/candidate-18/candidate_v10.py"
+      - "research/candidate-18/config_v10.json"
+      - "research/candidate-18/validate_v10.py"
+      - "research/candidate-18/tests/test_quarter_hour_relaunch_logic.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  screen:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: dev-2023-10
+            build_start: "2023-10-13"
+            evaluation_start: "2023-10-16"
+            evaluation_end: "2023-10-22"
+          - name: dev-2023-12
+            build_start: "2023-12-22"
+            evaluation_start: "2023-12-25"
+            evaluation_end: "2023-12-31"
+          - name: dev-2024-07
+            build_start: "2024-07-05"
+            evaluation_start: "2024-07-08"
+            evaluation_end: "2024-07-14"
+          - name: dev-2024-01-28d
+            build_start: "2024-01-19"
+            evaluation_start: "2024-01-22"
+            evaluation_end: "2024-02-18"
+
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+
+    env:
+      PYTHONPATH: research/candidate-18:research/candidate-17:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-18-v10/${{ matrix.name }}
+      CACHE: .cache/candidate-18-v10/${{ matrix.name }}
+      PERIOD_NAME: ${{ matrix.name }}
+      BUILD_START: ${{ matrix.build_start }}
+      EVALUATION_START: ${{ matrix.evaluation_start }}
+      EVALUATION_END: ${{ matrix.evaluation_end }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prove environment and causal source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-18 \
+            research/candidate-17 \
+            research/candidate-16 \
+            research/candidate-05
+          python research/candidate-18/tests/test_quarter_hour_router.py
+          python research/candidate-18/tests/test_quarter_hour_relaunch_logic.py
+          python research/candidate-05/tests/test_positioning_contract.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          config = json.loads(Path("research/candidate-18/config_v10.json").read_text())
+          strategy = config["strategy"]
+          assert config["risk_fraction"] == 0.03
+          assert strategy["quarter_hour_pre_range_bars"] == 3
+          assert strategy["quarter_hour_retest_bars"] == 3
+          assert strategy["quarter_hour_relaunch_bars"] == 6
+          assert strategy["quarter_hour_relaunch_buffer_atr"] == 0.02
+          assert strategy["quarter_hour_relaunch_tail_flow_min"] == 0.10
+          assert strategy["quarter_hour_relaunch_full_flow_min"] == 0.10
+          assert strategy["quarter_hour_relaunch_efficiency_min"] == 0.20
+          assert strategy["quarter_hour_relaunch_queue_min"] == 0.0
+          assert strategy["acceptance_target_net_r"] == 1.5
+          assert strategy["max_target_net_r"] == 1.5
+          PY
+
+      - name: Run Candidate 18 v10 in NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-18/candidate_v10.py stage \
+            --config research/candidate-18/config_v10.json \
+            --build-start "$BUILD_START" \
+            --build-end "$EVALUATION_END" \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --cache "$CACHE" \
+            --output "$ROOT" \
+            --validation-mode "v10-development-$PERIOD_NAME" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Validate causal routing, execution, and risk
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-18/validate_v10.py \
+            --root "$ROOT" \
+            --period "$PERIOD_NAME"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          decision = json.loads((root / "v10_development_decision.json").read_text())
+          metrics = decision["metrics"]
+          summary = {
+              "schema": "candidate-18-v10-development-summary-v1",
+              "period": os.environ["PERIOD_NAME"],
+              "evaluation_start": os.environ["EVALUATION_START"],
+              "evaluation_end": os.environ["EVALUATION_END"],
+              "integrity_pass": decision["integrity_pass"],
+              "gate_pass": bool(metrics.get("gate_pass", False)),
+              "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+              "total_return": metrics.get("total_return"),
+              "trades": metrics.get("trades"),
+              "wins": metrics.get("wins"),
+              "win_rate": metrics.get("win_rate"),
+              "profit_factor": metrics.get("profit_factor"),
+              "max_drawdown": metrics.get("max_drawdown"),
+              "ending_nav": metrics.get("ending_nav"),
+              "contexts_armed": decision.get("contexts_armed"),
+              "retests_armed": decision.get("retests_armed"),
+              "relaunch_confirmations": decision.get("relaunch_confirmations"),
+              "entry_rows": decision.get("entry_rows"),
+              "max_planned_risk_fraction": decision.get("max_planned_risk_fraction"),
+              "max_realized_loss_fraction": decision.get("max_realized_loss_fraction"),
+          }
+          (root / "v10_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False))
+          PY
+
+      - name: Verify evidence files
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            metrics.json v10_development_decision.json v10_summary.json \
+            run.json data_manifest.json raw_evidence.json orders.csv \
+            positions.csv account.csv equity.csv strategy_diagnostics.json \
+            closed_scenarios.json scenario_events.jsonl candidate18_contract.json
+          do
+            test -s "$ROOT/$file"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-18-v10-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-18-v10/${{ matrix.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
