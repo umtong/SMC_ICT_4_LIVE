@@ -116,7 +116,10 @@ def run_backtest(
         end=build_end,
         cache=cache,
     )
-    base.write_json_atomic(output / "raw_evidence.json", raw_evidence)
+    base.write_json_atomic(
+        output / "raw_evidence.json",
+        {"files": raw_evidence},
+    )
 
     catalog_path = output / "catalog"
     if catalog_path.exists():
