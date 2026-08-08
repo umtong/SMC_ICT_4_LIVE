@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from datetime import date
 import unittest
 
 import pandas as pd
 
-from positioning_contract import _positioning_features
+from positioning_contract import (
+    _positioning_features,
+    _retain_archive_partition,
+)
 
 
 class PositioningContractTest(unittest.TestCase):
@@ -33,6 +37,48 @@ class PositioningContractTest(unittest.TestCase):
             int(times.iloc[3].value),
         )
 
+    def test_archive_partition_owns_only_matching_utc_date(self) -> None:
+        raw = pd.DataFrame(
+            {
+                "create_time": pd.to_datetime(
+                    [
+                        "2024-04-07 23:55:00+00:00",
+                        "2024-04-08 00:00:00+00:00",
+                        "2024-04-08 23:55:00+00:00",
+                        "2024-04-09 00:00:00+00:00",
+                    ],
+                    utc=True,
+                ),
+                "value": [7, 8, 9, 10],
+            },
+        )
+        result = _retain_archive_partition(
+            raw,
+            partition_day=date(2024, 4, 8),
+            source="BTCUSDT-metrics-2024-04-08.zip",
+        )
+        self.assertEqual(result["value"].tolist(), [8, 9])
+        self.assertEqual(
+            {stamp.date() for stamp in result["create_time"]},
+            {date(2024, 4, 8)},
+        )
+
+    def test_archive_partition_rejects_empty_owned_partition(self) -> None:
+        raw = pd.DataFrame(
+            {
+                "create_time": pd.to_datetime(
+                    ["2024-04-07 23:55:00+00:00"],
+                    utc=True,
+                ),
+            },
+        )
+        with self.assertRaisesRegex(RuntimeError, "contains no rows owned"):
+            _retain_archive_partition(
+                raw,
+                partition_day=date(2024, 4, 8),
+                source="BTCUSDT-metrics-2024-04-08.zip",
+            )
+
     def test_identical_daily_boundary_duplicate_is_collapsed(self) -> None:
         frame = self._frame()
         duplicate = frame.iloc[[3]].copy()
@@ -42,7 +88,7 @@ class PositioningContractTest(unittest.TestCase):
         self.assertFalse(result["metrics_observed_time"].duplicated().any())
         self.assertAlmostEqual(result.iloc[3]["oi_change_15m"], 0.03)
 
-    def test_conflicting_daily_boundary_duplicate_is_rejected(self) -> None:
+    def test_conflicting_duplicate_inside_owned_partition_is_rejected(self) -> None:
         frame = self._frame()
         duplicate = frame.iloc[[3]].copy()
         duplicate.loc[:, "sum_open_interest"] = 999.0
