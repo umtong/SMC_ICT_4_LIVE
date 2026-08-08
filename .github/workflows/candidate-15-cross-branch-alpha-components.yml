@@ -1,0 +1,336 @@
+name: Candidate 15 cross-branch alpha component scan
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - ".github/workflows/candidate-15-cross-branch-alpha-components.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-15-cross-branch-alpha-components-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 0
+
+      - name: Fetch every candidate branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/research/candidate-*:refs/remotes/origin/research/candidate-*'
+
+      - name: Mine cross-branch positive route components
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          import re
+          import subprocess
+          from pathlib import PurePosixPath, Path
+          from typing import Any, Iterable
+
+          REPO = Path('.')
+          OUTPUT = Path('research/candidate-15/cross_branch_alpha_components')
+          OUTPUT.mkdir(parents=True, exist_ok=True)
+
+          def git(*args: str) -> str:
+              return subprocess.check_output(['git', *args], text=True, errors='replace')
+
+          branches = [
+              line.strip()
+              for line in git(
+                  'for-each-ref', '--format=%(refname:short)',
+                  'refs/remotes/origin/research/candidate-*',
+              ).splitlines()
+              if re.search(r'candidate-\d+$', line.strip())
+          ]
+
+          def candidate_number(branch: str) -> int:
+              match = re.search(r'candidate-(\d+)$', branch)
+              if not match:
+                  raise ValueError(branch)
+              return int(match.group(1))
+
+          def own_prefixes(branch: str) -> tuple[str, ...]:
+              number = candidate_number(branch)
+              return (
+                  f'research/candidate-{number}/',
+                  f'research/candidate-{number:02d}/',
+              )
+
+          def json_files(branch: str) -> Iterable[tuple[str, int]]:
+              prefixes = own_prefixes(branch)
+              listing = git('ls-tree', '-rl', branch)
+              for line in listing.splitlines():
+                  try:
+                      metadata, path = line.split('\t', 1)
+                  except ValueError:
+                      continue
+                  parts = metadata.split()
+                  if len(parts) < 4 or not parts[3].isdigit():
+                      continue
+                  size = int(parts[3])
+                  if (
+                      path.startswith(prefixes)
+                      and path.endswith('.json')
+                      and 1 <= size <= 1_500_000
+                      and '/data/' not in path
+                  ):
+                      yield path, size
+
+          def show_json(branch: str, path: str) -> Any | None:
+              try:
+                  text = git('show', f'{branch}:{path}')
+                  return json.loads(text)
+              except Exception:
+                  return None
+
+          def walk(value: Any, location: str = '$'):
+              if isinstance(value, dict):
+                  yield location, value
+                  for key, child in value.items():
+                      yield from walk(child, f'{location}.{key}')
+              elif isinstance(value, list):
+                  for index, child in enumerate(value[:500]):
+                      yield from walk(child, f'{location}[{index}]')
+
+          def split_stats(split: Any) -> tuple[dict[str, dict[str, Any]], str]:
+              if not isinstance(split, dict):
+                  return {}, 'MISSING'
+              for key in ('route_stats', 'family_stats', 'scenario_stats', 'module_stats'):
+                  record = split.get(key)
+                  if isinstance(record, dict) and record:
+                      return {
+                          str(name): stats
+                          for name, stats in record.items()
+                          if isinstance(stats, dict)
+                      }, key
+              return {}, 'OVERALL_ONLY'
+
+          def number(record: dict[str, Any], *keys: str) -> float | None:
+              for key in keys:
+                  value = record.get(key)
+                  if value is None:
+                      continue
+                  try:
+                      return float(value)
+                  except (TypeError, ValueError):
+                      continue
+              return None
+
+          components: list[dict[str, Any]] = []
+          overall_positive: list[dict[str, Any]] = []
+          scanned_files: list[dict[str, Any]] = []
+          errors: list[dict[str, Any]] = []
+
+          split_pairs = (
+              ('development', 'stability'),
+              ('development', 'evaluation'),
+              ('development', 'holdout'),
+              ('train', 'test'),
+              ('in_sample', 'out_of_sample'),
+          )
+
+          for branch in sorted(branches, key=candidate_number):
+              for path, size in json_files(branch):
+                  payload = show_json(branch, path)
+                  scanned_files.append({
+                      'branch': branch,
+                      'path': path,
+                      'bytes': size,
+                      'parsed': payload is not None,
+                  })
+                  if payload is None:
+                      continue
+                  try:
+                      for location, obj in walk(payload):
+                          for left_name, right_name in split_pairs:
+                              if left_name not in obj or right_name not in obj:
+                                  continue
+                              left = obj[left_name]
+                              right = obj[right_name]
+                              left_routes, left_kind = split_stats(left)
+                              right_routes, right_kind = split_stats(right)
+                              route_names = sorted(set(left_routes) & set(right_routes))
+                              for route in route_names:
+                                  a = left_routes[route]
+                                  b = right_routes[route]
+                                  a_trades = number(a, 'trades', 'closed_trades', 'completed_trades', 'events')
+                                  b_trades = number(b, 'trades', 'closed_trades', 'completed_trades', 'events')
+                                  a_mean = number(a, 'mean_net_bps', 'net_mean_bps', 'after_cost_mean_bps')
+                                  b_mean = number(b, 'mean_net_bps', 'net_mean_bps', 'after_cost_mean_bps')
+                                  if (
+                                      a_trades is None or b_trades is None
+                                      or a_mean is None or b_mean is None
+                                      or a_trades < 3 or b_trades < 3
+                                      or a_mean <= 0.0 or b_mean <= 0.0
+                                  ):
+                                      continue
+                                  components.append({
+                                      'candidate': candidate_number(branch),
+                                      'branch': branch,
+                                      'path': path,
+                                      'json_location': location,
+                                      'development_split': left_name,
+                                      'stability_split': right_name,
+                                      'development_stat_kind': left_kind,
+                                      'stability_stat_kind': right_kind,
+                                      'route': route,
+                                      'development_trades': int(a_trades),
+                                      'development_mean_net_bps': a_mean,
+                                      'development_win_rate': number(a, 'win_rate', 'accuracy'),
+                                      'development_t_stat': number(a, 'net_t_stat', 't_stat'),
+                                      'stability_trades': int(b_trades),
+                                      'stability_mean_net_bps': b_mean,
+                                      'stability_win_rate': number(b, 'win_rate', 'accuracy'),
+                                      'stability_t_stat': number(b, 'net_t_stat', 't_stat'),
+                                      'robust_score_bps': min(a_mean, b_mean),
+                                      'minimum_split_trades': int(min(a_trades, b_trades)),
+                                  })
+
+                              # Single-family results often keep only overall split stats.
+                              if not route_names and isinstance(left, dict) and isinstance(right, dict):
+                                  a_trades = number(left, 'trades', 'closed_trades', 'completed_trades')
+                                  b_trades = number(right, 'trades', 'closed_trades', 'completed_trades')
+                                  a_mean = number(left, 'mean_net_bps', 'net_mean_bps', 'after_cost_mean_bps')
+                                  b_mean = number(right, 'mean_net_bps', 'net_mean_bps', 'after_cost_mean_bps')
+                                  if (
+                                      a_trades is not None and b_trades is not None
+                                      and a_mean is not None and b_mean is not None
+                                      and a_trades >= 5 and b_trades >= 5
+                                      and a_mean > 0.0 and b_mean > 0.0
+                                  ):
+                                      overall_positive.append({
+                                          'candidate': candidate_number(branch),
+                                          'branch': branch,
+                                          'path': path,
+                                          'json_location': location,
+                                          'development_split': left_name,
+                                          'stability_split': right_name,
+                                          'development_trades': int(a_trades),
+                                          'development_mean_net_bps': a_mean,
+                                          'development_win_rate': number(left, 'win_rate', 'accuracy'),
+                                          'development_t_stat': number(left, 'net_t_stat', 't_stat'),
+                                          'stability_trades': int(b_trades),
+                                          'stability_mean_net_bps': b_mean,
+                                          'stability_win_rate': number(right, 'win_rate', 'accuracy'),
+                                          'stability_t_stat': number(right, 'net_t_stat', 't_stat'),
+                                          'robust_score_bps': min(a_mean, b_mean),
+                                          'minimum_split_trades': int(min(a_trades, b_trades)),
+                                      })
+                  except Exception as exc:
+                      errors.append({
+                          'branch': branch,
+                          'path': path,
+                          'error': type(exc).__name__,
+                          'message': str(exc),
+                      })
+
+          def unique(records: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
+              best: dict[tuple[Any, ...], dict[str, Any]] = {}
+              for record in records:
+                  key = tuple(record.get(name) for name in keys)
+                  current = best.get(key)
+                  if current is None or (
+                      record['robust_score_bps'], record['minimum_split_trades']
+                  ) > (
+                      current['robust_score_bps'], current['minimum_split_trades']
+                  ):
+                      best[key] = record
+              return sorted(
+                  best.values(),
+                  key=lambda item: (
+                      -item['robust_score_bps'],
+                      -item['minimum_split_trades'],
+                      item['candidate'],
+                      item['route'] if 'route' in item else '',
+                  ),
+              )
+
+          components = unique(
+              components,
+              ('candidate', 'path', 'route', 'development_split', 'stability_split'),
+          )
+          overall_positive = unique(
+              overall_positive,
+              ('candidate', 'path', 'json_location', 'development_split', 'stability_split'),
+          )
+          payload = {
+              'schema': 'candidate-15-cross-branch-alpha-components-v1',
+              'candidate_branches_scanned': len(branches),
+              'json_files_scanned': len(scanned_files),
+              'positive_route_components': components,
+              'positive_single_family_results': overall_positive,
+              'scan_errors': errors,
+          }
+          (OUTPUT / 'scan.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          lines = [
+              '# Cross-branch positive alpha components', '',
+              f'- candidate branches scanned: `{len(branches)}`',
+              f'- JSON files scanned: `{len(scanned_files)}`',
+              f'- positive route components: `{len(components)}`',
+              f'- positive single-family results: `{len(overall_positive)}`', '',
+              'A record appears only when both declared temporal splits have at least '
+              'three route trades (five for an unsplit single family) and positive '
+              'after-cost mean return. This is component mining, not a success claim.', '',
+              '## Route components',
+          ]
+          for record in components[:100]:
+              lines.extend([
+                  f"### Candidate {record['candidate']} — {record['route']}",
+                  f"- source: `{record['branch']}:{record['path']}`",
+                  f"- splits: `{record['development_split']} / {record['stability_split']}`",
+                  f"- trades: `{record['development_trades']} / {record['stability_trades']}`",
+                  f"- mean net bp: `{record['development_mean_net_bps']} / {record['stability_mean_net_bps']}`",
+                  f"- robust score bp: `{record['robust_score_bps']}`", '',
+              ])
+          lines.append('## Positive single-family results')
+          for record in overall_positive[:100]:
+              lines.extend([
+                  f"### Candidate {record['candidate']}",
+                  f"- source: `{record['branch']}:{record['path']}`",
+                  f"- location: `{record['json_location']}`",
+                  f"- trades: `{record['development_trades']} / {record['stability_trades']}`",
+                  f"- mean net bp: `{record['development_mean_net_bps']} / {record['stability_mean_net_bps']}`",
+                  f"- robust score bp: `{record['robust_score_bps']}`", '',
+              ])
+          (OUTPUT / 'RESULT.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+      - name: Persist component scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-component-scan-bot
+          git config user.email candidate-15-component-scan-bot@users.noreply.github.com
+          git add research/candidate-15/cross_branch_alpha_components
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15: persist cross-branch alpha component scan [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate15-cross-branch-alpha-components-${{ github.run_id }}
+          path: research/candidate-15/cross_branch_alpha_components
+          if-no-files-found: warn
+          retention-days: 30
