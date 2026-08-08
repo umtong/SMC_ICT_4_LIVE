@@ -1,0 +1,38 @@
+name: candidate-35-source-snapshot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research/candidate-35"]
+    paths:
+      - ".github/workflows/candidate-35-source-snapshot.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect reusable source interfaces
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/c35-source
+          cp research/candidate-35/strategy.py artifacts/c35-source/
+          cp research/candidate-35/strategy_v2.py artifacts/c35-source/
+          cp research/candidate-35/router.py artifacts/c35-source/
+          cp research/candidate-35/router_v2.py artifacts/c35-source/
+          cp research/candidate-35/run.py artifacts/c35-source/
+          cp research/candidate-35/run_continuous.py artifacts/c35-source/
+          cp research/candidate-35/launch.py artifacts/c35-source/
+          cp research/candidate-35/event_lifecycle_patch.py artifacts/c35-source/
+          cp research/candidate-35/config.json artifacts/c35-source/
+          cp research/candidate-35/test_contract.py artifacts/c35-source/
+          cp .github/workflows/candidate-35-seven-day-execution.yml artifacts/c35-source/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate35-source-${{ github.sha }}
+          path: artifacts/c35-source/**
+          retention-days: 1
