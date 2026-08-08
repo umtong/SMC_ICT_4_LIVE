@@ -1,0 +1,86 @@
+name: candidate-35-cross-asset-rule-holdout
+on:
+  push:
+    branches: ["research/candidate-35"]
+    paths:
+      - ".github/workflows/candidate-35-cross-asset-rule-holdout.yml"
+  workflow_dispatch:
+concurrency:
+  group: candidate-35-cross-asset-rule-holdout
+  cancel-in-progress: true
+permissions:
+  contents: read
+  packages: read
+jobs:
+  holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-35:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/c35-cross-asset-rule-holdout-2024-09
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore checksum-verified cross-asset cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/c35-cross-asset-failure
+          key: candidate35-cross-asset-failure-monthly-klines-v1
+      - name: Verify predeclared holdout contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-35/cross_asset_rule_holdout.py
+          python - <<'PY'
+          import ast, json
+          from pathlib import Path
+          source=Path('research/candidate-35/cross_asset_rule_holdout.py').read_text()
+          tree=ast.parse(source)
+          names={node.name for node in ast.walk(tree) if isinstance(node,ast.FunctionDef)}
+          assert 'systemic_full_flip' in names
+          assert 'sustained_systemic_full_flip' in names
+          assert 'sustained_cross_market_state_flip' in names
+          cases=json.loads(Path('research/candidate-35/evidence/c16-external-2024-09-trade-cases.json').read_text())
+          assert cases['claim_scope']=='HISTORICAL_COMPONENT_DIAGNOSTIC_NOT_FOUR_ASSET_ACCOUNT_EVIDENCE'
+          assert len(cases['cases'])==21
+          assert {item['source_label'] for item in cases['cases']}=={'v2024sep_untouched'}
+          PY
+      - name: Evaluate untouched 2024-09 component cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-35/cross_asset_rule_holdout.py \
+            --cases research/candidate-35/evidence/c16-external-2024-09-trade-cases.json \
+            --cache .cache/c35-cross-asset-failure \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Verify claim boundary and source integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          result=json.loads((root/'cross_asset_rule_holdout.json').read_text())
+          assert result['claim_scope']=='UNTOUCHED_HISTORICAL_COMPONENT_DIAGNOSTIC_NO_NEW_ACCOUNT_PNL_OR_NAV_CLAIM'
+          assert result['cases']==21
+          assert result['rejection_cases']==20
+          assert result['source_labels']==['v2024sep_untouched']
+          assert len(result['source_evidence'])==4
+          assert all(item['sha256'] for item in result['source_evidence'])
+          print(json.dumps(result['predeclared_rules'],indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate35-cross-asset-rule-holdout-${{ github.sha }}
+          path: artifacts/c35-cross-asset-rule-holdout-2024-09/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
