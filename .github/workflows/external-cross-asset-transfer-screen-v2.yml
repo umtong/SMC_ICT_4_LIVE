@@ -43,11 +43,11 @@ jobs:
           import cross_asset_transfer_screen as screen
           import cross_asset_transfer_screen_runner as runner
           assert screen.SYMBOLS == ('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT')
-          assert screen.HORIZONS == (1, 3, 5, 15, 30, 60)
+          assert screen.HORIZONS == (1, 3, 5, 10, 15, 30, 60)
           assert screen.ROUND_TRIP_HURDLE_BPS == 20.0
           assert screen.PARENT_COOLDOWN_MINUTES == 60
           assert screen.read_kline is runner.robust_read_kline
-          print('fixed screen and timestamp adapter verified')
+          print('fixed screen, ten-minute horizon, and timestamp adapter verified')
           PY
 
       - name: Run unchanged 2023 three-month development screen
@@ -77,6 +77,7 @@ jobs:
           assert report['development_period'] == ['2023-06-01', '2023-08-31']
           assert report['entry_timing'] == 'strictly later next-minute open'
           assert report['round_trip_hurdle_bps'] == 20.0
+          assert report['horizons_minutes'] == [1, 3, 5, 10, 15, 30, 60]
           assert report['independent_btc_parent_events'] > 0
           print(json.dumps({
               'independent_btc_parent_events': report['independent_btc_parent_events'],
