@@ -1,0 +1,180 @@
+name: candidate-17-v2-depth-eligible-holdout
+
+on:
+  push:
+    branches: ["research/candidate-17"]
+    paths:
+      - ".github/workflows/candidate-17-v2-holdout-depth-eligible.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-17-v2-depth-eligible-holdout
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  untouched-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-17-v2-depth-holdout
+      FROZEN_SHA: 3bfc9a45f1fa29aef7479b2deb723944d13b87d0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify frozen strategy and deterministic depth-eligible period
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          from hashlib import sha1, sha256
+          from pathlib import Path
+
+          frozen_blobs = {
+              "research/candidate-17/config.json": "67bee1e641327d04d6c0af2d987fa75ca0b80b98",
+              "research/candidate-17/candidate17_strategy.py": "d6bdfe08203f54b9ccb661992254f80f5613fbc3",
+              "research/candidate-17/defense_memory_router.py": "699d603bab3e14dd0b80b00039d9d90d3cb59f85",
+              "research/candidate-17/failure_retest_router.py": "e0364bef2a86fce76de9f54165311d043c9c2761",
+              "research/candidate-17/remembered_defense_strategy.py": "53c54a0c97ee9f2bfa7923f3a7a455bfbe4e515b",
+              "research/candidate-17/remembered_defense_strategy_v2.py": "9002b7e5e40cb2813a287a98bf2b05408f9d8cf0",
+          }
+          for name, expected in frozen_blobs.items():
+              data = Path(name).read_bytes()
+              actual = sha1(f"blob {len(data)}\0".encode("ascii") + data).hexdigest()
+              if actual != expected:
+                  raise SystemExit({"path": name, "expected": expected, "actual": actual})
+
+          excluded = {date(2023, 12, 25), date(2024, 9, 16)}
+          mondays = []
+          cursor = date(2023, 1, 2)
+          while cursor <= date(2025, 12, 29):
+              if cursor not in excluded:
+                  mondays.append(cursor)
+              cursor += timedelta(days=7)
+          seed = (
+              "candidate17-v2-depth-eligible|"
+              "3bfc9a45f1fa29aef7479b2deb723944d13b87d0|untouched-week-2"
+          )
+          index = int(sha256(seed.encode("utf-8")).hexdigest(), 16) % len(mondays)
+          expected_selection = (155, 99, date(2024, 12, 9))
+          actual_selection = (len(mondays), index, mondays[index])
+          if actual_selection != expected_selection:
+              raise SystemExit({"expected": expected_selection, "actual": actual_selection})
+          print({"candidate_weeks": len(mondays), "index": index, "start": str(mondays[index])})
+          PY
+
+      - name: Verify environment and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-17 research/candidate-16
+          python -m unittest discover -s research/candidate-17/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_displayed_liquidity_router_v2.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v2_contract.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_effort_result_router.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Run untouched depth-eligible BTC week
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-17/candidate.py stage \
+            --config research/candidate-17/config.json \
+            --build-start 2024-12-06 \
+            --build-end 2024-12-15 \
+            --evaluation-start 2024-12-09 \
+            --evaluation-end 2024-12-15 \
+            --cache .cache/candidate-17-v2-depth-holdout \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Make authoritative holdout decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          features = pd.read_csv(root / "features.csv.gz", usecols=["feature_ready"])
+          ready_rows = int(features["feature_ready"].astype(bool).sum())
+          total_rows = int(len(features))
+          ready_fraction = ready_rows / total_rows if total_rows else 0.0
+          integrity = (
+              ready_fraction >= 0.95
+              and int(metrics.get("liquidations", 0)) == 0
+              and int(diagnostics.get("order_rejections", 0)) == 0
+              and int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1
+              and int(diagnostics.get("max_open_positions_observed", 0)) <= 1
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          gate = bool(metrics.get("gate_pass", False))
+          result = {
+              "schema": "candidate-17-v2-depth-eligible-untouched-v1",
+              "strategy_sha": os.environ["FROZEN_SHA"],
+              "selection_seed": (
+                  "candidate17-v2-depth-eligible|"
+                  "3bfc9a45f1fa29aef7479b2deb723944d13b87d0|untouched-week-2"
+              ),
+              "evaluation": ["2024-12-09", "2024-12-15"],
+              "feature_ready_rows": ready_rows,
+              "feature_total_rows": total_rows,
+              "feature_ready_fraction": ready_fraction,
+              "integrity_pass": integrity,
+              "gate_pass": gate,
+              "classification": (
+                  "WEEKLY_GATE_PASSED; REQUIRE_MORE_UNTOUCHED_PERIODS"
+                  if integrity and gate
+                  else "FAILED_UNTOUCHED_GATE; DO_NOT_CLAIM_TARGET"
+              ),
+              "metrics": metrics,
+              "routing": {
+                  "parents": diagnostics.get("candidate16_parent_auctions", 0),
+                  "initiatives": diagnostics.get("candidate16_v2_failure_initiatives", 0),
+                  "retests_armed": diagnostics.get("candidate17_v2_failure_retests_armed", 0),
+                  "retests_confirmed": diagnostics.get("candidate17_v2_failure_retests_confirmed", 0),
+                  "retests_invalidated": diagnostics.get("candidate17_v2_failure_retests_invalidated", 0),
+                  "retests_expired": diagnostics.get("candidate17_v2_failure_retests_expired", 0),
+                  "cost_geometry_rejections": diagnostics.get("candidate17_v2_cost_dominated_geometry_rejections", 0),
+                  "depletion_confirmations": diagnostics.get("candidate17_depletion_confirmations", 0),
+              },
+          }
+          (root / "holdout_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify authoritative evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          python -m json.tool "$ROOT/holdout_decision.json"
+          for file in run.json data_manifest.json raw_evidence.json features.csv.gz orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl candidate17_contract.json; do
+            test -s "$ROOT/$file"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-17-v2-depth-holdout-${{ github.sha }}
+          path: artifacts/candidate-17-v2-depth-holdout/**
+          if-no-files-found: warn
+          retention-days: 90
