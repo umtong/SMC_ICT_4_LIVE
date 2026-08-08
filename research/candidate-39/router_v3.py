@@ -1,7 +1,7 @@
 """Candidate 39 V3 trapped-inventory release state machine.
 
 V2 remains the authoritative classifier for accepted continuation, cascade
-reclaim and peer-led repricing.  V3 adds one independent state instead of
+reclaim and peer-led repricing. V3 adds one independent state instead of
 loosening those policies:
 
 1. a completed 15-minute attack opens or preserves leverage beyond a range;
@@ -172,7 +172,7 @@ def detect_trapped_build(
     confirmation_premium = _finite(confirmation_feature.premium_z, 0.0)
 
     # New positions may have accumulated immediately before the attack or in
-    # the attack itself.  A fully cleared OI event belongs to V2 cascade logic,
+    # the attack itself. A fully cleared OI event belongs to V2 cascade logic,
     # not to the trapped-build family.
     minimum_persistent_oi = (
         route_config.min_oi_build
@@ -183,10 +183,10 @@ def detect_trapped_build(
 
     crossed_boundary = break_extreme >= route_config.min_sweep_atr
     attack_closed_beyond = break_close > 0.0
-    failed_value = (
-        retention < route_config.min_break_retention
-        or response_hold < -route_config.boundary_hold_tolerance_atr
-    )
+    # A failed auction must actually return to prior value. Weak wick retention
+    # while the completed response remains outside is a continuation candidate,
+    # not a trapped-reversal setup.
+    failed_value = response_hold < 0.0
     attack_sponsored = (
         opening_alignment >= route_config.min_flow_alignment
         and participation >= route_config.min_participation_ratio
@@ -226,6 +226,7 @@ def detect_trapped_build(
             "interaction_oi_change_15m": interaction_oi,
             "inventory_not_cleared": inventory_not_cleared,
             "failed_value": failed_value,
+            "strict_prior_value_reentry": failed_value,
             "setup_policy": "PENDING_UNTIL_SEPARATE_OPPOSITE_RELEASE_AUCTION",
         }
     )
