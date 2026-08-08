@@ -1,0 +1,90 @@
+{
+  "schema": "candidate-13-v16-source-transfer-development-v1",
+  "candidate": "candidate-13-v16-source-transfer-router",
+  "created_utc": "2026-08-08",
+  "validation_mode": "exposed_mechanism_development",
+  "research_question": "Can a cross-market rotation transfer be defined as a later recipient event rather than a rank-one source event, preserving the V15 W13 transfer winner while removing the remaining V15 W20 loss?",
+  "hypothesis": {
+    "unchanged_v15_execution": "FAR retains the V15 post-only causal displacement retrace, sweep-based structural stop and external-liquidity target; confirmation-close market chasing and internal void stops remain disabled.",
+    "source_transfer_boundary": "SEMANTIC_FAR_ROTATION_TRANSFER_EVENT_DISPLACEMENT is executable only when event_direction_rank is greater than one. Rank-one candidates are the source of the move, not recipients of transfer, and become UNRESOLVED.",
+    "unchanged_roles": "All other FAR and AAC roles, thresholds, risk sizing, costs, global arbitration and NautilusTrader order handling are unchanged.",
+    "development_only": "W13 and W20 are already exposed. They can reject the mechanism or select the frozen policy for untouched validation, but cannot support a success claim."
+  },
+  "locked_source": {
+    "origin_branch": "research/candidate-13",
+    "strategy_freeze_commit": "ac1e721adf627b85b33c81c811fe09dea9d40cab",
+    "enforce_git_blobs": true,
+    "blobs": {
+      "bar_adapter.py": "c2ce386a42956c22039f0bf7490cf9493ab51003",
+      "global_allocator.py": "6dcc95a4f02a0613ad7c72ff0b738cee4b640fc4",
+      "logic.py": "08ac6c0119c2e83039c864ff3a0aff06d6a75c75",
+      "market_leadership.py": "272b1aee7468cbbd6b79a4bc6c8e421e93df6bf0",
+      "session_engine.py": "21180b2397f0ee63c887079764df1ee94e426a03",
+      "run_leadership_scdam_base.py": "e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f",
+      "runner_materializer.py": "ff77c90071b2b4076dd3aeaf42601a0b07a2d254",
+      "runner_materializer_v4.py": "86503e4d28b1826cad0ee5ad942c6aa59f238d95",
+      "semantic_execution.py": "a463710a65b0f85b290bb1424c350f720d394925",
+      "semantic_logic.py": "cdc606415dccf36a14605dbccd555889c9f9e07c",
+      "semantic_logic_v15.py": "b260b44533d1475bb69a0af012e08b558e04db4f",
+      "semantic_market_leadership.py": "3c04fa19684897647248cff720a038787dfdfeba",
+      "semantic_market_leadership_v4.py": "946d84dee4298839efff4ccd10e97b57ead9325b",
+      "semantic_market_leadership_v16.py": "41342d2bbef94ca2a47799a6d20688b87ee49788",
+      "semantic_post_gate_v15.py": "79ea5f0d4789b45082be9f7e083a3c902042f1ce",
+      "run_leadership_scdam_v16.py": "a5edc1c9fe0cc5990ea49dfb31cb10f2b9d67cc5",
+      "candidate13_runner.py": "0f3fa750b9f4dda2152f3242e97a84c00546826a",
+      "candidate13_runner_v16.py": "e9aa5afef2a7974396e8bb2a7227f9b24286e699",
+      "run_v16_source_transfer_week.sh": "cebbdf6b3f49ee39dfbc857c405390875acab89d",
+      "evidence_audit.py": "990dd8986246a7dac8d5c619ef930ffd54ba430e",
+      "base_config.json": "050b5b9413c22e4fc2ef247cc2b272657ff66f38"
+    }
+  },
+  "selection": {
+    "seed": 202608081816,
+    "method": "Two exposed weeks isolate the only two V15 rotation-displacement plans: W13 rank-three winner and W20 rank-one loss.",
+    "warmup_days": 3,
+    "evaluation_days": 7,
+    "holdouts": {
+      "W13": {
+        "start": "2024-09-17",
+        "end_exclusive": "2024-09-24",
+        "role": "exposed-transfer-preservation-control"
+      },
+      "W20": {
+        "start": "2021-07-12",
+        "end_exclusive": "2021-07-19",
+        "role": "exposed-rank-one-source-rejection"
+      }
+    }
+  },
+  "aggregate_gate": {
+    "observed_calendar_days": 14,
+    "minimum_daily_geometric_growth": 0.0,
+    "minimum_closed_trades": 6,
+    "minimum_active_weeks": 2,
+    "minimum_win_rate": 1.0,
+    "minimum_payoff_ratio": 1.0,
+    "maximum_trade_path_drawdown": 0.2,
+    "maximum_positive_log_growth_share_from_one_week": 0.8,
+    "require_all_safety_audits": true,
+    "risk_fraction": 0.03,
+    "global_pending_entry_plus_position_limit": 1
+  },
+  "execution_lock": {
+    "engine": "NautilusTrader 1.230.0",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "starting_nav": "100000",
+    "risk_fraction": 0.03,
+    "global_pending_entry_plus_position_limit": 1,
+    "effective_maker_rate": "0.0004",
+    "effective_taker_rate": "0.0008",
+    "parent_order": "POST_ONLY_LIMIT_GTD",
+    "take_profit_order": "POST_ONLY_LIMIT_GTC",
+    "stop_order": "STOP_MARKET_GTC"
+  },
+  "claim_rules": [
+    "W13 and W20 are exposed development periods and cannot support a success claim.",
+    "The only new rule is event order: a rotation-transfer recipient cannot be event rank one.",
+    "Passing advances the unchanged V16 policy to the full exposed regression and then a source-frozen untouched continuous account."
+  ],
+  "success_claim": false
+}
