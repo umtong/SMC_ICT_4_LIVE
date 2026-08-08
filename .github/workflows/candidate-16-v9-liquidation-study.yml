@@ -1,0 +1,98 @@
+name: candidate-16-v9-external-liquidation-mechanism-study
+
+on:
+  push:
+    branches: ["research/candidate-16-v9-liquidation-vwap-basis"]
+    paths:
+      - "research/candidate-16/v9_liquidation_event_study.py"
+      - "research/candidate-16/tests/test_v9_liquidation_event_study.py"
+      - ".github/workflows/candidate-16-v9-liquidation-study.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v9-external-liquidation-mechanism-study
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  mechanism-study:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v9-liquidation-study
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and focused contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-16/v9_liquidation_event_study.py
+          python -m unittest discover \
+            -s research/candidate-16/tests \
+            -p 'test_v9_liquidation_event_study.py' -v
+
+      - name: Run four-asset external mechanism study
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/v9_liquidation_event_study.py \
+            --month 2023-10 \
+            --cache .cache/candidate-16-v9-liquidation \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify causal output and print decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/study.json"
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          study = json.loads((root / "study.json").read_text())
+          if study.get("role") != "mechanism event study; no fill, PnL, NAV, or strategy claim":
+              raise SystemExit("study role drifted")
+          if set(study.get("symbols", [])) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
+              raise SystemExit("symbol set drifted")
+          coverage = study.get("coverage", {})
+          if set(coverage) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
+              raise SystemExit("incomplete symbol coverage")
+          if not all(int(item.get("minute_rows", 0)) >= 40000 for item in coverage.values()):
+              raise SystemExit("incomplete synchronized minute panel")
+          if not all(int(item.get("liquidation_minutes", 0)) > 0 for item in coverage.values()):
+              raise SystemExit("liquidation observations missing")
+          if abs(float(study["cost_assumption"]["round_trip_rate"]) - 0.002) > 1e-12:
+              raise SystemExit("cost screen drifted")
+          print(json.dumps({
+              "decision": study["decision"],
+              "promote": study["promote"],
+              "promotion_checks": study["promotion_checks"],
+              "all_events": study["summaries"].get("ALL", {}),
+              "forced_basis": study["summaries"].get("FORCED_BASIS_DISLOCATION", {}),
+              "forced_oi": study["summaries"].get("FORCED_OI_DERIVATIVES_LEAD", {}),
+          }, indent=2, sort_keys=True))
+          PY
+          test -s "$ROOT/events.csv"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v9-liquidation-study-${{ github.sha }}
+          path: artifacts/candidate-16-v9-liquidation-study/**
+          if-no-files-found: warn
+          retention-days: 90
