@@ -1,0 +1,227 @@
+name: candidate-02-v148-sequential-holdout
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths: ["research/candidate-02/v148_trigger.json"]
+
+permissions: {contents: write, packages: read, actions: read}
+concurrency: {group: candidate-02-v148-sequential-holdout, cancel-in-progress: false}
+
+jobs:
+  v148-holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", fetch-depth: 0}
+
+      - name: Verify engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+
+      - name: Lock candidate and stage before new date reveal
+        id: lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/v148
+          python - <<'PY'
+          import json,os
+          from datetime import date,timedelta
+          from pathlib import Path
+
+          specs={
+              'v142':{
+                  'glob':'research/candidate-02/results/v142_family/*/artifacts-v142-family-decision.json','central':'100','runner':'research/candidate-02/v142_nt_backtest.py',
+                  'scenario':{'volatility_quantile':0.55,'target_extension':0.0,'minimum_cost_after_rr':0.65,'maximum_cost_after_rr':4.0,'maximum_holding_minutes':60,'decision_window_minutes':15,'activation_delay_minutes':1,'resolution_stop_buffer_atr':0.15,'continuation_extension':1.0}},
+              'v144':{
+                  'glob':'research/candidate-02/results/v144_family/*/artifacts-v144-family-decision.json','central':'10','runner':'research/candidate-02/v144_nt_backtest.py',
+                  'scenario':{'volatility_quantile':0.55,'target_extension':0.0,'minimum_cost_after_rr':0.90,'maximum_cost_after_rr':5.0,'maximum_holding_minutes':60,'decision_window_minutes':15,'retest_window_minutes':10,'activation_delay_minutes':1,'retest_tolerance_atr':0.10,'retest_stop_buffer_atr':0.10,'continuation_extension':1.0}},
+              'v145':{
+                  'glob':'research/candidate-02/results/v145_family/*/artifacts-v145-family-decision.json','central':'65','runner':'research/candidate-02/v145_nt_backtest.py',
+                  'scenario':{'volatility_quantile':0.55,'target_extension':0.0,'minimum_cost_after_rr':0.65,'maximum_cost_after_rr':4.0,'maximum_holding_minutes':60,'decision_window_minutes':15,'activation_delay_minutes':1,'resolution_stop_buffer_atr':0.15,'continuation_extension':1.0,'trend_lookback_5m':48,'trend_efficiency_quantile':0.65}},
+              'v146':{
+                  'glob':'research/candidate-02/results/v146_family/*/artifacts-v146-family-decision.json','central':'60','runner':'research/candidate-02/v146_nt_backtest.py',
+                  'scenario':{'volatility_quantile':0.55,'target_extension':0.0,'minimum_cost_after_rr':0.65,'maximum_cost_after_rr':4.0,'maximum_holding_minutes':60,'decision_window_minutes':15,'activation_delay_minutes':1,'resolution_stop_buffer_atr':0.15,'continuation_extension':1.0,'model_history_days':120,'model_min_training_samples':60,'model_probability_threshold':0.60,'model_l2':0.50,'model_iterations':500,'model_purge_minutes':60}},
+          }
+          previous_paths=sorted(Path('.').glob('research/candidate-02/results/v147_prospective/*/artifacts-v147-prospective-decision.json'))
+          previous=json.loads(previous_paths[-1].read_text()) if previous_paths else None
+          revealed=[]
+          if previous and previous.get('prospective_week_start'):
+              revealed.append(previous['prospective_week_start'])
+
+          stage='FIRST_NEW_GENERATION'
+          selected=None
+          if previous and previous.get('status')=='FIRST_PROSPECTIVE_PASS':
+              family=previous['selected_family']
+              if family in specs:
+                  selected=(family,specs[family],previous.get('development_minimum_week_growth',0.0))
+                  stage='SECOND_SAME_CANDIDATE'
+          if selected is None:
+              rejected_family=previous.get('selected_family') if previous and previous.get('status')=='FIRST_PROSPECTIVE_REJECT' else None
+              eligible=[]
+              for family,spec in specs.items():
+                  if family==rejected_family:
+                      continue
+                  paths=sorted(Path('.').glob(spec['glob']))
+                  if not paths:
+                      continue
+                  decision=json.loads(paths[-1].read_text())
+                  variant=spec['central']
+                  if not decision.get('plateau_pass') or not decision.get('variant_both_week_pass',{}).get(variant):
+                      continue
+                  weeks=decision['variants'][variant]
+                  floor=min(float(m['geometric_daily_growth_after_cost']) for m in weeks.values())
+                  eligible.append((floor,family,spec))
+              if eligible:
+                  floor,family,spec=max(eligible)
+                  selected=(family,spec,floor)
+
+          out={'candidate':'candidate-02-v148-sequential-holdout','engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':0.03,'selection_before_date_reveal':True,'previous_v147_path':str(previous_paths[-1]) if previous_paths else None}
+          if selected is None:
+              out.update({'status':'NO_ELIGIBLE_PLATEAU','has_candidate':False,'previous_revealed_weeks':revealed})
+              Path('artifacts-v148-lock.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+              with open(os.environ['GITHUB_OUTPUT'],'a') as fh: fh.write('has_candidate=false\n')
+              raise SystemExit(0)
+
+          family,spec,floor=selected
+          earliest=date(2024,12,9) if family=='v146' else date(2024,11,4)
+          mondays=[]; current=earliest
+          excluded={'2024-12-30','2025-03-03',*revealed}
+          while current<=date(2025,2,24):
+              if current.isoformat() not in excluded: mondays.append(current)
+              current+=timedelta(days=7)
+          if not mondays:
+              raise RuntimeError('no untouched holdout weeks remain')
+          key=os.environ['GITHUB_SHA']+family+stage
+          index=int.from_bytes(key.encode(),'little') % len(mondays)
+          week=mondays[index]
+          out.update({'status':'LOCKED_BEFORE_REVEAL','has_candidate':True,'stage':stage,'selected_family':family,'selected_variant':spec['central'],'selected_runner':spec['runner'],'selected_scenario':spec['scenario'],'development_minimum_week_growth':floor,'holdout_week_start':week.isoformat(),'previous_revealed_weeks':revealed,'week_selection':'trigger SHA plus locked family and stage modulo untouched Mondays'})
+          Path('artifacts-v148-lock.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as fh:
+              fh.write('has_candidate=true\n'); fh.write(f'family={family}\n'); fh.write(f"runner={spec['runner']}\n"); fh.write(f'week_start={week.isoformat()}\n'); fh.write(f'stage={stage}\n')
+          PY
+
+      - name: Download immutable causal feature matrix
+        if: steps.lock.outputs.has_candidate == 'true'
+        uses: actions/download-artifact@v4
+        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v148, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
+
+      - name: Reveal and materialize bounded raw history
+        if: steps.lock.outputs.has_candidate == 'true'
+        shell: bash
+        env:
+          WEEK_START: "${{ steps.lock.outputs.week_start }}"
+        run: |
+          set -euo pipefail
+          rm -rf inputs/v148/.cache
+          mkdir -p inputs/v148/.cache/candidate-02/v148-holdout/binance_1m /tmp/v148/download
+          python - <<'PY'
+          import calendar,os
+          from datetime import date,timedelta
+          from pathlib import Path
+          start=date(2024,9,1); week=date.fromisoformat(os.environ['WEEK_START']); final=week+timedelta(days=7)
+          base='https://data.binance.vision/data/futures/um'
+          out=Path('inputs/v148/.cache/candidate-02/v148-holdout/binance_1m')
+          commands=[]
+          cursor=date(start.year,start.month,1)
+          while True:
+              last=date(cursor.year,cursor.month,calendar.monthrange(cursor.year,cursor.month)[1])
+              if last < date(week.year,week.month,1):
+                  token=f'{cursor.year:04d}-{cursor.month:02d}'; name=f'BTCUSDT-1m-{token}.zip'
+                  commands.append((f'{base}/monthly/klines/BTCUSDT/1m/{name}',out/name))
+                  cursor=(date(cursor.year+1,1,1) if cursor.month==12 else date(cursor.year,cursor.month+1,1))
+              else: break
+          day=date(week.year,week.month,1)
+          while day<=final:
+              name=f'BTCUSDT-1m-{day.isoformat()}.zip'
+              commands.append((f'{base}/daily/klines/BTCUSDT/1m/{name}',out/name)); day+=timedelta(days=1)
+          Path('/tmp/v148/downloads.tsv').write_text('\n'.join(f'{u}\t{p}' for u,p in commands)+'\n')
+          PY
+          cat /tmp/v148/downloads.tsv | xargs -P 8 -n 2 bash -c 'curl --fail --location --retry 5 --retry-delay 2 "$0" -o "$1"'
+          test "$(find inputs/v148/.cache/candidate-02/v148-holdout/binance_1m -name '*.zip' | wc -l)" -ge 4
+
+      - name: Materialize locked configuration
+        if: steps.lock.outputs.has_candidate == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('artifacts-v148-lock.json').read_text())
+          base=json.loads(Path('research/candidate-02/v107_week1_config.json').read_text())
+          base['candidate']=f"candidate-02-v148-{lock['selected_family']}-{lock['stage'].lower()}"
+          base['scenario'].update(lock['selected_scenario'])
+          base['validation']['first_week_start']=lock['holdout_week_start']
+          Path('/tmp/v148/config.json').write_text(json.dumps(base,indent=2,sort_keys=True)+'\n')
+          assert float(base['risk']['risk_fraction'])==0.03 and base['risk']['maximum_notional_cap'] is None
+          PY
+
+      - name: Run locked holdout with NautilusTrader
+        if: steps.lock.outputs.has_candidate == 'true'
+        shell: bash
+        env:
+          RUNNER: "${{ steps.lock.outputs.runner }}"
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-02-v148/holdout
+          set +e
+          python "$RUNNER" --config /tmp/v148/config.json --input-root inputs/v148 --output artifacts/candidate-02-v148/holdout | tee artifacts-v148-holdout.log
+          status=${PIPESTATUS[0]}; set -e
+          echo "$status" > artifacts/candidate-02-v148/holdout/validation_exit_code.txt
+          if [[ "$status" != 0 && "$status" != 2 ]]; then exit "$status"; fi
+
+      - name: Finalize sequential decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out=json.loads(Path('artifacts-v148-lock.json').read_text())
+          metrics_path=Path('artifacts/candidate-02-v148/holdout/metrics.json')
+          if not out.get('has_candidate'):
+              out['status']='NO_ELIGIBLE_PLATEAU'; out['holdout_target_met']=False
+          elif metrics_path.exists():
+              metrics=json.loads(metrics_path.read_text()); out['holdout_metrics']=metrics; out['holdout_target_met']=bool(metrics['target_met'])
+              if out['stage']=='SECOND_SAME_CANDIDATE': out['status']='SECOND_PROSPECTIVE_PASS' if metrics['target_met'] else 'SECOND_PROSPECTIVE_REJECT'
+              else: out['status']='FIRST_NEW_GENERATION_PASS' if metrics['target_met'] else 'FIRST_NEW_GENERATION_REJECT'
+          else:
+              out['status']='HOLDOUT_EXECUTION_ERROR'; out['holdout_target_met']=False
+          Path('artifacts-v148-decision.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'status':out['status'],'family':out.get('selected_family'),'week':out.get('holdout_week_start'),'metrics':{k:out.get('holdout_metrics',{}).get(k) for k in ('trades','trades_per_day','win_rate','profit_factor_after_cost','geometric_daily_growth_after_cost','maximum_mark_to_market_drawdown','target_met')}},indent=2,sort_keys=True))
+          PY
+
+      - name: Commit sequential holdout evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf compact-v148; mkdir compact-v148
+          cp -f artifacts-v148-*.json compact-v148/ 2>/dev/null || true
+          cp -f artifacts-v148-*.log compact-v148/ 2>/dev/null || true
+          cp -a artifacts/candidate-02-v148 compact-v148/ 2>/dev/null || true
+          git fetch origin research/candidate-02
+          if test "$(git rev-parse origin/research/candidate-02)" = "$GITHUB_SHA" && test -f artifacts-v148-decision.json; then
+            destination="research/candidate-02/results/v148_holdout/$GITHUB_SHA"; rm -rf "$destination"; mkdir -p "$destination"; cp -a compact-v148/. "$destination/"
+            git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"; git add "$destination"; git commit -m "research(candidate-02): record sequential holdout evidence"; git push origin HEAD:research/candidate-02
+          fi
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: "candidate-02-v148-holdout-${{ github.sha }}", path: compact-v148, if-no-files-found: warn, retention-days: 30, compression-level: 9}
