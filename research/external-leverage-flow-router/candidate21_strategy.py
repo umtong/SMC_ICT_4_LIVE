@@ -51,6 +51,7 @@ class Candidate21Config(Candidate18Config, frozen=True):
     exhaustion_transition_structure_bars: int = 2
     exhaustion_stop_buffer_atr: float = 0.10
     exhaustion_entry_cap_bps: float = 5.0
+    exhaustion_entry_cap_atr: float = 1.0
     exhaustion_episode_cooldown_bars: int = 60
 
     # The inherited runner still creates quarter-hour phase features.  They are
@@ -85,6 +86,8 @@ class Candidate21Strategy(Candidate18FokStrategy):
             raise ValueError("exhaustion_transition_structure_bars must be positive")
         if config.exhaustion_entry_cap_bps <= 0.0:
             raise ValueError("exhaustion_entry_cap_bps must be positive")
+        if config.exhaustion_entry_cap_atr <= 0.0:
+            raise ValueError("exhaustion_entry_cap_atr must be positive")
         if config.exhaustion_episode_cooldown_bars < 1:
             raise ValueError("exhaustion_episode_cooldown_bars must be positive")
 
@@ -368,11 +371,19 @@ class Candidate21Strategy(Candidate18FokStrategy):
         signal_close = float(row["close"])
         stop_price = self.instrument.make_price(stop_raw)
         stop = _as_float(stop_price)
-        cap_rate = max(
-            self.config.exhaustion_entry_cap_bps,
-            self.config.adverse_slippage_bps_each_side,
-        ) / 10_000.0
-        entry_price = self.instrument.make_price(signal_close * (1.0 + side * cap_rate))
+        atr = self._atr()
+        transition_range = max(0.0, float(row["high"]) - float(row["low"]))
+        cap_distance = max(
+            signal_close
+            * max(
+                self.config.exhaustion_entry_cap_bps,
+                self.config.adverse_slippage_bps_each_side,
+            )
+            / 10_000.0,
+            self.config.exhaustion_entry_cap_atr * atr,
+            0.5 * transition_range,
+        )
+        entry_price = self.instrument.make_price(signal_close + side * cap_distance)
         entry = _as_float(entry_price)
         increment = _as_float(self.instrument.price_increment)
         if side > 0 and entry <= signal_close:
@@ -486,6 +497,9 @@ class Candidate21Strategy(Candidate18FokStrategy):
                 "side": side,
                 "signal_close": signal_close,
                 "entry_limit_worst_fill": entry,
+                "entry_cap_distance": cap_distance,
+                "entry_cap_atr_multiple": self.config.exhaustion_entry_cap_atr,
+                "entry_transition_range": transition_range,
                 "entry_time_in_force": "FOK",
                 "entry_all_or_none": True,
                 "stop": stop,
