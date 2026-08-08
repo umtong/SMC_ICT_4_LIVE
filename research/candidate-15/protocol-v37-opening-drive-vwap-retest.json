@@ -1,0 +1,100 @@
+{
+  "schema": "candidate-15-v37-opening-drive-vwap-retest-v1",
+  "candidate": "candidate-15-v37-opening-drive-vwap-retest",
+  "created_utc": "2026-08-09",
+  "research_question": "Does the first session-VWAP retest after a high-activity four-hour opening drive resume toward the opening-drive extreme after opposite-flow absorption and an independent fifteen-minute reacceptance?",
+  "external_mechanism": {
+    "sources": [
+      "institutional VWAP execution and anchored-VWAP trading practice",
+      "opening-drive and first-pullback discretionary day-trading playbooks",
+      "order-flow absorption and auction reacceptance concepts"
+    ],
+    "reused": [
+      "a high-volume opening drive establishes context rather than an entry",
+      "the first pullback to anchored session VWAP is the liquidity interaction",
+      "opposite signed flow with limited price acceptance is treated as absorption candidate",
+      "entry waits for a separate completed reacceptance bar"
+    ]
+  },
+  "scenario": {
+    "context": "the first completed four UTC hours move at least one prior twenty-four-hour ATR with above-prior-median opening quote volume",
+    "liquidity_objective": "the high or low of that completed opening drive",
+    "interaction": "the first later completed fifteen-minute bar touching anchored session VWAP carries taker pressure opposite the opening drive but closes on the drive side of VWAP and does not invalidate the session open",
+    "state": {
+      "BREADTH_OPENING_DRIVE": "at least three markets share the opening-drive direction",
+      "RELATIVE_OPENING_DRIVE": "breadth is unresolved but the focal market is the unique largest volatility-normalized opening drive",
+      "UNRESOLVED": "all other days are no-trade"
+    },
+    "confirmation": "the next completed fifteen-minute bar moves in the drive direction, stays on the drive side of anchored VWAP, closes directionally within its range and has aligned taker pressure",
+    "entry": "confirmation close",
+    "invalidation": "beyond the VWAP-interaction extreme plus ten percent of prior twenty-four-hour ATR",
+    "target": "the completed opening-drive high or low",
+    "management": "target or stop first; otherwise exit at UTC day end",
+    "arbitration": "one global open position and one causal attempt per symbol/day"
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and latest daily five-minute klines",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-04-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": [
+      "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04",
+      "2026-08-05", "2026-08-06", "2026-08-07"
+    ],
+    "visibility": "opening context is complete at 04:00 UTC; VWAP uses only bars completed through each interaction/confirmation; target is fixed from the completed opening drive"
+  },
+  "fixed_rules": {
+    "session_start_hour_utc": 0,
+    "opening_drive_hours": 4,
+    "interaction_start_hour_utc": 4,
+    "last_entry_hour_utc": 20,
+    "atr_lookback_hours": 24,
+    "opening_drive_atr_min": 1.0,
+    "opening_volume_lookback_days": 30,
+    "minimum_opening_volume_ratio": 1.0,
+    "breadth_fraction_min": 0.75,
+    "relative_drive_atr_min": 1.25,
+    "relative_leader_gap_atr_min": 0.25,
+    "interaction_bar_minutes": 15,
+    "maximum_vwap_distance_atr": 0.1,
+    "minimum_opposite_interaction_pressure": 0.0,
+    "confirmation_minutes": 15,
+    "minimum_confirmation_body_fraction": 0.5,
+    "minimum_directional_taker_pressure": 0.0,
+    "stop_atr_buffer": 0.1,
+    "minimum_net_target_space_bps": 20.0,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_bar_target_stop_policy": "STOP_FIRST_CONSERVATIVE"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.25,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 5,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 1,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Only a fixed route positive in every declared split advances to NautilusTrader.",
+    "reject": "Do not alter opening hours, VWAP interaction, flow, confirmation, stop or target rules after evaluation."
+  }
+}
