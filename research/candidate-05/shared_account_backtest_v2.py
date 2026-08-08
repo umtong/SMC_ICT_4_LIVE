@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared-account runner with common data and same-day NAV contracts."""
+"""Shared-account runner with common data, basis and same-day NAV contracts."""
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -12,17 +12,33 @@ import pandas as pd
 from timestamp_contract import install as install_timestamp_contract
 from wrangler_contract import install as install_wrangler_contract
 from positioning_contract import install as install_positioning_contract
+from basis_contract import install as install_basis_contract
 
+# The shared runner must install the exact same causal feature wrappers as the
+# single-symbol candidate entrypoint before importing shared_account_backtest.
+# That module captures ``features.load_range`` at import time, so installing the
+# basis wrapper afterwards silently removes premium-index state from every
+# shared-account symbol.
 install_timestamp_contract()
 install_wrangler_contract()
 install_positioning_contract()
+install_basis_contract()
 
+import features as _features
 import shared_account_backtest as _base
 from backtest import make_instrument as make_contract_instrument
 from cross_asset_repricing_context import reset_shared_cross_asset_context
 from instrument_contracts import instrument_contract
 from nautilus_trader.model.identifiers import InstrumentId
 from smt_session_context import reset_shared_smt_session_context
+
+
+if not getattr(_features.load_range, "_candidate05_basis_contract", False):
+    raise RuntimeError("shared-account feature loader did not install the basis contract")
+if _base.load_range is not _features.load_range:
+    raise RuntimeError(
+        "shared_account_backtest captured a pre-contract feature loader; import order is invalid",
+    )
 
 
 PROJECT_SYMBOLS = _base.PROJECT_SYMBOLS
