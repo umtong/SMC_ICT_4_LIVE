@@ -61,6 +61,70 @@ jobs:
               assert not item["liquidation_detected"], item
           PY
 
+      - name: Repair diagnostic direction mapping and expose raw geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("research/candidate-12/diagnose_i20.py")
+          s = p.read_text(encoding="utf-8")
+          old = '''        confirmation: dict[str, Any],
+              ) -> None:
+                  decision = five_all.iloc[idx]
+                  direction = "SHORT" if side == "HIGH" else "LONG"
+          '''
+          new = '''        confirmation: dict[str, Any],
+                  direction_override: str | None = None,
+              ) -> None:
+                  decision = five_all.iloc[idx]
+                  direction = direction_override or ("SHORT" if side == "HIGH" else "LONG")
+          '''
+          # Keep indentation exact to the checked-in source rather than relying
+          # on a fuzzy patch.
+          old = old.replace("              )", "    )").replace("                  decision", "        decision").replace("                  direction", "        direction")
+          new = new.replace("                  direction_override", "        direction_override").replace("              )", "    )").replace("                  decision", "        decision").replace("                  direction", "        direction")
+          assert s.count(old) == 1, s.count(old)
+          s = s.replace(old, new, 1)
+          old = '''            "confirmation": confirmation,
+                      "overlaps_current_position": overlaps(decision.name, occupied),
+                      "geometry": geometry,
+          '''
+          new = '''            "confirmation": confirmation,
+                      "decision_open": float(decision.open),
+                      "decision_high": float(decision.high),
+                      "decision_low": float(decision.low),
+                      "decision_close": float(decision.close),
+                      "decision_atr": float(decision.atr),
+                      "raw_stop": stop_raw,
+                      "raw_target": target_raw,
+                      "overlaps_current_position": overlaps(decision.name, occupied),
+                      "geometry": geometry,
+          '''
+          old = old.replace("                      ", "            ")
+          new = new.replace("                      ", "            ")
+          assert s.count(old) == 1, s.count(old)
+          s = s.replace(old, new, 1)
+          high = '''                    route="IB_TRUE_ACCEPTANCE_PULLBACK_BULLISH_FVG",
+                              side=side,
+          '''.replace("                              ", "                    ")
+          high_new = '''                    route="IB_TRUE_ACCEPTANCE_PULLBACK_BULLISH_FVG",
+                              side=side,
+                              direction_override="LONG",
+          '''.replace("                              ", "                    ")
+          low = '''                    route="IB_TRUE_ACCEPTANCE_PULLBACK_BEARISH_FVG",
+                              side=side,
+          '''.replace("                              ", "                    ")
+          low_new = '''                    route="IB_TRUE_ACCEPTANCE_PULLBACK_BEARISH_FVG",
+                              side=side,
+                              direction_override="SHORT",
+          '''.replace("                              ", "                    ")
+          assert s.count(high) == 1 and s.count(low) == 1
+          s = s.replace(high, high_new, 1).replace(low, low_new, 1)
+          p.write_text(s, encoding="utf-8")
+          PY
+          python -m py_compile research/candidate-12/diagnose_i20.py
+
       - name: Screen opening-balance value failure and acceptance
         shell: bash
         run: |
