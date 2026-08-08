@@ -1,0 +1,55 @@
+{
+  "schema": "candidate-15-v44-cross-branch-component-integration-v1",
+  "candidate": "candidate-15-v44-cross-branch-component-integration",
+  "created_utc": "2026-08-09",
+  "research_question": "Do the strongest route-level alpha components mined across every candidate branch remain positive and sufficiently frequent when their original timestamped streams are deduplicated and run through one global chronological slot?",
+  "precondition": {
+    "skip_when_any_v33_v43_advance_exists": true
+  },
+  "source_scan": "research/candidate-15/cross_branch_alpha_components/scan.json",
+  "fixed_selection": {
+    "minimum_component_split_trades": 5,
+    "minimum_robust_score_bps": 0.0,
+    "maximum_components": 12,
+    "maximum_components_per_candidate": 2,
+    "prefer_route_components_over_unsplit_families": true,
+    "candidate_stream_preference": [
+      "all_executable_candidates.csv",
+      "all_active_family_proposals.csv",
+      "selected_trades.csv",
+      "selected_events.csv",
+      "selected_integrated_trades.csv",
+      "trades.csv"
+    ],
+    "maximum_candidate_stream_bytes": 25000000,
+    "episode_bucket_minutes": 30,
+    "same_symbol_episode_deduplication": true,
+    "global_position_limit": 1,
+    "same_timestamp_winner": "larger robust component score, then source rank, then lower candidate number, then route and symbol",
+    "overlap_policy": "reject entries before the selected open position's recorded exit"
+  },
+  "evaluation": {
+    "diagnostic_start": "2024-07-01",
+    "diagnostic_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08"
+  },
+  "advance_gate": {
+    "minimum_loaded_components": 2,
+    "require_positive_july_mean_net": true,
+    "minimum_july_trades": 10,
+    "minimum_july_net_t_stat": 1.0,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 2,
+    "minimum_combined_confirmation_trades_per_day": 0.5,
+    "maximum_single_component_share": 0.8,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Freeze the loaded component set, source blobs, causal deduplication and global arbitration unchanged, then reimplement the component logic in one NautilusTrader account.",
+    "reject": "Do not lower the source positivity, minimum sample, deduplication or recent confirmation gates."
+  }
+}
