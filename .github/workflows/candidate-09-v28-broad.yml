@@ -1,0 +1,133 @@
+name: Candidate 09 v28 broad-block session-opening drive
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths:
+      - .github/workflows/candidate-09-v28-broad.yml
+      - research/candidate-09/v28_bundle/**
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v28-broad-block
+  cancel-in-progress: true
+
+jobs:
+  development-and-untouched-if-qualified:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09
+          key: candidate-09-binance-vision-v2
+          restore-keys: |
+            candidate-09-binance-vision-v1
+
+      - name: Materialize and verify frozen v28 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=research/candidate-09
+          root=$src/v28_opening_drive
+          rm -rf "$root"
+          mkdir -p "$root/tests"
+
+          while read -r chunk blob bytes; do
+            [[ "$chunk" == chunk* ]] || continue
+            file="$src/v28_bundle/$chunk"
+            test "$(wc -c < "$file")" -eq "$bytes"
+            test "$(git hash-object "$file")" = "$blob"
+          done < "$src/v28_bundle/SHA256"
+
+          cat "$src"/v28_bundle/chunk* > /tmp/candidate-09-v28.tar.gz.b64
+          test "$(wc -c < /tmp/candidate-09-v28.tar.gz.b64)" -eq 14756
+          base64 -d /tmp/candidate-09-v28.tar.gz.b64 > /tmp/candidate-09-v28.tar.gz
+          expected=$(awk 'NR==1 {print $1}' "$src/v28_bundle/SHA256")
+          expected_bytes=$(awk 'NR==1 {print $3}' "$src/v28_bundle/SHA256")
+          test "$(wc -c < /tmp/candidate-09-v28.tar.gz)" -eq "$expected_bytes"
+          echo "$expected  /tmp/candidate-09-v28.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/candidate-09-v28.tar.gz -C "$root"
+
+          cp "$src/run.py" "$root/run.py"
+          cp "$src/data_loader.py" "$root/data_loader.py"
+          cp "$src/tests/test_accounting_contract.py" "$root/tests/test_accounting_contract.py"
+          cp "$src/tests/test_nautilus_contract.py" "$root/tests/test_nautilus_contract.py"
+
+      - name: Run contracts and broad-block NautilusTrader evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09/v28_opening_drive
+          export PYTHONPATH="$GITHUB_WORKSPACE/$root:$GITHUB_WORKSPACE/src"
+          smc4 doctor | tee "$root/doctor.txt"
+          python -m compileall -q "$root"
+          python -m unittest \
+            "$root/tests/test_accounting_contract.py" \
+            "$root/tests/test_state_engine.py" -v |& tee "$root/tests-pure.txt"
+          python -m unittest "$root/tests/test_nautilus_contract.py" -v |& tee "$root/tests-nautilus.txt"
+          rm -rf "$root/evidence/latest"
+          python "$root/run_development.py" \
+            --config "$root/config.json" \
+            --cache "$GITHUB_WORKSPACE/.cache/candidate-09" \
+            --output "$root/evidence/latest" |& tee "$root/run.txt"
+
+      - name: Preserve exact source and full evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v28-${{ github.run_id }}
+          path: research/candidate-09/v28_opening_drive
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit compact v28 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_WORKSPACE"
+          root="$repo/research/candidate-09/v28_opening_drive"
+          [[ -f "$root/evidence/latest/summary.json" ]] || exit 0
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/evidence"
+          for name in summary.json REPORT.md outcomes.csv trades.csv fills.csv data_manifest.json; do
+            [[ -f "$root/evidence/latest/$name" ]] && cp "$root/evidence/latest/$name" "$tmp/evidence/$name"
+          done
+          for name in doctor.txt tests-pure.txt tests-nautilus.txt run.txt; do
+            [[ -f "$root/$name" ]] && cp "$root/$name" "$tmp/$name"
+          done
+
+          git config --global --add safe.directory "$repo"
+          git -C "$repo" config user.name candidate-09-research-bot
+          git -C "$repo" config user.email candidate-09-research-bot@users.noreply.github.com
+          git -C "$repo" fetch origin "$GITHUB_REF_NAME"
+          git -C "$repo" reset --hard "origin/$GITHUB_REF_NAME"
+          out="$repo/research/candidate-09/v28_opening_drive/result"
+          rm -rf "$out"
+          mkdir -p "$out/evidence"
+          cp -a "$tmp/evidence/." "$out/evidence/"
+          for name in doctor.txt tests-pure.txt tests-nautilus.txt run.txt; do
+            [[ -f "$tmp/$name" ]] && cp "$tmp/$name" "$out/$name"
+          done
+          git -C "$repo" add research/candidate-09/v28_opening_drive/result
+          if git -C "$repo" diff --cached --quiet; then exit 0; fi
+          status=$(python -c "import json; print(json.load(open('research/candidate-09/v28_opening_drive/result/evidence/summary.json')).get('status','IMPLEMENTATION_ERROR'))")
+          git -C "$repo" commit -m "candidate-09 v28 broad block: ${status}"
+          git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
