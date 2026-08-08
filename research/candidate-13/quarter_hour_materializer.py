@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed source materialization for Candidate 13 V9."""
 from __future__ import annotations
+
 def _replace(source: str, old: str, new: str, *, label: str, expected: int=1) -> str:
     count = source.count(old)
     if count != expected:
@@ -8,6 +9,7 @@ def _replace(source: str, old: str, new: str, *, label: str, expected: int=1) ->
     return source.replace(old, new)
 
 def materialize_quarter_hour_source(source: str) -> str:
+    source = _replace(source, '        frame = frame[pd.to_numeric(frame["open_time"], errors="coerce").notna()].copy()\n        if len(frame.index) not in (1439, 1440, 1441):', '        numeric_open_time = pd.to_numeric(frame["open_time"], errors="coerce")\n        valid_open_time = numeric_open_time.notna()\n        frame = frame.loc[valid_open_time].copy()\n        frame["open_time"] = numeric_open_time.loc[valid_open_time].astype("int64")\n        # candidate-13-v9-strict-open-time: normalize mixed header/integer archives before sort.\n        if len(frame.index) not in (1439, 1440, 1441):', label='strict-open-time')
     source = _replace(source, 'from session_engine import RegionalHandoffAuctionEngine\n\nfrom smc_ict_4.event_log import EventLogError, write_events', 'from session_engine import RegionalHandoffAuctionEngine\nfrom quarter_hour_common_flow import (\n    QH_LOGIC_KEY,\n    QuarterHourCommonFlowEngine,\n)\n\nfrom smc_ict_4.event_log import EventLogError, write_events', label='imports')
     source = _replace(source, '    logics: dict[str, RegionalHandoffAuctionEngine],', '    logics: dict[str, Any],', label='metrics-logic-type')
     source = _replace(source, '        "scenario_counts": {\n            scenario: sum(plan["scenario"] == scenario for plan in plans)\n            for scenario in ("FAR", "AAC")\n        },\n        "symbol_counts": {', '        "scenario_counts": {\n            scenario: sum(plan["scenario"] == scenario for plan in plans)\n            for scenario in sorted({str(plan.get("scenario", "UNKNOWN")) for plan in plans})\n        },\n        "module_counts": {\n            module: sum(plan.get("module", "SCDAM_CORE") == module for plan in plans)\n            for module in sorted({str(plan.get("module", "SCDAM_CORE")) for plan in plans})\n        },\n        "symbol_counts": {', label='dynamic-module-metrics')
@@ -24,7 +26,7 @@ def materialize_quarter_hour_source(source: str) -> str:
     source = _replace(source, 'self._capture_events(rejected.symbol)', 'self._capture_events(self._logic_key_for_plan(plan, rejected.symbol))', label='arbitration-event-routing', expected=2)
     source = _replace(source, '            self.plans.append({\n                "symbol": symbol,\n                "scenario_id": plan.scenario_id,', '            self.plans.append({\n                "symbol": symbol,\n                "module": str(plan.details.get("module", "SCDAM_CORE")),\n                "scenario_id": plan.scenario_id,', label='plan-module-evidence')
     source = _replace(source, '                plans.append((plan, candidate))\n\n            if not plans:\n                return', '                plans.append((plan, candidate))\n\n            for qh_symbol, qh_plan in self.logic[self.quarter_hour_key].on_batch(\n                ts_ns,\n                self.buffer,\n            ):\n                self._capture_events(self.quarter_hour_key)\n                if ts_ns < self.config.evaluation_start_ns:\n                    self.logic[self.quarter_hour_key].mark_rejected(\n                        qh_plan,\n                        ts_ns,\n                        "OUTSIDE_EVALUATION_WINDOW",\n                    )\n                    self._capture_events(self.quarter_hour_key)\n                    continue\n                qh_candidate = Candidate(\n                    symbol=qh_symbol,\n                    scenario_id=qh_plan.scenario_id,\n                    observed_ts_ns=qh_plan.observed_ts_ns,\n                    net_structural_r=Decimal(str(qh_plan.net_r)),\n                    expected_entry=Decimal(str(qh_plan.expected_entry)),\n                    expected_loss_per_unit=Decimal(str(qh_plan.loss_per_unit)),\n                )\n                plans.append((qh_plan, qh_candidate))\n            self._capture_events(self.quarter_hour_key)\n\n            if not plans:\n                return', label='quarter-hour-plan-generation')
-    required = ('QuarterHourCommonFlowEngine(logic_config)', 'on_batch(\n                ts_ns,\n                self.buffer,', 'plans.append((qh_plan, qh_candidate))')
+    required = ('candidate-13-v9-strict-open-time', 'QuarterHourCommonFlowEngine(logic_config)', 'on_batch(\n                ts_ns,\n                self.buffer,', 'plans.append((qh_plan, qh_candidate))')
     missing = [token for token in required if source.count(token) != 1]
     if missing:
         raise RuntimeError(f'Candidate 13 V9 routes not materialized exactly once: {missing}')
