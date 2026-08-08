@@ -9,7 +9,9 @@ on:
       - "research/candidate-21/candidate21_response_strategy.py"
       - "research/candidate-21/candidate21_response_backtest.py"
       - "research/candidate-21/candidate_response.py"
+      - "research/candidate-21/latency_aligned_tick_clock.py"
       - "research/candidate-21/tests/test_boundary_response_router.py"
+      - "research/candidate-21/tests/test_latency_aligned_tick_clock.py"
       - ".github/workflows/candidate-21-response-development.yml"
 
 concurrency:
@@ -38,6 +40,7 @@ jobs:
           smc4 doctor
           python -m compileall -q research/candidate-21
           python -m unittest discover -s research/candidate-21/tests -p 'test_boundary_response_router.py' -v
+          python -m unittest discover -s research/candidate-21/tests -p 'test_latency_aligned_tick_clock.py' -v
           python -m unittest discover -s research/candidate-21/tests -p 'test_*.py' -v
           python -m unittest discover -s research/candidate-18/tests -p 'test_fok_execution_contract.py' -v
 
@@ -81,6 +84,13 @@ jobs:
           root = Path(os.environ["ROOT"])
           metrics = json.loads((root / "metrics.json").read_text())
           diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          clock = json.loads((root / "execution_clock.json").read_text())
+          if clock.get("selection_offset_ns") != 300_000_000:
+              raise SystemExit(clock)
+          if clock.get("modeled_order_latency_ns") != 250_000_000:
+              raise SystemExit(clock)
+          if not clock.get("strictly_increasing") or not clock.get("actual_prices_only"):
+              raise SystemExit(clock)
           keys = (
               "candidate21_clock_events_armed",
               "candidate21_response_classified",
@@ -94,6 +104,7 @@ jobs:
           )
           summary = {
               "metrics": metrics,
+              "clock": clock,
               "routing": {key: diagnostics.get(key, 0) for key in keys},
           }
           (root / "candidate21_response_summary.json").write_text(
