@@ -1,0 +1,110 @@
+name: candidate-07-initiative-probe
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/initiative_probe.py"
+      - "research/candidate-07/strategy_initiative_probe.py"
+      - "research/candidate-07/backtest_initiative_probe.py"
+      - "research/candidate-07/candidate_initiative_probe.py"
+      - "research/candidate-07/staged_initiative_probe.py"
+      - "research/candidate-07/initiative_auction.py"
+      - "research/candidate-07/strategy_initiative_auction.py"
+      - "research/candidate-07/strategy_failed_continuation_initiative.py"
+      - "research/candidate-07/strategy_progress.py"
+      - "research/candidate-07/tests/test_initiative_probe.py"
+      - ".github/workflows/candidate-07-initiative-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify foundation and shadow-probe contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-probe-pyc \
+            python -m compileall -q research/candidate-07
+          python -m unittest discover \
+            -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+
+      - name: Run frozen weeks and gated continuous evaluation
+        run: >-
+          python research/candidate-07/staged_initiative_probe.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --output artifacts/candidate-07-initiative-probe
+          --data-root .research-data/candidate-07
+          --max-weeks 3
+          --run-long
+
+      - name: Audit probe decisions
+        if: always()
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          from collections import Counter
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-07-initiative-probe")
+          output = {"stages": {}}
+          for events_path in sorted(root.glob("*/events.jsonl")):
+              events = [json.loads(line) for line in events_path.read_text().splitlines()]
+              reasons = Counter(event.get("reason_code") for event in events)
+              output["stages"][events_path.parent.name] = {
+                  "shadow_probes": reasons["INITIATIVE_OWNS_REVERSAL_SHADOW_ONLY"],
+                  "target_first": reasons["SHADOW_REVERSAL_TARGET_DELIVERED"],
+                  "stop_first": reasons["SHADOW_REVERSAL_STOP_ACCEPTED"],
+                  "shadow_continuations_ready": reasons["SHADOW_STOP_ACCEPTANCE_CONTINUATION_READY"],
+                  "reclaim_unresolved": reasons["INITIATIVE_SOURCE_RECLAIM_UNRESOLVED"],
+                  "capital_loss_avoided_events": reasons["SHADOW_FAILURE_RECONFIRMS_INITIATIVE"],
+              }
+          destination = root / "probe_audit.json"
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_text(json.dumps(output, indent=2, sort_keys=True), encoding="utf-8")
+          print(destination.read_text(encoding="utf-8"))
+          PY
+
+      - name: Print immutable result
+        if: always()
+        run: |
+          test -f artifacts/candidate-07-initiative-probe/pipeline_summary.json
+          cat artifacts/candidate-07-initiative-probe/pipeline_summary.json
+          find artifacts/candidate-07-initiative-probe -name metrics.json \
+            -print -exec cat {} \;
+          test -f artifacts/candidate-07-initiative-probe/probe_audit.json
+          cat artifacts/candidate-07-initiative-probe/probe_audit.json
+
+      - name: Preserve complete probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-initiative-probe-${{ github.sha }}
+          path: artifacts/candidate-07-initiative-probe
+          retention-days: 14
+          if-no-files-found: error
