@@ -24,6 +24,14 @@ strategy_module = importlib.import_module("strategy")
 if Path(strategy_module.__file__).resolve() != (HERE / "strategy.py").resolve():
     raise RuntimeError(f"Candidate 35 strategy collision: {strategy_module.__file__}")
 
+# The direct runner resolves ``strategy:Candidate35Strategy`` later.  Import the
+# redesigned adapter first so it patches that verified module before BacktestNode
+# constructs the strategy.  Without this step the continuous workflow silently
+# executes the retired Candidate 35 policy.
+policy_module = importlib.import_module("strategy_v2")
+if Path(policy_module.__file__).resolve() != (HERE / "strategy_v2.py").resolve():
+    raise RuntimeError(f"Candidate 35b policy collision: {policy_module.__file__}")
+
 import event_lifecycle_patch  # noqa: F401,E402 -- installs corrected callback
 from chunk_assembly import SYMBOLS, assemble_universe, sha256_file
 
