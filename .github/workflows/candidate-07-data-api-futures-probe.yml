@@ -1,0 +1,102 @@
+name: candidate-07-data-api-futures-probe
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - ".github/workflows/candidate-07-data-api-futures-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Probe data-only futures routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          start = 1719187200000
+          routes = {
+              "data-api-fapi-klines": "https://data-api.binance.vision/fapi/v1/klines",
+              "data-api-fapi-aggTrades": "https://data-api.binance.vision/fapi/v1/aggTrades",
+              "data-api-fapi-continuous": "https://data-api.binance.vision/fapi/v1/continuousKlines",
+              "data-api-dapi-klines": "https://data-api.binance.vision/dapi/v1/klines",
+              "data-api-futures-um-klines": "https://data-api.binance.vision/data/futures/um/api/v1/klines",
+              "vision-api-fapi-klines": "https://api.binance.vision/fapi/v1/klines",
+          }
+
+          def get(url: str) -> tuple[int, object]:
+              request = urllib.request.Request(
+                  url,
+                  headers={"User-Agent": "smc4-candidate07/1"},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      status = int(response.status)
+                      raw = response.read().decode("utf-8")
+              except urllib.error.HTTPError as exc:
+                  status = int(exc.code)
+                  raw = exc.read().decode("utf-8")
+              try:
+                  return status, json.loads(raw)
+              except json.JSONDecodeError:
+                  return status, raw[:500]
+
+          output = {}
+          for label, base in routes.items():
+              if "aggTrades" in base:
+                  params = {
+                      "symbol": "BTCUSDT",
+                      "startTime": start,
+                      "endTime": start + 4999,
+                      "limit": 1000,
+                  }
+              elif "continuous" in label:
+                  params = {
+                      "pair": "BTCUSDT",
+                      "contractType": "PERPETUAL",
+                      "interval": "1m",
+                      "startTime": start,
+                      "endTime": start + 59999,
+                      "limit": 10,
+                  }
+              elif "dapi" in label:
+                  params = {
+                      "symbol": "BTCUSD_PERP",
+                      "interval": "1m",
+                      "startTime": start,
+                      "endTime": start + 59999,
+                      "limit": 10,
+                  }
+              else:
+                  params = {
+                      "symbol": "BTCUSDT",
+                      "interval": "1s",
+                      "startTime": start,
+                      "endTime": start + 4999,
+                      "limit": 10,
+                  }
+              status, payload = get(base + "?" + urllib.parse.urlencode(params))
+              if isinstance(payload, list):
+                  summary = {
+                      "rows": len(payload),
+                      "first": payload[0] if payload else None,
+                  }
+              else:
+                  summary = payload
+              output[label] = {"status": status, "summary": summary}
+
+          print(json.dumps(output, indent=2, sort_keys=True))
+          PY
