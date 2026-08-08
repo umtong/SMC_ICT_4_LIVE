@@ -1,0 +1,123 @@
+name: candidate-16-v14-external-two-hour-jump-study
+
+on:
+  push:
+    branches: ["research/candidate-16-v14-two-hour-jump-reversion"]
+    paths:
+      - "research/candidate-16/v14_two_hour_jump_reversion_study.py"
+      - "research/candidate-16/tests/test_v14_two_hour_jump_reversion_study.py"
+      - ".github/workflows/candidate-16-v14-two-hour-jump-study.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v14-external-two-hour-jump-study
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-and-conditional-holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 320
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v14-two-hour-jump-study
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and external replication contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-16/v9_liquidation_event_study.py \
+            research/candidate-16/v10_open_drive_study.py \
+            research/candidate-16/v14_two_hour_jump_reversion_study.py
+          python -m unittest discover \
+            -s research/candidate-16/tests \
+            -p 'test_v14_two_hour_jump_reversion_study.py' -v
+
+      - name: Run checksum-verified 2023 replication and conditional 2024 holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/v14_two_hour_jump_reversion_study.py \
+            --cache .cache/candidate-16-v14-two-hour-jump \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify frozen mechanism and promotion decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/study.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          study = json.loads((root / "study.json").read_text())
+          if study.get("role") != "external mechanism replication; no fills, stop/target, account, portfolio, or NAV claim":
+              raise SystemExit("study role drifted")
+          policy = study.get("external_policy", {})
+          if policy.get("source") != "De Nicola (2021), On the Intraday Behavior of Bitcoin":
+              raise SystemExit("external source identity drifted")
+          if int(policy.get("timeframe_hours", 0)) != 2 or int(policy.get("holding_period_hours", 0)) != 2:
+              raise SystemExit("two-hour policy drifted")
+          if float(policy.get("jump_threshold_sigma", 0.0)) != 4.0:
+              raise SystemExit("four-sigma policy drifted")
+          adaptations = study.get("causal_adaptations", {})
+          if not adaptations.get("whole_sample_statistics_forbidden"):
+              raise SystemExit("whole-sample volatility was permitted")
+          if adaptations.get("simultaneous_cross_asset_policy") != "one causal episode; largest standardized jump only":
+              raise SystemExit("causal episode policy drifted")
+          if set(study.get("data", {}).get("symbols", [])) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
+              raise SystemExit("symbol set drifted")
+          if study.get("data", {}).get("years") != [2023, 2024]:
+              raise SystemExit("development/holdout years drifted")
+          if abs(float(study.get("cost", {}).get("round_trip_rate", -1.0)) - 0.002) > 1e-12:
+              raise SystemExit("cost screen drifted")
+          if not all(int(value) >= 8700 for value in study.get("two_hour_rows", {}).values()):
+              raise SystemExit("two-hour panels incomplete")
+          development = study.get("development", {})
+          holdout = study.get("holdout", {})
+          if not development.get("passed") and holdout.get("opened"):
+              raise SystemExit("holdout was opened after development failed")
+          print(json.dumps({
+              "decision": study["decision"],
+              "promote": study["promote"],
+              "raw_symbol_events": study["raw_symbol_events"],
+              "independent_global_events": study["independent_global_events"],
+              "development": development,
+              "holdout": holdout,
+          }, indent=2, sort_keys=True))
+          PY
+          test -e "$ROOT/development_events.csv"
+          if python - <<'PY'
+          import json,os
+          from pathlib import Path
+          study=json.loads((Path(os.environ['ROOT'])/'study.json').read_text())
+          raise SystemExit(0 if study['holdout']['opened'] else 1)
+          PY
+          then
+            test -e "$ROOT/holdout_events.csv"
+          else
+            test ! -e "$ROOT/holdout_events.csv"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v14-two-hour-jump-${{ github.sha }}
+          path: artifacts/candidate-16-v14-two-hour-jump-study/**
+          if-no-files-found: warn
+          retention-days: 90
