@@ -1,0 +1,149 @@
+name: candidate-08-opening-type-no-new-leg-diagnostic-v2
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-opening-type-no-new-leg-diagnostic-v2"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-opening-type-no-new-leg-diagnostic-v2
+  cancel-in-progress: true
+
+jobs:
+  diagnostic:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.run-opening-type-no-new-leg-diagnostic-v2
+      OUTPUT: research/candidate-08/evidence/opening-type-first-pullback-v2-no-new-leg-diagnostic
+      CACHE: .cache/candidate-08-opening-type-first-pullback-v2
+      CONFIG: research/candidate-08/config_opening_type_first_pullback_multiasset_v2.json
+      PATTERN: research/candidate-08/config_range_fvg.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-08-opening-type-first-pullback-v2
+          key: candidate-08-opening-type-first-pullback-v2-${{ hashFiles('research/candidate-08/config_opening_type_first_pullback_multiasset_v2.json') }}
+          restore-keys: |
+            candidate-08-opening-type-first-pullback-v2-
+            candidate-08-opening-type-state-router-v1-
+            candidate-08-aggtrade-acceptance-
+
+      - name: Verify bundle, compile, and run the one permitted diagnostic
+        id: research
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          rm -rf "$OUTPUT" /tmp/opening-type-diagnostic
+          mkdir -p "$OUTPUT" "$CACHE" /tmp/opening-type-diagnostic
+          set +e
+          (
+            set -euo pipefail
+            cat > /tmp/chunks.sha256 <<'EOF'
+          77d4a40275173b3fe283a365f5a46deca3f626a17f78b3f7b566228a7f271888  research/candidate-08/.diagbundle.00
+          ec69a827cf2a94e9e9a6ac95813866b0db38d2d7c39c2ea703b0caf881acf5fe  research/candidate-08/.diagbundle.01
+          aac3c9ea7f8ab2c56a90f5b7ebfa75c3299741c6587bbf338dba5c828fb56203  research/candidate-08/.diagbundle.02
+          337c7825765d02d94688c7564dd5b2f94f7073c6f78a91726dcee8d98ac74811  research/candidate-08/.diagbundle.03
+          c48e2b8ddcff9d350efc2a7b036664236ecf61446e0d45cf7a8b408b0974013f  research/candidate-08/.diagbundle.04
+          EOF
+            sha256sum -c /tmp/chunks.sha256
+            cat research/candidate-08/.diagbundle.0* | base64 -d > /tmp/opening-type-diagnostic/bundle.tgz
+            echo '2c9e95112475efd22950b0d1365e4d98947f5d98062d73c7d3d273e7b9a457be  /tmp/opening-type-diagnostic/bundle.tgz' | sha256sum -c -
+            tar -xzf /tmp/opening-type-diagnostic/bundle.tgz -C /tmp/opening-type-diagnostic
+            install -m 0644 /tmp/opening-type-diagnostic/opening_type_first_pullback_no_new_leg_diagnostic_v2.py research/candidate-08/
+            install -m 0644 /tmp/opening-type-diagnostic/run_opening_type_first_pullback_no_new_leg_diagnostic_v2.py research/candidate-08/
+
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/opening_type_first_pullback_no_new_leg_diagnostic_v2.py \
+              research/candidate-08/run_opening_type_first_pullback_no_new_leg_diagnostic_v2.py
+            python research/candidate-08/run_opening_type_first_pullback_no_new_leg_diagnostic_v2.py \
+              --config "$CONFIG" --pattern-config "$PATTERN" \
+              --output "$OUTPUT" --data-cache "$CACHE"
+
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['OUTPUT'])
+          suite=json.loads((root/'suite_metrics.json').read_text())
+          result=suite['window_results'][0]
+          checks=suite['suite_gate_checks']
+          clean=all(bool(checks.get(key,False)) for key in (
+              'entry_causality','fill_adjusted_risk_budget_respected',
+              'planned_risk_budget_respected','realized_loss_budget_respected',
+              'funding_cost_state_is_causal_and_complete','no_residual_exposure',
+              'no_unexpected_or_liquidation_closes','no_execution_failures'))
+          decision={
+              'candidate':'candidate-08-opening-type-first-pullback-no-new-leg-diagnostic-v2',
+              'classification':(
+                  'DIAGNOSTIC_IMPLEMENTATION_OR_EXECUTION_FAILURE' if not clean else
+                  'STRUCTURAL_REBUILD_SUPPORTED_NOT_PROMOTABLE' if (
+                      int(result.get('closed_trades',0))>=5
+                      and float(result.get('total_return',0))>0
+                      and float(result.get('win_rate',0))>=0.50
+                      and float(suite.get('single_trade_positive_pnl_share',1.0))<=0.50
+                  ) else 'NO_STRUCTURAL_IMPROVEMENT_DISCARD_OPENING_TYPE_LINEAGE'
+              ),
+              'diagnostic_only':True,
+              'promotion_permitted':False,
+              'removed_variable':'SEPARATE_LATER_M5_NEW_LEG_CONFIRMATION',
+              'implementation_clean':clean,
+              'window_result':result,
+              'suite_summary':suite,
+          }
+          (root/'decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+          ) 2>&1 | tee "$OUTPUT/workflow.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT/exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit source and diagnostic evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER" research/candidate-08/.diagbundle.0* research/candidate-08/.opening-type-no-new-leg-diagnostic.part00
+          git add -A -- \
+            research/candidate-08/opening_type_first_pullback_no_new_leg_diagnostic_v2.py \
+            research/candidate-08/run_opening_type_first_pullback_no_new_leg_diagnostic_v2.py \
+            "$OUTPUT" "$MARKER" research/candidate-08/.diagbundle.0* \
+            research/candidate-08/.opening-type-no-new-leg-diagnostic.part00
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: record no-new-leg confirmation diagnostic [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
+            git rebase --abort || true
+            sleep $((attempt*4))
+          done
+          exit 1
+
+      - name: Enforce reproducible execution
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS_VALUE: ${{ steps.research.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
