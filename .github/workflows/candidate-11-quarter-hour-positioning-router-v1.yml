@@ -1,0 +1,150 @@
+name: Candidate 11 quarter-hour positioning router
+
+on:
+  push:
+    branches: ["research/candidate-11"]
+    paths:
+      - "research/candidate-11/quarter_hour_positioning_router_v1/**"
+      - ".github/workflows/candidate-11-quarter-hour-positioning-router-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-11-quarter-hour-positioning-router-v1-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CAND: research/candidate-11/quarter_hour_positioning_router_v1
+      POSITIONING: research/candidate-11/positioning_regional_router_v1
+      REGIONAL: research/candidate-11/regional_spot_perp_router_v1
+      SPOT: research/candidate-11/spot_perp_session_router_v1
+      VENDOR: vendor/candidate16
+      CACHE: .cache/candidate-11-quarter-hour-positioning-router-v1
+      OUT: artifacts/candidate-11-quarter-hour-positioning-router-v1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: af82ebc64e05aeaf2704eeb3af0709cdbf4c77c2
+          path: vendor/candidate16
+          fetch-depth: 1
+
+      - name: Verify runtime, pure logic and information-role separation
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python research/candidate-11/liquidity_state_router_v1/patch_features_v4.py "$VENDOR/research/candidate-16/features_v4.py"
+          python research/candidate-11/session_auction_l1_router_v1/patch_vendor.py "$VENDOR"
+          python -m compileall -q "$CAND" "$POSITIONING" "$REGIONAL" "$SPOT" "$VENDOR/research/candidate-05" "$VENDOR/research/candidate-16"
+          PYTHONPATH="$GITHUB_WORKSPACE/$CAND" python -m unittest discover -s "$CAND" -p 'test_*.py' -v
+          grep -F 'opening_flow_10s' "$CAND/quarter_hour_logic.py"
+          grep -F 'oi_change_5m' "$CAND/quarter_hour_logic.py"
+          grep -F 'l1_pressure_flipped' "$CAND/quarter_hour_logic.py"
+          grep -F 'NautilusTrader remains the only execution' "$CAND/quarter_hour_strategy.py"
+
+      - name: Run 28-day continuous development account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT/DEVELOPMENT"
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/$POSITIONING:$GITHUB_WORKSPACE/$REGIONAL:$GITHUB_WORKSPACE/$SPOT:$GITHUB_WORKSPACE/$VENDOR/research/candidate-16:$GITHUB_WORKSPACE/$VENDOR/research/candidate-05:$GITHUB_WORKSPACE/$VENDOR/src"
+          python "$CAND/candidate.py" \
+            --config "$VENDOR/research/candidate-16/config_v4.json" \
+            --build-start 2023-11-03 \
+            --build-end 2023-12-03 \
+            --evaluation-start 2023-11-06 \
+            --evaluation-end 2023-12-03 \
+            --cache "$CACHE/development" \
+            --output "$OUT/DEVELOPMENT" \
+            --validation-mode DEVELOPMENT \
+            2>&1 | tee "$OUT/DEVELOPMENT/console.log"
+
+      - name: Apply absolute development gate
+        id: development
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+          root=Path(os.environ["OUT"])/"DEVELOPMENT"
+          frame=pd.read_csv(root/"features.csv.gz")
+          ready=frame["positioning_feature_ready"].fillna(False).astype(bool)
+          if int(ready.sum()) <= 0:
+              raise SystemExit("positioning information did not reach the strategy clock")
+          diagnostics=json.loads((root/"strategy_diagnostics.json").read_text())
+          if int(diagnostics.get("quarter_boundary_observations", 0)) <= 0:
+              raise SystemExit("quarter-hour event clock did not reach the strategy")
+          if int(diagnostics.get("quarter_ranges_completed", 0)) <= 0:
+              raise SystemExit("completed quarter ranges were not published")
+          print({
+              "positioning_ready_rows": int(ready.sum()),
+              "quarter_boundary_observations": diagnostics["quarter_boundary_observations"],
+              "quarter_ranges_completed": diagnostics["quarter_ranges_completed"],
+          })
+          PY
+          python "$SPOT/audit_account.py" \
+            --root "$OUT/DEVELOPMENT" \
+            --output "$OUT/DEVELOPMENT_AUDIT.json" \
+            --schema candidate-11-quarter-hour-positioning-development-v1 \
+            --minimum-trades 28
+          gate="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["gate_passed"]).lower())' "$OUT/DEVELOPMENT_AUDIT.json")"
+          echo "gate=$gate" >> "$GITHUB_OUTPUT"
+
+      - name: Run source-frozen fresh 21-day account only after development success
+        if: steps.development.outputs.gate == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT/FRESH"
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/$POSITIONING:$GITHUB_WORKSPACE/$REGIONAL:$GITHUB_WORKSPACE/$SPOT:$GITHUB_WORKSPACE/$VENDOR/research/candidate-16:$GITHUB_WORKSPACE/$VENDOR/research/candidate-05:$GITHUB_WORKSPACE/$VENDOR/src"
+          python "$CAND/candidate.py" \
+            --config "$VENDOR/research/candidate-16/config_v4.json" \
+            --build-start 2024-03-01 \
+            --build-end 2024-03-24 \
+            --evaluation-start 2024-03-04 \
+            --evaluation-end 2024-03-24 \
+            --cache "$CACHE/fresh" \
+            --output "$OUT/FRESH" \
+            --validation-mode FRESH_VALIDATION \
+            2>&1 | tee "$OUT/FRESH/console.log"
+
+      - name: Apply absolute fresh gate
+        if: steps.development.outputs.gate == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$SPOT/audit_account.py" \
+            --root "$OUT/FRESH" \
+            --output "$OUT/FRESH_AUDIT.json" \
+            --schema candidate-11-quarter-hour-positioning-fresh-v1 \
+            --minimum-trades 21
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-11-quarter-hour-positioning-router-v1-${{ github.sha }}
+          path: artifacts/candidate-11-quarter-hour-positioning-router-v1/**
+          if-no-files-found: warn
+          retention-days: 90
