@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI for the external spot-perpetual participation router."""
+"""CLI for the cross-market external-liquidity exhaustion system."""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +19,16 @@ CANDIDATE17 = ROOT / "candidate-17"
 CANDIDATE16 = ROOT / "candidate-16"
 CANDIDATE05 = ROOT / "candidate-05"
 for index, path in enumerate(
-    (HERE, CANDIDATE21, CANDIDATE16, CANDIDATE20, CANDIDATE19, CANDIDATE18, CANDIDATE17, CANDIDATE05),
+    (
+        HERE,
+        CANDIDATE21,
+        CANDIDATE16,
+        CANDIDATE20,
+        CANDIDATE19,
+        CANDIDATE18,
+        CANDIDATE17,
+        CANDIDATE05,
+    ),
 ):
     sys.path.insert(index, str(path))
 
@@ -37,7 +46,7 @@ install_basis_contract()
 install_book_depth_gap_contract()
 install_spot_participation_contract()
 
-from candidate21_backtest import run_backtest
+from external_backtest import run_backtest
 from smc_ict_4.manifest import write_json_atomic
 
 
@@ -51,13 +60,14 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
         cache=args.cache,
         output=args.output,
     )
-    result["candidate"] = "external-spot-perp-participation-router"
+    result["candidate"] = "external-liquidity-exhaustion-reversal"
     result["validation_mode"] = args.validation_mode
     result["external_alpha"] = (
-        "spot-led discovery versus perp-led leverage crowding with later state transition"
+        "synchronized spot-perpetual flow climax at external liquidity, "
+        "followed by a strictly later microstructure and aggressor-flow reversal"
     )
     result["reused_engine"] = "NautilusTrader BacktestNode"
-    result["reused_execution_clock"] = "Candidate 21 actual aggTrade replay"
+    result["reused_execution_clock"] = "Candidate 21 actual aggTrade latency clock"
     result["reused_accounting"] = "Candidate 05 continuous NAV"
     write_json_atomic(args.output.resolve() / "metrics.json", result)
     write_json_atomic(
@@ -69,10 +79,21 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
                 "checksum-verified Binance spot klines and aggTrades",
                 "checksum-verified Binance USD-M klines, aggTrades, depth, metrics and premium",
             ],
-            "parent": "prior 15-minute balance break with OI expansion",
-            "router": ["SPOT_LED_ACCEPTANCE", "PERP_LED_CROWDING", "UNRESOLVED"],
-            "transition": "strictly later completed minute",
-            "entry": "all-or-none price-capped FOK bracket",
+            "parent": (
+                "external-liquidity reach with synchronized spot/perpetual displacement, "
+                "aggressor flow, volume climax, and low price efficiency"
+            ),
+            "router": ["EXTERNAL_LIQUIDITY_EXHAUSTION", "UNRESOLVED"],
+            "transition": (
+                "strictly later opposite microstructure break plus perpetual flow reversal"
+            ),
+            "entry": (
+                "native Nautilus MARKET-IOC bracket; quantity and net-R computed at "
+                "volatility-aware adverse fill budget"
+            ),
+            "entry_integrity": (
+                "actual fill worse than the adverse fill budget invalidates the run"
+            ),
             "risk_fraction": 0.03,
             "continuous_nav": True,
             "custom_matching_or_accounting": False,
