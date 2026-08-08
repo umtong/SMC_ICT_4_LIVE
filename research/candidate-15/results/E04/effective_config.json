@@ -6,7 +6,7 @@
     "risk_fraction": 0.03,
     "starting_nav": "100000"
   },
-  "candidate": "candidate-15-v8-managed-residual-information-transfer",
+  "candidate": "candidate-15-v9-beta-coherent-diffusion-lag",
   "candidate15_protocol": {
     "base_candidate": {
       "branch": "research/candidate-14",
@@ -16,42 +16,44 @@
     "interval": "E04",
     "role": "exposed-mid-regime-development",
     "router": {
-      "accepted_market_count_required": 3,
-      "active_horizon": "observed_confirmation_span",
+      "beta_estimation_cutoff": "STRICTLY_BEFORE_FIRST_EVIDENCE_EVENT",
+      "beta_horizons": [
+        24,
+        48,
+        96,
+        192
+      ],
+      "beta_model": "ZERO_INTERCEPT_RECEIVER_ON_MEDIAN_OTHER_THREE",
+      "beta_return_bar_minutes": 5,
       "common_flow_breadth": 3,
       "common_markets_required": 3,
-      "continuation_engine": "ManagedResidualTransferContinuationEngine",
+      "confirmation_delivery_gap_required_all_horizons": true,
+      "continuation_engine": "BetaCoherentResidualTransferContinuationEngine",
       "distinct_events_required": 2,
       "entry_order": "POST_ONLY_LIMIT_GTD",
       "entry_timeframe_minutes": 5,
-      "four_market_response": "NO_TRADE_NO_RESIDUAL_RECEIVER",
-      "handoff_stage": "current fresh displacement touches and closes beyond parity",
+      "flow_contract": "SENDER_AGGRESSOR_FLOW_TO_RECEIVER_MSS_FLOW_CONVERSION",
+      "geometry_clock": "COMPLETED_RECEIVER_MSS_BAR_END",
+      "geometry_delivery_gap_required_all_horizons": true,
       "management_action": "MODIFY_EXISTING_STOP_MARKET_TO_POSITIVE_COST_COVER",
       "management_observation": "SYNCHRONIZED_COMPLETED_ONE_MINUTE_CLOSE",
       "management_preserves_external_target": true,
-      "maximum_candidate_event_separation_hours": 4,
-      "module": "MANAGED_RESIDUAL_TRANSFER_MSS_FVG",
-      "origin_rule": "majority remains beyond the first confirming origins",
-      "partial_stage": "parity remains ahead with positive costed space",
+      "module": "BETA_COHERENT_DIFFUSION_LAG_MSS_FVG",
       "portfolio_router": "residual_laggard_symbol",
-      "prior_parity_consumption": "NO_TRADE",
-      "progress_rule": "positive median signed log return and majority advance",
-      "receiver_atr_timeframe_minutes": 5,
-      "receiver_atr_uses_current_impulse": false,
-      "refresh_resets_effective_timestamp": true,
-      "residual_must_lag_sender_median": true,
-      "sender_atr_timeframe_minutes": 5,
-      "sender_atr_uses_current_impulse": false,
-      "state_router": "ManagedTransferPersistentQuarterHourRouter",
+      "positive_beta_consensus_required": true,
+      "prior_completion_consumption": "NO_TRADE",
+      "receiver_to_weakest_sender_body_ratio": {
+        "maximum_exclusive": 1.0,
+        "minimum_inclusive": 0.5
+      },
+      "state_router": "BetaCoherentTransferPersistentQuarterHourRouter",
       "stop_order": "STOP_MARKET_GTC",
       "take_profit_order": "POST_ONLY_LIMIT_GTC",
-      "tradable_market_policy": "sole market excluded from current accepted_symbols",
       "transfer_stages": [
-        "PARTIAL_CATCH_UP",
-        "PARITY_HANDOFF_RETEST"
+        "BETA_COHERENT_DIFFUSION_LAG"
       ]
     },
-    "schema": "candidate-15-managed-residual-information-transfer-v8"
+    "schema": "candidate-15-beta-coherent-diffusion-lag-v9"
   },
   "execution": {
     "bar_adaptive_high_low_ordering": true,
@@ -178,7 +180,7 @@
   "selection": {
     "evaluation_days": 7,
     "seed": 202608081508,
-    "selection_rule": "E01-E06 are the same fully exposed mechanism-development intervals used by V4-V7. Reuse isolates transfer-stage routing and post-entry management; it can never support a success claim.",
+    "selection_rule": "E01-E06 are the fully exposed V4-V8 mechanism-development intervals. Reuse verifies that online V9 reproduces the corrected diagnostic state without creating success evidence.",
     "warmup_days": 3,
     "weeks": {
       "E01": {
