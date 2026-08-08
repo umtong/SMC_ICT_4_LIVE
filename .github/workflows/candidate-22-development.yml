@@ -1,0 +1,144 @@
+name: candidate-22-development
+
+on:
+  push:
+    branches: ["research/candidate-22"]
+    paths:
+      - "research/candidate-22/**"
+      - ".github/workflows/candidate-22-development.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-22-development
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  observed-periods:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: known-2023-12-25
+            build_start: "2023-12-22"
+            build_end: "2023-12-31"
+            evaluation_start: "2023-12-25"
+            evaluation_end: "2023-12-31"
+          - name: viewed-2024-07-08
+            build_start: "2024-07-05"
+            build_end: "2024-07-14"
+            evaluation_start: "2024-07-08"
+            evaluation_end: "2024-07-14"
+          - name: viewed-2023-10-16
+            build_start: "2023-10-13"
+            build_end: "2023-10-22"
+            evaluation_start: "2023-10-16"
+            evaluation_end: "2023-10-22"
+          - name: viewed-2025-09-22
+            build_start: "2025-09-19"
+            build_end: "2025-09-28"
+            evaluation_start: "2025-09-22"
+            evaluation_end: "2025-09-28"
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-22:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-22/${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-22
+          python -m unittest discover -s research/candidate-22/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-19/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-18/tests -p 'test_fok_execution_contract.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_displayed_liquidity_router_v2.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Run observed period through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-22/candidate.py stage \
+            --config research/candidate-22/config.json \
+            --build-start "${{ matrix.build_start }}" \
+            --build-end "${{ matrix.build_end }}" \
+            --evaluation-start "${{ matrix.evaluation_start }}" \
+            --evaluation-end "${{ matrix.evaluation_end }}" \
+            --cache ".cache/candidate-22/${{ matrix.name }}" \
+            --output "$ROOT" \
+            --validation-mode "development-seen-period" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Attribute scenario-family result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          keys = (
+              "candidate18_initiative_sustained",
+              "candidate19_shock_transmissions_armed",
+              "candidate19_shock_transmissions_confirmed",
+              "candidate22_opening_ranges_fixed",
+              "candidate22_compressed_opening_ranges",
+              "candidate22_expansions_armed",
+              "candidate22_retest_observations",
+              "candidate22_retests_confirmed",
+              "candidate22_retests_invalidated",
+              "candidate22_retests_expired",
+              "candidate22_fok_entries",
+              "candidate18_fok_limit_entries",
+          )
+          summary = {
+              "performance": {
+                  key: metrics.get(key)
+                  for key in (
+                      "evaluation_start",
+                      "evaluation_end",
+                      "ending_nav",
+                      "total_return",
+                      "geometric_daily_growth",
+                      "max_drawdown",
+                      "trades",
+                      "wins",
+                      "losses",
+                      "win_rate",
+                      "profit_factor",
+                      "active_days",
+                      "gate_pass",
+                  )
+              },
+              "routing": {key: diagnostics.get(key, 0) for key in keys},
+          }
+          (root / "candidate22_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-22-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-22/${{ matrix.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
