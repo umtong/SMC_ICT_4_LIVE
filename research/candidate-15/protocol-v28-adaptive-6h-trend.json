@@ -1,0 +1,112 @@
+{
+  "schema": "candidate-15-v28-adaptive-6h-trend-v1",
+  "candidate": "candidate-15-v28-adaptive-6h-trend",
+  "created_utc": "2026-08-09",
+  "research_question": "Can a six-hour, volatility-adaptive trend policy with causal fifteen-minute confirmation and a dynamic trailing stop deliver cost-positive day-trading opportunities across BTC, ETH, SOL and XRP under one global slot?",
+  "external_mechanisms": [
+    {
+      "source": "Bui and Nguyen (2026), AdaptiveTrend",
+      "reused": [
+        "six-hour signal interval",
+        "momentum entry",
+        "volatility-calibrated trailing stop",
+        "rolling performance/state selection"
+      ]
+    },
+    {
+      "source": "Shen, Urquhart and Wang (2022), Bitcoin intraday time-series momentum",
+      "reused": [
+        "stronger intraday predictability when the initiating interval has elevated volume or volatility"
+      ]
+    }
+  ],
+  "scenario": {
+    "context": "completed six-hour futures auction with 24-hour momentum that is large relative to prior-only six-hour ATR, accompanied by above-median six-hour quote volume",
+    "state": {
+      "BREADTH_ALIGNED_6H_TREND": "at least three of the four markets share the momentum direction; select the strongest volatility-normalized market",
+      "RELATIVE_6H_LEADER": "when breadth is mixed, one market has a volatility-normalized residual lead over the median large enough to identify local price discovery",
+      "UNRESOLVED": "all remaining states are no-trade"
+    },
+    "confirmation": "a wholly subsequent completed fifteen-minute bar extends in the proposed direction with directional taker pressure",
+    "entry": "confirmation close",
+    "invalidation_and_management": "initial stop is a volatility floor outside the confirmation leg; after every completed five-minute bar, the stop trails the best completed close by two prior six-hour ATRs",
+    "exit": "trailing stop or a hard twenty-four-hour day-trading cap",
+    "arbitration": "one global open trade across all four markets; choose breadth route first, then larger fixed quality score"
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and latest daily five-minute klines",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ],
+    "interval": "5m",
+    "start": "2024-04-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": [
+      "2026-08-01",
+      "2026-08-02",
+      "2026-08-03",
+      "2026-08-04",
+      "2026-08-05",
+      "2026-08-06",
+      "2026-08-07"
+    ],
+    "visibility": "signal uses only completed six-hour bars; confirmation is the following completed fifteen-minute bar; stop updates only after completed five-minute bars"
+  },
+  "fixed_rules": {
+    "signal_interval_minutes": 360,
+    "momentum_lookback_bars": 4,
+    "atr_lookback_bars": 14,
+    "trend_quality_lookback_bars": 120,
+    "minimum_prior_bars": 60,
+    "long_momentum_atr_min": 1.0,
+    "short_momentum_atr_min": 1.25,
+    "minimum_six_hour_volume_ratio": 1.0,
+    "breadth_fraction_min": 0.75,
+    "relative_leader_atr_min": 1.0,
+    "relative_leader_gap_atr_min": 0.35,
+    "minimum_trend_quality": 0.1,
+    "confirmation_minutes": 15,
+    "minimum_confirmation_body_fraction": 0.5,
+    "minimum_directional_taker_pressure": 0.0,
+    "initial_stop_atr": 1.0,
+    "trailing_stop_atr": 2.0,
+    "maximum_hold_minutes": 1440,
+    "same_bar_stop_policy": "STOP_FIRST_CONSERVATIVE",
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_symbol_signal_cooldown_minutes": 360,
+    "volume_median_lookback_bars": 20
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.2,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 5,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 1,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per evaluation calendar day after all scenario families are routed together"
+  },
+  "decision_contract": {
+    "advance": "Only a fixed route positive in development, year-long stability, July confirmation and the latest pulse advances to NautilusTrader.",
+    "reject": "Do not tune momentum, volume, breadth, confirmation or trailing-stop thresholds after reading the declared result."
+  }
+}
