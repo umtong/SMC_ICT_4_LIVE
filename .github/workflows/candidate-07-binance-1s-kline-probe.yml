@@ -108,3 +108,57 @@ jobs:
           2025-12-22|1766361600000
           2026-06-30|1782777600000
           EOF
+
+      - name: Probe official aliases and a read-only transparent mirror
+        shell: bash
+        run: |
+          set -u
+          START_MS=1719187200000
+          END_MS=$((START_MS + 5000))
+          probe_route() {
+            local label="$1"
+            local base="$2"
+            local interval="$3"
+            local url="${base}?symbol=BTCUSDT&interval=${interval}&startTime=${START_MS}&endTime=${END_MS}&limit=10"
+            local body status exit_code
+            body=$(mktemp)
+            status=$(curl --location --silent --show-error \
+              --connect-timeout 15 --max-time 60 \
+              --output "$body" --write-out '%{http_code}' "$url" 2>&1)
+            exit_code=$?
+            printf 'ROUTE|%s|interval=%s|curl_exit=%s|http=%s|payload=' \
+              "$label" "$interval" "$exit_code" "$status"
+            python - "$body" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          raw = Path(sys.argv[1]).read_text(encoding="utf-8")
+          try:
+              value = json.loads(raw)
+          except json.JSONDecodeError:
+              print(raw[:300])
+          else:
+              if isinstance(value, list):
+                  print({
+                      "rows": len(value),
+                      "first_open_time": value[0][0] if value else None,
+                      "first_ohlc": value[0][1:5] if value else None,
+                  })
+              else:
+                  print(value)
+          PY
+            rm -f "$body"
+          }
+
+          while IFS='|' read -r label base; do
+            probe_route "$label" "$base" 1s
+            probe_route "$label-control" "$base" 1m
+          done <<'EOF'
+          fapi|https://fapi.binance.com/fapi/v1/klines
+          fapi1|https://fapi1.binance.com/fapi/v1/klines
+          fapi2|https://fapi2.binance.com/fapi/v1/klines
+          fapi3|https://fapi3.binance.com/fapi/v1/klines
+          fapi4|https://fapi4.binance.com/fapi/v1/klines
+          pipai-readonly|https://api.pipai.org/fapi/v1/klines
+          spot-data-vision|https://data-api.binance.vision/api/v3/klines
+          EOF
