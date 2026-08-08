@@ -1,0 +1,151 @@
+name: Candidate 15 V33-V37 round status
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - ".github/workflows/candidate-15-v33-v37-round-status.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v33-v37-round-status
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-15
+          fetch-depth: 0
+
+      - name: Wait for and collect round evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            research/candidate-15/V33_CROSS_SECTIONAL_8H_MOMENTUM_RESULT.md
+            research/candidate-15/V34_LIQUIDITY_VACUUM_RECLAIM_RESULT.md
+            research/candidate-15/V35_BETA_RESIDUAL_DISCOVERY_RESULT.md
+            research/candidate-15/V36_CVD_BOUNDARY_DIVERGENCE_RESULT.md
+            research/candidate-15/V37_OPENING_DRIVE_VWAP_RETEST_RESULT.md
+          )
+          for attempt in $(seq 1 40); do
+            git fetch origin research/candidate-15
+            missing=0
+            for path in "${expected[@]}"; do
+              if ! git cat-file -e "origin/research/candidate-15:$path" 2>/dev/null; then
+                missing=$((missing + 1))
+              fi
+            done
+            [[ "$missing" -eq 0 ]] && break
+            sleep 30
+          done
+          git fetch origin research/candidate-15
+          git checkout -B research/candidate-15 origin/research/candidate-15
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          import re
+          from pathlib import Path
+
+          root = Path('research/candidate-15')
+          names = {
+              33: 'CROSS_SECTIONAL_8H_MOMENTUM',
+              34: 'LIQUIDITY_VACUUM_RECLAIM',
+              35: 'BETA_RESIDUAL_DISCOVERY',
+              36: 'CVD_BOUNDARY_DIVERGENCE',
+              37: 'OPENING_DRIVE_VWAP_RETEST',
+          }
+          rows = []
+          for version, stem in names.items():
+              result = root / f'V{version}_{stem}_RESULT.md'
+              summaries = sorted(root.glob(f'v{version}/**/summary.json'))
+              record = {
+                  'version': version,
+                  'result_present': result.is_file(),
+                  'summary_present': bool(summaries),
+                  'classification': 'MISSING',
+                  'advance_to_nautilus': False,
+              }
+              if result.is_file():
+                  text = result.read_text(encoding='utf-8', errors='replace')
+                  match = re.search(r'\*\*(V\d+_[A-Z0-9_]+)\*\*', text)
+                  if match:
+                      record['classification'] = match.group(1)
+              if summaries:
+                  data = json.loads(summaries[-1].read_text(encoding='utf-8'))
+                  record['summary_path'] = str(summaries[-1])
+                  record['classification'] = data.get('classification', record['classification'])
+                  record['advance_to_nautilus'] = bool(data.get('advance_to_nautilus'))
+                  for split in ('development', 'stability', 'july_confirmation', 'latest_pulse'):
+                      current = data.get(split, {})
+                      record[f'{split}_trades'] = current.get('trades')
+                      record[f'{split}_trades_per_day'] = current.get('trades_per_day')
+                      record[f'{split}_mean_net_bps'] = current.get('mean_net_bps')
+                      record[f'{split}_net_t_stat'] = current.get('net_t_stat')
+                      record[f'{split}_positive_month_share'] = current.get('positive_month_share')
+                  record['surviving_routes'] = data.get('surviving_routes', [])
+                  record['decision'] = data.get('decision')
+              rows.append(record)
+
+          payload = {
+              'schema': 'candidate-15-v33-v37-round-status-v1',
+              'all_results_present': all(row['result_present'] for row in rows),
+              'any_advance_to_nautilus': any(row['advance_to_nautilus'] for row in rows),
+              'advance_versions': [row['version'] for row in rows if row['advance_to_nautilus']],
+              'rows': rows,
+          }
+          (root / 'V33_V37_ROUND_STATUS.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          lines = [
+              '# Candidate 15 V33-V37 round status', '',
+              f"- all_results_present: `{payload['all_results_present']}`",
+              f"- any_advance_to_nautilus: `{payload['any_advance_to_nautilus']}`",
+              f"- advance_versions: `{payload['advance_versions']}`", '',
+          ]
+          for row in rows:
+              lines.extend([
+                  f"## V{row['version']}",
+                  f"- classification: `{row['classification']}`",
+                  f"- advance_to_nautilus: `{row['advance_to_nautilus']}`",
+                  f"- stability trades/day: `{row.get('stability_trades')} / {row.get('stability_trades_per_day')}`",
+                  f"- stability mean net / t-stat: `{row.get('stability_mean_net_bps')} / {row.get('stability_net_t_stat')}`",
+                  f"- July mean net / trades: `{row.get('july_confirmation_mean_net_bps')} / {row.get('july_confirmation_trades')}`",
+                  f"- latest mean net / trades: `{row.get('latest_pulse_mean_net_bps')} / {row.get('latest_pulse_trades')}`",
+                  f"- surviving_routes: `{row.get('surviving_routes', [])}`",
+                  f"- decision: {row.get('decision')}", '',
+              ])
+          (root / 'V33_V37_ROUND_STATUS.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+      - name: Persist round status
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-15
+          git rebase origin/research/candidate-15
+          git config user.name candidate-15-round-status-bot
+          git config user.email candidate-15-round-status-bot@users.noreply.github.com
+          git add research/candidate-15/V33_V37_ROUND_STATUS.json research/candidate-15/V33_V37_ROUND_STATUS.md
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15: record V33-V37 round status [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate15-v33-v37-round-status-${{ github.run_id }}
+          path: |
+            research/candidate-15/V33_V37_ROUND_STATUS.json
+            research/candidate-15/V33_V37_ROUND_STATUS.md
+          if-no-files-found: warn
+          retention-days: 30
