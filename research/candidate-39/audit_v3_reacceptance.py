@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """Audit V3 failed-attack reacceptance paths on exposed development data.
 
-This is a structural path audit, not an account backtest or success claim.  It
+This is a structural path audit, not an account backtest or success claim. It
 uses the exact checksum-verified kline archives already owned by the V3
-Nautilus replay and the emitted setup/transition events.  Its sole purpose is
+Nautilus replay and the emitted setup/transition events. Its sole purpose is
 to distinguish an implementation error from a different latent state:
 
     leveraged attack -> true failure inside value -> later same-side reacceptance
 
 Only events whose completed response actually closed back inside the old range
-are retained.  Wick-retention failure while price remains outside is explicitly
+are retained. Wick-retention failure while price remains outside is explicitly
 excluded.
 """
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
@@ -27,7 +26,6 @@ COLUMNS = (
     "open_time", "open", "high", "low", "close", "volume", "close_time",
     "quote_volume", "trades", "taker_buy_volume", "taker_buy_quote_volume", "ignore",
 )
-MINUTE_NS = 60_000_000_000
 HORIZONS = (15, 30, 60, 120, 240)
 
 
@@ -144,7 +142,7 @@ def audit(*, events: Path, cache: Path, source_root: Path, output: Path) -> dict
         reaccepted_extreme = side * (float(current["close"]) - attack_extreme) >= 0.0
 
         # A new continuation leg is anchored to the last completed micro-balance
-        # before the reacceptance close.  Entry, invalidation and target are all
+        # before the reacceptance close. Entry, invalidation and target are all
         # measured from this new leg; the old broad sweep is not reused as stop.
         prior = leg.iloc[:-1].tail(2)
         if prior.empty:
@@ -160,7 +158,7 @@ def audit(*, events: Path, cache: Path, source_root: Path, output: Path) -> dict
             if side > 0
             else max(local_extreme, boundary + 0.10 * atr)
         )
-        context_range = float(setup["context_high"]) - float(setup["context_low"])
+        context_range = float(diagnostic["context_high"]) - float(diagnostic["context_low"])
         objective = boundary + side * context_range
         risk = side * (micro_boundary - stop)
         reward = side * (objective - micro_boundary)
