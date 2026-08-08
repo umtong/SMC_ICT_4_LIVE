@@ -1,0 +1,95 @@
+{
+  "schema": "candidate-15-v21-cojump-state-transition-v1",
+  "candidate": "candidate-15-v21-cojump-state-transition",
+  "created_utc": "2026-08-08",
+  "research_question": "Can prior-only bipower-variation jump detection separate systemic information co-jumps from idiosyncratic leverage jumps before entry, and do the resulting state transitions retain after-cost expectancy across a year-long stability period and the latest daily archives?",
+  "scenario": {
+    "event_detector": "a five-minute return is a jump only when its absolute log return exceeds four prior-only continuous-volatility sigmas estimated from rolling bipower variation and futures quote volume is abnormal",
+    "state_router": {
+      "SYSTEMIC_COJUMP_ACCEPTANCE": "futures, spot and composite index jump in the same direction, at least half of peer spot markets agree, base OI does not collapse and futures aggressor flow is aligned",
+      "IDIOSYNCRATIC_LEVERAGE_JUMP_RECLAIM": "the perpetual future jumps without matching spot/index delivery, the futures-spot return gap is abnormal and base OI collapses",
+      "UNRESOLVED": "ordinary large returns, unconfirmed co-jumps and ambiguous leverage shocks are no-trade"
+    },
+    "independent_confirmation": {
+      "SYSTEMIC_COJUMP_ACCEPTANCE": "the next completed five-minute bar extends, OI does not unwind, futures flow remains aligned and spot/index/peer breadth continue in the jump direction; trade continuation after that close",
+      "IDIOSYNCRATIC_LEVERAGE_JUMP_RECLAIM": "the next completed bar fails, OI contraction stops, futures flow flips and spot still does not follow; trade reversal after that close"
+    },
+    "exit": "fixed two-hour continuation or one-hour reclaim horizon, both belonging to the post-confirmation intraday leg",
+    "causal_episode": "one co-jump timestamp shared across all four markets; same-symbol events are suppressed for the active route horizon"
+  },
+  "data": {
+    "spot_source": "Binance Vision monthly and latest daily spot 5m klines",
+    "futures_source": "Binance Vision USD-M monthly and latest daily futures 5m klines and indexPriceKlines",
+    "state_source": "Binance Vision USD-M daily 5m metrics using base sum_open_interest",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-06-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": ["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"],
+    "visibility": "jump statistics use only observations completed before the event; state confirmation uses the separately completed next bar"
+  },
+  "fixed_rules": {
+    "bipower_lookback_bars": 288,
+    "bipower_minimum_prior_bars": 144,
+    "absolute_jump_z_min": 4.0,
+    "futures_quote_volume_z_min": 1.0,
+    "directional_event_futures_taker_pressure_min": 0.10,
+    "state_rolling_prior_bars": 2016,
+    "state_minimum_prior_bars": 1008,
+    "systemic_spot_jump_z_min": 3.0,
+    "systemic_index_jump_z_min": 2.5,
+    "systemic_peer_spot_jump_breadth_min": 0.50,
+    "systemic_event_open_interest_5m_z_min": -0.25,
+    "systemic_confirmation_price_extension_min": 0.0,
+    "systemic_confirmation_open_interest_5m_z_min": -0.25,
+    "systemic_confirmation_directional_futures_taker_pressure_min": 0.0,
+    "systemic_confirmation_directional_spot_follow_min": 0.0,
+    "systemic_confirmation_directional_index_follow_min": 0.0,
+    "systemic_confirmation_peer_spot_breadth_min": 0.50,
+    "idiosyncratic_spot_jump_z_max": 2.0,
+    "idiosyncratic_index_jump_z_max": 2.0,
+    "idiosyncratic_directional_perp_spot_gap_z_min": 2.0,
+    "idiosyncratic_event_open_interest_5m_z_max": -1.5,
+    "idiosyncratic_confirmation_price_extension_max": 0.0,
+    "idiosyncratic_confirmation_open_interest_5m_z_min": -0.25,
+    "idiosyncratic_confirmation_directional_futures_taker_pressure_max": 0.0,
+    "idiosyncratic_confirmation_directional_spot_follow_max": 0.0,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "continuation_horizon_minutes": 120,
+    "reclaim_horizon_minutes": 60,
+    "same_symbol_event_cooldown_minutes": 120
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_august_pulse_start": "2026-08-01",
+    "latest_august_pulse_end_exclusive": "2026-08-08",
+    "latest_august_pulse_status": "predeclared_and_not_used_by_candidate15_v14_to_v20",
+    "global_position_limit": 1,
+    "same_event_arbitration": "largest fixed jump-context-times-state-quality score, then symbol",
+    "overlap_policy": "no selected episode while the chosen fixed route horizon is active"
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.65,
+    "minimum_family_stability_trades_per_calendar_day": 0.25,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 10,
+    "minimum_latest_august_pulse_mean_net_bps": 0.0,
+    "minimum_latest_august_pulse_trades": 3,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per evaluation calendar day after global arbitration"
+  },
+  "decision_contract": {
+    "advance": "A fixed family passing development, year-long stability, July confirmation and the predeclared August pulse may be frozen for NautilusTrader; it is not a final system unless integrated frequency and continuous NAV also pass.",
+    "reject": "Do not tune jump or state thresholds after evaluation. Preserve only a route positive across every declared split and move to another independent mechanism."
+  }
+}
