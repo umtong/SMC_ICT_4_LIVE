@@ -1,0 +1,99 @@
+{
+  "schema": "candidate-15-v40-volume-profile-reentry-v1",
+  "candidate": "candidate-15-v40-volume-profile-reentry",
+  "created_utc": "2026-08-09",
+  "research_question": "Does rejection back into a prior-only 24-hour volume-profile value area, followed by a separate confirmation toward the point of control, produce stable cost-positive day trades?",
+  "precondition": {
+    "skip_when_any_v33_v39_advance_exists": true
+  },
+  "external_mechanism": {
+    "sources": [
+      "auction-market value-area and point-of-control trading",
+      "volume-profile failed-auction practice",
+      "market-profile excess and reentry concepts"
+    ],
+    "reused": [
+      "value is estimated from a completed prior auction rather than current outcome",
+      "an outside close is only an interaction, not an entry",
+      "reentry and a later confirmation toward POC are separate state transitions",
+      "the target and invalidation remain within the same failed-auction leg"
+    ]
+  },
+  "scenario": {
+    "context": "a 24-hour profile from the prior 48 completed thirty-minute bars defines POC and a seventy-percent value area",
+    "interaction": "a completed thirty-minute bar closes beyond VAH or VAL by at least fifteen percent of prior ATR with above-prior-median quote volume",
+    "state": {
+      "HIGH_VALUE_REJECTION_TO_POC": "the next completed thirty-minute bar closes back below the frozen VAH with bearish body and taker pressure",
+      "LOW_VALUE_REJECTION_TO_POC": "the next completed thirty-minute bar closes back above the frozen VAL with bullish body and taker pressure",
+      "UNRESOLVED": "all other auctions are no-trade"
+    },
+    "confirmation": "the next completed fifteen-minute bar continues from reentry toward the frozen POC with directional body and taker pressure",
+    "entry": "confirmation close",
+    "invalidation": "beyond the outside-event extreme plus ten percent of prior ATR",
+    "target": "the frozen prior-auction POC",
+    "management": "target or stop first; otherwise exit after six hours",
+    "arbitration": "one global open position; choose the larger normalized outside excursion"
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and latest daily five-minute klines",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-04-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": [
+      "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04",
+      "2026-08-05", "2026-08-06", "2026-08-07"
+    ],
+    "visibility": "the profile is frozen before the outside event; reentry is a later completed 30-minute bar; entry follows a still later completed 15-minute bar"
+  },
+  "fixed_rules": {
+    "event_interval_minutes": 30,
+    "profile_lookback_bars": 48,
+    "profile_price_bins": 24,
+    "value_area_fraction": 0.7,
+    "atr_lookback_bars": 48,
+    "minimum_outside_excursion_atr": 0.15,
+    "volume_median_lookback_bars": 336,
+    "minimum_outside_volume_ratio": 1.0,
+    "minimum_reentry_body_fraction": 0.5,
+    "minimum_reentry_directional_taker_pressure": 0.0,
+    "confirmation_minutes": 15,
+    "minimum_confirmation_body_fraction": 0.5,
+    "minimum_confirmation_taker_pressure": 0.0,
+    "stop_atr_buffer": 0.1,
+    "maximum_hold_minutes": 360,
+    "same_symbol_cooldown_minutes": 240,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_bar_target_stop_policy": "STOP_FIRST_CONSERVATIVE"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.25,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 5,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 1,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Only a fixed high or low rejection route positive in every declared split advances to NautilusTrader.",
+    "reject": "Do not tune bins, value-area fraction, excursion, reentry, confirmation, stop or target rules after evaluation."
+  }
+}
