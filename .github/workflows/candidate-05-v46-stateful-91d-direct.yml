@@ -1,0 +1,74 @@
+name: candidate-05-v46-stateful-91d-direct
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v46-stateful-91d-direct.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v46-stateful-91d-direct
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  stateful-91d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v46-stateful-91d-direct
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and unchanged v46 contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v45_external_active_inventory_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_breakaway_state_logic.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v46_no_post_retrace_breakaway_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_basis_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_reset_logic.py' -v
+
+      - name: Run one uninterrupted 91-day BTC path through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-05/v40_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-05-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-05-30 \
+            --cache .cache/candidate-05-v46-stateful-91d-direct \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify authoritative NautilusTrader evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          for file in run.json data_manifest.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl; do
+            test -s "$ROOT/$file"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v46-stateful-91d-direct-${{ github.sha }}
+          path: artifacts/candidate-05-v46-stateful-91d-direct/**
+          if-no-files-found: warn
+          retention-days: 90
