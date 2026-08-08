@@ -1,6 +1,6 @@
 {
-  "schema": "candidate-15-managed-residual-information-transfer-v8",
-  "candidate": "candidate-15-v8-managed-residual-information-transfer",
+  "schema": "candidate-15-beta-coherent-diffusion-lag-v9",
+  "candidate": "candidate-15-v9-beta-coherent-diffusion-lag",
   "created_utc": "2026-08-08",
   "validation_mode": "exposed_mechanism_development_only",
   "base_candidate": {
@@ -9,58 +9,58 @@
     "role": "frozen Nautilus execution, costs, account, external pools and current-NAV risk path"
   },
   "prior_failure": {
-    "protocol": "candidate-15-bounded-residual-information-transfer-v7",
-    "closed_trades": 1,
+    "protocol": "candidate-15-managed-residual-information-transfer-v8",
+    "classification": "CANDIDATE15_V8_INSUFFICIENT_ACTIVITY",
+    "submitted_plans": 22,
+    "closed_trades": 11,
     "wins": 1,
-    "losses": 0,
-    "win_rate": 1.0,
-    "daily_geometric_growth": 0.0009025579406663048,
-    "active_intervals": 1,
-    "submitted_plans": 2,
-    "diagnosis": "V7 repaired stale refresh ownership and receiver ATR self-normalization, but its single 0.5-to-1 sender-body and 0-to-1 parity-risk state collapsed the opportunity set to two plans. Path evidence showed that parity has two different meanings: it can remain ahead as an unfinished transfer, or the fresh receiver displacement can cross it and establish a new price-discovery leg before the FVG retracement. Treating all prior parity touches as stale discarded the second family."
+    "losses": 10,
+    "daily_geometric_growth": -0.000174361,
+    "diagnosis": "Equal-weight sender parity confused ordinary cross-asset beta, independent receiver rotation and genuine delayed delivery. Corrected first-event-prior beta diagnostics showed that the only large winner and one unfilled plan alone combined all-horizon under-delivery at confirmation, all-horizon under-delivery at the exact completed receiver MSS clock, and a receiver body between one-half and one weakest-sender body."
   },
-  "research_question": "Can one causal residual-receiver state support both unfinished catch-up and a fresh same-leg parity handoff, while completed transfer converts the original protective stop to a fee-covering positive lock and leaves the external-liquidity objective intact?",
+  "research_question": "Does a receiver leg retain positive after-cost alpha when delivery is measured against fixed prior-only cross-asset beta rather than one-for-one sender parity, while sender aggressor flow and receiver MSS flow conversion remain independent causal evidence?",
   "hypothesis": {
-    "sender_state": "Two distinct completed five-minute common-flow events must share exactly three accepted sender markets, produce positive median signed progress, majority advance, and majority first-origin hold. Sender impulses use only prior completed five-minute ATR.",
-    "effective_evidence_boundary": "Every activation or accepted refresh creates a new effective evidence timestamp. A residual leg whose completed five-minute bar began at or before that timestamp is no-trade, even when the portfolio state identifier is retained.",
-    "information_ownership": "The three accepted sender markets supplied the state evidence and remain terminal no-trade. A four-market response has no residual receiver. The sole excluded market is the only possible receiver.",
-    "residual_lag": "At confirmation the residual market's signed log progress from the first event must be strictly less than the accepted sender median, leaving a positive delivery gap.",
-    "fresh_leg": "The residual must independently complete a new post-evidence five-minute MSS, same-direction displacement, strict three-candle FVG and passive first consequent-encroachment retracement. Its displacement is normalized with prior completed five-minute ranges only.",
-    "partial_catch_up": "Parity remains strictly ahead and no completed post-evidence receiver bar has consumed it. The new residual MSS/FVG leg is allowed without reusing V7's exposed sender-body interval; the independent same-leg structure and live external target continue to define executable geometry.",
-    "parity_handoff_retest": "No earlier completed post-evidence bar consumed parity, but the current fresh receiver displacement itself trades through and closes beyond parity. That completed displacement becomes a new price-discovery leg, and only its later passive FVG retracement may enter.",
-    "management": "After entry, a synchronized completed one-minute close at or beyond parity or the minimum fee-cover activation modifies the existing STOP_MARKET to the smallest one-tick-positive cost-cover price. The external target is not shortened, preserving right-tail delivery.",
-    "invalidation_and_target": "The stop remains beyond the residual leg's protected swing or opposing bar and the final target remains the next causally live completed-4H or previous-day external liquidity pool. Entry, invalidation and target belong to the receiver's new leg; parity only validates the transfer stage.",
-    "family_isolation": "V1-V3 SCDAM, SESSION_I7, accepted-market continuation, malformed receiver states, and stale parity states remain terminally rejected.",
-    "execution_safety": "NautilusTrader owns orders and account state. A flat post-only entry rejection is terminal non-execution; any denied or rejected order while a position is open cancels remaining orders and market-closes the position. Stop modification requires exactly one open STOP_MARKET child and otherwise fail-closes."
+    "sender_state": "Two distinct completed five-minute common-flow events share exactly three sender markets, positive median signed price progress, majority first-origin hold and same-direction aggressor flow.",
+    "beta_estimation": "For each possible receiver, zero-intercept beta to the median five-minute return of the other three markets is fitted at 24, 48, 96 and 192 bars. Every regression ends strictly before the first evidence event; current-event and future returns are excluded.",
+    "confirmation_under_delivery": "All four positive beta estimates must imply more directional receiver progress than was observed at the second sender event.",
+    "fresh_receiver_leg": "The sole excluded market independently forms a post-evidence five-minute MSS, same-direction aggressor-flow displacement, strict FVG and first passive consequent-encroachment retracement.",
+    "geometry_under_delivery": "At the exact completed MSS bar end, not the following one-minute emission clock, all four fixed betas must still imply more receiver progress than observed.",
+    "bounded_displacement": "Receiver MSS body must be at least one-half and strictly less than the weakest second-event sender standardized body, distinguishing emerging transfer from noise and independent price discovery.",
+    "entry_invalidation_target": "Entry, protected swing/opposing-bar stop and next causally live completed-4H or previous-day liquidity target all belong to the new receiver auction leg.",
+    "management": "After entry, a synchronized completed close reaches the fixed beta-adjusted delivery price or fee-cover activation, then the existing STOP_MARKET is modified to the smallest one-tick-positive cost-cover price without shortening the external target.",
+    "family_isolation": "V1-V8 failed families, accepted sender markets, nonpositive/incomplete beta, stale clocks and already consumed completion geometry remain no-trade.",
+    "execution_safety": "NautilusTrader exclusively owns orders, fills, fees, positions and NAV; the four instruments share one global pending-entry-or-position slot and current-NAV planned loss remains 3%."
   },
   "router": {
-    "module": "MANAGED_RESIDUAL_TRANSFER_MSS_FVG",
-    "state_router": "ManagedTransferPersistentQuarterHourRouter",
-    "continuation_engine": "ManagedResidualTransferContinuationEngine",
+    "module": "BETA_COHERENT_DIFFUSION_LAG_MSS_FVG",
+    "state_router": "BetaCoherentTransferPersistentQuarterHourRouter",
+    "continuation_engine": "BetaCoherentResidualTransferContinuationEngine",
     "portfolio_router": "residual_laggard_symbol",
     "common_flow_breadth": 3,
-    "sender_atr_timeframe_minutes": 5,
-    "sender_atr_uses_current_impulse": false,
-    "receiver_atr_timeframe_minutes": 5,
-    "receiver_atr_uses_current_impulse": false,
     "distinct_events_required": 2,
     "common_markets_required": 3,
-    "progress_rule": "positive median signed log return and majority advance",
-    "origin_rule": "majority remains beyond the first confirming origins",
-    "maximum_candidate_event_separation_hours": 4,
-    "active_horizon": "observed_confirmation_span",
-    "refresh_resets_effective_timestamp": true,
-    "tradable_market_policy": "sole market excluded from current accepted_symbols",
-    "accepted_market_count_required": 3,
-    "four_market_response": "NO_TRADE_NO_RESIDUAL_RECEIVER",
-    "residual_must_lag_sender_median": true,
-    "transfer_stages": [
-      "PARTIAL_CATCH_UP",
-      "PARITY_HANDOFF_RETEST"
+    "beta_return_bar_minutes": 5,
+    "beta_horizons": [
+      24,
+      48,
+      96,
+      192
     ],
-    "prior_parity_consumption": "NO_TRADE",
-    "partial_stage": "parity remains ahead with positive costed space",
-    "handoff_stage": "current fresh displacement touches and closes beyond parity",
+    "beta_model": "ZERO_INTERCEPT_RECEIVER_ON_MEDIAN_OTHER_THREE",
+    "beta_estimation_cutoff": "STRICTLY_BEFORE_FIRST_EVIDENCE_EVENT",
+    "positive_beta_consensus_required": true,
+    "confirmation_delivery_gap_required_all_horizons": true,
+    "geometry_clock": "COMPLETED_RECEIVER_MSS_BAR_END",
+    "geometry_delivery_gap_required_all_horizons": true,
+    "receiver_to_weakest_sender_body_ratio": {
+      "minimum_inclusive": 0.5,
+      "maximum_exclusive": 1.0
+    },
+    "flow_contract": "SENDER_AGGRESSOR_FLOW_TO_RECEIVER_MSS_FLOW_CONVERSION",
+    "transfer_stages": [
+      "BETA_COHERENT_DIFFUSION_LAG"
+    ],
+    "prior_completion_consumption": "NO_TRADE",
     "management_observation": "SYNCHRONIZED_COMPLETED_ONE_MINUTE_CLOSE",
     "management_action": "MODIFY_EXISTING_STOP_MARKET_TO_POSITIVE_COST_COVER",
     "management_preserves_external_target": true,
@@ -71,7 +71,7 @@
   },
   "selection": {
     "seed": 202608081508,
-    "method": "E01-E06 are the same fully exposed mechanism-development intervals used by V4-V7. Reuse isolates transfer-stage routing and post-entry management; it can never support a success claim.",
+    "method": "E01-E06 are the fully exposed V4-V8 mechanism-development intervals. Reuse verifies that online V9 reproduces the corrected diagnostic state without creating success evidence.",
     "warmup_days": 3,
     "evaluation_days": 7,
     "intervals": {
@@ -134,10 +134,10 @@
     "margin_maint": "0.025"
   },
   "claim_rules": [
-    "E01-E06 are exposed development periods and can only reject or improve V8.",
-    "V6/V7 path attribution is post-hoc mechanism evidence, not success evidence.",
-    "V8 changes transfer-stage routing and management, not costs, risk sizing, global slot, invalidation or external target.",
-    "Passing development permits a source freeze and newly predeclared untouched confirmation; it is not success.",
+    "E01-E06 are exposed development periods and can only reject or verify the V9 mechanism.",
+    "The corrected V8 beta diagnostic motivated V9 and is development evidence, not success evidence.",
+    "V9 changes latent-state measurement and management completion reference, not costs, risk sizing, global slot, invalidation or external target.",
+    "Passing development permits source freeze and newly predeclared untouched confirmation only.",
     "Success requires a frozen continuous Nautilus account with realistic costs, sufficient independent opportunities, no liquidation or unrecoverable damage, and project-level daily geometric growth of at least 1%."
   ]
 }
