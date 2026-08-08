@@ -21,8 +21,24 @@ CANDIDATE18 = HERE.parent / "candidate-18"
 CANDIDATE17 = HERE.parent / "candidate-17"
 CANDIDATE05 = HERE.parent / "candidate-05"
 
-for path in (CANDIDATE16, HERE, CANDIDATE19, CANDIDATE18, CANDIDATE17, CANDIDATE05):
-    sys.path.insert(0, str(path))
+# Several inherited candidates use historical top-level module names such as
+# ``strategy_v2``.  Candidate 17 means Candidate 16's strategy_v2, while
+# Candidate 05 also contains a different module with that name.  Environment
+# PYTHONPATH and repeated insert(0) calls are not a stable import contract, so
+# remove all candidate roots and prepend the exact dependency precedence once.
+_MODULE_PRECEDENCE = (
+    HERE,
+    CANDIDATE19,
+    CANDIDATE18,
+    CANDIDATE17,
+    CANDIDATE16,
+    CANDIDATE05,
+)
+for path in _MODULE_PRECEDENCE:
+    value = str(path)
+    while value in sys.path:
+        sys.path.remove(value)
+sys.path[:0] = [str(path) for path in _MODULE_PRECEDENCE]
 
 from timestamp_contract import install as install_timestamp_contract
 from wrangler_contract import install as install_wrangler_contract
