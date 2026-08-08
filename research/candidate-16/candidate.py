@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Candidate 16 entry point; reuses Candidate 05's NautilusTrader runner."""
+"""Candidate 16 v2 entry point; reuses Candidate 05's NautilusTrader runner."""
 from __future__ import annotations
 
 import argparse
@@ -32,7 +32,12 @@ from smc_ict_4.manifest import write_json_atomic
 _ORIGINAL_IMPORTABLE_STRATEGY_CONFIG = candidate05_backtest.ImportableStrategyConfig
 
 
-def _candidate16_strategy_config(*, strategy_path: str, config_path: str, config: dict[str, Any]):
+def _candidate16_strategy_config(
+    *,
+    strategy_path: str,
+    config_path: str,
+    config: dict[str, Any],
+):
     del strategy_path, config_path
     return _ORIGINAL_IMPORTABLE_STRATEGY_CONFIG(
         strategy_path="strategy:Candidate16Strategy",
@@ -54,7 +59,7 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
         cache=args.cache,
         output=args.output,
     )
-    result["candidate"] = "candidate-16-effort-result-auction-router"
+    result["candidate"] = "candidate-16-v2-accepted-breakout-failure"
     result["reused_runner"] = "research/candidate-05/backtest.py"
     result["strategy_path"] = "research/candidate-16/strategy.py"
     write_json_atomic(args.output.resolve() / "metrics.json", result)
@@ -65,12 +70,21 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
             "engine": "NautilusTrader BacktestNode",
             "risk_fraction": 0.03,
             "max_global_entry_or_position": 1,
-            "state_router": [
-                "FAILED_AUCTION",
-                "ACCEPTANCE_CONTINUATION",
-                "UNRESOLVED",
+            "context": "completed 15m/60m/daily source-auction extremes",
+            "causal_sequence": [
+                "BOUNDARY_BREACH",
+                "TWO_COMPLETED_OUTSIDE_CLOSE_ACCEPTANCE",
+                "LATER_ACCEPTED_BOUNDARY_FAILURE",
+                "LATER_INDEPENDENT_FAILURE_LEG_TRIGGER",
             ],
-            "target_policy": "unconsumed liquidity objective after costs; no fallback target",
+            "explicit_no_trade": [
+                "WICK_RECLAIM_WITHOUT_TRUE_ACCEPTANCE",
+                "TRUE_ACCEPTANCE_WITHOUT_LATER_FAILURE",
+                "FAILURE_WITHOUT_SEPARATE_TRIGGER",
+                "INSUFFICIENT_SOURCE_OBJECTIVE_AFTER_COSTS",
+            ],
+            "invalidation": "failed boundary plus failure/trigger extremes",
+            "target_policy": "pre-existing source midpoint, then opposite source edge; no synthetic fallback",
             "runner_snapshot": "candidate-05@e9c858247ef5247bc3f4d8ad3f0de078a7ecebb0",
         },
     )

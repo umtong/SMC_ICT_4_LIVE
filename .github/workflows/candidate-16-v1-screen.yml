@@ -1,120 +1,16 @@
 name: candidate-16-v1-screen
 
+# v1 is a completed, failed development experiment.  Keep it manually
+# reproducible, but do not rerun its consumed evaluation period on every v2 push.
 on:
-  push:
-    branches: ["research/candidate-16"]
-    paths:
-      - "research/candidate-16/**"
-      - ".github/workflows/candidate-16-v1-screen.yml"
   workflow_dispatch:
-
-concurrency:
-  group: candidate-16-v1-screen
-  cancel-in-progress: true
 
 permissions:
   contents: read
   packages: read
 
 jobs:
-  causal-screen:
+  archived-v1:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    container:
-      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
-      options: --user 0
-    env:
-      PYTHONPATH: research/candidate-16:research/candidate-05
-      PYTHONUNBUFFERED: "1"
-      ROOT: artifacts/candidate-16-v1-screen
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Verify environment and causal contracts
-        shell: bash
-        run: |
-          set -euo pipefail
-          smc4 doctor
-          python -m compileall -q research/candidate-16
-          python -m unittest discover -s research/candidate-16/tests -p 'test_effort_result_router.py' -v
-          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_contract.py' -v
-          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
-
-      - name: Run pre-registered untouched BTC week through NautilusTrader
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$ROOT"
-          python research/candidate-16/candidate.py stage \
-            --config research/candidate-16/config.json \
-            --build-start 2024-05-03 \
-            --build-end 2024-05-12 \
-            --evaluation-start 2024-05-06 \
-            --evaluation-end 2024-05-12 \
-            --cache .cache/candidate-16-v1 \
-            --output "$ROOT" \
-            2>&1 | tee "$ROOT/console.log"
-
-      - name: Classify screen without changing the gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          root = Path(os.environ["ROOT"])
-          metrics = json.loads((root / "metrics.json").read_text())
-          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
-          integrity = (
-              int(metrics.get("liquidations", 0)) == 0
-              and int(diagnostics.get("order_rejections", 0)) == 0
-              and int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1
-              and int(diagnostics.get("max_open_positions_observed", 0)) <= 1
-              and float(metrics.get("min_equity", 0.0)) > 0.0
-          )
-          result = {
-              "schema": "candidate-16-v1-screen-v1",
-              "pre_registered_evaluation": ["2024-05-06", "2024-05-12"],
-              "integrity_pass": integrity,
-              "gate_pass": bool(metrics.get("gate_pass", False)),
-              "classification": (
-                  "ADVANCE_UNCHANGED_TO_NEXT_UNTOUCHED_PERIOD"
-                  if integrity and metrics.get("gate_pass", False)
-                  else "DO_NOT_CLAIM_TARGET; ATTRIBUTE_FAILURE_BEFORE_ANY_CHANGE"
-              ),
-              "metrics": metrics,
-              "router_counts": {
-                  "parents": diagnostics.get("candidate16_parent_auctions", 0),
-                  "failed": diagnostics.get("candidate16_failed_auctions", 0),
-                  "accepted": diagnostics.get("candidate16_acceptance_continuations", 0),
-                  "unresolved": diagnostics.get("candidate16_unresolved", 0),
-                  "natural_objective_rejections": diagnostics.get(
-                      "candidate16_natural_objective_rejections", 0
-                  )
-              }
-          }
-          (root / "screen_decision.json").write_text(
-              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
-          )
-          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
-          PY
-
-      - name: Verify authoritative evidence
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m json.tool "$ROOT/metrics.json"
-          python -m json.tool "$ROOT/screen_decision.json"
-          for file in run.json data_manifest.json raw_evidence.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl candidate16_contract.json; do
-            test -s "$ROOT/$file"
-          done
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: candidate-16-v1-screen-${{ github.sha }}
-          path: artifacts/candidate-16-v1-screen/**
-          if-no-files-found: warn
-          retention-days: 90
+      - run: echo "Candidate 16 v1 is archived at commit 91317f522546afd837e330a2bde0f9c05e81b068"
