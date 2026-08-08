@@ -1,4 +1,4 @@
-name: candidate-35-seven-day-execution
+name: candidate-35c-development-week1
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ on:
       - "research/candidate-35/config.json"
 
 concurrency:
-  group: candidate-35-seven-day-execution
+  group: candidate-35c-development-week1
   cancel-in-progress: true
 
 permissions:
@@ -37,8 +37,8 @@ jobs:
     env:
       PYTHONPATH: research/candidate-35:research/candidate-29:research/candidate-16:research/candidate-05
       PYTHONUNBUFFERED: "1"
-      INPUT: artifacts/c35-seven-input
-      ROOT: artifacts/c35-seven-execution
+      INPUT: artifacts/c35c-week1-input
+      ROOT: artifacts/c35c-week1-execution
       SOURCE_RUN: "31265666283"
       SOURCE_SHA: 177ecf1784b24dae7ce6a9b048ac243b58f5f435
     steps:
@@ -88,7 +88,6 @@ jobs:
           python -m compileall -q research/candidate-35
           python -m unittest discover -s research/candidate-35 -p 'test_*.py' -v
           test "$(find "$INPUT" -name chunk_manifest.json | wc -l)" -eq 4
-          find "$INPUT" -name chunk_manifest.json -print
 
       - name: Run one seven-day four-asset Nautilus account
         shell: bash
@@ -100,12 +99,12 @@ jobs:
             --config research/candidate-35/config.json \
             --start 2026-07-01 \
             --end 2026-07-07 \
-            --cache .cache/c35-seven \
-            --workspace .cache/c35-seven-work \
+            --cache .cache/c35c-week1 \
+            --workspace .cache/c35c-week1-work \
             --output "$ROOT" \
             2>&1 | tee "$ROOT/console.log"
 
-      - name: Verify execution evidence contract
+      - name: Verify execution and structural-invalidation evidence
         if: always()
         shell: bash
         run: |
@@ -122,7 +121,15 @@ jobs:
           assert x['account_restarts']==0
           assert x['strategy_restarts']==0
           assert x['strategy_diagnostics']['max_open_positions_observed'] <= 1
-          assert x['strategy_diagnostics']['policy_version'] == 'candidate-35b'
+          assert x['strategy_diagnostics']['policy_version'] == 'candidate-35c'
+          closed=json.loads((root/'closed_scenarios.json').read_text())
+          for trade in closed:
+              side=int(trade['side'])
+              stop=float(trade['stop'])
+              anchor=float(trade['diagnostics']['structural_invalidation_anchor'])
+              assert stop < anchor if side > 0 else stop > anchor
+              assert trade['diagnostics']['stop_policy'] == 'NEVER_SHRINK_INSIDE_FROZEN_AUCTION_STRUCTURE'
+              assert float(trade['planned_account_loss']) <= float(trade['risk_budget']) + 1e-6
           print(json.dumps({k:x.get(k) for k in ['ending_nav','total_return','geometric_daily_growth','max_drawdown','trades','wins','losses','win_rate','profit_factor','expectancy_usdt','gate_pass','position_counts_by_symbol']},indent=2,sort_keys=True))
           PY
           else
@@ -133,8 +140,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate35-seven-day-execution-${{ github.sha }}
-          path: artifacts/c35-seven-execution/**
+          name: candidate35c-development-week1-${{ github.sha }}
+          path: artifacts/c35c-week1-execution/**
           if-no-files-found: warn
           retention-days: 90
           compression-level: 6
