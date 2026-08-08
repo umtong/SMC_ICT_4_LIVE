@@ -1,0 +1,102 @@
+name: Candidate 13 V17 missed-retrace rearm diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-13]
+    paths:
+      - "research/candidate-13/missed_retrace_rearm_diagnostics.py"
+      - ".github/workflows/candidate-13-v17-rearm-diagnostics.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-13-v17-rearm-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify environment and diagnostic source
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-13:$GITHUB_WORKSPACE/src"
+          python -m py_compile \
+            research/candidate-13/tape_reacceptance_diagnostics.py \
+            research/candidate-13/missed_retrace_rearm_diagnostics.py
+          python -m json.tool research/candidate-13/protocol-v16-full-regression.json >/dev/null
+          test -s research/candidate-13/v16/full_regression/aggregate.json
+      - name: Run checksum-verified causal rearm diagnostic
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-13:$GITHUB_WORKSPACE/src"
+          python research/candidate-13/missed_retrace_rearm_diagnostics.py \
+            --results-root research/candidate-13/v16/full_regression/results \
+            --protocol research/candidate-13/protocol-v16-full-regression.json \
+            --cache /tmp/candidate13-v17-kline-cache \
+            --output-json research/candidate-13/v17-missed-retrace-rearm-diagnostics.json \
+            --output-md research/candidate-13/V17_MISSED_RETRACE_REARM_DIAGNOSTICS.md \
+            --evidence-json research/candidate-13/v17-rearm-raw-evidence.json \
+            2>&1 | tee research/candidate-13/V17_MISSED_RETRACE_REARM_RUN.log
+      - name: Verify causal evidence contract
+        run: |
+          set -euo pipefail
+          python -m json.tool research/candidate-13/v17-missed-retrace-rearm-diagnostics.json >/dev/null
+          python -m json.tool research/candidate-13/v17-rearm-raw-evidence.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('research/candidate-13/v17-missed-retrace-rearm-diagnostics.json').read_text())
+          assert result['evaluation_role'] == 'EXPOSED_DEVELOPMENT_DIAGNOSTIC_ONLY'
+          assert result['success_claim'] is False
+          assert result['causal_contract']['search_begins_after_real_parent_expiry'] is True
+          assert result['causal_contract']['post_confirmation_same_bar_fill'] is False
+          assert result['causal_contract']['original_far_rewritten'] is False
+          assert result['summary']['expired_far_parents'] > 0
+          assert len(result['records']) == result['summary']['expired_far_parents']
+          assert len({row['row_key'] for row in result['records']}) == len(result['records'])
+          assert result['accounting']['unmatched_expiry_segments'] == []
+          evidence = json.loads(Path('research/candidate-13/v17-rearm-raw-evidence.json').read_text())
+          assert evidence['archives']
+          assert all(item['rows'] in (1439, 1440, 1441) for item in evidence['archives'])
+          PY
+          test -s research/candidate-13/V17_MISSED_RETRACE_REARM_DIAGNOSTICS.md
+          test -s research/candidate-13/V17_MISSED_RETRACE_REARM_RUN.log
+      - name: Persist commit-scoped diagnostic evidence
+        env:
+          START_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global user.name candidate-13-bot
+          git config --global user.email candidate-13-bot@users.noreply.github.com
+          git add \
+            research/candidate-13/v17-missed-retrace-rearm-diagnostics.json \
+            research/candidate-13/v17-rearm-raw-evidence.json \
+            research/candidate-13/V17_MISSED_RETRACE_REARM_DIAGNOSTICS.md \
+            research/candidate-13/V17_MISSED_RETRACE_REARM_RUN.log
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-13 v17: record missed-retrace rearm diagnostic [skip ci]"
+          git fetch origin research/candidate-13
+          test "$(git rev-parse origin/research/candidate-13)" = "$START_SHA"
+          git push origin HEAD:research/candidate-13
