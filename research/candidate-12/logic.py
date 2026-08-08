@@ -1,4 +1,4 @@
-"""Causal completed-session auction router for Candidate 12 I14b.
+"""Causal completed-session auction router for Candidate 12 I15.
 
 The engine distinguishes economically different interactions with a completed
 Asia or London dealing range instead of forcing one candle pattern onto every
@@ -54,6 +54,8 @@ class ScenarioKind(str, Enum):
     LONDON_LOW_REJECTION = "LONDON_LOW_REJECTION"
     ASIA_HIGH_ACCEPTANCE = "ASIA_HIGH_ACCEPTANCE"
     LONDON_HIGH_ACCEPTANCE = "LONDON_HIGH_ACCEPTANCE"
+    ASIA_HIGH_ACCEPTANCE_FAILURE = "ASIA_HIGH_ACCEPTANCE_FAILURE"
+    LONDON_HIGH_ACCEPTANCE_FAILURE = "LONDON_HIGH_ACCEPTANCE_FAILURE"
     ASIA_HIGH_REACCEPTANCE = "ASIA_HIGH_REACCEPTANCE"
     ASIA_HIGH_DELAYED_REJECTION = "ASIA_HIGH_DELAYED_REJECTION"
     ASIA_LOW_ACCEPTANCE = "ASIA_LOW_ACCEPTANCE"
@@ -421,6 +423,12 @@ class SourceState:
     failed_high_acceptance: bool = False
     reacceptance_anchor_fvg: BullFVG | None = None
     reacceptance_done: bool = False
+    high_failure_watch: bool = False
+    high_failure_fvg: BullFVG | None = None
+    high_failure_peak: float | None = None
+    high_failure_bar_low: float | None = None
+    high_failure_started_index: int | None = None
+    high_failure_scenario_id: str | None = None
 
     outside_low_closes: int = 0
     active_bear_fvg: BearFVG | None = None
@@ -1753,11 +1761,98 @@ class CausalLiquidityAuctionEngine:
         source = state.source
         if state.high_plan_emitted:
             return None
+        # A deep failure is a separate auction only when the
+        # original accepted imbalance has been destroyed, no trade has
+        # already been emitted from this completed boundary, and bearish
+        # displacement breaks the failure leg within the existing reclaim
+        # horizon. This is not a second entry on the same episode.
+        if state.high_failure_watch:
+            started = state.high_failure_started_index
+            failed_fvg = state.high_failure_fvg
+            failure_peak = state.high_failure_peak
+            failure_low = state.high_failure_bar_low
+            failure_sid = state.high_failure_scenario_id
+            if (
+                started is None
+                or failed_fvg is None
+                or failure_peak is None
+                or failure_low is None
+                or failure_sid is None
+            ):
+                state.high_failure_watch = False
+                self.skips["HIGH_ACCEPTANCE_FAILURE_MISSING_STRUCTURE"] += 1
+            elif self._five_index - started > self.config.reclaim_max_bars:
+                state.high_failure_watch = False
+                self.skips["HIGH_ACCEPTANCE_FAILURE_CONFIRMATION_EXPIRED"] += 1
+            elif bar.close > source.high:
+                state.high_failure_watch = False
+                self.skips["HIGH_ACCEPTANCE_FAILURE_REACCEPTED"] += 1
+            else:
+                confirmed = (
+                    bar.close < bar.open
+                    and bar.body / atr
+                    >= self.config.acceptance_displacement_body_atr
+                    and bar.close_location
+                    <= self.config.low_acceptance_displacement_max_close_location
+                    and bar.close < failure_low
+                    and bar.close < failed_fvg.lower
+                )
+                if confirmed:
+                    scenario = (
+                        ScenarioKind.ASIA_HIGH_ACCEPTANCE_FAILURE
+                        if source.label is SessionLabel.ASIA
+                        else ScenarioKind.LONDON_HIGH_ACCEPTANCE_FAILURE
+                    )
+                    structural_stop = (
+                        failure_peak + self.config.fvg_stop_buffer_atr * atr
+                    )
+                    plan = self._costed_plan(
+                        scenario_id=failure_sid,
+                        scenario=scenario,
+                        direction=Direction.SHORT,
+                        entry_order=EntryOrder.MARKET,
+                        observed_ts_ns=bar.ts_ns,
+                        bar=bar,
+                        atr=atr,
+                        entry_raw=bar.close,
+                        stop_raw=structural_stop,
+                        target_raw=source.low,
+                        expire_ts_ns=None,
+                        details={
+                            "source": source.label.value,
+                            "route": "DEEP_HIGH_ACCEPTANCE_FAILURE_BEARISH_MSS",
+                            "session_high": source.high,
+                            "session_low": source.low,
+                            "session_width": source.width,
+                            "failed_fvg_lower": failed_fvg.lower,
+                            "failed_fvg_upper": failed_fvg.upper,
+                            "failure_peak": failure_peak,
+                            "failure_leg_low": failure_low,
+                            "structural_invalidation": structural_stop,
+                            "confirmation_body_atr": bar.body / atr,
+                            "confirmation_close_location": bar.close_location,
+                            "target_semantics": "OPPOSITE_COMPLETED_SESSION_BOUNDARY",
+                        },
+                    )
+                    state.high_failure_watch = False
+                    if plan is None:
+                        self.skips[
+                            "HIGH_ACCEPTANCE_FAILURE_COSTED_PLAN_REJECTED"
+                        ] += 1
+                        return None
+                    self.scenario_counts[scenario.value] += 1
+                    state.high_plan_emitted = True
+                    state.trade_plan_emitted = True
+                    return self._emit_plan(plan, allow_entry)
+
         # A completed close back inside terminates the current acceptance and
         # creates the only causal prerequisite for an Asia re-acceptance route.
         if bar.close < source.high and state.had_high_acceptance:
             if state.acceptance_phase in ("WAIT_RETEST", "WAIT_REACCELERATION", "MONITOR_FAILURE"):
                 original_fvg = state.active_fvg
+                failure_peak = max(
+                    state.acceptance_peak or source.high, bar.high
+                )
                 reacceptance_eligible = (
                     source.label is SessionLabel.ASIA
                     and original_fvg is not None
@@ -1774,10 +1869,29 @@ class CausalLiquidityAuctionEngine:
                 state.acceptance_scenario_id = None
                 state.acceptance_pullback_low = None
                 state.acceptance_peak = None
+                state.high_failure_watch = (
+                    original_fvg is not None
+                    and not reacceptance_eligible
+                )
+                state.high_failure_fvg = (
+                    original_fvg if state.high_failure_watch else None
+                )
+                state.high_failure_peak = (
+                    failure_peak if state.high_failure_watch else None
+                )
+                state.high_failure_bar_low = (
+                    bar.low if state.high_failure_watch else None
+                )
+                state.high_failure_started_index = (
+                    self._five_index if state.high_failure_watch else None
+                )
                 if not reacceptance_eligible:
                     state.reacceptance_done = True
                     self.skips["HIGH_ACCEPTANCE_ORIGINAL_FVG_INVALIDATED"] += 1
                 sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE-FAILURE")
+                state.high_failure_scenario_id = (
+                    sid if state.high_failure_watch else None
+                )
                 self._emit(
                     scenario_id=sid,
                     event_type="HIGH_ACCEPTANCE_FAILED_BACK_INSIDE",

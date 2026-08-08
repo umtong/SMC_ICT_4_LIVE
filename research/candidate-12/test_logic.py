@@ -340,6 +340,46 @@ class LogicTests(unittest.TestCase):
         self.assertAlmostEqual(plan.target_price, 115.0)
         self.assertGreaterEqual(plan.net_r, 0.7)
 
+    def test_deep_high_acceptance_failure_requires_bearish_mss(self) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(
+            config(max_stop_atr=100.0),
+            "X",
+        )
+        self.seed_asia(engine)
+        self.form_asia_high_acceptance(engine)
+        self.assertIsNone(
+            engine._on_five(
+                bar(ts(y, m, d, 6, 20), 108, 108.2, 105.2, 105.7),
+                True,
+            )
+        )
+        self.assertIsNone(
+            engine._on_five(
+                bar(ts(y, m, d, 6, 25), 105.7, 106, 103.5, 103.8),
+                True,
+            )
+        )
+        state = engine._sources[SessionLabel.ASIA]
+        self.assertTrue(state.high_failure_watch)
+        plan = engine._on_five(
+            bar(ts(y, m, d, 6, 30), 103.8, 104, 97, 98),
+            True,
+        )
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(
+            plan.scenario,
+            ScenarioKind.ASIA_HIGH_ACCEPTANCE_FAILURE,
+        )
+        self.assertEqual(plan.direction, Direction.SHORT)
+        self.assertEqual(plan.entry_order, EntryOrder.MARKET)
+        self.assertEqual(
+            plan.details["route"],
+            "DEEP_HIGH_ACCEPTANCE_FAILURE_BEARISH_MSS",
+        )
+        self.assertAlmostEqual(plan.target_price, 95.0)
+
     def test_opposite_boundaries_have_independent_causal_lifecycles(self) -> None:
         y, m, d = self.DAY
         engine = CausalLiquidityAuctionEngine(config(), "X")
