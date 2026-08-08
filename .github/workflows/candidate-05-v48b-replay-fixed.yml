@@ -1,0 +1,185 @@
+name: candidate-05-v48b-replay-fixed
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v48b-replay-fixed.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v48b-replay-fixed
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  session-value-replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v48b-replay-fixed
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and locate frozen v48b source
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python - <<'PY'
+          from pathlib import Path
+          files = sorted(Path("research/candidate-05").glob("strategy_v48b*.py"))
+          if not files:
+              files = sorted(Path("research/candidate-05").glob("strategy_v48*.py"))
+          if not files:
+              raise SystemExit("no frozen strategy_v48 source exists")
+          print("\n".join(str(path) for path in files))
+          PY
+
+      - name: Generate import-safe active shim and child launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-05/v48b_fixed_active "$ROOT"
+          python - <<'PY'
+          import ast
+          import json
+          import re
+          from pathlib import Path
+
+          parent = Path("research/candidate-05")
+          modules = sorted(parent.glob("strategy_v48b*.py")) or sorted(parent.glob("strategy_v48*.py"))
+          selected = None
+          exported = None
+          for path in modules:
+              tree = ast.parse(path.read_text())
+              classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
+              aliases = []
+              for node in tree.body:
+                  if isinstance(node, ast.Assign) and any(
+                      isinstance(target, ast.Name) and target.id == "LiquidityResponseStrategy"
+                      for target in node.targets
+                  ) and isinstance(node.value, ast.Name):
+                      aliases.append(node.value.id)
+              if aliases and aliases[-1] in classes:
+                  selected, exported = path, aliases[-1]
+                  break
+          if selected is None:
+              if len(modules) != 1:
+                  raise SystemExit(f"cannot unambiguously choose v48b: {modules}")
+              selected = modules[0]
+              tree = ast.parse(selected.read_text())
+              candidates = [
+                  node.name for node in tree.body
+                  if isinstance(node, ast.ClassDef) and node.name.endswith("Strategy")
+              ]
+              if not candidates:
+                  raise SystemExit(f"no Strategy class in {selected}")
+              exported = candidates[-1]
+          module_name = selected.stem
+          active = parent / "v48b_fixed_active"
+          strategy = f'''"""Generated import-safe shim for frozen {module_name}."""\nfrom __future__ import annotations\nimport importlib.util\nfrom pathlib import Path\nimport sys\n_PARENT = Path(__file__).resolve().parents[1]\n_BASE_PATH = _PARENT / "strategy.py"\n_SPEC = importlib.util.spec_from_file_location("_candidate05_v48b_fixed_base", _BASE_PATH)\nif _SPEC is None or _SPEC.loader is None:\n    raise RuntimeError(f"cannot load base strategy from {{_BASE_PATH}}")\n_BASE = importlib.util.module_from_spec(_SPEC)\nsys.modules[_SPEC.name] = _BASE\n_SPEC.loader.exec_module(_BASE)\n_WRAPPER = sys.modules[__name__]\nsys.modules["strategy"] = _BASE\ntry:\n    from {module_name} import {exported} as _Candidate\nfinally:\n    sys.modules["strategy"] = _WRAPPER\nLiquidityResponseConfig = _BASE.LiquidityResponseConfig\nLiquidityResponseStrategy = _Candidate\n__all__ = ["LiquidityResponseConfig", "LiquidityResponseStrategy"]\n'''
+          (active / "strategy.py").write_text(strategy)
+          candidate = '''#!/usr/bin/env python3\nfrom __future__ import annotations\nimport importlib.util\nfrom pathlib import Path\nimport subprocess\nimport sys\nfrom typing import Any\nHERE = Path(__file__).resolve().parent\nPARENT = HERE.parent\nif str(PARENT) not in sys.path:\n    sys.path.append(str(PARENT))\nSPEC = importlib.util.spec_from_file_location("_candidate05_v48b_pipeline_base", PARENT / "candidate.py")\nif SPEC is None or SPEC.loader is None:\n    raise RuntimeError("cannot load parent candidate pipeline")\nBASE = importlib.util.module_from_spec(SPEC)\nsys.modules[SPEC.name] = BASE\nSPEC.loader.exec_module(BASE)\ndef isolated(*, config_path: Path, build_start: Any, build_end: Any, evaluation_start: Any, evaluation_end: Any, cache: Path, output: Path):\n    command = [sys.executable, str(Path(__file__).resolve()), "stage", "--config", str(config_path.resolve()), "--build-start", str(build_start), "--build-end", str(build_end), "--evaluation-start", str(evaluation_start), "--evaluation-end", str(evaluation_end), "--cache", str(cache.resolve()), "--output", str(output.resolve())]\n    subprocess.run(command, check=True)\n    return BASE.json.loads((output.resolve() / "metrics.json").read_text())\nBASE.run_backtest_isolated = isolated\nif __name__ == "__main__":\n    BASE.main()\n'''
+          (active / "candidate.py").write_text(candidate)
+
+          workflow = Path(".github/workflows/candidate-05-v48b-session-value.yml").read_text()
+          lines = workflow.splitlines()
+          command_lines = []
+          collecting = False
+          command_indent = None
+          for line in lines:
+              stripped = line.lstrip()
+              if not collecting and "candidate.py stage" in line and stripped.startswith("python "):
+                  collecting = True
+                  command_indent = len(line) - len(stripped)
+              if collecting:
+                  current_indent = len(line) - len(stripped)
+                  if command_lines and line.strip() and current_indent < command_indent:
+                      break
+                  if not line.strip():
+                      break
+                  command_lines.append(line.strip())
+                  if not line.rstrip().endswith("\\"):
+                      break
+          if not command_lines:
+              raise SystemExit("could not recover frozen v48b candidate command")
+          command = "\n".join(command_lines)
+          command = re.sub(
+              r"python\s+\S*candidate\.py\s+stage",
+              "python research/candidate-05/v48b_fixed_active/candidate.py stage",
+              command,
+              count=1,
+          )
+          command = re.sub(
+              r"--output(?:=|\s+)(?:\"[^\"]*\"|'[^']*'|\S+)",
+              '--output "$ROOT"',
+              command,
+          )
+          command = re.sub(
+              r"--cache(?:=|\s+)(?:\"[^\"]*\"|'[^']*'|\S+)",
+              '--cache .cache/candidate-05-v48b-replay-fixed',
+              command,
+          )
+          Path("/tmp/v48b-command.sh").write_text("set -euo pipefail\n" + command + "\n")
+          print(json.dumps({
+              "strategy_module": module_name,
+              "strategy_class": exported,
+              "command": command,
+          }, indent=2))
+          PY
+          cat /tmp/v48b-command.sh
+
+      - name: Run frozen session-value system through NautilusTrader
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v48b_fixed_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          bash /tmp/v48b-command.sh 2>&1 | tee "$ROOT/console.log"
+
+      - name: Inventory resulting authoritative metrics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics_files = sorted(root.rglob("metrics.json"))
+          payload = {
+              "schema": "candidate-05-v48b-replay-fixed-v1",
+              "classification": (
+                  "V48B_MARKET_LOGIC_EXECUTED"
+                  if metrics_files
+                  else "V48B_STILL_BLOCKED_BEFORE_MARKET_EVALUATION"
+              ),
+              "metrics": [
+                  {"path": str(path), "value": json.loads(path.read_text())}
+                  for path in metrics_files
+              ],
+          }
+          (root / "replay_decision.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v48b-replay-fixed-${{ github.sha }}
+          path: artifacts/candidate-05-v48b-replay-fixed/**
+          if-no-files-found: warn
+          retention-days: 90
