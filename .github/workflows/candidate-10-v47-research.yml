@@ -1,0 +1,173 @@
+name: candidate-10-v47-event-direction-leader
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/c10_v47_*.py
+      - research/candidate-10/test_c10_v47_event_leader.py
+      - .github/workflows/candidate-10-v47-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v47-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CANDIDATE11_COMMIT: f10517d4ccd2a1a8fbd4d31091cbe0e7c3655327
+
+jobs:
+  weeks:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - week_id: CONTROL_FAST_REVERSALS
+            week_start: "2022-07-09"
+            evidence_class: controlled_event_router
+          - week_id: CONTROL_WINNER
+            week_start: "2023-04-11"
+            evidence_class: controlled_winner_preservation
+          - week_id: CONTROL_PIVOT_AVAILABLE
+            week_start: "2023-06-27"
+            evidence_class: controlled_event_router
+          - week_id: CONTROL_DENSE_HOLDOUT
+            week_start: "2024-03-18"
+            evidence_class: controlled_event_router
+          - week_id: CONTROL_IMMEDIATE_FAILURES
+            week_start: "2024-10-14"
+            evidence_class: controlled_failure_boundary
+          - week_id: CONTROL_NEAR_EDGE_WINNER
+            week_start: "2025-05-19"
+            evidence_class: controlled_winner_preservation
+          # Predeclared before results. Exact committed-date searches returned
+          # no previous Candidate-10 occurrence, and every start is more than
+          # 14 days from the previously inspected starts used in v37-v46.
+          - week_id: NEW_V47A
+            week_start: "2022-05-16"
+            evidence_class: untouched_holdout
+          - week_id: NEW_V47B
+            week_start: "2024-06-03"
+            evidence_class: untouched_holdout
+          - week_id: NEW_V47C
+            week_start: "2025-04-21"
+            evidence_class: untouched_holdout
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout candidate-10
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen Candidate 11 source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+
+      - name: Run event-leader by state-failure exact factorial
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ROOT="artifacts/candidate-10-v47/${{ matrix.week_id }}"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v47:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v47
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v47
+              for file in \
+                c10_v27_overlay.py c10_v27_patch.py \
+                c10_v28_overlay.py c10_v28_patch.py \
+                c10_v29_overlay.py c10_v29_patch.py \
+                c10_v33_overlay.py \
+                c10_v36_overlay.py c10_v36_state.py c10_v36_patch.py \
+                c10_v37_overlay.py c10_v37_state.py c10_v37_patch.py \
+                c10_v38_overlay.py c10_v38_state.py c10_v38_patch.py \
+                c10_v40_overlay.py c10_v40_state.py c10_v40_patch.py \
+                c10_v41_overlay.py c10_v41_patch.py \
+                c10_v44_overlay.py c10_v44_patch.py \
+                c10_v45_overlay.py c10_v45_patch.py \
+                c10_v46_overlay.py c10_v46_patch.py \
+                c10_v47_overlay.py c10_v47_patch.py c10_v47_run.py \
+                test_c10_v27_overlay.py test_c10_v28_overlay.py \
+                test_c10_v29_overlay.py test_c10_v33_overlay.py \
+                test_c10_v36_state.py test_c10_v37_protection.py \
+                test_c10_v38_micro_pivot.py \
+                test_c10_v40_source_detector.py \
+                test_c10_v41_entry_timing.py \
+                test_c10_v44_target_hierarchy.py \
+                test_c10_v45_entry_leg_invalidation.py \
+                test_c10_v46_void_close.py \
+                test_c10_v47_event_leader.py; do
+                cp "/workspace/research/candidate-10/${file}" /tmp/candidate11-v47/
+              done
+              smc4 doctor
+              python /tmp/candidate11-v47/c10_v47_patch.py \
+                /tmp/candidate11-v47/run_leadership_scdam.py
+              python -m py_compile \
+                /tmp/candidate11-v47/c10_v*.py \
+                /tmp/candidate11-v47/run_leadership_scdam.py
+              python -m unittest discover \
+                -s /tmp/candidate11-v47 \
+                -p "test_c10_v*.py" \
+                -v
+
+              BASE="/workspace/artifacts/candidate-10-v47/${{ matrix.week_id }}"
+              python /tmp/candidate11-v47/c10_v47_run.py \
+                --candidate11-dir /tmp/candidate11-v47 \
+                --week-start "${{ matrix.week_start }}" \
+                --variant all-approved-hard-stop \
+                --output "${BASE}/all-approved-hard-stop"
+
+              for variant in \
+                all-approved-void-close \
+                event-leader-hard-stop \
+                event-leader-void-close; do
+                mkdir -p "${BASE}/${variant}/data"
+                cp -al "${BASE}/all-approved-hard-stop/data/." \
+                  "${BASE}/${variant}/data/"
+                python /tmp/candidate11-v47/c10_v47_run.py \
+                  --candidate11-dir /tmp/candidate11-v47 \
+                  --week-start "${{ matrix.week_start }}" \
+                  --variant "${variant}" \
+                  --output "${BASE}/${variant}"
+              done
+            '
+
+      - name: Record evidence class
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts/candidate-10-v47/${{ matrix.week_id }}
+          printf '%s\n' '${{ matrix.evidence_class }}' > \
+            artifacts/candidate-10-v47/${{ matrix.week_id }}/evidence_class.txt
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v47-${{ matrix.week_id }}-${{ github.sha }}
+          path: artifacts/candidate-10-v47/${{ matrix.week_id }}
+          if-no-files-found: warn
+          retention-days: 14
