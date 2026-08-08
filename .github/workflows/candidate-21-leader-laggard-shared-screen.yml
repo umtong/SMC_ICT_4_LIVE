@@ -1,0 +1,121 @@
+name: candidate-21-leader-laggard-shared-screen
+
+on:
+  push:
+    branches: ["research/candidate-21"]
+    paths:
+      - "research/candidate-21/leader_laggard_router.py"
+      - "research/candidate-21/candidate21_leader_laggard_strategy.py"
+      - "research/candidate-21/tests/test_leader_laggard_router.py"
+      - ".github/workflows/candidate-21-leader-laggard-shared-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-21-leader-laggard-shared-screen
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  shared-development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-21-leader-laggard
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and causal transfer contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-21
+          python -m unittest discover -s research/candidate-21/tests -p 'test_leader_laggard_router.py' -v
+          python -m unittest research/candidate-05/tests/test_global_entry_slot_v4.py -v
+          python -m unittest research/candidate-05/tests/test_shared_account_strategy_variants_v2.py -v
+
+      - name: Inject candidate 21 policy into the existing shared-account family
+        shell: bash
+        run: |
+          cat > research/candidate-05/strategy_v36_cross_asset_repricing_gate.py <<'PY'
+          from candidate21_leader_laggard_strategy import LeaderLaggardTransferMixin
+          from strategy_v26 import ScenarioValidEntryStrategy
+
+          SystemicRepricingGateMixin = LeaderLaggardTransferMixin
+
+          class SystemicRepricingGateStrategy(
+              LeaderLaggardTransferMixin,
+              ScenarioValidEntryStrategy,
+          ):
+              pass
+
+          CandidateStrategy = SystemicRepricingGateStrategy
+          StrategyClass = SystemicRepricingGateStrategy
+          CrossAssetRepricingGateStrategy = SystemicRepricingGateStrategy
+          PY
+          python -m compileall -q research/candidate-05/strategy_v36_cross_asset_repricing_gate.py
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/winner.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_v36_cross_asset_repricing_gate:SystemicRepricingGateStrategy",
+            "experiment_role": "CANDIDATE21_LEADER_LAGGARD_ONE_ACCOUNT_DEVELOPMENT"
+          }
+          JSON
+
+      - name: Run first pre-used development week in one Nautilus account
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/winner.json" \
+            --build-start 2023-07-07 \
+            --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 \
+            --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-21-leader-laggard/week-1 \
+            --output "$ROOT/week-1" \
+            2>&1 | tee "$ROOT/week-1-console.log"
+
+      - name: Attribute shared opportunity and execution evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root=Path(os.environ['ROOT']);week=root/'week-1';out={'completed':(week/'metrics.json').exists()}
+          if (week/'metrics.json').exists():out['metrics']=json.loads((week/'metrics.json').read_text())
+          symbols={}
+          for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT'):
+              p=week/'symbols'/symbol/'strategy_diagnostics.json'
+              if not p.exists():continue
+              d=json.loads(p.read_text());keys=(
+                  'candidate21_transfer_owner_evaluations','candidate21_transfer_owner_selected',
+                  'candidate21_transfer_non_owner','candidate21_transfer_peer_events',
+                  'candidate21_transfer_local_reprices','candidate21_transfer_flow_depth_basis_pass',
+                  'candidate21_transfer_cost_geometry_rejected','candidate21_transfer_submissions',
+                  'entry_submissions','order_rejections','shared_slot_acquisitions','shared_slot_conflicts')
+              symbols[symbol]={k:d.get(k,0) for k in keys}
+          out['symbols']=symbols
+          (root/'week-1-assessment.json').write_text(json.dumps(out,indent=2,sort_keys=True,allow_nan=True)+'\n')
+          print(json.dumps(out,indent=2,sort_keys=True,allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-21-leader-laggard-${{ github.sha }}
+          path: artifacts/candidate-21-leader-laggard/**
+          if-no-files-found: warn
+          retention-days: 90
