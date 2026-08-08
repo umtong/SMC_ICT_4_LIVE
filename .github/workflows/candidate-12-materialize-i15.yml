@@ -25,7 +25,7 @@ jobs:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
 
-      - name: Install I18 unfilled rearm auction
+      - name: Diagnose I18 unfilled rearm auction
         shell: bash
         run: |
           set -euo pipefail
@@ -47,13 +47,14 @@ jobs:
           old_gate = "        self.assertEqual(expired.entry_order, EntryOrder.LIMIT_GTD)\n        self.assertTrue(\n            engine.rearm_unfilled_plan(\n"
           new_gate = "        self.assertEqual(expired.entry_order, EntryOrder.LIMIT_GTD)\n        object.__setattr__(engine.config, \"min_net_r\", 0.65)\n        self.assertTrue(\n            engine.rearm_unfilled_plan(\n"
           assert text.count(old_gate) == 1, text.count(old_gate)
-          path.write_text(text.replace(old_gate, new_gate, 1), encoding="utf-8")
+          text = text.replace(old_gate, new_gate, 1)
+          start = text.index("    def test_expired_reacceleration_limit_requires_later_mitigation_and_active_hold(\n")
+          needle = "        self.assertIsNotNone(plan)\n"
+          pos = text.index(needle, start)
+          diagnostic = "        self.assertIsNotNone(plan, (dict(engine.skips), [(e.event_type, e.reason_code, e.next_state) for e in engine.events[-8:]], state.high_rearm_watch, state.high_rearm_entry, state.high_rearm_mitigation_low))\n"
+          text = text[:pos] + diagnostic + text[pos + len(needle):]
+          path.write_text(text, encoding="utf-8")
           PY
           python research/candidate-12/materialize_i18.py
           python -m compileall -q research/candidate-12
           python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add research/candidate-12/logic.py research/candidate-12/test_logic.py research/candidate-12/config.json research/candidate-12/strategy_adapter.py
-          git commit -m "candidate-12: rearm expired limits only after fresh active hold"
-          git push origin HEAD:research/candidate-12
