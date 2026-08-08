@@ -238,5 +238,15 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
             return plan.target_price
         return candidate
 
+    @staticmethod
+    def _structural_reset_price(plan: TradePlan) -> float:
+        """Expose the unchanged opposing-liquidity geometry to progress state.
+
+        The progress-protection mixin and the initiative-auction state machine
+        refer to the same causal objective with different lifecycle names. Keep
+        one calculation and make the composition contract explicit.
+        """
+        return Candidate07Strategy._structural_delivery_price(plan)
+
 
 __all__ = ["Candidate07Strategy", "Candidate07StrategyConfig"]
