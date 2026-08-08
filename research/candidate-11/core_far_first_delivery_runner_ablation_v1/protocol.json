@@ -1,0 +1,134 @@
+{
+  "baseline": {
+    "closed_trades": 9,
+    "losses": 8,
+    "pooled_daily_geometric_growth": -0.002190890657322142,
+    "pooled_log_growth": -0.18423671023420873,
+    "pooled_nav_multiple": 0.8317388994132656,
+    "result_path": "research/candidate-11/core_far_continuous_v1/aggregate.json",
+    "scenario_ids": [
+      "SOLUSDT-PERP.BINANCE-LONDON_CLOSE_1000_1200_NY-R000261-LOW",
+      "SOLUSDT-PERP.BINANCE-LONDON_CLOSE_1000_1200_NY-R000345-HIGH",
+      "BTCUSDT-PERP.BINANCE-LONDON_CLOSE_1000_1200_NY-R000121-LOW",
+      "XRPUSDT-PERP.BINANCE-US_LATE_1600_2000_NY-R000152-LOW",
+      "SOLUSDT-PERP.BINANCE-NY_PREMARKET_0500_0700_NY-R000426-HIGH",
+      "ETHUSDT-PERP.BINANCE-LONDON_0200_0500_NY-R000481-HIGH",
+      "ETHUSDT-PERP.BINANCE-LONDON_CLOSE_1000_1200_NY-R000233-HIGH",
+      "XRPUSDT-PERP.BINANCE-ASIA_2000_0000_NY-R000505-HIGH",
+      "SOLUSDT-PERP.BINANCE-ASIA_2000_0000_NY-R000813-LOW"
+    ],
+    "source_commit": "3d184df885fb0755c9a961d058b8e0df75259123",
+    "wins": 1
+  },
+  "can_advance_candidate": false,
+  "can_claim_alpha": false,
+  "candidate": "candidate-11-core-far-first-delivery-runner-ablation",
+  "comparison_contract": {
+    "require_all_safety_audits": true,
+    "require_exact_scenario_id_set": true,
+    "require_same_direction_per_scenario": true,
+    "require_same_trade_count": true,
+    "retain_diagnostic_only_if": [
+      "pooled after-cost log growth is positive",
+      "at least two of three block log-growth values are positive",
+      "at least three causal first-delivery fills occur",
+      "at least one external runner reaches its inherited target",
+      "at least three paired scenarios improve",
+      "leave-one-scenario-out pooled log growth remains positive",
+      "no one positive scenario supplies more than 60% of positive ablation log growth"
+    ],
+    "retain_does_not_mean": [
+      "candidate advancement",
+      "fresh-validation authorization",
+      "alpha claim",
+      "frequency sufficiency"
+    ]
+  },
+  "created_utc": "2026-08-08",
+  "decision": {
+    "controlled_failure": "Reject this first-delivery realization contract. Do not sweep target percentages, split percentages or MFE thresholds.",
+    "implementation_failure": "Repair only the concrete execution/evidence defect and rerun the exact same frozen ablation; do not change any alpha variable.",
+    "improved_but_insufficient": "Record which realization component improved, but do not promote or validate it. Replace the next causally identified market-state or realization assumption rather than fitting numbers.",
+    "retain_diagnostic_only": "Retain the causal first-delivery/runner mechanism for a separately defined DEVELOPMENT candidate, then freeze it before untouched validation. This opened-data result itself cannot advance or claim alpha."
+  },
+  "mechanism_contract": {
+    "allocation": "before venue rounding, primary=L/(L+G1) and runner=G1/(L+G1), where L is the inherited costed full stop loss per unit and G1 is costed first-delivery gain per unit",
+    "causal_guard": "the first-delivery price must remain beyond the completed confirmation bar extreme and strictly before the inherited external target",
+    "entry": "one and only one parent entry order",
+    "exits": "after real fills, two reduce-only limit exits and one reduce-only protective stop are owned by NautilusTrader",
+    "fail_closed": [
+      "child submission exception",
+      "protective-stop submission or resize exception",
+      "order modification rejection",
+      "runner fill before primary completion",
+      "missing parent order after a reported fill"
+    ],
+    "fallback": "if no causal first-delivery node exists or venue quantity/notional granularity cannot express both legs, preserve the inherited bracket rather than deleting the scenario",
+    "first_delivery_candidate_order": [
+      "nearest still-live causally confirmed five-minute internal pivot formed after source-range completion",
+      "nearest still-live external pool on the route to the inherited target",
+      "completed source-range equilibrium"
+    ],
+    "liveness": "internal pivots are invalid once crossed after becoming known; external pools use their existing consumed and expiry state",
+    "policy": "SELF_FINANCING_FIRST_DELIVERY_EXTERNAL_RUNNER",
+    "rounding": "primary quantity is rounded upward to the venue increment, so realized first-delivery gain remains at least sufficient to finance the residual runner's inherited full costed loss under the planning assumptions"
+  },
+  "research_question": "For the exact same approved and filled SCDAM-core FAR scenarios, does realizing a causally known first price-delivery node with a self-financing quantity while retaining a residual external-liquidity runner convert partial delivery into repeatable after-cost account growth?",
+  "research_stage": "TEMPORARY_TEST",
+  "schema": "candidate-11-core-far-first-delivery-runner-ablation-v1",
+  "selection": {
+    "blocks": {
+      "D1": {
+        "end_exclusive": "2023-10-20",
+        "role": "development-gate",
+        "start": "2023-09-22"
+      },
+      "D2": {
+        "end_exclusive": "2024-10-29",
+        "role": "development-gate",
+        "start": "2024-10-01"
+      },
+      "D3": {
+        "end_exclusive": "2025-10-14",
+        "role": "development-gate",
+        "start": "2025-09-16"
+      }
+    },
+    "data_use": "OPENED_DEVELOPMENT_MECHANISM_ABLATION",
+    "evaluation_days": 28,
+    "resolution_tail_days": 2,
+    "seed": 2026080811,
+    "source_protocol": "research/candidate-11/core_far_continuous_v1/protocol.json",
+    "warmup_days": 3
+  },
+  "single_changed_variable": {
+    "ablation": "one filled position is divided into a causal first-delivery quantity and a residual external runner; entry, initial stop, final target and total risk quantity do not change",
+    "baseline": "the whole filled quantity remains bracketed between the inherited structural stop and the inherited external-liquidity target",
+    "name": "first_delivery_realization_topology",
+    "not_used": [
+      "return-fitted target percentage",
+      "MFE threshold",
+      "fixed partial-close percentage",
+      "session whitelist",
+      "direction deletion",
+      "entry/admission change",
+      "initial stop change",
+      "external target change",
+      "position risk multiplier"
+    ]
+  },
+  "success_claim_allowed": false,
+  "unchanged_contract": [
+    "same SCDAM_CORE/FAR detector and semantic market-leadership admission",
+    "same exact nine baseline scenario IDs",
+    "same directions and entries",
+    "same inherited initial structural stop",
+    "same inherited external target",
+    "same effective maker/taker cost assumptions",
+    "same current-NAV 3% planned-loss sizing",
+    "same global one pending-entry/open-position slot",
+    "same D1-D3 continuous decision windows and resolution tails",
+    "NautilusTrader owns clocks, orders, partial fills, fees, positions and NAV"
+  ],
+  "validation_eligible": false
+}
