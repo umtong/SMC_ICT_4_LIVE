@@ -1,0 +1,85 @@
+name: candidate-12-i29-development-scan
+
+on:
+  push:
+    branches: ["research/candidate-12"]
+    paths:
+      - ".github/workflows/candidate-12-i29-development-scan.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-12-i29-development-scan-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        week: [W2, W4, W5, W6, W7, W8, W9, W10, W11]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify frozen research contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          test "$(git hash-object research/candidate-12/logic.py)" = "848b278d492249cee867f4c8978a1e62086b6d45"
+          test "$(git hash-object research/candidate-12/run_i27_portfolio.py)" = "b0504d2478bab8b3fb9ad0639e5b5ed244b5252d"
+          python -m compileall -q research/candidate-12
+
+      - name: Run unchanged I29 development week
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT="artifacts/candidate-12/I29-DEVELOPMENT-${{ matrix.week }}"
+          mkdir -p "$OUTPUT"
+          python research/candidate-12/run_i29_excess_tail_router.py \
+            --week "${{ matrix.week }}" \
+            --output "$OUTPUT" | tee "$OUTPUT.console.json"
+
+      - name: Print compact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          root = Path("artifacts/candidate-12/I29-DEVELOPMENT-${{ matrix.week }}")
+          metrics = json.loads((root / "metrics.json").read_text())
+          plans = json.loads((root / "submitted_plans.json").read_text())["plans"]
+          print(json.dumps({
+              "week": "${{ matrix.week }}",
+              "metrics": metrics,
+              "plans": [
+                  {
+                      "symbol": item["symbol"],
+                      "scenario": item["scenario"],
+                      "observed_ts_ns": item["observed_ts_ns"],
+                      "entry": item["entry"],
+                      "stop": item["stop"],
+                      "target": item["target"],
+                      "net_r": item["net_r"],
+                  }
+                  for item in plans
+              ],
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Preserve development evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-I29-development-${{ matrix.week }}-${{ github.sha }}
+          path: artifacts/candidate-12/I29-DEVELOPMENT-${{ matrix.week }}
+          if-no-files-found: warn
