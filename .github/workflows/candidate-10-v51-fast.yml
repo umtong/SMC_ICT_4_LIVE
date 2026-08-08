@@ -1,0 +1,112 @@
+name: candidate-10-v51-fast-transfer-role
+
+on:
+  push:
+    branches: [research/candidate-10]
+    paths:
+      - .github/workflows/candidate-10-v51-fast.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v51-fast-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CANDIDATE11_COMMIT: f10517d4ccd2a1a8fbd4d31091cbe0e7c3655327
+
+jobs:
+  runs:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period_id: H1_2026
+            start: "2026-01-01"
+            end_exclusive: "2026-07-01"
+            evidence_class: predeclared_continuous_temporal_account
+            variant: all-approved
+          - period_id: H1_2026
+            start: "2026-01-01"
+            end_exclusive: "2026-07-01"
+            evidence_class: predeclared_continuous_temporal_account
+            variant: event-rank-one
+          - period_id: H1_2026
+            start: "2026-01-01"
+            end_exclusive: "2026-07-01"
+            evidence_class: predeclared_continuous_temporal_account
+            variant: causal-role-router
+          - period_id: JULY_2026
+            start: "2026-07-13"
+            end_exclusive: "2026-08-03"
+            evidence_class: untouched_temporal_holdout
+            variant: all-approved
+          - period_id: JULY_2026
+            start: "2026-07-13"
+            end_exclusive: "2026-08-03"
+            evidence_class: untouched_temporal_holdout
+            variant: event-rank-one
+          - period_id: JULY_2026
+            start: "2026-07-13"
+            end_exclusive: "2026-08-03"
+            evidence_class: untouched_temporal_holdout
+            variant: causal-role-router
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+      - name: Run one frozen transfer-role variant
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ROOT="artifacts/candidate-10-v51-fast/${{ matrix.period_id }}/${{ matrix.variant }}"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v51:/workspace/src \
+            "${RESEARCH_IMAGE}" bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v51
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v51
+              cp /workspace/research/candidate-10/c10_v*.py /tmp/candidate11-v51/
+              cp /workspace/research/candidate-10/test_c10_v*.py /tmp/candidate11-v51/
+              smc4 doctor
+              python /tmp/candidate11-v51/c10_v51_patch.py \
+                /tmp/candidate11-v51/run_leadership_scdam.py
+              python -m py_compile /tmp/candidate11-v51/c10_v*.py \
+                /tmp/candidate11-v51/run_leadership_scdam.py
+              python -m unittest discover -s /tmp/candidate11-v51 \
+                -p "test_c10_v*.py" -v
+              python /tmp/candidate11-v51/c10_v51_run.py \
+                --candidate11-dir /tmp/candidate11-v51 \
+                --start "${{ matrix.start }}" \
+                --end-exclusive "${{ matrix.end_exclusive }}" \
+                --variant "${{ matrix.variant }}" \
+                --evidence-class "${{ matrix.evidence_class }}" \
+                --output "/workspace/${ROOT}"
+            '
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-10-v51-fast-${{ matrix.period_id }}-${{ matrix.variant }}-${{ github.sha }}
+          path: artifacts/candidate-10-v51-fast/${{ matrix.period_id }}/${{ matrix.variant }}
+          if-no-files-found: warn
+          retention-days: 14
