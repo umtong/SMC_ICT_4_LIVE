@@ -1,0 +1,70 @@
+{
+  "schema": "candidate-15-v15-quarter-hour-public-delivery-v1",
+  "candidate": "candidate-15-v15-quarter-hour-public-delivery",
+  "created_utc": "2026-08-08",
+  "research_question": "Can the quarter-hour opening-flow episode be routed causally into short-horizon inventory reversion versus medium-horizon public-state delivery with enough after-cost expectancy and independent frequency to justify a frozen NautilusTrader scenario family?",
+  "hypothesis": {
+    "event": "The first completed minute beginning at each UTC quarter-hour is an execution-wave observation, not an entry reason by itself.",
+    "reversion": "Extreme opening aggressor imbalance may reverse over the next 30 minutes when the prior public state does not support delivery.",
+    "delivery": "When prior-only public price-volume state predicts the same 8-12 hour direction as opening aggressor imbalance, the episode may deliver in that direction over an eight-hour intraday leg.",
+    "unresolved": "Routes with non-positive prior calibration expectancy, disagreement, stale training, funding settlement, or insufficient score fail closed."
+  },
+  "data": {
+    "dataset": "Binance USD-M monthly one-minute klines",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "start": "2023-01-01",
+    "end_exclusive": "2026-05-01",
+    "bar_visibility": "open_time plus one minute",
+    "exclude_funding_settlement_utc_hours": [0, 8, 16]
+  },
+  "walk_forward": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-01-01",
+    "evaluation_start": "2025-01-01",
+    "evaluation_end_exclusive": "2026-05-01",
+    "refit": "calendar_month_start",
+    "fit_lookback_days": 365,
+    "calibration_days": 90,
+    "minimum_fit_rows": 10000,
+    "minimum_calibration_candidates": 120,
+    "ridge_alpha": 40.0,
+    "route_score_quantile": 0.75,
+    "minimum_calibration_win_rate": 0.50,
+    "minimum_calibration_mean_net_bps": 0.0
+  },
+  "routes": {
+    "QH_INVENTORY_REVERSION_30M": {
+      "horizon_minutes": 30,
+      "round_trip_cost_bps": 16.0,
+      "funding_reserve_bps": 0.0,
+      "opening_flow_quantile": 0.75,
+      "condition": "predicted 30m return opposes current opening aggressor imbalance"
+    },
+    "QH_PUBLIC_DELIVERY_8H": {
+      "horizon_minutes": 480,
+      "confirmation_horizon_minutes": 720,
+      "round_trip_cost_bps": 16.0,
+      "funding_reserve_bps": 4.0,
+      "opening_flow_quantile": 0.60,
+      "condition": "prior public 8h and 12h predictions agree and opening aggressor imbalance aligns"
+    }
+  },
+  "portfolio_diagnostic": {
+    "global_position_limit": 1,
+    "same_event_arbitration": "maximum prior-calibrated expected net edge, then score, then symbol",
+    "overlap_policy": "no new episode before the selected route horizon is complete",
+    "independence": "one selected route per quarter-hour causal episode"
+  },
+  "advance_gate": {
+    "minimum_evaluation_mean_net_bps": 0.0,
+    "minimum_evaluation_net_t_stat": 1.0,
+    "minimum_positive_evaluation_month_share": 0.65,
+    "minimum_selected_trades_per_calendar_day": 1.0,
+    "require_positive_development_mean_net": true,
+    "require_each_route_or_router_not_to_depend_on_one_symbol": true
+  },
+  "decision_contract": {
+    "advance": "Only a predeclared route/router passing development and untouched evaluation economics and frequency may be frozen for NautilusTrader implementation.",
+    "reject": "If the router fails, do not threshold-tune this quarter-hour family; preserve only any independently positive route and move to a different causal scenario."
+  }
+}
