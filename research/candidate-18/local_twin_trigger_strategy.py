@@ -41,6 +41,7 @@ class Candidate18Strategy(_Candidate18V6Strategy):
                 "candidate18_v7_stop_waves": 0,
                 "candidate18_v7_target_waves": 0,
                 "candidate18_v7_opposite_release_events": 0,
+                "candidate18_v7_missing_cancel_orders": 0,
             },
         )
 
@@ -149,7 +150,15 @@ class Candidate18Strategy(_Candidate18V6Strategy):
 
     def _cancel_local_family(self, identifiers: set[str]) -> None:
         for identifier in tuple(identifiers):
-            self.cancel_order(ClientOrderId(identifier))
+            order = self.cache.order(ClientOrderId(identifier))
+            if order is None:
+                self.diagnostics["candidate18_v7_missing_cancel_orders"] = int(
+                    self.diagnostics["candidate18_v7_missing_cancel_orders"],
+                ) + 1
+                continue
+            if bool(getattr(order, "is_closed", False)):
+                continue
+            self.cancel_order(order)
 
     def on_order_released(self, event: Any) -> None:
         client_order_id = str(getattr(event, "client_order_id", ""))
