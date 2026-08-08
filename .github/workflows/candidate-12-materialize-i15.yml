@@ -35,12 +35,17 @@ jobs:
           from pathlib import Path
           path = Path("research/candidate-12/materialize_i18.py")
           text = path.read_text(encoding="utf-8")
-          old_bar = "bar(ts(y, m, d, 6, 50), 107.2, 110.5, 107.1, 110.2)"
-          new_bar = "bar(ts(y, m, d, 6, 50), 107.2, 109.0, 107.1, 108.8)"
-          assert text.count(old_bar) == 1, text.count(old_bar)
-          text = text.replace(old_bar, new_bar, 1)
+          replacements = {
+              "bar(ts(y, m, d, 6, 45), 109, 109.2, 107.0, 107.2)":
+                  "bar(ts(y, m, d, 6, 45), 109, 109.2, 106.4, 107.2)",
+              "bar(ts(y, m, d, 6, 50), 107.2, 110.5, 107.1, 110.2)":
+                  "bar(ts(y, m, d, 6, 50), 107.2, 109.0, 107.1, 108.8)",
+          }
+          for old, new in replacements.items():
+              assert text.count(old) == 1, (old, text.count(old))
+              text = text.replace(old, new, 1)
           old_gate = "        self.assertEqual(expired.entry_order, EntryOrder.LIMIT_GTD)\n        self.assertTrue(\n            engine.rearm_unfilled_plan(\n"
-          new_gate = "        self.assertEqual(expired.entry_order, EntryOrder.LIMIT_GTD)\n        # Force only the first decision into the protected-limit branch.\n        object.__setattr__(engine.config, \"min_net_r\", 0.65)\n        self.assertTrue(\n            engine.rearm_unfilled_plan(\n"
+          new_gate = "        self.assertEqual(expired.entry_order, EntryOrder.LIMIT_GTD)\n        object.__setattr__(engine.config, \"min_net_r\", 0.65)\n        self.assertTrue(\n            engine.rearm_unfilled_plan(\n"
           assert text.count(old_gate) == 1, text.count(old_gate)
           path.write_text(text.replace(old_gate, new_gate, 1), encoding="utf-8")
           PY
