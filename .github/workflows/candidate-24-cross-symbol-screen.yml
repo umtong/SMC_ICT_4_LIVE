@@ -1,0 +1,153 @@
+name: candidate-24-cross-symbol-screen
+
+on:
+  push:
+    branches: ["research/candidate-24"]
+    paths:
+      - ".github/workflows/candidate-24-cross-symbol-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-24-cross-symbol-screen
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  cross-symbol:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [ETHUSDT, SOLUSDT, XRPUSDT]
+        period:
+          - name: known-2023-12-25
+            build_start: "2023-12-22"
+            build_end: "2023-12-31"
+            evaluation_start: "2023-12-25"
+            evaluation_end: "2023-12-31"
+          - name: viewed-2024-07-08
+            build_start: "2024-07-05"
+            build_end: "2024-07-14"
+            evaluation_start: "2024-07-08"
+            evaluation_end: "2024-07-14"
+          - name: viewed-2023-10-16
+            build_start: "2023-10-13"
+            build_end: "2023-10-22"
+            evaluation_start: "2023-10-16"
+            evaluation_end: "2023-10-22"
+          - name: viewed-2025-09-22
+            build_start: "2025-09-19"
+            build_end: "2025-09-28"
+            evaluation_start: "2025-09-22"
+            evaluation_end: "2025-09-28"
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-24/${{ matrix.symbol }}/${{ matrix.period.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify frozen strategy and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-19 research/candidate-18 research/candidate-17 research/candidate-16 research/candidate-05
+          python -m unittest discover -s research/candidate-19/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-18/tests -p 'test_fok_execution_contract.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_displayed_liquidity_router_v2.py' -v
+
+      - name: Build symbol-only configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          source = json.loads(Path("research/candidate-19/config.json").read_text())
+          source["symbol"] = os.environ["SYMBOL"]
+          source["execution_seed"] = {
+              "ETHUSDT": 241901,
+              "SOLUSDT": 241902,
+              "XRPUSDT": 241903,
+          }[os.environ["SYMBOL"]]
+          target = Path(os.environ["ROOT"]) / "config.json"
+          target.write_text(json.dumps(source, indent=2, sort_keys=True) + "\n")
+          PY
+        env:
+          SYMBOL: ${{ matrix.symbol }}
+
+      - name: Run frozen Candidate19 through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-19/candidate.py stage \
+            --config "$ROOT/config.json" \
+            --build-start "${{ matrix.period.build_start }}" \
+            --build-end "${{ matrix.period.build_end }}" \
+            --evaluation-start "${{ matrix.period.evaluation_start }}" \
+            --evaluation-end "${{ matrix.period.evaluation_end }}" \
+            --cache ".cache/candidate-24/${{ matrix.symbol }}/${{ matrix.period.name }}" \
+            --output "$ROOT" \
+            --validation-mode "cross-symbol-development-screen" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify and summarize result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          assert metrics["engine"] == "NautilusTrader BacktestNode"
+          assert metrics["min_equity"] > 0
+          assert metrics["liquidations"] == 0
+          assert diagnostics.get("max_open_positions_observed", 0) <= 1
+          assert diagnostics.get("max_simultaneous_entry_intents", 0) <= 1
+          summary = {
+              "symbol": metrics["instrument"],
+              "evaluation_start": metrics["evaluation_start"],
+              "evaluation_end": metrics["evaluation_end"],
+              "ending_nav": metrics["ending_nav"],
+              "total_return": metrics["total_return"],
+              "geometric_daily_growth": metrics["geometric_daily_growth"],
+              "max_drawdown": metrics["max_drawdown"],
+              "trades": metrics["trades"],
+              "wins": metrics["wins"],
+              "losses": metrics["losses"],
+              "win_rate": metrics["win_rate"],
+              "profit_factor": metrics["profit_factor"],
+              "active_days": metrics["active_days"],
+              "gate_pass": metrics["gate_pass"],
+              "sustained": diagnostics.get("candidate18_initiative_sustained", 0),
+              "shock_transmissions": diagnostics.get("candidate19_shock_transmissions_confirmed", 0),
+              "fok_entries": diagnostics.get("candidate18_fok_limit_entries", 0),
+          }
+          (root / "candidate24_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-24-${{ matrix.symbol }}-${{ matrix.period.name }}-${{ github.sha }}
+          path: artifacts/candidate-24/${{ matrix.symbol }}/${{ matrix.period.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
