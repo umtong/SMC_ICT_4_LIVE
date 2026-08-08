@@ -1,0 +1,196 @@
+name: candidate-10-v62-isolated-extreme-transfer
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/c10_v62_*.py
+      - research/candidate-10/test_c10_v62_isolated_transfer.py
+      - .github/workflows/candidate-10-v62-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v62-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CANDIDATE11_COMMIT: f10517d4ccd2a1a8fbd4d31091cbe0e7c3655327
+
+jobs:
+  periods:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The state contract and interval were committed before any v60/v61
+          # 2021 result became available.
+          - period_id: UNTOUCHED_2021_FULL
+            start: "2021-01-01"
+            end_exclusive: "2022-01-01"
+            evidence_class: untouched_continuous_predeclared_before_download
+            timeout: 420
+          - period_id: DEVELOPMENT_2026_FULL
+            start: "2026-01-01"
+            end_exclusive: "2026-08-01"
+            evidence_class: previously_inspected_continuous_development
+            timeout: 360
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+
+    steps:
+      - name: Checkout candidate-10
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen Candidate 11 source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+
+      - name: Run isolated transfer exact ablation
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ROOT="artifacts/candidate-10-v62/${{ matrix.period_id }}"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v62:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v62
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v62
+              for file in \
+                c10_v27_overlay.py c10_v27_patch.py \
+                c10_v28_overlay.py c10_v28_patch.py \
+                c10_v29_overlay.py c10_v29_patch.py \
+                c10_v30_overlay.py c10_v32_overlay.py c10_v33_overlay.py \
+                c10_v36_overlay.py c10_v36_state.py c10_v36_patch.py \
+                c10_v37_overlay.py c10_v37_state.py c10_v37_patch.py \
+                c10_v38_overlay.py c10_v38_state.py c10_v38_patch.py \
+                c10_v40_overlay.py c10_v40_state.py c10_v40_patch.py \
+                c10_v41_overlay.py c10_v41_patch.py \
+                c10_v44_overlay.py c10_v44_patch.py \
+                c10_v45_overlay.py c10_v45_patch.py \
+                c10_v46_overlay.py c10_v46_patch.py \
+                c10_v47_overlay.py c10_v47_patch.py \
+                c10_v62_overlay.py c10_v62_patch.py c10_v62_run.py \
+                test_c10_v27_overlay.py test_c10_v28_overlay.py \
+                test_c10_v29_overlay.py test_c10_v33_overlay.py \
+                test_c10_v36_state.py test_c10_v37_protection.py \
+                test_c10_v38_micro_pivot.py \
+                test_c10_v40_source_detector.py \
+                test_c10_v41_entry_timing.py \
+                test_c10_v44_target_hierarchy.py \
+                test_c10_v45_entry_leg_invalidation.py \
+                test_c10_v46_void_close.py \
+                test_c10_v47_event_leader.py \
+                test_c10_v62_isolated_transfer.py; do
+                cp "/workspace/research/candidate-10/${file}" /tmp/candidate11-v62/
+              done
+              smc4 doctor
+              python /tmp/candidate11-v62/c10_v62_patch.py \
+                /tmp/candidate11-v62/run_leadership_scdam.py
+              python -m py_compile \
+                /tmp/candidate11-v62/c10_v27_overlay.py \
+                /tmp/candidate11-v62/c10_v27_patch.py \
+                /tmp/candidate11-v62/c10_v28_overlay.py \
+                /tmp/candidate11-v62/c10_v28_patch.py \
+                /tmp/candidate11-v62/c10_v29_overlay.py \
+                /tmp/candidate11-v62/c10_v29_patch.py \
+                /tmp/candidate11-v62/c10_v30_overlay.py \
+                /tmp/candidate11-v62/c10_v32_overlay.py \
+                /tmp/candidate11-v62/c10_v33_overlay.py \
+                /tmp/candidate11-v62/c10_v36_overlay.py \
+                /tmp/candidate11-v62/c10_v36_state.py \
+                /tmp/candidate11-v62/c10_v36_patch.py \
+                /tmp/candidate11-v62/c10_v37_overlay.py \
+                /tmp/candidate11-v62/c10_v37_state.py \
+                /tmp/candidate11-v62/c10_v37_patch.py \
+                /tmp/candidate11-v62/c10_v38_overlay.py \
+                /tmp/candidate11-v62/c10_v38_state.py \
+                /tmp/candidate11-v62/c10_v38_patch.py \
+                /tmp/candidate11-v62/c10_v40_overlay.py \
+                /tmp/candidate11-v62/c10_v40_state.py \
+                /tmp/candidate11-v62/c10_v40_patch.py \
+                /tmp/candidate11-v62/c10_v41_overlay.py \
+                /tmp/candidate11-v62/c10_v41_patch.py \
+                /tmp/candidate11-v62/c10_v44_overlay.py \
+                /tmp/candidate11-v62/c10_v44_patch.py \
+                /tmp/candidate11-v62/c10_v45_overlay.py \
+                /tmp/candidate11-v62/c10_v45_patch.py \
+                /tmp/candidate11-v62/c10_v46_overlay.py \
+                /tmp/candidate11-v62/c10_v46_patch.py \
+                /tmp/candidate11-v62/c10_v47_overlay.py \
+                /tmp/candidate11-v62/c10_v47_patch.py \
+                /tmp/candidate11-v62/c10_v62_overlay.py \
+                /tmp/candidate11-v62/c10_v62_patch.py \
+                /tmp/candidate11-v62/c10_v62_run.py \
+                /tmp/candidate11-v62/run_leadership_scdam.py
+              python -m unittest -v \
+                test_c10_v27_overlay \
+                test_c10_v28_overlay \
+                test_c10_v29_overlay \
+                test_c10_v33_overlay \
+                test_c10_v36_state \
+                test_c10_v37_protection \
+                test_c10_v38_micro_pivot \
+                test_c10_v40_source_detector \
+                test_c10_v41_entry_timing \
+                test_c10_v44_target_hierarchy \
+                test_c10_v45_entry_leg_invalidation \
+                test_c10_v46_void_close \
+                test_c10_v47_event_leader \
+                test_c10_v62_isolated_transfer
+
+              BASE="/workspace/artifacts/candidate-10-v62/${{ matrix.period_id }}"
+              python /tmp/candidate11-v62/c10_v62_run.py \
+                --candidate11-dir /tmp/candidate11-v62 \
+                --start "${{ matrix.start }}" \
+                --end-exclusive "${{ matrix.end_exclusive }}" \
+                --variant event-leader-baseline \
+                --evidence-class "${{ matrix.evidence_class }}" \
+                --output "${BASE}/event-leader-baseline"
+
+              mkdir -p "${BASE}/isolated-extreme-transfer/data"
+              cp -al "${BASE}/event-leader-baseline/data/." \
+                "${BASE}/isolated-extreme-transfer/data/"
+              python /tmp/candidate11-v62/c10_v62_run.py \
+                --candidate11-dir /tmp/candidate11-v62 \
+                --start "${{ matrix.start }}" \
+                --end-exclusive "${{ matrix.end_exclusive }}" \
+                --variant isolated-extreme-transfer \
+                --evidence-class "${{ matrix.evidence_class }}" \
+                --output "${BASE}/isolated-extreme-transfer"
+
+              rm -rf \
+                "${BASE}/event-leader-baseline/data" \
+                "${BASE}/isolated-extreme-transfer/data"
+            '
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v62-${{ matrix.period_id }}-${{ github.sha }}
+          path: artifacts/candidate-10-v62/${{ matrix.period_id }}
+          if-no-files-found: warn
+          retention-days: 14
