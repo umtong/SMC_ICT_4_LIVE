@@ -5,6 +5,7 @@ on:
     branches: ["research/candidate-16-v9-liquidation-vwap-basis"]
     paths:
       - "research/candidate-16/v9_tardis_liquidation_study.py"
+      - "research/candidate-16/v9_tardis_liquidation_study_v2.py"
       - "research/candidate-16/tests/test_v9_tardis_liquidation_study.py"
       - ".github/workflows/candidate-16-v9-tardis-study.yml"
   workflow_dispatch:
@@ -38,17 +39,27 @@ jobs:
           smc4 doctor
           python -m compileall -q \
             research/candidate-16/v9_liquidation_event_study.py \
-            research/candidate-16/v9_tardis_liquidation_study.py
+            research/candidate-16/v9_tardis_liquidation_study.py \
+            research/candidate-16/v9_tardis_liquidation_study_v2.py
           python -m unittest discover \
             -s research/candidate-16/tests \
             -p 'test_v9_tardis_liquidation_study.py' -v
+          python - <<'PY'
+          import pandas as pd
+          from v9_tardis_liquidation_study_v2 import normalize_completed_minute
+          for unit in ("ms", "us"):
+              frame = pd.DataFrame({"minute": pd.to_datetime([1696118400000], unit=unit, utc=True)})
+              normalized = normalize_completed_minute(frame)
+              if str(normalized["minute"].dtype) != "datetime64[ns, UTC]":
+                  raise SystemExit((unit, normalized["minute"].dtype))
+          PY
 
       - name: Run 112-symbol-day external liquidation router study
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
-          python research/candidate-16/v9_tardis_liquidation_study.py \
+          python research/candidate-16/v9_tardis_liquidation_study_v2.py \
             --cache .cache/candidate-16-v9-tardis \
             --output "$ROOT" \
             2>&1 | tee "$ROOT/console.log"
@@ -74,6 +85,9 @@ jobs:
               raise SystemExit("sample contract drifted")
           if abs(float(study["event_contract"]["round_trip_cost_rate"]) - 0.002) > 1e-12:
               raise SystemExit("cost screen drifted")
+          compatibility = study.get("timestamp_compatibility", {})
+          if compatibility.get("canonical_dtype") != "datetime64[ns, UTC]" or compatibility.get("economic_logic_changed"):
+              raise SystemExit("timestamp compatibility contract failed")
           coverage = study.get("coverage", {})
           if set(coverage) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
               raise SystemExit("coverage incomplete")
