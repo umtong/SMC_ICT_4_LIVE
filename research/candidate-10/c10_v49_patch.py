@@ -32,7 +32,11 @@ def patch(path: Path) -> None:
         '''                transfer_state = classify_transfer_state(
                     plan,
                     minimum_confirmation_impulse=float(
-                        self.leadership.minimum_follower_confirmation_impulse
+                        getattr(
+                            self.leadership,
+                            "original",
+                            self.leadership,
+                        ).minimum_follower_confirmation_impulse
                     ),
                 )
                 plan.details["event_transfer_state_router"] = (
