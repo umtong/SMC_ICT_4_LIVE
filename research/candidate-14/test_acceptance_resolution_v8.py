@@ -128,7 +128,11 @@ class ExplicitAcceptanceFailureTests(unittest.TestCase):
         stored = transition._states(engine)[state.pool.scenario_id]
         self.assertEqual(stored.failure_index, 10)
         self.assertEqual(len(engine.events), 1)
-        self.assertEqual(engine.events[0][1], "AAC_FAILURE_OBSERVED")
+        event = engine.events[0]
+        self.assertEqual(event[1], "AAC_FAILURE_OBSERVED")
+        self.assertEqual(event[4], "OBSERVE")
+        self.assertEqual(event[5], "OBSERVE")
+        self.assertEqual(state.state, "OBSERVE")
 
     def test_later_initiative_owns_market_reversal(self) -> None:
         engine = DummyEngine()
@@ -159,6 +163,18 @@ class ExplicitAcceptanceFailureTests(unittest.TestCase):
         self.assertFalse(plan.details["same_bar_reversal_allowed"])
         self.assertEqual(state.state, "PENDING_ENTRY")
         self.assertNotIn(state.pool.scenario_id, transition._states(engine))
+        reversal = next(
+            event for event in engine.events
+            if event[1] == "AAC_FAILURE_REVERSAL_CONFIRMED"
+        )
+        self.assertEqual(reversal[4], "OBSERVE")
+        self.assertEqual(reversal[5], "FAR_CONFIRMED")
+        plan_event = next(
+            event for event in engine.events
+            if event[1] == "TRADE_PLAN_CONFIRMED"
+        )
+        self.assertEqual(plan_event[4], "FAR_CONFIRMED")
+        self.assertEqual(plan_event[5], "PENDING_ENTRY")
 
     def test_exclusive_rejection_delegates_to_v6_far(self) -> None:
         engine = DummyEngine()

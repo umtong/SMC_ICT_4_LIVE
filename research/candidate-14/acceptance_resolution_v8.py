@@ -1,11 +1,10 @@
 """Candidate 14 v8 explicit accepted-auction failure resolution.
 
 The v6 correction established that ordinary failed-auction reversal belongs only
-to an exclusively rejection-framed liquidity event.  V7 then showed that both
+to an exclusively rejection-framed liquidity event. V7 then showed that both
 the inherited second-pullback limit and immediate reacceleration entry failed to
-turn the current AAC label into positive expectancy.  V8 therefore stops
-trading the incomplete continuation label and represents a different causal
-state:
+turn the current AAC label into positive expectancy. V8 therefore stops trading
+the incomplete continuation label and represents a different causal state:
 
     accepted-auction origin
     -> completed deep boundary re-entry (failure observation)
@@ -13,8 +12,12 @@ state:
     -> later completed opposite initiative through the failure-bar extreme
     -> failure-bar invalidation and still-live opposing external draw
 
-All magnitude conditions are inherited from the frozen detector.  Exclusive
-rejection-origin FAR remains delegated byte-for-byte to the v6 adapter.  The
+The pending failure is an episode substate while the parent auction remains in
+OBSERVE. This preserves the shared ResearchEvent state-chain contract. Only the
+later initiative may move the parent auction from OBSERVE to FAR_CONFIRMED.
+
+All magnitude conditions are inherited from the frozen detector. Exclusive
+rejection-origin FAR remains delegated byte-for-byte to the v6 adapter. The
 current AAC continuation branch is deliberately flat; a future candidate must
 supply an independently observable durable-acceptance state before continuation
 can trade again.
@@ -117,10 +120,11 @@ def _register_failure(
         a.sweep.ts_ns,
         bar.ts_ns,
         "OBSERVE",
-        "AAC_FAILURE_PENDING_INITIATIVE",
+        "OBSERVE",
         "DEEP_BOUNDARY_REENTRY_REQUIRES_LATER_INITIATIVE",
         boundary,
         {
+            "episode_substate": "AAC_FAILURE_PENDING_INITIATIVE",
             "failure_high": bar.high,
             "failure_low": bar.low,
             "target_pool": target.scenario_id,
@@ -147,8 +151,8 @@ def explicit_acceptance_failure_far(
     state = states.get(a.pool.scenario_id)
 
     # Use the already-frozen AAC invalidation observation before any reversal
-    # decision.  This prevents the generic FAR branch from claiming the same
-    # re-entry bar which first revealed acceptance failure.
+    # decision. The parent auction remains OBSERVE; the dict stores the explicit
+    # failure substate so existing cascade/extreme restoration logic remains live.
     self._track_aac_pullback(a, bar)
 
     if state is not None and not a.acceptance_invalidated:
@@ -158,10 +162,11 @@ def explicit_acceptance_failure_far(
             "AAC_FAILURE_RESCINDED",
             a.sweep.ts_ns,
             bar.ts_ns,
-            "AAC_FAILURE_PENDING_INITIATIVE",
+            "OBSERVE",
             "OBSERVE",
             "ACCEPTANCE_EXTREME_RESTORED",
             a.pool.level,
+            {"episode_substate": "AAC_FAILURE_RESCINDED"},
         )
         return None
 
@@ -241,11 +246,12 @@ def explicit_acceptance_failure_far(
         "AAC_FAILURE_REVERSAL_CONFIRMED",
         state.failure_ts_ns,
         bar.ts_ns,
-        "AAC_FAILURE_PENDING_INITIATIVE",
+        "OBSERVE",
         "FAR_CONFIRMED",
         "LATER_FAILURE_EXTREME_BREAK_WITH_ALIGNED_INITIATIVE",
         state.boundary,
         {
+            "episode_substate": "AAC_FAILURE_RESOLVED",
             "direction": direction.value,
             "failure_ts_ns": state.failure_ts_ns,
             "failure_high": state.failure_high,
