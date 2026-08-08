@@ -1,0 +1,235 @@
+name: Candidate 15 V33-V38 reproducible replay
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - ".github/workflows/candidate-15-v33-v38-replay.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v33-v38-replay-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - version: "33"
+            script: diagnose_v33_cross_sectional_8h_momentum.py
+            protocol: protocol-v33-cross-sectional-8h-momentum.json
+            output: v33/cross_sectional_8h_momentum/results
+            canonical: V33_CROSS_SECTIONAL_8H_MOMENTUM_RESULT.md
+          - version: "34"
+            script: diagnose_v34_liquidity_vacuum_reclaim.py
+            protocol: protocol-v34-liquidity-vacuum-reclaim.json
+            output: v34/liquidity_vacuum_reclaim/results
+            canonical: V34_LIQUIDITY_VACUUM_RECLAIM_RESULT.md
+          - version: "35"
+            script: diagnose_v35_beta_residual_discovery.py
+            protocol: protocol-v35-beta-residual-discovery.json
+            output: v35/beta_residual_discovery/results
+            canonical: V35_BETA_RESIDUAL_DISCOVERY_RESULT.md
+          - version: "36"
+            script: diagnose_v36_cvd_boundary_divergence.py
+            protocol: protocol-v36-cvd-boundary-divergence.json
+            output: v36/cvd_boundary_divergence/results
+            canonical: V36_CVD_BOUNDARY_DIVERGENCE_RESULT.md
+          - version: "37"
+            script: diagnose_v37_opening_drive_vwap_retest.py
+            protocol: protocol-v37-opening-drive-vwap-retest.json
+            output: v37/opening_drive_vwap_retest/results
+            canonical: V37_OPENING_DRIVE_VWAP_RETEST_RESULT.md
+          - version: "38"
+            script: diagnose_v38_walkforward_ensemble.py
+            protocol: protocol-v38-walkforward-ensemble.json
+            output: v38/walkforward_ensemble/results
+            canonical: V38_WALKFORWARD_ENSEMBLE_RESULT.md
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 1
+
+      - name: Verify environment and compile current version
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-15/diagnose_v28_adaptive_6h_trend.py \
+            "research/candidate-15/${{ matrix.script }}"
+
+      - name: Run frozen mechanism
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/src"
+          out="research/candidate-15/${{ matrix.output }}"
+          python "research/candidate-15/${{ matrix.script }}" \
+            --protocol "research/candidate-15/${{ matrix.protocol }}" \
+            --output "$out"
+          rm -rf "$out/data"
+          mkdir -p bundle
+          cp -a "$out/." bundle/
+          cp "$out/RESULT.md" "bundle/${{ matrix.canonical }}"
+
+      - name: Upload version evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-replay-v${{ matrix.version }}
+          path: bundle
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: always()
+    needs: [evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate15-replay-v*
+          path: artifacts
+      - name: Restore and summarize all evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          import re
+          import shutil
+          from pathlib import Path
+
+          root = Path('research/candidate-15')
+          mapping = {
+              33: ('cross_sectional_8h_momentum', 'V33_CROSS_SECTIONAL_8H_MOMENTUM_RESULT.md'),
+              34: ('liquidity_vacuum_reclaim', 'V34_LIQUIDITY_VACUUM_RECLAIM_RESULT.md'),
+              35: ('beta_residual_discovery', 'V35_BETA_RESIDUAL_DISCOVERY_RESULT.md'),
+              36: ('cvd_boundary_divergence', 'V36_CVD_BOUNDARY_DIVERGENCE_RESULT.md'),
+              37: ('opening_drive_vwap_retest', 'V37_OPENING_DRIVE_VWAP_RETEST_RESULT.md'),
+              38: ('walkforward_ensemble', 'V38_WALKFORWARD_ENSEMBLE_RESULT.md'),
+          }
+          rows = []
+          for version, (folder, canonical) in mapping.items():
+              source = Path(f'artifacts/candidate15-replay-v{version}')
+              target = root / f'v{version}' / folder / 'results'
+              if target.exists():
+                  shutil.rmtree(target)
+              target.mkdir(parents=True, exist_ok=True)
+              if source.exists():
+                  for item in source.iterdir():
+                      if item.name == canonical:
+                          continue
+                      destination = target / item.name
+                      if item.is_dir():
+                          shutil.copytree(item, destination, dirs_exist_ok=True)
+                      else:
+                          shutil.copy2(item, destination)
+                  result = source / canonical
+                  if result.is_file():
+                      shutil.copy2(result, root / canonical)
+              summary_path = target / 'summary.json'
+              result_path = root / canonical
+              row = {
+                  'version': version,
+                  'result_present': result_path.is_file(),
+                  'summary_present': summary_path.is_file(),
+                  'classification': 'MISSING_OR_JOB_FAILURE',
+                  'advance_to_nautilus': False,
+              }
+              if result_path.is_file():
+                  text = result_path.read_text(encoding='utf-8', errors='replace')
+                  match = re.search(r'\*\*(V\d+_[A-Z0-9_]+)\*\*', text)
+                  if match:
+                      row['classification'] = match.group(1)
+              if summary_path.is_file():
+                  data = json.loads(summary_path.read_text(encoding='utf-8'))
+                  row['classification'] = data.get('classification', row['classification'])
+                  row['advance_to_nautilus'] = bool(data.get('advance_to_nautilus'))
+                  for split in ('development', 'stability', 'july_confirmation', 'latest_pulse'):
+                      record = data.get(split, {})
+                      row[f'{split}_trades'] = record.get('trades')
+                      row[f'{split}_trades_per_day'] = record.get('trades_per_day')
+                      row[f'{split}_mean_net_bps'] = record.get('mean_net_bps')
+                      row[f'{split}_net_t_stat'] = record.get('net_t_stat')
+                      row[f'{split}_positive_month_share'] = record.get('positive_month_share')
+                  row['surviving_routes'] = data.get('surviving_routes', [])
+                  row['decision'] = data.get('decision')
+              rows.append(row)
+
+          payload = {
+              'schema': 'candidate-15-v33-v38-replay-status-v1',
+              'all_summaries_present': all(row['summary_present'] for row in rows),
+              'any_advance_to_nautilus': any(row['advance_to_nautilus'] for row in rows),
+              'advance_versions': [row['version'] for row in rows if row['advance_to_nautilus']],
+              'rows': rows,
+          }
+          (root / 'V33_V38_REPLAY_STATUS.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          lines = [
+              '# Candidate 15 V33-V38 reproducible replay', '',
+              f"- all_summaries_present: `{payload['all_summaries_present']}`",
+              f"- any_advance_to_nautilus: `{payload['any_advance_to_nautilus']}`",
+              f"- advance_versions: `{payload['advance_versions']}`", '',
+          ]
+          for row in rows:
+              lines.extend([
+                  f"## V{row['version']}",
+                  f"- classification: `{row['classification']}`",
+                  f"- advance_to_nautilus: `{row['advance_to_nautilus']}`",
+                  f"- stability trades/day: `{row.get('stability_trades')} / {row.get('stability_trades_per_day')}`",
+                  f"- stability net bp / t-stat: `{row.get('stability_mean_net_bps')} / {row.get('stability_net_t_stat')}`",
+                  f"- July trades / net bp: `{row.get('july_confirmation_trades')} / {row.get('july_confirmation_mean_net_bps')}`",
+                  f"- latest trades / net bp: `{row.get('latest_pulse_trades')} / {row.get('latest_pulse_mean_net_bps')}`",
+                  f"- surviving_routes: `{row.get('surviving_routes', [])}`",
+                  f"- decision: {row.get('decision')}", '',
+              ])
+          (root / 'V33_V38_REPLAY_STATUS.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+      - name: Persist replay evidence on current research branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-replay-bot
+          git config user.email candidate-15-replay-bot@users.noreply.github.com
+          git add research/candidate-15/V33_* research/candidate-15/V34_* research/candidate-15/V35_* research/candidate-15/V36_* research/candidate-15/V37_* research/candidate-15/V38_* research/candidate-15/v33 research/candidate-15/v34 research/candidate-15/v35 research/candidate-15/v36 research/candidate-15/v37 research/candidate-15/v38
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15: persist V33-V38 reproducible replay [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate15-v33-v38-replay-status-${{ github.run_id }}
+          path: |
+            research/candidate-15/V33_V38_REPLAY_STATUS.json
+            research/candidate-15/V33_V38_REPLAY_STATUS.md
+          if-no-files-found: warn
+          retention-days: 30
