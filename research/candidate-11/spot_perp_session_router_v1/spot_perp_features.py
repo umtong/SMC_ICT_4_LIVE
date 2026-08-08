@@ -128,7 +128,11 @@ def load_range(
         )
         * 10_000.0
     )
-    spot_feature["minute_start_ns"] = spot_feature.index.astype("int64")
+    # Binance spot archives can materialize a datetime64[us] index.  Integer
+    # conversion without explicit normalization silently produces microseconds
+    # and cannot join the nanosecond feature clock.
+    spot_index_ns = spot_feature.index.astype("datetime64[ns, UTC]")
+    spot_feature["minute_start_ns"] = spot_index_ns.astype("int64")
     spot_feature = spot_feature.reset_index(drop=True)
 
     futures = klines[["open_time_dt", "close"]].copy()
@@ -170,6 +174,10 @@ def load_range(
             "basis_change_bps",
         ]
     ].notna().all(axis=1)
+    if int(merged["spot_trade_close"].notna().sum()) == 0:
+        raise RuntimeError(
+            "spot aggregate-trade clock did not join the nanosecond feature clock",
+        )
     base_ready = merged["feature_ready"].astype(str).str.lower().isin({"true", "1", "yes"})
     merged["feature_ready"] = base_ready & merged["spot_perp_feature_ready"]
     if merged["observed_time_ns"].duplicated().any():
