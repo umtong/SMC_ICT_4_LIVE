@@ -53,6 +53,31 @@ class ParentInitiativeContinuationTests(unittest.TestCase):
         )
         self.assertEqual(result.outcome, "REVERSAL_TARGET_FIRST")
 
+    def test_extended_horizon_changes_only_stop_observation_window(self) -> None:
+        rows = [(100.0, 101.0, 99.0, 100.0)] * 7
+        rows.append((100.0, 106.0, 99.0, 105.0))
+        minutes = self._minutes(rows)
+        opened_ns = int(minutes.iloc[0]["timestamp_ns"])
+        baseline = first_reversal_barrier(
+            minutes,
+            direction="SHORT",
+            opened_ns=opened_ns,
+            stop=105.0,
+            target=94.0,
+            signal_minutes=5,
+        )
+        extended = first_reversal_barrier(
+            minutes,
+            direction="SHORT",
+            opened_ns=opened_ns,
+            stop=105.0,
+            target=94.0,
+            signal_minutes=120,
+        )
+        self.assertEqual(baseline.outcome, "NO_BARRIER_IN_SIGNAL_SHOCK")
+        self.assertEqual(extended.outcome, "REVERSAL_STOP_FIRST")
+        self.assertEqual(extended.index, 7)
+
     def test_stop_then_next_bar_acceptance_is_causal(self) -> None:
         minutes = self._minutes(
             [
