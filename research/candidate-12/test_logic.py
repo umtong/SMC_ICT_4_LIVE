@@ -489,6 +489,54 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
         self.assertEqual(plan.expire_ts_ns, decision_ts + 5 * NS_MINUTE)
 
+    def test_london_low_weak_reclaim_waits_for_local_bullish_mss_fvg(
+        self,
+    ) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(
+            config(max_stop_atr=100.0),
+            "X",
+        )
+        self.seed_london(engine)
+        self.assertIsNone(
+            engine._on_five(
+                bar(ts(y, m, d, 12, 5), 95.2, 96, 90, 95.5),
+                True,
+            )
+        )
+        self.assertIsNone(
+            engine._on_five(
+                bar(ts(y, m, d, 12, 10), 95.5, 96, 94.5, 95.1),
+                True,
+            )
+        )
+        state = engine._sources[SessionLabel.LONDON]
+        assert state.low_rejection is not None
+        self.assertEqual(state.low_rejection.phase, "WAIT_DELAYED_BULL_FVG")
+        engine._on_five(
+            bar(ts(y, m, d, 12, 15), 95.1, 96, 94.8, 95.2),
+            True,
+        )
+        engine._on_five(
+            bar(ts(y, m, d, 12, 20), 95.2, 101, 95, 100.5),
+            True,
+        )
+        plan = engine._on_five(
+            bar(ts(y, m, d, 12, 25), 100.5, 102, 96.2, 100.8),
+            True,
+        )
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.scenario, ScenarioKind.LONDON_LOW_DELAYED_REJECTION)
+        self.assertEqual(plan.direction, Direction.LONG)
+        self.assertEqual(plan.entry_order, EntryOrder.MARKET)
+        self.assertEqual(
+            plan.details["route"],
+            "DELAYED_SELL_SIDE_FAILED_AUCTION_LOCAL_BULLISH_MSS_FVG",
+        )
+        self.assertAlmostEqual(plan.target_price, 105.0)
+        self.assertGreater(plan.stop_price, 90.0)
+
     def test_low_acceptance_requires_failed_pullback_near_completed_boundary(self) -> None:
         y, m, d = self.DAY
         engine = CausalLiquidityAuctionEngine(

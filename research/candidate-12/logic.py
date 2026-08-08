@@ -1,4 +1,4 @@
-"""Causal completed-session auction router for Candidate 12 I18.
+"""Causal completed-session auction router for Candidate 12 I19.
 
 The engine distinguishes economically different interactions with a completed
 Asia or London dealing range instead of forcing one candle pattern onto every
@@ -52,6 +52,7 @@ class ScenarioKind(str, Enum):
     LONDON_HIGH_REJECTION = "LONDON_HIGH_REJECTION"
     ASIA_LOW_REJECTION = "ASIA_LOW_REJECTION"
     LONDON_LOW_REJECTION = "LONDON_LOW_REJECTION"
+    LONDON_LOW_DELAYED_REJECTION = "LONDON_LOW_DELAYED_REJECTION"
     ASIA_HIGH_ACCEPTANCE = "ASIA_HIGH_ACCEPTANCE"
     LONDON_HIGH_ACCEPTANCE = "LONDON_HIGH_ACCEPTANCE"
     ASIA_HIGH_ACCEPTANCE_FAILURE = "ASIA_HIGH_ACCEPTANCE_FAILURE"
@@ -1125,6 +1126,95 @@ class CausalLiquidityAuctionEngine:
                 self._invalidate_raid(state, "LOW", bar, "LOW_BOUNDARY_ACCEPTED_NOT_RECLAIMED")
             return None
 
+        if episode.phase == "WAIT_DELAYED_BULL_FVG":
+            assert episode.reclaim_index is not None
+            assert episode.reclaim_bar is not None
+            assert episode.atr_at_reclaim is not None
+            reclaim = episode.reclaim_bar
+            reclaim_atr = episode.atr_at_reclaim
+            hard_stop = (
+                episode.extreme
+                - self.config.rejection_stop_buffer_atr * reclaim_atr
+            )
+            if bar.low <= hard_stop or bar.close < source.low:
+                self._invalidate_raid(
+                    state, "LOW", bar, "DELAYED_LOW_REJECTION_INVALIDATED"
+                )
+                return None
+            if (
+                self._five_index - episode.reclaim_index
+                > self.config.delayed_rejection_expiry_bars
+            ):
+                self._invalidate_raid(
+                    state, "LOW", bar, "DELAYED_LOW_REJECTION_EXPIRED"
+                )
+                return None
+            fresh = self._fresh_bull_fvg_general(bar)
+            displacement = self._bars[-1] if self._bars else None
+            if fresh is None or displacement is None:
+                return None
+            if not (
+                displacement.close > reclaim.high
+                and displacement.close > source.low
+                and bar.close > source.low
+            ):
+                return None
+            boundary_distance = (fresh.lower - source.low) / atr
+            if (
+                fresh.lower
+                < source.low - self.config.fvg_boundary_tolerance_atr * atr
+                or boundary_distance
+                > self.config.delayed_rejection_fvg_max_boundary_distance_atr
+            ):
+                self.skips["DELAYED_LOW_REJECTION_FVG_NOT_NEAR_SOURCE"] += 1
+                return None
+            local_stop = (
+                min(displacement.low, bar.low)
+                - self.config.fvg_stop_buffer_atr * atr
+            )
+            plan = self._costed_plan(
+                scenario_id=episode.scenario_id,
+                scenario=ScenarioKind.LONDON_LOW_DELAYED_REJECTION,
+                direction=Direction.LONG,
+                entry_order=EntryOrder.MARKET,
+                observed_ts_ns=bar.ts_ns,
+                bar=bar,
+                atr=atr,
+                entry_raw=bar.close,
+                stop_raw=local_stop,
+                target_raw=source.high,
+                expire_ts_ns=None,
+                details={
+                    "source": source.label.value,
+                    "route": "DELAYED_SELL_SIDE_FAILED_AUCTION_LOCAL_BULLISH_MSS_FVG",
+                    "session_high": source.high,
+                    "session_low": source.low,
+                    "session_width": source.width,
+                    "raid_extreme": episode.extreme,
+                    "sweep_ts_ns": episode.sweep_ts_ns,
+                    "reclaim_ts_ns": episode.reclaim_ts_ns,
+                    "reclaim_high": reclaim.high,
+                    "fvg_lower": fresh.lower,
+                    "fvg_upper": fresh.upper,
+                    "fvg_formed_ts_ns": fresh.formed_ts_ns,
+                    "local_displacement_low": displacement.low,
+                    "structural_invalidation": local_stop,
+                    "boundary_distance_atr": boundary_distance,
+                    "decision_body_atr": fresh.displacement_body_atr,
+                    "decision_close_location": fresh.displacement_close_location,
+                    "target_semantics": "OPPOSITE_COMPLETED_SESSION_BOUNDARY",
+                },
+            )
+            state.low_rejection = None
+            state.low_rejection_done = True
+            if plan is None:
+                self.skips["DELAYED_LOW_REJECTION_COSTED_PLAN_REJECTED"] += 1
+                return None
+            self.scenario_counts[ScenarioKind.LONDON_LOW_DELAYED_REJECTION.value] += 1
+            state.low_plan_emitted = True
+            state.trade_plan_emitted = True
+            return self._emit_plan(plan, allow_entry)
+
         assert episode.confirm_index is not None
         if self._five_index < episode.confirm_index:
             return None
@@ -1137,7 +1227,28 @@ class CausalLiquidityAuctionEngine:
             and reclaim.close_location >= self.config.low_confirmation_min_close_location
         )
         if not reclaimed:
-            self._invalidate_raid(state, "LOW", bar, "LOW_RECLAIM_LACKED_BULLISH_DISPLACEMENT")
+            if source.label is SessionLabel.LONDON:
+                episode.phase = "WAIT_DELAYED_BULL_FVG"
+                self.skips["LONDON_LOW_REJECTION_IMMEDIATE_RECLAIM_WEAK"] += 1
+                self._emit(
+                    scenario_id=episode.scenario_id,
+                    event_type="IMMEDIATE_LOW_REJECTION_CONFIRMATION_ABSENT",
+                    event_time_ns=bar.ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state="WAIT_DELAYED_BULL_FVG",
+                    reason_code="WEAK_RECLAIM_REQUIRES_LOCAL_BULLISH_MSS_FVG",
+                    reference_price=source.low,
+                    details={
+                        "source": source.label.value,
+                        "reclaim_body_atr": reclaim.body / reclaim_atr,
+                        "reclaim_close_location": reclaim.close_location,
+                        "delayed_expiry_bars": self.config.delayed_rejection_expiry_bars,
+                    },
+                )
+                return None
+            self._invalidate_raid(
+                state, "LOW", bar, "LOW_RECLAIM_LACKED_BULLISH_DISPLACEMENT"
+            )
             return None
         invalidation = episode.extreme - self.config.rejection_stop_buffer_atr * reclaim_atr
         confirmed = (
@@ -1147,7 +1258,29 @@ class CausalLiquidityAuctionEngine:
             and bar.close > reclaim.high
         )
         if not confirmed:
-            self._invalidate_raid(state, "LOW", bar, "LOW_REJECTION_LACKED_BULLISH_MSS")
+            if source.label is SessionLabel.LONDON:
+                episode.phase = "WAIT_DELAYED_BULL_FVG"
+                self.skips["LONDON_LOW_REJECTION_IMMEDIATE_MSS_ABSENT"] += 1
+                self._emit(
+                    scenario_id=episode.scenario_id,
+                    event_type="IMMEDIATE_LOW_REJECTION_CONFIRMATION_ABSENT",
+                    event_time_ns=bar.ts_ns,
+                    observed_time_ns=bar.ts_ns,
+                    next_state="WAIT_DELAYED_BULL_FVG",
+                    reason_code="RECLAIM_HELD_BUT_LOCAL_BULLISH_MSS_FVG_REQUIRED",
+                    reference_price=source.low,
+                    details={
+                        "source": source.label.value,
+                        "reclaim_high": reclaim.high,
+                        "decision_close": bar.close,
+                        "decision_body_atr": bar.body / atr,
+                        "delayed_expiry_bars": self.config.delayed_rejection_expiry_bars,
+                    },
+                )
+                return None
+            self._invalidate_raid(
+                state, "LOW", bar, "LOW_REJECTION_LACKED_BULLISH_MSS"
+            )
             return None
         if bar.low <= invalidation:
             self._invalidate_raid(state, "LOW", bar, "LOW_RAID_EXTREME_NOT_DEFENDED")
