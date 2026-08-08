@@ -1,0 +1,379 @@
+name: candidate-05-v55-diagnostic-loop
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v55-diagnostic-loop.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v55-diagnostic-loop
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnostic-loop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05/v55_variant_active:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v55-diagnostic-loop
+      CACHE: .cache/candidate-05-v55-diagnostic-loop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed environment and v55 contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_spot_price_discovery_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_spot_led_repricing_logic.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v55_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_contract.py' -v
+
+      - name: Run strict v55 development path
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/strict"
+          env -u V55_SPOT_LEAD_BPS_MIN -u V55_ACCEPTANCE_FLOW_MIN -u V55_CONTEXT_MIN_AGE_BARS \
+            python research/candidate-05/v55_variant_active/candidate.py stage \
+              --config research/candidate-05/config.json \
+              --build-start 2024-02-28 \
+              --build-end 2024-03-30 \
+              --evaluation-start 2024-03-01 \
+              --evaluation-end 2024-03-30 \
+              --cache "$CACHE" \
+              --output "$ROOT/strict" \
+              2>&1 | tee "$ROOT/strict/console.log"
+
+      - name: Select at most one causal ablation
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          strict = root / "strict"
+          metrics = json.loads((strict / "metrics.json").read_text())
+          diagnostics = json.loads((strict / "strategy_diagnostics.json").read_text())
+          closed = json.loads((strict / "closed_scenarios.json").read_text())
+
+          def number(value):
+              try:
+                  return float(str(value).strip().split()[0].replace(",", ""))
+              except Exception:
+                  return None
+
+          pnls = []
+          for item in closed:
+              if item.get("branch") != "SPOT_LED_PRICE_DISCOVERY_PULLBACK":
+                  continue
+              value = number(item.get("realized_pnl"))
+              if value is not None and math.isfinite(value):
+                  pnls.append(value)
+          strict_positive = (
+              len(pnls) >= 2
+              and sum(pnls) > 0.0
+              and float(metrics.get("total_return", 0.0)) > 0.056446145529302605
+          )
+
+          selection = {
+              "strict_branch_trades": len(pnls),
+              "strict_branch_net_pnl_usdt": sum(pnls),
+              "strict_total_return": metrics.get("total_return"),
+              "diagnostics": diagnostics,
+              "selected": "strict" if strict_positive else None,
+              "changed_variable": None,
+              "environment": {},
+              "reason": "STRICT_DEVELOPMENT_PASS" if strict_positive else None,
+          }
+          if not strict_positive:
+              created = int(diagnostics.get("spot_led_contexts_created", 0))
+              accepted = int(diagnostics.get("spot_led_contexts_accepted", 0))
+              activations = int(diagnostics.get("spot_led_context_detector_activations", 0))
+              armed = int(diagnostics.get("spot_led_internal_pullbacks_armed", 0))
+              if created == 0:
+                  selection.update({
+                      "selected": "relax_spot_lead",
+                      "changed_variable": "SPOT_LEAD_BPS_MIN",
+                      "environment": {"V55_SPOT_LEAD_BPS_MIN": "0.0"},
+                      "reason": "NO_STRICT_SPOT_LED_CONTEXT_CREATED",
+                  })
+              elif accepted == 0:
+                  selection.update({
+                      "selected": "remove_acceptance_flow_sign",
+                      "changed_variable": "SPOT_CONTEXT_ACCEPTANCE_FLOW_3M_MIN",
+                      "environment": {"V55_ACCEPTANCE_FLOW_MIN": "-1.0"},
+                      "reason": "SPOT_CONTEXTS_NEVER_ACCEPTED_BY_PERPETUAL_FLOW",
+                  })
+              elif activations == 0:
+                  selection.update({
+                      "selected": "shorten_context_maturity",
+                      "changed_variable": "SPOT_CONTEXT_MIN_AGE_BARS",
+                      "environment": {"V55_CONTEXT_MIN_AGE_BARS": "5"},
+                      "reason": "ACCEPTED_CONTEXT_EXPIRED_OR_INVALIDATED_BEFORE_MATURITY",
+                  })
+              else:
+                  selection.update({
+                      "selected": "none",
+                      "reason": (
+                          "ACTIVE_CONTEXT_FOUND_NO_INTERNAL_PULLBACK"
+                          if armed == 0
+                          else "PULLBACK_FOUND_BUT_EXECUTION_GEOMETRY_REJECTED"
+                      ),
+                  })
+
+          (root / "selection.json").write_text(
+              json.dumps(selection, indent=2, sort_keys=True) + "\n",
+          )
+          env_path = root / "variant.env"
+          env_path.write_text(
+              "".join(f"export {key}={value}\n" for key, value in selection["environment"].items()),
+          )
+          run_variant = selection["selected"] not in {"strict", "none", None}
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"run_variant={'true' if run_variant else 'false'}\n")
+              stream.write(f"selected={selection['selected']}\n")
+          print(json.dumps(selection, indent=2, sort_keys=True))
+          PY
+
+      - name: Run selected one-variable development ablation
+        if: steps.select.outputs.run_variant == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/variant"
+          source "$ROOT/variant.env"
+          python research/candidate-05/v55_variant_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-30 \
+            --cache "$CACHE" \
+            --output "$ROOT/variant" \
+            2>&1 | tee "$ROOT/variant/console.log"
+
+      - name: Decide whether development earns untouched evaluation
+        id: develop
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          selection = json.loads((root / "selection.json").read_text())
+          chosen = "strict" if selection["selected"] == "strict" else "variant"
+          path = root / chosen
+          if not (path / "metrics.json").exists():
+              decision = {
+                  "promote": False,
+                  "chosen": selection["selected"],
+                  "reason": selection.get("reason"),
+                  "error": "NO_SELECTED_DEVELOPMENT_RESULT",
+              }
+          else:
+              metrics = json.loads((path / "metrics.json").read_text())
+              closed = json.loads((path / "closed_scenarios.json").read_text())
+              diagnostics = json.loads((path / "strategy_diagnostics.json").read_text())
+              def number(value):
+                  try:
+                      return float(str(value).strip().split()[0].replace(",", ""))
+                  except Exception:
+                      return None
+              pnls = []
+              for item in closed:
+                  if item.get("branch") != "SPOT_LED_PRICE_DISCOVERY_PULLBACK":
+                      continue
+                  value = number(item.get("realized_pnl"))
+                  if value is not None and math.isfinite(value):
+                      pnls.append(value)
+              integrity = (
+                  int(metrics.get("liquidations", 0)) == 0
+                  and int(metrics.get("order_rejections", 0)) == 0
+                  and int(metrics.get("order_denials", 0)) == 0
+                  and float(metrics.get("min_equity", 0.0)) > 0.0
+              )
+              promote = (
+                  integrity
+                  and len(pnls) >= 2
+                  and sum(pnls) > 0.0
+                  and float(metrics.get("total_return", 0.0)) > 0.056446145529302605
+              )
+              decision = {
+                  "promote": promote,
+                  "chosen": selection["selected"],
+                  "changed_variable": selection.get("changed_variable"),
+                  "environment": selection.get("environment", {}),
+                  "reason": selection.get("reason"),
+                  "integrity_pass": integrity,
+                  "branch_trades": len(pnls),
+                  "branch_wins": sum(value > 0.0 for value in pnls),
+                  "branch_net_pnl_usdt": sum(pnls),
+                  "candidate_metrics": metrics,
+                  "diagnostics": diagnostics,
+              }
+          (root / "development_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"promote={'true' if decision.get('promote') else 'false'}\n")
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Run untouched 60-day path with frozen selected contract
+        if: steps.develop.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/oos"
+          source "$ROOT/variant.env"
+          python research/candidate-05/v55_variant_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-03-30 \
+            --build-end 2024-05-30 \
+            --evaluation-start 2024-04-01 \
+            --evaluation-end 2024-05-30 \
+            --cache "$CACHE" \
+            --output "$ROOT/oos" \
+            2>&1 | tee "$ROOT/oos/console.log"
+
+      - name: Decide whether untouched evidence earns continuous replay
+        id: oos
+        if: steps.develop.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "oos/metrics.json").read_text())
+          closed = json.loads((root / "oos/closed_scenarios.json").read_text())
+          def number(value):
+              try:
+                  return float(str(value).strip().split()[0].replace(",", ""))
+              except Exception:
+                  return None
+          pnls = []
+          for item in closed:
+              if item.get("branch") != "SPOT_LED_PRICE_DISCOVERY_PULLBACK":
+                  continue
+              value = number(item.get("realized_pnl"))
+              if value is not None and math.isfinite(value):
+                  pnls.append(value)
+          integrity = (
+              int(metrics.get("liquidations", 0)) == 0
+              and int(metrics.get("order_rejections", 0)) == 0
+              and int(metrics.get("order_denials", 0)) == 0
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          promote = (
+              integrity
+              and len(pnls) >= 3
+              and sum(pnls) > 0.0
+              and float(metrics.get("total_return", 0.0)) > 0.0
+          )
+          decision = {
+              "promote_continuous": promote,
+              "integrity_pass": integrity,
+              "branch_trades": len(pnls),
+              "branch_wins": sum(value > 0.0 for value in pnls),
+              "branch_net_pnl_usdt": sum(pnls),
+              "candidate_metrics": metrics,
+          }
+          (root / "oos_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"promote={'true' if promote else 'false'}\n")
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Run one continuous 91-day account with frozen selected contract
+        if: steps.oos.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/continuous"
+          source "$ROOT/variant.env"
+          python research/candidate-05/v55_variant_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-05-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-05-30 \
+            --cache "$CACHE" \
+            --output "$ROOT/continuous" \
+            2>&1 | tee "$ROOT/continuous/console.log"
+
+      - name: Build final loop classification
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          def load(name):
+              path = root / name
+              return json.loads(path.read_text()) if path.exists() else None
+          development = load("development_decision.json")
+          oos = load("oos_decision.json")
+          continuous_metrics = load("continuous/metrics.json")
+          if continuous_metrics is not None:
+              classification = "V55_PRICE_DISCOVERY_FAMILY_PASSED_DEV_OOS_AND_CONTINUOUS"
+          elif oos is not None:
+              classification = "V55_PRICE_DISCOVERY_FAILED_UNTOUCHED_EVALUATION"
+          elif development is not None and development.get("promote"):
+              classification = "V55_UNTOUCHED_RUN_MISSING"
+          else:
+              classification = "V55_NO_DEVELOPMENT_BREAKTHROUGH"
+          report = {
+              "schema": "candidate-05-v55-diagnostic-loop-v1",
+              "classification": classification,
+              "selection": load("selection.json"),
+              "development": development,
+              "oos": oos,
+              "continuous_metrics": continuous_metrics,
+          }
+          (root / "loop_decision.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          print(json.dumps(report, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v55-diagnostic-loop-${{ github.sha }}
+          path: artifacts/candidate-05-v55-diagnostic-loop/**
+          if-no-files-found: warn
+          retention-days: 90
