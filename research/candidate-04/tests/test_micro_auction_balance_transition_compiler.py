@@ -23,11 +23,15 @@ class PastOnlyTests(unittest.TestCase):
 class BalanceTests(unittest.TestCase):
     def test_frozen_balance_uses_completed_window_only(self) -> None:
         rows = candidate.BALANCE_BARS + 1
+        completed_closes = [
+            99.5 if index % 2 == 0 else 100.5
+            for index in range(candidate.BALANCE_BARS)
+        ]
         data = pd.DataFrame(
             {
                 "high": [101.0] * candidate.BALANCE_BARS + [500.0],
                 "low": [99.0] * candidate.BALANCE_BARS + [1.0],
-                "close": [100.0] * rows,
+                "close": completed_closes + [400.0],
                 "atr": [2.0] * rows,
                 "metric_sum_open_interest": [100.0] * rows,
             }
@@ -84,8 +88,14 @@ class InventoryRouteTests(unittest.TestCase):
         expansion = candidate.classify_inventory_route(100.0, 101.0, 0.005)
         contraction = candidate.classify_inventory_route(100.0, 99.0, 0.005)
         marginal = candidate.classify_inventory_route(100.0, 100.1, 0.005)
-        self.assertEqual(expansion, ("NEW_INVENTORY", 0.01))
-        self.assertEqual(contraction, ("LIQUIDATION", -0.01))
+        self.assertIsNotNone(expansion)
+        self.assertIsNotNone(contraction)
+        assert expansion is not None
+        assert contraction is not None
+        self.assertEqual(expansion[0], "NEW_INVENTORY")
+        self.assertAlmostEqual(expansion[1], 0.01)
+        self.assertEqual(contraction[0], "LIQUIDATION")
+        self.assertAlmostEqual(contraction[1], -0.01)
         self.assertIsNone(marginal)
 
 
