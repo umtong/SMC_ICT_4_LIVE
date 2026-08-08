@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/candidate-03-v30-staged-container.yml"
       - "research/candidate-03/patch_candidate22_contested_countertrend.py"
+      - "research/candidate-03/patch_candidate22_semantic_test_contract.py"
       - "research/candidate-03/test_candidate22_contested_countertrend.py"
       - "research/candidate-03/aggregate_candidate22_contested_countertrend.py"
   workflow_dispatch:
@@ -55,12 +56,15 @@ jobs:
           python orchestrator/research/candidate-03/patch_candidate22_contested_countertrend.py \
             frozen-source/research/candidate-14/candidate16_failed_far.py \
             frozen-source/research/candidate-14/semantic_market_leadership.py
+          python orchestrator/research/candidate-03/patch_candidate22_semantic_test_contract.py \
+            frozen-source/research/candidate-14/test_semantic_market_leadership.py
           python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
           python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
           python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
           python orchestrator/research/candidate-03/patch_candidate16_native_exit_reason.py frozen-source/research/candidate-14/run_leadership_scdam_base.py
           grep -q 'SEMANTIC_FAR_MODERATE_COUNTERTREND_CONTESTED' frozen-source/research/candidate-14/candidate16_failed_far.py
           grep -q 'SEMANTIC_FAR_MODERATE_COUNTERTREND_CONTESTED' frozen-source/research/candidate-14/semantic_market_leadership.py
+          grep -q 'test_unanimous_moderate_countertrend_core_is_contested' frozen-source/research/candidate-14/test_semantic_market_leadership.py
           ! grep -q 'return _with(decision, True, "SEMANTIC_FAR_MODERATE_COUNTERTREND_UNANIMOUS")' frozen-source/research/candidate-14/semantic_market_leadership.py
           grep -q 'SEMANTIC_REJECTED_FAR_TWO_CLOSE_ACCEPTANCE_MARKET' frozen-source/research/candidate-14/candidate16_failed_far.py
           export PYTHONPATH="$GITHUB_WORKSPACE/frozen-source/research/candidate-14:$GITHUB_WORKSPACE/frozen-source/src"
