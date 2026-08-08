@@ -41,6 +41,8 @@ install_basis_contract()
 install_book_depth_gap_contract()
 
 from candidate21_response_backtest import run_backtest
+from latency_aligned_tick_clock import EXECUTION_OFFSET_NS
+from latency_aligned_tick_clock import MODELED_ORDER_LATENCY_NS
 from smc_ict_4.manifest import write_json_atomic
 
 
@@ -57,10 +59,11 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
     result["candidate"] = "candidate-21-same-minute-response-router"
     result["validation_mode"] = args.validation_mode
     result["reused_data_and_accounting"] = "research/candidate-05"
-    result["reused_execution_clock"] = "research/candidate-20/tick_backtest.py"
+    result["reused_execution_clock"] = "research/candidate-21/latency_aligned_tick_clock.py"
     result["reused_order_lifecycle"] = "research/candidate-18/fok_capped_strategy.py"
     result["new_alpha"] = (
-        "first-10-second shock separated from strictly later 10-60-second response"
+        "first-10-second shock separated from strictly later "
+        "10-60-second response"
     )
     result["reused_engine"] = "NautilusTrader BacktestNode"
     write_json_atomic(args.output.resolve() / "metrics.json", result)
@@ -74,6 +77,12 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
             "classification_thresholds": "sign coherence only; no fitted magnitude cutoffs",
             "branches": ["ACCEPTANCE", "FAILED_AUCTION", "UNRESOLVED"],
             "entry": "all-or-none price-capped FOK bracket at completed minute",
+            "execution_clock": (
+                "first actual aggTrade at or after modeled latency plus "
+                "50 ms safety margin"
+            ),
+            "modeled_order_latency_ns": MODELED_ORDER_LATENCY_NS,
+            "execution_selection_offset_ns": EXECUTION_OFFSET_NS,
             "risk_fraction": 0.03,
             "continuous_nav": True,
             "no_custom_matching_or_accounting": True,
