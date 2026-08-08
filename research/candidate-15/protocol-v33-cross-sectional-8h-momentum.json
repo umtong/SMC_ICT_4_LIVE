@@ -1,0 +1,96 @@
+{
+  "schema": "candidate-15-v33-cross-sectional-8h-momentum-v1",
+  "candidate": "candidate-15-v33-cross-sectional-8h-momentum",
+  "created_utc": "2026-08-09",
+  "research_question": "Can a fixed eight-hour cross-sectional/time-series momentum router select the current crypto price-discovery market often enough to generate robust cost-positive day trades after a separate one-hour confirmation?",
+  "external_mechanism": {
+    "sources": [
+      "cryptocurrency cross-sectional momentum research",
+      "time-series momentum across liquid futures",
+      "crypto intraday continuation conditional on volume and volatility"
+    ],
+    "reused": [
+      "rank assets by prior completed returns rather than fixed symbol identity",
+      "require agreement between short and medium trend horizons",
+      "select the strongest market only after cross-market state routing",
+      "use a volatility trailing stop rather than a fixed profit target"
+    ]
+  },
+  "scenario": {
+    "context": "every completed eight-hour boundary, compute trailing twenty-four-hour and seven-day returns from completed one-hour bars",
+    "state": {
+      "BREADTH_TREND_LEADER": "at least three markets agree in sign on both horizons; trade the strongest volatility-normalized market in the shared direction",
+      "CROSS_SECTIONAL_TREND_LEADER": "breadth is unresolved; trade only the unique largest residual score whose own horizons agree",
+      "UNRESOLVED": "all other states are no-trade"
+    },
+    "confirmation": "the wholly subsequent completed one-hour bar extends in the proposed direction with directional body and taker pressure",
+    "entry": "confirmation close",
+    "invalidation": "outside the confirmation-hour extreme plus half of prior twenty-four-hour ATR",
+    "management": "trail the best completed hourly close by one and a half prior twenty-four-hour ATR",
+    "exit": "trailing stop or before the next eight-hour decision boundary",
+    "arbitration": "one selected market and one global open position"
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and latest daily five-minute klines",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-04-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": [
+      "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04",
+      "2026-08-05", "2026-08-06", "2026-08-07"
+    ],
+    "visibility": "all state returns and ATR use completed one-hour bars ending at the decision boundary; entry follows a separately completed one-hour confirmation"
+  },
+  "fixed_rules": {
+    "decision_interval_hours": 8,
+    "short_horizon_hours": 24,
+    "medium_horizon_hours": 168,
+    "volatility_lookback_hours": 168,
+    "volatility_minimum_prior_hours": 72,
+    "atr_lookback_hours": 24,
+    "volume_median_lookback_decisions": 60,
+    "minimum_decision_volume_ratio": 0.8,
+    "breadth_fraction_min": 0.75,
+    "relative_score_min": 1.0,
+    "relative_leader_gap_min": 0.25,
+    "confirmation_hours": 1,
+    "minimum_confirmation_body_fraction": 0.5,
+    "minimum_directional_taker_pressure": 0.0,
+    "initial_stop_atr": 0.5,
+    "trailing_stop_atr": 1.5,
+    "maximum_hold_hours": 7,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_bar_stop_policy": "STOP_FIRST_CONSERVATIVE"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 1.0,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 15,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 3,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Only a fixed route positive in all declared splits advances to NautilusTrader.",
+    "reject": "Do not change horizons, decision clocks, ranking, confirmation or stop rules after evaluation."
+  }
+}
