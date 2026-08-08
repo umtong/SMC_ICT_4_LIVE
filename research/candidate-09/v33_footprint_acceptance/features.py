@@ -8,17 +8,19 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from features_base import *  # noqa: F401,F403 - preserve reused module API
+from features_base import *  # noqa: F401,F403 - preserve reused public API
 import features_base as _base
 
 _ORIGINAL_AGGREGATE = _base.aggregate_agg_trades
 _ORIGINAL_BUILD = _base.build_features
 _TICK_SIZE = 0.1  # Frozen BTCUSDT contract tick at the reused runner snapshot.
 _IMBALANCE_RATIO = 3.0
+_archive_spec = _base._archive_spec  # required by the gap-contract wrapper
 
 
 def _longest_run(
@@ -202,12 +204,18 @@ def build_features(
     return result
 
 
-# Candidate 05's load_range resolves these globals at call time. Replace only
-# the two observational transformations, then reuse all archive and checksum
-# logic unchanged.
-_base.aggregate_agg_trades = aggregate_agg_trades
-_base.build_features = build_features
-load_range = _base.load_range
+def load_range(*args: Any, **kwargs: Any):
+    """Delegate while preserving observational wrappers installed at runtime."""
+    # Candidate 05's book-depth gap contract patches this module after import.
+    # Synchronize those wrappers into features_base immediately before its
+    # authoritative load_range resolves its own globals.
+    _base.download_checked = globals()["download_checked"]
+    _base.aggregate_book_depth = globals()["aggregate_book_depth"]
+    _base.aggregate_agg_trades = aggregate_agg_trades
+    _base.build_features = globals()["build_features"]
+    return _base.load_range(*args, **kwargs)
+
+
 sha256_file = _base.sha256_file
 
 __all__ = [
