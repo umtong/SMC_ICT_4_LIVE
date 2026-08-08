@@ -1,0 +1,166 @@
+name: candidate-16-sol-seesaw-development
+
+on:
+  push:
+    branches: ["research/candidate-16"]
+    paths:
+      - ".github/workflows/candidate-16-sol-seesaw-development.yml"
+      - "research/candidate-16/strategy_sol_seesaw_rotation.py"
+      - "research/candidate-16/seesaw_active/**"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-sol-seesaw-development
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  seesaw:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 420
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16/seesaw_active:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-sol-seesaw
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify exact direction ablation and global slot composition
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05 research/candidate-16
+          python -m unittest discover -s research/candidate-16/tests -p 'test_cross_impact_context.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_timestamp_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_global_entry_slot_v4.py' -v
+          python - <<'PY'
+          import shared_account_strategy_variants_v2 as variants
+          from strategy_sol_seesaw_rotation import SolSeesawFlowRotationStrategy
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              cls = variants.final_shared_strategy_class(variants.WINNER, symbol)
+              assert issubclass(cls, SolSeesawFlowRotationStrategy)
+              print(symbol, cls.__mro__)
+          PY
+
+      - name: Run frozen seven-day direction ablation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/seesaw.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_sol_seesaw_rotation:SolSeesawFlowRotationStrategy",
+            "experiment_role": "CANDIDATE16_SOL_SEESAW_DIRECTION_ABLATION"
+          }
+          JSON
+          python research/candidate-16/seesaw_active/run_shared.py \
+            --winner-evidence "$ROOT/evidence/seesaw.json" \
+            --build-start 2023-07-07 \
+            --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 \
+            --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-16-sol-seesaw-development \
+            --output "$ROOT/development-7d" \
+            2>&1 | tee "$ROOT/development-console.log"
+
+      - name: Classify direction ablation
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math, os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          path = root / "development-7d" / "metrics.json"
+          metrics = json.loads(path.read_text()) if path.exists() else None
+          trades = int((metrics or {}).get("trades", 0) or 0)
+          ret = float((metrics or {}).get("total_return", 0.0) or 0.0)
+          pf = float((metrics or {}).get("profit_factor", 0.0) or 0.0)
+          integrity = bool(metrics) and bool(metrics.get("integrity_pass"))
+          if not metrics:
+              classification = "IMPLEMENTATION_FAILURE"
+          elif not integrity:
+              classification = "INVALID_EXECUTION_EVIDENCE"
+          elif trades == 0:
+              classification = "NO_EXECUTABLE_OCCURRENCES"
+          elif ret <= 0.0 or not math.isfinite(pf) or pf <= 1.0:
+              classification = "NEGATIVE_OR_NONPOSITIVE_EXPECTANCY"
+          elif trades < 4:
+              classification = "POSITIVE_BUT_TOO_FEW_SAMPLES"
+          else:
+              classification = "PROMOTE_UNCHANGED_TO_2025_07_OOS"
+          summary = {
+              "schema": "candidate-16-sol-seesaw-development-v1",
+              "classification": classification,
+              "only_traded_symbol": "SOLUSDT",
+              "semantic_change_from_failed_continuation": "DIRECTION_ONLY",
+              "metrics": metrics,
+          }
+          (root / "development_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Run unchanged predeclared 30-day OOS
+        if: ${{ hashFiles('artifacts/candidate-16-sol-seesaw/development_summary.json') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          classification=$(python -c 'import json; print(json.load(open("artifacts/candidate-16-sol-seesaw/development_summary.json"))["classification"])')
+          if [ "$classification" != "PROMOTE_UNCHANGED_TO_2025_07_OOS" ]; then
+            echo "not promoted: $classification"
+            exit 0
+          fi
+          python research/candidate-16/seesaw_active/run_shared.py \
+            --winner-evidence "$ROOT/evidence/seesaw.json" \
+            --build-start 2025-06-29 \
+            --build-end 2025-07-30 \
+            --evaluation-start 2025-07-01 \
+            --evaluation-end 2025-07-30 \
+            --cache .cache/candidate-16-sol-seesaw-oos \
+            --output "$ROOT/oos-30d" \
+            2>&1 | tee "$ROOT/oos-console.log"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ["ROOT"])
+          metrics=json.loads((root/'oos-30d/metrics.json').read_text())
+          result={
+              'schema':'candidate-16-sol-seesaw-oos-v1',
+              'predeclared_period':'2025-07-01/2025-07-30',
+              'logic_changed_after_development':False,
+              'metrics':metrics,
+          }
+          (root/'oos_summary.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=True)+'\n')
+          print(json.dumps(result,indent=2,sort_keys=True,allow_nan=True))
+          PY
+
+      - name: Verify evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/development_summary.json"
+          test -s "$ROOT/development-7d/metrics.json"
+          test -s "$ROOT/development-7d/orders.csv"
+          test -s "$ROOT/development-7d/positions.csv"
+          test -s "$ROOT/development-7d/account.csv"
+          test -s "$ROOT/development-7d/global_slot_audit.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-sol-seesaw-${{ github.sha }}
+          path: artifacts/candidate-16-sol-seesaw/**
+          if-no-files-found: warn
+          retention-days: 90
