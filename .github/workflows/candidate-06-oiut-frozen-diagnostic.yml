@@ -1,0 +1,155 @@
+name: Candidate 06 OIUT Frozen Diagnostic
+
+on:
+  push:
+    branches: [research/candidate-06]
+    paths:
+      - ".github/workflows/candidate-06-oiut-frozen-diagnostic.yml"
+      - "research/candidate-06/run_oiut_frozen_diagnostic.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-oiut-frozen-diagnostic
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  evaluate:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed NautilusTrader environment
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(f"NAUTILUS_VERSION={actual}")
+          PY
+
+      - name: Verify unchanged OIUT causal and execution contracts
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            research/candidate-06/run_oiut_frozen_diagnostic.py \
+            research/candidate-06/run_open_interest_unwind_transfer_matrix.py \
+            research/candidate-06/open_interest_inventory_regime_engine.py \
+            research/candidate-06/open_interest_inventory_nautilus_runner.py
+          python research/candidate-06/test_open_interest_inventory_regime_engine.py
+          python research/candidate-06/test_oiir_runner_contract.py
+          python research/candidate-06/test_futures_metrics_data.py
+          python research/candidate-06/test_futures_metrics_timestamp_contract.py
+          python - <<'PY'
+          import inspect
+          from run_oiut_frozen_diagnostic import main
+          from open_interest_inventory_nautilus_runner import run_open_interest_inventory_backtest
+
+          source = inspect.getsource(main)
+          runner = inspect.getsource(run_open_interest_inventory_backtest)
+          assert "for week_index in range(3)" in source
+          assert 'oiir_enable_build": False' in source
+          assert 'oiir_require_counter_inventory_rebuild": require_counter_rebuild' in source
+          assert "BacktestEngine" in runner
+          assert "engine.add_instrument" in runner
+          assert "engine.add_data" in runner
+          assert "engine.add_strategy" in runner
+          print("OIUT frozen configuration and Nautilus-only execution verified")
+          PY
+
+      - name: Run unchanged OIUT on all three sealed weeks
+        id: lab
+        continue-on-error: true
+        run: |
+          set +e
+          rm -rf artifacts/candidate-06/oiut-frozen-diagnostic
+          mkdir -p "$SMC4_RESEARCH_DATA" artifacts
+          python research/candidate-06/run_oiut_frozen_diagnostic.py \
+            --output artifacts/candidate-06/oiut-frozen-diagnostic \
+            > artifacts/candidate-06-oiut-frozen.stdout \
+            2> artifacts/candidate-06-oiut-frozen.stderr
+          code=$?
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Guarantee terminal evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p artifacts/candidate-06/oiut-frozen-diagnostic
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          printf '%s\n' "$code" > artifacts/candidate-06/oiut-frozen-diagnostic/workflow_exit_code.txt
+          cp artifacts/candidate-06-oiut-frozen.stdout artifacts/candidate-06/oiut-frozen-diagnostic/workflow_stdout.txt 2>/dev/null || true
+          cp artifacts/candidate-06-oiut-frozen.stderr artifacts/candidate-06/oiut-frozen-diagnostic/workflow_stderr.txt 2>/dev/null || true
+          if [ ! -f artifacts/candidate-06/oiut-frozen-diagnostic/summary.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-06/oiut-frozen-diagnostic")
+          payload = {
+              "long_evaluation_authorized": False,
+              "terminal_status": "IMPLEMENTATION_OR_DATA_FAILURE_BEFORE_SUMMARY",
+          }
+          (root / "summary.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+          echo "--- OIUT FROZEN SUMMARY ---"
+          cat artifacts/candidate-06/oiut-frozen-diagnostic/SUMMARY.md 2>/dev/null || cat artifacts/candidate-06/oiut-frozen-diagnostic/summary.json
+
+      - name: Commit complete frozen evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add -f artifacts/candidate-06/oiut-frozen-diagnostic
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record candidate-06 OIUT frozen diagnostic [candidate-06 evidence]"
+          git pull --rebase origin research/candidate-06
+          git push origin HEAD:research/candidate-06
+
+      - name: Upload complete evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-oiut-frozen-${{ github.sha }}
+          path: artifacts/candidate-06/oiut-frozen-diagnostic
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce research verdict
+        if: always()
+        run: |
+          code='${{ steps.lab.outputs.exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          exit "$code"
