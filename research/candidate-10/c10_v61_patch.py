@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from c10_long_interval_event_identity_patch import patch as patch_event_identity
 from c10_v47_patch import patch as patch_v47
 
 
@@ -16,6 +17,7 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 
 def patch(path: Path) -> None:
+    patch_event_identity(path.with_name("logic.py"))
     patch_v47(path)
     text = path.read_text(encoding="utf-8")
     text = replace_once(
