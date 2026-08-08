@@ -1,0 +1,180 @@
+name: candidate-07-parent-auction-state
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/diagnose_parent_auction_state.py"
+      - "research/candidate-07/tests/test_parent_auction_state.py"
+      - ".github/workflows/candidate-07-parent-auction-state.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify foundation and parent-state contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-parent-state-pyc \
+            python -m compileall -q research/candidate-07
+          python -m unittest \
+            research/candidate-07/tests/test_parent_auction_state.py -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+
+      - name: Reproduce frozen initiative-auction evidence
+        run: >-
+          python research/candidate-07/staged_initiative_auction.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --output artifacts/source-initiative
+          --data-root .research-data/candidate-07
+          --max-weeks 3
+
+      - name: Diagnose parent auction state
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          ROOT=artifacts/parent-auction
+          python research/candidate-07/diagnose_parent_auction_state.py \
+            --stage week-1 --start 2025-12-22 --end 2025-12-29 \
+            --run-root artifacts/source-initiative/week-1 \
+            --output "$ROOT/week-1" \
+            --data-root .research-data/candidate-07
+          python research/candidate-07/diagnose_parent_auction_state.py \
+            --stage week-2 --start 2025-01-27 --end 2025-02-03 \
+            --run-root artifacts/source-initiative/week-2 \
+            --output "$ROOT/week-2" \
+            --data-root .research-data/candidate-07
+          python research/candidate-07/diagnose_parent_auction_state.py \
+            --stage week-3 --start 2024-06-24 --end 2024-07-01 \
+            --run-root artifacts/source-initiative/week-3 \
+            --output "$ROOT/week-3" \
+            --data-root .research-data/candidate-07
+
+      - name: Build cross-stage parent-state evidence
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from math import prod
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("artifacts/parent-auction")
+          frames = []
+          stages = {}
+          for stage in ("week-1", "week-2", "week-3"):
+              frame = pd.read_csv(root / stage / "parent_auction_features.csv")
+              frames.append(frame)
+              summary = json.loads(
+                  (root / stage / "parent_auction_summary.json").read_text()
+              )
+              stages[stage] = {
+                  "absorption_trades": int(summary["absorption_trades"]),
+                  "context_results": summary["context_results"],
+              }
+          combined = pd.concat(frames, ignore_index=True)
+          combined.to_csv(root / "parent_auction_features_all.csv", index=False)
+
+          contexts = {}
+          for context in (
+              "COUNTER_INITIATIVE",
+              "WITH_INITIATIVE",
+              "BALANCE_OR_UNRESOLVED",
+          ):
+              selected = combined[combined["parent_context"] == context]
+              returns = selected["net_return_on_nav"].astype(float).tolist()
+              contexts[context] = {
+                  "trades": int(len(selected.index)),
+                  "wins": int(selected["win"].astype(bool).sum()),
+                  "losses": int((~selected["win"].astype(bool)).sum()),
+                  "win_rate": (
+                      float(selected["win"].astype(bool).mean())
+                      if len(selected.index)
+                      else 0.0
+                  ),
+                  "diagnostic_compounded_recorded_returns": (
+                      prod(1.0 + item for item in returns) - 1.0
+                      if returns
+                      else 0.0
+                  ),
+                  "by_stage": {
+                      stage: {
+                          "trades": int(len(part.index)),
+                          "wins": int(part["win"].astype(bool).sum()),
+                          "losses": int((~part["win"].astype(bool)).sum()),
+                      }
+                      for stage, part in selected.groupby("stage", sort=True)
+                  },
+              }
+          allowed = combined[combined["parent_context"] != "COUNTER_INITIATIVE"]
+          returns = allowed["net_return_on_nav"].astype(float).tolist()
+          decision = {
+              "candidate": "candidate-07-parent-auction-state-diagnostic",
+              "source_commit": "${{ github.sha }}",
+              "stages": stages,
+              "contexts": contexts,
+              "predeclared_rule": {
+                  "rule": "allow local reversal only outside counter-initiative parent state",
+                  "selected": int(len(allowed.index)),
+                  "wins": int(allowed["win"].astype(bool).sum()),
+                  "losses": int((~allowed["win"].astype(bool)).sum()),
+                  "win_rate": (
+                      float(allowed["win"].astype(bool).mean())
+                      if len(allowed.index)
+                      else 0.0
+                  ),
+                  "diagnostic_compounded_recorded_returns": (
+                      prod(1.0 + item for item in returns) - 1.0
+                      if returns
+                      else 0.0
+                  ),
+                  "exact_replay_required": True,
+              },
+          }
+          destination = root / "combined_parent_auction_diagnostic.json"
+          destination.write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n"
+          )
+          print(destination.read_text())
+          PY
+
+      - name: Print immutable result
+        if: always()
+        run: |
+          test -f artifacts/parent-auction/combined_parent_auction_diagnostic.json
+          cat artifacts/parent-auction/combined_parent_auction_diagnostic.json
+
+      - name: Preserve complete parent-state evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-parent-auction-state-${{ github.sha }}
+          path: |
+            artifacts/source-initiative
+            artifacts/parent-auction
+          retention-days: 14
+          if-no-files-found: error
