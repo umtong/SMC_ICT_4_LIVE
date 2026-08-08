@@ -8,6 +8,7 @@ on:
     paths:
       - research/candidate-13/v13_v4_trade_events.json
       - research/candidate-13/oi_inventory_state_diagnostics.py
+      - research/candidate-13/oi_inventory_state_diagnostics_v2.py
       - .github/workflows/candidate-13-v13-oi-state-diagnostics.yml
 
 permissions:
@@ -40,12 +41,14 @@ jobs:
         run: |
           set -euo pipefail
           smc4 doctor
-          python -m py_compile research/candidate-13/oi_inventory_state_diagnostics.py
+          python -m py_compile \
+            research/candidate-13/oi_inventory_state_diagnostics.py \
+            research/candidate-13/oi_inventory_state_diagnostics_v2.py
           python -m json.tool research/candidate-13/v13_v4_trade_events.json >/dev/null
       - name: Run checksum-verified causal OI diagnostic
         run: |
           set -euo pipefail
-          python research/candidate-13/oi_inventory_state_diagnostics.py \
+          python research/candidate-13/oi_inventory_state_diagnostics_v2.py \
             --events research/candidate-13/v13_v4_trade_events.json \
             --cache /tmp/candidate13-v13-oi-cache \
             --output-json research/candidate-13/v13-oi-state-diagnostics.json \
