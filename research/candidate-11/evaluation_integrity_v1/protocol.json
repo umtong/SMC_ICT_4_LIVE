@@ -1,0 +1,54 @@
+{
+  "binding_interval_registry": {
+    "consumed_holdout": [
+      "H1",
+      "H2",
+      "H3"
+    ],
+    "development_only": [
+      "W10",
+      "W11",
+      "W12",
+      "W13",
+      "W14"
+    ],
+    "rule": "An interval becomes permanently opened when any market-derived output from it is observed. Source or parameter changes can never restore its validation eligibility."
+  },
+  "created_utc": "2026-08-08",
+  "development_before_fresh_data": {
+    "data_scope": "opened data only",
+    "requirements": [
+      "Run one contiguous account timeline; do not restart NAV, detector state or portfolio state every seven days.",
+      "Define the claimed scenario domain before evaluation: direction, session, volatility state and cross-market role.",
+      "Aggregate trades sharing one UTC date, session, direction and common displacement into one economic cluster.",
+      "Require positive after-cost cluster log expectancy under leave-one-cluster-out deletion.",
+      "Require no single cluster to contribute more than 25% of positive log growth.",
+      "Require at least 20 independent economic clusters spanning at least three non-overlapping 28-day blocks before spending fresh data.",
+      "If the strategy claims both directions or multiple scenarios, each claimed domain must independently contain positive after-cost evidence; otherwise narrow the claim before source freeze."
+    ],
+    "success_claim_allowed": false
+  },
+  "fresh_validation": {
+    "execution": "Run each block exactly once through NautilusTrader with one continuous NAV/state timeline and the global one-slot contract.",
+    "first_block_failure": "Reject the frozen candidate. The block becomes opened development data. Any repair is a new candidate and requires a new untouched block.",
+    "first_block_pass": "Run the second block with byte-identical strategy and config.",
+    "minimum_evidence": [
+      "At least 12 independent economic clusters per 28-day block; fewer is a frequency failure, not permission to extend or choose another block after seeing results.",
+      "Positive after-cost NAV log growth in each block.",
+      "Pooled after-cost daily geometric NAV growth at least 1% across the precommitted 56 calendar days.",
+      "All project safety, risk-budget, cost, causality and global-slot audits pass.",
+      "No scenario/domain may be silently removed after seeing the first block."
+    ],
+    "no_tuning_between_blocks": true,
+    "selection": "Select two non-overlapping contiguous 28-day blocks from different calendar quarters using a committed deterministic seed and an exclusion registry of every opened date plus warmup.",
+    "source_freeze": "Commit exact strategy, config, data adapter, cost model and audit code before selecting or downloading the interval.",
+    "success_claim": "Allowed only when both untouched blocks pass without any source/config change."
+  },
+  "long_evaluation": {
+    "condition": "Only after fresh_validation succeeds.",
+    "failure_interpretation": "A failure is a logic/generalization failure unless evidence audit identifies a concrete implementation defect.",
+    "method": "Run the same frozen source on a long contiguous interval. Report rolling 7/28-day growth, independent-cluster expectancy, domain coverage and regime transitions; do not reset weekly."
+  },
+  "purpose": "Prevent isolated random-week winner's curse, adaptive holdout reuse, latent-regime duplication and weekly-state reset from being mistaken for durable alpha.",
+  "schema": "candidate-11-contiguous-validation-protocol-v1"
+}
