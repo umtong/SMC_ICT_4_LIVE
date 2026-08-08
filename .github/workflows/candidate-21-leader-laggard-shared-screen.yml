@@ -36,11 +36,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$ROOT"
           smc4 doctor
           python -m compileall -q research/candidate-21
           python -m unittest discover -s research/candidate-21/tests -p 'test_leader_laggard_router.py' -v
-          python -m unittest research/candidate-05/tests/test_global_entry_slot_v4.py -v
-          python -m unittest research/candidate-05/tests/test_shared_account_strategy_variants_v2.py -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_global_entry_slot_v4.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_shared_account_strategy_variants.py' -v
 
       - name: Inject candidate 21 policy into the existing shared-account family
         shell: bash
@@ -90,6 +91,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$ROOT"
           python - <<'PY'
           import json
           import os
