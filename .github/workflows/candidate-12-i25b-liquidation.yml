@@ -1,0 +1,173 @@
+name: candidate-12-i25b-exact-liquidation-reuse
+
+on:
+  push:
+    branches: ["research/candidate-12"]
+    paths:
+      - ".github/workflows/candidate-12-i25b-liquidation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-12-i25b-liquidation-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify I19 and reproduce authoritative baselines
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          test "$(git hash-object research/candidate-12/logic.py)" = "848b278d492249cee867f4c8978a1e62086b6d45"
+          test "$(git hash-object research/candidate-12/test_logic.py)" = "c145bdfcb9576a6675dc354e4ae5f40bb266e5b6"
+          test "$(git hash-object research/candidate-12/config.json)" = "160557c044e7fc315fc802bfe7f1c3f974b53374"
+          test "$(git hash-object research/candidate-12/strategy_adapter.py)" = "c8f1a2c30fc598bda1b03adaafde3b4a55f50018"
+          python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+          for WEEK in W1 W12; do
+            OUTPUT="artifacts/candidate-12/BTCUSDT-${WEEK}"
+            mkdir -p "$OUTPUT"
+            python research/candidate-12/run.py --symbol BTCUSDT --week "$WEEK" --output "$OUTPUT" \
+              | tee "$OUTPUT.console.json"
+          done
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          root = Path("artifacts/candidate-12")
+          expected = {"W1": 6, "W12": 4}
+          for week, trades in expected.items():
+              item = json.loads((root / f"BTCUSDT-{week}" / "metrics.json").read_text())
+              assert item["closed_trades"] == trades, item
+              assert item["wins"] == trades and item["losses"] == 0, item
+              assert item["risk_budget_passed"] and item["global_slot_passed"], item
+              assert item["event_log_valid"] and not item["engine_errors"], item
+              assert not item["liquidation_detected"], item
+          PY
+
+      - name: Restore exact Candidate 28 diagnostic and Candidate 05 contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags --depth=1 origin research/candidate-28
+          git restore --source=FETCH_HEAD -- \
+            research/candidate-05 \
+            research/candidate-28/liquidation_state_diagnostic.py
+          test "$(git hash-object research/candidate-28/liquidation_state_diagnostic.py)" \
+            = "3459c421184fcd6195699707a4e0457b4df95207"
+          python -m py_compile \
+            research/candidate-05/*.py \
+            research/candidate-28/liquidation_state_diagnostic.py
+
+      - name: Run exact liquidation diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-12/I25b-liquidation/W1
+          python research/candidate-28/liquidation_state_diagnostic.py \
+            --symbol BTCUSDT \
+            --build-start 2023-06-21 \
+            --build-end 2023-07-03 \
+            --evaluation-start 2023-06-25 \
+            --evaluation-end 2023-07-01 \
+            --cache /tmp/candidate-12-i25b-cache \
+            --output artifacts/candidate-12/I25b-liquidation/W1 \
+            --round-trip-bps 20.0 \
+            | tee artifacts/candidate-12/I25b-liquidation/W1.console.json
+
+          mkdir -p artifacts/candidate-12/I25b-liquidation/W12
+          python research/candidate-28/liquidation_state_diagnostic.py \
+            --symbol BTCUSDT \
+            --build-start 2025-12-20 \
+            --build-end 2026-01-01 \
+            --evaluation-start 2025-12-24 \
+            --evaluation-end 2025-12-30 \
+            --cache /tmp/candidate-12-i25b-cache \
+            --output artifacts/candidate-12/I25b-liquidation/W12 \
+            --round-trip-bps 20.0 \
+            | tee artifacts/candidate-12/I25b-liquidation/W12.console.json
+
+      - name: Summarize only independent liquidation opportunities
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path("artifacts/candidate-12")
+          output = {
+              "schema": "candidate-12-i25b-exact-liquidation-reuse-v1",
+              "not_performance_evidence": True,
+              "source_commit": "c1e2897c0dff069ba88a288465f48d29f8f9a5ed",
+              "source_blob": "3459c421184fcd6195699707a4e0457b4df95207",
+              "weeks": {},
+          }
+          for week in ("W1", "W12"):
+              positions = pd.read_csv(root / f"BTCUSDT-{week}" / "positions.csv")
+              occupied = []
+              for row in positions.itertuples(index=False):
+                  a = pd.Timestamp(row.ts_opened)
+                  b = pd.Timestamp(row.ts_closed)
+                  a = a.tz_localize("UTC") if a.tzinfo is None else a.tz_convert("UTC")
+                  b = b.tz_localize("UTC") if b.tzinfo is None else b.tz_convert("UTC")
+                  occupied.append((a, b))
+
+              episodes = pd.read_csv(
+                  root / "I25b-liquidation" / week / "liquidation_state_episodes.csv"
+              )
+              records = []
+              for row in episodes.to_dict(orient="records"):
+                  entry = pd.Timestamp(row["entry_time"])
+                  entry = entry.tz_localize("UTC") if entry.tzinfo is None else entry.tz_convert("UTC")
+                  row["entry_overlaps_i19_position"] = any(a <= entry <= b for a, b in occupied)
+                  records.append(row)
+              actionable = [r for r in records if r["route"] != "UNRESOLVED"]
+              additive = [r for r in actionable if not r["entry_overlaps_i19_position"]]
+              by_route = {}
+              for route in ("REVERSAL", "CONTINUATION", "UNRESOLVED"):
+                  subset = [r for r in records if r["route"] == route]
+                  by_route[route] = {
+                      "episodes": len(subset),
+                      **{
+                          f"mean_net_{h}m_bps": (
+                              None if not subset else sum(float(r[f"net_{h}m_bps"]) for r in subset) / len(subset)
+                          )
+                          for h in (15, 30, 60, 120)
+                      },
+                  }
+              output["weeks"][week] = {
+                  "all_episodes": len(records),
+                  "actionable_episodes": len(actionable),
+                  "additive_actionable_episodes": len(additive),
+                  "route_summary": by_route,
+                  "additive_records": additive,
+                  "source_diagnostic": json.loads(
+                      (root / "I25b-liquidation" / week / "diagnostic.json").read_text()
+                  ),
+              }
+          path = root / "I25b-liquidation" / "summary.json"
+          path.write_text(json.dumps(output, indent=2, sort_keys=True, allow_nan=False) + "\n")
+          print(json.dumps(output, indent=2, sort_keys=True, allow_nan=False))
+          PY
+
+      - name: Preserve exact reuse evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-I25b-exact-liquidation-reuse-${{ github.sha }}
+          path: artifacts/candidate-12
+          if-no-files-found: warn
