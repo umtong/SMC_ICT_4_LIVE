@@ -69,16 +69,19 @@ def main() -> None:
     assert not generated, "initiative context emitted an entry"
     assert "BTCUSDT" not in engine._episodes, "information owner was chased"
 
-    # Followers deliver beyond their initiative and leave the first FVG.
+    # Followers deliver beyond their initiative and leave the first FVG. The
+    # detector can only confirm it when all three component bars are later than
+    # the first outside-delivery close, so the FVG becomes visible at minute 39.
     batch(36, {"BTCUSDT": 0.30, "ETHUSDT": 0.28, "SOLUSDT": 0.26})
     batch(37, {"BTCUSDT": 0.08, "ETHUSDT": 0.08, "SOLUSDT": 0.08})
     batch(38, {"BTCUSDT": 0.35, "ETHUSDT": 0.32, "SOLUSDT": 0.30})
     batch(39, {"BTCUSDT": 0.12, "ETHUSDT": 0.12, "SOLUSDT": 0.12})
 
-    # The first FVG is actually retraced and held outside the initiative.
+    # Retrace the now-confirmed FVG midpoint but close fractionally above its
+    # lower boundary and outside the original initiative range.
     batch(
         40,
-        {"BTCUSDT": -0.50, "ETHUSDT": -0.47, "SOLUSDT": -0.44},
+        {"BTCUSDT": -0.42, "ETHUSDT": -0.39, "SOLUSDT": -0.37},
         flow=0.30,
     )
     batch(41, {"BTCUSDT": 0.03, "ETHUSDT": 0.03, "SOLUSDT": 0.03})
