@@ -1,0 +1,171 @@
+name: candidate-37-v2-large-event-study
+
+on:
+  push:
+    branches: ["research/candidate-37"]
+    paths:
+      - "research/candidate-37/build_chunk.py"
+      - "research/candidate-37/large_event_router.py"
+      - "research/candidate-37/v2_large_event_study.py"
+      - "research/candidate-37/test_large_event_router.py"
+      - ".github/workflows/candidate-37-v2-large-event-study.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-37-v2-large-event-study
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      chunks: ${{ steps.matrix.outputs.chunks }}
+    steps:
+      - id: matrix
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+          months = [
+              ("2025-09", "2025-09-01", "2025-09-30"),
+              ("2025-10", "2025-10-01", "2025-10-31"),
+          ]
+          chunks = [
+              {"symbol": symbol, "name": name, "start": start, "end": end}
+              for name, start, end in months
+              for symbol in symbols
+          ]
+          assert len(chunks) == 8
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write("chunks=" + json.dumps(chunks, separators=(",", ":")) + "\n")
+          print(json.dumps(chunks, indent=2))
+          PY
+
+  preprocess:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        chunk: ${{ fromJson(needs.plan.outputs.chunks) }}
+    env:
+      PYTHONPATH: research/candidate-37
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/c37-v2-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and pure decision contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-37
+          python -m unittest research/candidate-37/test_large_event_router.py -v
+
+      - name: Build checksum-owned rich minute observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-37/build_chunk.py \
+            --symbol "${{ matrix.chunk.symbol }}" \
+            --core-start "${{ matrix.chunk.start }}" \
+            --core-end "${{ matrix.chunk.end }}" \
+            --warmup-days 3 \
+            --cache ".cache/c37-v2/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}" \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate37-v2-${{ matrix.chunk.name }}-${{ matrix.chunk.symbol }}-${{ github.sha }}
+          path: |
+            artifacts/c37-v2-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}/klines.csv.gz
+            artifacts/c37-v2-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}/features.csv.gz
+            artifacts/c37-v2-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}/chunk_manifest.json
+            artifacts/c37-v2-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}/candidate37_chunk.json
+            artifacts/c37-v2-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}/console.log
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  study:
+    needs: preprocess
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-37
+      PYTHONUNBUFFERED: "1"
+      INPUT: artifacts/c37-v2-downloaded
+      ROOT: artifacts/c37-v2-study
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate37-v2-*-${{ github.sha }}
+          path: ${{ env.INPUT }}
+          merge-multiple: false
+
+      - name: Verify owned inputs and run fixed two-split study
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find "$INPUT" -name chunk_manifest.json | wc -l)" -eq 8
+          python -m compileall -q research/candidate-37
+          python -m unittest research/candidate-37/test_large_event_router.py -v
+          mkdir -p "$ROOT"
+          python research/candidate-37/v2_large_event_study.py \
+            --input-root "$INPUT" \
+            --output "$ROOT" \
+            --start 2025-09-01 \
+            --end 2025-10-31 \
+            --split 2025-10-01 \
+            --horizon-minutes 180 \
+            --lockout-minutes 120 \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Enforce claim boundary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f "$ROOT/study.json"; then
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          result = json.loads((Path(os.environ["ROOT"]) / "study.json").read_text())
+          assert result["claim_scope"] == "CAUSAL_STRUCTURAL_PATH_LABELS_ONLY_NO_ORDER_FILL_POSITION_PNL_OR_NAV_SIMULATION"
+          assert result["gate_checks"]["exact_four_symbol_minute_clock"] is True
+          assert result["gate_checks"]["future_input_violations"] == 0
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          else
+            echo "study.json absent; inspect console.log"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate37-v2-large-event-study-${{ github.sha }}
+          path: artifacts/c37-v2-study/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
