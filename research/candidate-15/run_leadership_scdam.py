@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Candidate 15 V5 Nautilus portfolio runner."""
+"""Candidate 15 V6 residual-laggard Nautilus portfolio runner."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,6 +17,10 @@ import market_leadership as _market_leadership  # noqa: E402
 from candidate15_portfolio_materializer import (  # noqa: E402,F401
     far_stop_preserves_sweep_invalidation,
     materialize_candidate15_portfolio_source,
+)
+from candidate15_v6_residual_laggard_materializer import (  # noqa: E402,F401
+    materialize_residual_laggard_source,
+    residual_laggard_symbol,
 )
 from portfolio_materializer import materialize_combined_portfolio_source  # noqa: E402
 from quarter_hour_persistent_initiative import (  # noqa: E402,F401
@@ -41,4 +45,5 @@ _SOURCE = _BASE.read_text(encoding="utf-8")
 _SOURCE = materialize_runner_source(_SOURCE)
 _SOURCE = materialize_combined_portfolio_source(_SOURCE)
 _SOURCE = materialize_candidate15_portfolio_source(_SOURCE)
+_SOURCE = materialize_residual_laggard_source(_SOURCE)
 exec(compile(_SOURCE, str(_BASE), "exec"), globals(), globals())
