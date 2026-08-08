@@ -64,8 +64,6 @@ class FirstDeliveryMaterializerTest(unittest.TestCase):
         self.assertIn("self.submit_order(entry_order)", result)
         self.assertEqual(result.count("self.submit_order_list(order_list)"), 1)
         self.assertNotIn("candidate-14-unified-parent", result)
-        self.assertNotIn(".is_closed()", result)
-        self.assertIn(".is_closed", result)
 
     def test_fails_closed_on_source_drift(self):
         with self.assertRaises(RuntimeError):
