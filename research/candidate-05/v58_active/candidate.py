@@ -14,8 +14,12 @@ PARENT = HERE.parent
 if str(PARENT) not in sys.path:
     sys.path.append(str(PARENT))
 
+from order_failure_idempotency_contract import install as install_failure_idempotency  # noqa: E402
 from spot_price_discovery_contract import install as install_spot_price_discovery  # noqa: E402
 
+# These contracts affect observation/evidence integrity only.  They do not
+# change any v58 market decision, price, size, order or account rule.
+install_failure_idempotency()
 install_spot_price_discovery()
 
 SPEC = importlib.util.spec_from_file_location(
