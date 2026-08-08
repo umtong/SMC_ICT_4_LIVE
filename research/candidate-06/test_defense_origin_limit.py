@@ -6,7 +6,11 @@ from __future__ import annotations
 from math import isclose
 from types import SimpleNamespace
 
-from defense_origin_limit import _next_interval_boundary_ns, resolve_entry_placement
+from defense_origin_limit import (
+    BAR_BOUNDARY_GTD_ENCODING_NS,
+    _next_interval_boundary_ns,
+    resolve_entry_placement,
+)
 
 
 MINUTE = 60 * 1_000_000_000
@@ -174,8 +178,10 @@ def main() -> int:
     assert failed_trap.order_type == "MARKET"
 
     # LCOR_RF short: the completed second failure closes below the already-known
-    # failed ownership boundary. The exact midpoint is a passive sell limit and
-    # expires at the end of the same 15-minute source auction.
+    # failed ownership boundary. The exact midpoint is a passive sell limit.
+    # Its logical lifetime ends at 20:15; the GTD transport timestamp is one
+    # microsecond later so the right-edge-stamped [20:14, 20:15) bar is matched
+    # before expiry without admitting the next 20:15-20:16 auction interval.
     lcor_short = _signal(
         "SHORT",
         64107.7,
@@ -204,15 +210,47 @@ def main() -> int:
         confirmation_passed=True,
         trap_armed=False,
     )
+    logical_boundary = (20 * 60 + 15) * MINUTE
     assert lcor_placement.reason is None, lcor_placement
     assert lcor_placement.order_type == "LIMIT"
     assert lcor_placement.mode == "FAILED_BOUNDARY_HALF_BACK_LIMIT"
     assert isclose(lcor_placement.expected_entry, 64339.65)
     assert lcor_placement.expected_entry > lcor_snapshot.observation.close
-    assert lcor_placement.expiry_ts_ns == (20 * 60 + 15) * MINUTE
+    assert lcor_placement.expiry_ts_ns == (
+        logical_boundary + BAR_BOUNDARY_GTD_ENCODING_NS
+    )
+    assert lcor_placement.details["logical_auction_boundary_ts_ns"] == logical_boundary
+    assert lcor_placement.details["bar_boundary_gtd_encoding_ns"] == 1_000
     assert lcor_placement.details["remaining_seconds"] == 60.0
     assert lcor_placement.details["boundary_is_favorable"] is True
     assert lcor_placement.details["limit_is_passive_at_submission"] is True
+
+    # An LCOR_RF decision observed at the logical boundary has no market-time
+    # lifetime. The microsecond transport offset must never create one.
+    lcor_boundary_snapshot = _snapshot(
+        logical_boundary,
+        64359.3,
+        64373.5,
+        64300.0,
+        64321.6,
+    )
+    lcor_boundary_placement = resolve_entry_placement(
+        lcor_short,
+        lcor_short,
+        lcor_boundary_snapshot,
+        {
+            "lcor_reaccept_failure_entry_execution": (
+                "FAILED_BOUNDARY_HALF_BACK_LIMIT"
+            ),
+            "ciot_auction_period_minutes": 15,
+        },
+        confirmation_passed=True,
+        trap_armed=False,
+    )
+    assert lcor_boundary_placement.reason == (
+        "FAILED_BOUNDARY_HALF_BACK_HAS_NO_CAUSAL_LIFETIME"
+    )
+    assert lcor_boundary_placement.details["remaining_seconds"] == 0.0
 
     # The mirrored long contract places its passive bid halfway back to a
     # lower failed boundary.
