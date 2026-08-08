@@ -1,0 +1,207 @@
+name: candidate-21-flow-sweep-development
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research/candidate-21"]
+    paths:
+      - "research/candidate-21/candidate21_flow_sweep_strategy.py"
+      - "research/candidate-21/candidate21_flow_sweep_backtest.py"
+      - "research/candidate-21/candidate_flow_sweep.py"
+      - ".github/workflows/candidate-21-flow-sweep-development.yml"
+
+concurrency:
+  group: candidate-21-flow-sweep-development
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify flow-sweep contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-21
+          python -m unittest discover -s research/candidate-21/tests -p 'test_flow_carry_logic.py' -v
+          python -m unittest discover -s research/candidate-21/tests -p 'test_event_time.py' -v
+          python -m unittest discover -s research/candidate-21/tests -p 'test_*.py' -v
+          python - <<'PY'
+          from candidate21_flow_sweep_backtest import run_backtest
+          from candidate21_flow_sweep_strategy import Candidate21FlowSweepConfig
+          from candidate21_flow_sweep_strategy import Candidate21FlowSweepStrategy
+          assert callable(run_backtest)
+          assert Candidate21FlowSweepConfig is not None
+          assert Candidate21FlowSweepStrategy is not None
+          PY
+
+  observed-development:
+    needs: contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: viewed-2023-10-16
+            build_start: "2023-10-13"
+            build_end: "2023-10-22"
+            evaluation_start: "2023-10-16"
+            evaluation_end: "2023-10-22"
+          - name: known-2023-12-25
+            build_start: "2023-12-22"
+            build_end: "2023-12-31"
+            evaluation_start: "2023-12-25"
+            evaluation_end: "2023-12-31"
+          - name: viewed-2024-07-08
+            build_start: "2024-07-05"
+            build_end: "2024-07-14"
+            evaluation_start: "2024-07-08"
+            evaluation_end: "2024-07-14"
+          - name: viewed-2025-09-22
+            build_start: "2025-09-19"
+            build_end: "2025-09-28"
+            evaluation_start: "2025-09-22"
+            evaluation_end: "2025-09-28"
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-21/flow-sweep-${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run synchronized flow sweep
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          mkdir -p "$ROOT"
+          python research/candidate-21/candidate_flow_sweep.py stage \
+            --config research/candidate-21/config.json \
+            --build-start "${{ matrix.build_start }}" \
+            --build-end "${{ matrix.build_end }}" \
+            --evaluation-start "${{ matrix.evaluation_start }}" \
+            --evaluation-end "${{ matrix.evaluation_end }}" \
+            --cache ".cache/candidate-21/flow-sweep/${{ matrix.name }}" \
+            --output "$ROOT" \
+            --validation-mode "development-synchronized-flow-sweep" \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Verify execution and summarize
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads(
+              (root / "strategy_diagnostics.json").read_text()
+          )
+          contract = json.loads(
+              (root / "candidate21_flow_sweep_contract.json").read_text()
+          )
+          orders = pd.read_csv(root / "orders.csv")
+          if contract.get("entry_change") != "MARKET_IOC_TO_MARKET_GTC":
+              raise SystemExit(contract)
+          if contract.get("alpha_change_from_flow_carry") != "NONE":
+              raise SystemExit(contract)
+          if contract.get("risk_fraction") != 0.03:
+              raise SystemExit(contract)
+          if contract.get("target") is not None:
+              raise SystemExit(contract)
+          if metrics.get("trade_execution") is not False:
+              raise SystemExit(metrics)
+          if metrics.get("bar_execution") is not True:
+              raise SystemExit(metrics)
+          if int(diagnostics.get("max_simultaneous_entry_intents", 0)) > 1:
+              raise SystemExit(diagnostics)
+          if int(diagnostics.get("max_open_positions_observed", 0)) > 1:
+              raise SystemExit(diagnostics)
+          entries = orders[
+              orders["tags"].astype(str).str.contains(
+                  "CANDIDATE21_SYNC_FLOW_SWEEP_GTC",
+                  regex=False,
+              )
+          ].copy()
+          entry_execution = []
+          for _, order in entries.iterrows():
+              quantity = float(order["quantity"])
+              filled = float(order["filled_qty"])
+              entry_execution.append(
+                  {
+                      "quantity": quantity,
+                      "filled_qty": filled,
+                      "fill_fraction": (
+                          filled / quantity if quantity > 0.0 else 0.0
+                      ),
+                      "status": str(order["status"]),
+                      "time_in_force": str(order["time_in_force"]),
+                  }
+              )
+          keys = (
+              "candidate21_flow_carry_acceptance_seen",
+              "candidate21_flow_carry_not_full_hour",
+              "candidate21_flow_carry_trend_rejected",
+              "candidate21_flow_carry_entries",
+              "candidate21_flow_sweep_gtc_entries",
+              "candidate21_flow_carry_protective_stops",
+              "candidate21_flow_carry_protective_rejections",
+              "candidate21_flow_carry_fail_closes",
+              "candidate21_flow_carry_time_exits",
+              "candidate21_flow_carry_funding_exits",
+              "entry_submissions",
+              "order_rejections",
+              "max_open_positions_observed",
+          )
+          summary = {
+              "metrics": metrics,
+              "contract": contract,
+              "entry_execution": entry_execution,
+              "routing": {
+                  key: diagnostics.get(key, 0)
+                  for key in keys
+              },
+          }
+          (root / "candidate21_flow_sweep_summary.json").write_text(
+              json.dumps(
+                  summary,
+                  indent=2,
+                  sort_keys=True,
+                  allow_nan=True,
+              )
+              + "\n"
+          )
+          print(
+              json.dumps(
+                  summary,
+                  indent=2,
+                  sort_keys=True,
+                  allow_nan=True,
+              )
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-21-flow-sweep-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-21/flow-sweep-${{ matrix.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
