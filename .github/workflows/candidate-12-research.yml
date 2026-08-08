@@ -1,32 +1,32 @@
-name: candidate-12-i24b-one-minute-ownership-diagnostic
+name: candidate-12-i25-reuse-liquidation-state-diagnostic
 
 on:
   push:
     branches: ["research/candidate-12"]
     paths:
       - ".github/workflows/candidate-12-research.yml"
-      - "research/candidate-12/diagnose_i24_spot_perp.py"
-      - "research/candidate-12/diagnose_i24b_spot_perp.py"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i24b-spot-perp-${{ github.sha }}
+  group: candidate-12-i25-liquidation-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
   diagnostic:
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 90
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user root
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Verify unchanged I19 strategy and I24b diagnostic
+      - name: Verify unchanged I19 production candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -38,14 +38,17 @@ jobs:
           python -m compileall -q research/candidate-12
           python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
 
-      - name: Reproduce I19 W1 and W12 baseline
+      - name: Reproduce I19 W1 and W12 account evidence
         shell: bash
         run: |
           set -euo pipefail
-          for W in W1 W12; do
-            O="artifacts/candidate-12/BTCUSDT-${W}"
-            mkdir -p "$O"
-            python research/candidate-12/run.py --symbol BTCUSDT --week "$W" --output "$O" | tee "$O.console.json"
+          for WEEK in W1 W12; do
+            OUTPUT="artifacts/candidate-12/BTCUSDT-${WEEK}"
+            mkdir -p "$OUTPUT"
+            python research/candidate-12/run.py \
+              --symbol BTCUSDT \
+              --week "$WEEK" \
+              --output "$OUTPUT" | tee "$OUTPUT.console.json"
           done
           python - <<'PY'
           from pathlib import Path
@@ -61,21 +64,117 @@ jobs:
               assert not item["liquidation_detected"], item
           PY
 
-      - name: Screen one-minute ownership and five-minute execution
+      - name: Reuse exact Candidate 28 liquidation-state diagnostic
         shell: bash
         run: |
           set -euo pipefail
-          python research/candidate-12/diagnose_i24b_spot_perp.py \
-            --weeks W1 W12 \
-            --data-dir /tmp/candidate-12-i24b-data \
-            --baseline-root artifacts/candidate-12 \
-            --output artifacts/candidate-12/I24b-spot-perp-ownership.json
-          cat artifacts/candidate-12/I24b-spot-perp-ownership.json
+          git fetch --no-tags --depth=1 origin research/candidate-28
+          mkdir -p research/candidate-28
+          git show FETCH_HEAD:research/candidate-28/liquidation_state_diagnostic.py \
+            > research/candidate-28/liquidation_state_diagnostic.py
+          test "$(git hash-object research/candidate-28/liquidation_state_diagnostic.py)" \
+            = "3459c421184fcd6195699707a4e0457b4df95207"
+          python -m py_compile research/candidate-28/liquidation_state_diagnostic.py
 
-      - name: Preserve reproducible diagnostic evidence
+      - name: Run W1 liquidation-state diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT=artifacts/candidate-12/I25-liquidation/W1
+          mkdir -p "$OUTPUT"
+          python research/candidate-28/liquidation_state_diagnostic.py \
+            --symbol BTCUSDT \
+            --build-start 2023-06-21 \
+            --build-end 2023-07-03 \
+            --evaluation-start 2023-06-25 \
+            --evaluation-end 2023-07-01 \
+            --cache /tmp/candidate-12-i25-cache \
+            --output "$OUTPUT" \
+            --round-trip-bps 20.0 | tee "$OUTPUT.console.json"
+
+      - name: Run W12 liquidation-state diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT=artifacts/candidate-12/I25-liquidation/W12
+          mkdir -p "$OUTPUT"
+          python research/candidate-28/liquidation_state_diagnostic.py \
+            --symbol BTCUSDT \
+            --build-start 2025-12-20 \
+            --build-end 2026-01-01 \
+            --evaluation-start 2025-12-24 \
+            --evaluation-end 2025-12-30 \
+            --cache /tmp/candidate-12-i25-cache \
+            --output "$OUTPUT" \
+            --round-trip-bps 20.0 | tee "$OUTPUT.console.json"
+
+      - name: Join liquidation episodes to I19 occupied intervals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import pandas as pd
+
+          root = Path("artifacts/candidate-12")
+          result = {
+              "schema": "candidate-12-i25-liquidation-reuse-v1",
+              "source_commit": "c1e2897c0dff069ba88a288465f48d29f8f9a5ed",
+              "source_blob": "3459c421184fcd6195699707a4e0457b4df95207",
+              "not_performance_evidence": True,
+              "weeks": {},
+          }
+          for week in ("W1", "W12"):
+              positions_path = root / f"BTCUSDT-{week}" / "positions.csv"
+              positions = pd.read_csv(positions_path)
+              occupied = []
+              for row in positions.itertuples(index=False):
+                  start = pd.Timestamp(row.ts_opened)
+                  end = pd.Timestamp(row.ts_closed)
+                  start = start.tz_localize("UTC") if start.tzinfo is None else start.tz_convert("UTC")
+                  end = end.tz_localize("UTC") if end.tzinfo is None else end.tz_convert("UTC")
+                  occupied.append((start, end))
+
+              episode_path = root / "I25-liquidation" / week / "liquidation_state_episodes.csv"
+              episodes = pd.read_csv(episode_path)
+              records = []
+              for row in episodes.to_dict(orient="records"):
+                  entry = pd.Timestamp(row["entry_time"])
+                  entry = entry.tz_localize("UTC") if entry.tzinfo is None else entry.tz_convert("UTC")
+                  row["entry_overlaps_i19_position"] = any(a <= entry <= b for a, b in occupied)
+                  records.append(row)
+              actionable = [row for row in records if row["route"] in ("REVERSAL", "CONTINUATION")]
+              additive = [row for row in actionable if not row["entry_overlaps_i19_position"]]
+              route_summary = {}
+              for route in ("REVERSAL", "CONTINUATION", "UNRESOLVED"):
+                  subset = [row for row in records if row["route"] == route]
+                  route_summary[route] = {
+                      "episodes": len(subset),
+                      "mean_net_15m_bps": None if not subset else sum(float(r["net_15m_bps"]) for r in subset) / len(subset),
+                      "mean_net_30m_bps": None if not subset else sum(float(r["net_30m_bps"]) for r in subset) / len(subset),
+                      "mean_net_60m_bps": None if not subset else sum(float(r["net_60m_bps"]) for r in subset) / len(subset),
+                      "mean_net_120m_bps": None if not subset else sum(float(r["net_120m_bps"]) for r in subset) / len(subset),
+                  }
+              result["weeks"][week] = {
+                  "all_episodes": len(records),
+                  "actionable_episodes": len(actionable),
+                  "additive_actionable_episodes": len(additive),
+                  "route_summary": route_summary,
+                  "additive_records": additive,
+                  "source_diagnostic": json.loads(
+                      (root / "I25-liquidation" / week / "diagnostic.json").read_text()
+                  ),
+              }
+          output = root / "I25-liquidation" / "summary.json"
+          output.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+          PY
+
+      - name: Preserve reproducible liquidation evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I24b-spot-perp-ownership-${{ github.sha }}
+          name: candidate-12-I25-liquidation-reuse-${{ github.sha }}
           path: artifacts/candidate-12
           if-no-files-found: warn
