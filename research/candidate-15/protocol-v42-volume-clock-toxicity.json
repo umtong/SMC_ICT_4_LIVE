@@ -1,0 +1,108 @@
+{
+  "schema": "candidate-15-v42-volume-clock-toxicity-v1",
+  "candidate": "candidate-15-v42-volume-clock-toxicity",
+  "created_utc": "2026-08-09",
+  "research_question": "Can prior-only volume-synchronized buckets distinguish toxic information-driven price discovery from absorbed order flow strongly enough for cost-positive multi-hour day trades?",
+  "precondition": {
+    "skip_when_any_v33_v41_advance_exists": true
+  },
+  "external_mechanism": {
+    "sources": [
+      "VPIN and volume-synchronized probability of informed trading",
+      "order-flow toxicity and price-impact research",
+      "volume-time bars used by discretionary and systematic traders"
+    ],
+    "reused": [
+      "sample market state in equal expected quote-volume buckets rather than fixed time",
+      "rolling absolute signed-flow imbalance estimates toxicity",
+      "price response per unit toxicity separates information delivery from absorption",
+      "entry waits for a separately completed time-bar transition"
+    ]
+  },
+  "scenario": {
+    "context": "a volume bucket closes after accumulating a target derived only from the prior seven-day median five-minute quote volume",
+    "state": {
+      "TOXIC_FLOW_PRICE_DISCOVERY": "high prior-standardized VPIN, strong signed imbalance, same-direction bucket return and high price impact",
+      "ABSORBED_TOXIC_FLOW_REVERSAL": "high prior-standardized VPIN and signed imbalance but low or opposite price response",
+      "UNRESOLVED": "all other volume buckets are no-trade"
+    },
+    "confirmation": "the next completed fifteen-minute bar moves in the route direction with directional body and taker pressure",
+    "entry": "confirmation close",
+    "invalidation": "outside the toxic bucket extreme plus ten percent of prior bucket ATR",
+    "target": {
+      "TOXIC_FLOW_PRICE_DISCOVERY": "trailing multi-hour price-discovery leg",
+      "ABSORBED_TOXIC_FLOW_REVERSAL": "toxic bucket midpoint"
+    },
+    "management": "continuation trails completed thirty-minute closes; reversal uses midpoint target; both stop first and cap at four hours",
+    "arbitration": "one global open position; choose the largest toxicity-response quality"
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and latest daily five-minute klines",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-04-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": [
+      "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04",
+      "2026-08-05", "2026-08-06", "2026-08-07"
+    ],
+    "visibility": "bucket target and all toxicity thresholds use only rows completed before the bucket; confirmation follows bucket completion"
+  },
+  "fixed_rules": {
+    "base_interval_minutes": 5,
+    "target_volume_lookback_bars": 2016,
+    "target_volume_minimum_prior_bars": 1008,
+    "target_bucket_multiple_of_prior_median_5m_volume": 6.0,
+    "minimum_bucket_bars": 2,
+    "maximum_bucket_bars": 24,
+    "vpin_lookback_buckets": 50,
+    "vpin_z_lookback_buckets": 500,
+    "vpin_z_minimum_prior_buckets": 250,
+    "vpin_z_min": 1.5,
+    "minimum_absolute_signed_imbalance": 0.35,
+    "impact_z_lookback_buckets": 500,
+    "impact_z_minimum_prior_buckets": 250,
+    "discovery_impact_z_min": 1.0,
+    "absorption_max_return_atr": 0.2,
+    "bucket_atr_lookback": 50,
+    "confirmation_minutes": 15,
+    "minimum_confirmation_body_fraction": 0.5,
+    "minimum_confirmation_taker_pressure": 0.0,
+    "stop_atr_buffer": 0.1,
+    "continuation_trailing_stop_atr": 1.5,
+    "maximum_hold_minutes": 240,
+    "same_symbol_cooldown_minutes": 120,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_bar_target_stop_policy": "STOP_FIRST_CONSERVATIVE"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.5,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 10,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 2,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Only a fixed toxicity route positive in every declared split advances to NautilusTrader.",
+    "reject": "Do not tune volume target, VPIN, impact, absorption, confirmation or stop rules after evaluation."
+  }
+}
