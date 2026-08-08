@@ -1,0 +1,91 @@
+name: candidate-10-v50-fast-independent-external
+
+on:
+  push:
+    branches: [research/candidate-10]
+    paths:
+      - .github/workflows/candidate-10-v50-fast.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v50-fast-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CANDIDATE11_COMMIT: f10517d4ccd2a1a8fbd4d31091cbe0e7c3655327
+
+jobs:
+  h1:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - external-all-approved
+          - external-event-leader
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+      - name: Run one frozen H1 external-draw variant
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ROOT="artifacts/candidate-10-v50-fast/H1_2026/${{ matrix.variant }}"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v50:/workspace/src \
+            "${RESEARCH_IMAGE}" bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v50
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v50
+              for file in \
+                c10_v27_overlay.py c10_v27_patch.py \
+                c10_v28_overlay.py c10_v28_patch.py \
+                c10_v29_overlay.py c10_v29_patch.py \
+                c10_v50_overlay.py c10_v50_patch.py c10_v50_run.py \
+                test_c10_v27_overlay.py test_c10_v28_overlay.py \
+                test_c10_v29_overlay.py test_c10_v50_external_event.py; do
+                cp "/workspace/research/candidate-10/${file}" /tmp/candidate11-v50/
+              done
+              smc4 doctor
+              python /tmp/candidate11-v50/c10_v50_patch.py \
+                /tmp/candidate11-v50/run_leadership_scdam.py
+              python -m py_compile /tmp/candidate11-v50/c10_v*.py \
+                /tmp/candidate11-v50/run_leadership_scdam.py
+              python -m unittest discover -s /tmp/candidate11-v50 \
+                -p "test_c10_v*.py" -v
+              python /tmp/candidate11-v50/c10_v50_run.py \
+                --candidate11-dir /tmp/candidate11-v50 \
+                --start 2026-01-01 \
+                --end-exclusive 2026-07-01 \
+                --variant "${{ matrix.variant }}" \
+                --evidence-class predeclared_continuous_temporal_account \
+                --output "/workspace/${ROOT}"
+            '
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-10-v50-fast-H1_2026-${{ matrix.variant }}-${{ github.sha }}
+          path: artifacts/candidate-10-v50-fast/H1_2026/${{ matrix.variant }}
+          if-no-files-found: warn
+          retention-days: 14
