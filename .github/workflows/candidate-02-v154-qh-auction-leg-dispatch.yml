@@ -1,0 +1,30 @@
+name: candidate-02-v154-qh-auction-leg-dispatch
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths: ["research/candidate-02/v154_trigger.json"]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: candidate-02-v154-qh-auction-leg-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch-locked-v153-implementation:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch only the isolated auction-leg workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run candidate-02-v153-qh-auction-leg.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref research/candidate-02
+          echo "Dispatched isolated V153 implementation from V154 trigger ${GITHUB_SHA}."
