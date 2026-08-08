@@ -1,0 +1,163 @@
+name: Candidate 09 frozen Candidate 12 continuous account
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths:
+      - .github/workflows/candidate-09-c12-continuous.yml
+      - research/candidate-09/c12_continuous/apply_monthly_loader.py
+      - research/candidate-09/c12_continuous/run_continuous.py
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-c12-continuous
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      C12_SOURCE_SHA: 6a28ed92f3320fa2a6841e113e6ecf6e46f8d1fd
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09-c12-continuous
+          key: candidate-09-c12-monthly-klines-v1
+
+      - name: Materialize frozen Candidate 12 I13
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin "$C12_SOURCE_SHA"
+          root=research/candidate-09/c12_continuous
+          source=$root/source
+          rm -rf "$source" "$root/result"
+          mkdir -p "$source"
+          tmp=$(mktemp -d)
+          git archive "$C12_SOURCE_SHA" research/candidate-12 | tar -x -C "$tmp"
+          cp -a "$tmp/research/candidate-12/." "$source/"
+          cp "$source/data_loader.py" "$source/data_loader_daily.py"
+          test "$(git hash-object "$source/logic.py")" = "1636e30cc3705dc7f3ae77c4117169fdfa1fe468"
+          test "$(git hash-object "$source/config.json")" = "5e09edba38352acb5d89a7cdf2dfda23682bb641"
+          test "$(git hash-object "$source/run.py")" = "d24065c0a056ef694572d489c9318af15153b17e"
+          python "$root/apply_monthly_loader.py"
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root=Path('research/candidate-09/c12_continuous')
+          source=root/'source'
+          names=('logic.py','config.json','run.py','data_loader_daily.py','bar_adapter.py','metrics.py','strategy_adapter.py')
+          files={}
+          for name in names:
+              payload=(source/name).read_bytes()
+              files[name]={'git_blob':hashlib.sha1(f'blob {len(payload)}\0'.encode()+payload).hexdigest(),'sha256':hashlib.sha256(payload).hexdigest(),'bytes':len(payload)}
+          manifest={'source_commit':'6a28ed92f3320fa2a6841e113e6ecf6e46f8d1fd','source_branch':'research/candidate-12','frozen_candidate':'candidate-12-state-priced-reacceleration-router','transport_patch_only':True,'files':files}
+          (root/'source_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Verify monthly transport against daily source
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09/c12_continuous
+          export PYTHONPATH="$GITHUB_WORKSPACE/$root/source:$GITHUB_WORKSPACE/src"
+          python - <<'PY'
+          import importlib.util, json, sys
+          from datetime import date
+          from pathlib import Path
+          import pandas as pd
+          root=Path('research/candidate-09/c12_continuous')
+          source=root/'source'
+          sys.path.insert(0,str(source.resolve()))
+          def load(name,path):
+              spec=importlib.util.spec_from_file_location(name,path)
+              module=importlib.util.module_from_spec(spec)
+              sys.modules[name]=module
+              spec.loader.exec_module(module)
+              return module
+          daily=load('c12_daily_transport',source/'data_loader_daily.py')
+          monthly=load('c12_monthly_transport',source/'data_loader.py')
+          cache=Path('.cache/candidate-09-c12-continuous')
+          d,_=daily.load_binance_bars('BTCUSDT',date(2025,12,24),date(2025,12,24),cache)
+          m,_=monthly.load_binance_bars('BTCUSDT',date(2025,12,24),date(2025,12,24),cache)
+          pd.testing.assert_frame_equal(d,m,check_exact=True)
+          (root/'transport_parity.json').write_text(json.dumps({'symbol':'BTCUSDT','date':'2025-12-24','rows':len(d),'first':str(d.index[0]),'last':str(d.index[-1])},indent=2)+'\n')
+          PY
+
+      - name: Run one continuous 2022 through 2025 BTC Nautilus account
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09/c12_continuous
+          export PYTHONPATH="$GITHUB_WORKSPACE/$root/source:$GITHUB_WORKSPACE/src"
+          smc4 doctor | tee "$root/doctor.txt"
+          python -m compileall -q "$root"
+          mkdir -p "$root/result" .cache/candidate-09-c12-continuous
+          ln -s "$GITHUB_WORKSPACE/.cache/candidate-09-c12-continuous" "$root/result/data"
+          python "$root/run_continuous.py" |& tee "$root/run.txt"
+          rm -f "$root/result/data"
+          [[ -f "$root/result/scenario_events.raw.jsonl" ]] && gzip -f "$root/result/scenario_events.raw.jsonl"
+          [[ -f "$root/result/scenario_events.jsonl" ]] && gzip -f "$root/result/scenario_events.jsonl"
+
+      - name: Preserve continuous evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-c12-continuous-${{ github.run_id }}
+          path: |
+            research/candidate-09/c12_continuous/result
+            research/candidate-09/c12_continuous/continuous_config.json
+            research/candidate-09/c12_continuous/source_manifest.json
+            research/candidate-09/c12_continuous/transport_parity.json
+            research/candidate-09/c12_continuous/doctor.txt
+            research/candidate-09/c12_continuous/run.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit compact decision and evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09/c12_continuous
+          [[ -f "$root/result/FINAL_DECISION.json" ]] || exit 0
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/result"
+          for name in FINAL_DECISION.json metrics.json positions.csv orders.csv account.csv submitted_plans.json order_lifecycle.json data_manifest.json run.json; do
+            [[ -f "$root/result/$name" ]] && cp "$root/result/$name" "$tmp/result/$name"
+          done
+          for name in continuous_config.json source_manifest.json transport_parity.json doctor.txt run.txt; do
+            [[ -f "$root/$name" ]] && cp "$root/$name" "$tmp/$name"
+          done
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name candidate-09-research-bot
+          git config user.email candidate-09-research-bot@users.noreply.github.com
+          git fetch origin "$GITHUB_REF_NAME"
+          git reset --hard "origin/$GITHUB_REF_NAME"
+          rm -rf "$root/result"
+          mkdir -p "$root/result"
+          cp -a "$tmp/result/." "$root/result/"
+          for name in continuous_config.json source_manifest.json transport_parity.json doctor.txt run.txt; do
+            [[ -f "$tmp/$name" ]] && cp "$tmp/$name" "$root/$name"
+          done
+          git add "$root/result" "$root/continuous_config.json" "$root/source_manifest.json" "$root/transport_parity.json" "$root/doctor.txt" "$root/run.txt"
+          git diff --cached --quiet && exit 0
+          status=$(python -c "import json;print(json.load(open('$root/result/FINAL_DECISION.json'))['status'])")
+          git commit -m "candidate-09 Candidate 12 continuous: ${status}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
