@@ -51,7 +51,9 @@ def context(*, invalidate: bool = False) -> tuple[FiveMinuteBar, ...]:
 def execution(extra_rows: int = 0) -> pd.DataFrame:
     end = pd.Timestamp("2026-01-05T00:45:00Z") + pd.Timedelta(seconds=10 * extra_rows)
     index = pd.date_range("2026-01-04T23:00:10Z", end, freq="10s")
-    close = np.full(len(index), 105.1)
+    # Keep the synthetic executable observation inside the still-open auction leg so the
+    # contract test exercises state/causality rather than failing the independent cost gate.
+    close = np.full(len(index), 104.7)
     return pd.DataFrame(
         {"open": close, "high": close + 0.05, "low": close - 0.05,
          "close": close, "volume": 10.0},
