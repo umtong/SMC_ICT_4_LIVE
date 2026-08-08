@@ -1,0 +1,157 @@
+name: candidate-18-development-verification
+
+on:
+  push:
+    branches: ["research/candidate-18"]
+    paths:
+      - "research/candidate-18/**"
+      - ".github/workflows/candidate-18-development.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-18-development-verification
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-18-development
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and inherited contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-18 research/candidate-17 research/candidate-16
+          python -m unittest discover -s research/candidate-18/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-17/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_displayed_liquidity_router_v2.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v2_contract.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_effort_result_router.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Verify untouched-week pre-registration without opening it
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          from hashlib import sha256
+
+          seed = (
+              "candidate18-latency-safe-initiative|"
+              "3efdf932d37bb997cff95404fb40ee7026a58325|independent-week-1"
+          )
+          mondays = []
+          cursor = date(2022, 1, 3)
+          while cursor <= date(2025, 12, 29):
+              mondays.append(cursor)
+              cursor += timedelta(days=7)
+          index = int(sha256(seed.encode("utf-8")).hexdigest(), 16) % len(mondays)
+          if index != 131 or mondays[index].isoformat() != "2024-07-08":
+              raise SystemExit((index, mondays[index]))
+          print({"candidate_weeks": len(mondays), "index": index, "start": str(mondays[index])})
+          PY
+
+      - name: Run Candidate 17 failure week as development data
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-18/candidate.py stage \
+            --config research/candidate-18/config.json \
+            --build-start 2023-12-22 \
+            --build-end 2023-12-31 \
+            --evaluation-start 2023-12-25 \
+            --evaluation-end 2023-12-31 \
+            --cache .cache/candidate-18-development \
+            --output "$ROOT" \
+            --validation-mode development-known-candidate17-failure-week \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify mechanism replacement and retain honest metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          with (root / "orders.csv").open(newline="", encoding="utf-8") as stream:
+              orders = list(csv.DictReader(stream))
+          entries = [
+              row for row in orders
+              if not str(row.get("is_reduce_only", "")).lower() == "true"
+              and "ENTRY" in str(row.get("tags", ""))
+          ]
+          non_stop_limit_entries = [row for row in entries if row.get("type") != "STOP_LIMIT"]
+          integrity = (
+              int(metrics.get("liquidations", 0)) == 0
+              and int(diagnostics.get("order_rejections", 0)) == 0
+              and int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1
+              and int(diagnostics.get("max_open_positions_observed", 0)) <= 1
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          mechanism = {
+              "all_entry_parents_stop_limit": not non_stop_limit_entries,
+              "entry_parent_count": len(entries),
+              "sustained_routes": diagnostics.get("candidate18_initiative_sustained", 0),
+              "shock_routes": diagnostics.get("candidate18_initiative_shock", 0),
+              "quality_rejections": diagnostics.get("candidate18_initiative_quality_rejected", 0),
+              "remembered_defense_no_trade": diagnostics.get("candidate18_remembered_defense_no_trade", 0),
+              "stop_limit_submissions": diagnostics.get("candidate18_stop_limit_entries", 0),
+              "protective_fail_closes": diagnostics.get("candidate16_v2_protective_stop_fail_closes", 0),
+          }
+          if not mechanism["all_entry_parents_stop_limit"]:
+              raise SystemExit({"non_stop_limit_entries": non_stop_limit_entries})
+          if int(mechanism["stop_limit_submissions"]) <= 0:
+              raise SystemExit("Candidate 18 did not exercise STOP_LIMIT entry")
+          result = {
+              "schema": "candidate-18-development-v1",
+              "development_period": ["2023-12-25", "2023-12-31"],
+              "integrity_pass": integrity,
+              "gate_pass": bool(metrics.get("gate_pass", False)),
+              "mechanism": mechanism,
+              "metrics": metrics,
+          }
+          (root / "development_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify authoritative evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          python -m json.tool "$ROOT/development_decision.json"
+          for file in run.json data_manifest.json raw_evidence.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl candidate18_contract.json; do
+            test -s "$ROOT/$file"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-18-development-${{ github.sha }}
+          path: artifacts/candidate-18-development/**
+          if-no-files-found: warn
+          retention-days: 90
