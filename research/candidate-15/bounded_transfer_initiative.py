@@ -18,9 +18,9 @@ continues to own orders, fills, fees, margin, positions, and NAV.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import exp, fsum, isfinite, log
+from math import exp, isfinite, log
 from statistics import median
-from typing import Any, Mapping
+from typing import Any
 
 from candidate15_v6_residual_laggard_materializer import residual_laggard_symbol
 from logic import BarObs, Direction, LogicConfig, TradePlan
@@ -94,6 +94,25 @@ class BoundedTransferPersistentQuarterHourRouter(
             del self._event_market_closes[oldest]
         return snapshot
 
+    @staticmethod
+    def _base_state(state: BoundedTransferInitiativeState) -> ResponseQualifiedInitiativeState:
+        """Remove stale receiver fields before V5's generic refresh replacement."""
+        return ResponseQualifiedInitiativeState(
+            scenario_id=state.scenario_id,
+            direction=state.direction,
+            activated_ts_ns=state.activated_ts_ns,
+            expires_ts_ns=state.expires_ts_ns,
+            owner_symbol=state.owner_symbol,
+            accepted_symbols=tuple(state.accepted_symbols),
+            origins=dict(state.origins),
+            source_event_ids=tuple(state.source_event_ids),
+            confirmation_span_ns=state.confirmation_span_ns,
+            overlap_symbols=tuple(state.overlap_symbols),
+            median_directional_progress=state.median_directional_progress,
+            advancing_symbols=tuple(state.advancing_symbols),
+            origin_holding_symbols=tuple(state.origin_holding_symbols),
+        )
+
     def _terminate_unowned(
         self,
         event: CommonFlowEvent,
@@ -105,14 +124,30 @@ class BoundedTransferPersistentQuarterHourRouter(
 
     def _handle_event(self, event: CommonFlowEvent) -> None:
         previous_candidate = self._candidate
+        previous_state = self._state
         second_closes = self._snapshot(event)
+        # ResponseQualifiedPersistentQuarterHourRouter refreshes with
+        # dataclasses.replace. A V7 state carries receiver fields tied to the
+        # prior accepted set, so expose only the base state while that generic
+        # response decision is made. Rejected same-direction responses restore
+        # the prior bounded state unchanged.
+        if isinstance(previous_state, BoundedTransferInitiativeState):
+            self._state = self._base_state(previous_state)
         super()._handle_event(event)
         state = self._state
-        if state is None or previous_candidate is None:
+        newest_is_current = bool(
+            state is not None
+            and state.source_event_ids
+            and state.source_event_ids[-1] == event.event_id
+        )
+        if (
+            isinstance(previous_state, BoundedTransferInitiativeState)
+            and event.direction is previous_state.direction
+            and not newest_is_current
+        ):
+            self._state = previous_state
             return
-        # A rejected response leaves the prior state intact. Only a state whose
-        # newest source is the current event may own new transfer evidence.
-        if not state.source_event_ids or state.source_event_ids[-1] != event.event_id:
+        if state is None or previous_candidate is None or not newest_is_current:
             return
         first_closes = self._event_market_closes.get(previous_candidate.event_id)
         if first_closes is None:
