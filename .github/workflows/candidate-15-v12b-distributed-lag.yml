@@ -1,0 +1,167 @@
+name: Candidate 15 V12B causal distributed-lag diagnostic
+
+on:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - ".github/workflows/candidate-15-v12b-distributed-lag.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v12b-distributed-lag-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify causal model and predeclared advancement contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-15-v12/diagnose_distributed_lag.py \
+            research/candidate-15-v12/aggregate_distributed_lag.py
+          PYTHONPATH=research/candidate-15-v12 python - <<'PY'
+          import json
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+          import numpy as np
+
+          from diagnose_distributed_lag import RollingNormalRelation
+          from aggregate_distributed_lag import aggregate
+
+          model = RollingNormalRelation(3, 2)
+          for x, y in (
+              (np.array([1.0, 0.0]), 1.0),
+              (np.array([0.0, 1.0]), -1.0),
+              (np.array([1.0, 1.0]), 0.0),
+          ):
+              model.add(x, y)
+          assert model.ready
+          assert model.predict(np.array([1.0, 0.0])) is not None
+
+          with TemporaryDirectory() as root_text:
+              root = Path(root_text)
+              artifacts = root / 'artifacts'
+              output = root / 'output'
+              for interval in ('E01', 'E02', 'E03', 'E04', 'E05', 'E06'):
+                  folder = artifacts / f'candidate15-v12b-distributed-lag-{interval}'
+                  folder.mkdir(parents=True)
+                  (folder / 'summary.json').write_text(json.dumps({'interval': interval}))
+                  (folder / 'forecasts.json').write_text('[]')
+              result = aggregate(artifacts, output)
+              assert result['classification'] == 'V12B_DISTRIBUTED_LAG_REJECTED_OR_UNDERPOWERED'
+              assert result['diagnostic_only_not_account_backtest'] is True
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          source = Path('research/candidate-15-v12/diagnose_distributed_lag.py').read_text()
+          aggregate = Path('research/candidate-15-v12/aggregate_distributed_lag.py').read_text()
+          for token in (
+              'TARGET_ADDED_ONLY_AT_SOURCE_PLUS_10_MINUTES',
+              'ALL_12H_24H_48H_MODELS',
+              'FROZEN_16BPS_URGENT_ROUND_TRIP',
+              'ONE_FORECAST_PER_10_MINUTE_CAUSAL_EPISODE',
+          ):
+              assert token in source, token
+          for token in (
+              'minimum_wilson_95_low_exclusive',
+              'minimum_mean_after_16bps_t_stat',
+              'maximum_positive_interval_share',
+              'NO_TRADE_PNL_OR_NAV_CLAIM',
+          ):
+              assert token in aggregate, token
+          assert 'BacktestEngine' not in source
+          PY
+
+  evaluate:
+    needs: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        interval: [E01, E02, E03, E04, E05, E06]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Evaluate ${{ matrix.interval }} causal distributed lag
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-15-v12 \
+          python research/candidate-15-v12/diagnose_distributed_lag.py \
+            "${{ matrix.interval }}" \
+            --output "research/candidate-15-v12/distributed-lag/${{ matrix.interval }}"
+          rm -rf "research/candidate-15-v12/distributed-lag/${{ matrix.interval }}/data"
+      - name: Upload complete interval evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v12b-distributed-lag-${{ matrix.interval }}
+          path: research/candidate-15-v12/distributed-lag/${{ matrix.interval }}
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    if: ${{ always() && needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate15-v12b-distributed-lag-E*
+          path: artifacts
+      - name: Aggregate causal cost-clearing forecasts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-15-v12/aggregate_distributed_lag.py \
+            --artifacts artifacts \
+            --output research/candidate-15-v12/distributed-lag
+
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-v12b-bot
+          git config user.email candidate-15-v12b-bot@users.noreply.github.com
+          git add research/candidate-15-v12/distributed-lag/aggregate.json \
+                  research/candidate-15-v12/distributed-lag/DIAGNOSTIC.md
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15 v12b: persist distributed-lag evidence [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v12b-distributed-lag-aggregate-${{ github.run_id }}
+          path: research/candidate-15-v12/distributed-lag
+          if-no-files-found: error
+          retention-days: 30
