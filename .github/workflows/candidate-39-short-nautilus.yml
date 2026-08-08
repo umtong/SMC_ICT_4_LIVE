@@ -43,7 +43,29 @@ jobs:
           set -euo pipefail
           smc4 doctor
           python -m compileall -q research/candidate-39
-          python -m pytest -q research/candidate-39
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import sys
+
+          root = Path("research/candidate-39")
+          count = 0
+          for path in sorted(root.glob("test_*.py")):
+              name = "candidate39_contract_" + path.stem
+              spec = importlib.util.spec_from_file_location(name, path)
+              if spec is None or spec.loader is None:
+                  raise RuntimeError(f"cannot load {path}")
+              module = importlib.util.module_from_spec(spec)
+              sys.modules[name] = module
+              spec.loader.exec_module(module)
+              for test_name in sorted(vars(module)):
+                  test = getattr(module, test_name)
+                  if test_name.startswith("test_") and callable(test):
+                      test()
+                      count += 1
+          assert count == 7, count
+          print(f"candidate39 causal contracts passed: {count}")
+          PY
 
       - name: Run one four-asset continuous Nautilus account
         shell: bash
