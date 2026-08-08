@@ -1,0 +1,95 @@
+{
+  "schema": "candidate-15-v26-residual-oi-state-router-v1",
+  "candidate": "candidate-15-v26-residual-oi-state-router",
+  "created_utc": "2026-08-09",
+  "research_question": "Can a 30-minute crypto move be separated before entry into idiosyncratic liquidation exhaustion versus residual price discovery by first removing the four-market common factor and then observing open-interest and a distinct 15-minute transition?",
+  "external_mechanism": {
+    "ideas_reused": [
+      "medium-frequency return reversal after transitory price pressure",
+      "order-flow impact can decay when it is uninformed inventory transfer",
+      "open-interest destruction distinguishes liquidation from new directional risk",
+      "cross-sectional residuals separate common crypto beta from asset-specific repricing"
+    ],
+    "adaptation": "A prior-only rolling beta removes the four-market median factor from every five-minute return. Thirty-minute residual shocks are routed by independent OI change and a subsequent 15-minute residual/flow transition.",
+    "not_used": [
+      "raw return z-score without factor removal",
+      "same event bar as both state and confirmation",
+      "outcome-driven threshold selection",
+      "synthetic portfolio NAV"
+    ]
+  },
+  "data": {
+    "price_source": "Binance Vision USD-M monthly five-minute futures klines",
+    "state_source": "Binance Vision USD-M daily metrics",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ],
+    "interval": "5m",
+    "start": "2024-06-01",
+    "end_exclusive": "2026-08-01",
+    "metrics_visibility": "native five-minute create_time; state uses event timestamp or earlier; confirmation uses only the following three completed bars and entry follows their close"
+  },
+  "fixed_state_rules": {
+    "factor_beta_prior_bars": 2016,
+    "factor_beta_minimum_prior_bars": 1008,
+    "event_bars": 6,
+    "event_clock_minutes": [
+      0,
+      30
+    ],
+    "residual_prior_events": 672,
+    "residual_minimum_prior_events": 336,
+    "absolute_residual_z_min": 2.0,
+    "event_volume_z_min": 1.0,
+    "directional_event_taker_pressure_min": 0.05,
+    "idiosyncratic_factor_z_max": 1.25,
+    "minimum_residual_share_of_symbol_move": 0.5,
+    "open_interest_contraction_z_max": -1.0,
+    "open_interest_buildup_z_min": 1.0,
+    "continuation_factor_breadth_min": 0.75,
+    "confirmation_bars": 3,
+    "confirmation_reversal_residual_max": 0.0,
+    "confirmation_reversal_taker_pressure_max": 0.0,
+    "confirmation_reversal_oi_change_z_min": -0.25,
+    "confirmation_continuation_residual_min": 0.0,
+    "confirmation_continuation_taker_pressure_min": 0.0,
+    "confirmation_continuation_oi_change_z_min": -0.25,
+    "reversal_horizon_minutes": 120,
+    "continuation_horizon_minutes": 120,
+    "same_symbol_event_cooldown_minutes": 120,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "route_residual_liquidation_reversal": "RESIDUAL_LIQUIDATION_EXHAUSTION_2H",
+    "route_residual_buildup_continuation": "RESIDUAL_POSITION_BUILDUP_CONTINUATION_2H"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "global_position_limit": 1,
+    "same_event_arbitration": "largest absolute residual z times OI-state magnitude times confirmation quality, then symbol",
+    "overlap_policy": "no selected episode while the fixed two-hour route horizon is active"
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.5,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 10,
+    "maximum_single_symbol_share": 0.75,
+    "require_cross_split_positive_route": true,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per evaluation calendar day after four-asset global arbitration"
+  },
+  "decision_contract": {
+    "advance": "Only a fixed route positive in development, year-long stability and July confirmation while passing integrated gates advances to NautilusTrader.",
+    "reject": "Do not tune residual, OI, confirmation or horizon thresholds after observing these declared results. Preserve only a cross-split-positive route and move to another independent family."
+  }
+}
