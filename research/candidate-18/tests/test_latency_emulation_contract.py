@@ -11,7 +11,7 @@ class RetiredLatencyEmulationContractTests(unittest.TestCase):
         adapter = (root / "candidate18_strategy.py").read_text(encoding="utf-8")
         self.assertIn("emulation_trigger=TriggerType.DEFAULT", retained)
         self.assertNotIn("latency_emulated_strategy", adapter)
-        self.assertIn("fok_capped_strategy", adapter)
+        self.assertIn("partial_oto_ioc_strategy", adapter)
 
 
 if __name__ == "__main__":

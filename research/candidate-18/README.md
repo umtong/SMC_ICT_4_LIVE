@@ -1,4 +1,4 @@
-# Candidate 18 — State Router with Atomic Price-Capped Execution
+# Candidate 18 — State Router with Protected Partial Execution
 
 Candidate 18 extracts a complete decision policy from displayed-liquidity
 failed auctions and true acceptance rather than trading surface patterns.
@@ -16,16 +16,21 @@ failed auctions and true acceptance rather than trading surface patterns.
 ## Execution evolution
 
 Candidate 17's market parent could fill beyond its planned stop. Candidate 18
-v1 used a capped IOC LIMIT parent. Untouched data then exposed an atomicity bug:
-a partial IOC fill canceled the OTO children and left naked exposure. The full
-v1 failure and results are retained in `V1_FAILURE.md`.
+v1 introduced a price-capped IOC LIMIT, but its implicit venue setup allowed a
+partial fill to lose its OTO children and remain naked. `V1_FAILURE.md` retains
+that failure.
 
-The effective v2 parent is a native NautilusTrader FOK LIMIT bracket. It fills
-the complete risk-sized quantity immediately at or better than the cap, or
-opens no position. Quantity is still sized from the worst permissible fill,
-including fees and adverse slippage, with a maximum planned account loss of 3%.
-No custom matcher, portfolio simulator or account engine is introduced.
+Candidate 18 v2 used FOK and proved all-or-none safety, but failed both viewed
+weeks after discarding partial-fill opportunities. `V2_FOK_RESULTS.md` retains
+those results.
 
-NautilusTrader owns orders, fills, fees, positions, margin, portfolio accounting
-and continuous NAV. Candidate 05 supplies the runner and Candidate 16/17 supply
-the inherited causal state and fail-close contracts.
+The effective v3 uses the same price-capped IOC bracket and explicitly sets the
+NautilusTrader venue to `oto_trigger_mode=PARTIAL`. Every partial parent fill
+must release and resize its stop and target children pro-rata. Quantity is
+still calculated from the worst permissible entry fill, fees, adverse
+slippage and a maximum 3% planned account loss.
+
+NautilusTrader owns orders, partial fills, contingent-child release, fees,
+positions, margin, portfolio accounting and continuous NAV. Candidate 05
+supplies the runner; Candidate 16/17 supply the inherited causal state and
+fail-close contracts. No custom matching, account or portfolio engine exists.
