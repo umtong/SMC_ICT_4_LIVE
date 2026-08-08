@@ -8,18 +8,17 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
 
+from features_base import *  # noqa: F401,F403 - preserve reused module API
 import features_base as _base
 
 _ORIGINAL_AGGREGATE = _base.aggregate_agg_trades
 _ORIGINAL_BUILD = _base.build_features
 _TICK_SIZE = 0.1  # Frozen BTCUSDT contract tick at the reused runner snapshot.
 _IMBALANCE_RATIO = 3.0
-_MIN_STACK_LEVELS = 3
 
 
 def _longest_run(
@@ -96,15 +95,24 @@ def _footprint_rows(path: Path) -> pd.DataFrame:
         median_cell = float(np.median(active)) if active.size else 0.0
         denominator_floor = max(1.0, 0.10 * median_cell)
         minimum_numerator = max(1.0, median_cell)
-        buy_by_tick = {int(tick): float(value) for tick, value in zip(ticks, buy, strict=True)}
-        sell_by_tick = {int(tick): float(value) for tick, value in zip(ticks, sell, strict=True)}
+        buy_by_tick = {
+            int(tick): float(value)
+            for tick, value in zip(ticks, buy, strict=True)
+        }
+        sell_by_tick = {
+            int(tick): float(value)
+            for tick, value in zip(ticks, sell, strict=True)
+        }
 
         buy_flags = np.asarray(
             [
                 numerator >= minimum_numerator
                 and numerator
                 >= _IMBALANCE_RATIO
-                * max(sell_by_tick.get(int(tick) - 1, 0.0), denominator_floor)
+                * max(
+                    sell_by_tick.get(int(tick) - 1, 0.0),
+                    denominator_floor,
+                )
                 for tick, numerator in zip(ticks, buy, strict=True)
             ],
             dtype=bool,
@@ -114,7 +122,10 @@ def _footprint_rows(path: Path) -> pd.DataFrame:
                 numerator >= minimum_numerator
                 and numerator
                 >= _IMBALANCE_RATIO
-                * max(buy_by_tick.get(int(tick) + 1, 0.0), denominator_floor)
+                * max(
+                    buy_by_tick.get(int(tick) + 1, 0.0),
+                    denominator_floor,
+                )
                 for tick, numerator in zip(ticks, sell, strict=True)
             ],
             dtype=bool,
@@ -133,7 +144,9 @@ def _footprint_rows(path: Path) -> pd.DataFrame:
                 "stacked_sell_low": sell_low,
                 "stacked_sell_high": sell_high,
                 "footprint_poc_price": (
-                    float(ticks[poc_index]) * _TICK_SIZE if ticks.size else math.nan
+                    float(ticks[poc_index]) * _TICK_SIZE
+                    if ticks.size
+                    else math.nan
                 ),
                 "footprint_delta_60s": (
                     float((buy.sum() - sell.sum()) / total_notional)
@@ -143,7 +156,11 @@ def _footprint_rows(path: Path) -> pd.DataFrame:
                 "footprint_cell_median_notional": median_cell,
             }
         )
-    return pd.DataFrame.from_records(records).set_index("minute").sort_index()
+    return (
+        pd.DataFrame.from_records(records)
+        .set_index("minute")
+        .sort_index()
+    )
 
 
 def aggregate_agg_trades(path: Path) -> pd.DataFrame:
@@ -193,4 +210,9 @@ _base.build_features = build_features
 load_range = _base.load_range
 sha256_file = _base.sha256_file
 
-__all__ = ["aggregate_agg_trades", "build_features", "load_range", "sha256_file"]
+__all__ = [
+    "aggregate_agg_trades",
+    "build_features",
+    "load_range",
+    "sha256_file",
+]
