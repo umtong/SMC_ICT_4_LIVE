@@ -9,6 +9,7 @@ on:
       - research/candidate-09/v41_leverage_contraction_drive/run_experiment.py
       - research/candidate-09/v41_leverage_contraction_drive/test_contracts.py
       - research/candidate-09/v41_leverage_contraction_drive/apply_metrics_archive_ownership.py
+      - research/candidate-09/v41_leverage_contraction_drive/apply_event_observation_time.py
   workflow_dispatch:
 
 permissions:
@@ -41,7 +42,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ env.CACHE }}
-          key: candidate-09-v41-leverage-contraction-drive-v1
+          key: candidate-09-v41-leverage-contraction-drive-v2
 
       - name: Materialize verified data, canonical OI, completed auctions, and V41 state
         shell: bash
@@ -57,9 +58,11 @@ jobs:
           cp research/candidate-09/v33_footprint_acceptance/strategy.py "$ROOT/work/research/candidate-16/strategy_v33.py"
           cp research/candidate-09/v35_completed_auction_footprint/strategy.py "$ROOT/work/research/candidate-16/strategy_v35.py"
           cp "$ROOT/strategy.py" "$ROOT/work/research/candidate-16/strategy.py"
+          python "$ROOT/apply_event_observation_time.py" "$ROOT/work/research/candidate-16/strategy.py"
           test "$(git hash-object "$ROOT/work/research/candidate-05/features.py")" = "6c784148effb4e1632c83eb03071f0050579c179"
           test "$(git hash-object "$ROOT/work/research/candidate-16/strategy_v1.py")" = "3dddd221fbd1a7c3c518bb753c88dcffbbdac361"
           grep -q V41_CANONICAL_METRICS_ARCHIVE_OWNER "$ROOT/work/research/candidate-05/positioning_contract.py"
+          grep -q V41_EVENT_OBSERVED_ON_CURRENT_COMPLETED_BAR "$ROOT/work/research/candidate-16/strategy.py"
 
       - name: Verify environment, archive ownership, causal roles, and runner contracts
         shell: bash
