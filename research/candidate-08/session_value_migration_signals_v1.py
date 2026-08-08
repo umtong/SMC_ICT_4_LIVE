@@ -459,7 +459,6 @@ def build_session_value_migration_signals(
                     break
                 attempt = replace(attempt, second_close=bar)
                 diagnostics["SECOND_M15_CLOSE_AND_SESSION_VWAP_MIGRATED"] += 1
-                continue
 
             direction = attempt.direction
             for five_position in range(
