@@ -30,7 +30,9 @@ class ParentAuctionStateTests(unittest.TestCase):
         specifications = (
             (95.0, 100.0, 90.0),
             (101.0, 102.0, 96.0),
-            (103.0, 104.0, 100.5),
+            # Persist above the accepted 100 boundary without making another
+            # close beyond the immediately preceding 102 high.
+            (101.5, 103.0, 100.5),
             (99.0, 104.0, 98.0),
         )
         for bucket, (close, high, low) in enumerate(specifications):
