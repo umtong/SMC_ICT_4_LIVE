@@ -1,0 +1,174 @@
+name: candidate-37-v2-lightweight-study
+
+on:
+  push:
+    branches: ["research/candidate-37"]
+    paths:
+      - "research/candidate-37/large_event_router.py"
+      - "research/candidate-37/v2_large_event_study.py"
+      - "research/candidate-37/v2_lightweight_study.py"
+      - "research/candidate-37/test_large_event_router.py"
+      - ".github/workflows/candidate-37-v2-lightweight-study.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-37-v2-lightweight-study
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      chunks: ${{ steps.matrix.outputs.chunks }}
+    steps:
+      - id: matrix
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          chunks = []
+          for name, start, end in (
+              ("2025-09", "2025-09-01", "2025-09-30"),
+              ("2025-10", "2025-10-01", "2025-10-31"),
+          ):
+              for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+                  chunks.append({"name": name, "start": start, "end": end, "symbol": symbol})
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write("chunks=" + json.dumps(chunks, separators=(",", ":")) + "\n")
+          print(json.dumps(chunks, indent=2))
+          PY
+
+  preprocess:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        chunk: ${{ fromJson(needs.plan.outputs.chunks) }}
+    env:
+      PYTHONUNBUFFERED: "1"
+      PIN: e2a75507e9b98135907c761b844afe095a6f839c
+      TOOL: artifacts/c37-c30-pinned
+      ROOT: artifacts/c37-light-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify environment and pin reused Candidate 30 builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-37
+          python -m unittest research/candidate-37/test_large_event_router.py -v
+          git fetch --depth=1 origin "$PIN"
+          test "$(git rev-parse FETCH_HEAD)" = "$PIN"
+          mkdir -p "$TOOL"
+          for name in build_month.py build_month_v2.py build_month_v3.py; do
+            git show "$PIN:research/candidate-30/$name" > "$TOOL/$name"
+          done
+          python -m compileall -q "$TOOL"
+
+      - name: Build checksum-owned price OI positioning and premium month
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          PYTHONPATH="$TOOL" python "$TOOL/build_month_v3.py" \
+            --symbol "${{ matrix.chunk.symbol }}" \
+            --core-start "${{ matrix.chunk.start }}" \
+            --core-end "${{ matrix.chunk.end }}" \
+            --cache ".cache/c37-light/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}" \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate37-light-${{ matrix.chunk.name }}-${{ matrix.chunk.symbol }}-${{ github.sha }}
+          path: |
+            artifacts/c37-light-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}/minute_state.csv.gz
+            artifacts/c37-light-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}/month_manifest.json
+            artifacts/c37-light-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}/console.log
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  study:
+    needs: preprocess
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-37
+      PYTHONUNBUFFERED: "1"
+      INPUT: artifacts/c37-light-downloaded
+      ROOT: artifacts/c37-light-study
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate37-light-*-${{ github.sha }}
+          path: ${{ env.INPUT }}
+          merge-multiple: false
+
+      - name: Run fixed two-split lightweight screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find "$INPUT" -name month_manifest.json | wc -l)" -eq 8
+          python -m compileall -q research/candidate-37
+          python -m unittest research/candidate-37/test_large_event_router.py -v
+          mkdir -p "$ROOT"
+          python research/candidate-37/v2_lightweight_study.py \
+            --input-root "$INPUT" \
+            --output "$ROOT" \
+            --start 2025-09-01 \
+            --end 2025-10-31 \
+            --split 2025-10-01 \
+            --horizon-minutes 180 \
+            --lockout-minutes 120 \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Enforce triage claim boundary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f "$ROOT/study.json"; then
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          result = json.loads((Path(os.environ["ROOT"]) / "study.json").read_text())
+          assert result["claim_scope"] == "CAUSAL_COARSE_FEATURE_PATH_SCREEN_NO_ORDER_FILL_POSITION_PNL_OR_NAV_SIMULATION"
+          assert result["gate_checks"]["exact_four_symbol_minute_clock"] is True
+          assert result["gate_checks"]["future_input_violations"] == 0
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          else
+            echo "study.json absent; inspect console.log"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate37-v2-lightweight-study-${{ github.sha }}
+          path: artifacts/c37-light-study/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
