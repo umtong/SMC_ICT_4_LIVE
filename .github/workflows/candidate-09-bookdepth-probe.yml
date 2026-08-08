@@ -1,0 +1,46 @@
+name: Candidate 09 Binance bookDepth probe
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths:
+      - .github/workflows/candidate-09-bookdepth-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe one official daily bookDepth archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          url='https://data.binance.vision/data/futures/um/daily/bookDepth/BTCUSDT/BTCUSDT-bookDepth-2024-10-14.zip'
+          curl --retry 3 --retry-all-errors --connect-timeout 20 --max-time 300 -fsSL "$url" -o /tmp/depth.zip
+          echo "URL=$url"
+          stat -c 'BYTES=%s' /tmp/depth.zip
+          sha256sum /tmp/depth.zip
+          unzip -l /tmp/depth.zip
+          python - <<'PY'
+          import csv, io, zipfile
+          p='/tmp/depth.zip'
+          with zipfile.ZipFile(p) as z:
+              names=[n for n in z.namelist() if n.lower().endswith('.csv')]
+              print('CSV_NAMES=', names)
+              if len(names) != 1:
+                  raise SystemExit('expected exactly one CSV')
+              with z.open(names[0]) as raw:
+                  reader=csv.reader(io.TextIOWrapper(raw, encoding='utf-8', newline=''))
+                  rows=[]
+                  for i,row in enumerate(reader):
+                      rows.append(row)
+                      if i >= 11:
+                          break
+              print('SAMPLE_ROWS=')
+              for row in rows:
+                  print(repr(row))
+          PY
