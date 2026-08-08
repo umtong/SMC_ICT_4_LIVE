@@ -1,0 +1,74 @@
+{
+  "schema": "candidate-15-v18-spot-perp-leadership-v1",
+  "candidate": "candidate-15-v18-spot-perp-leadership",
+  "created_utc": "2026-08-08",
+  "research_question": "Can spot-versus-perpetual price leadership resolve the time instability of OI buildup continuation and distinguish information delivery from leverage-only overshoot before entry?",
+  "scenario": {
+    "context": "an abnormal five-minute return and aggressive-flow episode in either Binance spot or USD-M perpetual futures",
+    "state_router": {
+      "SPOT_LED_POSITION_BUILDUP": "spot leads the directional return with abnormal spot volume and aggressor flow while perpetual base OI builds",
+      "PERP_LED_DELEVERAGING": "perpetual futures lead the directional return with abnormal futures volume and aggressor flow while base OI collapses",
+      "UNRESOLVED": "neither market has sufficiently distinct leadership or OI state"
+    },
+    "independent_confirmation": {
+      "SPOT_LED_POSITION_BUILDUP": "spot does not reverse, futures catch up, OI does not unwind, futures flow remains aligned, composite index follows and peer spot breadth agrees; trade continuation after the confirmation close",
+      "PERP_LED_DELEVERAGING": "spot does not follow, the lead gap repairs, OI stops collapsing and futures flow opposes the event; trade reversal after the confirmation close"
+    },
+    "invalidation_target_note": "This is a mechanism screen. Any surviving route must be frozen with event-extreme invalidation, same-leg objectives and current-NAV 3% risk sizing in NautilusTrader."
+  },
+  "data": {
+    "spot_source": "Binance Vision monthly spot klines",
+    "futures_source": "Binance Vision USD-M monthly futures klines and indexPriceKlines",
+    "state_source": "Binance Vision USD-M daily metrics",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-06-01",
+    "end_exclusive": "2026-08-01",
+    "visibility": "all event and confirmation inputs are joined at their native completed five-minute timestamp"
+  },
+  "fixed_state_rules": {
+    "rolling_prior_bars": 2016,
+    "minimum_prior_bars": 1008,
+    "absolute_leader_return_z_min": 2.0,
+    "leader_quote_volume_z_min": 1.5,
+    "leader_directional_taker_pressure_min": 0.10,
+    "directional_lead_gap_z_min": 1.0,
+    "spot_led_open_interest_build_z_min": 0.75,
+    "perp_led_open_interest_drop_z_max": -1.5,
+    "confirmation_open_interest_z_min": -0.25,
+    "spot_led_gap_repair_fraction_min": 0.25,
+    "perp_led_gap_repair_fraction_min": 0.35,
+    "spot_led_index_follow_ratio_min": 0.25,
+    "spot_led_cross_market_breadth_min": 0.5,
+    "perp_led_spot_follow_ratio_max": 0.15,
+    "round_trip_cost_bps": 16.0,
+    "continuation_horizon_minutes": 120,
+    "reversal_horizon_minutes": 60,
+    "same_symbol_event_cooldown_minutes": 60
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "latest_holdout_start": "2026-07-01",
+    "latest_holdout_end_exclusive": "2026-08-01",
+    "global_position_limit": 1,
+    "same_event_arbitration": "largest fixed leadership-state quality score, then symbol",
+    "overlap_policy": "no new selected episode until the active route horizon completes"
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.65,
+    "minimum_stability_trades_per_calendar_day": 1.0,
+    "minimum_latest_holdout_mean_net_bps": 0.0,
+    "minimum_latest_holdout_trades": 20,
+    "maximum_single_symbol_share": 0.75
+  },
+  "decision_contract": {
+    "advance": "Only a predeclared route/router passing development, year-long stability and the latest July 2026 holdout may be frozen for NautilusTrader.",
+    "reject": "Do not adjust numeric thresholds after these results. Preserve only a route that is positive across all declared splits and move to another independent mechanism."
+  }
+}
