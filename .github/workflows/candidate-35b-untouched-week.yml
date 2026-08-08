@@ -1,12 +1,17 @@
-name: candidate-35b-untouched-week
+name: candidate-35c-development-week2
 on:
   push:
     branches: ["research/candidate-35"]
     paths:
       - ".github/workflows/candidate-35b-untouched-week.yml"
+      - "research/candidate-35/router_v2.py"
+      - "research/candidate-35/strategy_v2.py"
+      - "research/candidate-35/config.json"
+      - "research/candidate-35/test_router_v2.py"
+      - "research/candidate-35/test_contract.py"
   workflow_dispatch:
 concurrency:
-  group: candidate-35b-untouched-week
+  group: candidate-35c-development-week2
   cancel-in-progress: true
 permissions:
   contents: read
@@ -21,15 +26,15 @@ jobs:
     env:
       PYTHONPATH: research/candidate-35:research/candidate-29:research/candidate-16:research/candidate-05
       PYTHONUNBUFFERED: "1"
-      ROOT: artifacts/c35b-untouched-2026-07-08_2026-07-14
+      ROOT: artifacts/c35c-development-2026-07-08_2026-07-14
     steps:
       - uses: actions/checkout@v4
       - name: Restore verified raw-data cache
         uses: actions/cache@v4
         with:
-          path: .cache/c35b-untouched-week
-          key: candidate35b-binance-2026-07-08_2026-07-14-v1
-      - name: Verify frozen implementation
+          path: .cache/c35c-development-week2
+          key: candidate35-binance-2026-07-08_2026-07-14-v1
+      - name: Verify implementation
         shell: bash
         run: |
           set -euo pipefail
@@ -45,9 +50,11 @@ jobs:
           assert s['context_bars']==60
           assert s['min_context_breadth']==3
           assert s['min_net_reward_r']==1.25
+          assert s['min_stop_atr']>0
+          assert 'max_stop_atr' not in s
           assert cfg['risk_fraction']==0.03
           PY
-      - name: Run one untouched seven-day four-asset Nautilus account
+      - name: Run one seven-day four-asset Nautilus development account
         shell: bash
         run: |
           set -euo pipefail
@@ -56,11 +63,11 @@ jobs:
             --config research/candidate-35/config.json \
             --start 2026-07-08 \
             --end 2026-07-14 \
-            --cache .cache/c35b-untouched-week \
-            --workspace .cache/c35b-untouched-week-work \
+            --cache .cache/c35c-development-week2 \
+            --workspace .cache/c35c-development-week2-work \
             --output "$ROOT" \
             2>&1 | tee "$ROOT/console.log"
-      - name: Verify account and claim boundary
+      - name: Verify account and structural invalidation
         if: always()
         shell: bash
         run: |
@@ -77,9 +84,16 @@ jobs:
           assert x['single_continuous_account'] is True
           assert x['single_strategy_process'] is True
           assert x['global_entry_or_position_limit']==1
-          assert x['strategy_diagnostics']['policy_version']=='candidate-35b'
+          assert x['strategy_diagnostics']['policy_version']=='candidate-35c'
           assert x['strategy_diagnostics']['max_open_positions_observed'] <= 1
           assert x['strategy_diagnostics']['global_position_violations']==0
+          closed=json.loads((root/'closed_scenarios.json').read_text())
+          for trade in closed:
+              side=int(trade['side'])
+              stop=float(trade['stop'])
+              anchor=float(trade['diagnostics']['structural_invalidation_anchor'])
+              assert stop < anchor if side > 0 else stop > anchor
+              assert float(trade['planned_account_loss']) <= float(trade['risk_budget']) + 1e-6
           print(json.dumps({
             'ending_nav':x['ending_nav'],
             'total_return':x['total_return'],
@@ -100,8 +114,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate35b-untouched-week-${{ github.sha }}
-          path: artifacts/c35b-untouched-2026-07-08_2026-07-14/**
+          name: candidate35c-development-week2-${{ github.sha }}
+          path: artifacts/c35c-development-2026-07-08_2026-07-14/**
           if-no-files-found: warn
           retention-days: 90
           compression-level: 6
