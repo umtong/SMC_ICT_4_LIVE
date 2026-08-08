@@ -1,0 +1,78 @@
+name: candidate-35-cross-asset-failure-diagnostic
+on:
+  push:
+    branches: ["research/candidate-35"]
+    paths:
+      - ".github/workflows/candidate-35-cross-asset-failure-diagnostic.yml"
+  workflow_dispatch:
+concurrency:
+  group: candidate-35-cross-asset-failure-diagnostic
+  cancel-in-progress: true
+permissions:
+  contents: read
+  packages: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-35:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/c35-cross-asset-failure-diagnostic
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore checksum-verified monthly kline cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/c35-cross-asset-failure
+          key: candidate35-cross-asset-failure-monthly-klines-v1
+      - name: Verify environment and diagnostic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-35/cross_asset_failure_diagnostic.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          source=json.loads(Path('research/candidate-35/evidence/c16-historical-trade-cases.json').read_text())
+          assert source['claim_scope']=='HISTORICAL_COMPONENT_DIAGNOSTIC_NOT_FOUR_ASSET_ACCOUNT_EVIDENCE'
+          assert len(source['cases'])==17
+          assert len({case['source_label'] for case in source['cases']})==4
+          PY
+      - name: Diagnose systemic versus idiosyncratic auction state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-35/cross_asset_failure_diagnostic.py \
+            --cache .cache/c35-cross-asset-failure \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Verify no account-performance claim
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          result=json.loads((root/'cross_asset_failure_diagnostic.json').read_text())
+          assert result['claim_scope']=='HISTORICAL_COMPONENT_DIAGNOSTIC_NO_NEW_ACCOUNT_PNL_CLAIM'
+          assert result['cases']==17
+          assert result['rejection_cases']==16
+          assert len(result['source_evidence'])==16
+          assert all(item['sha256'] for item in result['source_evidence'])
+          print(json.dumps(result['categorical_flag_summaries'],indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate35-cross-asset-failure-${{ github.sha }}
+          path: artifacts/c35-cross-asset-failure-diagnostic/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
