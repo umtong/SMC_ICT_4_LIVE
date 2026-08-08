@@ -178,7 +178,10 @@ jobs:
                   and row.get("is_reduce_only") == "True"
                   for row in stops
               ),
-              "targets_exist": bool(targets),
+              "target_report_or_stop_preemption": (
+                  bool(targets)
+                  or int(diag.get("candidate18_v5_stop_fill_events", 0)) > 0
+              ),
               "has_filled_trade": int(metrics.get("trades", 0)) > 0,
               "fill_quantity_matches_diagnostics": math.isclose(
                   float(diag.get("candidate18_v4_entry_fill_qty", 0.0)),
