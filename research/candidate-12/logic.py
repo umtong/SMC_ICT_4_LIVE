@@ -1,4 +1,4 @@
-"""Causal completed-session auction router for Candidate 12 I12.
+"""Causal completed-session auction router for Candidate 12 I13.
 
 The engine distinguishes economically different interactions with a completed
 Asia or London dealing range instead of forcing one candle pattern onto every
@@ -2066,6 +2066,50 @@ class CausalLiquidityAuctionEngine:
                 sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE-REACCELERATION")
                 state.acceptance_scenario_id = sid
             prior_peak = state.acceptance_peak or source.high
+
+            # A fresh FVG after the first mitigation failure is completed
+            # reacceleration. Enter at the close only when that close still
+            # passes the existing costed min_net_r gate; otherwise retain the
+            # protected one-bar FVG limit.
+            market_plan = self._costed_plan(
+                scenario_id=sid,
+                scenario=(
+                    ScenarioKind.ASIA_HIGH_ACCEPTANCE
+                    if source.label is SessionLabel.ASIA
+                    else ScenarioKind.LONDON_HIGH_ACCEPTANCE
+                ),
+                direction=Direction.LONG,
+                entry_order=EntryOrder.MARKET,
+                observed_ts_ns=bar.ts_ns,
+                bar=bar,
+                atr=atr,
+                entry_raw=bar.close,
+                stop_raw=fresh.lower - self.config.fvg_stop_buffer_atr * atr,
+                target_raw=prior_peak,
+                expire_ts_ns=None,
+                details={
+                    "source": source.label.value,
+                    "route": "FVG_BREACH_HELD_BOUNDARY_THEN_FRESH_REACCELERATION_MARKET",
+                    "session_high": source.high,
+                    "session_low": source.low,
+                    "session_width": source.width,
+                    "fvg_lower": fresh.lower,
+                    "fvg_upper": fresh.upper,
+                    "fvg_formed_ts_ns": fresh.formed_ts_ns,
+                    "initial_pullback_low": state.acceptance_pullback_low,
+                    "prior_acceptance_peak": prior_peak,
+                    "decision_close": bar.close,
+                    "execution_semantics": (
+                        "COMPLETED_FRESH_REACCELERATION_CLOSE_RETAINED_COSTED_R"
+                    ),
+                    "target_semantics": "PRIOR_ACCEPTANCE_EXPANSION_HIGH",
+                },
+            )
+            if market_plan is not None:
+                state.high_plan_emitted = True
+                state.trade_plan_emitted = True
+                return self._emit_plan(market_plan, allow_entry)
+
             plan = self._costed_plan(
                 scenario_id=sid,
                 scenario=(
@@ -2098,6 +2142,10 @@ class CausalLiquidityAuctionEngine:
                     "fvg_formed_ts_ns": fresh.formed_ts_ns,
                     "initial_pullback_low": state.acceptance_pullback_low,
                     "prior_acceptance_peak": prior_peak,
+                    "decision_close": bar.close,
+                    "execution_semantics": (
+                        "MARKET_CLOSE_FAILED_COSTED_R_THEN_ONE_BAR_PROTECTED_LIMIT"
+                    ),
                     "target_semantics": "PRIOR_ACCEPTANCE_EXPANSION_HIGH",
                 },
             )

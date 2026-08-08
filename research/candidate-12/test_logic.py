@@ -284,9 +284,11 @@ class LogicTests(unittest.TestCase):
         plan = engine._on_five(bar(ts(y, m, d, 6, 35), 108.5, 110, 106.5, 109), True)
         self.assertIsNone(plan)
 
-    def test_fvg_lower_edge_breach_waits_for_fresh_reacceleration_limit(self) -> None:
+    def test_fresh_reacceleration_falls_back_to_limit_when_market_r_is_insufficient(
+        self,
+    ) -> None:
         y, m, d = self.DAY
-        engine = CausalLiquidityAuctionEngine(config(), "X")
+        engine = CausalLiquidityAuctionEngine(config(min_net_r=3.0), "X")
         self.seed_asia(engine)
         # Initial acceptance peaks well above the first FVG.
         engine._on_five(bar(ts(y, m, d, 6, 5), 103, 104, 102, 103), True)
@@ -309,6 +311,34 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
         self.assertEqual(plan.details["target_semantics"], "PRIOR_ACCEPTANCE_EXPANSION_HIGH")
         self.assertAlmostEqual(plan.target_price, 115.0)
+
+    def test_fresh_reacceleration_uses_market_when_close_retains_costed_r(
+        self,
+    ) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(config(min_net_r=1.0), "X")
+        self.seed_asia(engine)
+        engine._on_five(bar(ts(y, m, d, 6, 5), 103, 104, 102, 103), True)
+        engine._on_five(bar(ts(y, m, d, 6, 10), 103, 112, 103, 110), True)
+        engine._on_five(bar(ts(y, m, d, 6, 15), 110, 115, 105.5, 110), True)
+        self.assertIsNone(
+            engine._on_five(bar(ts(y, m, d, 6, 20), 108, 108.2, 103.5, 105.2), True)
+        )
+        engine._on_five(bar(ts(y, m, d, 6, 25), 105.2, 106, 104.8, 105.5), True)
+        engine._on_five(bar(ts(y, m, d, 6, 30), 105.5, 109, 105.4, 108.5), True)
+        plan = engine._on_five(
+            bar(ts(y, m, d, 6, 35), 108.5, 110, 106.5, 109), True
+        )
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.entry_order, EntryOrder.MARKET)
+        self.assertEqual(
+            plan.details["route"],
+            "FVG_BREACH_HELD_BOUNDARY_THEN_FRESH_REACCELERATION_MARKET",
+        )
+        self.assertAlmostEqual(plan.expected_entry, 109.0)
+        self.assertAlmostEqual(plan.target_price, 115.0)
+        self.assertGreaterEqual(plan.net_r, 1.0)
 
     def test_opposite_boundaries_have_independent_causal_lifecycles(self) -> None:
         y, m, d = self.DAY
