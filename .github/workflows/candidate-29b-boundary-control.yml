@@ -1,0 +1,86 @@
+name: candidate-29b-boundary-control
+
+on:
+  push:
+    branches: ["research/candidate-29b"]
+    paths:
+      - "research/candidate-29/**"
+      - ".github/workflows/candidate-29b-boundary-control.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-29b-boundary-control
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  may-2024-boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-29:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-29b/boundary-control-2024-05
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and boundary contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-29
+          python -m unittest discover -s research/candidate-29 -p 'test_*.py' -v
+
+      - name: Reproduce the previously conflicting month
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-29/build_chunk.py \
+            --symbol BTCUSDT \
+            --core-start 2024-05-01 \
+            --core-end 2024-05-31 \
+            --warmup-days 3 \
+            --cache .cache/candidate-29b/2024-05 \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify exact May evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-29b/boundary-control-2024-05")
+          manifest = json.loads((root / "chunk_manifest.json").read_text())
+          assert manifest["schema_version"] == 2
+          assert manifest["metrics_boundary_policy"] == "create_time_owned_by_filename_utc_day"
+          assert manifest["core_start"] == "2024-05-01"
+          assert manifest["core_end"] == "2024-05-31"
+          assert manifest["rows"] == 31 * 1440
+          assert manifest["first_observed_time_ns"] < manifest["last_observed_time_ns"]
+          print(json.dumps({
+              "rows": manifest["rows"],
+              "feature_ready_rows": manifest["feature_ready_rows"],
+              "evidence_endpoints": manifest["evidence_endpoints"],
+              "metrics_boundary_policy": manifest["metrics_boundary_policy"],
+          }, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate29b-boundary-control-2024-05-${{ github.sha }}
+          path: artifacts/candidate-29b/boundary-control-2024-05/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
