@@ -1,0 +1,163 @@
+name: candidate-10-finalize-research-v2
+
+on:
+  workflow_run:
+    workflows:
+      - candidate-10-v51-cross-market-transfer-role
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: candidate-10-finalize
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.head_branch == 'research/candidate-10'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-10
+          fetch-depth: 0
+      - name: Download latest completed final-lineage evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf final-artifacts
+          mkdir -p final-artifacts
+          for workflow in \
+            candidate-10-v49-research.yml \
+            candidate-10-v50-research.yml \
+            candidate-10-v51-research.yml; do
+            run_id="$(gh run list --workflow "${workflow}" \
+              --branch research/candidate-10 --status completed --limit 10 \
+              --json databaseId,conclusion,createdAt \
+              --jq '[.[] | select(.conclusion == "success")] | sort_by(.createdAt) | last | .databaseId // empty')"
+            if [[ -n "${run_id}" ]]; then
+              mkdir -p "final-artifacts/${workflow%.yml}"
+              gh run download "${run_id}" -D "final-artifacts/${workflow%.yml}" || true
+              printf '%s\n' "${run_id}" > "final-artifacts/${workflow%.yml}/run_id.txt"
+            fi
+          done
+      - name: Generate final verdict from every continuous artifact
+        shell: bash
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import json
+          from pathlib import Path
+
+          rows=[]
+          for path in Path('final-artifacts').rglob('metrics.json'):
+              try: d=json.loads(path.read_text(encoding='utf-8'))
+              except Exception: continue
+              def f(v):
+                  try: return float(v)
+                  except Exception: return None
+              trades=int(d.get('closed_trades') or 0)
+              wins=int(d.get('wins') or 0)
+              row={
+                  'path':str(path),
+                  'candidate':str(d.get('candidate_generation') or d.get('candidate') or 'unknown'),
+                  'variant':str(d.get('variant') or path.parent.name),
+                  'start':d.get('period_start') or d.get('evaluation_start') or d.get('week_start'),
+                  'end':d.get('period_end_exclusive') or d.get('evaluation_end_exclusive'),
+                  'evaluation_days':int(d.get('evaluation_days') or 0),
+                  'trades':trades,'wins':wins,'losses':int(d.get('losses') or 0),
+                  'win_rate':wins/trades if trades else 0.0,
+                  'payoff_ratio':f(d.get('impact_adjusted_payoff_ratio',d.get('payoff_ratio'))),
+                  'nav':f(d.get('impact_adjusted_ending_nav',d.get('final_nav'))),
+                  'daily_geometric_growth':f(d.get('impact_adjusted_geometric_daily_growth',d.get('daily_geometric_growth'))),
+                  'max_drawdown':f(d.get('impact_adjusted_intraday_max_drawdown',d.get('max_drawdown'))),
+                  'errors':len(d.get('errors',[]) or []),
+                  'global_overlap_count':int(d.get('global_overlap_count') or 0),
+                  'liquidation_detected':bool(d.get('liquidation_detected',False)),
+                  'evidence_class':d.get('evidence_class'),
+              }
+              row['continuous']=(
+                  row['evaluation_days']>=90 or 'CONTINUOUS' in str(path).upper()
+                  or 'continuous' in str(row['evidence_class']).lower()
+              )
+              row['target_pass']=bool(
+                  row['continuous'] and row['trades']>=30 and row['win_rate']>=0.90
+                  and row['payoff_ratio'] is not None and row['payoff_ratio']>=1.20
+                  and row['daily_geometric_growth'] is not None and row['daily_geometric_growth']>=0.01
+                  and row['max_drawdown'] is not None and row['max_drawdown']<=0.20
+                  and row['errors']==0 and row['global_overlap_count']==0
+                  and not row['liquidation_detected']
+              )
+              rows.append(row)
+          rows.sort(key=lambda r:(r['candidate'],str(r['start']),r['variant'],r['path']))
+          continuous=[r for r in rows if r['continuous']]
+          passing=[r for r in continuous if r['target_pass']]
+          def key(r):
+              return (r['target_pass'],r['daily_geometric_growth'] if r['daily_geometric_growth'] is not None else -999,r['win_rate'],r['trades'],-(r['max_drawdown'] if r['max_drawdown'] is not None else 999))
+          best=max(continuous,key=key,default=None)
+          verdict='TARGET_ACHIEVED' if passing else 'TARGET_NOT_ACHIEVED'
+          payload={
+              'schema':'candidate-10-final-research-verdict-v2',
+              'generated_at_utc':datetime.now(timezone.utc).isoformat(),
+              'branch':'research/candidate-10','verdict':verdict,
+              'success_claim':bool(passing),
+              'decision_contract':{
+                  'continuous_days_min':90,'closed_trades_min':30,
+                  'win_rate_min':0.90,'payoff_ratio_min':1.20,
+                  'daily_geometric_growth_min':0.01,'max_drawdown_max':0.20,
+                  'errors_required':0,'global_overlap_required':0,
+                  'liquidation_required':False,
+              },
+              'best_continuous_row':best,'target_passing_rows':passing,'rows':rows,
+          }
+          Path('research/candidate-10/final_research_metrics.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          def pct(v): return 'n/a' if v is None else f'{100*v:.4f}%'
+          def num(v): return 'n/a' if v is None else f'{v:.6f}'
+          lines=['# Candidate 10 — Final autonomous research verdict','',f'Verdict: **{verdict}**','',
+                 'The verdict is generated from the latest completed v49, v50 and v51 GitHub Actions artifacts.','',
+                 '## Fixed success contract','',
+                 '- 90 or more continuous calendar days;','- 30 or more closed trades;',
+                 '- cost-after win rate at least 90%;','- cost-after payoff ratio at least 1.20;',
+                 '- cost-after geometric daily growth at least 1%;','- maximum drawdown at most 20%;',
+                 '- zero implementation errors, liquidations and global-slot overlaps.','']
+          if best:
+              lines += ['## Best completed continuous result','',
+                        f"- candidate: `{best['candidate']}`",f"- variant: `{best['variant']}`",
+                        f"- period: `{best['start']}` to `{best['end']}`",
+                        f"- trades: {best['trades']} ({best['wins']} wins / {best['losses']} losses)",
+                        f"- win rate: {pct(best['win_rate'])}",f"- payoff ratio: {num(best['payoff_ratio'])}",
+                        f"- cost-after ending NAV: {num(best['nav'])}",
+                        f"- cost-after geometric daily growth: {pct(best['daily_geometric_growth'])}",
+                        f"- maximum drawdown: {pct(best['max_drawdown'])}",
+                        f"- implementation errors: {best['errors']}",f"- target pass: {best['target_pass']}",'']
+          else:
+              lines += ['## Continuous evidence','','No completed continuous artifact was available.','']
+          lines += ['## All completed continuous variants','',
+                    '| Candidate | Variant | Days | Trades | W/L | Win rate | Payoff | Daily geom | NAV | Max DD | Pass |',
+                    '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|']
+          for r in continuous:
+              lines.append(f"| {r['candidate']} | {r['variant']} | {r['evaluation_days']} | {r['trades']} | {r['wins']}/{r['losses']} | {pct(r['win_rate'])} | {num(r['payoff_ratio'])} | {pct(r['daily_geometric_growth'])} | {num(r['nav'])} | {pct(r['max_drawdown'])} | {r['target_pass']} |")
+          lines += ['','## Final conclusion','']
+          if passing:
+              lines.append('Only the listed passing frozen continuous variant is the completed candidate.')
+          else:
+              lines += ['No frozen continuous variant satisfies the project target. Controlled wins, sparse perfect records, zero-trade preservation and loss reduction are not success evidence.',
+                        'The source-equilibrium, independent-external-draw and cross-market transfer-role lineages are therefore not approved for live trading.']
+          lines += ['','Machine-readable evidence is in `final_research_metrics.json`.','']
+          Path('research/candidate-10/FINAL_RESEARCH_RESULT.md').write_text('\n'.join(lines),encoding='utf-8')
+          PY
+      - name: Commit final verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-10/FINAL_RESEARCH_RESULT.md research/candidate-10/final_research_metrics.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-10: finalize v49-v51 research verdict"
+          git push origin HEAD:research/candidate-10
