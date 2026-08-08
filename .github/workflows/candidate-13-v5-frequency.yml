@@ -1,0 +1,173 @@
+name: Candidate 13 V5 multi-market session frequency
+
+on:
+  push:
+    branches:
+      - research/candidate-13
+    paths:
+      - ".github/workflows/candidate-13-v5-frequency.yml"
+      - "research/candidate-13/protocol-v5-frequency-development.json"
+      - "research/candidate-13/session_auction_i7.py"
+      - "research/candidate-13/session_auction_bridge.py"
+      - "research/candidate-13/session_i7_config.json"
+      - "research/candidate-13/semantic_market_leadership_v5.py"
+      - "research/candidate-13/runner_materializer_v5.py"
+      - "research/candidate-13/portfolio_materializer_v5.py"
+      - "research/candidate-13/run_multisymbol_session_v5.py"
+      - "research/candidate-13/candidate13_runner_v5.py"
+      - "research/candidate-13/aggregate_v5_development.py"
+      - "research/candidate-13/run_v5_frequency_week.sh"
+      - "research/candidate-13/test_v5_multisymbol_session.py"
+      - "research/candidate-13/test_event_log_singleton.py"
+      - "src/smc_ict_4/event_log.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-13-v5-frequency-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify environment, materialization and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-13:$GITHUB_WORKSPACE/src"
+          python -m py_compile research/candidate-13/*.py src/smc_ict_4/event_log.py
+          python -m unittest discover -s research/candidate-13 -p 'test_*.py' -v
+          python - <<'PY'
+          import candidate13_runner_v5
+          from run_multisymbol_session_v5 import run
+          assert callable(candidate13_runner_v5.execute)
+          assert callable(run)
+          PY
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        interval: [D01, D02, D03, D04]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Run NautilusTrader development interval
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash research/candidate-13/run_v5_frequency_week.sh "${{ matrix.interval }}"
+      - name: Remove downloaded market archives
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/data"
+      - name: Upload auditable evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate13-v5-${{ matrix.interval }}
+          path: |
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/run.json
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/data_manifest.json
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/metrics.json
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/summary.json
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/audit.json
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/audit.md
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/source_lock.json
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/effective_config.json
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/scenario_events.jsonl
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/submitted_plans.json
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/order_lifecycle.json
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/orders.csv
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/positions.csv
+            research/candidate-13/v5/frequency/development/results/${{ matrix.interval }}/account.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: ${{ needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Download fresh interval evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate13-v5-D*
+          path: artifacts
+      - name: Aggregate and persist exposed development evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-13
+          current_head="$(git rev-parse origin/research/candidate-13)"
+          if [[ "$current_head" != "$GITHUB_SHA" ]]; then
+            echo "stale V5 run: $GITHUB_SHA; current branch: $current_head"
+            exit 0
+          fi
+          rm -rf research/candidate-13/v5/frequency/development/results
+          mkdir -p research/candidate-13/v5/frequency/development/results
+          for interval in D01 D02 D03 D04; do
+            src="artifacts/candidate13-v5-$interval"
+            test -d "$src"
+            mkdir -p "research/candidate-13/v5/frequency/development/results/$interval"
+            cp -a "$src/." "research/candidate-13/v5/frequency/development/results/$interval/"
+            test -s "research/candidate-13/v5/frequency/development/results/$interval/audit.json"
+            test -s "research/candidate-13/v5/frequency/development/results/$interval/metrics.json"
+          done
+          python research/candidate-13/aggregate_v5_development.py \
+            --results research/candidate-13/v5/frequency/development/results \
+            --protocol research/candidate-13/protocol-v5-frequency-development.json \
+            --output research/candidate-13/v5/frequency/development/aggregate.json
+          latest_head="$(git ls-remote origin refs/heads/research/candidate-13 | cut -f1)"
+          if [[ "$latest_head" != "$GITHUB_SHA" ]]; then
+            echo "branch advanced during V5 run; evidence remains commit-scoped artifacts"
+            exit 0
+          fi
+          git config user.name "candidate-13-bot"
+          git config user.email "candidate-13-bot@users.noreply.github.com"
+          git add -A research/candidate-13/v5/frequency/development
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-13 v5: record multi-market session development [skip ci]"
+            git push origin HEAD:research/candidate-13
+          fi
+      - name: Upload development aggregate
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate13-v5-frequency-aggregate-${{ github.run_id }}
+          path: |
+            research/candidate-13/v5/frequency/development/aggregate.json
+            research/candidate-13/v5/frequency/development/RESULT.md
+          if-no-files-found: error
+          retention-days: 30

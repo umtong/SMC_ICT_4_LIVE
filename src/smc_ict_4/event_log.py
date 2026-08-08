@@ -13,6 +13,27 @@ class EventLogError(ContractError):
     """Raised when an event sequence is internally inconsistent."""
 
 
+def _scenario_chain_key(event: ResearchEvent) -> str:
+    """Return the state-chain identity for one research event.
+
+    ``AMBIGUOUS_SWEEP`` is a terminal diagnostic for one unresolvable bar, not
+    a persistent trading scenario.  The detector deliberately emits the
+    sentinel scenario id ``AMBIGUOUS`` because there is no selected pool to
+    supply a normal scenario id.  Repeated sentinel observations must therefore
+    remain independent singleton chains.  The exception is deliberately exact;
+    every ordinary scenario id retains strict chained-state validation.
+    """
+    if (
+        event.scenario_id == "AMBIGUOUS"
+        and event.event_type == "AMBIGUOUS_SWEEP"
+        and event.previous_state == "ARMED"
+        and event.next_state == "TERMINAL"
+        and event.reason_code == "BAR_PATH_UNRESOLVABLE"
+    ):
+        return event.event_id
+    return event.scenario_id
+
+
 def validate_events(events: Iterable[ResearchEvent]) -> list[ResearchEvent]:
     materialized = list(events)
     last_global_observed = -1
@@ -31,7 +52,8 @@ def validate_events(events: Iterable[ResearchEvent]) -> list[ResearchEvent]:
             )
         last_global_observed = event.observed_time_ns
 
-        previous = last_by_scenario.get(event.scenario_id)
+        chain_key = _scenario_chain_key(event)
+        previous = last_by_scenario.get(chain_key)
         if previous is not None:
             if event.previous_state != previous.next_state:
                 raise EventLogError(
@@ -43,7 +65,7 @@ def validate_events(events: Iterable[ResearchEvent]) -> list[ResearchEvent]:
                 raise EventLogError(
                     f"scenario {event.scenario_id!r} observed time moved backwards",
                 )
-        last_by_scenario[event.scenario_id] = event
+        last_by_scenario[chain_key] = event
 
     return materialized
 
