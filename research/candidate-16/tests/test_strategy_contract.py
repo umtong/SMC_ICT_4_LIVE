@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import inspect
+import json
+from pathlib import Path
 import unittest
 
-from strategy import Candidate16Config
 from strategy import Candidate16Strategy
 
 
 class Candidate16StrategyContractTest(unittest.TestCase):
-    def test_config_keeps_project_risk_default(self) -> None:
-        self.assertEqual(Candidate16Config.model_fields["risk_fraction"].default, 0.03)
+    def test_config_keeps_project_risk_fraction(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(config["risk_fraction"], 0.03)
 
     def test_no_capacity_or_score_sizing_in_submission(self) -> None:
         source = inspect.getsource(Candidate16Strategy._submit_entry)
