@@ -17,6 +17,8 @@ def test_strategy_keeps_project_risk_and_execution_shell_contract():
     assert "Candidate35Strategy = Candidate39Strategy" in source
     assert "ORDER_REJECTION_WHILE_POSITION_LIVE" in source
     assert "PROTECTIVE_STOP_ALREADY_CROSSED_ON_ENTRY_BAR" in source
+    assert "def on_position_closed" in source
+    assert 'event_details.pop("ts_event", None)' in source
     assert "close_all_positions" in source
 
 

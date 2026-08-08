@@ -1,10 +1,11 @@
 """Candidate 39 NautilusTrader strategy adapter.
 
 The execution, account, fee, latency, contingent-order, and continuous-NAV
-machinery is deliberately reused from Candidate 35.  Candidate 39 replaces only
-the causal state router and adds the execution-integrity correction learned from
-Candidate 16: a rejected or already-crossed protective stop causes an immediate
-flatten, never an unprotected timed hold.
+machinery is deliberately reused from Candidate 35. Candidate 39 replaces only
+the causal state router and adds execution-integrity corrections learned from
+Candidate 16 and the first Candidate 39 replay: rejected/already-crossed
+protective stops flatten immediately, and position-close evidence is persisted
+without duplicating the event timestamp argument.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ BASE = HERE.parent / "candidate-35"
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-# Candidate 35 imports a module named ``router``.  Pin that name to Candidate
+# Candidate 35 imports a module named ``router``. Pin that name to Candidate
 # 39 before loading the reused strategy module.
 import router as _candidate39_router
 
@@ -78,6 +79,30 @@ class Candidate39Strategy(_base.Candidate35Strategy):
             bar_high=float(latest.high),
             bar_low=float(latest.low),
         )
+
+    def on_position_closed(self, event: Any) -> None:
+        """Persist one close event without re-passing ``ts_event`` as a kwarg.
+
+        Candidate 35 stored ``ts_event`` in the scenario record and then passed
+        that record to ``_event`` after also supplying the positional timestamp.
+        The first real Candidate 39 stop fill exposed the resulting TypeError.
+        This override preserves the evidence schema while making the event call
+        unambiguous.
+        """
+        ts_event = int(getattr(event, "ts_event", self._latest_ts()))
+        record = dict(self.current_scenario or {})
+        record.update(
+            {
+                "ts_event": ts_event,
+                "realized_pnl": str(getattr(event, "realized_pnl", None)),
+                "event": str(event),
+            }
+        )
+        self.closed_scenarios.append(record)
+        event_details = dict(record)
+        event_details.pop("ts_event", None)
+        self._event("POSITION_CLOSED", ts_event, **event_details)
+        self._clear_trade_state()
 
     def on_order_rejected(self, event: Any) -> None:
         super().on_order_rejected(event)
