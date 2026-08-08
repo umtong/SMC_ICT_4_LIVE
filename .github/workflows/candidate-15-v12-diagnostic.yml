@@ -1,0 +1,267 @@
+name: Candidate 15 V12 causal cross-predictive diagnostic
+
+on:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - "research/candidate-15-v12/**"
+      - ".github/workflows/candidate-15-v12-diagnostic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v12-diagnostic-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify causal diagnostic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-15-v12/diagnose_cross_predictive_spillover.py
+          python - <<'PY'
+          from pathlib import Path
+          source = Path('research/candidate-15-v12/diagnose_cross_predictive_spillover.py').read_text()
+          for token in (
+              'EVERY_RESPONSE_MATURE_BEFORE_MODEL_USE',
+              'ALL_THREE_PEERS_SAME_SIGN_AND_PRIOR_24H_95P_FIRST_PASSAGE',
+              'diagnostic_only_not_account_backtest',
+              'MODEL_EVENT_WINDOWS = (16, 32, 48)',
+          ):
+              assert token in source, token
+          assert 'BacktestEngine' not in source
+          PY
+
+  evaluate:
+    needs: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        interval: [E01, E02, E03, E04, E05, E06]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Diagnose ${{ matrix.interval }} causal cross-predictive responses
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-15-v12/diagnose_cross_predictive_spillover.py \
+            "${{ matrix.interval }}" \
+            --output "research/candidate-15-v12/diagnostic/${{ matrix.interval }}"
+          rm -rf "research/candidate-15-v12/diagnostic/${{ matrix.interval }}/data"
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v12-diagnostic-${{ matrix.interval }}
+          path: research/candidate-15-v12/diagnostic/${{ matrix.interval }}
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    if: ${{ always() && needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate15-v12-diagnostic-E*
+          path: artifacts
+      - name: Aggregate causal response evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import statistics
+
+          symbols = ('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT')
+          intervals = ('E01', 'E02', 'E03', 'E04', 'E05', 'E06')
+          rows = []
+          interval_summaries = {}
+          for interval in intervals:
+              root = Path('artifacts') / f'candidate15-v12-diagnostic-{interval}'
+              summary = json.loads((root / 'summary.json').read_text())
+              interval_summaries[interval] = summary
+              rows.extend(json.loads((root / 'forecasts.json').read_text()))
+
+          def summarize(items):
+              if not items:
+                  return {
+                      'forecasts': 0,
+                      'directional_hit_rate': 0.0,
+                      'positive_after_two_maker_fees_rate': 0.0,
+                      'mean_directional_response_10m_bps': 0.0,
+                      'median_directional_response_10m_bps': 0.0,
+                      'mean_after_two_maker_fees_bps': 0.0,
+                      'median_after_two_maker_fees_bps': 0.0,
+                      'median_mfe_10m_bps': 0.0,
+                      'median_mae_10m_bps': 0.0,
+                  }
+              directional = [float(x['directional_response_10m']) for x in items]
+              after = [float(x['directional_response_after_two_maker_fees']) for x in items]
+              mfe = [float(x['mfe_10m']) for x in items]
+              mae = [float(x['mae_10m']) for x in items]
+              return {
+                  'forecasts': len(items),
+                  'directional_hit_rate': sum(x > 0 for x in directional) / len(items),
+                  'positive_after_two_maker_fees_rate': sum(x > 0 for x in after) / len(items),
+                  'mean_directional_response_10m_bps': statistics.fmean(directional) * 10000,
+                  'median_directional_response_10m_bps': statistics.median(directional) * 10000,
+                  'mean_after_two_maker_fees_bps': statistics.fmean(after) * 10000,
+                  'median_after_two_maker_fees_bps': statistics.median(after) * 10000,
+                  'median_mfe_10m_bps': statistics.median(mfe) * 10000,
+                  'median_mae_10m_bps': statistics.median(mae) * 10000,
+              }
+
+          def mechanism(row):
+              factor_sign = 1 if float(row['factor']) > 0 else -1
+              return (
+                  'SPILLOVER_POSITIVE_BETA'
+                  if int(row['direction']) == factor_sign
+                  else 'SEESAW_NEGATIVE_BETA'
+              )
+
+          overall = summarize(rows)
+          by_interval = {
+              interval: summarize([x for x in rows if x['interval'] == interval])
+              for interval in intervals
+          }
+          by_regime = {
+              regime: summarize([x for x in rows if x['regime'] == regime])
+              for regime in ('DIFFUSE', 'CONCENTRATED')
+          }
+          by_mechanism = {
+              name: summarize([x for x in rows if mechanism(x) == name])
+              for name in ('SPILLOVER_POSITIVE_BETA', 'SEESAW_NEGATIVE_BETA')
+          }
+          by_regime_mechanism = {}
+          for regime in ('DIFFUSE', 'CONCENTRATED'):
+              for name in ('SPILLOVER_POSITIVE_BETA', 'SEESAW_NEGATIVE_BETA'):
+                  key = f'{regime}::{name}'
+                  by_regime_mechanism[key] = summarize([
+                      x for x in rows if x['regime'] == regime and mechanism(x) == name
+                  ])
+          by_symbol = {
+              symbol: summarize([x for x in rows if x['receiver'] == symbol])
+              for symbol in symbols
+          }
+
+          eligible = []
+          for key, value in by_regime_mechanism.items():
+              if (
+                  value['forecasts'] >= 24
+                  and value['directional_hit_rate'] >= 0.55
+                  and value['mean_after_two_maker_fees_bps'] > 0.0
+                  and value['median_mfe_10m_bps'] > abs(value['median_mae_10m_bps'])
+              ):
+                  eligible.append((key, value))
+          eligible.sort(
+              key=lambda item: (
+                  item[1]['mean_after_two_maker_fees_bps'],
+                  item[1]['directional_hit_rate'],
+                  item[1]['forecasts'],
+              ),
+              reverse=True,
+          )
+          if eligible:
+              classification = 'V12_MECHANISM_SURVIVED_BUILD_NAUTILUS_EXECUTION'
+              selected = {'route': eligible[0][0], 'evidence': eligible[0][1]}
+          else:
+              classification = 'V12_MECHANISM_REJECTED_OR_UNDERPOWERED'
+              selected = None
+
+          aggregate = {
+              'schema': 'candidate-15-v12-causal-cross-predictive-aggregate-v1',
+              'classification': classification,
+              'diagnostic_only_not_account_backtest': True,
+              'forecast_rows': len(rows),
+              'overall': overall,
+              'by_interval': by_interval,
+              'by_regime': by_regime,
+              'by_mechanism': by_mechanism,
+              'by_regime_mechanism': by_regime_mechanism,
+              'by_symbol': by_symbol,
+              'selected_for_nautilus_implementation': selected,
+              'interval_summaries': interval_summaries,
+              'claim': 'NO_PNL_OR_SUCCESS_CLAIM; CONDITIONAL_RESPONSE_MECHANISM_ONLY',
+          }
+          out = Path('research/candidate-15-v12/diagnostic')
+          out.mkdir(parents=True, exist_ok=True)
+          (out / 'aggregate.json').write_text(json.dumps(aggregate, indent=2, sort_keys=True))
+          lines = [
+              '# Candidate 15 V12 causal cross-predictive diagnostic',
+              '',
+              f'**{classification}**',
+              '',
+              f"- forecast rows: `{len(rows)}`",
+              f"- directional hit rate: `{overall['directional_hit_rate']:.6f}`",
+              f"- mean 10m directional response: `{overall['mean_directional_response_10m_bps']:.4f}` bps",
+              f"- mean after two frozen maker fees: `{overall['mean_after_two_maker_fees_bps']:.4f}` bps",
+              '',
+              '## Regime × learned sign',
+          ]
+          for key, value in by_regime_mechanism.items():
+              lines.append(
+                  f"- {key}: n={value['forecasts']}, hit={value['directional_hit_rate']:.4f}, "
+                  f"after_cost={value['mean_after_two_maker_fees_bps']:.4f} bps, "
+                  f"MFE/MAE={value['median_mfe_10m_bps']:.4f}/{value['median_mae_10m_bps']:.4f} bps"
+              )
+          lines.extend([
+              '',
+              'This file is a causal response diagnostic, not a portfolio or NAV result.',
+          ])
+          (out / 'DIAGNOSTIC.md').write_text('\n'.join(lines) + '\n')
+          PY
+
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-v12-bot
+          git config user.email candidate-15-v12-bot@users.noreply.github.com
+          git add research/candidate-15-v12/diagnostic/aggregate.json \
+                  research/candidate-15-v12/diagnostic/DIAGNOSTIC.md
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15 v12: persist causal response diagnostic [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v12-diagnostic-aggregate-${{ github.run_id }}
+          path: research/candidate-15-v12/diagnostic
+          if-no-files-found: error
+          retention-days: 30
