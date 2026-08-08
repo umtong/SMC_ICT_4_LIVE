@@ -2,18 +2,18 @@
 
 The v40 source-range detector, v41 first-displacement near-edge entry, source
 midpoint target, original raid invalidation, all-cost sizing and global slot are
-frozen.  A one-minute right-confirmed pivot on the profitable side of the real
-entry is evidence that the predicted auction has begun.  It does not become a
-hard stop.  Once current modeled net profit can fund the complete original-stop
+frozen. A one-minute right-confirmed pivot on the profitable side of the real
+entry is evidence that the predicted auction has begun. It does not become a
+hard stop. Once current modeled net profit can fund the complete original-stop
 loss of the residual quantity, close only the minimum solved quantity and leave
-the residual on its original target and invalidation.  No fixed partial fraction
+the residual on its original target and invalidation. No fixed partial fraction
 or MFE/R threshold is used.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from typing import Iterable
+from typing import Any, Iterable
 
 from c10_v32_overlay import FundedReduction, solve_funded_reduction
 from c10_v41_overlay import (  # re-export frozen current layers
@@ -59,19 +59,21 @@ def first_favorable_pivot_observation(
     direction: str,
     micro_highs: Iterable[tuple[int, int, float]],
     micro_lows: Iterable[tuple[int, int, float]],
+    bars: Iterable[Any],
     entry_fill_ts_ns: int,
     observed_ts_ns: int,
     entry_reference: float,
     current_price: float,
     target_price: float,
 ) -> FavorablePivotObservation | None:
-    """Return the first causal profitable-side pivot still relevant now.
+    """Return the first causal profitable-side pivot which remains defended.
 
-    The pivot event and its one-right-bar confirmation must both follow the real
-    fill.  The current completed price must remain between entry and target in
-    the predicted direction.  Cost feasibility and reduction size are decided
-    separately by ``solve_funded_reduction``; an early pivot can therefore remain
-    armed until enough genuine net gain exists to fund residual risk.
+    The pivot event and one-right-bar confirmation must both follow the real
+    fill. From confirmation through the current completed bar, price may not
+    violate the pivot. Current price must remain between entry and target in the
+    predicted direction. Cost feasibility and reduction size are decided by
+    ``solve_funded_reduction``; a valid pivot can stay armed until enough genuine
+    net gain exists to fund residual risk.
     """
 
     if direction not in {"LONG", "SHORT"}:
@@ -94,6 +96,11 @@ def first_favorable_pivot_observation(
     )
     if not current_favorable:
         return None
+    observations = [
+        bar
+        for bar in bars
+        if entry_fill_ts_ns <= int(getattr(bar, "ts_ns")) <= observed_ts_ns
+    ]
     for event_ts, known_ts, level in ordered:
         if event_ts <= entry_fill_ts_ns or known_ts <= entry_fill_ts_ns:
             continue
@@ -103,6 +110,19 @@ def first_favorable_pivot_observation(
             else level < entry_reference
         )
         if not pivot_favorable:
+            continue
+        post_confirmation = [
+            bar
+            for bar in observations
+            if int(getattr(bar, "ts_ns")) >= known_ts
+        ]
+        violated = any(
+            float(getattr(bar, "low")) < level
+            if direction == "LONG"
+            else float(getattr(bar, "high")) > level
+            for bar in post_confirmation
+        )
+        if violated:
             continue
         return FavorablePivotObservation(
             direction=direction,
