@@ -1,0 +1,125 @@
+name: candidate-16-v46-91d-audit
+
+on:
+  push:
+    branches: ["research/candidate-16"]
+    paths:
+      - ".github/workflows/candidate-16-v46-91d-audit.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v46-91d-audit
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  stateful-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v46-91d-audit
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and exact v46 import
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python - <<'PY'
+          import strategy
+          assert strategy.LiquidityResponseStrategy.__name__ == "NoPostRetraceBreakawayStrategy"
+          print(strategy.LiquidityResponseStrategy)
+          PY
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v46_no_post_retrace_breakaway_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_timestamp_contract.py' -v
+
+      - name: Run one uninterrupted 91-day BTC account through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-05/v40_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-05-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-05-30 \
+            --cache .cache/candidate-16-v46-91d-audit \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Build compact authoritative audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          integrity = (
+              int(metrics.get("liquidations", 0) or 0) == 0
+              and int(diagnostics.get("order_rejections", 0) or 0) == 0
+              and int(diagnostics.get("max_simultaneous_entry_intents", 0) or 0) <= 1
+              and int(diagnostics.get("max_open_positions_observed", 0) or 0) <= 1
+              and float(metrics.get("min_equity", 0.0) or 0.0) > 0.0
+          )
+          summary = {
+              "schema": "candidate-16-v46-91d-audit-v1",
+              "strategy": "strategy_v46_no_post_retrace_breakaway:NoPostRetraceBreakawayStrategy",
+              "engine": "NautilusTrader BacktestNode",
+              "evaluation_start": metrics.get("evaluation_start"),
+              "evaluation_end": metrics.get("evaluation_end"),
+              "integrity_pass": integrity,
+              "starting_nav": metrics.get("starting_nav"),
+              "ending_nav": metrics.get("ending_nav"),
+              "total_return": metrics.get("total_return"),
+              "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+              "max_drawdown": metrics.get("max_drawdown"),
+              "trades": metrics.get("trades"),
+              "wins": metrics.get("wins"),
+              "losses": metrics.get("losses"),
+              "win_rate": metrics.get("win_rate"),
+              "profit_factor": metrics.get("profit_factor"),
+              "expectancy_usdt": metrics.get("expectancy_usdt"),
+              "largest_winner_share": metrics.get("largest_winner_share"),
+              "scenario_metrics": metrics.get("scenario_metrics", {}),
+              "order_rejections": diagnostics.get("order_rejections", 0),
+              "max_simultaneous_entry_intents": diagnostics.get("max_simultaneous_entry_intents", 0),
+              "max_open_positions_observed": diagnostics.get("max_open_positions_observed", 0),
+          }
+          (root / "audit_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n")
+          print(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify raw evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          python -m json.tool "$ROOT/audit_summary.json"
+          for file in run.json data_manifest.json raw_evidence.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl; do
+            test -s "$ROOT/$file"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v46-91d-audit-${{ github.sha }}
+          path: artifacts/candidate-16-v46-91d-audit/**
+          if-no-files-found: warn
+          retention-days: 90
