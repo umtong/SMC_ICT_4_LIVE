@@ -1,0 +1,124 @@
+name: Candidate 15 V12 causal cross-predictive diagnostic v2
+
+on:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - ".github/workflows/candidate-15-v12-diagnostic-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v12-diagnostic-v2-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify diagnostic and audited loader boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-15-v12/diagnose_cross_predictive_spillover.py \
+            research/candidate-15-v12/run_diagnostic.py \
+            research/candidate-15-v12/aggregate_diagnostic.py
+          python - <<'PY'
+          from pathlib import Path
+          wrapper = Path('research/candidate-15-v12/run_diagnostic.py').read_text()
+          aggregate = Path('research/candidate-15-v12/aggregate_diagnostic.py').read_text()
+          assert 'run_leadership_scdam_v11.py' in wrapper
+          assert 'diagnostic._load_candidate14_runner = _load_candidate15_v11_runner' in wrapper
+          assert 'mean_after_16bps_bps' in aggregate
+          assert 'diagnostic_only_not_account_backtest' in aggregate
+          PY
+
+  evaluate:
+    needs: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        interval: [E01, E02, E03, E04, E05, E06]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Diagnose ${{ matrix.interval }} with prior-only response models
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-15-v12/run_diagnostic.py \
+            "${{ matrix.interval }}" \
+            --output "research/candidate-15-v12/diagnostic/${{ matrix.interval }}"
+          rm -rf "research/candidate-15-v12/diagnostic/${{ matrix.interval }}/data"
+      - name: Upload complete interval evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v12-diagnostic-${{ matrix.interval }}
+          path: research/candidate-15-v12/diagnostic/${{ matrix.interval }}
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    if: ${{ always() && needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate15-v12-diagnostic-E*
+          path: artifacts
+      - name: Aggregate without manufacturing a portfolio result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-15-v12/aggregate_diagnostic.py \
+            --artifacts artifacts \
+            --output research/candidate-15-v12/diagnostic
+
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-v12-bot
+          git config user.email candidate-15-v12-bot@users.noreply.github.com
+          git add research/candidate-15-v12/diagnostic/aggregate.json \
+                  research/candidate-15-v12/diagnostic/DIAGNOSTIC.md
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15 v12: persist causal response diagnostic v2 [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v12-diagnostic-aggregate-${{ github.run_id }}
+          path: research/candidate-15-v12/diagnostic
+          if-no-files-found: error
+          retention-days: 30
