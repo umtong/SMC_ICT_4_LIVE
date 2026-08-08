@@ -1,0 +1,161 @@
+name: Candidate 09 v44 four-market POC migration
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths:
+      - .github/workflows/candidate-09-v44-four-market-poc-migration.yml
+      - research/candidate-09/v44_four_market_poc_migration/portfolio_strategy.py
+      - research/candidate-09/v44_four_market_poc_migration/run_portfolio.py
+      - research/candidate-09/v44_four_market_poc_migration/test_contracts.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v44-four-market-poc-migration
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SOURCE_SHA: 91317f522546afd837e330a2bde0f9c05e81b068
+      SHARED_SHA: 4adca09c7dfcb357421dbde074e8daa8e26efc70
+      ROOT: research/candidate-09/v44_four_market_poc_migration
+      CACHE: .cache/candidate-09-v44-four-market-poc-migration
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-09-v44-four-market-poc-migration-v1
+
+      - name: Materialize verified shared account, multi-symbol POC, V42, and global slot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin "$SOURCE_SHA" "$SHARED_SHA"
+          rm -rf "$ROOT/work" "$ROOT/evidence/latest"
+          mkdir -p "$ROOT/work"
+          git archive "$SOURCE_SHA" research/candidate-05 research/candidate-16 | tar -x -C "$ROOT/work"
+          for file in shared_account_backtest.py global_entry_slot_v3.py global_entry_slot_v4.py; do
+            git show "$SHARED_SHA:research/candidate-05/$file" > "$ROOT/work/research/candidate-05/$file"
+          done
+          for file in test_global_entry_slot_v3.py test_global_entry_slot_v4.py; do
+            git show "$SHARED_SHA:research/candidate-05/tests/$file" > "$ROOT/work/research/candidate-05/tests/$file"
+          done
+          mv "$ROOT/work/research/candidate-05/features.py" "$ROOT/work/research/candidate-05/features_base.py"
+          mv "$ROOT/work/research/candidate-16/strategy.py" "$ROOT/work/research/candidate-16/strategy_v1.py"
+          cp research/candidate-09/v37_four_market_completed_footprint/features.py "$ROOT/work/research/candidate-05/features.py"
+          python research/candidate-09/v40_btc_led_cross_impact/apply_tick_contract.py "$ROOT/work/research/candidate-05/features.py"
+          cp research/candidate-09/v33_footprint_acceptance/strategy.py "$ROOT/work/research/candidate-16/strategy_v33.py"
+          cp research/candidate-09/v35_completed_auction_footprint/strategy.py "$ROOT/work/research/candidate-16/strategy_v35.py"
+          cp research/candidate-09/v42_poc_migration_acceptance/strategy.py "$ROOT/work/research/candidate-16/strategy_v42.py"
+          cp research/candidate-09/v40_btc_led_cross_impact/portfolio_strategy.py "$ROOT/work/research/candidate-05/portfolio_strategy_v40.py"
+          cp "$ROOT/portfolio_strategy.py" "$ROOT/work/research/candidate-05/portfolio_strategy.py"
+          cp research/candidate-09/v37_four_market_completed_footprint/shared_account_strategy_variants_v2.py "$ROOT/work/research/candidate-05/shared_account_strategy_variants_v2.py"
+          cp research/candidate-09/v37_four_market_completed_footprint/run_bootstrapped.py "$ROOT/run_bootstrapped.py"
+          cp research/candidate-09/v37_four_market_completed_footprint/apply_shared_runner_compat.py "$ROOT/apply_shared_runner_compat.py"
+          python research/candidate-09/v39_opening_range_footprint/apply_minimal_data_contracts.py "$ROOT/run_bootstrapped.py"
+          test "$(git hash-object "$ROOT/work/research/candidate-05/features_base.py")" = "6c784148effb4e1632c83eb03071f0050579c179"
+          test "$(git hash-object "$ROOT/work/research/candidate-16/strategy_v1.py")" = "3dddd221fbd1a7c3c518bb753c88dcffbbdac361"
+          test "$(git hash-object "$ROOT/work/research/candidate-05/global_entry_slot_v4.py")" = "b13e820a36fad23e3cb8311623889b49d3753576"
+          grep -q '"SOLUSDT": 0.01' "$ROOT/work/research/candidate-05/features.py"
+          grep -q V39_MINIMAL_OBSERVATION_CONTRACTS "$ROOT/run_bootstrapped.py"
+
+      - name: Verify environment, POC ownership, symbol parity, and global lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/$ROOT/work/research/candidate-16:$GITHUB_WORKSPACE/$ROOT/work/research/candidate-05:$GITHUB_WORKSPACE/src"
+          smc4 doctor | tee "$ROOT/doctor.txt"
+          python -m compileall -q "$ROOT" "$ROOT/work/research/candidate-16" "$ROOT/work/research/candidate-05"
+          python "$ROOT/test_contracts.py"
+          python -m unittest discover -s "$ROOT/work/research/candidate-05/tests" -p 'test_global_entry_slot_v3.py' -v
+          python -m unittest discover -s "$ROOT/work/research/candidate-05/tests" -p 'test_global_entry_slot_v4.py' -v
+          python -m unittest discover -s "$ROOT/work/research/candidate-16/tests" -p 'test_effort_result_router.py' -v
+          python -m unittest discover -s "$ROOT/work/research/candidate-05/tests" -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Run four-market POC migration and exact price-only control
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$ROOT/evidence/latest"
+          python "$ROOT/run_bootstrapped.py" \
+            --work "$ROOT/work" \
+            --cache "$CACHE" \
+            --output "$ROOT/evidence/latest" \
+            |& tee "$ROOT/run.txt"
+          find "$ROOT/evidence/latest" -type d -name catalog -prune -exec rm -rf {} + || true
+          find "$ROOT/evidence/latest" -type f -name features.csv.gz -delete || true
+
+      - name: Preserve complete evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v44-four-market-poc-migration-${{ github.run_id }}
+          path: |
+            research/candidate-09/v44_four_market_poc_migration/evidence/latest
+            research/candidate-09/v44_four_market_poc_migration/doctor.txt
+            research/candidate-09/v44_four_market_poc_migration/run.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Commit compact decision and metrics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -f "$ROOT/evidence/latest/FINAL_DECISION.json" ]] || exit 0
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/evidence/latest"
+          cp "$ROOT/evidence/latest/FINAL_DECISION.json" "$tmp/evidence/latest/"
+          for stage in development holdout long; do
+            [[ -d "$ROOT/evidence/latest/$stage" ]] || continue
+            while IFS= read -r directory; do
+              rel=${directory#"$ROOT/evidence/latest/"}
+              for name in metrics.json global_slot_audit.json data_manifest.json positions.csv orders.csv account.csv; do
+                [[ -f "$ROOT/evidence/latest/$rel/$name" ]] || continue
+                mkdir -p "$tmp/evidence/latest/$rel"
+                cp "$ROOT/evidence/latest/$rel/$name" "$tmp/evidence/latest/$rel/$name"
+              done
+              for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+                source="$ROOT/evidence/latest/$rel/symbols/$symbol/strategy_diagnostics.json"
+                [[ -f "$source" ]] || continue
+                mkdir -p "$tmp/evidence/latest/$rel/symbols/$symbol"
+                cp "$source" "$tmp/evidence/latest/$rel/symbols/$symbol/"
+              done
+            done < <(find "$ROOT/evidence/latest/$stage" -mindepth 1 -maxdepth 1 -type d)
+          done
+          [[ -f "$ROOT/doctor.txt" ]] && cp "$ROOT/doctor.txt" "$tmp/doctor.txt"
+          [[ -f "$ROOT/run.txt" ]] && cp "$tmp/run.txt" "$tmp/run.txt" 2>/dev/null || true
+          [[ -f "$ROOT/run.txt" ]] && cp "$ROOT/run.txt" "$tmp/run.txt"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name candidate-09-research-bot
+          git config user.email candidate-09-research-bot@users.noreply.github.com
+          git fetch origin "$GITHUB_REF_NAME"
+          git reset --hard "origin/$GITHUB_REF_NAME"
+          rm -rf "$ROOT/evidence/latest"
+          mkdir -p "$ROOT/evidence/latest"
+          cp -a "$tmp/evidence/latest/." "$ROOT/evidence/latest/"
+          [[ -f "$tmp/doctor.txt" ]] && cp "$tmp/doctor.txt" "$ROOT/doctor.txt"
+          [[ -f "$tmp/run.txt" ]] && cp "$tmp/run.txt" "$ROOT/run.txt"
+          git add "$ROOT/evidence/latest" "$ROOT/doctor.txt" "$ROOT/run.txt"
+          git diff --cached --quiet && exit 0
+          status=$(python -c "import json;print(json.load(open('$ROOT/evidence/latest/FINAL_DECISION.json'))['status'])")
+          git commit -m "candidate-09 v44: ${status}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
