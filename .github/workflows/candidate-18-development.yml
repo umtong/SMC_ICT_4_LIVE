@@ -82,7 +82,7 @@ jobs:
             --validation-mode development-known-candidate17-failure-week \
             2>&1 | tee "$ROOT/console.log"
 
-      - name: Verify mechanism replacement and retain honest metrics
+      - name: Verify final execution mechanism and retain honest metrics
         shell: bash
         run: |
           set -euo pipefail
@@ -99,10 +99,15 @@ jobs:
               orders = list(csv.DictReader(stream))
           entries = [
               row for row in orders
-              if not str(row.get("is_reduce_only", "")).lower() == "true"
+              if str(row.get("is_reduce_only", "")).lower() != "true"
               and "ENTRY" in str(row.get("tags", ""))
           ]
-          non_stop_limit_entries = [row for row in entries if row.get("type") != "STOP_LIMIT"]
+          invalid_entries = [
+              row for row in entries
+              if row.get("type") != "LIMIT"
+              or row.get("time_in_force") != "IOC"
+              or "CANDIDATE18_IOC_PRICE_CAP" not in str(row.get("tags", ""))
+          ]
           integrity = (
               int(metrics.get("liquidations", 0)) == 0
               and int(diagnostics.get("order_rejections", 0)) == 0
@@ -111,21 +116,25 @@ jobs:
               and float(metrics.get("min_equity", 0.0)) > 0.0
           )
           mechanism = {
-              "all_entry_parents_stop_limit": not non_stop_limit_entries,
-              "entry_parent_count": len(entries),
+              "all_filled_entry_parents_ioc_limit": not invalid_entries,
+              "filled_entry_parent_count": len(entries),
+              "ioc_limit_submissions": diagnostics.get("candidate18_ioc_limit_entries", 0),
               "sustained_routes": diagnostics.get("candidate18_initiative_sustained", 0),
               "shock_routes": diagnostics.get("candidate18_initiative_shock", 0),
               "quality_rejections": diagnostics.get("candidate18_initiative_quality_rejected", 0),
               "remembered_defense_no_trade": diagnostics.get("candidate18_remembered_defense_no_trade", 0),
-              "stop_limit_submissions": diagnostics.get("candidate18_stop_limit_entries", 0),
               "protective_fail_closes": diagnostics.get("candidate16_v2_protective_stop_fail_closes", 0),
           }
-          if not mechanism["all_entry_parents_stop_limit"]:
-              raise SystemExit({"non_stop_limit_entries": non_stop_limit_entries})
-          if int(mechanism["stop_limit_submissions"]) <= 0:
-              raise SystemExit("Candidate 18 did not exercise STOP_LIMIT entry")
+          if invalid_entries:
+              raise SystemExit({"invalid_entries": invalid_entries})
+          if int(mechanism["ioc_limit_submissions"]) <= 0:
+              raise SystemExit("Candidate 18 did not exercise IOC LIMIT submission")
+          if len(entries) <= 0:
+              raise SystemExit("Candidate 18 final execution path produced no filled entry")
+          if not integrity:
+              raise SystemExit({"integrity_failure": mechanism, "metrics": metrics})
           result = {
-              "schema": "candidate-18-development-v1",
+              "schema": "candidate-18-development-v2",
               "development_period": ["2023-12-25", "2023-12-31"],
               "integrity_pass": integrity,
               "gate_pass": bool(metrics.get("gate_pass", False)),

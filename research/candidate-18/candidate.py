@@ -14,9 +14,6 @@ CANDIDATE17 = HERE.parent / "candidate-17"
 CANDIDATE16 = HERE.parent / "candidate-16"
 CANDIDATE05 = HERE.parent / "candidate-05"
 
-# Candidate 16 must own the legacy top-level module name ``strategy`` because
-# strategy_v2 imports Candidate16Config from it. Candidate 18 and Candidate 17
-# use uniquely named adapters/implementations.
 sys.path.insert(0, str(CANDIDATE16))
 sys.path.insert(1, str(HERE))
 sys.path.insert(2, str(CANDIDATE17))
@@ -74,7 +71,7 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
     result["reused_state"] = "research/candidate-17/remembered_defense_strategy.py"
     result["strategy_path"] = "research/candidate-18/candidate18_strategy.py"
     result["strategy_implementation"] = (
-        "research/candidate-18/execution_preserving_strategy.py"
+        "research/candidate-18/latency_capped_ioc_strategy.py"
     )
     write_json_atomic(args.output.resolve() / "metrics.json", result)
     write_json_atomic(
@@ -90,31 +87,35 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
                     "BOUNDARY_RECLAIM",
                     "STRICTLY_LATER_OPPOSITE_INITIATIVE",
                     "FULL_WINDOW_PERSISTENCE_OR_FIRST_BAR_NOTIONAL_SHOCK",
-                    "DIRECTIONAL_REARM",
-                    "PRICE_CAPPED_STOP_LIMIT_PARENT",
+                    "COMPLETED_SIGNAL_EXECUTION",
+                    "PRICE_CAPPED_IOC_LIMIT_PARENT",
                 ],
                 "true_acceptance": [
                     "OUTSIDE_RESIDENCE",
                     "DIRECTIONAL_BOOK_WITHDRAWAL",
                     "FRESH_OPEN_INTEREST_EXPANSION",
                     "FIRST_DEFENDED_RETEST",
-                    "DIRECTIONAL_REARM",
-                    "PRICE_CAPPED_STOP_LIMIT_PARENT",
+                    "COMPLETED_SIGNAL_EXECUTION",
+                    "PRICE_CAPPED_IOC_LIMIT_PARENT",
                 ],
                 "remembered_defense": "UNRESOLVED_NO_TRADE_WITHOUT_DEPLETION_PROOF",
                 "otherwise": "UNRESOLVED_NO_TRADE",
             },
             "entry_policy": {
-                "type": "STOP_LIMIT_BRACKET",
-                "trigger": "signal close plus 0.01 ATR in trade direction",
+                "type": "IOC_LIMIT_BRACKET",
+                "signal": "completed causal initiative or defended acceptance retest",
                 "worst_fill_cap": "50% expansion of structural stop distance",
-                "expiry": "shared two completed-bar entry-intent window",
-                "risk_sizing": "worst permissible stop-limit fill including costs",
+                "expiry": "IOC; fill immediately at or better than cap, otherwise cancel",
+                "risk_sizing": "worst permissible limit fill including configured costs",
             },
             "target_policy": "unconsumed liquidity objective after costs",
             "protective_fill_policy": (
                 "if actual fill has crossed stop, cancel children and fail-close"
             ),
+            "development_execution_failures_retained": [
+                "native STOP_LIMIT crossed before delayed venue insertion",
+                "BID_ASK local emulation had no quote trigger in bar-only replay",
+            ],
             "runner_snapshot": (
                 "candidate-17@3efdf932d37bb997cff95404fb40ee7026a58325"
             ),
