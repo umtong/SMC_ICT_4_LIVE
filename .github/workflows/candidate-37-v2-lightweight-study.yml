@@ -63,22 +63,41 @@ jobs:
       ROOT: artifacts/c37-light-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: Verify environment and pin reused Candidate 30 builder
+      - name: Verify environment and fetch exact reused Candidate 30 builder blobs
         shell: bash
         run: |
           set -euo pipefail
           smc4 doctor
           python -m compileall -q research/candidate-37
           python -m unittest discover -s research/candidate-37 -p 'test_large_event_router.py' -v
-          git fetch --depth=1 origin "$PIN"
-          test "$(git rev-parse FETCH_HEAD)" = "$PIN"
-          mkdir -p "$TOOL"
-          for name in build_month.py build_month_v2.py build_month_v3.py; do
-            git show "$PIN:research/candidate-30/$name" > "$TOOL/$name"
-          done
+          python - <<'PY'
+          from hashlib import sha1
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+
+          pin = os.environ["PIN"]
+          tool = Path(os.environ["TOOL"])
+          tool.mkdir(parents=True, exist_ok=True)
+          expected = {
+              "build_month.py": "388965682b8737752df22ef0f413e14841b32a88",
+              "build_month_v2.py": "fa93594cbc062e4e64d68dd44b60d55dc879a84d",
+              "build_month_v3.py": "b1c2faad0366ad7fd7d206133688bb3f349ba673",
+          }
+          for name, expected_blob in expected.items():
+              url = (
+                  "https://raw.githubusercontent.com/umtong/SMC_ICT_4_LIVE/"
+                  f"{pin}/research/candidate-30/{name}"
+              )
+              with urlopen(url, timeout=120) as response:
+                  data = response.read()
+              actual_blob = sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+              if actual_blob != expected_blob:
+                  raise RuntimeError(f"pinned blob mismatch for {name}: {actual_blob}")
+              (tool / name).write_bytes(data)
+              print(name, actual_blob, len(data))
+          PY
           python -m compileall -q "$TOOL"
 
       - name: Build checksum-owned price OI positioning and premium month
