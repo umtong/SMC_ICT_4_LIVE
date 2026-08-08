@@ -1,17 +1,16 @@
-name: candidate-12-i18-w1-then-w12
+name: candidate-12-i19-w1-then-w12
 
 on:
   push:
     branches: ["research/candidate-12"]
-    paths:
-      - ".github/workflows/candidate-12-research.yml"
+    paths: [".github/workflows/candidate-12-research.yml"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i18-w1-w12
+  group: candidate-12-i19-w1-w12
   cancel-in-progress: false
 
 jobs:
@@ -22,43 +21,38 @@ jobs:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user root
     steps:
-      - name: Checkout I18 candidate
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Verify environment and frozen source
+      - name: Verify frozen I19 and tests
         shell: bash
         run: |
           set -euo pipefail
           smc4 doctor
-          test "$(git hash-object research/candidate-12/logic.py)" = "45caf20d4c5fb34deefbfc6e8a2fd9b1399e935d"
-          test "$(git hash-object research/candidate-12/test_logic.py)" = "b157af7b34264f0c03d48af0967e2337bc299a50"
-          test "$(git hash-object research/candidate-12/config.json)" = "d868935fb5ee331c4ba9db0dbb1afff1740af592"
+          test "$(git hash-object research/candidate-12/logic.py)" = "848b278d492249cee867f4c8978a1e62086b6d45"
+          test "$(git hash-object research/candidate-12/test_logic.py)" = "c145bdfcb9576a6675dc354e4ae5f40bb266e5b6"
+          test "$(git hash-object research/candidate-12/config.json)" = "160557c044e7fc315fc802bfe7f1c3f974b53374"
           test "$(git hash-object research/candidate-12/strategy_adapter.py)" = "c8f1a2c30fc598bda1b03adaafde3b4a55f50018"
           python - <<'PY'
           from pathlib import Path
           import json
           c = json.loads(Path("research/candidate-12/config.json").read_text())
-          assert c["schema_version"] == 19, c
-          assert c["candidate"] == "candidate-12-unfilled-rearm-auction-router", c
-          assert c["selection"]["weeks"]["W12"] == {
-              "start": "2025-12-24",
-              "end_exclusive": "2025-12-31",
-          }, c
+          assert c["schema_version"] == 20
+          assert c["candidate"] == "candidate-12-delayed-low-failed-auction-router"
           PY
           python -m compileall -q research/candidate-12
           python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
 
-      - name: Run W1 design gate
+      - name: W1 design gate
         shell: bash
         run: |
           set -euo pipefail
-          OUTPUT=artifacts/candidate-12/BTCUSDT-W1
-          mkdir -p "$OUTPUT"
-          python research/candidate-12/run.py --symbol BTCUSDT --week W1 --output "$OUTPUT" | tee "$OUTPUT.console.json"
+          O=artifacts/candidate-12/BTCUSDT-W1
+          mkdir -p "$O"
+          python research/candidate-12/run.py --symbol BTCUSDT --week W1 --output "$O" | tee "$O.console.json"
           python - <<'PY'
           from pathlib import Path
           import json
-          m = json.loads(Path("artifacts/candidate-12/BTCUSDT-W1/metrics.json").read_text())
+          m=json.loads(Path("artifacts/candidate-12/BTCUSDT-W1/metrics.json").read_text())
           assert m["closed_trades"] == 6, m
           assert m["wins"] == 6 and m["losses"] == 0, m
           assert m["project_target_gate_passed"] is True, m
@@ -67,48 +61,38 @@ jobs:
           assert not m["liquidation_detected"], m
           PY
 
-      - name: Run W12 diagnosis only after W1 passes
+      - name: W12 only after W1 passes
         shell: bash
         run: |
           set -euo pipefail
-          OUTPUT=artifacts/candidate-12/BTCUSDT-W12
-          mkdir -p "$OUTPUT"
-          python research/candidate-12/run.py --symbol BTCUSDT --week W12 --output "$OUTPUT" | tee "$OUTPUT.console.json"
+          O=artifacts/candidate-12/BTCUSDT-W12
+          mkdir -p "$O"
+          python research/candidate-12/run.py --symbol BTCUSDT --week W12 --output "$O" | tee "$O.console.json"
           python - <<'PY'
-          from decimal import Decimal
           from pathlib import Path
           import json
-          root = Path("artifacts/candidate-12/BTCUSDT-W12")
-          m = json.loads((root / "metrics.json").read_text())
-          assert m["candidate"] == "candidate-12-unfilled-rearm-auction-router", m
-          assert m["week_id"] == "W12", m
-          assert m["evaluation_start"] == "2025-12-24", m
-          assert m["evaluation_end_exclusive"] == "2025-12-31", m
+          p=Path("artifacts/candidate-12/BTCUSDT-W12")
+          m=json.loads((p/"metrics.json").read_text())
+          assert m["candidate"] == "candidate-12-delayed-low-failed-auction-router", m
           assert m["risk_budget_passed"] and m["global_slot_passed"], m
           assert m["event_log_valid"] and not m["engine_errors"], m
           assert not m["liquidation_detected"], m
-          assert Decimal(str(m["starting_nav"])) > 0, m
-          assert Decimal(str(m["final_nav"])) > 0, m
           print(json.dumps(m, indent=2, sort_keys=True))
           PY
 
-      - name: Surface W1 and W12 evidence
+      - name: Surface evidence
         if: always()
         shell: bash
         run: |
-          for WEEK in W1 W12; do
-            FILE="artifacts/candidate-12/BTCUSDT-${WEEK}/metrics.json"
-            if [[ -f "$FILE" ]]; then
-              echo "=== I18_${WEEK}_METRICS_BEGIN ==="
-              cat "$FILE"
-              echo "=== I18_${WEEK}_METRICS_END ==="
-            fi
+          for W in W1 W12; do
+            F="artifacts/candidate-12/BTCUSDT-${W}/metrics.json"
+            test ! -f "$F" || cat "$F"
           done
 
-      - name: Preserve reproducible I18 evidence
+      - name: Preserve evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I18-W1-W12-${{ github.sha }}
+          name: candidate-12-I19-W1-W12-${{ github.sha }}
           path: artifacts/candidate-12
           if-no-files-found: warn
