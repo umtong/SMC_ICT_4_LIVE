@@ -1,0 +1,138 @@
+name: candidate-21-development
+
+on:
+  push:
+    branches: ["research/candidate-21"]
+    paths:
+      - "research/candidate-21/**"
+      - ".github/workflows/candidate-21-development.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-21-development
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  causal-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-21
+          python -m unittest discover -s research/candidate-21/tests -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-18/tests -p 'test_fok_execution_contract.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_displayed_liquidity_router_v2.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+
+  observed-development:
+    needs: causal-contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-21/dev-2024-07-08
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+
+      - name: Run BTC observed development period
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-21/candidate.py stage \
+            --config research/candidate-21/config.json \
+            --build-start "2024-07-05" \
+            --build-end "2024-07-14" \
+            --evaluation-start "2024-07-08" \
+            --evaluation-end "2024-07-14" \
+            --cache ".cache/candidate-21/dev-2024-07-08" \
+            --output "$ROOT" \
+            --validation-mode "development-observed-period" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify causal execution and summarize
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          clock = json.loads((root / "execution_clock.json").read_text())
+          features = json.loads((root / "clock_feature_contract.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          contract = json.loads((root / "candidate21_contract.json").read_text())
+
+          if not clock["strictly_increasing"] or int(clock["source_rows"]) < 10000:
+              raise SystemExit({"execution_clock": clock})
+          if not features["strictly_increasing_observation_time"]:
+              raise SystemExit({"clock_features": features})
+          if int(features["ready_boundary_rows"]) < 100:
+              raise SystemExit({"insufficient_ready_clock_rows": features})
+          if int(diagnostics.get("max_simultaneous_entry_intents", 0)) > 1:
+              raise SystemExit({"global_entry_intent_violation": diagnostics})
+          if int(diagnostics.get("max_open_positions_observed", 0)) > 1:
+              raise SystemExit({"position_count_violation": diagnostics})
+          if float(contract["risk_fraction"]) != 0.03:
+              raise SystemExit(contract)
+
+          routing_keys = (
+              "candidate21_clock_boundaries_seen",
+              "candidate21_clock_events_armed",
+              "candidate21_clock_observations",
+              "candidate21_acceptance_confirmed",
+              "candidate21_failed_auction_confirmed",
+              "candidate21_unresolved",
+              "candidate21_target_consumed_before_entry",
+              "candidate21_natural_target_geometry_rejected",
+              "candidate21_fok_entries",
+              "entry_submissions",
+              "order_rejections",
+          )
+          summary = {
+              "metrics": metrics,
+              "clock": clock,
+              "features": features,
+              "routing": {key: diagnostics.get(key, 0) for key in routing_keys},
+          }
+          (root / "candidate21_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-21-dev-2024-07-08-${{ github.sha }}
+          path: artifacts/candidate-21/dev-2024-07-08/**
+          if-no-files-found: warn
+          retention-days: 90
