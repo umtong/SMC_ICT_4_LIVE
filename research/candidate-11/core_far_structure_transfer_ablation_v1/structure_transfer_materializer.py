@@ -250,7 +250,7 @@ def materialize_structure_transfer_source(source: str) -> str:
                 "current_close": current_close,
             })
             self.modify_order(
-                stop_order.client_order_id,
+                stop_order,
                 trigger_price=instrument.make_price(rounded),
             )
 
