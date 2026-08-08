@@ -11,6 +11,7 @@ from model import Direction, LogicConfig, ScenarioState, SignalBar  # noqa: E402
 from model_structural_mss import (  # noqa: E402
     MinuteSwing,
     StructuralMSSRouter,
+    StructuralStage,
     _StructuralEpisode,
 )
 from strategy_structural_mss import _TargetSafeStructuralMSSRouter  # noqa: E402
@@ -38,7 +39,10 @@ def bar(
     )
 
 
-def warm(router: StructuralMSSRouter, *, through: int = 70) -> None:
+def warm(router: StructuralMSSRouter, *, through: int = 100) -> None:
+    # The structural rank requires 24 bars for the causal ATR and then 60
+    # completed body/ATR observations. One hundred bars supplies both histories
+    # without touching private rank state directly.
     for minute in range(1, through + 1):
         open_ = 100.0 + (0.01 if minute % 2 else -0.01)
         close = 100.0 - (0.01 if minute % 2 else -0.01)
@@ -56,15 +60,15 @@ def warm(router: StructuralMSSRouter, *, through: int = 70) -> None:
 def episode(
     *,
     direction: Direction = Direction.LONG,
-    source_time_ns: int = 70 * NS_PER_MINUTE,
+    source_time_ns: int = 100 * NS_PER_MINUTE,
 ) -> _StructuralEpisode:
     if direction is Direction.LONG:
         boundary = MinuteSwing(
             "1MH-boundary",
             "UPPER",
             101.0,
-            60 * NS_PER_MINUTE,
-            62 * NS_PER_MINUTE,
+            90 * NS_PER_MINUTE,
+            92 * NS_PER_MINUTE,
         )
         source_level, extreme = 99.0, 98.0
         internal, external = 105.0, 110.0
@@ -73,8 +77,8 @@ def episode(
             "1ML-boundary",
             "LOWER",
             99.0,
-            60 * NS_PER_MINUTE,
-            62 * NS_PER_MINUTE,
+            90 * NS_PER_MINUTE,
+            92 * NS_PER_MINUTE,
         )
         source_level, extreme = 101.0, 102.0
         internal, external = 95.0, 90.0
@@ -123,20 +127,21 @@ class StructuralMSSRouterTests(unittest.TestCase):
         router._structural_episode = episode()
 
         mss = router.observe_minute(
-            bar(71, open_=100.0, high=101.7, low=99.9, close=101.6)
+            bar(101, open_=100.0, high=101.7, low=99.9, close=101.6)
         )
         self.assertIsNone(mss.plan)
         self.assertEqual(
             [item.reason_code for item in mss.transitions],
             ["INDEPENDENT_1M_DISPLACEMENT_MSS"],
         )
+        assert router._structural_episode is not None
         self.assertEqual(
             router._structural_episode.scenario_state,
             ScenarioState.CONFIRMED,
         )
 
         retest = router.observe_minute(
-            bar(72, open_=101.10, high=101.45, low=100.95, close=101.35)
+            bar(102, open_=101.10, high=101.45, low=100.95, close=101.35)
         )
         self.assertIsNotNone(retest.plan)
         assert retest.plan is not None
@@ -153,13 +158,13 @@ class StructuralMSSRouterTests(unittest.TestCase):
         router = StructuralMSSRouter(LogicConfig())
         warm(router)
         active = episode()
-        active.stage = active.stage.AWAIT_RETEST
+        active.stage = StructuralStage.AWAIT_RETEST
         active.scenario_state = ScenarioState.CONFIRMED
-        active.mss_ns = 70 * NS_PER_MINUTE
+        active.mss_ns = 100 * NS_PER_MINUTE
         router._structural_episode = active
 
         result = router.observe_minute(
-            bar(71, open_=101.2, high=101.3, low=100.8, close=100.9)
+            bar(101, open_=101.2, high=101.3, low=100.8, close=100.9)
         )
         self.assertIsNone(result.plan)
         self.assertEqual(
@@ -173,7 +178,7 @@ class StructuralMSSRouterTests(unittest.TestCase):
         warm(router)
         router._structural_episode = episode()
         result = router.observe_minute(
-            bar(71, open_=99.0, high=99.2, low=97.8, close=98.1)
+            bar(101, open_=99.0, high=99.2, low=97.8, close=98.1)
         )
         self.assertEqual(
             [item.reason_code for item in result.transitions],
@@ -186,7 +191,7 @@ class StructuralMSSRouterTests(unittest.TestCase):
         warm(router)
         router._structural_episode = episode()
         result = router.observe_minute(
-            bar(71, open_=101.0, high=105.2, low=100.9, close=104.8)
+            bar(101, open_=101.0, high=105.2, low=100.9, close=104.8)
         )
         self.assertIsNone(result.plan)
         self.assertEqual(
@@ -200,14 +205,14 @@ class StructuralMSSRouterTests(unittest.TestCase):
         warm(router)
         router._structural_episode = episode(direction=Direction.SHORT)
         mss = router.observe_minute(
-            bar(71, open_=100.0, high=100.1, low=98.3, close=98.4)
+            bar(101, open_=100.0, high=100.1, low=98.3, close=98.4)
         )
         self.assertEqual(
             [item.reason_code for item in mss.transitions],
             ["INDEPENDENT_1M_DISPLACEMENT_MSS"],
         )
         retest = router.observe_minute(
-            bar(72, open_=98.9, high=99.05, low=98.55, close=98.65)
+            bar(102, open_=98.9, high=99.05, low=98.55, close=98.65)
         )
         self.assertIsNotNone(retest.plan)
         assert retest.plan is not None
