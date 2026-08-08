@@ -17,6 +17,7 @@ old = '''            plan = self.logic.on_bar(observation, allow_entry=allow_ent
 '''
 new = '''            plan = self.logic.on_bar(observation, allow_entry=allow_entry)
             if plan is not None:
+                # NO_LONDON_HIGH_SOURCE_ABLATION: one source-family removal only.
                 if plan.scenario.value.startswith("LONDON_HIGH_"):
                     self.logic.mark_plan_rejected(
                         plan,
