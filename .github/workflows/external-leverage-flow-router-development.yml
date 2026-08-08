@@ -1,4 +1,4 @@
-name: external-spot-perp-participation-development
+name: external-liquidity-exhaustion-development
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: external-spot-perp-participation-development
+  group: external-liquidity-exhaustion-development
   cancel-in-progress: true
 
 permissions:
@@ -46,6 +46,7 @@ jobs:
           from spot_perp_router import ParticipationRoute
           assert getattr(features.load_range, '_external_spot_participation_contract', False)
           assert candidate21_strategy.Candidate21Strategy.__module__ == 'candidate21_strategy'
+          assert ParticipationRoute.EXTERNAL_LIQUIDITY_EXHAUSTION.value == 'EXTERNAL_LIQUIDITY_EXHAUSTION'
           assert ParticipationRoute.UNRESOLVED.value == 'UNRESOLVED'
           print('namespace and causal feature wrapper verified')
           PY
@@ -98,26 +99,27 @@ jobs:
               ready = ready.astype(str).str.lower().isin({'true','1','yes'})
 
           funnel_names = [
-              'spot_perp_parent_breaks',
-              'spot_perp_parent_oi_rejected',
-              'spot_perp_spot_led_states',
-              'spot_perp_perp_crowding_states',
-              'spot_perp_unresolved_states',
-              'spot_perp_later_observations',
-              'spot_perp_spot_led_retests',
-              'spot_perp_spot_led_invalidations',
-              'spot_perp_crowding_failures',
-              'spot_perp_crowding_accepted_without_trade',
-              'spot_perp_states_expired',
-              'spot_perp_target_consumed',
-              'spot_perp_geometry_rejected',
-              'spot_perp_fok_entries',
+              'exhaustion_parent_candidates',
+              'exhaustion_external_edge_rejected',
+              'exhaustion_unresolved_states',
+              'exhaustion_states',
+              'exhaustion_later_observations',
+              'exhaustion_transitions',
+              'exhaustion_states_expired',
+              'exhaustion_target_consumed',
+              'exhaustion_geometry_rejected',
+              'exhaustion_fok_entries',
               'entry_submissions',
           ]
           funnel = {name: int(diagnostics.get(name, 0) or 0) for name in funnel_names}
+          gate = metrics.get('gate_checks', {})
           integrity = (
-              bool(metrics.get('integrity_pass'))
-              and future_spot == 0
+              future_spot == 0
+              and bool(gate.get('no_liquidation'))
+              and bool(gate.get('no_order_rejections'))
+              and bool(gate.get('positive_nav'))
+              and bool(gate.get('single_entry_intent'))
+              and bool(gate.get('single_position'))
               and int(metrics.get('liquidations', 0) or 0) == 0
               and int(metrics.get('order_rejections', 0) or 0) == 0
               and int(diagnostics.get('max_simultaneous_entry_intents', 0) or 0) <= 1
@@ -126,16 +128,16 @@ jobs:
           )
           if not integrity:
               classification = 'INVALID_DEVELOPMENT_RUN'
-          elif funnel['spot_perp_spot_led_states'] + funnel['spot_perp_perp_crowding_states'] == 0:
-              classification = 'NO_CLASSIFIED_STATES; REASSESS PARENT ECONOMICS'
-          elif funnel['spot_perp_fok_entries'] == 0:
-              classification = 'STATES_OCCURRED_BUT_NO_EXECUTABLE_TRANSITION'
+          elif funnel['exhaustion_states'] == 0:
+              classification = 'NO_EXHAUSTION_STATES; REASSESS PARENT MECHANISM'
+          elif funnel['exhaustion_fok_entries'] == 0:
+              classification = 'STATES_OCCURRED_BUT_NO_EXECUTABLE_REVERSAL_LEG'
           elif float(metrics.get('total_return', 0.0) or 0.0) > 0.0:
               classification = 'POSITIVE_DEVELOPMENT; FREEZE AND MOVE TO UNTOUCHED'
           else:
-              classification = 'VALID_NEGATIVE_DEVELOPMENT; DIAGNOSE ROUTE BEFORE ANY HOLDOUT'
+              classification = 'VALID_NEGATIVE_DEVELOPMENT; DIAGNOSE MECHANISM BEFORE HOLDOUT'
           decision = {
-              'schema': 'external-spot-perp-development-v1',
+              'schema': 'external-liquidity-exhaustion-development-v1',
               'evaluation': ['2024-02-19', '2024-02-25'],
               'integrity_pass': integrity,
               'classification': classification,
@@ -167,7 +169,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: external-spot-perp-development-${{ github.sha }}
+          name: external-liquidity-exhaustion-development-${{ github.sha }}
           path: artifacts/external-spot-perp-development/**
           if-no-files-found: warn
           retention-days: 90
