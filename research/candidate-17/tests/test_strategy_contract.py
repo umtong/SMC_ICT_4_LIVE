@@ -8,7 +8,7 @@ import unittest
 class StrategyContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.path = Path(__file__).resolve().parents[1] / "strategy.py"
+        cls.path = Path(__file__).resolve().parents[1] / "remembered_defense_strategy.py"
         cls.source = cls.path.read_text(encoding="utf-8")
         cls.tree = ast.parse(cls.source)
 
