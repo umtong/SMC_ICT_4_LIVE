@@ -5,6 +5,8 @@ on:
     branches: ["research/candidate-16"]
     paths:
       - ".github/workflows/candidate-16-v46-91d-audit.yml"
+      - "research/candidate-05/positioning_contract.py"
+      - "research/candidate-05/tests/test_positioning_contract.py"
   workflow_dispatch:
 
 concurrency:
@@ -42,6 +44,7 @@ jobs:
           PY
           python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v46_no_post_retrace_breakaway_contract.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_timestamp_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_contract.py' -v
 
       - name: Run one uninterrupted 91-day BTC account through NautilusTrader
         shell: bash
@@ -64,7 +67,6 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json
-          import math
           import os
           from pathlib import Path
 
@@ -79,7 +81,7 @@ jobs:
               and float(metrics.get("min_equity", 0.0) or 0.0) > 0.0
           )
           summary = {
-              "schema": "candidate-16-v46-91d-audit-v1",
+              "schema": "candidate-16-v46-91d-audit-v2",
               "strategy": "strategy_v46_no_post_retrace_breakaway:NoPostRetraceBreakawayStrategy",
               "engine": "NautilusTrader BacktestNode",
               "evaluation_start": metrics.get("evaluation_start"),
