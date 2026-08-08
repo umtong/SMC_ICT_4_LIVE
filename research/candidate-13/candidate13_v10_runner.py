@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from evidence_audit import audit
-from logic import BarObs, LogicConfig, MINUTE_NS
+from logic import BarObs, Direction, LogicConfig, MINUTE_NS
 from quarter_hour_persistent_initiative import (
     PersistentInitiativeContinuationEngine,
     PersistentQuarterHourRouter,
