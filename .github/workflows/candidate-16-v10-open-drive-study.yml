@@ -5,6 +5,7 @@ on:
     branches: ["research/candidate-16-v10-open-drive-auction"]
     paths:
       - "research/candidate-16/v10_open_drive_study.py"
+      - "research/candidate-16/v10_open_drive_study_v2.py"
       - "research/candidate-16/tests/test_v10_open_drive_study.py"
       - ".github/workflows/candidate-16-v10-open-drive-study.yml"
   workflow_dispatch:
@@ -38,17 +39,24 @@ jobs:
           smc4 doctor
           python -m compileall -q \
             research/candidate-16/v9_liquidation_event_study.py \
-            research/candidate-16/v10_open_drive_study.py
+            research/candidate-16/v10_open_drive_study.py \
+            research/candidate-16/v10_open_drive_study_v2.py
           python -m unittest discover \
             -s research/candidate-16/tests \
             -p 'test_v10_open_drive_study.py' -v
+          python - <<'PY'
+          from v10_open_drive_study_v2 import safe_enforce_one_global_slot
+          selected, conflicts = safe_enforce_one_global_slot([], {})
+          if selected or conflicts:
+              raise SystemExit("empty global slot sentinel failed")
+          PY
 
       - name: Run checksum-verified 2023 development and conditional 2024 holdout
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
-          python research/candidate-16/v10_open_drive_study.py \
+          python research/candidate-16/v10_open_drive_study_v2.py \
             --cache .cache/candidate-16-v10-open-drive \
             --output "$ROOT" \
             2>&1 | tee "$ROOT/console.log"
@@ -78,6 +86,9 @@ jobs:
               raise SystemExit("target geometry drifted")
           if int(geometry.get("global_entry_or_position_slot", 99)) != 1:
               raise SystemExit("global slot contract drifted")
+          sentinel = study.get("empty_global_slot_sentinel", {})
+          if sentinel.get("representation") != "None until first accepted candidate" or sentinel.get("economic_logic_changed"):
+              raise SystemExit("empty-slot sentinel contract failed")
           development = study.get("development", {})
           holdout = study.get("holdout", {})
           if not development.get("passed") and holdout.get("opened"):
