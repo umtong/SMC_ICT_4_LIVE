@@ -1,0 +1,78 @@
+{
+  "schema": "candidate-15-v39-adaptive-positive-family-router-v1",
+  "candidate": "candidate-15-v39-adaptive-positive-family-router",
+  "created_utc": "2026-08-09",
+  "research_question": "Can the independently positive V17 OI position-buildup route be activated only when its fully matured 90-day and 180-day after-cost history remain positive, then combined with the rare V28 breadth trend under one global slot?",
+  "precondition": {
+    "status_path": "research/candidate-15/V33_V38_REPLAY_STATUS.json",
+    "run_only_when_any_advance_to_nautilus_is_false": true
+  },
+  "locked_family_streams": {
+    "OI_POSITION_BUILDUP": {
+      "candidate_paths": [
+        "research/candidate-15/v17/open_interest/results/selected_events.csv",
+        "research/candidate-15/v17/open_interest/results/selected_trades.csv"
+      ],
+      "route": "POSITION_BUILDUP_ACCEPTANCE_CONTINUATION",
+      "source_result": "research/candidate-15/V17_OPEN_INTEREST_RESULT.md",
+      "net_return_already_includes_bps": 16.0,
+      "family_priority": 2
+    },
+    "BREADTH_6H_TREND": {
+      "candidate_paths": [
+        "research/candidate-15/v28/adaptive_6h_trend/results/selected_trades.csv"
+      ],
+      "route": "BREADTH_ALIGNED_6H_TREND",
+      "source_result": "research/candidate-15/V28_ADAPTIVE_6H_TREND_RESULT.md",
+      "net_return_already_includes_bps": 20.0,
+      "family_priority": 1
+    }
+  },
+  "causal_router": {
+    "OI_POSITION_BUILDUP": {
+      "short_lookback_days": 90,
+      "long_lookback_days": 180,
+      "minimum_matured_events_short": 20,
+      "minimum_matured_events_long": 40,
+      "minimum_short_mean_net_bps": 0.0,
+      "minimum_long_mean_net_bps": 0.0,
+      "minimum_short_win_rate": 0.5,
+      "maturity_rule": "an event may enter router history only when its recorded exit timestamp is strictly earlier than the new entry timestamp"
+    },
+    "BREADTH_6H_TREND": {
+      "activation": "always active because its fixed family was independently positive in development and stability; no outcome-based threshold is changed"
+    },
+    "global_position_limit": 1,
+    "same_entry_priority": "larger causal family score, then family priority, then symbol",
+    "overlap": "reject an entry before the selected active proposal's recorded exit",
+    "duplicate_episode": "same family, symbol and entry timestamp may appear once"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08"
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.25,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 5,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 1,
+    "maximum_single_family_share": 0.8,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Freeze the causal activation and family arbitration unchanged, then implement it inside one NautilusTrader account.",
+    "reject": "Do not tune the performance windows or activation thresholds after evaluation; preserve only positive components."
+  }
+}
