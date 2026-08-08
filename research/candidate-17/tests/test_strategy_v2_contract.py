@@ -37,7 +37,7 @@ class Candidate17V2ContractTests(unittest.TestCase):
         self.assertIn("branch='FAILURE_RETEST'", text)
         self.assertNotIn("self._submit_entry", text)
 
-    def test_only_confirmed_retest_can_submit(self) -> None:
+    def test_only_terminal_confirmed_retest_can_submit(self) -> None:
         method = next(
             node
             for node in ast.walk(self.tree)
@@ -45,8 +45,14 @@ class Candidate17V2ContractTests(unittest.TestCase):
             and node.name == "_process_failure_retest"
         )
         text = ast.unparse(method)
-        self.assertIn("RetestDecision.CONFIRMED", self.source)
-        self.assertIn("self._submit_entry(completed, row)", text)
+        self.assertIn("state.decision is RetestDecision.WAITING", text)
+        self.assertIn("state.decision is RetestDecision.INVALIDATED", text)
+        self.assertIn("state.decision is RetestDecision.EXPIRED", text)
+        self.assertLess(
+            text.index("state.decision is RetestDecision.EXPIRED"),
+            text.index("self._submit_entry(completed, row)"),
+        )
+        self.assertEqual(text.count("self._submit_entry(completed, row)"), 1)
 
     def test_geometry_rule_is_economic_not_pnl_fitted(self) -> None:
         method = next(
