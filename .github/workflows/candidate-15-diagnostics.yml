@@ -1,0 +1,123 @@
+name: Candidate 15 V6 causal path diagnostics
+
+on:
+  push:
+    branches: [research/candidate-15]
+    paths: [".github/workflows/candidate-15-diagnostics.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v6-diagnostics-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        interval: [E01, E02, E03, E04, E05, E06]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Reproduce V6 and compute causal path diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
+          python -m py_compile research/candidate-15/analyze_v6_paths.py
+          bash research/candidate-15/run_week.sh "${{ matrix.interval }}"
+          python research/candidate-15/analyze_v6_paths.py \
+            "research/candidate-15/results/${{ matrix.interval }}"
+      - name: Remove downloaded archives
+        if: always()
+        shell: bash
+        run: rm -rf "research/candidate-15/results/${{ matrix.interval }}/data"
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v6diag-${{ matrix.interval }}
+          path: research/candidate-15/results/${{ matrix.interval }}
+          if-no-files-found: error
+          retention-days: 30
+
+  aggregate:
+    if: ${{ always() && needs.evaluate.result == 'success' }}
+    needs: evaluate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate15-v6diag-*
+          path: artifacts
+      - name: Aggregate and persist diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          intervals = {}
+          records = []
+          for path in sorted(Path("artifacts").glob("candidate15-v6diag-E*/path_diagnostics.json")):
+              interval = path.parent.name.rsplit("-", 1)[-1]
+              value = json.loads(path.read_text())
+              intervals[interval] = {key: val for key, val in value.items() if key != "records"}
+              for record in value["records"]:
+                  record["interval"] = interval
+                  records.append(record)
+          if set(intervals) != {"E01", "E02", "E03", "E04", "E05", "E06"}:
+              raise RuntimeError(f"incomplete diagnostics: {sorted(intervals)}")
+          output = {
+              "schema": "candidate-15-v6-causal-path-diagnostics-aggregate-v1",
+              "source_commit": "${{ github.sha }}",
+              "diagnostic_only": True,
+              "does_not_modify_execution": True,
+              "intervals": intervals,
+              "submitted_plans": len(records),
+              "filled_trades": sum(record["filled"] for record in records),
+              "wins": sum(record.get("win", False) for record in records),
+              "parity_ahead_at_entry": sum(record.get("filled") and record.get("parity_ahead") for record in records),
+              "parity_before_stop": sum(record.get("filled") and record.get("parity_before_stop") for record in records),
+              "records": records,
+          }
+          Path("research/candidate-15/v6_path_diagnostics.json").write_text(
+              json.dumps(output, indent=2, sort_keys=True, default=str) + "\n"
+          )
+          print(json.dumps({key: val for key, val in output.items() if key != "records"}, indent=2))
+          PY
+          git fetch origin research/candidate-15
+          if [[ "$(git rev-parse origin/research/candidate-15)" != "$GITHUB_SHA" ]]; then
+            echo "branch advanced; preserve artifact only"
+            exit 0
+          fi
+          git config user.name "candidate-15-bot"
+          git config user.email "candidate-15-bot@users.noreply.github.com"
+          git add research/candidate-15/v6_path_diagnostics.json
+          git commit -m "candidate-15: record V6 causal path diagnostics [skip ci]"
+          git push origin HEAD:research/candidate-15
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v6diag-aggregate-${{ github.run_id }}
+          path: research/candidate-15/v6_path_diagnostics.json
+          if-no-files-found: error
+          retention-days: 30
