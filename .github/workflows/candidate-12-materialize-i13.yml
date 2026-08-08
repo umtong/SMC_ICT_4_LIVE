@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: candidate-12-materialize-i13-${{ github.ref }}
+  group: candidate-12-materialize-i13
   cancel-in-progress: false
 
 jobs:
@@ -30,11 +30,170 @@ jobs:
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          PATCH=research/candidate-12/update-i13.patch
-          echo "3f77781127b74443042c2b350b4bcbca82a26af062c1062c139587c5201c5623  $PATCH" | sha256sum -c -
-          git apply --check "$PATCH"
-          git apply "$PATCH"
           smc4 doctor
+
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          logic_path = Path("research/candidate-12/logic.py")
+          logic = logic_path.read_text(encoding="utf-8")
+          plan_anchor = (
+              "            prior_peak = state.acceptance_peak or source.high\n"
+              "            plan = self._costed_plan(\n"
+          )
+          assert logic.count(plan_anchor) == 1, logic.count(plan_anchor)
+          market_block = '''            prior_peak = state.acceptance_peak or source.high
+
+            # Fresh reacceleration is already a completed confirmation event.
+            # Enter at that close when the close itself still preserves the
+            # configured costed structural R. Otherwise retain the protected
+            # one-bar FVG limit. Both branches use the existing min_net_r.
+            market_plan = self._costed_plan(
+                scenario_id=sid,
+                scenario=(
+                    ScenarioKind.ASIA_HIGH_ACCEPTANCE
+                    if source.label is SessionLabel.ASIA
+                    else ScenarioKind.LONDON_HIGH_ACCEPTANCE
+                ),
+                direction=Direction.LONG,
+                entry_order=EntryOrder.MARKET,
+                observed_ts_ns=bar.ts_ns,
+                bar=bar,
+                atr=atr,
+                entry_raw=bar.close,
+                stop_raw=fresh.lower - self.config.fvg_stop_buffer_atr * atr,
+                target_raw=prior_peak,
+                expire_ts_ns=None,
+                details={
+                    "source": source.label.value,
+                    "route": "FVG_BREACH_HELD_BOUNDARY_THEN_FRESH_REACCELERATION_MARKET",
+                    "session_high": source.high,
+                    "session_low": source.low,
+                    "session_width": source.width,
+                    "fvg_lower": fresh.lower,
+                    "fvg_upper": fresh.upper,
+                    "fvg_formed_ts_ns": fresh.formed_ts_ns,
+                    "initial_pullback_low": state.acceptance_pullback_low,
+                    "prior_acceptance_peak": prior_peak,
+                    "decision_close": bar.close,
+                    "execution_semantics": (
+                        "COMPLETED_FRESH_REACCELERATION_CLOSE_RETAINED_COSTED_R"
+                    ),
+                    "target_semantics": "PRIOR_ACCEPTANCE_EXPANSION_HIGH",
+                },
+            )
+            if market_plan is not None:
+                state.high_plan_emitted = True
+                state.trade_plan_emitted = True
+                return self._emit_plan(market_plan, allow_entry)
+
+            plan = self._costed_plan(
+'''
+          logic = logic.replace(plan_anchor, market_block, 1)
+          detail_anchor = '''                    "initial_pullback_low": state.acceptance_pullback_low,
+                    "prior_acceptance_peak": prior_peak,
+                    "target_semantics": "PRIOR_ACCEPTANCE_EXPANSION_HIGH",
+'''
+          assert logic.count(detail_anchor) == 1, logic.count(detail_anchor)
+          detail_replacement = '''                    "initial_pullback_low": state.acceptance_pullback_low,
+                    "prior_acceptance_peak": prior_peak,
+                    "decision_close": bar.close,
+                    "execution_semantics": (
+                        "MARKET_CLOSE_FAILED_COSTED_R_THEN_ONE_BAR_PROTECTED_LIMIT"
+                    ),
+                    "target_semantics": "PRIOR_ACCEPTANCE_EXPANSION_HIGH",
+'''
+          logic = logic.replace(detail_anchor, detail_replacement, 1)
+          logic = logic.replace(
+              '"""Causal completed-session auction router for Candidate 12 I12.',
+              '"""Causal completed-session auction router for Candidate 12 I13.',
+              1,
+          )
+          logic_path.write_text(logic, encoding="utf-8")
+
+          tests_path = Path("research/candidate-12/test_logic.py")
+          tests = tests_path.read_text(encoding="utf-8")
+          start_marker = (
+              "    def test_fvg_lower_edge_breach_waits_for_fresh_reacceleration_limit"
+              "(self) -> None:\n"
+          )
+          end_marker = "    def test_opposite_boundaries_have_independent_causal_lifecycles"
+          assert tests.count(start_marker) == 1, tests.count(start_marker)
+          start = tests.index(start_marker)
+          end = tests.index(end_marker, start)
+          limit_test = tests[start:end]
+          limit_test = limit_test.replace(
+              start_marker,
+              "    def test_fresh_reacceleration_falls_back_to_limit_when_market_r_is_insufficient(\n"
+              "        self,\n"
+              "    ) -> None:\n",
+              1,
+          )
+          old_engine = '        engine = CausalLiquidityAuctionEngine(config(), "X")\n'
+          assert limit_test.count(old_engine) == 1, limit_test.count(old_engine)
+          limit_test = limit_test.replace(
+              old_engine,
+              '        engine = CausalLiquidityAuctionEngine(config(min_net_r=3.0), "X")\n',
+              1,
+          )
+          market_test = '''    def test_fresh_reacceleration_uses_market_when_close_retains_costed_r(
+        self,
+    ) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(config(min_net_r=1.0), "X")
+        self.seed_asia(engine)
+        engine._on_five(bar(ts(y, m, d, 6, 5), 103, 104, 102, 103), True)
+        engine._on_five(bar(ts(y, m, d, 6, 10), 103, 112, 103, 110), True)
+        engine._on_five(bar(ts(y, m, d, 6, 15), 110, 115, 105.5, 110), True)
+        self.assertIsNone(
+            engine._on_five(bar(ts(y, m, d, 6, 20), 108, 108.2, 103.5, 105.2), True)
+        )
+        engine._on_five(bar(ts(y, m, d, 6, 25), 105.2, 106, 104.8, 105.5), True)
+        engine._on_five(bar(ts(y, m, d, 6, 30), 105.5, 109, 105.4, 108.5), True)
+        plan = engine._on_five(
+            bar(ts(y, m, d, 6, 35), 108.5, 110, 106.5, 109),
+            True,
+        )
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.entry_order, EntryOrder.MARKET)
+        self.assertEqual(
+            plan.details["route"],
+            "FVG_BREACH_HELD_BOUNDARY_THEN_FRESH_REACCELERATION_MARKET",
+        )
+        self.assertAlmostEqual(plan.expected_entry, 109.0)
+        self.assertAlmostEqual(plan.target_price, 115.0)
+        self.assertGreaterEqual(plan.net_r, 1.0)
+
+'''
+          tests = tests[:start] + limit_test + market_test + tests[end:]
+          tests_path.write_text(tests, encoding="utf-8")
+
+          config_path = Path("research/candidate-12/config.json")
+          config = json.loads(config_path.read_text(encoding="utf-8"))
+          assert config["schema_version"] == 12, config["schema_version"]
+          assert config["candidate"] == "candidate-12-confirmed-extension-session-auction-router"
+          config["schema_version"] = 13
+          config["candidate"] = "candidate-12-state-priced-reacceleration-router"
+          config["selection"]["selection_rule"] = (
+              "W1-W11 are exposed design, implementation, and diagnosis evidence. I13 repairs "
+              "the W2 high-acceptance execution miss without opening new data or adding a fitted "
+              "parameter. After an initial bullish FVG is breached while the completed session "
+              "high remains accepted, a fresh bullish FVG is a completed reacceleration "
+              "confirmation. The engine enters at the completed close only when that close still "
+              "passes the existing costed min_net_r gate to the frozen prior acceptance peak; "
+              "otherwise it preserves the one-bar protected FVG limit. Sell-side failed-pullback "
+              "routes do not receive a market fallback because their edge is the pullback price "
+              "itself. I13 must convert the exposed W2 high-acceptance setup into a Nautilus market "
+              "trade, preserve the W5 protected-limit winner, and re-pass all prior causal, cost, "
+              "risk, slot, event-log, and liquidation invariants before any untouched week is opened."
+          )
+          config["selection"]["implementation_week"] = "W2"
+          config["selection"]["diagnosis_week"] = "W2"
+          config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+          PY
+
           python -m compileall -q research/candidate-12
           python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
 
@@ -53,7 +212,7 @@ jobs:
             contents: read
 
           concurrency:
-            group: candidate-12-i13-${{ github.ref }}-${{ github.sha }}
+            group: candidate-12-i13-authoritative
             cancel-in-progress: false
 
           jobs:
@@ -234,12 +393,12 @@ jobs:
                   if: always()
                   uses: actions/upload-artifact@v4
                   with:
-                    name: candidate-12-I13-authoritative-${{ github.sha }}
+                    name: candidate-12-I13-authoritative
                     path: artifacts/candidate-12
                     if-no-files-found: warn
           RESEARCH_YAML
 
-          git rm "$PATCH" .github/workflows/candidate-12-materialize-i13.yml
+          git rm research/candidate-12/update-i13.patch .github/workflows/candidate-12-materialize-i13.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add research/candidate-12/logic.py research/candidate-12/test_logic.py research/candidate-12/config.json .github/workflows/candidate-12-research.yml
