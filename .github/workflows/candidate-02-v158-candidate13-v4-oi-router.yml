@@ -14,7 +14,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  C13_SOURCE_COMMIT: 6e8e7a1461cbc77b82fa9f7f2ec2e29a37726b59
+  C13_SOURCE_SNAPSHOT_COMMIT: f613cadff54c86eeb14bdb402aa17ce43474603b
+  C13_STRATEGY_FREEZE_COMMIT: 6e8e7a1461cbc77b82fa9f7f2ec2e29a37726b59
   C13_ROOT: /tmp/candidate13-v158
   PYTHONUNBUFFERED: "1"
 
@@ -41,12 +42,15 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           smc4 doctor
           git fetch --no-tags origin research/candidate-13
-          git cat-file -e "$C13_SOURCE_COMMIT^{commit}"
+          git cat-file -e "$C13_SOURCE_SNAPSHOT_COMMIT^{commit}"
+          git cat-file -e "$C13_STRATEGY_FREEZE_COMMIT^{commit}"
           rm -rf "$C13_ROOT"; mkdir -p "$C13_ROOT"
-          git archive "$C13_SOURCE_COMMIT" research/candidate-13 \
+          git archive "$C13_SOURCE_SNAPSHOT_COMMIT" research/candidate-13 \
             | tar -x -C "$C13_ROOT" --strip-components=2
           python research/candidate-02/v158_materialize_candidate13_oi.py \
-            --root "$C13_ROOT" --source-commit "$C13_SOURCE_COMMIT"
+            --root "$C13_ROOT" \
+            --source-snapshot-commit "$C13_SOURCE_SNAPSHOT_COMMIT" \
+            --strategy-freeze-commit "$C13_STRATEGY_FREEZE_COMMIT"
 
       - name: Verify causal source and implementation-only transport repair
         shell: bash
@@ -67,9 +71,15 @@ jobs:
 
           root = Path(os.environ['C13_ROOT'])
           protocol = json.loads((root / 'v158_protocol.json').read_text(encoding='utf-8'))
+          materialization = json.loads((root / 'v158_materialization.json').read_text(encoding='utf-8'))
           runner = (root / 'v158_run_leadership_scdam.py').read_text(encoding='utf-8')
           router = (root / 'v158_oi_router.py').read_text(encoding='utf-8')
           assert protocol['claim_eligible'] is False
+          assert protocol['locked_source']['strategy_freeze_commit'] == os.environ['C13_STRATEGY_FREEZE_COMMIT']
+          assert protocol['locked_source']['materialization_source_commit'] == os.environ['C13_SOURCE_SNAPSHOT_COMMIT']
+          assert materialization['candidate13_strategy_freeze_commit'] == os.environ['C13_STRATEGY_FREEZE_COMMIT']
+          assert materialization['candidate13_materialization_source_commit'] == os.environ['C13_SOURCE_SNAPSHOT_COMMIT']
+          assert len(materialization['candidate13_locked_blobs_verified_before_v158']) >= 17
           assert protocol['aggregate_gate']['observed_calendar_days'] == 140
           assert protocol['aggregate_gate']['minimum_daily_geometric_growth'] == 0.01
           assert protocol['aggregate_gate']['minimum_closed_trades'] == 25
@@ -82,7 +92,7 @@ jobs:
           assert 'create_time >= sweep' in router
           assert 'minimum_bytes = 1 if url.endswith(".CHECKSUM") else 100' in runner
           assert 'CausalOIRouter._download = staticmethod' in runner
-          print('V158 causal OI and transport contracts: OK')
+          print('V158 causal OI, frozen-source and transport contracts: OK')
           PY
           python -m unittest discover -s "$C13_ROOT" -p 'test_*.py' -v
 
@@ -128,7 +138,7 @@ jobs:
               status = 'REJECT_V158_OI_ROUTER'
               next_action = 'discard OI-gated FAR as active policy and change market-state mechanism'
           decision.update({
-              'schema': 'candidate-02-v158-development-decision-v1',
+              'schema': 'candidate-02-v158-development-decision-v2',
               'engine': 'NautilusTrader 1.230.0',
               'custom_backtest_engine': False,
               'risk_fraction': 0.03,
@@ -143,6 +153,7 @@ jobs:
               'status': status,
               'next_action': next_action,
               'implementation_fix': (
+                  'separated complete runnable snapshot provenance from the byte-frozen strategy commit; '
                   'accepted valid short checksum text while retaining ZIP size, checksum and archive integrity checks'
               ),
           })
