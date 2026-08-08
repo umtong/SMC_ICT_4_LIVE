@@ -1,0 +1,134 @@
+name: candidate-35-seven-day-execution
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research/candidate-35"]
+    paths:
+      - ".github/workflows/candidate-35-seven-day-execution.yml"
+      - "research/candidate-35/run_continuous.py"
+      - "research/candidate-35/chunk_assembly.py"
+      - "research/candidate-35/run.py"
+      - "research/candidate-35/strategy.py"
+      - "research/candidate-35/router.py"
+      - "research/candidate-35/config.json"
+
+concurrency:
+  group: candidate-35-seven-day-execution
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+  actions: read
+
+jobs:
+  execute:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-35:research/candidate-29:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      INPUT: artifacts/c35-seven-input
+      ROOT: artifacts/c35-seven-execution
+      SOURCE_RUN: "31265666283"
+      SOURCE_SHA: 177ecf1784b24dae7ce6a9b048ac243b58f5f435
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download verified BTC input
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate35-short-BTCUSDT-${{ env.SOURCE_SHA }}
+          path: ${{ env.INPUT }}/BTCUSDT
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN }}
+
+      - name: Download verified ETH input
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate35-short-ETHUSDT-${{ env.SOURCE_SHA }}
+          path: ${{ env.INPUT }}/ETHUSDT
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN }}
+
+      - name: Download verified SOL input
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate35-short-SOLUSDT-${{ env.SOURCE_SHA }}
+          path: ${{ env.INPUT }}/SOLUSDT
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN }}
+
+      - name: Download verified XRP input
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate35-short-XRPUSDT-${{ env.SOURCE_SHA }}
+          path: ${{ env.INPUT }}/XRPUSDT
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN }}
+
+      - name: Verify environment and input set
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-35
+          python -m unittest discover -s research/candidate-35 -p 'test_*.py' -v
+          test "$(find "$INPUT" -name chunk_manifest.json | wc -l)" -eq 4
+          find "$INPUT" -name chunk_manifest.json -print
+
+      - name: Run one seven-day four-asset Nautilus account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-35/run_continuous.py \
+            --input-root "$INPUT" \
+            --config research/candidate-35/config.json \
+            --start 2026-07-01 \
+            --end 2026-07-07 \
+            --cache .cache/c35-seven \
+            --workspace .cache/c35-seven-work \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify execution evidence contract
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$ROOT/metrics.json"; then
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          x=json.loads((root/'metrics.json').read_text())
+          assert x['universe']==['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']
+          assert x['single_continuous_account'] is True
+          assert x['single_strategy_process'] is True
+          assert x['global_entry_or_position_limit']==1
+          assert x['account_restarts']==0
+          assert x['strategy_restarts']==0
+          assert x['strategy_diagnostics']['max_open_positions_observed'] <= 1
+          print(json.dumps({k:x.get(k) for k in ['ending_nav','total_return','geometric_daily_growth','max_drawdown','trades','wins','losses','win_rate','profit_factor','expectancy_usdt','gate_pass','position_counts_by_symbol']},indent=2,sort_keys=True))
+          PY
+          else
+            echo 'metrics.json absent'
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate35-seven-day-execution-${{ github.sha }}
+          path: artifacts/c35-seven-execution/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
