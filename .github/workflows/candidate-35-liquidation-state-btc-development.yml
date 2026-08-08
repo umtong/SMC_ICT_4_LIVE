@@ -36,12 +36,37 @@ jobs:
           smc4 doctor
           python -m py_compile research/candidate-28/liquidation_state_diagnostic.py
           python - <<'PY'
+          import ast
+          import importlib.util
           from pathlib import Path
-          source=Path('research/candidate-28/liquidation_state_diagnostic.py').read_text()
-          assert 'NautilusTrader strategy is built only if one causal route' in source
+
+          path=Path('research/candidate-28/liquidation_state_diagnostic.py')
+          source=path.read_text()
+          tree=ast.parse(source)
+          class_names={node.name for node in ast.walk(tree) if isinstance(node,ast.ClassDef)}
+          imported_modules={
+              alias.name
+              for node in ast.walk(tree)
+              if isinstance(node,ast.Import)
+              for alias in node.names
+          }
+          imported_from={
+              node.module or ''
+              for node in ast.walk(tree)
+              if isinstance(node,ast.ImportFrom)
+          }
+          assert not ({'BacktestEngine','MatchingEngine','PortfolioEngine','AccountEngine'} & class_names)
+          assert not any(name.startswith('nautilus_trader') for name in imported_modules | imported_from)
           assert 'round_trip_bps' in source
-          assert 'refractory window' in source
-          assert 'BacktestEngine' not in source
+          assert 'available_index = shock_index + 120' in source
+
+          spec=importlib.util.spec_from_file_location('c28_liquidation_diag',path)
+          assert spec is not None and spec.loader is not None
+          module=importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          assert module.HORIZONS==(15,30,60,120)
+          assert callable(module.run_diagnostic)
+          assert {'route','trade_side','structural_risk_bps'} <= set(module.EPISODE_COLUMNS)
           PY
       - name: Run BTC liquidation-state development diagnostic
         shell: bash
@@ -59,7 +84,6 @@ jobs:
             --output "$ROOT" \
             2>&1 | tee "$ROOT/console.log"
       - name: Verify diagnostic-only result
-        if: always()
         shell: bash
         run: |
           set -euo pipefail
