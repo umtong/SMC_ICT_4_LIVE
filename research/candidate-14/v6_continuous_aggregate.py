@@ -9,9 +9,12 @@ be labelled diagnostic and can never emit a success claim.
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+from types import ModuleType
 
 
 BASE = Path(__file__).resolve().with_name("continuous_aggregate.py")
+MODULE_NAME = "candidate14_v6_continuous_aggregate_materialized"
 
 
 def replace_once(source: str, old: str, new: str) -> str:
@@ -61,16 +64,41 @@ def materialized_source() -> str:
     return source
 
 
+def load_materialized_module() -> ModuleType:
+    """Load the derived evaluator as a real module so dataclasses resolve it."""
+    if MODULE_NAME in sys.modules:
+        raise RuntimeError(f"materialized module already loaded: {MODULE_NAME}")
+    module = ModuleType(MODULE_NAME)
+    module.__file__ = str(BASE)
+    module.__package__ = ""
+    sys.modules[MODULE_NAME] = module
+    try:
+        exec(
+            compile(materialized_source(), str(BASE), "exec"),
+            module.__dict__,
+            module.__dict__,
+        )
+    except BaseException:
+        sys.modules.pop(MODULE_NAME, None)
+        raise
+    return module
+
+
+def unload_materialized_module(module: ModuleType) -> None:
+    current = sys.modules.get(MODULE_NAME)
+    if current is module:
+        del sys.modules[MODULE_NAME]
+
+
 def main() -> int:
-    namespace: dict[str, object] = {
-        "__name__": "candidate14_v6_continuous_aggregate_materialized",
-        "__file__": str(BASE),
-    }
-    exec(compile(materialized_source(), str(BASE), "exec"), namespace, namespace)
-    entry = namespace.get("main")
-    if not callable(entry):
-        raise RuntimeError("continuous aggregate main entry was not materialized")
-    return int(entry())
+    module = load_materialized_module()
+    try:
+        entry = module.__dict__.get("main")
+        if not callable(entry):
+            raise RuntimeError("continuous aggregate main entry was not materialized")
+        return int(entry())
+    finally:
+        unload_materialized_module(module)
 
 
 if __name__ == "__main__":
