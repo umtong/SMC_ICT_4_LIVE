@@ -23,6 +23,8 @@ expected = (HERE / "strategy.py").resolve()
 if resolved != expected:
     raise RuntimeError(f"Candidate 35 strategy collision: {resolved} != {expected}")
 
+import event_lifecycle_patch  # noqa: F401,E402 -- installs corrected callback
+
 spec = importlib.util.spec_from_file_location("candidate35_direct_runner", HERE / "run.py")
 if spec is None or spec.loader is None:
     raise RuntimeError("cannot load Candidate 35 runner")
