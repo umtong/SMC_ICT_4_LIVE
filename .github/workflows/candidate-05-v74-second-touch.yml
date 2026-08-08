@@ -1,0 +1,186 @@
+name: candidate-05-v74-structural-second-touch
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v74-second-touch.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v74-structural-second-touch
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-and-conditional-oos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v74-second-touch
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify controlled entry-timing change
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v74_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_order_failure_idempotency_contract.py' -v
+          PYTHONPATH=research/candidate-05/v74_active:research/candidate-05 python - <<'PY'
+          import strategy
+          assert strategy.LiquidityResponseStrategy.__name__ == "StructuralSecondTouchStrategy"
+          print(strategy.LiquidityResponseStrategy)
+          PY
+
+      - name: Run exposed continuous 91-day BTC comparison candidate
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v74_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/development"
+          python research/candidate-05/v74_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-05-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-05-30 \
+            --cache .cache/candidate-05-v74-development \
+            --output "$ROOT/development" \
+            2>&1 | tee "$ROOT/development/console.log"
+
+      - name: Decide entry-policy promotion
+        id: development
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "development/metrics.json").read_text())
+          diagnostics = json.loads((root / "development/strategy_diagnostics.json").read_text())
+          integrity = (
+              int(metrics.get("liquidations", 0)) == 0
+              and int(metrics.get("order_rejections", 0)) == 0
+              and int(metrics.get("order_denials", 0)) == 0
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          promote = (
+              integrity
+              and int(metrics.get("trades", 0)) >= 8
+              and float(metrics.get("total_return", -1.0)) > 0.0256520
+              and float(metrics.get("profit_factor", 0.0)) > 1.204
+          )
+          result = {
+              "schema": "candidate-05-v74-development-v1",
+              "classification": "V74_PROMOTE_UNTOUCHED" if promote else "V74_DISCARD_DEVELOPMENT",
+              "promote": promote,
+              "integrity_pass": integrity,
+              "baseline_v46": {
+                  "total_return": 0.0256520,
+                  "trades": 16,
+                  "wins": 11,
+                  "profit_factor": 1.204,
+                  "max_drawdown": 0.0709
+              },
+              "candidate_metrics": metrics,
+              "strategy_diagnostics": diagnostics,
+          }
+          (root / "development_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"promote={'true' if promote else 'false'}\n")
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Run untouched v46 control
+        if: steps.development.outputs.promote == 'true'
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/untouched-control"
+          python research/candidate-05/v40_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-12-30 \
+            --build-end 2025-03-31 \
+            --evaluation-start 2025-01-01 \
+            --evaluation-end 2025-03-31 \
+            --cache .cache/candidate-05-v74-oos-control \
+            --output "$ROOT/untouched-control" \
+            2>&1 | tee "$ROOT/untouched-control/console.log"
+
+      - name: Run untouched v74 candidate
+        if: steps.development.outputs.promote == 'true'
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v74_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/untouched-candidate"
+          python research/candidate-05/v74_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-12-30 \
+            --build-end 2025-03-31 \
+            --evaluation-start 2025-01-01 \
+            --evaluation-end 2025-03-31 \
+            --cache .cache/candidate-05-v74-oos-candidate \
+            --output "$ROOT/untouched-candidate" \
+            2>&1 | tee "$ROOT/untouched-candidate/console.log"
+
+      - name: Compare untouched candidate with identical control
+        if: steps.development.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          control = json.loads((root / "untouched-control/metrics.json").read_text())
+          candidate = json.loads((root / "untouched-candidate/metrics.json").read_text())
+          integrity = all(
+              int(candidate.get(key, 0)) == 0
+              for key in ("liquidations", "order_rejections", "order_denials")
+          ) and float(candidate.get("min_equity", 0.0)) > 0.0
+          passed = (
+              integrity
+              and int(candidate.get("trades", 0)) >= 8
+              and float(candidate.get("total_return", -1.0)) > 0.0
+              and float(candidate.get("total_return", -1.0)) > float(control.get("total_return", 0.0))
+              and float(candidate.get("profit_factor", 0.0)) > float(control.get("profit_factor", 0.0))
+          )
+          result = {
+              "schema": "candidate-05-v74-untouched-v1",
+              "classification": "V74_UNTOUCHED_ENTRY_EDGE" if passed else "V74_UNTOUCHED_FAILED",
+              "passed": passed,
+              "integrity_pass": integrity,
+              "control_metrics": control,
+              "candidate_metrics": candidate,
+          }
+          (root / "untouched_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v74-second-touch-${{ github.sha }}
+          path: artifacts/candidate-05-v74-second-touch/**
+          if-no-files-found: warn
+          retention-days: 90
