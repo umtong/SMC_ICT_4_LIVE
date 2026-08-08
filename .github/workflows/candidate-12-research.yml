@@ -1,4 +1,4 @@
-name: candidate-12-i14a-w1-then-w12
+name: candidate-12-i14b-w1-then-w12
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i14a-w1-w12
+  group: candidate-12-i14b-w1-w12
   cancel-in-progress: false
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user root
     steps:
-      - name: Checkout I14a candidate
+      - name: Checkout I14b candidate
         uses: actions/checkout@v4
 
       - name: Verify environment and frozen source
@@ -30,14 +30,15 @@ jobs:
         run: |
           set -euo pipefail
           smc4 doctor
-          test "$(git hash-object research/candidate-12/logic.py)" = "045e5ce7e30d0a9a0d5be4bf707747d7361d8607"
-          test "$(git hash-object research/candidate-12/config.json)" = "0972b4e475dca0eddb3414113838a5af14dc3e5a"
+          test "$(git hash-object research/candidate-12/logic.py)" = "a89b644abcfa21fa096f3874e0b21b2194940528"
+          test "$(git hash-object research/candidate-12/test_logic.py)" = "7752d317437b209b737824d837fb6c9240c86112"
+          test "$(git hash-object research/candidate-12/config.json)" = "5d5d3645a708721b1d7a0e2c0c4d0f2dc006c74f"
           python - <<'PY'
           from pathlib import Path
           import json
           c = json.loads(Path("research/candidate-12/config.json").read_text())
-          assert c["schema_version"] == 14, c
-          assert c["candidate"] == "candidate-12-boundary-hold-reacceleration-router", c
+          assert c["schema_version"] == 15, c
+          assert c["candidate"] == "candidate-12-same-leg-reacceleration-router", c
           assert c["selection"]["weeks"]["W12"] == {
               "start": "2025-12-24",
               "end_exclusive": "2025-12-31",
@@ -78,7 +79,7 @@ jobs:
           import json
           root = Path("artifacts/candidate-12/BTCUSDT-W12")
           m = json.loads((root / "metrics.json").read_text())
-          assert m["candidate"] == "candidate-12-boundary-hold-reacceleration-router", m
+          assert m["candidate"] == "candidate-12-same-leg-reacceleration-router", m
           assert m["week_id"] == "W12", m
           assert m["evaluation_start"] == "2025-12-24", m
           assert m["evaluation_end_exclusive"] == "2025-12-31", m
@@ -97,16 +98,16 @@ jobs:
           for WEEK in W1 W12; do
             FILE="artifacts/candidate-12/BTCUSDT-${WEEK}/metrics.json"
             if [[ -f "$FILE" ]]; then
-              echo "=== I14A_${WEEK}_METRICS_BEGIN ==="
+              echo "=== I14B_${WEEK}_METRICS_BEGIN ==="
               cat "$FILE"
-              echo "=== I14A_${WEEK}_METRICS_END ==="
+              echo "=== I14B_${WEEK}_METRICS_END ==="
             fi
           done
 
-      - name: Preserve reproducible I14a evidence
+      - name: Preserve reproducible I14b evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I14a-W1-W12-${{ github.sha }}
+          name: candidate-12-I14b-W1-W12-${{ github.sha }}
           path: artifacts/candidate-12
           if-no-files-found: warn
