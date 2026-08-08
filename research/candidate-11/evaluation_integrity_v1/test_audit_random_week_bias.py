@@ -40,6 +40,19 @@ class EvaluationIntegrityTests(unittest.TestCase):
             result["failure_modes"],
         )
 
+    def test_week_end_forced_exit_is_not_natural_trade_evidence(self):
+        result = audit(self.snapshot())
+        self.assertEqual(result["boundary_censored_outcome_count"], 1)
+        self.assertFalse(
+            result["boundary_censored_outcomes"][0][
+                "natural_target_or_stop_outcome_known"
+            ]
+        )
+        self.assertIn(
+            "WEEK_END_FORCED_EXIT_CENSORING",
+            result["failure_modes"],
+        )
+
     def test_same_opened_weeks_cannot_be_holdout_after_source_revision(self):
         result = audit(self.snapshot())
         self.assertTrue(result["adaptive_reuse"])
@@ -82,6 +95,14 @@ class EvaluationIntegrityTests(unittest.TestCase):
         self.assertGreater(
             density["required_minus_observed_combined_trades_per_day"], 0.0
         )
+
+    def test_protocol_prevents_block_end_outcome_censoring(self):
+        protocol = json.loads(
+            (ROOT / "protocol.json").read_text(encoding="utf-8")
+        )
+        tail = protocol["fresh_validation"]["resolution_tail"]
+        self.assertIn("disable new entries", tail)
+        self.assertIn("not a win/loss observation", tail)
 
     def test_nonpositive_path_has_no_feasible_required_density(self):
         self.assertIsNone(

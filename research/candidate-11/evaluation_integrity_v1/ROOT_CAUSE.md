@@ -15,6 +15,7 @@ The decisive error was a mismatch between the nominal sampling unit and the econ
 5. **Uncertainty hidden by point estimates.** Seven wins in seven attempts has an exact 95% win-rate lower bound near 59%, not evidence of a stable 100% process. Nine wins in eleven has a lower bound near 48%.
 6. **Opportunity-density failure.** The combined 56-day continuity context produced 14 trades and about 0.708% daily geometric growth. Even after mixing development and holdout, it remained below the project target.
 7. **Fresh causal scarcity.** The separately frozen second-scale peer-implied fair-value-gap screen generated zero costed events on all three opened mechanism weeks.
+8. **Weekly boundary censoring.** Candidate 13 W14's SOL short was closed exactly at the evaluation end and counted as a profitable trade even though its natural target/stop outcome was never observed. A long continuous run would not create that artificial exit.
 
 ## What is not supported
 
@@ -42,5 +43,6 @@ The short test was effectively conditional on a few favorable events. The longer
 - Weekly performance is descriptive only; advancement is based on a contiguous stateful timeline and independent economic clusters.
 - Fresh data is spent only after the opened-data development gate in `protocol.json`.
 - Failure on the first fresh block rejects the frozen candidate; it does not authorize tuning on that block and reusing it as holdout.
+- Every validation block includes a precommitted no-new-entry resolution tail; unresolved positions cannot be converted into arbitrary period-end wins or losses.
 
 This closes the prior loop: no future candidate can turn repeated success on the same “random” weeks into a validation claim.

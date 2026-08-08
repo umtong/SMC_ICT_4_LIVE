@@ -105,6 +105,7 @@ def audit(snapshot: dict[str, Any]) -> dict[str, Any]:
     holdout = snapshot["multi_session_untouched_holdout"]
     combined = snapshot["combined_context"]
     short_week_failures = snapshot["short_week_failure_archive"]
+    boundary_censored = snapshot["boundary_censored_outcomes"]
     target = float(snapshot["project_target_daily_geometric_growth"])
 
     interval_signatures = [tuple(sequence["interval_set"]) for _ in versions]
@@ -175,6 +176,8 @@ def audit(snapshot: dict[str, Any]) -> dict[str, Any]:
     classifications = []
     if not all_random_weeks_were_good:
         classifications.append("SURVIVORSHIP_AND_RESEARCH_MEMORY_BIAS")
+    if boundary_censored:
+        classifications.append("WEEK_END_FORCED_EXIT_CENSORING")
     if adaptive_reuse:
         classifications.append("ADAPTIVE_REUSE_OF_OPENED_RANDOM_WEEKS")
     if diagnostic_trials < 20:
@@ -200,6 +203,8 @@ def audit(snapshot: dict[str, Any]) -> dict[str, Any]:
         "all_random_weeks_were_good": all_random_weeks_were_good,
         "archived_short_week_failures": archived_short_week_failures,
         "archived_short_week_failure_count": len(archived_short_week_failures),
+        "boundary_censored_outcomes": boundary_censored,
+        "boundary_censored_outcome_count": len(boundary_censored),
         "adaptive_reuse": adaptive_reuse,
         "same_calendar_versions_observed": len(versions),
         "same_calendar_version_results": version_results,
@@ -249,8 +254,10 @@ def audit(snapshot: dict[str, Any]) -> dict[str, Any]:
         "root_cause": (
             "The archive disproves the premise that random weeks were always "
             "good: multiple preselected first-week tests were negative. The "
-            "apparent pattern is survivorship across generations. Calendar "
-            "randomization also did not create independent validation. The same "
+            "apparent pattern is survivorship across generations. At least one "
+            "reported winner was also closed exactly at a weekly evaluation "
+            "boundary before its natural target/stop outcome was known. Calendar "
+            "randomization did not create independent validation. The same "
             "opened weeks were reused across source revisions, sparse "
             "trades were treated as five weekly samples, and the development "
             "trades concentrated in one short-side latent regime. Fresh data "
@@ -287,6 +294,11 @@ def render_markdown(result: dict[str, Any]) -> str:
             f"`{result['archived_short_week_failure_count']}` explicit negative "
             "short-week generations, so the premise that random weeks always "
             "worked is false."
+        ),
+        (
+            "- Boundary-censored winners: "
+            f"`{result['boundary_censored_outcome_count']}`; these were closed "
+            "at the evaluation end rather than by the live scenario contract."
         ),
         (
             f"- The same W10-W14 calendar set was evaluated across "
