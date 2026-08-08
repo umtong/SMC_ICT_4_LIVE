@@ -1,0 +1,94 @@
+name: candidate-18-v8-cross-asset-screen
+
+on:
+  push:
+    branches: ["research/candidate-18"]
+    paths:
+      - ".github/workflows/candidate-18-v8-cross-asset-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-18-v8-cross-asset-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  screen:
+    name: ${{ matrix.symbol }}-2024-07-08-14
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [ETHUSDT, SOLUSDT, XRPUSDT]
+
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+
+    env:
+      PYTHONPATH: research/candidate-18:research/candidate-16:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      SYMBOL: ${{ matrix.symbol }}
+      BUILD_START: "2024-07-05"
+      EVALUATION_START: "2024-07-08"
+      EVALUATION_END: "2024-07-14"
+      ROOT: artifacts/candidate-18-v8-cross-asset/${{ matrix.symbol }}
+      CACHE: .cache/candidate-18-v8-cross-asset/${{ matrix.symbol }}
+      CONFIG: .cache/candidate-18-v8-cross-asset/${{ matrix.symbol }}-config.json
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and freeze symbol-only adaptation
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python research/candidate-18/v8_contract_check.py
+          mkdir -p "$(dirname "$CONFIG")"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          base = json.loads(Path("research/candidate-18/config.json").read_text())
+          base["symbol"] = os.environ["SYMBOL"]
+          Path(os.environ["CONFIG"]).write_text(
+              json.dumps(base, indent=2, sort_keys=True) + "\n"
+          )
+          print({"symbol": base["symbol"], "adapted_fields": ["symbol"]})
+          PY
+
+      - name: Run untouched-symbol screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-18/candidate_v8.py stage \
+            --config "$CONFIG" \
+            --build-start "$BUILD_START" \
+            --build-end "$EVALUATION_END" \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --cache "$CACHE" \
+            --output "$ROOT" \
+            --validation-mode "v8-untouched-symbol-screen-$SYMBOL" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify execution, risk, basis routing and causality
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-18/validate_v8.py \
+            --root "$ROOT" \
+            --period "$SYMBOL-2024-07-08-14"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-18-v8-cross-asset-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-18-v8-cross-asset/${{ matrix.symbol }}/**
+          if-no-files-found: warn
+          retention-days: 90
