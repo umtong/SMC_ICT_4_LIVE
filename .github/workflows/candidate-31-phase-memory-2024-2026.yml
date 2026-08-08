@@ -1,0 +1,182 @@
+name: candidate-31-phase-memory-2024-2026
+
+on:
+  push:
+    branches: ["research/candidate-31"]
+    paths:
+      - "research/candidate-31/**"
+      - ".github/workflows/candidate-31-phase-memory-2024-2026.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-31-phase-memory-2024-2026
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      chunks: ${{ steps.calendar.outputs.chunks }}
+    steps:
+      - id: calendar
+        name: Build warmup, evaluation and outcome-tail chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          import calendar
+          import json
+          import os
+
+          cursor = date(2023, 10, 1)
+          final_month_end = date(2026, 7, 31)
+          chunks = []
+          while cursor <= final_month_end:
+              end = date(cursor.year, cursor.month, calendar.monthrange(cursor.year, cursor.month)[1])
+              chunks.append({
+                  "name": f"{cursor.year:04d}-{cursor.month:02d}",
+                  "start": cursor.isoformat(),
+                  "end": end.isoformat(),
+              })
+              cursor = end + timedelta(days=1)
+          chunks.append({
+              "name": "2026-08-tail",
+              "start": "2026-08-01",
+              "end": "2026-08-02",
+          })
+          assert len(chunks) == 35
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write("chunks=" + json.dumps(chunks, separators=(",", ":")) + "\n")
+          print(json.dumps(chunks, indent=2))
+          PY
+
+  preprocess:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        chunk: ${{ fromJson(needs.plan.outputs.chunks) }}
+    env:
+      PYTHONPATH: research/candidate-31:research/candidate-30
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-31/months/${{ matrix.chunk.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and fixed phase-memory contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-30 research/candidate-31
+          python -m unittest discover -s research/candidate-30 -p 'test_*.py' -v
+          python -m unittest discover -s research/candidate-31 -p 'test_*.py' -v
+
+      - name: Build checksum-verified lightweight observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-30/build_month_v2.py \
+            --symbol BTCUSDT \
+            --core-start "${{ matrix.chunk.start }}" \
+            --core-end "${{ matrix.chunk.end }}" \
+            --cache ".cache/candidate-31/${{ matrix.chunk.name }}" \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate31-month-${{ matrix.chunk.name }}-${{ github.sha }}
+          path: |
+            artifacts/candidate-31/months/${{ matrix.chunk.name }}/minute_state.csv.gz
+            artifacts/candidate-31/months/${{ matrix.chunk.name }}/month_manifest.json
+            artifacts/candidate-31/months/${{ matrix.chunk.name }}/console.log
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  continuous-study:
+    needs: preprocess
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-31:research/candidate-30
+      PYTHONUNBUFFERED: "1"
+      INPUT_ROOT: artifacts/candidate-31/downloaded-months
+      ROOT: artifacts/candidate-31/continuous-study
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate31-month-*-${{ github.sha }}
+          path: artifacts/candidate-31/downloaded-months
+          merge-multiple: false
+
+      - name: Run one causal phase-memory policy over the continuous grid
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find "$INPUT_ROOT" -name month_manifest.json | wc -l)" -eq 35
+          python -m compileall -q research/candidate-30 research/candidate-31
+          python -m unittest discover -s research/candidate-31 -p 'test_*.py' -v
+          mkdir -p "$ROOT"
+          python research/candidate-31/analyze_phase_memory.py \
+            --input-root "$INPUT_ROOT" \
+            --output "$ROOT" \
+            --symbol BTCUSDT \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Emit fixed-policy verdict
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f "$ROOT/study.json"; then
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads((Path(os.environ["ROOT"]) / "study.json").read_text())
+          print(json.dumps({
+              "evaluation_start": result["evaluation_start"],
+              "evaluation_end": result["evaluation_end"],
+              "evaluation_calendar_days": result["evaluation_calendar_days"],
+              "diagnostics": result["diagnostics"],
+              "promoted_routes": result["promoted_routes"],
+              "decision": result["decision"],
+          }, indent=2, sort_keys=True))
+          assert result["evaluation_start"] == "2024-01-01"
+          assert result["evaluation_end"] == "2026-07-31"
+          assert result["evaluation_calendar_days"] == 943
+          assert result["continuous_observation_grid"] is True
+          PY
+          else
+            echo "study.json absent; inspect console log"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate31-continuous-phase-memory-${{ github.sha }}
+          path: artifacts/candidate-31/continuous-study/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
