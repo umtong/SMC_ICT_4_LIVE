@@ -1,0 +1,122 @@
+name: candidate-16-v15-external-funding-cliff-study
+
+on:
+  push:
+    branches: ["research/candidate-16-v15-funding-cliff-rebound"]
+    paths:
+      - "research/candidate-16/v15_funding_cliff_study.py"
+      - "research/candidate-16/tests/test_v15_funding_cliff_study.py"
+      - ".github/workflows/candidate-16-v15-funding-cliff-study.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v15-external-funding-cliff-study
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-and-conditional-holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 320
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v15-funding-cliff-study
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and causal funding-state contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-16/v9_liquidation_event_study.py \
+            research/candidate-16/v10_open_drive_study.py \
+            research/candidate-16/v15_funding_cliff_study.py
+          python -m unittest discover \
+            -s research/candidate-16/tests \
+            -p 'test_v15_funding_cliff_study.py' -v
+
+      - name: Run checksum-verified 2023 study and conditional 2024 holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/v15_funding_cliff_study.py \
+            --cache .cache/candidate-16-v15-funding \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify frozen router and promotion decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/study.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          study = json.loads((root / "study.json").read_text())
+          if study.get("role") != "external mechanism study; no fills, stop/target, account, portfolio, or NAV claim":
+              raise SystemExit("study role drifted")
+          policy = study.get("external_policy", {})
+          if policy.get("family") != "perpetual funding settlement crowding and unwind":
+              raise SystemExit("external funding policy drifted")
+          if policy.get("settlement_clock") != "realized funding at event; descriptive entry at next minute open":
+              raise SystemExit("funding future-information boundary drifted")
+          expected_states = {"PRE_SETTLEMENT_UNWIND_EXHAUSTED", "CROWDED_FUNDING_FADE"}
+          if set(policy.get("states", {})) != expected_states:
+              raise SystemExit("funding state router drifted")
+          if set(study.get("data", {}).get("symbols", [])) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
+              raise SystemExit("symbol set drifted")
+          if study.get("data", {}).get("years") != [2023, 2024]:
+              raise SystemExit("development/holdout years drifted")
+          if abs(float(study.get("cost", {}).get("round_trip_rate", -1.0)) - 0.002) > 1e-12:
+              raise SystemExit("cost screen drifted")
+          if not all(int(value) >= 2100 for value in study.get("funding_rows", {}).values()):
+              raise SystemExit("funding coverage incomplete")
+          states = study.get("states", {})
+          if set(states) != expected_states:
+              raise SystemExit("state evidence incomplete")
+          for state, result in states.items():
+              if not result["development"]["passed"] and result["holdout"]["opened"]:
+                  raise SystemExit(f"holdout opened after development failure: {state}")
+          print(json.dumps({
+              "decision": study["decision"],
+              "promote": study["promote"],
+              "promoted_states": study["promoted_states"],
+              "raw_symbol_events": study["raw_symbol_events"],
+              "independent_global_events": study["independent_global_events"],
+              "state_counts": study["state_counts"],
+              "states": states,
+          }, indent=2, sort_keys=True))
+          PY
+          test -e "$ROOT/development_events.csv"
+          if python - <<'PY'
+          import json,os
+          from pathlib import Path
+          study=json.loads((Path(os.environ['ROOT'])/'study.json').read_text())
+          raise SystemExit(0 if any(x['holdout']['opened'] for x in study['states'].values()) else 1)
+          PY
+          then
+            test -e "$ROOT/holdout_events.csv"
+          else
+            test ! -e "$ROOT/holdout_events.csv"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v15-funding-cliff-${{ github.sha }}
+          path: artifacts/candidate-16-v15-funding-cliff-study/**
+          if-no-files-found: warn
+          retention-days: 90
