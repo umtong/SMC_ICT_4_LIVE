@@ -26,6 +26,12 @@ SPOT_BASE = "https://data.binance.vision/data/spot/daily"
 NS_PER_MINUTE = 60_000_000_000
 
 
+def _datetime_ns(values: pd.Series | pd.Index) -> np.ndarray:
+    """Return explicit Unix nanoseconds independent of pandas datetime storage unit."""
+    converted = pd.to_datetime(values, utc=True)
+    return pd.DatetimeIndex(converted).to_numpy(dtype="datetime64[ns]").astype("int64")
+
+
 def _spot_archive_spec(endpoint: str, symbol: str, day: date) -> tuple[str, str]:
     stamp = day.isoformat()
     if endpoint == "klines":
@@ -133,8 +139,8 @@ def _spot_features(klines: pd.DataFrame, agg: pd.DataFrame) -> pd.DataFrame:
     frame["spot_prior_15m_low"] = (
         frame["spot_low"].shift(1).rolling(15, min_periods=15).min()
     )
-    frame["spot_observed_time_ns"] = frame["close_time_dt"].astype("int64")
-    frame["minute_start_ns"] = frame.index.astype("int64")
+    frame["spot_observed_time_ns"] = _datetime_ns(frame["close_time_dt"])
+    frame["minute_start_ns"] = _datetime_ns(frame.index)
 
     required = [
         "spot_open",
