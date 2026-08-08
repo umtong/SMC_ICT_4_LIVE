@@ -1,37 +1,34 @@
 #!/usr/bin/env python3
-"""External two-hour jump mean-reversion mechanism study for Candidate 16 v14.
+"""External two-hour jump mean-reversion replication for Candidate 16 v14.
 
 De Nicola (2021) reports unusually strong negative first-order autocorrelation
-for Bitcoin at one-, two- and four-hour horizons.  The highest and most stable
-per-trade return in the paper is the two-hour strategy: after a completed large
-move it takes the opposite direction for exactly the next two-hour period.  At
-a four-standard-deviation trigger the reported gross mean is about 0.74%, large
-enough to justify a modern cost-aware replication before adding discretionary
-patterns.
+for Bitcoin at one-, two- and four-hour horizons.  The two-hour rule takes the
+opposite direction for the next complete two-hour period after a completed
+large jump.  Its reported four-sigma gross mean is about 0.74%, large enough to
+justify a modern cost-aware replication before inventing another pattern.
 
-This module reproduces only the mechanism, with the minimum adaptations needed
-for causal project use:
+Only the minimum causal project adaptations are made:
 
 * fixed non-overlapping UTC two-hour bars;
-* jump threshold = 4 times a shifted trailing 30-day standard deviation, never
-  whole-sample volatility;
+* jump threshold = four times a shifted trailing 30-day standard deviation,
+  never whole-sample volatility;
 * BTCUSDT, ETHUSDT, SOLUSDT and XRPUSDT are evaluated symmetrically;
-* simultaneous cross-asset jumps form one market-wide causal episode and only
-  the largest standardized jump is retained;
-* the opposite position is hypothetically held for exactly the next completed
-  two-hour period, as in the paper;
+* simultaneous cross-asset jumps form one causal episode and only the largest
+  standardized jump is retained;
+* the opposite hypothetical position is held for exactly the next completed
+  two-hour period;
 * 20 bp round-trip costs are deducted;
-* 2024 is never opened unless the unchanged 2023 mechanism clears the frozen
-  economic and diversification checks.
+* 2024 is not opened unless unchanged 2023 clears fixed economic and
+  diversification checks.
 
-This is not a fill, stop/target, account, portfolio or NAV simulation.  A passing
-mechanism must next be converted into a complete later-leg scenario and run in
-NautilusTrader with current-NAV 3% sizing and the one-global-slot rule.
+This module creates no exchange fills, stop/target, account, portfolio or NAV.
+A passing mechanism must next be converted into a complete later-leg scenario
+and validated in NautilusTrader with current-NAV 3% risk and one global slot.
 """
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import json
 import math
 from pathlib import Path
@@ -59,6 +56,7 @@ class JumpEvent:
     symbol: str
     bar_start_ts: pd.Timestamp
     bar_end_ts: pd.Timestamp
+    next_start_ts: pd.Timestamp
     next_end_ts: pd.Timestamp
     jump_return: float
     prior_sigma: float
@@ -80,7 +78,7 @@ def aggregate_two_hour(panel: pd.DataFrame) -> pd.DataFrame:
         closed="left",
         origin="start_day",
     )
-    result = pd.DataFrame(
+    bars = pd.DataFrame(
         {
             "open": grouped["perp_open"].first(),
             "high": grouped["perp_high"].max(),
@@ -90,25 +88,30 @@ def aggregate_two_hour(panel: pd.DataFrame) -> pd.DataFrame:
             "minute_count": grouped["perp_close"].count(),
         },
     )
-    result = result[result["minute_count"] == BAR_HOURS * 60].copy()
-    result["bar_start_ts"] = result.index.as_unit("ns")
-    result["bar_end_ts"] = (
-        result.index + pd.Timedelta(hours=BAR_HOURS) - pd.Timedelta(minutes=1)
+    bars = bars[bars["minute_count"] == BAR_HOURS * 60].copy()
+    bars.index = bars.index.as_unit("ns")
+    bars["bar_start_ts"] = bars.index
+    bars["bar_end_ts"] = (
+        bars.index
+        + pd.Timedelta(hours=BAR_HOURS)
+        - pd.Timedelta(minutes=1)
     ).as_unit("ns")
-    result["return"] = np.log(result["close"] / result["open"])
-    # The current jump return is excluded from the standard deviation that
-    # judges itself. ddof=0 mirrors the paper's population-standard-deviation
-    # framing while remaining strictly causal here.
-    result["prior_sigma"] = (
-        result["return"]
+    bars["log_return"] = np.log(bars["close"] / bars["open"])
+    # Shift excludes the current jump from the volatility baseline that judges it.
+    bars["prior_sigma"] = (
+        bars["log_return"]
         .rolling(TRAILING_BARS, min_periods=TRAILING_BARS)
         .std(ddof=0)
         .shift(1)
     )
-    result["jump_z"] = result["return"].abs() / result["prior_sigma"].replace(0.0, np.nan)
-    result["next_return"] = result["return"].shift(-1)
-    result["next_end_ts"] = result["bar_end_ts"].shift(-1)
-    return result
+    bars["jump_z"] = (
+        bars["log_return"].abs()
+        / bars["prior_sigma"].replace(0.0, np.nan)
+    )
+    bars["next_log_return"] = bars["log_return"].shift(-1)
+    bars["next_start_ts"] = bars["bar_start_ts"].shift(-1)
+    bars["next_end_ts"] = bars["bar_end_ts"].shift(-1)
+    return bars
 
 
 def _next_path(
@@ -136,20 +139,21 @@ def detect_symbol_events(
     eligible = bars[
         bars["prior_sigma"].gt(0.0)
         & bars["jump_z"].ge(JUMP_SIGMA)
-        & bars["next_return"].notna()
+        & bars["next_log_return"].notna()
+        & bars["next_start_ts"].notna()
     ]
-    for row in eligible.itertuples(index=False):
-        jump_return = float(row.return)
+    for _, row in eligible.iterrows():
+        jump_return = float(row["log_return"])
         direction = 1 if jump_return > 0.0 else -1
-        next_return = float(row.next_return)
+        next_return = float(row["next_log_return"])
         gross = -direction * next_return
         net = gross - ROUND_TRIP_COST_RATE
-        next_start = pd.Timestamp(row.bar_start_ts) + pd.Timedelta(hours=BAR_HOURS)
+        next_start = pd.Timestamp(row["next_start_ts"])
         path = _next_path(panel, next_start)
         if path is None:
             continue
         entry = float(path.iloc[0]["perp_open"])
-        if entry <= 0.0:
+        if not math.isfinite(entry) or entry <= 0.0:
             continue
         reversal_side = -direction
         if reversal_side > 0:
@@ -161,12 +165,13 @@ def detect_symbol_events(
         events.append(
             JumpEvent(
                 symbol=symbol,
-                bar_start_ts=pd.Timestamp(row.bar_start_ts),
-                bar_end_ts=pd.Timestamp(row.bar_end_ts),
-                next_end_ts=pd.Timestamp(row.next_end_ts),
+                bar_start_ts=pd.Timestamp(row["bar_start_ts"]),
+                bar_end_ts=pd.Timestamp(row["bar_end_ts"]),
+                next_start_ts=next_start,
+                next_end_ts=pd.Timestamp(row["next_end_ts"]),
                 jump_return=jump_return,
-                prior_sigma=float(row.prior_sigma),
-                jump_z=float(row.jump_z),
+                prior_sigma=float(row["prior_sigma"]),
+                jump_z=float(row["jump_z"]),
                 event_direction=direction,
                 next_return=next_return,
                 reversal_gross_return=gross,
@@ -197,15 +202,7 @@ def collapse_simultaneous_events(events: list[JumpEvent]) -> list[JumpEvent]:
 
 
 def records(events: list[JumpEvent]) -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {
-                field: getattr(event, field)
-                for field in event.__dataclass_fields__
-            }
-            for event in events
-        ],
-    )
+    return pd.DataFrame([asdict(event) for event in events])
 
 
 def summarize(frame: pd.DataFrame) -> dict[str, Any]:
@@ -231,7 +228,9 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
             "events": int(len(group)),
             "mean_gross_return": float(group["reversal_gross_return"].mean()),
             "mean_net_return": float(group["reversal_net_return"].mean()),
-            "cost_after_positive_rate": float((group["reversal_net_return"] > 0.0).mean()),
+            "cost_after_positive_rate": float(
+                (group["reversal_net_return"] > 0.0).mean(),
+            ),
         }
         for symbol, group in frame.groupby("symbol", sort=True)
     }
@@ -250,7 +249,9 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
             item["mean_net_return"] > 0.0 for item in by_symbol.values()
         ),
         "largest_event_share_of_positive_net": (
-            float(positive.max() / positive.sum()) if not positive.empty else 1.0
+            float(positive.max() / positive.sum())
+            if not positive.empty
+            else 1.0
         ),
         "by_symbol": by_symbol,
     }
@@ -259,13 +260,27 @@ def summarize(frame: pd.DataFrame) -> dict[str, Any]:
 def promotion_checks(summary: dict[str, Any]) -> dict[str, bool]:
     return {
         "independent_events_at_least_20": int(summary.get("events", 0)) >= 20,
-        "gross_positive_rate_at_least_55pct": float(summary.get("gross_positive_rate", 0.0)) >= 0.55,
-        "cost_after_positive_rate_at_least_50pct": float(summary.get("cost_after_positive_rate", 0.0)) >= 0.50,
-        "mean_gross_return_covers_round_trip_cost": float(summary.get("mean_gross_return", 0.0)) >= ROUND_TRIP_COST_RATE,
+        "gross_positive_rate_at_least_55pct": (
+            float(summary.get("gross_positive_rate", 0.0)) >= 0.55
+        ),
+        "cost_after_positive_rate_at_least_50pct": (
+            float(summary.get("cost_after_positive_rate", 0.0)) >= 0.50
+        ),
+        "mean_gross_return_covers_round_trip_cost": (
+            float(summary.get("mean_gross_return", 0.0))
+            >= ROUND_TRIP_COST_RATE
+        ),
         "mean_net_return_positive": float(summary.get("mean_net_return", 0.0)) > 0.0,
-        "median_mfe_covers_round_trip_cost": float(summary.get("median_mfe", 0.0)) >= ROUND_TRIP_COST_RATE,
-        "positive_mean_net_on_at_least_three_symbols": int(summary.get("symbols_positive_mean_net", 0)) >= 3,
-        "largest_positive_event_share_at_most_35pct": float(summary.get("largest_event_share_of_positive_net", 1.0)) <= 0.35,
+        "median_mfe_covers_round_trip_cost": (
+            float(summary.get("median_mfe", 0.0)) >= ROUND_TRIP_COST_RATE
+        ),
+        "positive_mean_net_on_at_least_three_symbols": (
+            int(summary.get("symbols_positive_mean_net", 0)) >= 3
+        ),
+        "largest_positive_event_share_at_most_35pct": (
+            float(summary.get("largest_event_share_of_positive_net", 1.0))
+            <= 0.35
+        ),
     }
 
 
@@ -321,7 +336,10 @@ def run(cache: Path, output: Path) -> dict[str, Any]:
         holdout.to_csv(output / "holdout_events.csv", index=False)
     result = {
         "schema": "candidate-16-v14-two-hour-jump-reversion-study-v1",
-        "role": "external mechanism replication; no fills, stop/target, account, portfolio, or NAV claim",
+        "role": (
+            "external mechanism replication; no fills, stop/target, account, "
+            "portfolio, or NAV claim"
+        ),
         "external_policy": {
             "source": "De Nicola (2021), On the Intraday Behavior of Bitcoin",
             "timeframe_hours": BAR_HOURS,
@@ -341,7 +359,9 @@ def run(cache: Path, output: Path) -> dict[str, Any]:
             "whole_sample_statistics_forbidden": True,
         },
         "data": {
-            "source": "checksum-verified Binance Vision spot and USD-M 1m monthly klines",
+            "source": (
+                "checksum-verified Binance Vision spot and USD-M 1m monthly klines"
+            ),
             "symbols": list(SYMBOLS),
             "years": [DEVELOPMENT_YEAR, HOLDOUT_YEAR],
         },
