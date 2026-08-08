@@ -7,7 +7,7 @@ are unchanged. This patch only reduces thousands of HTTP requests to monthly fil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent / "source"
-PATH = ROOT / "run_leadership_scdam_base.py"
+PATH = ROOT / "run_leadership_scdam.py"
 text = PATH.read_text(encoding="utf-8")
 if "candidate-09-monthly-transport-v1" in text:
     raise SystemExit(0)
