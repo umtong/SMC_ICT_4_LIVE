@@ -15,8 +15,9 @@
     "require_continuous_account_path": true,
     "risk_fraction": 0.03
   },
-  "candidate": "candidate-14-session-far-price-discovery",
+  "candidate": "candidate-14-v6-auction-origin-ownership",
   "created_utc": "2026-08-08",
+  "evidence_role": "post-holdout-controlled-development-diagnostic",
   "execution_lock": {
     "effective_maker_rate": "0.0004",
     "effective_taker_rate": "0.0008",
@@ -38,21 +39,25 @@
     "weekly_reset_allowed": false
   },
   "hypothesis": {
-    "alpha": "Candidate 13 SCDAM and Candidate 12 I7 generate distinct causal auction episodes; Candidate 14 admits only preserved four-market SCDAM semantics or the frozen completed-session FAR price-discovery semantic.",
-    "failure_question": "The test is designed to expose regime-state aliasing, loss clustering, opportunity drought, cross-symbol dependence and weekly-reset optimism.",
-    "portfolio": "One GlobalCandidateMutex, one current-NAV 3% planned-loss sizer and one NautilusTrader account across BTCUSDT, ETHUSDT, SOLUSDT and XRPUSDT."
+    "causal_defect": "The detector can seed both rejection and acceptance for one liquidity event, while the preserved ordinary FAR transition checks only rejection_seed. This permits an acceptance-origin or unresolved mixed auction to be silently relabelled by generic reclaim, MSS and displacement.",
+    "single_strategy_change": "Ordinary FAR is eligible only when rejection_seed is true and acceptance_seed is false. A mixed or acceptance-origin event remains non-FAR until a future independent candidate defines and observes an explicit acceptance-failure transition.",
+    "unchanged": "Liquidity detection, pool identity, draw resolution, market-leadership semantics, FAR confirmation geometry, entry, stop, target, costs, current-NAV 3% sizing, session I7 module, global arbitration and NautilusTrader execution/accounting are unchanged.",
+    "interpretation_rule": "The interval was previously inspected as Candidate 14 L1. It is reused only to test whether the categorical transition explains the observed failure mechanism; no result from this branch can establish success."
   },
   "locked_source": {
     "blobs": {
+      "auction_origin_ownership.py": "57cbb49e48fdebc01eb310ea12fc9e039bf972e1",
       "bar_adapter.py": "c2ce386a42956c22039f0bf7490cf9493ab51003",
       "base_config.json": "050b5b9413c22e4fc2ef247cc2b272657ff66f38",
+      "candidate14_v6_runner.py": "46326510ce6eb56c09adff83a241c6fc4a456bf6",
       "evidence_audit.py": "990dd8986246a7dac8d5c619ef930ffd54ba430e",
       "global_allocator.py": "6dcc95a4f02a0613ad7c72ff0b738cee4b640fc4",
       "logic.py": "08ac6c0119c2e83039c864ff3a0aff06d6a75c75",
       "market_leadership.py": "272b1aee7468cbbd6b79a4bc6c8e421e93df6bf0",
       "portfolio_materializer.py": "94e0921c447dca99f17fca15163909f563bfd0b3",
-      "run_leadership_scdam.py": "edab9fc25791d49e564925bbf0d86146460d7ae4",
+      "run_leadership_scdam.py": "74773d038107cb95a51e2c78070291b01e3b94e2",
       "run_leadership_scdam_base.py": "e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f",
+      "run_week.sh": "cc03caa8152ca2b0a242a009f1591c3af572707e",
       "runner_materializer.py": "7455c41ffa88f68e814256e37aa8a01d06af3bcd",
       "semantic_execution.py": "a463710a65b0f85b290bb1424c350f720d394925",
       "semantic_logic.py": "055e64acbb1c414ca80ef385b415827ba2eacc5f",
@@ -60,31 +65,36 @@
       "session_auction_bridge.py": "c1aa6f9379cec6ddc4f65e30f6da93a7c6fd7054",
       "session_auction_i7.py": "4bee42001707b26f89df09ab6080e118afb3a106",
       "session_engine.py": "21180b2397f0ee63c887079764df1ee94e426a03",
-      "session_i7_config.json": "a5183552aa637bea29cbb15bc65530ab38f9b644"
+      "session_i7_config.json": "a5183552aa637bea29cbb15bc65530ab38f9b644",
+      "v6_continuous_aggregate.py": "b0cf2566387e3f3599dabcb936ae904ecc20043d"
     },
-    "origin_branch": "research/candidate-13 + research/candidate-12@036c0e8"
+    "origin_branch": "research/candidate-14@48434c51b3a620be61a15fd2a91cab75c9351087"
   },
-  "research_question": "Does the strategy frozen at dfb180490b141fdafd5b5ac0b52d3dd0b842550d retain after-cost alpha, opportunity density and recoverable path risk when one NautilusTrader account runs continuously for 84 unseen calendar days without weekly NAV, state, order or liquidity-pool resets?",
-  "schema": "candidate-14-frozen-contiguous-84d-v1",
+  "research_question": "When one 84-day NautilusTrader account is replayed unchanged except for exclusive FAR auction-origin ownership, are the mixed-origin losses removed without creating new logic, execution or opportunity failures?",
+  "schema": "candidate-14-v6-development-origin-ownership-v1",
   "selection": {
     "evaluation_days": 84,
     "holdouts": {
       "L1": {
         "end_exclusive": "2026-08-03",
-        "role": "frozen-contiguous-12-week-current-regime",
+        "role": "previously-inspected-development-mechanism-diagnostic",
         "start": "2026-05-11"
       }
     },
-    "method": "Latest complete Monday-start 84-day block ending at least five full days before the 2026-08-08 reservation date. This deterministic recency rule selected 2026-05-11 through 2026-08-03 before any L1 market outcome was downloaded or evaluated. The block does not overlap Candidate 12 W1-W6 or Candidate 14 W10-W14.",
-    "seed": 2026080814,
+    "method": "Controlled replay of the previously inspected Candidate 14 L1 interval. Dates, data, costs, risk, execution and all other strategy rules are unchanged so the one categorical transition can be isolated. This interval is permanently ineligible for a success claim or future holdout use.",
+    "seed": 202608081406,
     "warmup_days": 3
   },
-  "strategy_freeze": {
-    "diagnostic_evidence_commit": "f859896a7c41792617bbc47b585623a5a9e55946",
-    "pre_reservation_branch_head": "fe7171620d448ded3f072b19ca18505003b5ec37",
-    "rule": "Any change to a locked detector, scenario transition, semantic gate, entry, stop, target, cost, risk sizing or global arbitration invalidates L1.",
-    "source_commit": "dfb180490b141fdafd5b5ac0b52d3dd0b842550d",
-    "strategy_files_changed_for_contiguous_test": false
+  "strategy_change_control": {
+    "base_branch_head": "48434c51b3a620be61a15fd2a91cab75c9351087",
+    "claim_allowed": false,
+    "changed_strategy_files": [
+      "auction_origin_ownership.py",
+      "run_leadership_scdam.py"
+    ],
+    "diagnostic_interval_outcomes_previously_inspected": true,
+    "single_change": "ordinary FAR requires exclusive rejection origin",
+    "unchanged_execution_and_risk": true
   },
-  "validation_mode": "frozen_holdout"
+  "validation_mode": "diagnostic"
 }
