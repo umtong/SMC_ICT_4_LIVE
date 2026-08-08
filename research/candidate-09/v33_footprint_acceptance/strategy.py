@@ -197,23 +197,37 @@ class Candidate16Strategy(_Candidate16V1Strategy):
         self._reset_stack()
 
     def on_order_rejected(self, event: Any) -> None:
-        late_flat_child = (
-            self.portfolio.is_flat(self.config.instrument_id)
-            and not self.entry_pending
-            and self.current_scenario_id is None
-        )
-        if late_flat_child:
-            self.diagnostics["candidate33_late_flat_order_rejections"] = int(
-                self.diagnostics["candidate33_late_flat_order_rejections"],
-            ) + 1
+        if self.portfolio.is_flat(self.config.instrument_id):
+            if not self.entry_pending and self.current_scenario_id is None:
+                self.diagnostics["candidate33_late_flat_order_rejections"] = int(
+                    self.diagnostics["candidate33_late_flat_order_rejections"],
+                ) + 1
+                return
+            # A rejected parent while flat is a genuine execution failure.
+            super().on_order_rejected(event)
             return
-        super().on_order_rejected(event)
-        if not self.portfolio.is_flat(self.config.instrument_id):
-            self.diagnostics["candidate33_protective_rejection_fail_closes"] = int(
-                self.diagnostics["candidate33_protective_rejection_fail_closes"],
-            ) + 1
-            self.cancel_all_orders(self.config.instrument_id)
-            self.close_all_positions(self.config.instrument_id)
+
+        # A protective child can become immediately marketable between the
+        # completed signal bar and Nautilus' simulated fill. Preserve the
+        # conservative economic outcome by flattening at market, but do not
+        # misclassify the already-open trade as an unexecuted alpha result.
+        self.diagnostics["candidate33_protective_rejection_fail_closes"] = int(
+            self.diagnostics["candidate33_protective_rejection_fail_closes"],
+        ) + 1
+        ts = int(getattr(event, "ts_event", self.bars[-1]["ts"]))
+        if self.current_scenario_id is not None:
+            self._transition(
+                self.current_scenario_id,
+                "PROTECTIVE_CHILD_REJECTED_FAIL_CLOSE",
+                ts,
+                ts,
+                "EXIT_PENDING",
+                "REJECTED_CHILD_REPLACED_BY_IMMEDIATE_MARKET_FLATTEN",
+                float(self.bars[-1]["close"]),
+                {"event": str(event)},
+            )
+        self.cancel_all_orders(self.config.instrument_id)
+        self.close_all_positions(self.config.instrument_id)
 
 
 __all__ = ["Candidate16Config", "Candidate16Strategy"]
