@@ -1,0 +1,167 @@
+name: candidate-35c-untouched-week3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["research/candidate-35"]
+    paths:
+      - ".github/workflows/candidate-35c-untouched-week3.yml"
+      - "research/candidate-35/evidence/candidate35c-untouched-2026-07-15_2026-07-21-prereg.json"
+
+concurrency:
+  group: candidate-35c-untouched-week3
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-35:research/candidate-29:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/c35c-untouched-week3
+      CACHE: .cache/c35c-untouched-week3
+      WORKSPACE: .cache/c35c-untouched-week3-work
+      PREREG: research/candidate-35/evidence/candidate35c-untouched-2026-07-15_2026-07-21-prereg.json
+      POLICY_COMMIT: fa76f0b78a09d40a44b4bd0b543a9bd1dfdc14ec
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore verified raw-data cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate35c-binance-2026-07-15-2026-07-21-v1
+
+      - name: Verify frozen policy and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$PREREG"
+          git diff --quiet "$POLICY_COMMIT" HEAD -- \
+            research/candidate-35/config.json \
+            research/candidate-35/router.py \
+            research/candidate-35/router_v2.py \
+            research/candidate-35/strategy.py \
+            research/candidate-35/strategy_v2.py \
+            research/candidate-35/run.py \
+            research/candidate-35/launch.py \
+            research/candidate-35/event_lifecycle_patch.py
+          smc4 doctor
+          python -m compileall -q research/candidate-35
+          python -m unittest discover -s research/candidate-35 -p 'test_*.py' -v
+          mkdir -p "$ROOT"
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          prereg = json.loads(Path(os.environ["PREREG"]).read_text())
+          assert prereg["registered_before_data_access"] is True
+          assert prereg["policy_source_commit"] == os.environ["POLICY_COMMIT"]
+          assert prereg["evaluation_start"] == "2026-07-15"
+          assert prereg["evaluation_end"] == "2026-07-21"
+          frozen = {}
+          for name in prereg["frozen_files"]:
+              data = Path(name).read_bytes()
+              frozen[name] = hashlib.sha256(data).hexdigest()
+          record = {
+              "schema": "candidate35c-frozen-policy-manifest-v1",
+              "policy_source_commit": os.environ["POLICY_COMMIT"],
+              "execution_commit": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD"], text=True
+              ).strip(),
+              "evaluation_start": prereg["evaluation_start"],
+              "evaluation_end": prereg["evaluation_end"],
+              "frozen_file_sha256": frozen,
+          }
+          root = Path(os.environ["ROOT"])
+          (root / "frozen_policy_manifest.json").write_text(
+              json.dumps(record, indent=2, sort_keys=True) + "\n"
+          )
+          (root / "preregistration.json").write_text(
+              json.dumps(prereg, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Run untouched seven-day four-asset Nautilus account
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-35/launch.py \
+            --config research/candidate-35/config.json \
+            --start 2026-07-15 \
+            --end 2026-07-21 \
+            --cache "$CACHE" \
+            --workspace "$WORKSPACE" \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify untouched evidence contract
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$ROOT/metrics.json"
+          test -f "$ROOT/frozen_policy_manifest.json"
+          test -f "$ROOT/preregistration.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          x = json.loads((root / "metrics.json").read_text())
+          prereg = json.loads((root / "preregistration.json").read_text())
+          assert x["evaluation_start"] == prereg["evaluation_start"]
+          assert x["evaluation_end"] == prereg["evaluation_end"]
+          assert x["universe"] == ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+          assert x["single_continuous_account"] is True
+          assert x["single_strategy_process"] is True
+          assert x["global_entry_or_position_limit"] == 1
+          assert x["strategy_diagnostics"]["policy_version"] == "candidate-35c"
+          assert x["strategy_diagnostics"]["max_open_positions_observed"] <= 1
+          decision = {
+              "promotion_eligible": bool(
+                  x["trades"] >= prereg["promotion_rule"]["minimum_completed_trades"]
+                  and x["geometric_daily_growth"] >= prereg["promotion_rule"]["minimum_geometric_daily_growth"]
+                  and x["expectancy_usdt"] > 0.0
+                  and x["max_drawdown"] <= prereg["promotion_rule"]["maximum_drawdown"]
+                  and x["gate_checks"]["no_liquidation"]
+                  and x["gate_checks"]["no_global_position_violation"]
+              ),
+              "frequency_eligible": x["trades"] >= prereg["promotion_rule"]["minimum_completed_trades"],
+              "metrics": {
+                  key: x.get(key)
+                  for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth",
+                      "max_drawdown", "trades", "wins", "losses", "win_rate",
+                      "profit_factor", "expectancy_usdt", "gate_pass"
+                  )
+              },
+          }
+          (root / "untouched_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate35c-untouched-week3-${{ github.sha }}
+          path: artifacts/c35c-untouched-week3/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
