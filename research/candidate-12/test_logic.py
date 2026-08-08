@@ -575,7 +575,7 @@ class LogicTests(unittest.TestCase):
             for event in engine.events
         ))
 
-    def test_mid_value_failed_low_acceptance_can_reverse_after_secondary_sweep(
+    def test_mid_value_failed_low_acceptance_requires_re_sweep_and_local_mss(
         self,
     ) -> None:
         y, m, d = self.DAY
@@ -602,12 +602,27 @@ class LogicTests(unittest.TestCase):
             )
         )
         self.assertAlmostEqual(state.low_failure_secondary_sweep or 0.0, 88.5)
+        # Intervening pullback high belongs to the local auction.
+        self.assertIsNone(
+            engine._on_five(
+                bar(ts(y, m, d, 6, 30), 89, 96, 89, 94),
+                True,
+            )
+        )
+        # A deeper re-sweep freezes that intervening high as the MSS level.
+        self.assertIsNone(
+            engine._on_five(
+                bar(ts(y, m, d, 6, 35), 94, 95, 87, 88),
+                True,
+            )
+        )
+        self.assertAlmostEqual(state.low_failure_mss_peak or 0.0, 96.0)
         engine._on_five(
-            bar(ts(y, m, d, 6, 30), 89, 99, 88.8, 98.5),
+            bar(ts(y, m, d, 6, 40), 88, 99, 87.5, 98.5),
             True,
         )
         plan = engine._on_five(
-            bar(ts(y, m, d, 6, 35), 98.5, 100, 96.5, 99),
+            bar(ts(y, m, d, 6, 45), 98.5, 100, 95.5, 99),
             True,
         )
         self.assertIsNotNone(plan)
@@ -617,10 +632,10 @@ class LogicTests(unittest.TestCase):
             ScenarioKind.ASIA_LOW_ACCEPTANCE_FAILURE_REVERSAL,
         )
         self.assertEqual(plan.direction, Direction.LONG)
-        self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
+        self.assertEqual(plan.entry_order, EntryOrder.MARKET)
         self.assertEqual(
             plan.details["route"],
-            "FAILED_LOW_ACCEPTANCE_SECONDARY_SWEEP_BULLISH_MSS_FVG",
+            "FAILED_LOW_ACCEPTANCE_RE_SWEEP_BULLISH_MSS_MARKET",
         )
         self.assertAlmostEqual(plan.target_price, 105.0)
 

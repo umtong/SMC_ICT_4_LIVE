@@ -1,4 +1,4 @@
-"""Causal completed-session auction router for Candidate 12 I16.
+"""Causal completed-session auction router for Candidate 12 I17.
 
 The engine distinguishes economically different interactions with a completed
 Asia or London dealing range instead of forcing one candle pattern onto every
@@ -452,6 +452,7 @@ class SourceState:
     low_failure_acceptance_trough: float | None = None
     low_failure_pullback_peak: float | None = None
     low_failure_secondary_sweep: float | None = None
+    low_failure_mss_peak: float | None = None
     low_failure_scenario_id: str | None = None
 
 
@@ -1269,6 +1270,7 @@ class CausalLiquidityAuctionEngine:
                 bar.high if mid_value_source else None
             )
             state.low_failure_secondary_sweep = None
+            state.low_failure_mss_peak = None
             sid = state.low_acceptance_scenario_id
             if sid is None:
                 sid = self._next_scenario_id(source.label, "LOW-ACCEPTANCE-FAILURE")
@@ -1631,57 +1633,80 @@ class CausalLiquidityAuctionEngine:
                         "LOW_ACCEPTANCE_FAILURE_REVERSAL_TARGET_PRECONSUMED"
                     ] += 1
                 else:
-                    if state.low_failure_secondary_sweep is None:
-                        state.low_failure_pullback_peak = max(
-                            pullback_peak,
-                            bar.high,
-                        )
+                    current_sweep = state.low_failure_secondary_sweep
+                    if current_sweep is None:
                         if (
                             bar.low
                             <= acceptance_trough - self.config.price_increment
                         ):
                             state.low_failure_secondary_sweep = bar.low
+                            state.low_failure_pullback_peak = bar.high
+                            state.low_failure_mss_peak = None
                             self._emit(
                                 scenario_id=reversal_sid,
                                 event_type=(
-                                    "LOW_ACCEPTANCE_FAILURE_SECONDARY_SWEEP"
+                                    "LOW_ACCEPTANCE_FAILURE_FIRST_POST_FAILURE_SWEEP"
                                 ),
                                 event_time_ns=bar.ts_ns,
                                 observed_time_ns=bar.ts_ns,
-                                next_state="WAIT_BULLISH_MSS_FVG",
+                                next_state="WAIT_RE_SWEEP",
                                 reason_code=(
-                                    "SECOND_SELL_SIDE_SWEEP_AFTER_FAILED_ACCEPTANCE"
+                                    "FIRST_SELL_SIDE_SWEEP_AFTER_FAILED_ACCEPTANCE"
                                 ),
                                 reference_price=acceptance_trough,
                                 details={
                                     "source": source.label.value,
                                     "acceptance_trough": acceptance_trough,
-                                    "secondary_sweep": bar.low,
-                                    "frozen_failure_peak": (
-                                        state.low_failure_pullback_peak
-                                    ),
+                                    "first_post_failure_sweep": bar.low,
                                 },
                             )
                         return None
 
-                    state.low_failure_secondary_sweep = min(
-                        state.low_failure_secondary_sweep,
-                        bar.low,
+                    # A deeper re-sweep freezes only the intervening local
+                    # pullback high. The later MSS must break that high, so
+                    # entry, invalidation, and confirmation belong to the new
+                    # auction leg rather than to the original acceptance leg.
+                    if bar.low <= current_sweep - self.config.price_increment:
+                        state.low_failure_mss_peak = pullback_peak
+                        state.low_failure_secondary_sweep = bar.low
+                        state.low_failure_pullback_peak = bar.high
+                        self._emit(
+                            scenario_id=reversal_sid,
+                            event_type="LOW_ACCEPTANCE_FAILURE_RE_SWEEP",
+                            event_time_ns=bar.ts_ns,
+                            observed_time_ns=bar.ts_ns,
+                            next_state="WAIT_LOCAL_BULLISH_MSS_FVG",
+                            reason_code=(
+                                "DEEPER_SELL_SIDE_RE_SWEEP_FROZE_INTERVENING_HIGH"
+                            ),
+                            reference_price=current_sweep,
+                            details={
+                                "source": source.label.value,
+                                "prior_sweep": current_sweep,
+                                "deeper_re_sweep": bar.low,
+                                "frozen_local_mss_peak": pullback_peak,
+                            },
+                        )
+                        return None
+
+                    state.low_failure_pullback_peak = max(
+                        pullback_peak,
+                        bar.high,
                     )
                     fresh = self._fresh_bull_fvg_general(bar)
                     displacement = self._bars[-1] if self._bars else None
-                    frozen_peak = state.low_failure_pullback_peak
+                    local_mss_peak = state.low_failure_mss_peak
                     confirmed = (
                         fresh is not None
                         and displacement is not None
-                        and frozen_peak is not None
+                        and local_mss_peak is not None
                         and displacement.close > source.low
-                        and displacement.close > frozen_peak
+                        and displacement.close > local_mss_peak
                         and bar.close > source.low
                     )
                     if confirmed:
                         assert fresh is not None
-                        assert frozen_peak is not None
+                        assert local_mss_peak is not None
                         sweep_extreme = state.low_failure_secondary_sweep
                         assert sweep_extreme is not None
                         scenario = (
@@ -1693,7 +1718,58 @@ class CausalLiquidityAuctionEngine:
                             sweep_extreme
                             - self.config.fvg_stop_buffer_atr * atr
                         )
-                        plan = self._costed_plan(
+                        common_details = {
+                            "source": source.label.value,
+                            "session_high": source.high,
+                            "session_low": source.low,
+                            "session_width": source.width,
+                            "source_close_location": source.close_location,
+                            "acceptance_trough": acceptance_trough,
+                            "local_mss_peak": local_mss_peak,
+                            "secondary_sweep": sweep_extreme,
+                            "fresh_fvg_lower": fresh.lower,
+                            "fresh_fvg_upper": fresh.upper,
+                            "fresh_fvg_formed_ts_ns": fresh.formed_ts_ns,
+                            "structural_invalidation": structural_stop,
+                            "decision_body_atr": fresh.displacement_body_atr,
+                            "decision_close_location": (
+                                fresh.displacement_close_location
+                            ),
+                            "target_semantics": (
+                                "OPPOSITE_COMPLETED_SESSION_BOUNDARY"
+                            ),
+                        }
+                        market_plan = self._costed_plan(
+                            scenario_id=reversal_sid,
+                            scenario=scenario,
+                            direction=Direction.LONG,
+                            entry_order=EntryOrder.MARKET,
+                            observed_ts_ns=bar.ts_ns,
+                            bar=bar,
+                            atr=atr,
+                            entry_raw=bar.close,
+                            stop_raw=structural_stop,
+                            target_raw=source.high,
+                            expire_ts_ns=None,
+                            details={
+                                **common_details,
+                                "route": (
+                                    "FAILED_LOW_ACCEPTANCE_RE_SWEEP_"
+                                    "BULLISH_MSS_MARKET"
+                                ),
+                                "execution_semantics": (
+                                    "COMPLETED_LOCAL_MSS_CLOSE_RETAINED_COSTED_R"
+                                ),
+                            },
+                        )
+                        if market_plan is not None:
+                            state.low_failure_reversal_watch = False
+                            self.scenario_counts[scenario.value] += 1
+                            state.low_plan_emitted = True
+                            state.trade_plan_emitted = True
+                            return self._emit_plan(market_plan, allow_entry)
+
+                        limit_plan = self._costed_plan(
                             scenario_id=reversal_sid,
                             scenario=scenario,
                             direction=Direction.LONG,
@@ -1711,35 +1787,19 @@ class CausalLiquidityAuctionEngine:
                                 * NS_MINUTE
                             ),
                             details={
-                                "source": source.label.value,
+                                **common_details,
                                 "route": (
-                                    "FAILED_LOW_ACCEPTANCE_SECONDARY_SWEEP_"
-                                    "BULLISH_MSS_FVG"
+                                    "FAILED_LOW_ACCEPTANCE_RE_SWEEP_"
+                                    "BULLISH_MSS_LIMIT"
                                 ),
-                                "session_high": source.high,
-                                "session_low": source.low,
-                                "session_width": source.width,
-                                "source_close_location": source.close_location,
-                                "acceptance_trough": acceptance_trough,
-                                "failure_pullback_peak": frozen_peak,
-                                "secondary_sweep": sweep_extreme,
-                                "fresh_fvg_lower": fresh.lower,
-                                "fresh_fvg_upper": fresh.upper,
-                                "fresh_fvg_formed_ts_ns": fresh.formed_ts_ns,
-                                "structural_invalidation": structural_stop,
-                                "decision_body_atr": (
-                                    fresh.displacement_body_atr
-                                ),
-                                "decision_close_location": (
-                                    fresh.displacement_close_location
-                                ),
-                                "target_semantics": (
-                                    "OPPOSITE_COMPLETED_SESSION_BOUNDARY"
+                                "execution_semantics": (
+                                    "MARKET_CLOSE_FAILED_COSTED_R_THEN_"
+                                    "ONE_BAR_PROTECTED_FVG_LIMIT"
                                 ),
                             },
                         )
                         state.low_failure_reversal_watch = False
-                        if plan is None:
+                        if limit_plan is None:
                             self.skips[
                                 "LOW_ACCEPTANCE_FAILURE_REVERSAL_COSTED_PLAN_REJECTED"
                             ] += 1
@@ -1747,7 +1807,7 @@ class CausalLiquidityAuctionEngine:
                         self.scenario_counts[scenario.value] += 1
                         state.low_plan_emitted = True
                         state.trade_plan_emitted = True
-                        return self._emit_plan(plan, allow_entry)
+                        return self._emit_plan(limit_plan, allow_entry)
                     return None
 
             if (
