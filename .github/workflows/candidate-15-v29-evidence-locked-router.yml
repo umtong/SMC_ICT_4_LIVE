@@ -1,0 +1,113 @@
+name: Candidate 15 V29 evidence-locked family router
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - "research/candidate-15/protocol-v29-evidence-locked-router.json"
+      - "research/candidate-15/diagnose_v29_evidence_locked_router.py"
+      - ".github/workflows/candidate-15-v29-evidence-locked-router.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v29-evidence-locked-router-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 1
+
+      - name: Verify environment and evidence locks
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile research/candidate-15/diagnose_v29_evidence_locked_router.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          protocol = json.loads(
+              Path('research/candidate-15/protocol-v29-evidence-locked-router.json').read_text()
+          )
+          assert protocol['schema'] == 'candidate-15-v29-evidence-locked-router-v1'
+          assert protocol['routing']['global_position_limit'] == 1
+          assert protocol['locked_family_evidence']['V26_OI_BUILDUP']['git_blob'] == \
+              '4835986fb00398e0de810abd2de61dc3129423f6'
+          assert protocol['locked_family_evidence']['V28_BREADTH_TREND']['git_blob'] == \
+              'df2495943b1a51d2db7437be85230f19d5745e3f'
+          PY
+
+      - name: Merge frozen family proposal streams
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-15/diagnose_v29_evidence_locked_router.py \
+            --protocol research/candidate-15/protocol-v29-evidence-locked-router.json \
+            --output research/candidate-15/v29/evidence_locked_router/results
+
+      - name: Verify global chronology
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          root = Path('research/candidate-15/v29/evidence_locked_router/results')
+          selected = pd.read_csv(root / 'selected_integrated_trades.csv')
+          if len(selected.index):
+              opened = pd.to_datetime(selected['entry_ts'], utc=True)
+              closed = pd.to_datetime(selected['exit_ts'], utc=True)
+              assert (closed > opened).all()
+              if len(selected.index) > 1:
+                  assert (
+                      opened.iloc[1:].reset_index(drop=True)
+                      >= closed.iloc[:-1].reset_index(drop=True)
+                  ).all()
+          PY
+
+      - name: Persist compact evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          result_dir="research/candidate-15/v29/evidence_locked_router/results"
+          cp "$result_dir/RESULT.md" research/candidate-15/V29_EVIDENCE_LOCKED_ROUTER_RESULT.md
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-v29-bot
+          git config user.email candidate-15-v29-bot@users.noreply.github.com
+          git add \
+            research/candidate-15/V29_EVIDENCE_LOCKED_ROUTER_RESULT.md \
+            research/candidate-15/v29/evidence_locked_router/results
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15 v29: persist evidence-locked router result [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+
+      - name: Upload compact evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v29-evidence-locked-router-${{ github.run_id }}
+          path: |
+            research/candidate-15/V29_EVIDENCE_LOCKED_ROUTER_RESULT.md
+            research/candidate-15/v29/evidence_locked_router/results
+          if-no-files-found: warn
+          retention-days: 30
