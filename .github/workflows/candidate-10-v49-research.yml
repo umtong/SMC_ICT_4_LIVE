@@ -1,0 +1,216 @@
+name: candidate-10-v49-cross-market-transfer-state
+
+on:
+  push:
+    branches:
+      - research/candidate-10
+    paths:
+      - research/candidate-10/c10_v49_*.py
+      - research/candidate-10/test_c10_v49_transfer_state.py
+      - .github/workflows/candidate-10-v49-research.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-10-v49-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RESEARCH_IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+  CANDIDATE11_COMMIT: f10517d4ccd2a1a8fbd4d31091cbe0e7c3655327
+
+jobs:
+  controls:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - period_id: CONTROL_FAST_REVERSALS
+            start: "2022-07-09"
+            end_exclusive: "2022-07-16"
+            evidence_class: controlled_transfer_attribution
+          - period_id: CONTROL_WINNER
+            start: "2023-04-11"
+            end_exclusive: "2023-04-18"
+            evidence_class: controlled_transfer_attribution
+          - period_id: CONTROL_PIVOT_AVAILABLE
+            start: "2023-06-27"
+            end_exclusive: "2023-07-04"
+            evidence_class: controlled_transfer_attribution
+          - period_id: CONTROL_DENSE_HOLDOUT
+            start: "2024-03-18"
+            end_exclusive: "2024-03-25"
+            evidence_class: controlled_transfer_attribution
+          - period_id: CONTROL_IMMEDIATE_FAILURES
+            start: "2024-10-14"
+            end_exclusive: "2024-10-21"
+            evidence_class: controlled_transfer_attribution
+          - period_id: CONTROL_NEAR_EDGE_WINNER
+            start: "2025-05-19"
+            end_exclusive: "2025-05-26"
+            evidence_class: controlled_transfer_attribution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout candidate-10
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen Candidate 11 source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+
+      - name: Run controlled transfer-state attribution
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ROOT="artifacts/candidate-10-v49/${{ matrix.period_id }}"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v49:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v49
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v49
+              cp /workspace/research/candidate-10/c10_v*.py /tmp/candidate11-v49/
+              cp /workspace/research/candidate-10/test_c10_v*.py /tmp/candidate11-v49/
+              smc4 doctor
+              python /tmp/candidate11-v49/c10_v49_patch.py \
+                /tmp/candidate11-v49/run_leadership_scdam.py
+              python -m py_compile \
+                /tmp/candidate11-v49/c10_v*.py \
+                /tmp/candidate11-v49/run_leadership_scdam.py
+              python -m unittest discover \
+                -s /tmp/candidate11-v49 \
+                -p "test_c10_v*.py" \
+                -v
+
+              BASE="/workspace/artifacts/candidate-10-v49/${{ matrix.period_id }}"
+              python /tmp/candidate11-v49/c10_v49_run.py \
+                --candidate11-dir /tmp/candidate11-v49 \
+                --start "${{ matrix.start }}" \
+                --end-exclusive "${{ matrix.end_exclusive }}" \
+                --variant event-leader-baseline \
+                --evidence-class "${{ matrix.evidence_class }}" \
+                --output "${BASE}/event-leader-baseline"
+
+              mkdir -p "${BASE}/event-transfer-state/data"
+              cp -al "${BASE}/event-leader-baseline/data/." \
+                "${BASE}/event-transfer-state/data/"
+              python /tmp/candidate11-v49/c10_v49_run.py \
+                --candidate11-dir /tmp/candidate11-v49 \
+                --start "${{ matrix.start }}" \
+                --end-exclusive "${{ matrix.end_exclusive }}" \
+                --variant event-transfer-state \
+                --evidence-class "${{ matrix.evidence_class }}" \
+                --output "${BASE}/event-transfer-state"
+            '
+
+      - name: Upload controlled evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v49-${{ matrix.period_id }}-${{ github.sha }}
+          path: artifacts/candidate-10-v49/${{ matrix.period_id }}
+          if-no-files-found: warn
+          retention-days: 14
+
+  continuous-2026-h1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout candidate-10
+        uses: actions/checkout@v4
+
+      - name: Checkout frozen Candidate 11 source
+        uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: ${{ env.CANDIDATE11_COMMIT }}
+          path: .candidate11
+          fetch-depth: 1
+
+      - name: Run continuous 2026 H1 account
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ROOT="artifacts/candidate-10-v49/CONTINUOUS_2026_H1"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}"
+          chmod -R a+rwx artifacts
+          printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+          docker pull "${RESEARCH_IMAGE}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            -e SMC4_PREBUILT_ENV=1 \
+            -e PYTHONPATH=/tmp/candidate11-v49:/workspace/src \
+            "${RESEARCH_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              rm -rf /tmp/candidate11-v49
+              cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v49
+              cp /workspace/research/candidate-10/c10_v*.py /tmp/candidate11-v49/
+              cp /workspace/research/candidate-10/test_c10_v*.py /tmp/candidate11-v49/
+              smc4 doctor
+              python /tmp/candidate11-v49/c10_v49_patch.py \
+                /tmp/candidate11-v49/run_leadership_scdam.py
+              python -m py_compile \
+                /tmp/candidate11-v49/c10_v*.py \
+                /tmp/candidate11-v49/run_leadership_scdam.py
+              python -m unittest discover \
+                -s /tmp/candidate11-v49 \
+                -p "test_c10_v*.py" \
+                -v
+
+              BASE="/workspace/artifacts/candidate-10-v49/CONTINUOUS_2026_H1"
+              python /tmp/candidate11-v49/c10_v49_run.py \
+                --candidate11-dir /tmp/candidate11-v49 \
+                --start "2026-01-05" \
+                --end-exclusive "2026-07-01" \
+                --variant event-leader-baseline \
+                --evidence-class untouched_continuous_temporal_holdout \
+                --output "${BASE}/event-leader-baseline"
+
+              mkdir -p "${BASE}/event-transfer-state/data"
+              cp -al "${BASE}/event-leader-baseline/data/." \
+                "${BASE}/event-transfer-state/data/"
+              python /tmp/candidate11-v49/c10_v49_run.py \
+                --candidate11-dir /tmp/candidate11-v49 \
+                --start "2026-01-05" \
+                --end-exclusive "2026-07-01" \
+                --variant event-transfer-state \
+                --evidence-class untouched_continuous_temporal_holdout \
+                --output "${BASE}/event-transfer-state"
+            '
+
+      - name: Upload continuous evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-10-v49-CONTINUOUS_2026_H1-${{ github.sha }}
+          path: artifacts/candidate-10-v49/CONTINUOUS_2026_H1
+          if-no-files-found: warn
+          retention-days: 14
