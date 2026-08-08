@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from datetime import date
+from pathlib import Path
+import tempfile
 import unittest
 
 import pandas as pd
 
 from positioning_contract import _positioning_features
+from positioning_contract import _read_metrics
 
 
 class PositioningContractTest(unittest.TestCase):
@@ -49,6 +53,38 @@ class PositioningContractTest(unittest.TestCase):
         combined = pd.concat([frame, duplicate], ignore_index=True)
         with self.assertRaisesRegex(RuntimeError, "conflicting combined metrics"):
             _positioning_features(combined)
+
+    def test_archive_day_owns_create_time_and_excludes_adjacent_spill(self) -> None:
+        rows = pd.DataFrame(
+            {
+                "create_time": [
+                    "2024-04-07 23:55:00+00:00",
+                    "2024-04-08 00:00:00+00:00",
+                ],
+                "symbol": ["BTCUSDT", "BTCUSDT"],
+                "sum_open_interest": [100.0, 999.0],
+                "sum_open_interest_value": [1000.0, 9990.0],
+                "count_toptrader_long_short_ratio": [1.0, 9.0],
+                "sum_toptrader_long_short_ratio": [1.0, 9.0],
+                "count_long_short_ratio": [1.0, 9.0],
+                "sum_taker_long_short_vol_ratio": [1.0, 9.0],
+            },
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "BTCUSDT-metrics-2024-04-07.zip"
+            rows.to_csv(
+                path,
+                index=False,
+                compression={"method": "zip", "archive_name": "metrics.csv"},
+            )
+            result = _read_metrics(path, archive_day=date(2024, 4, 7))
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(float(result.iloc[0]["sum_open_interest"]), 100.0)
+        self.assertEqual(
+            result.iloc[0]["metrics_observed_time"],
+            pd.Timestamp("2024-04-08 00:00:00+00:00"),
+        )
 
 
 if __name__ == "__main__":
