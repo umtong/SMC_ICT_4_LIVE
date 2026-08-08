@@ -67,7 +67,9 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
         "followed by a strictly later microstructure and aggressor-flow reversal"
     )
     result["reused_engine"] = "NautilusTrader BacktestNode"
-    result["reused_execution_clock"] = "Candidate 21 actual aggTrade latency clock"
+    result["reused_execution_clock"] = (
+        "volume-preserving actual USD-M aggTrade windows from 1s through 16s"
+    )
     result["reused_accounting"] = "Candidate 05 continuous NAV"
     write_json_atomic(args.output.resolve() / "metrics.json", result)
     write_json_atomic(
@@ -88,11 +90,17 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
                 "strictly later opposite microstructure break plus perpetual flow reversal"
             ),
             "entry": (
-                "native Nautilus MARKET-IOC bracket; quantity and net-R computed at "
-                "volatility-aware adverse fill budget"
+                "native Nautilus marketable LIMIT-GTD bracket at a volatility-aware "
+                "adverse-fill price, accumulating recorded opposite-side aggTrade volume "
+                "for at most fifteen seconds"
             ),
             "entry_integrity": (
-                "actual fill worse than the adverse fill budget invalidates the run"
+                "fill fraction below 95%, fill beyond the adverse price limit, future data, "
+                "order rejection, liquidation, or multiple concurrent intents invalidates the run"
+            ),
+            "execution_data": (
+                "all actual futures aggTrades from 1.000s inclusive to 16.000s exclusive "
+                "after every minute boundary; source price and quantity unchanged"
             ),
             "risk_fraction": 0.03,
             "continuous_nav": True,
