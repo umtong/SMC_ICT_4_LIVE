@@ -189,7 +189,7 @@ class ConfirmedAcceptanceFailureTests(unittest.TestCase):
         self.assertEqual(event[1], "ACCEPTANCE_COMPLETION_OBSERVED")
         self.assertEqual(event[4], "OBSERVE")
         self.assertEqual(event[5], "OBSERVE")
-        self.assertFalse(event[-1]["continuation_order_allowed"])
+        self.assertFalse(event[-2]["continuation_order_allowed"])
 
     def test_failure_requires_completion_then_later_initiative(self) -> None:
         engine = DummyEngine()
