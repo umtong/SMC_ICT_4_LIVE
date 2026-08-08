@@ -23,6 +23,14 @@ expected = (HERE / "strategy.py").resolve()
 if resolved != expected:
     raise RuntimeError(f"Candidate 35 strategy collision: {resolved} != {expected}")
 
+policy_module = importlib.import_module("strategy_v2")
+policy_resolved = Path(policy_module.__file__).resolve()
+policy_expected = (HERE / "strategy_v2.py").resolve()
+if policy_resolved != policy_expected:
+    raise RuntimeError(
+        f"Candidate 35b policy collision: {policy_resolved} != {policy_expected}",
+    )
+
 import event_lifecycle_patch  # noqa: F401,E402 -- installs corrected callback
 
 spec = importlib.util.spec_from_file_location("candidate35_direct_runner", HERE / "run.py")
