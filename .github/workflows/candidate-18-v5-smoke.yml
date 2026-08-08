@@ -173,9 +173,9 @@ jobs:
                   row.get("type") == "LIMIT" and row.get("time_in_force") == "IOC"
                   for row in entries
               ),
-              "last_price_emulated_stops_exist": bool(stops) and all(
-                  row.get("type") == "STOP_MARKET"
-                  and row.get("emulation_trigger") == "LAST_PRICE"
+              "last_price_emulated_stops_released": bool(stops) and all(
+                  row.get("type") == "MARKET"
+                  and row.get("is_reduce_only") == "True"
                   for row in stops
               ),
               "targets_exist": bool(targets),
@@ -190,6 +190,8 @@ jobs:
               "target_capacity_covers_fills": target_capacity + 1e-8 >= entry_fill_qty,
               "v5_stop_path_exercised": int(diag.get("candidate18_v5_trade_tick_stop_batches", 0)) > 0,
               "no_protective_rejection": int(diag.get("candidate18_v4_protective_rejections", 0)) == 0,
+              "no_crossed_stop_rearm": int(diag.get("candidate18_v4_crossed_stop_fail_closes", 0)) == 0,
+              "no_late_flatten_rejection": int(diag.get("candidate16_v2_late_exit_rejections", 0)) == 0,
               "no_order_rejections": int(diag.get("order_rejections", 0)) == 0,
               "three_percent_planned_risk": not malformed_risk and max(risks, default=0.0) <= 0.0300000001,
               "realized_loss_contained": max_realized_loss <= 0.031,
@@ -213,6 +215,17 @@ jobs:
               "metrics": metrics,
               "diagnostics": diag,
           }
+
+          def json_safe(value):
+              if isinstance(value, float) and not math.isfinite(value):
+                  return None
+              if isinstance(value, dict):
+                  return {key: json_safe(item) for key, item in value.items()}
+              if isinstance(value, list):
+                  return [json_safe(item) for item in value]
+              return value
+
+          decision = json_safe(decision)
           (root / "v5_smoke_decision.json").write_text(
               json.dumps(decision, indent=2, sort_keys=True, allow_nan=False) + "\n"
           )
