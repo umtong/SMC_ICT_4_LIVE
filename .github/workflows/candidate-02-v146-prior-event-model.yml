@@ -1,0 +1,222 @@
+name: candidate-02-v146-prior-event-model
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths: ["research/candidate-02/v146_trigger.json"]
+
+permissions: {contents: write, packages: read, actions: read}
+concurrency: {group: candidate-02-v146-prior-event-model, cancel-in-progress: false}
+
+jobs:
+  v146-family:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", fetch-depth: 0}
+
+      - name: Verify engine and frozen prior-event model
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v142_dual_auction_core.py \
+            research/candidate-02/v146_prior_event_model_core.py \
+            research/candidate-02/v146_nt_backtest.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          one=json.loads(Path('research/candidate-02/v107_week1_config.json').read_text())
+          two=json.loads(Path('research/candidate-02/v107_week2_config.json').read_text())
+          assert one['scenario']==two['scenario'] and one['costs']==two['costs'] and one['risk']==two['risk']
+          assert float(one['risk']['risk_fraction'])==0.03
+          assert one['risk']['maximum_notional_cap'] is None
+          assert one['risk']['score_risk_multiplier'] is None
+          PY
+
+      - name: Download immutable causal feature matrix for both weeks
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e
+          path: inputs/v146-base
+          github-token: "${{ github.token }}"
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31036754667"
+
+      - name: Materialize strictly bounded historical bars
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf inputs/v146-week1 inputs/v146-week2
+          cp -a inputs/v146-base inputs/v146-week1
+          cp -a inputs/v146-base inputs/v146-week2
+          rm -rf inputs/v146-week1/.cache inputs/v146-week2/.cache
+          mkdir -p inputs/v146-week1/.cache/candidate-02/v146-history/binance_1m
+          mkdir -p inputs/v146-week2/.cache/candidate-02/v146-history/binance_1m
+          mkdir -p /tmp/v146
+          python - <<'PY'
+          from datetime import date,timedelta
+          from pathlib import Path
+          commands=[]
+          base='https://data.binance.vision/data/futures/um'
+          roots={
+              'week1':Path('inputs/v146-week1/.cache/candidate-02/v146-history/binance_1m'),
+              'week2':Path('inputs/v146-week2/.cache/candidate-02/v146-history/binance_1m'),
+          }
+          for month in ('2024-09','2024-10','2024-11','2024-12','2025-01','2025-02'):
+              name=f'BTCUSDT-1m-{month}.zip'
+              url=f'{base}/monthly/klines/BTCUSDT/1m/{name}'
+              commands.append((url,roots['week1']/name))
+          day=date(2025,3,1)
+          while day <= date(2025,3,10):
+              name=f'BTCUSDT-1m-{day.isoformat()}.zip'
+              commands.append((f'{base}/daily/klines/BTCUSDT/1m/{name}',roots['week1']/name))
+              day += timedelta(days=1)
+          for month in ('2024-09','2024-10','2024-11'):
+              name=f'BTCUSDT-1m-{month}.zip'
+              commands.append((f'{base}/monthly/klines/BTCUSDT/1m/{name}',roots['week2']/name))
+          day=date(2024,12,1)
+          while day <= date(2025,1,6):
+              name=f'BTCUSDT-1m-{day.isoformat()}.zip'
+              commands.append((f'{base}/daily/klines/BTCUSDT/1m/{name}',roots['week2']/name))
+              day += timedelta(days=1)
+          lines=[f"{url}\t{path}" for url,path in commands]
+          Path('/tmp/v146/downloads.tsv').write_text('\n'.join(lines)+'\n')
+          PY
+          cat /tmp/v146/downloads.tsv | xargs -P 8 -n 2 bash -c \
+            'curl --fail --location --retry 5 --retry-delay 2 "$0" -o "$1"'
+          test "$(find inputs/v146-week1/.cache/candidate-02/v146-history/binance_1m -name '*.zip' | wc -l)" -eq 16
+          test "$(find inputs/v146-week2/.cache/candidate-02/v146-history/binance_1m -name '*.zip' | wc -l)" -eq 40
+
+      - name: Materialize adjacent frozen probability gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/v146-config
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for week in ('week1','week2'):
+              base=json.loads(Path(f'research/candidate-02/v107_{week}_config.json').read_text())
+              for threshold in (0.55,0.60,0.65):
+                  obj=json.loads(json.dumps(base))
+                  scenario=obj['scenario']
+                  scenario.update({
+                      'volatility_quantile':0.55,
+                      'target_extension':0.0,
+                      'minimum_cost_after_rr':0.65,
+                      'maximum_cost_after_rr':4.0,
+                      'maximum_holding_minutes':60,
+                      'decision_window_minutes':15,
+                      'activation_delay_minutes':1,
+                      'resolution_stop_buffer_atr':0.15,
+                      'continuation_extension':1.0,
+                      'model_history_days':120,
+                      'model_min_training_samples':60,
+                      'model_probability_threshold':threshold,
+                      'model_l2':0.50,
+                      'model_iterations':500,
+                      'model_purge_minutes':60,
+                  })
+                  tag=int(round(threshold*100))
+                  obj['candidate']=f'candidate-02-v146-prior-model-p{tag}'
+                  Path(f'/tmp/v146-config/{week}-p{tag}.json').write_text(
+                      json.dumps(obj,indent=2,sort_keys=True)+'\n'
+                  )
+          PY
+
+      - name: Run six NautilusTrader frozen-model screens
+        shell: bash
+        run: |
+          set -euo pipefail
+          for threshold in 55 60 65; do
+            for week in week1 week2; do
+              out="artifacts/candidate-02-v146/p${threshold}/${week}"
+              mkdir -p "$out"
+              set +e
+              python research/candidate-02/v146_nt_backtest.py \
+                --config "/tmp/v146-config/${week}-p${threshold}.json" \
+                --input-root "inputs/v146-${week}" \
+                --output "$out" \
+                | tee "artifacts-v146-p${threshold}-${week}.log"
+              status=${PIPESTATUS[0]}
+              set -e
+              echo "$status" > "$out/validation_exit_code.txt"
+              if [[ "$status" != 0 && "$status" != 2 ]]; then exit "$status"; fi
+            done
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out={
+              'candidate':'candidate-02-v146-prior-event-success-model',
+              'engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+              'risk_fraction':0.03,
+              'model_frozen_before_each_evaluation_week':True,
+              'historical_label_horizon_purged':True,
+              'single_variable':'frozen prior-event success probability gate',
+              'variants':{},
+          }
+          for threshold in (55,60,65):
+              out['variants'][str(threshold)]={
+                  week:json.loads(Path(f'artifacts/candidate-02-v146/p{threshold}/{week}/metrics.json').read_text())
+                  for week in ('week1','week2')
+              }
+          passes={key:all(metric['target_met'] for metric in weeks.values()) for key,weeks in out['variants'].items()}
+          out['variant_both_week_pass']=passes
+          out['plateau_pass']=passes['60'] and (passes['55'] or passes['65'])
+          out['status']='READY_FOR_PROSPECTIVE_WEEK' if out['plateau_pass'] else 'DEVELOPMENT_REJECT'
+          Path('artifacts-v146-family-decision.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({
+              'status':out['status'],
+              'passes':passes,
+              'metrics':{
+                  variant:{week:{key:metric.get(key) for key in (
+                      'trades','trades_per_day','win_rate','profit_factor_after_cost',
+                      'geometric_daily_growth_after_cost','maximum_mark_to_market_drawdown','target_met')}
+                           for week,metric in weeks.items()}
+                  for variant,weeks in out['variants'].items()
+              },
+          },indent=2,sort_keys=True))
+          PY
+
+      - name: Commit compact frozen-model evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf compact-v146
+          mkdir compact-v146
+          cp -f artifacts-v146-*.json compact-v146/ 2>/dev/null || true
+          cp -f artifacts-v146-*.log compact-v146/ 2>/dev/null || true
+          cp -a artifacts/candidate-02-v146 compact-v146/ 2>/dev/null || true
+          git fetch origin research/candidate-02
+          if test "$(git rev-parse origin/research/candidate-02)" = "$GITHUB_SHA" \
+             && test -f artifacts-v146-family-decision.json; then
+            destination="research/candidate-02/results/v146_family/$GITHUB_SHA"
+            rm -rf "$destination"
+            mkdir -p "$destination"
+            cp -a compact-v146/. "$destination/"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$destination"
+            git commit -m "research(candidate-02): record v146 prior-model evidence"
+            git push origin HEAD:research/candidate-02
+          fi
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: "candidate-02-v146-family-${{ github.sha }}", path: compact-v146, if-no-files-found: warn, retention-days: 30, compression-level: 9}
