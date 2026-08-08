@@ -4,7 +4,9 @@ import ast
 from pathlib import Path
 import unittest
 
+import features
 from global_entry_slot_v4 import FINAL_SHARED_ACCOUNT_ENTRY_COORDINATOR
+import shared_account_backtest_v2 as shared_runner
 from shared_account_strategy_variants_v2 import final_shared_strategy_class
 from shared_account_strategy_variants_v2 import final_shared_strategy_class_name
 from shared_account_strategy_variants_v2 import final_shared_strategy_path
@@ -16,6 +18,7 @@ from strategy_v46_no_post_retrace_breakaway import NoPostRetraceBreakawayStrateg
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "strategy_global_slot_wrappers_v7.py"
+SHARED_RUNNER_SOURCE = ROOT / "shared_account_backtest_v2.py"
 WINNER = "strategy_v46_no_post_retrace_breakaway:NoPostRetraceBreakawayStrategy"
 SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
 
@@ -53,6 +56,27 @@ class SharedAccountV46ContractTests(unittest.TestCase):
                 final_shared_strategy_path(WINNER, symbol),
                 f"shared_account_strategy_variants_v2:{cls.__name__}",
             )
+
+    def test_shared_runner_installs_basis_before_capturing_feature_loader(self) -> None:
+        tree = ast.parse(SHARED_RUNNER_SOURCE.read_text(encoding="utf-8"))
+        install_line = next(
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "install_basis_contract"
+        )
+        base_import_line = next(
+            node.lineno
+            for node in tree.body
+            if isinstance(node, ast.Import)
+            and any(alias.name == "shared_account_backtest" for alias in node.names)
+        )
+        self.assertLess(install_line, base_import_line)
+        self.assertTrue(
+            getattr(features.load_range, "_candidate05_basis_contract", False),
+        )
+        self.assertIs(shared_runner._base.load_range, features.load_range)
 
     def test_wrapper_contains_no_execution_or_risk_reimplementation(self) -> None:
         text = SOURCE.read_text(encoding="utf-8")
