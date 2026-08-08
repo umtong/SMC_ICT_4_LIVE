@@ -1,0 +1,103 @@
+name: candidate-05-loop-end-gate
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/loop_results/final_untouched.json"
+      - "research/candidate-05/loop_results/final_with_v59.json"
+      - "research/candidate-05/loop_results/multi_asset_final.json"
+      - "research/candidate-05/loop_results/authoritative_multi_asset.json"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-loop-end-gate
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+          fetch-depth: 0
+      - name: Evaluate only authoritative untouched target contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          directory=Path('research/candidate-05/loop_results')
+          names=[
+              'final_untouched.json',
+              'final_with_v59.json',
+              'multi_asset_final.json',
+              'authoritative_multi_asset.json',
+          ]
+          results={}
+          winners=[]
+          for name in names:
+              path=directory/name
+              if not path.exists():
+                  continue
+              value=json.loads(path.read_text())
+              results[name]=value
+              classification=str(value.get('classification',''))
+              if classification.startswith('PROJECT_TARGET_REACHED') and bool(value.get('target_reached')):
+                  winners.append((name,value))
+          state={
+              'schema':'candidate-05-loop-end-gate-v1',
+              'evaluated_at':datetime.now(timezone.utc).isoformat(),
+              'complete':bool(winners),
+              'available_results':sorted(results),
+              'classifications':{name:value.get('classification') for name,value in results.items()},
+              'target_contract':{
+                  'minimum_geometric_daily_growth':0.01,
+                  'minimum_trades':30,
+                  'execution_integrity_required':True,
+                  'untouched_continuous_evaluation_required':True,
+              },
+          }
+          if winners:
+              def growth(item):
+                  value=item[1]
+                  for key in ('v67_shared_account','v66_shared_account','v61','v60'):
+                      if isinstance(value.get(key),dict):
+                          return float(value[key].get('geometric_daily_growth',0.0))
+                  return 0.0
+              winner=max(winners,key=growth)
+              state['winner_file']=winner[0]
+              state['winner']=winner[1]
+              (directory/'loop_complete.json').write_text(json.dumps(state,indent=2,sort_keys=True,allow_nan=True)+'\n')
+              incomplete=directory/'loop_state.json'
+              if incomplete.exists(): incomplete.unlink()
+          else:
+              state['next_action']='CONTINUE_CAUSAL_FAMILY_RESEARCH_AND_UNTOUCHED_VALIDATION'
+              (directory/'loop_state.json').write_text(json.dumps(state,indent=2,sort_keys=True,allow_nan=True)+'\n')
+              complete=directory/'loop_complete.json'
+              if complete.exists(): complete.unlink()
+          print(json.dumps(state,indent=2,sort_keys=True,allow_nan=True))
+          PY
+      - name: Commit loop gate state
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- research/candidate-05/loop_results/loop_*.json; then exit 0; fi
+          git config user.name "candidate-05-loop-bot"
+          git config user.email "candidate-05-loop-bot@users.noreply.github.com"
+          git add -A research/candidate-05/loop_results/loop_*.json
+          git commit -m "candidate-05: update authoritative loop completion gate"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            git pull --rebase origin research/candidate-05
+            sleep $((attempt*2))
+          done
+          exit 1
