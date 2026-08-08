@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent / "source"
 PATH = ROOT / "run_leadership_scdam.py"
 text = PATH.read_text(encoding="utf-8")
-if "candidate-09-monthly-transport-v1" in text:
+if "candidate-09-monthly-transport-v2" in text:
     raise SystemExit(0)
 start = text.index("def load_symbol_bars(\n")
 end = text.index("\n\ndef _decimal", start)
@@ -19,7 +19,7 @@ replacement = '''def load_symbol_bars(
     end_inclusive: date,
     data_dir: Path,
 ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
-    """candidate-09-monthly-transport-v1: same rows, fewer HTTP requests."""
+    """candidate-09-monthly-transport-v2: same rows, fewer HTTP requests."""
     frames: list[pd.DataFrame] = []
     manifest: list[dict[str, Any]] = []
     cursor = date(start.year, start.month, 1)
@@ -44,7 +44,12 @@ replacement = '''def load_symbol_bars(
                 frame = frame.loc[:, COLUMNS]
             else:
                 frame = pd.read_csv(BytesIO(member_bytes), header=None, names=COLUMNS)
-        frame = frame[pd.to_numeric(frame["open_time"], errors="coerce").notna()].copy()
+        numeric_open_time = pd.to_numeric(frame["open_time"], errors="coerce")
+        frame = frame[numeric_open_time.notna()].copy()
+        frame["open_time"] = pd.to_numeric(
+            frame["open_time"],
+            errors="raise",
+        ).astype("int64")
         frames.append(frame)
         manifest.append({
             "symbol": symbol,
@@ -67,7 +72,7 @@ replacement = '''def load_symbol_bars(
         "open_time",
         kind="stable",
     )
-    first = int(pd.to_numeric(raw["open_time"], errors="raise").iloc[0])
+    first = int(raw["open_time"].iloc[0])
     if 1_000_000_000_000 <= first < 10_000_000_000_000:
         unit = "ms"
     elif 1_000_000_000_000_000 <= first < 10_000_000_000_000_000:
@@ -75,7 +80,7 @@ replacement = '''def load_symbol_bars(
     else:
         raise RuntimeError(f"unsupported timestamp magnitude: {first}")
     index = pd.to_datetime(
-        pd.to_numeric(raw["open_time"], errors="raise"),
+        raw["open_time"],
         unit=unit,
         utc=True,
     ) + pd.Timedelta(minutes=1)
