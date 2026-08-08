@@ -63,7 +63,19 @@ def _download_metrics(symbol: str, day: date, cache: Path):
     return archive, checksum, evidence
 
 
-def _read_metrics(path: Path) -> pd.DataFrame:
+def _read_metrics(path: Path, archive_day: date | None = None) -> pd.DataFrame:
+    """Read one official archive and keep only rows owned by its UTC day.
+
+    Binance daily metrics archives can contain a spill row from an adjacent
+    package boundary.  Adjacent archives have occasionally supplied different
+    values for that repeated timestamp.  File order is not evidence, so the
+    canonical row is selected by the archive's declared day and the row's own
+    ``create_time``.  The five-minute observability delay is applied only after
+    this package-boundary normalization.
+
+    ``archive_day=None`` is retained for isolated unit fixtures; production
+    ingestion always supplies the day encoded in the requested archive name.
+    """
     raw = pd.read_csv(path, compression="zip")
     required = {"create_time", "symbol", *_METRICS_COLUMNS}
     if not required.issubset(raw.columns):
@@ -71,9 +83,18 @@ def _read_metrics(path: Path) -> pd.DataFrame:
     raw["create_time"] = _as_utc_nanoseconds(raw["create_time"])
     for column in _METRICS_COLUMNS:
         raw[column] = pd.to_numeric(raw[column], errors="raise")
-    raw = raw.sort_values("create_time")
+
+    if archive_day is not None:
+        owned = raw[raw["create_time"].dt.date == archive_day].copy()
+        if owned.empty:
+            raise RuntimeError(
+                f"metrics archive contains no rows owned by {archive_day}: {path}",
+            )
+        raw = owned
+
+    raw = raw.sort_values("create_time", kind="stable")
     if raw["create_time"].duplicated().any():
-        raise RuntimeError(f"duplicate metrics timestamps in {path}")
+        raise RuntimeError(f"duplicate metrics timestamps in canonical archive rows: {path}")
     raw["metrics_observed_time"] = _as_utc_nanoseconds(
         raw["create_time"] + pd.Timedelta(minutes=5),
     )
@@ -81,12 +102,11 @@ def _read_metrics(path: Path) -> pd.DataFrame:
 
 
 def _deduplicate_combined_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
-    """Collapse identical daily-boundary observations and reject conflicts.
+    """Collapse identical residual duplicates and reject unresolved conflicts.
 
-    Binance daily metrics archives can repeat the same five-minute observation
-    at an adjacent file boundary.  An exact duplicate carries no new information
-    and is normalized to one row.  Conflicting values at the same timestamp are
-    an evidence-integrity failure and are never selected by file order.
+    Production ingestion has already assigned each row to the UTC day encoded
+    by its official archive.  Exact duplicates are harmless.  A remaining
+    conflict is an evidence-integrity failure and is never selected by order.
     """
     frame = metrics.sort_values("metrics_observed_time", kind="stable").copy()
     duplicated = frame["metrics_observed_time"].duplicated(keep=False)
@@ -156,7 +176,7 @@ def load_range(
     day = start
     while day <= end:
         archive, checksum, item = _download_metrics(symbol, day, cache)
-        metric_frames.append(_read_metrics(archive))
+        metric_frames.append(_read_metrics(archive, archive_day=day))
         manifest_files.extend([archive, checksum])
         evidence.append(item)
         day += timedelta(days=1)
