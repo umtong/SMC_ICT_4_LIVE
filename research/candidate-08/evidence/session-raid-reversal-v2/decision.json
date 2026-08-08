@@ -1,0 +1,71 @@
+{
+  "candidate": "candidate-08-session-raid-reversal-btc-nautilus-v2",
+  "classification": "REJECT_DIRECT_SESSION_RAID_FAMILY_MULTI_WEEK_LOGIC_AND_RISK_FAILURE",
+  "terminal": true,
+  "scenario_family": "H4_DRAW_DIRECT_SESSION_RAID_REVERSAL",
+  "implementation_findings": {
+    "v1_bar_market_entry_cost_mismatch_fixed": true,
+    "two_tick_bar_market_entry_reserve_verified": true,
+    "three_event_causal_ledger_verified": true,
+    "contiguous_next_ten_second_bucket_verified": true,
+    "preserve_components": [
+      "BAR_MARKET_TWO_TICK_ENTRY_RESERVE_V1",
+      "DIRECT_RAID_THREE_CAUSAL_EVENTS_V1",
+      "SESSION_RAID_REVERSAL_SIGNALS_V2_CAUSAL_NEXT_BUCKET"
+    ]
+  },
+  "first_frozen_btc_week": {
+    "window": "2024-04-08T00:00:00Z/2024-04-15T00:00:00Z",
+    "signals": 4,
+    "closed_trades": 4,
+    "wins": 2,
+    "losses": 2,
+    "win_rate": 0.5,
+    "total_return": 0.09642325019138531,
+    "daily_geometric_growth": 0.013236996241246413,
+    "final_nav_usdt": 109642.32501913853,
+    "maximum_realized_equity_drawdown": 0.05296857968435416,
+    "largest_positive_trade_share": 0.639608,
+    "all_execution_risk_funding_causality_checks_passed": true,
+    "first_window_gate_passed": true
+  },
+  "second_frozen_btc_week": {
+    "window": "2025-06-09T00:00:00Z/2025-06-16T00:00:00Z",
+    "signals": 3,
+    "closed_trades": 3,
+    "wins": 0,
+    "losses": 3,
+    "win_rate": 0.0,
+    "all_close_reasons": "STRUCTURAL_STOP",
+    "total_return": -0.0895192833332999,
+    "daily_geometric_growth": -0.013314141142219738,
+    "final_nav_usdt": 91048.07166667,
+    "maximum_realized_equity_drawdown": 0.0895192833332999,
+    "realized_loss_over_budget_count": 1,
+    "maximum_realized_loss_budget_ratio": 1.2850143,
+    "maximum_fill_adjusted_expected_loss_budget_ratio": 0.9999647
+  },
+  "robust_logic_failure": {
+    "finding": "All three second-week trades reached the scenario structural stop before the frozen target.",
+    "position_resizing_cannot_change_trade_outcome_sign": true,
+    "reason": "Increasing the stop reserve or reducing quantity would reduce PnL magnitude but each scenario would remain a losing structural-stop outcome.",
+    "multiweek_generalization_failed": true
+  },
+  "risk_model_failure": {
+    "finding": "One native stop fill exceeded the causal Q99 stop-slippage reserve and the three-percent signal-time loss budget.",
+    "realized_loss_usdt": 3855.0429,
+    "risk_budget_usdt": 3000.0,
+    "realized_loss_budget_ratio": 1.2850143,
+    "interpretation": "This is a separate baseline risk-contract failure; it does not rescue the already-negative scenario logic."
+  },
+  "third_frozen_btc_week": {
+    "run": false,
+    "reason": "The family was terminally rejected after an implementation-clean first-week pass followed by a zero-win, three-structural-stop second week plus a realized-loss-budget violation."
+  },
+  "preregistered_location_ablation": {
+    "run": false,
+    "reason": "The losing second-week trades already passed the source-session-half location rule; removing that rule cannot change their stop-before-target outcomes and was not the dominant rejection cause."
+  },
+  "next_action": "DISCARD_DIRECT_SESSION_RAID_FAMILY_AND_START_INDEPENDENT_OPENING_AUCTION_INITIAL_BALANCE_FAILURE_SCENARIO",
+  "goal_verified": false
+}
