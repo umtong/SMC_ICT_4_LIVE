@@ -1,43 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 CAND="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$CAND/../.." && pwd)"
 WEEK="${1:?usage: run_week.sh INTERVAL_ID}"
 OUT="${2:-$CAND/results/$WEEK}"
-
 export PYTHONPATH="$CAND:$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-
 smc4 doctor
 python -m py_compile \
-  "$CAND/bar_adapter.py" \
-  "$CAND/global_allocator.py" \
-  "$CAND/logic.py" \
-  "$CAND/market_leadership.py" \
-  "$CAND/session_engine.py" \
-  "$CAND/session_auction_i7.py" \
-  "$CAND/session_auction_bridge.py" \
-  "$CAND/semantic_logic.py" \
-  "$CAND/semantic_market_leadership.py" \
-  "$CAND/auction_origin_ownership.py" \
-  "$CAND/confirmed_acceptance_failure_v9.py" \
-  "$CAND/runner_materializer.py" \
-  "$CAND/portfolio_materializer.py" \
-  "$CAND/run_leadership_scdam.py" \
-  "$CAND/evidence_audit.py" \
-  "$CAND/candidate14_runner.py" \
-  "$CAND/candidate14_v9_runner.py" \
-  "$CAND/continuous_aggregate.py" \
-  "$CAND/diagnostic_continuous_aggregate.py" \
-  "$CAND/aggregate.py"
-
-rm -rf "$OUT"
-mkdir -p "$OUT"
-python "$CAND/candidate14_v9_runner.py" "$WEEK" "$OUT"
-
-for file in \
-  run.json data_manifest.json metrics.json summary.json audit.json audit.md \
-  source_lock.json effective_config.json scenario_events.jsonl \
-  submitted_plans.json order_lifecycle.json orders.csv positions.csv account.csv; do
-  test -s "$OUT/$file"
-done
+  "$CAND/bar_adapter.py" "$CAND/global_allocator.py" "$CAND/logic.py" \
+  "$CAND/market_leadership.py" "$CAND/session_engine.py" \
+  "$CAND/session_auction_i7.py" "$CAND/session_auction_bridge.py" \
+  "$CAND/semantic_logic.py" "$CAND/semantic_market_leadership.py" \
+  "$CAND/auction_origin_ownership.py" "$CAND/confirmed_acceptance_failure_v9.py" \
+  "$CAND/failure_leg_leadership_materializer.py" \
+  "$CAND/runner_materializer.py" "$CAND/portfolio_materializer.py" \
+  "$CAND/run_leadership_scdam.py" "$CAND/evidence_audit.py" \
+  "$CAND/candidate14_runner.py" "$CAND/candidate14_v10_runner.py" \
+  "$CAND/continuous_aggregate.py" "$CAND/diagnostic_continuous_aggregate.py"
+rm -rf "$OUT" && mkdir -p "$OUT"
+python "$CAND/candidate14_v10_runner.py" "$WEEK" "$OUT"
+for file in run.json data_manifest.json metrics.json summary.json audit.json audit.md \
+  source_lock.json effective_config.json scenario_events.jsonl submitted_plans.json \
+  order_lifecycle.json orders.csv positions.csv account.csv; do test -s "$OUT/$file"; done
