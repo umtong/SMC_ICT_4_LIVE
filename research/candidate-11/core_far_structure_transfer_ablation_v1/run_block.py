@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from hashlib import sha256
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -17,13 +18,20 @@ for path in (HERE, CORE_ROOT, SOURCE_ROOT):
         sys.path.insert(0, str(path))
 
 from evidence_audit import audit as audit_evidence  # noqa: E402
-from run_block import (  # type: ignore[no-redef]  # noqa: E402
-    load_object,
-    source_lock as core_source_lock,
-    validate_protocol as validate_core_protocol,
-    write_json,
-)
 from runner import run  # noqa: E402
+
+_CORE_SPEC = importlib.util.spec_from_file_location(
+    "candidate11_core_far_run_block",
+    CORE_ROOT / "run_block.py",
+)
+if _CORE_SPEC is None or _CORE_SPEC.loader is None:
+    raise ImportError("cannot load core FAR run_block module")
+_CORE_RUN_BLOCK = importlib.util.module_from_spec(_CORE_SPEC)
+_CORE_SPEC.loader.exec_module(_CORE_RUN_BLOCK)
+load_object = _CORE_RUN_BLOCK.load_object
+write_json = _CORE_RUN_BLOCK.write_json
+core_source_lock = _CORE_RUN_BLOCK.source_lock
+validate_core_protocol = _CORE_RUN_BLOCK.validate_protocol
 
 
 def validate_protocol(
