@@ -1,0 +1,185 @@
+name: candidate-21-fresh-initiative-untouched-screen
+
+on:
+  push:
+    branches: ["research/candidate-21"]
+    paths:
+      - ".github/workflows/candidate-21-fresh-initiative-untouched-screen.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-21-fresh-initiative-untouched-screen-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  untouched-window:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: regime-2024-04
+            build_start: "2024-04-05"
+            evaluation_start: "2024-04-08"
+            evaluation_end: "2024-04-14"
+          - label: regime-2024-08
+            build_start: "2024-08-09"
+            evaluation_start: "2024-08-12"
+            evaluation_end: "2024-08-18"
+          - label: regime-2024-12
+            build_start: "2024-12-06"
+            evaluation_start: "2024-12-09"
+            evaluation_end: "2024-12-15"
+          - label: regime-2025-04
+            build_start: "2025-04-04"
+            evaluation_start: "2025-04-07"
+            evaluation_end: "2025-04-13"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-21-fresh-untouched/${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify frozen implementation and shared-account contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          smc4 doctor
+          python -m compileall -q research/candidate-21
+          python -m unittest discover -s research/candidate-21/tests -p 'test_fresh_initiative_router.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_global_entry_slot_v4.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_shared_account_strategy_variants.py' -v
+
+      - name: Inject the frozen policy into the audited shared wrapper
+        shell: bash
+        run: |
+          cat > research/candidate-05/strategy_v36_cross_asset_repricing_gate.py <<'PY'
+          from typing import Any
+
+          from candidate21_fresh_initiative_strategy import FreshInitiativeAcceptanceMixin
+          from strategy_v26 import ScenarioValidEntryStrategy
+
+          REVERSAL_BRANCH_PREFIX = "TAIL_FLOW_"
+
+          def symbol_from_instrument(value: Any) -> str:
+              text = str(value)
+              if "-PERP" not in text:
+                  raise ValueError(f"unexpected project instrument id: {text}")
+              return text.split("-PERP", 1)[0]
+
+          SystemicRepricingGateMixin = FreshInitiativeAcceptanceMixin
+
+          class SystemicRepricingGateStrategy(
+              FreshInitiativeAcceptanceMixin,
+              ScenarioValidEntryStrategy,
+          ):
+              pass
+
+          CandidateStrategy = SystemicRepricingGateStrategy
+          StrategyClass = SystemicRepricingGateStrategy
+          CrossAssetRepricingGateStrategy = SystemicRepricingGateStrategy
+          PY
+          python -m compileall -q research/candidate-05/strategy_v36_cross_asset_repricing_gate.py
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/winner.json" <<'JSON'
+          {
+            "classification": "FROZEN_AFTER_2025_09_DEVELOPMENT",
+            "winner": "strategy_v36_cross_asset_repricing_gate:SystemicRepricingGateStrategy",
+            "experiment_role": "CANDIDATE21_FRESH_INITIATIVE_UNTOUCHED_SCREEN"
+          }
+          JSON
+
+      - name: Run one untouched window in one four-asset NautilusTrader account
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/winner.json" \
+            --build-start "${{ matrix.build_start }}" \
+            --build-end "${{ matrix.evaluation_end }}" \
+            --evaluation-start "${{ matrix.evaluation_start }}" \
+            --evaluation-end "${{ matrix.evaluation_end }}" \
+            --cache ".cache/candidate-21-fresh-untouched/${{ matrix.label }}" \
+            --output "$ROOT/run" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Write compact untouched assessment
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          run = root / "run"
+          result = {
+              "label": "${{ matrix.label }}",
+              "build_start": "${{ matrix.build_start }}",
+              "evaluation_start": "${{ matrix.evaluation_start }}",
+              "evaluation_end": "${{ matrix.evaluation_end }}",
+              "completed": (run / "metrics.json").exists(),
+              "symbols": {},
+          }
+          if (run / "metrics.json").exists():
+              metrics = json.loads((run / "metrics.json").read_text())
+              result["metrics"] = {
+                  key: metrics.get(key)
+                  for key in (
+                      "starting_nav", "ending_nav", "total_return",
+                      "geometric_daily_growth", "trades", "wins", "losses",
+                      "win_rate", "profit_factor", "expectancy_usdt",
+                      "max_drawdown", "largest_winner_share", "liquidations",
+                      "integrity_pass", "active_days", "calendar_days",
+                      "symbol_metrics", "scenario_metrics",
+                  )
+              }
+          keys = (
+              "candidate21_fresh_events",
+              "candidate21_fresh_event_geometry_rejected",
+              "candidate21_fresh_episodes_armed",
+              "candidate21_fresh_confirmations",
+              "candidate21_fresh_confirmation_geometry_rejected",
+              "candidate21_fresh_submissions",
+              "candidate21_fresh_expired",
+              "candidate21_fresh_invalidated",
+              "candidate21_fresh_target_consumed",
+              "entry_submissions", "order_rejections",
+              "shared_slot_acquisitions", "shared_slot_conflicts",
+          )
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              path = run / "symbols" / symbol / "strategy_diagnostics.json"
+              if path.exists():
+                  data = json.loads(path.read_text())
+                  result["symbols"][symbol] = {key: data.get(key, 0) for key in keys}
+          result["totals"] = {
+              key: sum(int(values.get(key, 0)) for values in result["symbols"].values())
+              for key in keys
+          }
+          if (run / "global_slot_audit.json").exists():
+              result["global_slot_audit"] = json.loads((run / "global_slot_audit.json").read_text())
+          root.mkdir(parents=True, exist_ok=True)
+          (root / "assessment.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-21-fresh-untouched-${{ matrix.label }}-${{ github.sha }}
+          path: artifacts/candidate-21-fresh-untouched/${{ matrix.label }}/**
+          if-no-files-found: warn
+          retention-days: 90
