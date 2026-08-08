@@ -1,0 +1,190 @@
+name: candidate-16-cross-impact-development
+
+on:
+  push:
+    branches: ["research/candidate-16"]
+    paths:
+      - ".github/workflows/candidate-16-cross-impact-development.yml"
+      - "research/candidate-16/cross_impact_context.py"
+      - "research/candidate-16/strategy_cross_impact_continuation.py"
+      - "research/candidate-16/cross_impact_active/**"
+      - "research/candidate-16/tests/test_cross_impact_context.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-cross-impact-development
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  cross-impact:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 420
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16/cross_impact_active:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-cross-impact
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify causal decision, exact strategy, and global slot composition
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05 research/candidate-16
+          python -m unittest discover -s research/candidate-16/tests -p 'test_cross_impact_context.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_timestamp_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_global_entry_slot_v4.py' -v
+          python - <<'PY'
+          import shared_account_strategy_variants_v2 as variants
+          from strategy_cross_impact_continuation import LaggedCrossImpactContinuationStrategy
+          from global_entry_slot_v4 import FINAL_SHARED_ACCOUNT_ENTRY_COORDINATOR
+          import strategy_global_slot_wrappers_v4 as wrappers
+          assert wrappers.SHARED_ACCOUNT_ENTRY_COORDINATOR is FINAL_SHARED_ACCOUNT_ENTRY_COORDINATOR
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              cls = variants.final_shared_strategy_class(variants.WINNER, symbol)
+              assert issubclass(cls, LaggedCrossImpactContinuationStrategy)
+              print(symbol, cls.__mro__)
+          PY
+
+      - name: Run predeclared seven-day development account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/cross-impact.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_cross_impact_continuation:LaggedCrossImpactContinuationStrategy",
+            "experiment_role": "CANDIDATE16_LAGGED_CROSS_IMPACT_DEVELOPMENT"
+          }
+          JSON
+          python research/candidate-16/cross_impact_active/run_shared.py \
+            --winner-evidence "$ROOT/evidence/cross-impact.json" \
+            --build-start 2023-07-07 \
+            --build-end 2023-07-15 \
+            --evaluation-start 2023-07-09 \
+            --evaluation-end 2023-07-15 \
+            --cache .cache/candidate-16-cross-impact-development \
+            --output "$ROOT/development-7d" \
+            2>&1 | tee "$ROOT/development-console.log"
+
+      - name: Classify development without parameter search
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          path = root / "development-7d" / "metrics.json"
+          metrics = json.loads(path.read_text()) if path.exists() else None
+          trades = int((metrics or {}).get("trades", 0) or 0)
+          total_return = float((metrics or {}).get("total_return", 0.0) or 0.0)
+          profit_factor = float((metrics or {}).get("profit_factor", 0.0) or 0.0)
+          integrity = bool(metrics) and bool(metrics.get("integrity_pass"))
+          diagnostics = (metrics or {}).get("strategy_diagnostics", {})
+          actionable = sum(
+              int(value.get("cross_impact_actionable", 0) or 0)
+              for value in diagnostics.values()
+          )
+          submitted = sum(
+              int(value.get("cross_impact_entry_submissions", 0) or 0)
+              for value in diagnostics.values()
+          )
+          if not metrics:
+              classification = "IMPLEMENTATION_FAILURE"
+          elif not integrity:
+              classification = "INVALID_EXECUTION_EVIDENCE"
+          elif actionable == 0:
+              classification = "NO_SCENARIO_OCCURRENCES"
+          elif trades == 0:
+              classification = "NO_EXECUTABLE_GEOMETRY"
+          elif total_return <= 0.0 or not math.isfinite(profit_factor) or profit_factor <= 1.0:
+              classification = "NEGATIVE_OR_NONPOSITIVE_EXPECTANCY"
+          elif trades < 4:
+              classification = "POSITIVE_BUT_TOO_FEW_DEVELOPMENT_SAMPLES"
+          else:
+              classification = "PROMOTE_UNCHANGED_TO_PREDECLARED_30D_OOS"
+          summary = {
+              "schema": "candidate-16-cross-impact-development-v1",
+              "classification": classification,
+              "strategy": "LAGGED_CROSS_ASSET_OFI_CONTINUATION",
+              "engine": "one shared NautilusTrader BacktestNode account",
+              "actionable_signals": actionable,
+              "entry_submissions": submitted,
+              "metrics": metrics,
+          }
+          (root / "development_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Run predeclared untouched 30-day account only after promotion
+        if: ${{ hashFiles('artifacts/candidate-16-cross-impact/development_summary.json') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          classification=$(python -c 'import json; print(json.load(open("artifacts/candidate-16-cross-impact/development_summary.json"))["classification"])')
+          if [ "$classification" != "PROMOTE_UNCHANGED_TO_PREDECLARED_30D_OOS" ]; then
+            echo "development did not earn promotion: $classification"
+            exit 0
+          fi
+          python research/candidate-16/cross_impact_active/run_shared.py \
+            --winner-evidence "$ROOT/evidence/cross-impact.json" \
+            --build-start 2024-05-30 \
+            --build-end 2024-06-30 \
+            --evaluation-start 2024-06-01 \
+            --evaluation-end 2024-06-30 \
+            --cache .cache/candidate-16-cross-impact-oos \
+            --output "$ROOT/oos-30d" \
+            2>&1 | tee "$ROOT/oos-console.log"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "oos-30d" / "metrics.json").read_text())
+          result = {
+              "schema": "candidate-16-cross-impact-oos-v1",
+              "untouched": True,
+              "logic_changed_after_development": False,
+              "metrics": metrics,
+          }
+          (root / "oos_summary.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify development evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/development_summary.json"
+          test -s "$ROOT/development-7d/metrics.json"
+          test -s "$ROOT/development-7d/orders.csv"
+          test -s "$ROOT/development-7d/positions.csv"
+          test -s "$ROOT/development-7d/account.csv"
+          test -s "$ROOT/development-7d/global_slot_audit.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-cross-impact-${{ github.sha }}
+          path: artifacts/candidate-16-cross-impact/**
+          if-no-files-found: warn
+          retention-days: 90
