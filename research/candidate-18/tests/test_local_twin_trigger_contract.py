@@ -53,7 +53,8 @@ class LocalTwinTriggerContractTests(unittest.TestCase):
         text = ast.unparse(release)
         self.assertIn("self._cancel_local_family(self._v5_stop_ids)", text)
         self.assertIn("self._cancel_local_family(self._v5_target_ids)", text)
-        self.assertIn("ClientOrderId.from_str", self.source)
+        self.assertIn("ClientOrderId(identifier)", self.source)
+        self.assertNotIn("ClientOrderId.from_str", self.source)
 
     def test_target_fill_wave_does_not_rearm_duplicate_protection(self) -> None:
         filled = next(

@@ -149,7 +149,7 @@ class Candidate18Strategy(_Candidate18V6Strategy):
 
     def _cancel_local_family(self, identifiers: set[str]) -> None:
         for identifier in tuple(identifiers):
-            self.cancel_order(ClientOrderId.from_str(identifier))
+            self.cancel_order(ClientOrderId(identifier))
 
     def on_order_released(self, event: Any) -> None:
         client_order_id = str(getattr(event, "client_order_id", ""))
