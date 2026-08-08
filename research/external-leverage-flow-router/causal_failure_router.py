@@ -2,13 +2,16 @@
 
 The first frozen holdout showed that a two-bar price break plus aggressor-flow
 reversal can be only a liquidation reset inside an information-driven trend.
-This router adds an independent derivatives-state transition rather than a
-numeric threshold:
+This router adds independent derivatives-state transitions rather than tuned
+numeric thresholds:
 
 * while price remains outside the parent external-liquidity boundary, the
   five-minute premium change must contract against the parent shock;
+* outside the boundary, fifteen-minute open interest must also be stable or
+  increasing, so forced position closure is not mistaken for durable opposing
+  participation;
 * once price has reclaimed the boundary, price itself has supplied the auction
-  failure evidence and the premium guard is no longer required;
+  failure evidence and the derivatives guards are no longer required;
 * the target is the nearest unconsumed auction objective in the reversal
   direction: external boundary, balance midpoint, then opposite edge.
 
@@ -30,7 +33,7 @@ class FailureRouterConfig(WindowedLimitConfig, frozen=True):
 
 
 class FailureRouterStrategy(WindowedLimitStrategy):
-    """Require causal premium failure or actual boundary reclaim."""
+    """Require causal derivatives failure or actual boundary reclaim."""
 
     def __init__(self, config: FailureRouterConfig) -> None:
         super().__init__(config=config)
@@ -38,8 +41,10 @@ class FailureRouterStrategy(WindowedLimitStrategy):
             {
                 "failure_router_price_flow_candidates": 0,
                 "failure_router_waiting_premium_contraction": 0,
+                "failure_router_waiting_non_liquidation_participation": 0,
                 "failure_router_boundary_reclaims": 0,
                 "failure_router_premium_failures": 0,
+                "failure_router_non_liquidation_participation": 0,
                 "failure_router_no_objective": 0,
                 "failure_router_objective_boundary": 0,
                 "failure_router_objective_midpoint": 0,
@@ -86,6 +91,7 @@ class FailureRouterStrategy(WindowedLimitStrategy):
         close = float(row["close"])
         perp_flow = self._feature("flow_60s")
         premium_change_5m = self._feature("premium_change_5m")
+        oi_change_15m = self._feature("oi_change_15m")
         boundary = float(setup.details["boundary"])
         observation = {
             "bar_index": self.bar_index,
@@ -99,6 +105,7 @@ class FailureRouterStrategy(WindowedLimitStrategy):
             "perp_flow": perp_flow,
             "spot_flow": self._feature("spot_flow_60s"),
             "premium_change_5m": premium_change_5m,
+            "oi_change_15m": oi_change_15m,
             "basis_bps": self._feature("perp_spot_basis_bps"),
             "basis_change_1m_bps": self._feature("perp_spot_basis_change_1m_bps"),
         }
@@ -122,21 +129,21 @@ class FailureRouterStrategy(WindowedLimitStrategy):
             math.isfinite(premium_change_5m)
             and direction * premium_change_5m < 0.0
         )
+        non_liquidation_participation = (
+            math.isfinite(oi_change_15m)
+            and oi_change_15m >= 0.0
+        )
         if boundary_reclaimed:
             self.diagnostics["failure_router_boundary_reclaims"] = int(
                 self.diagnostics["failure_router_boundary_reclaims"],
             ) + 1
-        elif premium_failed:
-            self.diagnostics["failure_router_premium_failures"] = int(
-                self.diagnostics["failure_router_premium_failures"],
-            ) + 1
-        else:
+        elif not premium_failed:
             self.diagnostics["failure_router_waiting_premium_contraction"] = int(
                 self.diagnostics["failure_router_waiting_premium_contraction"],
             ) + 1
             self._transition(
                 setup.scenario_id,
-                "REVERSAL_PRICE_FLOW_WITHOUT_DERIVATIVES_FAILURE",
+                "REVERSAL_PRICE_FLOW_WITHOUT_PREMIUM_FAILURE",
                 int(row["ts"]),
                 int(row["ts"]),
                 "WAITING_FOR_CAUSAL_FAILED_AUCTION",
@@ -145,6 +152,28 @@ class FailureRouterStrategy(WindowedLimitStrategy):
                 {**setup.details, "candidate_observation": observation},
             )
             return True
+        elif not non_liquidation_participation:
+            self.diagnostics["failure_router_waiting_non_liquidation_participation"] = int(
+                self.diagnostics["failure_router_waiting_non_liquidation_participation"],
+            ) + 1
+            self._transition(
+                setup.scenario_id,
+                "REVERSAL_PRICE_FLOW_DURING_OI_CONTRACTION",
+                int(row["ts"]),
+                int(row["ts"]),
+                "WAITING_FOR_CAUSAL_FAILED_AUCTION",
+                "COUNTERFLOW_CAN_BE_FORCED_LIQUIDATION_RESET_OUTSIDE_BOUNDARY",
+                close,
+                {**setup.details, "candidate_observation": observation},
+            )
+            return True
+        else:
+            self.diagnostics["failure_router_premium_failures"] = int(
+                self.diagnostics["failure_router_premium_failures"],
+            ) + 1
+            self.diagnostics["failure_router_non_liquidation_participation"] = int(
+                self.diagnostics["failure_router_non_liquidation_participation"],
+            ) + 1
 
         side = -direction
         balance_high = float(setup.details["prior_balance_high"])
@@ -186,6 +215,7 @@ class FailureRouterStrategy(WindowedLimitStrategy):
             "transition_observation": observation,
             "boundary_reclaimed": boundary_reclaimed,
             "premium_failed_against_parent": premium_failed,
+            "non_liquidation_participation": non_liquidation_participation,
             "selected_objective": objective_name,
             "selected_objective_price": target,
             "balance_midpoint": midpoint,
@@ -204,7 +234,7 @@ class FailureRouterStrategy(WindowedLimitStrategy):
             (
                 "BOUNDARY_RECLAIMED"
                 if boundary_reclaimed
-                else "PREMIUM_CONTRACTED_AGAINST_PARENT_SHOCK"
+                else "PREMIUM_FAILED_WITH_NON_LIQUIDATION_PARTICIPATION"
             ),
             close,
             transition_details,
