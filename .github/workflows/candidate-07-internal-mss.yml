@@ -1,0 +1,164 @@
+name: candidate-07-internal-mss
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/model_internal_mss.py"
+      - "research/candidate-07/backtest_internal_mss.py"
+      - "research/candidate-07/candidate_internal_mss.py"
+      - "research/candidate-07/staged_internal_mss.py"
+      - "research/candidate-07/tests/test_internal_mss.py"
+      - ".github/workflows/candidate-07-internal-mss.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify foundation and MSS contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-internal-mss-pyc \
+            python -m compileall -q research/candidate-07
+          python -m unittest \
+            research/candidate-07/tests/test_internal_mss.py \
+            research/candidate-07/tests/test_initiative_auction.py -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+
+      - name: Reproduce pseudo-MSS control
+        run: >-
+          python research/candidate-07/staged_initiative_auction.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --output artifacts/candidate-07-internal-mss/control
+          --data-root .research-data/candidate-07
+          --max-weeks 3
+
+      - name: Run internal-boundary MSS and gated continuous evaluation
+        run: >-
+          python research/candidate-07/staged_internal_mss.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --output artifacts/candidate-07-internal-mss/structural
+          --data-root .research-data/candidate-07
+          --max-weeks 3
+          --run-long
+
+      - name: Audit true MSS geometry and compare stages
+        if: always()
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import ast
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path("artifacts/candidate-07-internal-mss")
+          output = {
+              "source_commit": "${{ github.sha }}",
+              "candidate": "candidate-07-internal-boundary-mss",
+              "control": (
+                  "opposite body closes back through swept external level"
+              ),
+              "variant": (
+                  "opposite body closes through the pre-sweep internal boundary"
+              ),
+              "stages": {},
+              "geometry_audit": {},
+          }
+          for stage in ("week-1", "week-2", "week-3", "long-evaluation"):
+              record = {}
+              for variant in ("control", "structural"):
+                  folder = root / variant / stage
+                  metrics_path = folder / "metrics.json"
+                  if not metrics_path.exists():
+                      record[variant] = {"present": False}
+                      continue
+                  metrics = json.loads(metrics_path.read_text())
+                  record[variant] = {
+                      "present": True,
+                      "trades": metrics["trades"],
+                      "wins": metrics["wins"],
+                      "losses": metrics["losses"],
+                      "win_rate": metrics["win_rate"],
+                      "net_return": metrics["net_return"],
+                      "daily_geometric_growth": metrics["daily_geometric_growth"],
+                      "profit_factor": metrics["profit_factor"],
+                      "max_drawdown": metrics["max_drawdown"],
+                      "active_days": metrics["active_days"],
+                      "single_winner_share": metrics["single_winner_share"],
+                      "gate_passed": metrics["weekly_gate"]["passed"],
+                  }
+                  if variant != "structural":
+                      continue
+                  trades = pd.read_csv(folder / "trades.csv")
+                  audited = 0
+                  for trade in trades.itertuples(index=False):
+                      if str(trade.kind) != "ABSORPTION_RECLAIM":
+                          continue
+                      details = ast.literal_eval(str(trade.plan_details))
+                      boundary = float(details["opposing_internal"])
+                      entry = float(trade.entry_reference)
+                      direction = str(trade.direction)
+                      crossed = (
+                          entry > boundary
+                          if direction == "LONG"
+                          else entry < boundary
+                      )
+                      if not crossed:
+                          raise RuntimeError(
+                              "trade entered without crossing its stored internal "
+                              f"boundary: {trade.scenario_id}"
+                          )
+                      audited += 1
+                  output["geometry_audit"][stage] = {
+                      "absorption_trades_audited": audited,
+                      "all_entries_beyond_pre_sweep_internal_boundary": True,
+                  }
+              output["stages"][stage] = record
+          destination = root / "internal_mss_comparison.json"
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n")
+          print(destination.read_text())
+          PY
+
+      - name: Print immutable result
+        if: always()
+        run: |
+          find artifacts/candidate-07-internal-mss \
+            -name metrics.json -print -exec cat {} \;
+          test -f artifacts/candidate-07-internal-mss/internal_mss_comparison.json
+          cat artifacts/candidate-07-internal-mss/internal_mss_comparison.json
+
+      - name: Preserve complete MSS evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-internal-mss-${{ github.sha }}
+          path: artifacts/candidate-07-internal-mss
+          retention-days: 14
+          if-no-files-found: error
