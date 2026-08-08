@@ -1,0 +1,86 @@
+name: candidate-32-v54-continuous
+on:
+  push:
+    branches: ["research/candidate-32"]
+    paths:
+      - "research/candidate-32/**"
+      - ".github/workflows/candidate-32-v54-continuous.yml"
+  workflow_dispatch:
+concurrency:
+  group: candidate-32-v54-continuous
+  cancel-in-progress: true
+permissions:
+  actions: read
+  contents: read
+  packages: read
+jobs:
+  continuous-btc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-32:research/candidate-05/v54_active:research/candidate-29:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      INPUT: artifacts/c32-input
+      ROOT: artifacts/c32-continuous
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31263121137
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: candidate29b-chunk-*-8fa191f4717cdf133916bdba23470301dba3b8d3
+          path: artifacts/c32-input
+          merge-multiple: false
+      - name: Verify exact evidence and storage-only adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find "$INPUT" -name chunk_manifest.json | wc -l)" -eq 31
+          python -m compileall -q research/candidate-32
+          python -m unittest discover -s research/candidate-32 -p 'test_*.py' -v
+      - name: Run frozen v54 in one uninterrupted NautilusTrader account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-32/run_v54_continuous.py \
+            --input-root "$INPUT" \
+            --output "$ROOT" \
+            --workspace .cache/c32/assembled \
+            --cache .cache/c32/manifest \
+            --symbol BTCUSDT \
+            --start 2024-01-01 \
+            --end 2026-07-31 \
+            --config research/candidate-05/config.json \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Verify completed continuous result
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$ROOT/metrics.json"; then
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          x=json.loads((Path(os.environ['ROOT'])/'metrics.json').read_text())
+          assert x['evaluation_start']=='2024-01-01' and x['evaluation_end']=='2026-07-31'
+          assert x['calendar_days']==943
+          assert x['continuous_account'] is True and x['continuous_strategy_process'] is True
+          assert x['account_restarts']==0 and x['strategy_restarts']==0
+          assert x['alpha_decision_overrides']==0 and x['storage_only_adapter'] is True
+          print(json.dumps({k:x.get(k) for k in ['candidate','starting_nav','ending_nav','total_return','geometric_daily_growth','max_drawdown','trades','wins','win_rate','active_days','gate_pass','calendar_year_returns','rolling_windows']},indent=2,sort_keys=True))
+          PY
+          else
+            echo 'metrics.json absent'
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate32-v54-continuous-${{ github.sha }}
+          path: artifacts/c32-continuous/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
