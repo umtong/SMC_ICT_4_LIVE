@@ -1,0 +1,124 @@
+name: candidate-37-short-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-37"]
+    paths:
+      - "research/candidate-37/model.py"
+      - "research/candidate-37/burst_features.py"
+      - "research/candidate-37/burst_states.py"
+      - "research/candidate-37/router.py"
+      - "research/candidate-37/diagnostic_support.py"
+      - "research/candidate-37/diagnostic.py"
+      - "research/candidate-37/config.json"
+      - "research/candidate-37/test_router.py"
+      - ".github/workflows/candidate-37-short-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-37-short-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-37
+      PYTHONUNBUFFERED: "1"
+      INPUT: artifacts/c37-short-input
+      ROOT: artifacts/c37-short-diagnostic
+      SOURCE_RUN: "31265666283"
+      SOURCE_SHA: 177ecf1784b24dae7ce6a9b048ac243b58f5f435
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reuse verified BTC input
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate35-short-BTCUSDT-${{ env.SOURCE_SHA }}
+          path: ${{ env.INPUT }}/BTCUSDT
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN }}
+
+      - name: Reuse verified ETH input
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate35-short-ETHUSDT-${{ env.SOURCE_SHA }}
+          path: ${{ env.INPUT }}/ETHUSDT
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN }}
+
+      - name: Reuse verified SOL input
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate35-short-SOLUSDT-${{ env.SOURCE_SHA }}
+          path: ${{ env.INPUT }}/SOLUSDT
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN }}
+
+      - name: Reuse verified XRP input
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate35-short-XRPUSDT-${{ env.SOURCE_SHA }}
+          path: ${{ env.INPUT }}/XRPUSDT
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN }}
+
+      - name: Verify environment, causal contracts and input ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-37
+          python -m unittest discover -s research/candidate-37 -p 'test_router.py' -v
+          test "$(find "$INPUT" -name chunk_manifest.json | wc -l)" -eq 4
+
+      - name: Run causal router and forward-path diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-37/diagnostic.py \
+            --input-root "$INPUT" \
+            --config research/candidate-37/config.json \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify claim boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          result = json.loads((root / "burst_diagnostic.json").read_text())
+          assert result["claim_scope"] == "STRUCTURAL_AND_FORWARD_PATH_DIAGNOSTIC_NO_ORDER_SIMULATION_NO_PNL_NO_NAV_CLAIM"
+          assert result["same_minute_four_symbol_clock"] is True
+          assert result["future_input_violations"] == 0
+          assert result["minutes_evaluated"] > 0
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate37-short-diagnostic-${{ github.sha }}
+          path: artifacts/c37-short-diagnostic/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
