@@ -1,17 +1,17 @@
-name: candidate-02-v112-failed-reversal-acceptance-continuation
+name: candidate-02-v113-persistent-liquidity-pool-router
 
 on:
   push:
     branches: ["research/candidate-02"]
-    paths: ["research/candidate-02/v112_trigger.json"]
+    paths: ["research/candidate-02/v113_trigger.json"]
 
 permissions: {contents: write, packages: read, actions: read}
-concurrency: {group: candidate-02-v112-acceptance-continuation, cancel-in-progress: false}
+concurrency: {group: candidate-02-v113-persistent-pool-router, cancel-in-progress: false}
 
 jobs:
-  v112-family:
+  v113-family:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 50
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
         with: {ref: "${{ github.sha }}", fetch-depth: 0}
 
-      - name: Verify fixed engine and acceptance-continuation state machine
+      - name: Verify fixed engine and causal persistent-pool router
         shell: bash
         run: |
           set -euo pipefail
@@ -32,13 +32,13 @@ jobs:
           smc4 doctor
           python -m py_compile \
             research/candidate-02/v111_liquidity_sweep_core.py \
-            research/candidate-02/v112_acceptance_continuation_core.py \
-            research/candidate-02/v112_nt_backtest.py
+            research/candidate-02/v113_persistent_pool_router_core.py \
+            research/candidate-02/v113_nt_backtest.py
           python - <<'PY'
           import json
           from pathlib import Path
-          one=json.loads(Path('research/candidate-02/v112_week1_config.json').read_text())
-          two=json.loads(Path('research/candidate-02/v112_week2_config.json').read_text())
+          one=json.loads(Path('research/candidate-02/v113_week1_config.json').read_text())
+          two=json.loads(Path('research/candidate-02/v113_week2_config.json').read_text())
           assert one['scenario']==two['scenario']
           assert one['costs']==two['costs']
           assert one['risk']==two['risk']
@@ -46,7 +46,8 @@ jobs:
           assert float(one['risk']['risk_fraction']) == 0.03
           assert one['risk']['maximum_notional_cap'] is None
           assert one['risk']['score_risk_multiplier'] is None
-          assert one['scenario']['dealing_range_minutes'] < one['scenario']['higher_dealing_range_minutes']
+          assert one['scenario']['minimum_liquidity_touches'] >= 2
+          assert one['scenario']['pivot_span_minutes'] >= 1
           assert one['scenario']['activation_delay_minutes'] == 1
           assert one['scenario']['maximum_holding_minutes'] <= one['validation']['exit_buffer_minutes']
           PY
@@ -55,7 +56,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e
-          path: inputs/v112-week1
+          path: inputs/v113-week1
           github-token: "${{ github.token }}"
           repository: umtong/SMC_ICT_4_LIVE
           run-id: "31036754667"
@@ -64,7 +65,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e
-          path: inputs/v112-week2
+          path: inputs/v113-week2
           github-token: "${{ github.token }}"
           repository: umtong/SMC_ICT_4_LIVE
           run-id: "31036754667"
@@ -73,31 +74,31 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: candidate-02-v53-nt-second-week-3c73273b563ee221a0e0b9f4ec3c87077c645edd
-          path: inputs/v112-week2-source
+          path: inputs/v113-week2-source
           github-token: "${{ github.token }}"
           repository: umtong/SMC_ICT_4_LIVE
           run-id: "31065619489"
 
-      - name: Materialize locked inputs and adjacent acceptance family
+      - name: Materialize locked inputs and adjacent pool-tolerance family
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf inputs/v112-week2/.cache
-          mkdir -p inputs/v112-week2/.cache/candidate-02/v112-week2/binance_1m
-          find inputs/v112-week2-source -path '*/binance_1m/*.zip' -type f \
-            -exec cp '{}' inputs/v112-week2/.cache/candidate-02/v112-week2/binance_1m/ \;
-          test "$(find inputs/v112-week2/.cache/candidate-02/v112-week2/binance_1m -name '*.zip' | wc -l)" -eq 10
-          mkdir -p /tmp/v112
+          rm -rf inputs/v113-week2/.cache
+          mkdir -p inputs/v113-week2/.cache/candidate-02/v113-week2/binance_1m
+          find inputs/v113-week2-source -path '*/binance_1m/*.zip' -type f \
+            -exec cp '{}' inputs/v113-week2/.cache/candidate-02/v113-week2/binance_1m/ \;
+          test "$(find inputs/v113-week2/.cache/candidate-02/v113-week2/binance_1m -name '*.zip' | wc -l)" -eq 10
+          mkdir -p /tmp/v113
           python - <<'PY'
           import json
           from pathlib import Path
           for week in ('week1','week2'):
-              base=json.loads(Path(f'research/candidate-02/v112_{week}_config.json').read_text())
-              for closes in (1,2,3):
+              base=json.loads(Path(f'research/candidate-02/v113_{week}_config.json').read_text())
+              for tolerance in (10,15,20):
                   obj=json.loads(json.dumps(base))
-                  obj['scenario']['acceptance_closes']=closes
-                  obj['candidate']=f'candidate-02-v112-acceptance-{closes}'
-                  Path(f'/tmp/v112/{week}-a{closes}.json').write_text(
+                  obj['scenario']['liquidity_touch_tolerance_atr']=tolerance/100
+                  obj['candidate']=f'candidate-02-v113-pool-tolerance-{tolerance}'
+                  Path(f'/tmp/v113/{week}-t{tolerance}.json').write_text(
                       json.dumps(obj,indent=2,sort_keys=True)+'\n'
                   )
           PY
@@ -106,16 +107,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for closes in 1 2 3; do
+          for tolerance in 10 15 20; do
             for week in week1 week2; do
-              out="artifacts/candidate-02-v112/a${closes}/${week}"
+              out="artifacts/candidate-02-v113/t${tolerance}/${week}"
               mkdir -p "$out"
               set +e
-              python research/candidate-02/v112_nt_backtest.py \
-                --config "/tmp/v112/${week}-a${closes}.json" \
-                --input-root "inputs/v112-${week}" \
+              python research/candidate-02/v113_nt_backtest.py \
+                --config "/tmp/v113/${week}-t${tolerance}.json" \
+                --input-root "inputs/v113-${week}" \
                 --output "$out" \
-                | tee "artifacts-v112-a${closes}-${week}.log"
+                | tee "artifacts-v113-t${tolerance}-${week}.log"
               status=${PIPESTATUS[0]}
               set -e
               echo "$status" > "$out/validation_exit_code.txt"
@@ -126,28 +127,23 @@ jobs:
           import json
           from pathlib import Path
           out={
-              'candidate':'candidate-02-v112-failed-reversal-acceptance-continuation',
+              'candidate':'candidate-02-v113-persistent-liquidity-pool-router',
               'engine':'NautilusTrader 1.230.0',
               'custom_backtest_engine':False,
               'risk_fraction':0.03,
-              'event_detector':'initial local external-liquidity sweep and rejection',
-              'scenario_state_machine':[
-                  'RANGE_DEFINED',
-                  'LIQUIDITY_SWEPT_AND_REJECTED',
-                  'REVERSAL_FAILED',
-                  'ACCEPTANCE_BEYOND_LIQUIDITY',
-                  'CONTINUATION_DISPLACEMENT_AND_BOS',
-                  'CONTINUATION_FVG',
-                  'FVG_RETEST_HELD',
-                  'ENTRY_ARMED',
-              ],
-              'structural_family':'required_consecutive_acceptance_closes',
+              'detector':'multiple causally confirmed swing points clustered into persistent pools',
+              'scenario_router':{
+                  'reversal':'pool rejection -> displacement/CHoCH/FVG -> retest',
+                  'continuation':'pool acceptance -> displacement/BOS/FVG -> retest',
+                  'objective':'another pool already alive at sweep time',
+              },
+              'structural_family':'liquidity_touch_tolerance_atr',
               'variants':{},
           }
-          for closes in (1,2,3):
-              out['variants'][str(closes)]={
+          for tolerance in (10,15,20):
+              out['variants'][str(tolerance)]={
                   week:json.loads(
-                      Path(f'artifacts/candidate-02-v112/a{closes}/{week}/metrics.json').read_text()
+                      Path(f'artifacts/candidate-02-v113/t{tolerance}/{week}/metrics.json').read_text()
                   )
                   for week in ('week1','week2')
               }
@@ -156,9 +152,9 @@ jobs:
               for key,weeks in out['variants'].items()
           }
           out['variant_both_week_pass']=passes
-          out['plateau_pass']=passes['2'] and (passes['1'] or passes['3'])
+          out['plateau_pass']=passes['15'] and (passes['10'] or passes['20'])
           out['status']='READY_FOR_PROSPECTIVE_WEEK' if out['plateau_pass'] else 'DEVELOPMENT_REJECT'
-          Path('artifacts-v112-family-decision.json').write_text(
+          Path('artifacts-v113-family-decision.json').write_text(
               json.dumps(out,indent=2,sort_keys=True)+'\n'
           )
           print(json.dumps({
@@ -191,13 +187,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf compact-v112
-          mkdir -p compact-v112
-          cp -f artifacts-v112-family-decision.json compact-v112/ 2>/dev/null || true
-          for closes in 1 2 3; do
+          rm -rf compact-v113
+          mkdir -p compact-v113
+          cp -f artifacts-v113-family-decision.json compact-v113/ 2>/dev/null || true
+          for tolerance in 10 15 20; do
             for week in week1 week2; do
-              source="artifacts/candidate-02-v112/a${closes}/${week}"
-              destination="compact-v112/candidate-02-v112/a${closes}/${week}"
+              source="artifacts/candidate-02-v113/t${tolerance}/${week}"
+              destination="compact-v113/candidate-02-v113/t${tolerance}/${week}"
               mkdir -p "$destination"
               cp -f "$source/metrics.json" "$destination/" 2>/dev/null || true
               cp -f "$source/trades.jsonl" "$destination/" 2>/dev/null || true
@@ -208,15 +204,15 @@ jobs:
           done
           git fetch origin research/candidate-02
           if test "$(git rev-parse origin/research/candidate-02)" = "$GITHUB_SHA" \
-             && test -f artifacts-v112-family-decision.json; then
-            destination="research/candidate-02/results/v112_family/$GITHUB_SHA"
+             && test -f artifacts-v113-family-decision.json; then
+            destination="research/candidate-02/results/v113_family/$GITHUB_SHA"
             rm -rf "$destination"
             mkdir -p "$destination"
-            cp -a compact-v112/. "$destination/"
+            cp -a compact-v113/. "$destination/"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add "$destination"
-            git commit -m "research(candidate-02): record v112 acceptance-continuation evidence"
+            git commit -m "research(candidate-02): record v113 persistent-pool evidence"
             git push origin HEAD:research/candidate-02
           fi
 
@@ -224,8 +220,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: "candidate-02-v112-family-${{ github.sha }}"
-          path: compact-v112
+          name: "candidate-02-v113-family-${{ github.sha }}"
+          path: compact-v113
           if-no-files-found: warn
           retention-days: 30
           compression-level: 9
