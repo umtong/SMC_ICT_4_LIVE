@@ -1,0 +1,207 @@
+name: candidate-29-continuous-2024-2026
+
+on:
+  push:
+    branches: ["research/candidate-29"]
+    paths:
+      - "research/candidate-29/**"
+      - ".github/workflows/candidate-29-continuous-2024-2026.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-29-continuous-2024-2026
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      chunks: ${{ steps.calendar.outputs.chunks }}
+    steps:
+      - id: calendar
+        name: Build exact monthly calendar chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          import calendar
+          import json
+          import os
+
+          first = date(2024, 1, 1)
+          final = date(2026, 7, 31)
+          cursor = first
+          chunks = []
+          while cursor <= final:
+              last_day = calendar.monthrange(cursor.year, cursor.month)[1]
+              core_end = min(date(cursor.year, cursor.month, last_day), final)
+              chunks.append(
+                  {
+                      "name": f"{cursor.year:04d}-{cursor.month:02d}",
+                      "start": cursor.isoformat(),
+                      "end": core_end.isoformat(),
+                  },
+              )
+              cursor = core_end + timedelta(days=1)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write("chunks=" + json.dumps(chunks, separators=(",", ":")) + "\n")
+          print(json.dumps(chunks, indent=2))
+          PY
+
+  preprocess:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        chunk: ${{ fromJson(needs.plan.outputs.chunks) }}
+    env:
+      PYTHONPATH: research/candidate-29:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-29/chunks/${{ matrix.chunk.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and non-alpha storage contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-29
+          python -m unittest discover -s research/candidate-29 -p 'test_*.py' -v
+
+      - name: Build checksum-verified causal chunk
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-29/build_chunk.py \
+            --symbol BTCUSDT \
+            --core-start "${{ matrix.chunk.start }}" \
+            --core-end "${{ matrix.chunk.end }}" \
+            --warmup-days 3 \
+            --cache ".cache/candidate-29/${{ matrix.chunk.name }}" \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate29-chunk-${{ matrix.chunk.name }}-${{ github.sha }}
+          path: |
+            artifacts/candidate-29/chunks/${{ matrix.chunk.name }}/features.csv.gz
+            artifacts/candidate-29/chunks/${{ matrix.chunk.name }}/klines.csv.gz
+            artifacts/candidate-29/chunks/${{ matrix.chunk.name }}/chunk_manifest.json
+            artifacts/candidate-29/chunks/${{ matrix.chunk.name }}/console.log
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  continuous-btc:
+    needs: preprocess
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-29:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      INPUT_ROOT: artifacts/candidate-29/downloaded-chunks
+      ROOT: artifacts/candidate-29/continuous-btc-2024-2026
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate29-chunk-*-${{ github.sha }}
+          path: artifacts/candidate-29/downloaded-chunks
+          merge-multiple: false
+
+      - name: Verify exact uninterrupted coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find "$INPUT_ROOT" -name chunk_manifest.json | wc -l)" -eq 31
+          python -m compileall -q research/candidate-29
+          python -m unittest discover -s research/candidate-29 -p 'test_*.py' -v
+
+      - name: Run one continuous NautilusTrader account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-29/run_continuous.py \
+            --input-root "$INPUT_ROOT" \
+            --output "$ROOT" \
+            --workspace ".cache/candidate-29/assembled" \
+            --cache ".cache/candidate-29/manifest-root" \
+            --symbol BTCUSDT \
+            --start 2024-01-01 \
+            --end 2026-07-31 \
+            --config research/candidate-19/config.json \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Emit continuous-account verdict
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f "$ROOT/metrics.json"; then
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          summary = {
+              key: metrics.get(key)
+              for key in (
+                  "evaluation_start",
+                  "evaluation_end",
+                  "calendar_days",
+                  "starting_nav",
+                  "ending_nav",
+                  "total_return",
+                  "geometric_daily_growth",
+                  "max_drawdown",
+                  "trades",
+                  "wins",
+                  "win_rate",
+                  "active_days",
+                  "gate_pass",
+                  "account_restarts",
+                  "strategy_restarts",
+              )
+          }
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          assert metrics["evaluation_start"] == "2024-01-01"
+          assert metrics["evaluation_end"] == "2026-07-31"
+          assert metrics["calendar_days"] == 943
+          assert metrics["account_restarts"] == 0
+          assert metrics["strategy_restarts"] == 0
+          assert metrics["continuous_account"] is True
+          PY
+          else
+            echo "metrics.json absent; inspect console log"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate29-continuous-btc-2024-2026-${{ github.sha }}
+          path: artifacts/candidate-29/continuous-btc-2024-2026/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
