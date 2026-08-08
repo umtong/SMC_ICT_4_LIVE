@@ -2,9 +2,9 @@
 """V60 boundary-retest confirmation for failed micro auctions.
 
 A first close back inside a completed balance proves only that an outside
-auction failed locally.  V57/V59 entered immediately and paid for that first
-reaction at a poor price.  V60 requires a distinct counter-auction and a first
-retest of the reclaimed boundary.  Entry is emitted only when the completed
+auction failed locally. V57/V59 entered immediately and paid for that first
+reaction at a poor price. V60 requires a distinct counter-auction and a first
+retest of the reclaimed boundary. Entry is emitted only when the completed
 retest bar:
 
 * touches the exact reclaimed boundary,
@@ -15,7 +15,7 @@ retest bar:
 * and the reversal agrees with the completed 240-minute parent displacement.
 
 The opposite boundary of the already completed balance is the declared causal
-liquidity target.  The module emits intents only; NautilusTrader owns all
+liquidity target. The module emits intents only; NautilusTrader owns all
 orders, fills, costs, positions, PnL and NAV.
 """
 from __future__ import annotations
@@ -43,14 +43,6 @@ TARGET_SOURCE = "completed_frozen_balance_opposite_boundary"
 
 def finite(value: Any) -> float:
     return parent.finite(value)
-
-
-def completed_bar_observation(open_time: Any) -> pd.Timestamp:
-    return (
-        pd.Timestamp(open_time)
-        + pd.Timedelta(minutes=1)
-        - pd.Timedelta(milliseconds=1)
-    )
 
 
 def parent_directional_bps(
@@ -169,7 +161,9 @@ def route_signals(
                 counts["retest_without_aligned_confirmation"] += 1
                 continue
             signal_time = pd.Timestamp(row["open_time"])
-            observe_time = completed_bar_observation(signal_time)
+            # The repository's Nautilus bars use the rich row's causal
+            # observed_time as ts_event.  Do not subtract one millisecond.
+            observe_time = pd.Timestamp(row["observed_time"])
             full = rich.iloc[int(details["break_index"]) : index + 1]
             if side > 0:
                 retest_stop = min(stop, finite(full["mark_low"].min()) - STOP_BUFFER_ATR * atr)
@@ -192,6 +186,7 @@ def route_signals(
                 "causal_target_source": TARGET_SOURCE,
                 "causal_target_observed_index": int(details["balance_end_index"]),
                 "v60_route": "parent_aligned_boundary_retest_failed_auction",
+                "observation_time_contract": "rich observed_time equals Nautilus bar ts_event",
             }
             selected = {
                 "scenario": OUTPUT_SCENARIO,
@@ -244,6 +239,7 @@ def route_signals(
         "retest_max_bars": RETEST_MAX_BARS,
         "boundary_close_max_atr": BOUNDARY_CLOSE_MAX_ATR,
         "target_contract": "opposite boundary of the completed frozen balance",
+        "observation_time_contract": "rich observed_time equals Nautilus bar ts_event",
         "performance_calculated": False,
         "future_information_used": False,
     }
