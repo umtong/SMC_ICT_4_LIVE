@@ -1,0 +1,129 @@
+name: candidate-07-structural-mss-close
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/model_structural_mss_close.py"
+      - "research/candidate-07/strategy_structural_mss_close.py"
+      - "research/candidate-07/backtest_structural_mss_close.py"
+      - "research/candidate-07/candidate_structural_mss_close.py"
+      - "research/candidate-07/staged_structural_mss_close.py"
+      - "research/candidate-07/tests/test_structural_mss_close.py"
+      - ".github/workflows/candidate-07-structural-mss-close.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify foundation and true-MSS contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-structural-close-pyc \
+            python -m compileall -q research/candidate-07
+          python -m unittest \
+            research/candidate-07/tests/test_structural_mss.py \
+            research/candidate-07/tests/test_structural_mss_close.py -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+
+      - name: Reproduce retest baseline Week-1
+        run: >-
+          python research/candidate-07/candidate_structural_mss.py week
+          --config research/candidate-07/config.json
+          --stage week-1
+          --start 2025-12-22
+          --end 2025-12-29
+          --output artifacts/structural-retest/week-1
+          --data-root .research-data/candidate-07
+
+      - name: Run staged true-MSS-close ablation
+        run: >-
+          python research/candidate-07/staged_structural_mss_close.py
+          --config research/candidate-07/config.json
+          --week-plan research/candidate-07/week_plan.json
+          --output artifacts/structural-mss-close
+          --data-root .research-data/candidate-07
+          --max-weeks 3
+          --run-long
+
+      - name: Build immutable baseline-ablation comparison
+        if: always()
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+
+          baseline_path = Path("artifacts/structural-retest/week-1/metrics.json")
+          pipeline_path = Path("artifacts/structural-mss-close/pipeline_summary.json")
+          baseline = json.loads(baseline_path.read_text()) if baseline_path.exists() else None
+          pipeline = json.loads(pipeline_path.read_text()) if pipeline_path.exists() else None
+          report = {
+              "candidate": "candidate-07-true-structural-mss-close",
+              "source_commit": "${{ github.sha }}",
+              "controlled_variable": "same-boundary one-minute retest only",
+              "baseline_retest_week_1": None if baseline is None else {
+                  "trades": baseline["trades"],
+                  "wins": baseline["wins"],
+                  "losses": baseline["losses"],
+                  "net_return": baseline["net_return"],
+                  "daily_geometric_growth": baseline["daily_geometric_growth"],
+                  "profit_factor": baseline["profit_factor"],
+                  "max_drawdown": baseline["max_drawdown"],
+                  "gate_passed": baseline["weekly_gate"]["passed"],
+              },
+              "mss_close_pipeline": pipeline,
+              "decision": (
+                  "PROMOTE_TRUE_MSS_CLOSE"
+                  if pipeline is not None
+                  and pipeline.get("all_requested_passed")
+                  else "TRUE_MSS_CLOSE_NOT_VALIDATED"
+              ),
+          }
+          destination = Path("artifacts/structural-mss-close-comparison.json")
+          destination.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+          print(destination.read_text())
+          PY
+
+      - name: Print immutable result
+        if: always()
+        run: |
+          test -f artifacts/structural-mss-close-comparison.json
+          cat artifacts/structural-mss-close-comparison.json
+          find artifacts/structural-mss-close -name metrics.json \
+            -print -exec cat {} \;
+
+      - name: Preserve complete true-MSS evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-structural-mss-close-${{ github.sha }}
+          path: |
+            artifacts/structural-retest
+            artifacts/structural-mss-close
+            artifacts/structural-mss-close-comparison.json
+          retention-days: 14
+          if-no-files-found: error
