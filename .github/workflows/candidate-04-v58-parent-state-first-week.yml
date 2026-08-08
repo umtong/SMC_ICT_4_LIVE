@@ -1,0 +1,169 @@
+name: candidate-04-v58-parent-state-first-week
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/v58_trigger.json"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-04-v58-parent-state-first-week
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      SOURCE_RUN_ID: "31239650624"
+      ROOT: artifacts/candidate-04-v58/week_1
+      EVIDENCE: research/candidate-04/evidence-v58-week1.json
+      C04_BUILD_START: "2023-05-27"
+      C04_EVALUATION_START: "2023-05-29"
+      C04_EVALUATION_END: "2023-06-04"
+      C04_BUILD_END: "2023-06-04"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-04-v57b-week1-31239650624
+          path: restored-v57b
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify V58 causal and Nautilus contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-04/micro_auction_parent_state_router.py \
+            research/candidate-04/nt_backtest_v58_parent_state.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_micro_auction_parent_state_router.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_tail_adverse_fill_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+
+      - name: Route V57b completed states into V58
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT"
+          rich_manifest="$(find restored-v57b -type f -path '*/week_1/rich/data_manifest.json' | head -n1)"
+          base_signals="$(find restored-v57b -type f -path '*/week_1/signals/signals.json' | head -n1)"
+          test -n "$rich_manifest" -a -n "$base_signals"
+          rich_dir="$(dirname "$rich_manifest")"
+          python research/candidate-04/micro_auction_parent_state_router.py \
+            --signals "$base_signals" \
+            --rich-dir "$rich_dir" \
+            --output "$ROOT/signals"
+          test -s "$ROOT/signals/signals.json"
+          test -s "$ROOT/signals/summary.json"
+          python -m json.tool "$ROOT/signals/summary.json"
+
+      - name: Execute one BTC account through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$ROOT/signals/signals.json" \
+          python research/candidate-04/nt_backtest_v58_parent_state.py \
+            --config research/candidate-04/nt_liquidity_config.json \
+            --build-start "$C04_BUILD_START" \
+            --build-end "$C04_BUILD_END" \
+            --evaluation-start "$C04_EVALUATION_START" \
+            --evaluation-end "$C04_EVALUATION_END" \
+            --cache .cache/candidate-04-v58/week1 \
+            --output "$ROOT/nautilus"
+          test -s "$ROOT/nautilus/metrics.json"
+          test -e "$ROOT/nautilus/positions.csv"
+          test -s "$ROOT/nautilus/strategy_events.json"
+
+      - name: Decide frequency and economic gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          python research/candidate-04/summarize_candidate_week.py \
+            --root "$ROOT" \
+            --candidate candidate-04-v58-parent-state-micro-auction \
+            --stage first_btc_week \
+            --min-trades 4 \
+            --min-active-days 3 \
+            --min-win-rate 0.75 \
+            --min-geometric-daily 0.01 \
+            --output "$ROOT/summary.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          summary=json.loads((root/'summary.json').read_text())
+          router=json.loads((root/'signals/summary.json').read_text())
+          summary['router_summary']=router
+          summary['frequency_pass']=bool(
+              int(summary.get('trades') or 0)>=4
+              and int(summary.get('active_days') or 0)>=3
+          )
+          summary['economic_pass']=bool(
+              summary.get('risk_pass')
+              and summary['frequency_pass']
+              and float(summary.get('win_rate') or 0.0)>=0.75
+              and float(summary.get('total_return') or 0.0)>0.0
+              and float(summary.get('geometric_daily_growth') or 0.0)>=0.01
+          )
+          summary['implementation_pass']=True
+          summary['decision']='FREEZE_AND_OPEN_WEEK_2' if summary['economic_pass'] else 'REJECT_OR_ABLATE_V58'
+          Path(os.environ['EVIDENCE']).write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v58-week1-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v58
+            research/candidate-04/evidence-v58-week1.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test -s "$EVIDENCE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research(candidate-04): record V58 first-week evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt*3))
+          done
+          exit 1
