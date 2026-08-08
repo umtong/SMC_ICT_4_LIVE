@@ -65,6 +65,80 @@ def patch(path: Path) -> None:
 ''',
         "v45 invalidation before target hierarchy",
     )
+
+    method = '''        def _cancel_pending_entry_after_invalidation(
+            self,
+            symbol: str,
+            observation: BarObs,
+        ) -> bool:
+            """Cancel a passive parent when its invalidation trades first."""
+            if (
+                self.active_plan is None
+                or self.active_symbol != symbol
+                or self.mutex.state != SlotState.ENTRY_PENDING
+            ):
+                return False
+            instrument_id = instruments[symbol].id
+            if not self.portfolio.is_flat(instrument_id):
+                return False
+            direction = self.active_plan.direction.value
+            stop = float(self.active_plan.stop_price)
+            invalidated = (
+                float(observation.low) <= stop
+                if direction == "LONG"
+                else float(observation.high) >= stop
+            )
+            if not invalidated:
+                return False
+            if self.cache.orders_open_count(
+                instrument_id=instrument_id,
+                strategy_id=self.id,
+            ):
+                self.cancel_all_orders(instrument_id)
+            self.lifecycle.append({
+                "type": "PENDING_ENTRY_CANCELED_AFTER_INVALIDATION",
+                "ts_event": int(observation.ts_ns),
+                "scenario_id": self.active_plan.scenario_id,
+                "symbol": symbol,
+                "direction": direction,
+                "stop": stop,
+                "bar_high": float(observation.high),
+                "bar_low": float(observation.low),
+                "reason": (
+                    "the active invalidation traded before the passive parent "
+                    "obtained position ownership"
+                ),
+            })
+            return True
+
+'''
+    text = replace_once(
+        text,
+        "        def _cancel_pending_entry_after_target_delivery(\n",
+        method + "        def _cancel_pending_entry_after_target_delivery(\n",
+        "v45 pending-invalidation method",
+    )
+    text = replace_once(
+        text,
+        '''                if self._cancel_pending_entry_after_target_delivery(
+                    symbol,
+                    observation,
+                ):
+                    continue
+''',
+        '''                if self._cancel_pending_entry_after_invalidation(
+                    symbol,
+                    observation,
+                ):
+                    continue
+                if self._cancel_pending_entry_after_target_delivery(
+                    symbol,
+                    observation,
+                ):
+                    continue
+''',
+        "v45 pending-invalidation hook",
+    )
     path.write_text(text, encoding="utf-8")
 
 
