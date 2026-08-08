@@ -47,8 +47,18 @@ jobs:
         shell: bash
         run: |
           cat > research/candidate-05/strategy_v36_cross_asset_repricing_gate.py <<'PY'
+          from typing import Any
+
           from candidate21_leader_laggard_strategy import LeaderLaggardTransferMixin
           from strategy_v26 import ScenarioValidEntryStrategy
+
+          REVERSAL_BRANCH_PREFIX = "TAIL_FLOW_"
+
+          def symbol_from_instrument(value: Any) -> str:
+              text = str(value)
+              if "-PERP" not in text:
+                  raise ValueError(f"unexpected project instrument id: {text}")
+              return text.split("-PERP", 1)[0]
 
           SystemicRepricingGateMixin = LeaderLaggardTransferMixin
 
