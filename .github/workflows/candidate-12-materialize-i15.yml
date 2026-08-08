@@ -1,4 +1,4 @@
-name: candidate-12-materialize-i16
+name: candidate-12-materialize-i17
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: candidate-12-materialize-i16
+  group: candidate-12-materialize-i17
   cancel-in-progress: false
 
 jobs:
@@ -25,17 +25,17 @@ jobs:
       - name: Checkout candidate branch
         uses: actions/checkout@v4
 
-      - name: Install I16 secondary-sweep reversal
+      - name: Install I17 local-MSS re-sweep correction
         shell: bash
         run: |
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           smc4 doctor
-          python research/candidate-12/materialize_i16.py
+          python research/candidate-12/materialize_i17.py
           python -m compileall -q research/candidate-12
           python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add research/candidate-12/logic.py research/candidate-12/test_logic.py research/candidate-12/config.json
-          git commit -m "candidate-12: add secondary-sweep failure reversal"
+          git commit -m "candidate-12: align failed-acceptance reversal with local MSS"
           git push origin HEAD:research/candidate-12
