@@ -1,0 +1,173 @@
+name: candidate-02-v158-candidate13-v4-oi-router
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths: ["research/candidate-02/v158_trigger.json"]
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-02-v158-candidate13-v4-oi-router
+  cancel-in-progress: false
+
+env:
+  C13_SOURCE_COMMIT: 6e8e7a1461cbc77b82fa9f7f2ec2e29a37726b59
+  C13_ROOT: /tmp/candidate13-v158
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  exposed-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0:0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Materialize exact Candidate 13 v4 with V158 OI state
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          git fetch --no-tags origin research/candidate-13
+          git cat-file -e "$C13_SOURCE_COMMIT^{commit}"
+          rm -rf "$C13_ROOT"; mkdir -p "$C13_ROOT"
+          git archive "$C13_SOURCE_COMMIT" research/candidate-13 \
+            | tar -x -C "$C13_ROOT" --strip-components=2
+          python research/candidate-02/v158_materialize_candidate13_oi.py \
+            --root "$C13_ROOT" --source-commit "$C13_SOURCE_COMMIT"
+
+      - name: Verify causal source and implementation-only transport repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$C13_ROOT:$GITHUB_WORKSPACE/src"
+          python -m py_compile \
+            research/candidate-02/v158_materialize_candidate13_oi.py \
+            "$C13_ROOT/v158_oi_router.py" \
+            "$C13_ROOT/v158_run_leadership_scdam.py" \
+            "$C13_ROOT/v158_candidate13_runner.py" \
+            "$C13_ROOT/candidate13_runner.py" \
+            "$C13_ROOT/aggregate.py"
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+
+          root = Path(os.environ['C13_ROOT'])
+          protocol = json.loads((root / 'v158_protocol.json').read_text(encoding='utf-8'))
+          runner = (root / 'v158_run_leadership_scdam.py').read_text(encoding='utf-8')
+          router = (root / 'v158_oi_router.py').read_text(encoding='utf-8')
+          assert protocol['claim_eligible'] is False
+          assert protocol['aggregate_gate']['observed_calendar_days'] == 140
+          assert protocol['aggregate_gate']['minimum_daily_geometric_growth'] == 0.01
+          assert protocol['aggregate_gate']['minimum_closed_trades'] == 25
+          assert protocol['aggregate_gate']['minimum_win_rate'] == 0.8
+          assert protocol['aggregate_gate']['risk_fraction'] == 0.03
+          assert protocol['aggregate_gate']['global_pending_entry_plus_position_limit'] == 1
+          assert 'MAX_NONMATERIAL_OI_EXPANSION_15M = 0.001' in router
+          assert 'OBSERVATION_DELAY = pd.Timedelta(minutes=5)' in router
+          assert 'metrics_observed_time' in router
+          assert 'create_time >= sweep' in router
+          assert 'minimum_bytes = 1 if url.endswith(".CHECKSUM") else 100' in runner
+          assert 'CausalOIRouter._download = staticmethod' in runner
+          print('V158 causal OI and transport contracts: OK')
+          PY
+          python -m unittest discover -s "$C13_ROOT" -p 'test_*.py' -v
+
+      - name: Run twenty exposed regression weeks through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$C13_ROOT:$GITHUB_WORKSPACE/src"
+          target="research/candidate-02/results/v158_candidate13_v4_oi_router/$GITHUB_SHA"
+          rm -rf "$target"; mkdir -p "$target"
+          for n in $(seq 10 29); do
+            week="W${n}"
+            python "$C13_ROOT/v158_candidate13_runner.py" "$week" "$target/$week" \
+              --protocol "$C13_ROOT/v158_protocol.json"
+          done
+          python "$C13_ROOT/aggregate.py" \
+            --results "$target" \
+            --protocol "$C13_ROOT/v158_protocol.json" \
+            --output "$target/decision.json"
+          cp "$C13_ROOT/v158_protocol.json" "$target/protocol.json"
+          cp "$C13_ROOT/v158_materialization.json" "$target/materialization.json"
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import shutil
+
+          target = Path('research/candidate-02/results/v158_candidate13_v4_oi_router') / os.environ['GITHUB_SHA']
+          decision = json.loads((target / 'decision.json').read_text(encoding='utf-8'))
+          trades = int(decision.get('closed_trades', 0))
+          wins = int(decision.get('wins', 0))
+          win_rate = float(decision.get('win_rate', 0.0))
+          safety = bool(decision.get('all_safety_audits_passed', False))
+          component_reusable = safety and trades >= 10 and win_rate >= 0.80
+          project_gate = bool(decision.get('gate_passed', False))
+          if project_gate:
+              status = 'PROMOTE_EXACT_SOURCE_TO_UNTOUCHED_CONTINUOUS'
+              next_action = 'freeze exact V158 source and execute a precommitted continuous four-symbol account'
+          elif component_reusable:
+              status = 'RETAIN_AS_PRECISION_COMPONENT_ADD_INDEPENDENT_SCENARIOS'
+              next_action = 'preserve OI-gated FAR and widen opportunity set with independent causal scenario families'
+          else:
+              status = 'REJECT_V158_OI_ROUTER'
+              next_action = 'discard OI-gated FAR as active policy and change market-state mechanism'
+          decision.update({
+              'schema': 'candidate-02-v158-development-decision-v1',
+              'engine': 'NautilusTrader 1.230.0',
+              'custom_backtest_engine': False,
+              'risk_fraction': 0.03,
+              'global_pending_entry_plus_position_limit': 1,
+              'development_only': True,
+              'untouched_data_used': False,
+              'project_target_met': False,
+              'success_claim': False,
+              'component_reusable': component_reusable,
+              'observed_trade_frequency_per_calendar_day': trades / 140.0,
+              'all_closed_trades_won': trades > 0 and wins == trades,
+              'status': status,
+              'next_action': next_action,
+              'implementation_fix': (
+                  'accepted valid short checksum text while retaining ZIP size, checksum and archive integrity checks'
+              ),
+          })
+          (target / 'decision.json').write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          for n in range(10, 30):
+              week = target / f'W{n}'
+              shutil.rmtree(week / 'data', ignore_errors=True)
+              shutil.rmtree(week / 'oi_data', ignore_errors=True)
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit compact V158 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="research/candidate-02/results/v158_candidate13_v4_oi_router/$GITHUB_SHA"
+          git fetch origin research/candidate-02
+          if [[ "$(git rev-parse origin/research/candidate-02)" != "$GITHUB_SHA" ]]; then
+            echo "branch advanced; refusing to mix source and evidence"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$target"
+          git commit -m "research(candidate-02): record V158 OI-router evidence"
+          git push origin HEAD:research/candidate-02
