@@ -13,6 +13,7 @@ from aggtrade_flow_response_auction_signals_v3 import (
     INITIATIVE_FAMILY,
 )
 from run_flow_response_staged_validation import execute_staged_validation
+from flow_response_trade_path_diagnostics_v2 import DIAGNOSTIC_REVISION
 
 
 def _attribution_checks() -> dict[str, bool]:
@@ -81,6 +82,8 @@ def _diagnostic_summary(*, suite: str, mode: str, economic_pass: bool) -> dict:
     return {
         "suite": suite,
         "implementation_revision": IMPLEMENTATION_REVISION,
+        "ten_second_cadence_contract": "EXACT_CONSECUTIVE_10_SECONDS",
+        "trade_path_diagnostic_revision": DIAGNOSTIC_REVISION,
         "flow_response_family_mode": mode,
         "auction_family_mode": mode,
         "diagnostic_family_ablation": True,
@@ -94,6 +97,8 @@ def _diagnostic_summary(*, suite: str, mode: str, economic_pass: bool) -> dict:
         "trade_path_diagnostic_summary": {
             "records": 3,
             "complete_records": 3,
+            "diagnostic_revision_counts": {DIAGNOSTIC_REVISION: 3},
+            "expected_diagnostic_revision": DIAGNOSTIC_REVISION,
         },
         "suite_gate_checks": {
             "minimum_closed_trades": True,
