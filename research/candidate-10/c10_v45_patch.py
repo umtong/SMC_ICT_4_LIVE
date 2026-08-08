@@ -70,18 +70,21 @@ def patch(path: Path) -> None:
             self,
             event: OrderEvent,
         ) -> None:
-            """Close any quantity filled after protective activation failed.
+            """Close a later parent fill after protective activation failed.
 
-            Nautilus can emit more than one parent fill at the same timestamp.
-            A first partial fill may activate and reject a contingent stop, then
-            a later queued parent fill can arrive after the initial fail-close
-            order.  While the fail-close latch is set, every fill event must
-            leave no open parent and no residual position.
+            Nautilus can emit more than one fill for the same passive parent at
+            one timestamp. The first partial fill may activate and reject the
+            contingent stop; a later queued fill from that same parent can then
+            reopen residual exposure after the first fail-close order was sized.
+            Reassertion therefore applies only to fills of the original parent,
+            never to the market orders used to flatten the position.
             """
             if (
                 not self.protection_activation_fail_close_pending
                 or self.active_plan is None
                 or self.active_symbol is None
+                or self.active_entry_order_id is None
+                or str(event.client_order_id) != self.active_entry_order_id
             ):
                 return
             instrument_id = instruments[self.active_symbol].id
@@ -99,8 +102,8 @@ def patch(path: Path) -> None:
                 "symbol": self.active_symbol,
                 "filled_client_order_id": str(event.client_order_id),
                 "reason": (
-                    "a later queued fill arrived while protective activation "
-                    "fail-close ownership remained active"
+                    "a later queued parent fill arrived while protective "
+                    "activation fail-close ownership remained active"
                 ),
             })
             self.close_all_positions(instrument_id)
