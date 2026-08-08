@@ -1,0 +1,106 @@
+{
+  "schema": "candidate-15-v31-squeeze-expansion-v1",
+  "candidate": "candidate-15-v31-squeeze-expansion",
+  "created_utc": "2026-08-09",
+  "research_question": "Does a completed one-hour Bollinger-inside-Keltner volatility squeeze followed by a directional fifteen-minute expansion and a separate five-minute continuation confirmation produce robust cost-positive day-trading opportunities?",
+  "external_mechanisms": [
+    {
+      "source": "Bollinger/Keltner squeeze and volatility-breakout practice",
+      "reused": [
+        "volatility compression precedes expansion but does not predict direction",
+        "direction is chosen only after a completed breakout",
+        "volume confirmation and a stop outside the compression structure"
+      ]
+    },
+    {
+      "source": "crypto realized-volatility and volatility-commonality research",
+      "reused": [
+        "cross-market volatility state and range information are useful state variables"
+      ]
+    }
+  ],
+  "scenario": {
+    "context": "at least three consecutive completed one-hour bars with 20-hour Bollinger Bands wholly inside 20-hour Keltner Channels",
+    "liquidity_objective": "the high or low of the completed six-hour compression box",
+    "interaction": "a completed fifteen-minute bar closes outside that box with a large body, above-prior volume, directional taker pressure and normalized range expansion",
+    "market_state": {
+      "BREADTH_SQUEEZE_RELEASE": "at least three markets break in the same direction at the same completed fifteen-minute timestamp",
+      "RELATIVE_SQUEEZE_RELEASE": "breadth is unresolved, but one market has a uniquely large ATR-normalized expansion",
+      "UNRESOLVED": "all other releases are no-trade"
+    },
+    "confirmation": "the next completed five-minute bar remains outside the box, closes further in the breakout direction and keeps aligned taker pressure",
+    "entry": "confirmation close",
+    "invalidation": "beyond the opposite extreme of the breakout bar and compression boundary plus ten percent of prior one-hour ATR",
+    "management": "trail the best completed five-minute close by one and a half prior one-hour ATRs",
+    "exit": "trailing stop or twelve-hour cap",
+    "arbitration": "one global open position across four symbols"
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and latest daily five-minute klines",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-04-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": [
+      "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04",
+      "2026-08-05", "2026-08-06", "2026-08-07"
+    ],
+    "visibility": "squeeze and box use completed bars; breakout is completed before confirmation; entry is after a separately completed confirmation bar"
+  },
+  "fixed_rules": {
+    "bollinger_lookback_hours": 20,
+    "bollinger_std_multiple": 2.0,
+    "keltner_lookback_hours": 20,
+    "keltner_atr_multiple": 1.5,
+    "minimum_consecutive_squeeze_hours": 3,
+    "compression_box_hours": 6,
+    "breakout_bar_minutes": 15,
+    "confirmation_minutes": 5,
+    "minimum_breakout_body_fraction": 0.6,
+    "minimum_confirmation_body_fraction": 0.5,
+    "minimum_directional_taker_pressure": 0.0,
+    "breakout_volume_prior_window_bars": 672,
+    "breakout_volume_prior_minimum_bars": 192,
+    "breakout_volume_quantile": 0.6,
+    "breakout_range_atr_min": 0.35,
+    "breadth_fraction_min": 0.75,
+    "relative_expansion_atr_min": 0.6,
+    "relative_leader_gap_atr_min": 0.2,
+    "initial_stop_atr_buffer": 0.1,
+    "trailing_stop_atr": 1.5,
+    "maximum_hold_minutes": 720,
+    "same_symbol_cooldown_minutes": 360,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_bar_stop_policy": "STOP_FIRST_CONSERVATIVE"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 0.25,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 5,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 1,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Only a fixed route positive in all declared splits advances to NautilusTrader.",
+    "reject": "Do not alter squeeze duration, channel parameters, breakout, confirmation or stop thresholds after evaluation."
+  }
+}
