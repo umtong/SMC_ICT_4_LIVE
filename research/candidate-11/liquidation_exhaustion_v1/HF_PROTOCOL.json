@@ -1,0 +1,49 @@
+{
+  "schema": "candidate-11-liquidation-exhaustion-hf-v1",
+  "created_utc": "2026-08-09",
+  "status": "DEVELOPMENT_THEN_LOCKED_FRESH_SCREEN",
+  "dataset": {
+    "repo_id": "Mindbyte-89/btcusdt-microbar-v2",
+    "revision": "1d41abb",
+    "license": "MIT",
+    "source": "Binance USD-M public WebSocket exchange timestamps",
+    "streams": ["trades", "book_ticks", "liquidations"],
+    "collector_requirement": "v2 only; the predecessor's forceOrder route was broken"
+  },
+  "development": {
+    "day": "2026-04-29",
+    "minimum_executable_episodes": 3,
+    "minimum_target_first_rate": 0.8,
+    "positive_mean_realized_r": true
+  },
+  "fresh_if_development_passes": {
+    "day": "2026-04-30",
+    "source_and_logic_frozen": true,
+    "minimum_executable_episodes": 3,
+    "minimum_target_first_rate": 0.8,
+    "positive_mean_realized_r": true
+  },
+  "parent_event": {
+    "cascade": "same-side actual forceOrder observations separated by no more than three seconds",
+    "tail": "cascade notional at or above the shifted expanding 95th percentile after at least twenty prior cascades",
+    "delivery": "ordinary trade return and active flow both align with the liquidation direction"
+  },
+  "state_transition": {
+    "confirmation": "strictly later completed second with opposite trade return, opposite active flow, price leaving the liquidation extreme, opposite best-quote imbalance and opposite microprice premium without a worse spread",
+    "unresolved": "any missing or incoherent trade/book state is no-trade"
+  },
+  "geometry": {
+    "entry": "completed opposite-initiative trade second",
+    "invalidation": "liquidation cascade trade-price extreme plus one basis-point buffer",
+    "target": "last trade close immediately before the cascade",
+    "round_trip_cost_bps": 20.0,
+    "minimum_net_r": 1.15,
+    "maximum_hold_seconds": 300,
+    "same_second_target_and_stop": "stop first"
+  },
+  "limitations": [
+    "two preserved dates provide a diagnostic and a locked fresh screen, not long-term evidence",
+    "no account or success claim is allowed without NautilusTrader promotion and longer continuous data"
+  ],
+  "success_claim_allowed": false
+}
