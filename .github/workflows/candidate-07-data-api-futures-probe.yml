@@ -37,18 +37,20 @@ jobs:
               "vision-api-fapi-klines": "https://api.binance.vision/fapi/v1/klines",
           }
 
-          def get(url: str) -> tuple[int, object]:
+          def get(url: str) -> tuple[int | None, object]:
               request = urllib.request.Request(
                   url,
                   headers={"User-Agent": "smc4-candidate07/1"},
               )
               try:
                   with urllib.request.urlopen(request, timeout=30) as response:
-                      status = int(response.status)
+                      status: int | None = int(response.status)
                       raw = response.read().decode("utf-8")
               except urllib.error.HTTPError as exc:
                   status = int(exc.code)
                   raw = exc.read().decode("utf-8")
+              except urllib.error.URLError as exc:
+                  return None, {"network_error": str(exc.reason)}
               try:
                   return status, json.loads(raw)
               except json.JSONDecodeError:
