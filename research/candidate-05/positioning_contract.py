@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from functools import wraps
 import json
 from pathlib import Path
+import re
 import urllib.request
 from typing import Any, Callable
 
@@ -63,6 +64,13 @@ def _download_metrics(symbol: str, day: date, cache: Path):
     return archive, checksum, evidence
 
 
+def _archive_day(path: Path) -> str:
+    match = re.search(r"metrics-(\d{4}-\d{2}-\d{2})\.zip$", Path(path).name)
+    if match is None:
+        raise RuntimeError(f"cannot identify metrics archive day: {path}")
+    return match.group(1)
+
+
 def _read_metrics(path: Path) -> pd.DataFrame:
     raw = pd.read_csv(path, compression="zip")
     required = {"create_time", "symbol", *_METRICS_COLUMNS}
@@ -74,42 +82,74 @@ def _read_metrics(path: Path) -> pd.DataFrame:
     raw = raw.sort_values("create_time")
     if raw["create_time"].duplicated().any():
         raise RuntimeError(f"duplicate metrics timestamps in {path}")
+    raw["metrics_create_time"] = raw["create_time"]
     raw["metrics_observed_time"] = _as_utc_nanoseconds(
         raw["create_time"] + pd.Timedelta(minutes=5),
     )
-    return raw[["metrics_observed_time", *_METRICS_COLUMNS]].copy()
+    raw["_source_day"] = _archive_day(path)
+    return raw[
+        [
+            "metrics_create_time",
+            "metrics_observed_time",
+            "_source_day",
+            *_METRICS_COLUMNS,
+        ]
+    ].copy()
+
+
+def _rows_identical(group: pd.DataFrame) -> bool:
+    return all(group[column].nunique(dropna=False) <= 1 for column in _METRICS_COLUMNS)
 
 
 def _deduplicate_combined_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
-    """Collapse identical daily-boundary observations and reject conflicts.
+    """Resolve daily-boundary overlap by the timestamp's owning archive.
 
-    Binance daily metrics archives can repeat the same five-minute observation
-    at an adjacent file boundary.  An exact duplicate carries no new information
-    and is normalized to one row.  Conflicting values at the same timestamp are
-    an evidence-integrity failure and are never selected by file order.
+    Some Binance daily metrics files include a spillover observation at the next
+    UTC midnight while the next day's archive also contains its own observation
+    for that same create_time.  When they disagree, file concatenation order is
+    not evidence.  The canonical row is the one whose source archive day equals
+    the original metrics create_time date.  Exact duplicates without ownership
+    metadata may be collapsed; any other conflict remains a hard integrity error.
     """
     frame = metrics.sort_values("metrics_observed_time", kind="stable").copy()
-    duplicated = frame["metrics_observed_time"].duplicated(keep=False)
-    if not duplicated.any():
+    if not frame["metrics_observed_time"].duplicated(keep=False).any():
         return frame.reset_index(drop=True)
 
-    for timestamp, group in frame.loc[duplicated].groupby(
-        "metrics_observed_time",
-        sort=False,
-    ):
+    selected: list[pd.Series] = []
+    has_ownership = {"metrics_create_time", "_source_day"}.issubset(frame.columns)
+    for timestamp, group in frame.groupby("metrics_observed_time", sort=True):
+        if len(group) == 1:
+            selected.append(group.iloc[0])
+            continue
+
+        candidates = group
+        if has_ownership:
+            create_days = group["metrics_create_time"].dt.strftime("%Y-%m-%d")
+            owner_mask = create_days == group["_source_day"].astype(str)
+            owners = group.loc[owner_mask]
+            if len(owners) == 1:
+                selected.append(owners.iloc[0])
+                continue
+            if len(owners) > 1:
+                candidates = owners
+
+        if _rows_identical(candidates):
+            selected.append(candidates.iloc[-1])
+            continue
         conflicts = [
             column
             for column in _METRICS_COLUMNS
-            if group[column].nunique(dropna=False) > 1
+            if candidates[column].nunique(dropna=False) > 1
         ]
-        if conflicts:
-            raise RuntimeError(
-                "conflicting combined metrics observation at "
-                f"{timestamp}: {conflicts}",
-            )
-    return frame.drop_duplicates("metrics_observed_time", keep="last").reset_index(
-        drop=True,
-    )
+        raise RuntimeError(
+            "conflicting combined metrics observation without one canonical "
+            f"archive owner at {timestamp}: {conflicts}",
+        )
+
+    return pd.DataFrame(selected).sort_values(
+        "metrics_observed_time",
+        kind="stable",
+    ).reset_index(drop=True)
 
 
 def _positioning_features(metrics: pd.DataFrame) -> pd.DataFrame:
@@ -131,7 +171,7 @@ def _positioning_features(metrics: pd.DataFrame) -> pd.DataFrame:
         fill_method=None,
     )
     frame["metrics_observed_time_ns"] = frame["metrics_observed_time"].astype("int64")
-    return frame
+    return frame.drop(columns=["metrics_create_time", "_source_day"], errors="ignore")
 
 
 def load_range(
