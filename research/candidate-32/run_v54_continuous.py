@@ -12,26 +12,13 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 CANDIDATE29 = ROOT / "candidate-29"
-CANDIDATE19 = ROOT / "candidate-19"
-CANDIDATE18 = ROOT / "candidate-18"
-CANDIDATE17 = ROOT / "candidate-17"
-CANDIDATE16 = ROOT / "candidate-16"
 CANDIDATE05 = ROOT / "candidate-05"
 V54_ACTIVE = CANDIDATE05 / "v54_active"
 
-# v54's top-level ``strategy`` must resolve to v54_active, while Candidate 17's
-# historical ``strategy_v2`` must resolve to Candidate 16 rather than the
-# unrelated Candidate 05 module with the same name.
-_MODULE_PRECEDENCE = (
-    HERE,
-    V54_ACTIVE,
-    CANDIDATE29,
-    CANDIDATE19,
-    CANDIDATE18,
-    CANDIDATE17,
-    CANDIDATE16,
-    CANDIDATE05,
-)
+# The v54 inheritance tree uses historical top-level module names (strategy,
+# strategy_v2, ...).  Keep the process free of Candidate16-19 modules and give
+# every one of those names a single unambiguous Candidate05 owner.
+_MODULE_PRECEDENCE = (HERE, V54_ACTIVE, CANDIDATE29, CANDIDATE05)
 for path in _MODULE_PRECEDENCE:
     value = str(path)
     while value in sys.path:
@@ -41,9 +28,9 @@ sys.path[:0] = [str(path) for path in _MODULE_PRECEDENCE]
 import run_continuous as _continuous
 from nautilus_trader.config import ImportableStrategyConfig
 
-# run_continuous in the source evidence branch predates the module-collision
-# repair and mutates sys.path at import time. Reassert the exact v54 dependency
-# precedence before Nautilus dynamically imports the strategy class.
+# The shared runner mutates sys.path while importing its generic data/account
+# machinery. Reassert the v54-only strategy namespace before Nautilus performs
+# its dynamic strategy import.
 for path in _MODULE_PRECEDENCE:
     value = str(path)
     while value in sys.path:
@@ -76,8 +63,6 @@ def run(
     end: date,
     config_path: Path,
 ) -> dict[str, Any]:
-    # The shared runner retains exact chunk/hash/grid/account contracts. Only
-    # its import target is changed from Candidate 19 to the frozen v54 class.
     _continuous._strategy_config = _v54_strategy_config
     result = _continuous.run(
         input_root=input_root,
