@@ -49,7 +49,6 @@ class DummyEngine:
 
     def _track_aac_pullback(self, auction: object, bar: BarObs) -> None:
         self.track_calls += 1
-        # A LOW-side accepted auction fails only after a later deep re-entry.
         if bar.close > 101.8:
             auction.acceptance_invalidated = True
 
@@ -121,10 +120,12 @@ def auction(*, exclusive_rejection: bool = False) -> SimpleNamespace:
 
 
 def completion_bar() -> BarObs:
+    # Body 2.1 exceeds the frozen 0.18 ATR requirement; close location and
+    # negative flow also satisfy a LOW-side accepted-auction reacceleration.
     return BarObs(
         ts_ns=100,
-        open=98.5,
-        high=98.6,
+        open=99.5,
+        high=99.6,
         low=97.0,
         close=97.4,
         volume=1000.0,
