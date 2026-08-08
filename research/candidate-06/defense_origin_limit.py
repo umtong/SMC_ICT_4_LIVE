@@ -20,6 +20,14 @@ from typing import Any, Mapping
 
 from causal_clock import ONE_MINUTE_NS
 
+# Python ``datetime`` and Nautilus GTD timers accept microsecond resolution.
+# A bar stamped at an auction boundary represents the just-completed source
+# interval ending at that boundary. Encoding GTD exactly at the same timestamp
+# lets the timer expire before that bar is matched. One microsecond after the
+# logical boundary permits only that boundary-stamped bar; the next one-minute
+# bar is still one full minute later and therefore belongs to the next auction.
+BAR_BOUNDARY_GTD_ENCODING_NS = 1_000
+
 
 @dataclass(frozen=True, slots=True)
 class EntryPlacement:
@@ -78,8 +86,11 @@ def _resolve_lcor_reaccept_failure_half_back(
 
     The failed ownership boundary and the second-failure close are known at the
     completed decision timestamp. Their midpoint is the non-fitted equilibrium
-    of the completed displacement away from the boundary. The limit expires at
-    the end of the same fixed LCOR auction, so a later auction cannot rescue it.
+    of the completed displacement away from the boundary. The logical lifetime
+    ends with the same fixed LCOR auction. Because completed source bars are
+    timestamped at their right edge, the GTD transport timestamp is encoded one
+    microsecond after that edge so Nautilus can match the final in-auction bar
+    before expiring the order.
     """
 
     decision_ts_ns = int(snapshot.observation.ts_ns)
@@ -109,7 +120,11 @@ def _resolve_lcor_reaccept_failure_half_back(
         )
 
     period_minutes = int(params.get("ciot_auction_period_minutes", 15))
-    expiry_ts_ns = _next_interval_boundary_ns(decision_ts_ns, period_minutes)
+    logical_boundary_ts_ns = _next_interval_boundary_ns(
+        decision_ts_ns,
+        period_minutes,
+    )
+    expiry_ts_ns = logical_boundary_ts_ns + BAR_BOUNDARY_GTD_ENCODING_NS
     details = {
         **base_details,
         "direction": direction,
@@ -121,13 +136,17 @@ def _resolve_lcor_reaccept_failure_half_back(
         "objective_price": target,
         "objective_already_touched": objective_already_touched,
         "auction_period_minutes": period_minutes,
+        "logical_auction_boundary_ts_ns": logical_boundary_ts_ns,
         "entry_expiry_ts_ns": expiry_ts_ns,
+        "bar_boundary_gtd_encoding_ns": BAR_BOUNDARY_GTD_ENCODING_NS,
         "remaining_seconds": (
-            expiry_ts_ns - decision_ts_ns
+            logical_boundary_ts_ns - decision_ts_ns
         ) / 1_000_000_000,
         "placement_contract": (
             "midpoint of completed second-failure close and pre-existing failed "
-            "ownership boundary; no future bar or outcome is inspected"
+            "ownership boundary; logical lifetime ends at the same auction "
+            "boundary; GTD is transported one microsecond later solely so the "
+            "right-edge-stamped final in-auction bar is matched before expiry"
         ),
     }
     if not boundary_is_favorable:
@@ -157,7 +176,7 @@ def _resolve_lcor_reaccept_failure_half_back(
             reason="SECOND_FAILURE_BAR_OBJECTIVE_ALREADY_TOUCHED",
             details=details,
         )
-    if expiry_ts_ns <= decision_ts_ns:
+    if logical_boundary_ts_ns <= decision_ts_ns:
         return EntryPlacement(
             mode="FAILED_BOUNDARY_HALF_BACK_LIMIT",
             order_type="LIMIT",
