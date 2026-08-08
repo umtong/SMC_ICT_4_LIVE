@@ -1,0 +1,93 @@
+name: Candidate 15 V15 quarter-hour public delivery diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - "research/candidate-15/protocol-v15-quarter-hour-public-delivery.json"
+      - "research/candidate-15/diagnose_v15_quarter_hour.py"
+      - ".github/workflows/candidate-15-v15-quarter-hour.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v15-quarter-hour-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 1
+
+      - name: Verify common environment and source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile research/candidate-15/diagnose_v15_quarter_hour.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          protocol = json.loads(Path('research/candidate-15/protocol-v15-quarter-hour-public-delivery.json').read_text())
+          assert protocol['schema'] == 'candidate-15-v15-quarter-hour-public-delivery-v1'
+          assert protocol['portfolio_diagnostic']['global_position_limit'] == 1
+          assert protocol['walk_forward']['evaluation_start'] == '2025-01-01'
+          PY
+
+      - name: Run prior-only multi-asset mechanism diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-15/diagnose_v15_quarter_hour.py \
+            --protocol research/candidate-15/protocol-v15-quarter-hour-public-delivery.json \
+            --output research/candidate-15/v15/quarter_hour/results
+
+      - name: Remove downloaded market archives
+        if: always()
+        shell: bash
+        run: rm -rf research/candidate-15/v15/quarter_hour/results/data
+
+      - name: Persist compact mechanism evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          result_dir="research/candidate-15/v15/quarter_hour/results"
+          cp "$result_dir/RESULT.md" research/candidate-15/V15_QUARTER_HOUR_RESULT.md
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-v15-bot
+          git config user.email candidate-15-v15-bot@users.noreply.github.com
+          git add \
+            research/candidate-15/V15_QUARTER_HOUR_RESULT.md \
+            research/candidate-15/v15/quarter_hour/results
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15 v15: persist quarter-hour causal diagnostic [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+
+      - name: Upload compact evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v15-quarter-hour-${{ github.run_id }}
+          path: |
+            research/candidate-15/V15_QUARTER_HOUR_RESULT.md
+            research/candidate-15/v15/quarter_hour/results
+          if-no-files-found: warn
+          retention-days: 30
