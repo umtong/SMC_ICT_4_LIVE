@@ -1,21 +1,22 @@
-name: candidate-12-i21-cross-market-transfer-screen
+name: candidate-12-i22-causal-microstate-diagnostic
 
 on:
   push:
     branches: ["research/candidate-12"]
     paths:
       - ".github/workflows/candidate-12-research.yml"
+      - "research/candidate-12/diagnose_i22_microstate.py"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i21-transfer-${{ github.sha }}
+  group: candidate-12-i22-microstate-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  transfer-screen:
+  diagnostic:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     container:
@@ -24,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify unchanged I19 strategy
+      - name: Verify unchanged I19 baseline and causal diagnostic
         shell: bash
         run: |
           set -euo pipefail
@@ -35,68 +36,51 @@ jobs:
           test "$(git hash-object research/candidate-12/strategy_adapter.py)" = "c8f1a2c30fc598bda1b03adaafde3b4a55f50018"
           python -m compileall -q research/candidate-12
           python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
-
-      - name: Run W1 transfer gate, then W12 only for lossless positive symbols
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROOT=artifacts/candidate-12/I21-transfer
-          mkdir -p "$ROOT"
-          for SYMBOL in ETHUSDT SOLUSDT XRPUSDT; do
-            W1="$ROOT/${SYMBOL}-W1"
-            mkdir -p "$W1"
-            python research/candidate-12/run.py \
-              --symbol "$SYMBOL" --week W1 --output "$W1" | tee "$W1.console.json"
-            SYMBOL="$SYMBOL" ROOT="$ROOT" python - <<'PY'
-          from pathlib import Path
-          import json, os
-          symbol = os.environ["SYMBOL"]
-          root = Path(os.environ["ROOT"])
-          m = json.loads((root / f"{symbol}-W1" / "metrics.json").read_text())
-          valid = (
-              m["closed_trades"] >= 1
-              and m["losses"] == 0
-              and float(m["final_nav"]) > float(m["starting_nav"])
-              and m["risk_budget_passed"]
-              and m["global_slot_passed"]
-              and m["event_log_valid"]
-              and not m["engine_errors"]
-              and not m["liquidation_detected"]
-          )
-          (root / f"{symbol}.continue").write_text("1" if valid else "0")
-          print(json.dumps({"symbol": symbol, "continue_to_w12": valid, "metrics": m}, indent=2))
+          python - <<'PY'
+          import pandas as pd
+          import pyarrow
+          print({"pandas": pd.__version__, "pyarrow": pyarrow.__version__})
           PY
-            if [[ "$(cat "$ROOT/${SYMBOL}.continue")" == "1" ]]; then
-              W12="$ROOT/${SYMBOL}-W12"
-              mkdir -p "$W12"
-              python research/candidate-12/run.py \
-                --symbol "$SYMBOL" --week W12 --output "$W12" | tee "$W12.console.json"
-            fi
-          done
 
-      - name: Summarize transfer evidence
+      - name: Reproduce I19 W1 and W12 baseline
         shell: bash
         run: |
           set -euo pipefail
+          for W in W1 W12; do
+            O="artifacts/candidate-12/BTCUSDT-${W}"
+            mkdir -p "$O"
+            python research/candidate-12/run.py --symbol BTCUSDT --week "$W" --output "$O" | tee "$O.console.json"
+          done
           python - <<'PY'
           from pathlib import Path
           import json
-          root = Path("artifacts/candidate-12/I21-transfer")
-          result = {"schema": "candidate-12-i21-transfer-v1", "symbols": {}}
-          for symbol in ("ETHUSDT", "SOLUSDT", "XRPUSDT"):
-              item = {"W1": json.loads((root / f"{symbol}-W1" / "metrics.json").read_text())}
-              p = root / f"{symbol}-W12" / "metrics.json"
-              if p.exists():
-                  item["W12"] = json.loads(p.read_text())
-              result["symbols"][symbol] = item
-          (root / "summary.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
-          print(json.dumps(result, indent=2, sort_keys=True))
+          root = Path("artifacts/candidate-12")
+          expected = {"W1": 6, "W12": 4}
+          for week, count in expected.items():
+              item = json.loads((root / f"BTCUSDT-{week}" / "metrics.json").read_text())
+              assert item["closed_trades"] == count, (week, item)
+              assert item["wins"] == count and item["losses"] == 0, (week, item)
+              assert item["risk_budget_passed"] and item["global_slot_passed"], item
+              assert item["event_log_valid"] and not item["engine_errors"], item
+              assert not item["liquidation_detected"], item
           PY
 
-      - name: Preserve transfer evidence
+      - name: Run causal microstructure-state screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-12/diagnose_i22_microstate.py \
+            --weeks W1 W12 \
+            --data-dir /tmp/candidate-12-i22-market \
+            --feature-dir /tmp/candidate-12-i22-features \
+            --baseline-root artifacts/candidate-12 \
+            --output artifacts/candidate-12/I22-causal-microstate.json
+          cat artifacts/candidate-12/I22-causal-microstate.json
+
+      - name: Preserve reproducible diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I21-cross-market-transfer-${{ github.sha }}
-          path: artifacts/candidate-12/I21-transfer
+          name: candidate-12-I22-causal-microstate-${{ github.sha }}
+          path: artifacts/candidate-12
           if-no-files-found: warn
