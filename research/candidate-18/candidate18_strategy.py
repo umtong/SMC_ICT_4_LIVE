@@ -1,7 +1,7 @@
-"""Import adapter for Candidate 18's final strategy module."""
+"""Import adapter for Candidate 18's effective v2 strategy module."""
 from __future__ import annotations
 
-from latency_capped_ioc_strategy import Candidate18Config
-from latency_capped_ioc_strategy import Candidate18Strategy
+from fok_capped_strategy import Candidate18Config
+from fok_capped_strategy import Candidate18Strategy
 
 __all__ = ["Candidate18Config", "Candidate18Strategy"]

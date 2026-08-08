@@ -1,15 +1,31 @@
-# Candidate 18 — Execution-Preserving Initiative Router
+# Candidate 18 — State Router with Atomic Price-Capped Execution
 
-Candidate 18 is a direct response to Candidate 17's untouched failure. Candidate 17 lost 9.94%, its remembered-defense branch produced zero confirmations, most executed reversals were early initiatives, and one next-bar market parent filled beyond its planned stop before protection could become valid.
+Candidate 18 extracts a complete decision policy from displayed-liquidity
+failed auctions and true acceptance rather than trading surface patterns.
 
-The replacement policy is deliberately small:
+## Market-state policy
 
-- a clean displayed-liquidity failed auction keeps a reversal path only when the strictly later opposite initiative either survives the complete three-bar causal window or appears immediately with above-baseline notional;
-- repeated defense has no trade unless depletion is independently proven, so the inactive memory branch closes unresolved;
-- true-acceptance continuation remains available through independent book withdrawal, fresh OI expansion and the first defended retest;
-- every accepted signal is already complete at the finished bar. Execution uses a native IOC LIMIT parent: it can fill only at or better than the precomputed cap, otherwise it cancels. Quantity is sized from that worst permissible fill including fees and adverse slippage;
-- everything else is unresolved/no-trade.
+- A clean failed auction keeps a reversal path only when the strictly later
+  opposite initiative either survives the full three-bar causal window or
+  arrives immediately with above-baseline traded notional.
+- Repeated defense without independently proven depletion closes unresolved.
+- True acceptance requires outside residence, directional book withdrawal,
+  fresh OI expansion and the first defended retest.
+- All other states are no-trade.
 
-Two failed execution experiments are retained as evidence rather than hidden. A native STOP_LIMIT parent could reach the bar venue after its trigger had already crossed and reject the bracket. BID/ASK local emulation removed the rejection but had no quote trigger in the shared bar-only replay, so it produced no fills. The final IOC price cap matches the available execution data without adding a custom matching engine.
+## Execution evolution
 
-NautilusTrader still owns orders, fills, fees, positions, margin, portfolio accounting and NAV. Candidate 05 owns the runner and Candidate 16/17 own the inherited market-state and fail-close safety contracts.
+Candidate 17's market parent could fill beyond its planned stop. Candidate 18
+v1 used a capped IOC LIMIT parent. Untouched data then exposed an atomicity bug:
+a partial IOC fill canceled the OTO children and left naked exposure. The full
+v1 failure and results are retained in `V1_FAILURE.md`.
+
+The effective v2 parent is a native NautilusTrader FOK LIMIT bracket. It fills
+the complete risk-sized quantity immediately at or better than the cap, or
+opens no position. Quantity is still sized from the worst permissible fill,
+including fees and adverse slippage, with a maximum planned account loss of 3%.
+No custom matcher, portfolio simulator or account engine is introduced.
+
+NautilusTrader owns orders, fills, fees, positions, margin, portfolio accounting
+and continuous NAV. Candidate 05 supplies the runner and Candidate 16/17 supply
+the inherited causal state and fail-close contracts.

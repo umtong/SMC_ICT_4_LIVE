@@ -64,15 +64,13 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
         cache=args.cache,
         output=args.output,
     )
-    result["candidate"] = "candidate-18-execution-preserving-router"
+    result["candidate"] = "candidate-18-v2-fok-execution-preserving-router"
     result["validation_mode"] = args.validation_mode
     result["reused_runner"] = "research/candidate-05/backtest.py"
     result["reused_execution"] = "research/candidate-16/strategy_v2.py"
     result["reused_state"] = "research/candidate-17/remembered_defense_strategy.py"
     result["strategy_path"] = "research/candidate-18/candidate18_strategy.py"
-    result["strategy_implementation"] = (
-        "research/candidate-18/latency_capped_ioc_strategy.py"
-    )
+    result["strategy_implementation"] = "research/candidate-18/fok_capped_strategy.py"
     write_json_atomic(args.output.resolve() / "metrics.json", result)
     write_json_atomic(
         args.output.resolve() / "candidate18_contract.json",
@@ -88,7 +86,7 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
                     "STRICTLY_LATER_OPPOSITE_INITIATIVE",
                     "FULL_WINDOW_PERSISTENCE_OR_FIRST_BAR_NOTIONAL_SHOCK",
                     "COMPLETED_SIGNAL_EXECUTION",
-                    "PRICE_CAPPED_IOC_LIMIT_PARENT",
+                    "PRICE_CAPPED_FOK_LIMIT_PARENT",
                 ],
                 "true_acceptance": [
                     "OUTSIDE_RESIDENCE",
@@ -96,26 +94,22 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
                     "FRESH_OPEN_INTEREST_EXPANSION",
                     "FIRST_DEFENDED_RETEST",
                     "COMPLETED_SIGNAL_EXECUTION",
-                    "PRICE_CAPPED_IOC_LIMIT_PARENT",
+                    "PRICE_CAPPED_FOK_LIMIT_PARENT",
                 ],
                 "remembered_defense": "UNRESOLVED_NO_TRADE_WITHOUT_DEPLETION_PROOF",
                 "otherwise": "UNRESOLVED_NO_TRADE",
             },
             "entry_policy": {
-                "type": "IOC_LIMIT_BRACKET",
+                "type": "FOK_LIMIT_BRACKET",
                 "signal": "completed causal initiative or defended acceptance retest",
                 "worst_fill_cap": "50% expansion of structural stop distance",
-                "expiry": "IOC; fill immediately at or better than cap, otherwise cancel",
+                "fill_policy": "fill immediately in full at or better than cap, otherwise cancel all",
                 "risk_sizing": "worst permissible limit fill including configured costs",
             },
             "target_policy": "unconsumed liquidity objective after costs",
-            "protective_fill_policy": (
-                "if actual fill has crossed stop, cancel children and fail-close"
+            "v1_failure_replaced": (
+                "IOC partial fill canceled OTO children and left naked exposure"
             ),
-            "development_execution_failures_retained": [
-                "native STOP_LIMIT crossed before delayed venue insertion",
-                "BID_ASK local emulation had no quote trigger in bar-only replay",
-            ],
             "runner_snapshot": (
                 "candidate-17@3efdf932d37bb997cff95404fb40ee7026a58325"
             ),
