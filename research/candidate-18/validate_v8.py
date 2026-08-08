@@ -11,6 +11,17 @@ from typing import Any
 from validate_v6 import validate as validate_v6
 
 
+def _json_safe(value: Any) -> Any:
+    """Replace analysis-only NaN/inf values without changing pass/fail logic."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def validate(root: Path, period: str) -> dict[str, Any]:
     decision = validate_v6(root, period)
     metrics = json.loads((root / "metrics.json").read_text(encoding="utf-8"))
@@ -24,12 +35,18 @@ def validate(root: Path, period: str) -> dict[str, Any]:
         ).splitlines()
         if line.strip()
     ]
-    entries = [event for event in events if event.get("event_type") == "ENTRY_SUBMITTED"]
+    entries = [
+        event for event in events if event.get("event_type") == "ENTRY_SUBMITTED"
+    ]
     rejection_entries = [
-        event for event in entries if event.get("details", {}).get("branch") == "REJECTION"
+        event
+        for event in entries
+        if event.get("details", {}).get("branch") == "REJECTION"
     ]
     acceptance_entries = [
-        event for event in entries if event.get("details", {}).get("branch") == "ACCEPTANCE"
+        event
+        for event in entries
+        if event.get("details", {}).get("branch") == "ACCEPTANCE"
     ]
     malformed_basis = []
     shock_entries = []
@@ -51,7 +68,10 @@ def validate(root: Path, period: str) -> dict[str, Any]:
             malformed_basis.append(event.get("scenario_id"))
         if not math.isfinite(age) or age < 0.0 or observed > event_time:
             malformed_basis.append(event.get("scenario_id"))
-        quality = event.get("details", {}).get("candidate18_initiative_quality", {})
+        quality = event.get("details", {}).get(
+            "candidate18_initiative_quality",
+            {},
+        )
         if quality.get("route") == "SHOCK":
             shock_entries.append(event.get("scenario_id"))
 
@@ -80,7 +100,7 @@ def validate(root: Path, period: str) -> dict[str, Any]:
     )
     decision.update(
         {
-            "schema": "candidate-18-v8-development-v1",
+            "schema": "candidate-18-v8-development-v2",
             "period": period,
             "checks": checks,
             "integrity_pass": all(checks.values()),
@@ -92,7 +112,7 @@ def validate(root: Path, period: str) -> dict[str, Any]:
             "diagnostics": diagnostics,
         },
     )
-    return decision
+    return _json_safe(decision)
 
 
 def main() -> None:
@@ -102,11 +122,14 @@ def main() -> None:
     args = parser.parse_args()
     decision = validate(args.root.resolve(), args.period)
     destination = args.root.resolve() / "v8_development_decision.json"
-    destination.write_text(
-        json.dumps(decision, indent=2, sort_keys=True, allow_nan=False) + "\n",
-        encoding="utf-8",
-    )
-    print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=False))
+    rendered = json.dumps(
+        decision,
+        indent=2,
+        sort_keys=True,
+        allow_nan=False,
+    ) + "\n"
+    destination.write_text(rendered, encoding="utf-8")
+    print(rendered, end="")
     if not decision["integrity_pass"]:
         raise SystemExit("Candidate 18 v8 integrity failure")
 
