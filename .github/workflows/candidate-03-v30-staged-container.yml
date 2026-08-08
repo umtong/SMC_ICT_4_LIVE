@@ -1,4 +1,4 @@
-name: candidate-03-candidate27-quarter-hour-delivery-development
+name: candidate-03-candidate28-quarter-hour-internal-reload-development
 
 on:
   push:
@@ -6,9 +6,10 @@ on:
     paths:
       - ".github/workflows/candidate-03-v30-staged-container.yml"
       - "research/candidate-03/candidate27_quarter_hour_delivery.py"
-      - "research/candidate-03/patch_candidate27_runner_install.py"
-      - "research/candidate-03/test_candidate27_quarter_hour_delivery.py"
-      - "research/candidate-03/aggregate_candidate27_quarter_hour_delivery.py"
+      - "research/candidate-03/candidate28_quarter_hour_reload.py"
+      - "research/candidate-03/patch_candidate28_runner_install.py"
+      - "research/candidate-03/test_candidate28_quarter_hour_reload.py"
+      - "research/candidate-03/aggregate_candidate28_quarter_hour_reload.py"
   workflow_dispatch:
 
 permissions:
@@ -17,10 +18,10 @@ permissions:
 
 env:
   FROZEN_SOURCE_COMMIT: dfb180490b141fdafd5b5ac0b52d3dd0b842550d
-  RESULT_REL: research/candidate-03/results/candidate27-quarter-hour-delivery-development
+  RESULT_REL: research/candidate-03/results/candidate28-quarter-hour-internal-reload-development
 
 concurrency:
-  group: candidate-03-candidate27-quarter-hour-delivery-development
+  group: candidate-03-candidate28-quarter-hour-internal-reload-development
   cancel-in-progress: true
 
 jobs:
@@ -36,7 +37,7 @@ jobs:
         with: {ref: "${{ github.sha }}", path: orchestrator}
       - uses: actions/checkout@v4
         with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
-      - name: Verify Candidate 27 quarter-hour delivery contract
+      - name: Verify Candidate 28 quarter-hour internal-reload contract
         shell: bash
         run: |
           set -euo pipefail
@@ -44,13 +45,14 @@ jobs:
           test "$(git -C frozen-source rev-parse HEAD)" = "$FROZEN_SOURCE_COMMIT"
           cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/candidate27_quarter_hour_delivery.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/candidate28_quarter_hour_reload.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/test_candidate16_failed_far.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/test_candidate17_strict_target.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/test_candidate20_inside_origin_acceptance.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/test_candidate21_two_close_acceptance_entry.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/test_candidate22_contested_countertrend.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/test_candidate24_retire_semantic_rejection_watch.py frozen-source/research/candidate-14/
-          cp orchestrator/research/candidate-03/test_candidate27_quarter_hour_delivery.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate28_quarter_hour_reload.py frozen-source/research/candidate-14/
           python orchestrator/research/candidate-03/patch_candidate16_deep_reentry_call.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate17_strict_target.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate19_semantic_rejection_continuation.py frozen-source/research/candidate-14/candidate16_failed_far.py
@@ -66,12 +68,13 @@ jobs:
           python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
           python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
           python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
-          python orchestrator/research/candidate-03/patch_candidate27_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate28_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
           python orchestrator/research/candidate-03/patch_candidate16_native_exit_reason.py frozen-source/research/candidate-14/run_leadership_scdam_base.py
-          grep -q 'SCENARIO_KIND = "QUARTER_HOUR_SYNCHRONIZED_DELIVERY"' frozen-source/research/candidate-14/candidate27_quarter_hour_delivery.py
-          grep -q 'def _is_first_completed_minute_after_quarter' frozen-source/research/candidate-14/candidate27_quarter_hour_delivery.py
-          grep -q 'QUARTER_HOUR_OPENING_HOLD_REACCELERATION_MARKET' frozen-source/research/candidate-14/candidate27_quarter_hour_delivery.py
-          grep -q '_install_candidate27_quarter_hour_delivery()' frozen-source/research/candidate-14/run_leadership_scdam.py
+          grep -q 'SCENARIO_KIND = "QUARTER_HOUR_CONTEXT_INTERNAL_RELOAD"' frozen-source/research/candidate-14/candidate28_quarter_hour_reload.py
+          grep -q 'QUARTER_HOUR_CONTEXT_INTERNAL_RAID_RELOAD_MARKET' frozen-source/research/candidate-14/candidate28_quarter_hour_reload.py
+          grep -q 'def _consumed_reload_pivots' frozen-source/research/candidate-14/candidate28_quarter_hour_reload.py
+          grep -q '_install_candidate28_quarter_hour_reload()' frozen-source/research/candidate-14/run_leadership_scdam.py
+          ! grep -q '_install_candidate27_quarter_hour_delivery()' frozen-source/research/candidate-14/run_leadership_scdam.py
           ! grep -q '_install_candidate26_internal_raid()' frozen-source/research/candidate-14/run_leadership_scdam.py
           grep -q 'SEMANTIC_REJECTED_FAR_WATCH_RETIRED' frozen-source/research/candidate-14/candidate16_failed_far.py
           grep -q 'SEMANTIC_FAR_MODERATE_COUNTERTREND_CONTESTED' frozen-source/research/candidate-14/semantic_market_leadership.py
@@ -84,7 +87,7 @@ jobs:
           python -m py_compile orchestrator/research/candidate-03/aggregate_candidate21_two_close_acceptance_entry.py
           python -m py_compile orchestrator/research/candidate-03/aggregate_candidate22_contested_countertrend.py
           python -m py_compile orchestrator/research/candidate-03/aggregate_candidate25_clean_allocator.py
-          python -m py_compile orchestrator/research/candidate-03/aggregate_candidate27_quarter_hour_delivery.py
+          python -m py_compile orchestrator/research/candidate-03/aggregate_candidate28_quarter_hour_reload.py
 
   evaluate:
     needs: static
@@ -104,12 +107,13 @@ jobs:
         with: {ref: "${{ github.sha }}", path: orchestrator}
       - uses: actions/checkout@v4
         with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
-      - name: Install identical Candidate 27 runtime
+      - name: Install identical Candidate 28 runtime
         shell: bash
         run: |
           set -euo pipefail
           cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/candidate27_quarter_hour_delivery.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/candidate28_quarter_hour_reload.py frozen-source/research/candidate-14/
           python orchestrator/research/candidate-03/patch_candidate16_deep_reentry_call.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate17_strict_target.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate19_semantic_rejection_continuation.py frozen-source/research/candidate-14/candidate16_failed_far.py
@@ -123,27 +127,28 @@ jobs:
           python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
           python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
           python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
-          python orchestrator/research/candidate-03/patch_candidate27_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate28_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
           python orchestrator/research/candidate-03/patch_candidate16_native_exit_reason.py frozen-source/research/candidate-14/run_leadership_scdam_base.py
           python - <<'PY'
           import json
           from pathlib import Path
           p=json.loads(Path('orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json').read_text())
-          p['schema']='candidate-27-quarter-hour-synchronized-delivery-development-v1'
-          p['candidate']='candidate-27-quarter-hour-synchronized-delivery'
+          p['schema']='candidate-28-quarter-hour-context-internal-reload-development-v1'
+          p['candidate']='candidate-28-quarter-hour-context-internal-reload'
           p['validation_mode']='development_replay'
-          p['selection']['seed']=202608082727
+          p['selection']['seed']=202608082828
           p['claim_rules']=[
               'Development replay only; success_claim is false.',
-              'Candidate 27 replaces the rejected Candidate 26 state; Candidate 26 is not installed.',
-              'The state source is the first completed minute after a UTC quarter-hour boundary, not a generic internal pivot raid.',
-              'Opening imbalance, later price extension, synchronized-market approval, external target and invalidation are separate causal roles.',
+              'Candidate 28 replaces rejected Candidates 26 and 27; neither rejected scenario is installed.',
+              'Quarter-hour order-flow is medium-horizon context only; it cannot submit an order by itself.',
+              'Entry requires a later delivery-leg internal pivot raid, reclaim and still-later reacceleration.',
+              'Context, transition, entry, invalidation, target and synchronized-market approval use separate observations.',
               'No new numeric threshold, target relaxation, cost change, risk multiplier or portfolio slot is introduced.',
               'Realistic costs, exact 3% current-NAV risk and one global slot remain unchanged.',
           ]
           Path('frozen-source/research/candidate-14/protocol.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
           PY
-      - name: Run Candidate 27 ${{ matrix.week }} through NautilusTrader
+      - name: Run Candidate 28 ${{ matrix.week }} through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
@@ -154,7 +159,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate27-${{ matrix.week }}
+          name: candidate28-${{ matrix.week }}
           path: evidence/${{ matrix.week }}/
           if-no-files-found: error
           retention-days: 30
@@ -169,18 +174,18 @@ jobs:
       - uses: actions/checkout@v4
         with: {ref: research/candidate-03, fetch-depth: 0, path: orchestrator}
       - uses: actions/download-artifact@v4
-        with: {pattern: "candidate27-H*", path: downloaded}
-      - name: Attribute quarter-hour delivery and persist decision
+        with: {pattern: "candidate28-H*", path: downloaded}
+      - name: Attribute quarter-hour internal reload and persist decision
         shell: bash
         run: |
           set -euo pipefail
           root="orchestrator/$RESULT_REL"
           rm -rf "$root"; mkdir -p "$root"
           for week in H01 H02 H03 H04 H05 H06 H07 H08 H09 H10 H11 H12 H13 H14 H15 H16; do
-            src="downloaded/candidate27-$week"; test -d "$src"
+            src="downloaded/candidate28-$week"; test -d "$src"
             mkdir -p "$root/$week"; cp -a "$src/." "$root/$week/"
           done
-          python orchestrator/research/candidate-03/aggregate_candidate27_quarter_hour_delivery.py \
+          python orchestrator/research/candidate-03/aggregate_candidate28_quarter_hour_reload.py \
             --root "$root" \
             --baseline orchestrator/research/candidate-03/results/candidate14-frozen-holdout/aggregate.json \
             --candidate15 orchestrator/research/candidate-03/results/candidate15-far-execution-development/comparison.json \
@@ -191,20 +196,21 @@ jobs:
             --candidate22 orchestrator/research/candidate-03/results/candidate22-contested-countertrend-resolution-development/aggregate.json \
             --candidate25 orchestrator/research/candidate-03/results/candidate25-clean-allocator-development/aggregate.json \
             --candidate26 orchestrator/research/candidate-03/results/candidate26-internal-liquidity-raid-development/aggregate.json \
+            --candidate27 orchestrator/research/candidate-03/results/candidate27-quarter-hour-delivery-development/aggregate.json \
             --output "$root/aggregate.json"
           git -C orchestrator config user.name candidate-03-development-bot
           git -C orchestrator config user.email candidate-03-development-bot@users.noreply.github.com
           git -C orchestrator add "$RESULT_REL"
-          git -C orchestrator commit -m "candidate-03: record Candidate 27 quarter-hour delivery development [skip ci]"
+          git -C orchestrator commit -m "candidate-03: record Candidate 28 quarter-hour internal reload development [skip ci]"
           git -C orchestrator fetch origin research/candidate-03
           git -C orchestrator rebase origin/research/candidate-03
           git -C orchestrator push origin HEAD:research/candidate-03
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate27-quarter-hour-delivery-aggregate-${{ github.run_id }}
+          name: candidate28-quarter-hour-reload-aggregate-${{ github.run_id }}
           path: |
-            orchestrator/research/candidate-03/results/candidate27-quarter-hour-delivery-development/aggregate.json
-            orchestrator/research/candidate-03/results/candidate27-quarter-hour-delivery-development/RESULT.md
+            orchestrator/research/candidate-03/results/candidate28-quarter-hour-internal-reload-development/aggregate.json
+            orchestrator/research/candidate-03/results/candidate28-quarter-hour-internal-reload-development/RESULT.md
           if-no-files-found: warn
           retention-days: 30
