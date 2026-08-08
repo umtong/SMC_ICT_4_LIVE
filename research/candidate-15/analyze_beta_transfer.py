@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Prior-only common-factor beta and lead/lag diagnostics for V8 plans.
+"""Corrected prior-only beta and lead/lag diagnostics for V8 plans.
 
-Diagnostic only. All regressors use completed five-minute returns strictly before
-V8's first evidence event. Execution and plan selection are not modified.
+Diagnostic only. Regressors end strictly before the first response event.
+The plan geometry is measured at the completed five-minute MSS bar end, not
+at the following one-minute observation timestamp used to emit the plan.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ FIVE_MINUTES_NS = 5 * 60_000_000_000
 HORIZONS = (24, 48, 96, 192)
 
 
-def read_object(path: Path) -> dict:
+def obj(path: Path) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise TypeError(f"{path} must contain an object")
@@ -62,58 +63,63 @@ def load_symbol(root: Path, symbol: str) -> pd.DataFrame:
     return result[~result.index.duplicated(keep="last")].sort_index()
 
 
-def five_minute_closes(one_minute: pd.DataFrame) -> pd.Series:
-    # One-minute indexes are completed-bar close timestamps. The router forms
-    # windows (00,05], (05,10], ...; right-closed resampling matches that clock.
-    closes = one_minute["close"].resample("5min", closed="right", label="right", origin="epoch").last()
-    counts = one_minute["close"].resample("5min", closed="right", label="right", origin="epoch").count()
-    return closes[counts == 5].dropna()
+def five_minute_closes(frame: pd.DataFrame) -> pd.Series:
+    close = frame.close.resample(
+        "5min", closed="right", label="right", origin="epoch"
+    ).last()
+    count = frame.close.resample(
+        "5min", closed="right", label="right", origin="epoch"
+    ).count()
+    return close[count == 5].dropna()
 
 
-def safe_corr(x: np.ndarray, y: np.ndarray) -> float | None:
+def corr(x: np.ndarray, y: np.ndarray) -> float | None:
     if len(x) < 8 or np.std(x, ddof=1) <= 0.0 or np.std(y, ddof=1) <= 0.0:
         return None
     value = float(np.corrcoef(x, y)[0, 1])
     return value if isfinite(value) else None
 
 
-def regression(x: np.ndarray, y: np.ndarray) -> dict[str, float | None]:
-    if len(x) < 8:
-        return {"n": len(x), "beta": None, "beta_zero_intercept": None, "intercept": None, "corr": None, "idio_std": None, "r2": None}
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
+def fit(x: np.ndarray, y: np.ndarray) -> dict:
+    x, y = np.asarray(x, float), np.asarray(y, float)
     valid = np.isfinite(x) & np.isfinite(y)
     x, y = x[valid], y[valid]
     if len(x) < 8 or np.var(x, ddof=1) <= 0.0:
-        return {"n": len(x), "beta": None, "beta_zero_intercept": None, "intercept": None, "corr": None, "idio_std": None, "r2": None}
+        return {
+            "n": len(x), "beta": None, "beta_zero_intercept": None,
+            "intercept": None, "corr": None, "idio_std": None, "r2": None,
+        }
     beta = float(np.cov(x, y, ddof=1)[0, 1] / np.var(x, ddof=1))
     intercept = float(np.mean(y) - beta * np.mean(x))
     denom = float(np.dot(x, x))
     beta0 = float(np.dot(x, y) / denom) if denom > 0.0 else None
-    residuals = y - (intercept + beta * x)
-    idio = float(np.std(residuals, ddof=2)) if len(residuals) > 2 else None
-    corr = safe_corr(x, y)
-    r2 = None if corr is None else corr * corr
+    residual = y - (intercept + beta * x)
+    idio = float(np.std(residual, ddof=2)) if len(residual) > 2 else None
+    coefficient = corr(x, y)
     return {
         "n": len(x), "beta": beta, "beta_zero_intercept": beta0,
-        "intercept": intercept, "corr": corr, "idio_std": idio, "r2": r2,
+        "intercept": intercept, "corr": coefficient, "idio_std": idio,
+        "r2": None if coefficient is None else coefficient * coefficient,
     }
 
 
-def lag_diagnostics(factor: pd.Series, residual: pd.Series, horizon: int) -> dict[str, float | None]:
+def lead_lag(factor: pd.Series, residual: pd.Series, horizon: int) -> dict:
     joined = pd.concat({"x": factor, "y": residual}, axis=1).dropna().iloc[-horizon:]
-    result: dict[str, float | None] = {}
+    output: dict[str, float | None] = {}
     for lag in range(4):
         pair = pd.concat({"x": joined.x.shift(lag), "y": joined.y}, axis=1).dropna()
-        result[f"sender_lead_{lag}_corr"] = safe_corr(pair.x.to_numpy(), pair.y.to_numpy())
-        fit = regression(pair.x.to_numpy(), pair.y.to_numpy())
-        result[f"sender_lead_{lag}_beta"] = fit["beta_zero_intercept"]
+        output[f"sender_lead_{lag}_corr"] = corr(pair.x.to_numpy(), pair.y.to_numpy())
+        output[f"sender_lead_{lag}_beta"] = fit(
+            pair.x.to_numpy(), pair.y.to_numpy()
+        )["beta_zero_intercept"]
     reverse = pd.concat({"x": joined.y.shift(1), "y": joined.x}, axis=1).dropna()
-    result["receiver_lead_1_corr"] = safe_corr(reverse.x.to_numpy(), reverse.y.to_numpy())
-    lead1 = result.get("sender_lead_1_corr")
-    reverse1 = result.get("receiver_lead_1_corr")
-    result["lead_edge"] = None if lead1 is None or reverse1 is None else float(lead1 - reverse1)
-    return result
+    output["receiver_lead_1_corr"] = corr(reverse.x.to_numpy(), reverse.y.to_numpy())
+    sender = output.get("sender_lead_1_corr")
+    receiver = output.get("receiver_lead_1_corr")
+    output["lead_edge"] = (
+        None if sender is None or receiver is None else float(sender - receiver)
+    )
+    return output
 
 
 def close_at(frame: pd.DataFrame, ts_ns: int) -> float | None:
@@ -130,86 +136,184 @@ def money(value: object) -> float | None:
 
 
 def first_limit_fill(events: list[dict], scenario_id: str) -> dict | None:
-    start = next((i for i, event in enumerate(events) if event.get("type") == "GLOBAL_ENTRY_SUBMITTED" and event.get("scenario_id") == scenario_id), None)
+    start = next(
+        (
+            index for index, event in enumerate(events)
+            if event.get("type") == "GLOBAL_ENTRY_SUBMITTED"
+            and event.get("scenario_id") == scenario_id
+        ),
+        None,
+    )
     if start is None:
         return None
-    end = next((i for i in range(start + 1, len(events)) if events[i].get("type") == "GLOBAL_ENTRY_SUBMITTED"), len(events))
-    return next((event for event in events[start:end] if event.get("type") == "ORDER_FILLED" and "order_type=LIMIT" in str(event.get("event", ""))), None)
+    end = next(
+        (
+            index for index in range(start + 1, len(events))
+            if events[index].get("type") == "GLOBAL_ENTRY_SUBMITTED"
+        ),
+        len(events),
+    )
+    return next(
+        (
+            event for event in events[start:end]
+            if event.get("type") == "ORDER_FILLED"
+            and "order_type=LIMIT" in str(event.get("event", ""))
+        ),
+        None,
+    )
 
 
 def run(root: Path) -> dict:
     one = {symbol: load_symbol(root, symbol) for symbol in SYMBOLS}
     close5 = {symbol: five_minute_closes(one[symbol]) for symbol in SYMBOLS}
-    returns = pd.DataFrame({symbol: np.log(series / series.shift(1)) for symbol, series in close5.items()}).dropna(how="all")
-    plans = read_object(root / "submitted_plans.json").get("plans", [])
-    lifecycle = read_object(root / "order_lifecycle.json").get("events", [])
+    returns = pd.DataFrame(
+        {symbol: np.log(series / series.shift(1)) for symbol, series in close5.items()}
+    ).dropna(how="all")
+    plans = obj(root / "submitted_plans.json").get("plans", [])
+    lifecycle = obj(root / "order_lifecycle.json").get("events", [])
     try:
         positions = pd.read_csv(root / "positions.csv")
     except pd.errors.EmptyDataError:
         positions = pd.DataFrame()
-    position_map = {str(row["opening_order_id"]): row for row in positions.to_dict("records")} if len(positions) else {}
-    pending = read_object(root / "pending_path_diagnostics.json") if (root / "pending_path_diagnostics.json").is_file() else {"records": []}
-    pending_map = {str(record["scenario_id"]): record for record in pending.get("records", [])}
+    position_map = {
+        str(row["opening_order_id"]): row
+        for row in positions.to_dict("records")
+    } if len(positions) else {}
+    pending = (
+        obj(root / "pending_path_diagnostics.json")
+        if (root / "pending_path_diagnostics.json").is_file()
+        else {"records": []}
+    )
+    pending_map = {
+        str(record["scenario_id"]): record
+        for record in pending.get("records", [])
+    }
 
     records: list[dict] = []
     for plan in plans:
         details = plan.get("details", {})
         transfer = details.get("candidate15_v8_transfer", {})
         accepted = tuple(str(symbol) for symbol in transfer.get("accepted_symbols", ()))
-        residual_symbol = str(transfer.get("residual_symbol", plan.get("symbol", "")))
-        event_ids = tuple(str(item) for item in transfer.get("evidence_event_ids", ()))
+        residual_symbol = str(
+            transfer.get("residual_symbol", plan.get("symbol", ""))
+        )
+        event_ids = tuple(
+            str(item) for item in transfer.get("evidence_event_ids", ())
+        )
         if len(accepted) != 3 or residual_symbol not in SYMBOLS or len(event_ids) != 2:
             continue
         first_ts = int(event_ids[0].split("-")[1])
         second_ts = int(transfer["effective_ts_ns"])
         observed_ts = int(plan["observed_ts_ns"])
+        geometry_ts = int(details.get("mss_bar_end_ts_ns", observed_ts))
+        if geometry_ts > observed_ts or geometry_ts <= second_ts:
+            raise ValueError(
+                f"invalid V8 plan geometry clock for {plan['scenario_id']}: "
+                f"effective={second_ts}, geometry={geometry_ts}, observed={observed_ts}"
+            )
         sign = 1.0 if plan["direction"] == "LONG" else -1.0
-        history = returns.loc[returns.index < pd.Timestamp(first_ts, unit="ns", tz="UTC"), list((*accepted, residual_symbol))].dropna()
+        history = returns.loc[
+            returns.index < pd.Timestamp(first_ts, unit="ns", tz="UTC"),
+            list((*accepted, residual_symbol)),
+        ].dropna()
         factor = history.loc[:, list(accepted)].median(axis=1)
         residual_returns = history[residual_symbol]
 
-        first_prices = {symbol: close_at(one[symbol], first_ts) for symbol in (*accepted, residual_symbol)}
-        second_prices = {symbol: close_at(one[symbol], second_ts) for symbol in (*accepted, residual_symbol)}
-        plan_prices = {symbol: close_at(one[symbol], observed_ts) for symbol in (*accepted, residual_symbol)}
-        if any(value is None or value <= 0.0 for value in (*first_prices.values(), *second_prices.values(), *plan_prices.values())):
+        first_prices = {
+            symbol: close_at(one[symbol], first_ts)
+            for symbol in (*accepted, residual_symbol)
+        }
+        second_prices = {
+            symbol: close_at(one[symbol], second_ts)
+            for symbol in (*accepted, residual_symbol)
+        }
+        geometry_prices = {
+            symbol: close_at(one[symbol], geometry_ts)
+            for symbol in (*accepted, residual_symbol)
+        }
+        values = (
+            *first_prices.values(), *second_prices.values(), *geometry_prices.values()
+        )
+        if any(value is None or value <= 0.0 for value in values):
             continue
-        sender_state_progress = median(sign * log(float(second_prices[symbol]) / float(first_prices[symbol])) for symbol in accepted)
-        sender_plan_progress = median(sign * log(float(plan_prices[symbol]) / float(first_prices[symbol])) for symbol in accepted)
-        residual_state_progress = sign * log(float(second_prices[residual_symbol]) / float(first_prices[residual_symbol]))
-        residual_plan_progress = sign * log(float(plan_prices[residual_symbol]) / float(first_prices[residual_symbol]))
-        span_bars = max(1.0, (second_ts - first_ts) / FIVE_MINUTES_NS)
+
+        sender_state = median(
+            sign * log(float(second_prices[symbol]) / float(first_prices[symbol]))
+            for symbol in accepted
+        )
+        sender_geometry = median(
+            sign * log(float(geometry_prices[symbol]) / float(first_prices[symbol]))
+            for symbol in accepted
+        )
+        residual_state = sign * log(
+            float(second_prices[residual_symbol]) /
+            float(first_prices[residual_symbol])
+        )
+        residual_geometry = sign * log(
+            float(geometry_prices[residual_symbol]) /
+            float(first_prices[residual_symbol])
+        )
+        state_span = max(1.0, (second_ts - first_ts) / FIVE_MINUTES_NS)
+        geometry_span = max(1.0, (geometry_ts - first_ts) / FIVE_MINUTES_NS)
 
         horizon_results: dict[str, dict] = {}
         for horizon in HORIZONS:
             joined = pd.concat({"x": factor, "y": residual_returns}, axis=1).dropna().iloc[-horizon:]
-            fit = regression(joined.x.to_numpy(), joined.y.to_numpy())
-            beta = fit["beta_zero_intercept"]
-            expected_state = None if beta is None else float(beta * sender_state_progress)
-            expected_plan = None if beta is None else float(beta * sender_plan_progress)
-            idio = fit["idio_std"]
+            model = fit(joined.x.to_numpy(), joined.y.to_numpy())
+            beta = model["beta_zero_intercept"]
+            expected_state = None if beta is None else float(beta * sender_state)
+            expected_geometry = (
+                None if beta is None else float(beta * sender_geometry)
+            )
+            idio = model["idio_std"]
             state_z = None
-            plan_z = None
+            geometry_z = None
             if expected_state is not None and idio is not None and idio > 0.0:
-                state_z = float((residual_state_progress - expected_state) / (idio * sqrt(span_bars)))
-                plan_span = max(1.0, (observed_ts - first_ts) / FIVE_MINUTES_NS)
-                plan_z = float((residual_plan_progress - expected_plan) / (idio * sqrt(plan_span)))
+                state_z = float(
+                    (residual_state - expected_state) /
+                    (idio * sqrt(state_span))
+                )
+                geometry_z = float(
+                    (residual_geometry - expected_geometry) /
+                    (idio * sqrt(geometry_span))
+                )
             horizon_results[str(horizon)] = {
-                **fit,
+                **model,
                 "expected_state_directional_progress": expected_state,
-                "expected_plan_directional_progress": expected_plan,
-                "state_delivery_gap": None if expected_state is None else float(expected_state - residual_state_progress),
-                "plan_delivery_gap": None if expected_plan is None else float(expected_plan - residual_plan_progress),
+                "expected_geometry_directional_progress": expected_geometry,
+                "state_delivery_gap": (
+                    None if expected_state is None
+                    else float(expected_state - residual_state)
+                ),
+                "geometry_delivery_gap": (
+                    None if expected_geometry is None
+                    else float(expected_geometry - residual_geometry)
+                ),
                 "state_residual_z": state_z,
-                "plan_residual_z": plan_z,
-                **lag_diagnostics(factor, residual_returns, horizon),
+                "geometry_residual_z": geometry_z,
+                **lead_lag(factor, residual_returns, horizon),
             }
 
-        betas = [horizon_results[str(horizon)]["beta_zero_intercept"] for horizon in HORIZONS]
-        finite_betas = [float(value) for value in betas if value is not None and isfinite(float(value))]
-        positive_consensus = len(finite_betas) == len(HORIZONS) and all(value > 0.0 for value in finite_betas)
-        beta_spread = None if not finite_betas else max(finite_betas) - min(finite_betas)
+        betas = [
+            horizon_results[str(horizon)]["beta_zero_intercept"]
+            for horizon in HORIZONS
+        ]
+        finite_betas = [
+            float(value) for value in betas
+            if value is not None and isfinite(float(value))
+        ]
+        positive_consensus = (
+            len(finite_betas) == len(HORIZONS)
+            and all(value > 0.0 for value in finite_betas)
+        )
+        beta_spread = (
+            None if not finite_betas else max(finite_betas) - min(finite_betas)
+        )
         fill = first_limit_fill(lifecycle, str(plan["scenario_id"]))
-        position = position_map.get(str(fill["client_order_id"])) if fill is not None else None
+        position = (
+            position_map.get(str(fill["client_order_id"]))
+            if fill is not None else None
+        )
         pnl = money(position.get("realized_pnl")) if position is not None else None
         records.append({
             "scenario_id": plan["scenario_id"],
@@ -219,13 +323,21 @@ def run(root: Path) -> dict:
             "accepted_symbols": list(accepted),
             "first_evidence_ts_ns": first_ts,
             "effective_ts_ns": second_ts,
+            "geometry_ts_ns": geometry_ts,
             "observed_ts_ns": observed_ts,
-            "confirmation_span_minutes": (second_ts - first_ts) / 60_000_000_000,
-            "state_to_plan_minutes": (observed_ts - second_ts) / 60_000_000_000,
-            "sender_state_directional_progress": sender_state_progress,
-            "sender_plan_directional_progress": sender_plan_progress,
-            "residual_state_directional_progress": residual_state_progress,
-            "residual_plan_directional_progress": residual_plan_progress,
+            "confirmation_span_minutes": (
+                second_ts - first_ts
+            ) / 60_000_000_000,
+            "state_to_geometry_minutes": (
+                geometry_ts - second_ts
+            ) / 60_000_000_000,
+            "geometry_to_observed_minutes": (
+                observed_ts - geometry_ts
+            ) / 60_000_000_000,
+            "sender_state_directional_progress": sender_state,
+            "sender_geometry_directional_progress": sender_geometry,
+            "residual_state_directional_progress": residual_state,
+            "residual_geometry_directional_progress": residual_geometry,
             "v8_equal_weight_parity_price": transfer.get("parity_price"),
             "positive_beta_consensus": positive_consensus,
             "beta_spread": beta_spread,
@@ -233,23 +345,34 @@ def run(root: Path) -> dict:
             "filled": fill is not None,
             "realized_pnl": pnl,
             "win": None if pnl is None else pnl > 0.0,
-            "pending_first_passage": pending_map.get(str(plan["scenario_id"]), {}).get("classification"),
+            "pending_first_passage": pending_map.get(
+                str(plan["scenario_id"]), {}
+            ).get("classification"),
         })
 
     output = {
-        "schema": "candidate-15-prior-only-beta-transfer-diagnostics-v1",
+        "schema": "candidate-15-prior-only-beta-transfer-diagnostics-v2",
         "diagnostic_only": True,
         "does_not_modify_execution": True,
         "estimation_cutoff": "strictly_before_first_evidence_event",
+        "geometry_clock": "completed_mss_bar_end_ts_ns",
         "return_bar_minutes": 5,
         "horizons": list(HORIZONS),
         "submitted_plans": len(records),
         "filled_plans": sum(bool(record["filled"]) for record in records),
-        "positive_beta_consensus_plans": sum(bool(record["positive_beta_consensus"]) for record in records),
+        "positive_beta_consensus_plans": sum(
+            bool(record["positive_beta_consensus"]) for record in records
+        ),
         "records": records,
     }
-    (root / "beta_transfer_diagnostics.json").write_text(json.dumps(output, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
-    print(json.dumps({key: value for key, value in output.items() if key != "records"}, indent=2))
+    (root / "beta_transfer_diagnostics.json").write_text(
+        json.dumps(output, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(
+        {key: value for key, value in output.items() if key != "records"},
+        indent=2,
+    ))
     return output
 
 
