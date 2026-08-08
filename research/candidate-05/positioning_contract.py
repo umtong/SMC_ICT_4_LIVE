@@ -80,8 +80,40 @@ def _read_metrics(path: Path) -> pd.DataFrame:
     return raw[["metrics_observed_time", *_METRICS_COLUMNS]].copy()
 
 
+def _deduplicate_combined_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
+    """Collapse identical daily-boundary observations and reject conflicts.
+
+    Binance daily metrics archives can repeat the same five-minute observation
+    at an adjacent file boundary.  An exact duplicate carries no new information
+    and is normalized to one row.  Conflicting values at the same timestamp are
+    an evidence-integrity failure and are never selected by file order.
+    """
+    frame = metrics.sort_values("metrics_observed_time", kind="stable").copy()
+    duplicated = frame["metrics_observed_time"].duplicated(keep=False)
+    if not duplicated.any():
+        return frame.reset_index(drop=True)
+
+    for timestamp, group in frame.loc[duplicated].groupby(
+        "metrics_observed_time",
+        sort=False,
+    ):
+        conflicts = [
+            column
+            for column in _METRICS_COLUMNS
+            if group[column].nunique(dropna=False) > 1
+        ]
+        if conflicts:
+            raise RuntimeError(
+                "conflicting combined metrics observation at "
+                f"{timestamp}: {conflicts}",
+            )
+    return frame.drop_duplicates("metrics_observed_time", keep="last").reset_index(
+        drop=True,
+    )
+
+
 def _positioning_features(metrics: pd.DataFrame) -> pd.DataFrame:
-    frame = metrics.sort_values("metrics_observed_time").copy()
+    frame = _deduplicate_combined_metrics(metrics)
     frame["metrics_observed_time"] = _as_utc_nanoseconds(
         frame["metrics_observed_time"],
     )
