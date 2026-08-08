@@ -1,0 +1,60 @@
+name: candidate-12-i17-cross-symbol-w12-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-12"]
+    paths:
+      - ".github/workflows/candidate-12-cross-symbol-diagnostic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-12-i17-cross-symbol-w12
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [ETHUSDT, SOLUSDT, XRPUSDT]
+    steps:
+      - name: Checkout frozen I17 source
+        uses: actions/checkout@v4
+
+      - name: Verify source and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          test "$(git hash-object research/candidate-12/logic.py)" = "b189f9143b21611baa41d94e20fc30e0c744ce9d"
+          test "$(git hash-object research/candidate-12/config.json)" = "a10df41ce40e75454d8afda5b048774d4c9a9be0"
+          python -m compileall -q research/candidate-12
+          python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+
+      - name: Run unchanged I17 on W12
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT="artifacts/candidate-12/${{ matrix.symbol }}-W12"
+          mkdir -p "$OUTPUT"
+          python research/candidate-12/run.py \
+            --symbol "${{ matrix.symbol }}" \
+            --week W12 \
+            --output "$OUTPUT" | tee "$OUTPUT.console.json"
+          cat "$OUTPUT/metrics.json"
+
+      - name: Preserve diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-12-I17-${{ matrix.symbol }}-W12-${{ github.sha }}
+          path: artifacts/candidate-12
+          if-no-files-found: warn
