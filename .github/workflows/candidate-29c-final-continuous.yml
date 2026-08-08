@@ -1,0 +1,89 @@
+name: candidate-29c-final-continuous
+on:
+  push:
+    branches: ["research/candidate-29c"]
+    paths:
+      - "research/candidate-29/**"
+      - ".github/workflows/candidate-29c-final-continuous.yml"
+  workflow_dispatch:
+concurrency:
+  group: candidate-29c-final-continuous
+  cancel-in-progress: true
+permissions:
+  actions: read
+  contents: read
+  packages: read
+jobs:
+  continuous-btc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-29:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      INPUT: artifacts/c29c-input
+      ROOT: artifacts/c29c-continuous
+      SOURCE_RUN: "31263121137"
+      SOURCE_SHA: 8fa191f4717cdf133916bdba23470301dba3b8d3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31263121137
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: candidate29b-chunk-*-8fa191f4717cdf133916bdba23470301dba3b8d3
+          path: artifacts/c29c-input
+          merge-multiple: false
+      - name: Verify imported evidence and module contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find "$INPUT" -name chunk_manifest.json | wc -l)" -eq 31
+          python -m compileall -q research/candidate-29
+          python -m unittest discover -s research/candidate-29 -p 'test_*.py' -v
+      - name: Run one uninterrupted NautilusTrader account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-29/run_continuous.py \
+            --input-root "$INPUT" \
+            --output "$ROOT" \
+            --workspace .cache/c29c/assembled \
+            --cache .cache/c29c/manifest \
+            --symbol BTCUSDT \
+            --start 2024-01-01 \
+            --end 2026-07-31 \
+            --config research/candidate-19/config.json \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Verify completed continuous result
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$ROOT/metrics.json"; then
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          x=json.loads((Path(os.environ['ROOT'])/'metrics.json').read_text())
+          assert x['evaluation_start']=='2024-01-01'
+          assert x['evaluation_end']=='2026-07-31'
+          assert x['calendar_days']==943
+          assert x['continuous_account'] is True
+          assert x['continuous_strategy_process'] is True
+          assert x['account_restarts']==0 and x['strategy_restarts']==0
+          print(json.dumps({k:x.get(k) for k in ['starting_nav','ending_nav','total_return','geometric_daily_growth','max_drawdown','trades','wins','win_rate','active_days','gate_pass','calendar_year_returns','rolling_windows']},indent=2,sort_keys=True))
+          PY
+          else
+            echo 'metrics.json absent'
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate29c-final-continuous-${{ github.sha }}
+          path: artifacts/c29c-continuous/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
