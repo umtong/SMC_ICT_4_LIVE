@@ -36,8 +36,9 @@ class ForcedBasisReversionContractTests(unittest.TestCase):
         source = inspect.getsource(
             ForcedBasisReversionStrategy._submit_basis_reversion,
         )
+        self.assertEqual(BRANCH, "FORCED_SPOT_PERP_BASIS_REVERSION")
         self.assertIn("_submit_price_capped_bracket", source)
-        self.assertIn(BRANCH, source)
+        self.assertIn("branch=BRANCH", source)
         self.assertNotIn("order_factory", source)
 
 
