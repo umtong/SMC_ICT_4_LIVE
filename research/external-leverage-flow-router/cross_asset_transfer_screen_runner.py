@@ -6,6 +6,10 @@ Recent pandas versions can ignore ``unit='ms'`` for such objects and parse the
 integer text as a calendar year.  The shared reader remains untouched; this
 small adapter coerces only the two timestamp columns to int64 before datetime
 conversion, then installs it into the fixed screen module.
+
+The ten-minute horizon is included before observing screen results because the
+external minute-frequency research explicitly reports predictability up to ten
+minutes and uses ten-minute portfolio rebalancing.
 """
 from __future__ import annotations
 
@@ -80,6 +84,7 @@ def robust_read_kline(path: Path) -> pd.DataFrame:
 
 
 screen.read_kline = robust_read_kline
+screen.HORIZONS = (1, 3, 5, 10, 15, 30, 60)
 
 
 if __name__ == "__main__":
