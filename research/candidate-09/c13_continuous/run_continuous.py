@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from decimal import Decimal
 from pathlib import Path
 import sys
 from typing import Any
@@ -54,7 +53,13 @@ def main() -> int:
     effective = ROOT / "continuous_config.json"
     write_json(effective, config)
 
-    metrics = run(effective, "ALL", output)
+    data_link = output / "data"
+    try:
+        metrics = run(effective, "ALL", output)
+    finally:
+        if data_link.is_symlink():
+            data_link.unlink()
+
     audit_result = audit(output, "ALL")
     write_json(output / "audit.json", audit_result)
 
