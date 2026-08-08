@@ -10,6 +10,10 @@ import sys
 import aggregate_candidate20_inside_origin_acceptance as base
 
 
+def fmt(value: object) -> str:
+    return "n/a" if value is None else f"{float(value):.3f}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
@@ -103,8 +107,8 @@ def main() -> int:
         "",
         "| Candidate | Daily geo | NAV | Trades | W/L | Win rate | Active weeks | Payoff |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
-        f"| Candidate 20 | {previous['daily_geometric_growth']:.6%} | {previous['nav_multiple']:.6f} | {previous['trades']} | {previous['wins']}/{previous['losses']} | {previous['win_rate']:.2%} | {previous['active_weeks']} | {base.base.fmt(previous['payoff_ratio'])} |",
-        f"| Candidate 21 | {current['daily_geometric_growth']:.6%} | {current['nav_multiple']:.6f} | {current['trades']} | {current['wins']}/{current['losses']} | {current['win_rate']:.2%} | {current['active_weeks']} | {base.base.fmt(current.get('payoff_ratio'))} |",
+        f"| Candidate 20 | {previous['daily_geometric_growth']:.6%} | {previous['nav_multiple']:.6f} | {previous['trades']} | {previous['wins']}/{previous['losses']} | {previous['win_rate']:.2%} | {previous['active_weeks']} | {fmt(previous['payoff_ratio'])} |",
+        f"| Candidate 21 | {current['daily_geometric_growth']:.6%} | {current['nav_multiple']:.6f} | {current['trades']} | {current['wins']}/{current['losses']} | {current['win_rate']:.2%} | {current['active_weeks']} | {fmt(current.get('payoff_ratio'))} |",
         "",
         "## Incremental semantic-rejected FAR state",
         "",
@@ -115,7 +119,7 @@ def main() -> int:
         f"- Wins/losses: {semantic['wins']}/{semantic['losses']}",
         f"- Win rate: {semantic['win_rate']:.2%}",
         f"- Net PnL: {semantic['net_pnl']:.2f} USDT",
-        f"- Payoff: {base.base.fmt(semantic.get('payoff_ratio'))}",
+        f"- Payoff: {fmt(semantic.get('payoff_ratio'))}",
         f"- Decision: `{payload['decision']}`",
     ]
     args.output.with_name("RESULT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
