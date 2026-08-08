@@ -1,0 +1,239 @@
+name: candidate-05-v46-stateful-91d-v2
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v46-stateful-91d-v2.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v46-stateful-91d
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  stateful-91d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v46-stateful-91d-v2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify fixed environment and exact v46 contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v45_external_active_inventory_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_breakaway_state_logic.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v46_no_post_retrace_breakaway_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_basis_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_reset_logic.py' -v
+
+      - name: Run one uninterrupted 91-day BTC path through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-05/v40_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-05-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-05-30 \
+            --cache .cache/candidate-05-v46-stateful-91d-v2 \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Build stateful distribution and density diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          from datetime import date
+          import json
+          import math
+          import os
+          from pathlib import Path
+          from statistics import median
+          from typing import Any
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          daily_path = root / "daily_returns.json"
+          daily = json.loads(daily_path.read_text()) if daily_path.exists() else dict(metrics.get("daily_returns", {}))
+
+          def finite(value: Any, default: float = float("nan")) -> float:
+              try:
+                  number = float(value)
+              except (TypeError, ValueError):
+                  return default
+              return number if math.isfinite(number) else default
+
+          def sanitize(value: Any) -> Any:
+              if isinstance(value, dict):
+                  return {str(key): sanitize(item) for key, item in value.items()}
+              if isinstance(value, list):
+                  return [sanitize(item) for item in value]
+              if isinstance(value, tuple):
+                  return [sanitize(item) for item in value]
+              if isinstance(value, float) and not math.isfinite(value):
+                  return None
+              return value
+
+          def compound(values):
+              multiple = 1.0
+              for value in values:
+                  number = finite(value)
+                  if not math.isfinite(number) or number <= -1.0:
+                      return -1.0
+                  multiple *= 1.0 + number
+              return multiple - 1.0
+
+          rows = [(date.fromisoformat(day), finite(value)) for day, value in sorted(daily.items())]
+          rolling = []
+          for index in range(len(rows) - 6):
+              selected = rows[index:index + 7]
+              if any(selected[offset][0].toordinal() + 1 != selected[offset + 1][0].toordinal() for offset in range(6)):
+                  continue
+              total = compound(value for _, value in selected)
+              rolling.append({
+                  "start": selected[0][0].isoformat(),
+                  "end": selected[-1][0].isoformat(),
+                  "total_return": total,
+                  "geometric_daily_growth": (1.0 + total) ** (1.0 / 7.0) - 1.0,
+              })
+
+          monthly_multiple = {}
+          for day, value in rows:
+              key = day.isoformat()[:7]
+              monthly_multiple[key] = monthly_multiple.get(key, 1.0) * (1.0 + value)
+          monthly = {key: value - 1.0 for key, value in monthly_multiple.items()}
+
+          days = 91
+          risk_fraction = 0.03
+          maximum_net_r = 1.50
+          best_trade_multiple = 1.0 + risk_fraction * maximum_net_r
+          trades = int(metrics.get("trades", 0) or 0)
+          wins = int(metrics.get("wins", 0) or 0)
+          best_case_gdg = best_trade_multiple ** (trades / days) - 1.0
+          required_all_winner_trades = math.ceil(days * math.log(1.01) / math.log(best_trade_multiple))
+
+          total_return = finite(metrics.get("total_return"), -1.0)
+          gdg = finite(metrics.get("geometric_daily_growth"), -1.0)
+          integrity = bool(metrics.get("integrity_pass", True))
+          if not integrity:
+              classification = "V46_STATEFUL_91D_IMPLEMENTATION_OR_INTEGRITY_FAILURE"
+          elif gdg >= 0.01:
+              classification = "V46_STATEFUL_91D_PROJECT_GROWTH_REACHED"
+          elif total_return > 0.0 and best_case_gdg < 0.01:
+              classification = "V46_STATEFUL_91D_POSITIVE_BUT_STRUCTURALLY_INSUFFICIENT_DENSITY"
+          elif total_return > 0.0:
+              classification = "V46_STATEFUL_91D_POSITIVE_BELOW_PROJECT_GROWTH"
+          else:
+              classification = "V46_STATEFUL_91D_NEGATIVE_CONTINUOUS_EXPECTANCY"
+
+          returns = [float(item["total_return"]) for item in rolling]
+          result = {
+              "schema": "candidate-05-v46-stateful-91d-v2",
+              "classification": classification,
+              "strategy": "strategy_v46_no_post_retrace_breakaway:NoPostRetraceBreakawayStrategy",
+              "engine": "NautilusTrader BacktestNode",
+              "evaluation": {"start": metrics.get("evaluation_start"), "end": metrics.get("evaluation_end"), "calendar_days": days},
+              "metrics": sanitize(metrics),
+              "rolling_seven_day_distribution": {
+                  "count": len(returns),
+                  "positive_count": sum(value > 0.0 for value in returns),
+                  "positive_share": sum(value > 0.0 for value in returns) / len(returns) if returns else None,
+                  "minimum": min(returns) if returns else None,
+                  "median": median(returns) if returns else None,
+                  "maximum": max(returns) if returns else None,
+                  "windows": rolling,
+              },
+              "monthly_returns": monthly,
+              "opportunity_density_feasibility": {
+                  "risk_fraction": risk_fraction,
+                  "maximum_post_cost_target_r": maximum_net_r,
+                  "best_nav_multiple_per_all_winner_trade": best_trade_multiple,
+                  "actual_trades": trades,
+                  "required_all_winner_trades_for_one_percent_gdg": required_all_winner_trades,
+                  "all_winner_maximum_target_gdg_at_actual_trade_count": best_case_gdg,
+                  "feasible_even_with_all_winners": best_case_gdg >= 0.01,
+                  "note": "Upper-bound diagnosis only; no order or risk contract is changed.",
+              },
+          }
+          result_path = Path("research/candidate-05/V46_STATEFUL_91D_RESULT.json")
+          result_path.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n")
+
+          distribution = result["rolling_seven_day_distribution"]
+          markdown = f"""# Candidate 05 v46 — uninterrupted 91-day result
+
+**Classification: `{classification}`**
+
+- Total return: {total_return:.9%}
+- Geometric daily growth: {gdg:.9%}
+- Trades / wins: {trades} / {wins}
+- Win rate: {finite(metrics.get('win_rate'), 0.0):.6%}
+- Profit factor: {finite(metrics.get('profit_factor'), 0.0)}
+- Maximum drawdown: {finite(metrics.get('max_drawdown'), 0.0):.6%}
+- Rolling seven-day positive share: {distribution['positive_share']}
+- Rolling seven-day minimum / median / maximum: {distribution['minimum']} / {distribution['median']} / {distribution['maximum']}
+- Actual trades: {trades}
+- Minimum all-winner 1.50R trades required for 1% GDG: {required_all_winner_trades}
+- All-winner upper-bound GDG at actual density: {best_case_gdg:.9%}
+
+The density calculation is an impossible-best-case upper bound, not a risk or
+leverage rule. Risk remains 3% of current NAV and all execution is owned by
+NautilusTrader.
+"""
+          Path("research/candidate-05/V46_STATEFUL_91D_RESULT.md").write_text(markdown)
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+          PY
+
+      - name: Verify authoritative evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          python -m json.tool research/candidate-05/V46_STATEFUL_91D_RESULT.json
+          for file in run.json data_manifest.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json; do
+            test -s "$ROOT/$file"
+          done
+
+      - name: Commit result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V46_STATEFUL_91D_RESULT.json research/candidate-05/V46_STATEFUL_91D_RESULT.md
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-05: record v46 uninterrupted 91-day result [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v46-stateful-91d-v2-${{ github.sha }}
+          path: |
+            artifacts/candidate-05-v46-stateful-91d-v2/**
+            research/candidate-05/V46_STATEFUL_91D_RESULT.json
+            research/candidate-05/V46_STATEFUL_91D_RESULT.md
+          if-no-files-found: warn
+          retention-days: 90
