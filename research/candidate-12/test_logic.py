@@ -575,6 +575,55 @@ class LogicTests(unittest.TestCase):
             for event in engine.events
         ))
 
+    def test_mid_value_failed_low_acceptance_can_reverse_after_secondary_sweep(
+        self,
+    ) -> None:
+        y, m, d = self.DAY
+        engine = CausalLiquidityAuctionEngine(
+            config(max_stop_atr=100.0),
+            "X",
+        )
+        self.seed_asia(engine)
+        engine._on_five(bar(ts(y, m, d, 6, 5), 99, 101, 99, 100), True)
+        engine._on_five(bar(ts(y, m, d, 6, 10), 100, 100, 91, 92), True)
+        engine._on_five(bar(ts(y, m, d, 6, 15), 92, 96.1, 90, 93), True)
+        self.assertIsNone(
+            engine._on_five(
+                bar(ts(y, m, d, 6, 20), 93, 97, 92, 96),
+                True,
+            )
+        )
+        state = engine._sources[SessionLabel.ASIA]
+        self.assertTrue(state.low_failure_reversal_watch)
+        self.assertIsNone(
+            engine._on_five(
+                bar(ts(y, m, d, 6, 25), 96, 96, 88.5, 89),
+                True,
+            )
+        )
+        self.assertAlmostEqual(state.low_failure_secondary_sweep or 0.0, 88.5)
+        engine._on_five(
+            bar(ts(y, m, d, 6, 30), 89, 99, 88.8, 98.5),
+            True,
+        )
+        plan = engine._on_five(
+            bar(ts(y, m, d, 6, 35), 98.5, 100, 96.5, 99),
+            True,
+        )
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(
+            plan.scenario,
+            ScenarioKind.ASIA_LOW_ACCEPTANCE_FAILURE_REVERSAL,
+        )
+        self.assertEqual(plan.direction, Direction.LONG)
+        self.assertEqual(plan.entry_order, EntryOrder.LIMIT_GTD)
+        self.assertEqual(
+            plan.details["route"],
+            "FAILED_LOW_ACCEPTANCE_SECONDARY_SWEEP_BULLISH_MSS_FVG",
+        )
+        self.assertAlmostEqual(plan.target_price, 105.0)
+
     def test_failed_premium_low_acceptance_can_reaccept_bearishly(self) -> None:
         y, m, d = self.DAY
         engine = CausalLiquidityAuctionEngine(config(), "X")

@@ -1,4 +1,4 @@
-"""Causal completed-session auction router for Candidate 12 I15.
+"""Causal completed-session auction router for Candidate 12 I16.
 
 The engine distinguishes economically different interactions with a completed
 Asia or London dealing range instead of forcing one candle pattern onto every
@@ -63,6 +63,8 @@ class ScenarioKind(str, Enum):
     ASIA_LOW_REACCEPTANCE = "ASIA_LOW_REACCEPTANCE"
     ASIA_LOW_ACCEPTANCE_REACCELERATION = "ASIA_LOW_ACCEPTANCE_REACCELERATION"
     LONDON_LOW_ACCEPTANCE_REACCELERATION = "LONDON_LOW_ACCEPTANCE_REACCELERATION"
+    ASIA_LOW_ACCEPTANCE_FAILURE_REVERSAL = "ASIA_LOW_ACCEPTANCE_FAILURE_REVERSAL"
+    LONDON_LOW_ACCEPTANCE_FAILURE_REVERSAL = "LONDON_LOW_ACCEPTANCE_FAILURE_REVERSAL"
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,6 +447,12 @@ class SourceState:
     low_continuation_started_index: int | None = None
     low_reacceptance_outside_closes: int = 0
     low_reacceptance_done: bool = False
+    low_failure_reversal_watch: bool = False
+    low_failure_reversal_started_index: int | None = None
+    low_failure_acceptance_trough: float | None = None
+    low_failure_pullback_peak: float | None = None
+    low_failure_secondary_sweep: float | None = None
+    low_failure_scenario_id: str | None = None
 
 
 class CausalLiquidityAuctionEngine:
@@ -814,6 +822,32 @@ class CausalLiquidityAuctionEngine:
         else:
             state.low_rejection = None
             state.low_rejection_done = True
+
+    def _fresh_bull_fvg_general(self, bar: FiveBar) -> BullFVG | None:
+        if len(self._bars) < 2 or len(self._bar_atrs) < 2:
+            return None
+        first = self._bars[-2]
+        displacement = self._bars[-1]
+        displacement_atr = self._bar_atrs[-1]
+        if displacement_atr is None or displacement_atr <= 0:
+            return None
+        if not (
+            bar.low > first.high
+            and displacement.close > displacement.open
+            and displacement.body / displacement_atr
+            >= self.config.acceptance_displacement_body_atr
+            and displacement.close_location
+            >= self.config.acceptance_displacement_min_close_location
+        ):
+            return None
+        return BullFVG(
+            lower=first.high,
+            upper=bar.low,
+            formed_index=self._five_index,
+            formed_ts_ns=bar.ts_ns,
+            displacement_body_atr=displacement.body / displacement_atr,
+            displacement_close_location=displacement.close_location,
+        )
 
     def _fresh_bear_fvg_general(self, bar: FiveBar) -> BearFVG | None:
         if len(self._bars) < 2 or len(self._bar_atrs) < 2:
@@ -1218,9 +1252,29 @@ class CausalLiquidityAuctionEngine:
             state.low_acceptance_extension_confirmed = False
             state.low_continuation_pullback_high = None
             state.low_continuation_started_index = None
+            mid_value_source = (
+                source.close_location
+                >= self.config.low_acceptance_discount_close_cutoff
+                and source.close_location
+                < self.config.low_acceptance_premium_close_cutoff
+            )
+            state.low_failure_reversal_watch = mid_value_source
+            state.low_failure_reversal_started_index = (
+                self._five_index if mid_value_source else None
+            )
+            state.low_failure_acceptance_trough = (
+                state.low_acceptance_trough if mid_value_source else None
+            )
+            state.low_failure_pullback_peak = (
+                bar.high if mid_value_source else None
+            )
+            state.low_failure_secondary_sweep = None
             sid = state.low_acceptance_scenario_id
             if sid is None:
                 sid = self._next_scenario_id(source.label, "LOW-ACCEPTANCE-FAILURE")
+            state.low_failure_scenario_id = (
+                sid if state.low_failure_reversal_watch else None
+            )
             self._emit(
                 scenario_id=sid,
                 event_type="LOW_ACCEPTANCE_FAILED_BACK_INSIDE",
@@ -1544,6 +1598,158 @@ class CausalLiquidityAuctionEngine:
             return self._emit_plan(plan, allow_entry)
 
         if state.low_acceptance_phase == "WAIT_REACCEPT":
+            # A mid-value sell-side acceptance failure is unresolved until a
+            # second sell-side sweep occurs. Only then may an independent
+            # bullish MSS/FVG open a reversal auction to the opposite completed
+            # boundary. The original failure bar is not an entry.
+            if state.low_failure_reversal_watch:
+                started = state.low_failure_reversal_started_index
+                acceptance_trough = state.low_failure_acceptance_trough
+                pullback_peak = state.low_failure_pullback_peak
+                reversal_sid = state.low_failure_scenario_id
+                if (
+                    started is None
+                    or acceptance_trough is None
+                    or pullback_peak is None
+                    or reversal_sid is None
+                ):
+                    state.low_failure_reversal_watch = False
+                    self.skips[
+                        "LOW_ACCEPTANCE_FAILURE_REVERSAL_MISSING_STRUCTURE"
+                    ] += 1
+                elif (
+                    self._five_index - started
+                    > self.config.acceptance_retest_expiry_bars
+                ):
+                    state.low_failure_reversal_watch = False
+                    self.skips[
+                        "LOW_ACCEPTANCE_FAILURE_REVERSAL_EXPIRED"
+                    ] += 1
+                elif bar.high >= source.high:
+                    state.low_failure_reversal_watch = False
+                    self.skips[
+                        "LOW_ACCEPTANCE_FAILURE_REVERSAL_TARGET_PRECONSUMED"
+                    ] += 1
+                else:
+                    if state.low_failure_secondary_sweep is None:
+                        state.low_failure_pullback_peak = max(
+                            pullback_peak,
+                            bar.high,
+                        )
+                        if (
+                            bar.low
+                            <= acceptance_trough - self.config.price_increment
+                        ):
+                            state.low_failure_secondary_sweep = bar.low
+                            self._emit(
+                                scenario_id=reversal_sid,
+                                event_type=(
+                                    "LOW_ACCEPTANCE_FAILURE_SECONDARY_SWEEP"
+                                ),
+                                event_time_ns=bar.ts_ns,
+                                observed_time_ns=bar.ts_ns,
+                                next_state="WAIT_BULLISH_MSS_FVG",
+                                reason_code=(
+                                    "SECOND_SELL_SIDE_SWEEP_AFTER_FAILED_ACCEPTANCE"
+                                ),
+                                reference_price=acceptance_trough,
+                                details={
+                                    "source": source.label.value,
+                                    "acceptance_trough": acceptance_trough,
+                                    "secondary_sweep": bar.low,
+                                    "frozen_failure_peak": (
+                                        state.low_failure_pullback_peak
+                                    ),
+                                },
+                            )
+                        return None
+
+                    state.low_failure_secondary_sweep = min(
+                        state.low_failure_secondary_sweep,
+                        bar.low,
+                    )
+                    fresh = self._fresh_bull_fvg_general(bar)
+                    displacement = self._bars[-1] if self._bars else None
+                    frozen_peak = state.low_failure_pullback_peak
+                    confirmed = (
+                        fresh is not None
+                        and displacement is not None
+                        and frozen_peak is not None
+                        and displacement.close > source.low
+                        and displacement.close > frozen_peak
+                        and bar.close > source.low
+                    )
+                    if confirmed:
+                        assert fresh is not None
+                        assert frozen_peak is not None
+                        sweep_extreme = state.low_failure_secondary_sweep
+                        assert sweep_extreme is not None
+                        scenario = (
+                            ScenarioKind.ASIA_LOW_ACCEPTANCE_FAILURE_REVERSAL
+                            if source.label is SessionLabel.ASIA
+                            else ScenarioKind.LONDON_LOW_ACCEPTANCE_FAILURE_REVERSAL
+                        )
+                        structural_stop = (
+                            sweep_extreme
+                            - self.config.fvg_stop_buffer_atr * atr
+                        )
+                        plan = self._costed_plan(
+                            scenario_id=reversal_sid,
+                            scenario=scenario,
+                            direction=Direction.LONG,
+                            entry_order=EntryOrder.LIMIT_GTD,
+                            observed_ts_ns=bar.ts_ns,
+                            bar=bar,
+                            atr=atr,
+                            entry_raw=fresh.upper,
+                            stop_raw=structural_stop,
+                            target_raw=source.high,
+                            expire_ts_ns=(
+                                bar.ts_ns
+                                + self.config.limit_entry_expiry_bars
+                                * self.config.bar_minutes
+                                * NS_MINUTE
+                            ),
+                            details={
+                                "source": source.label.value,
+                                "route": (
+                                    "FAILED_LOW_ACCEPTANCE_SECONDARY_SWEEP_"
+                                    "BULLISH_MSS_FVG"
+                                ),
+                                "session_high": source.high,
+                                "session_low": source.low,
+                                "session_width": source.width,
+                                "source_close_location": source.close_location,
+                                "acceptance_trough": acceptance_trough,
+                                "failure_pullback_peak": frozen_peak,
+                                "secondary_sweep": sweep_extreme,
+                                "fresh_fvg_lower": fresh.lower,
+                                "fresh_fvg_upper": fresh.upper,
+                                "fresh_fvg_formed_ts_ns": fresh.formed_ts_ns,
+                                "structural_invalidation": structural_stop,
+                                "decision_body_atr": (
+                                    fresh.displacement_body_atr
+                                ),
+                                "decision_close_location": (
+                                    fresh.displacement_close_location
+                                ),
+                                "target_semantics": (
+                                    "OPPOSITE_COMPLETED_SESSION_BOUNDARY"
+                                ),
+                            },
+                        )
+                        state.low_failure_reversal_watch = False
+                        if plan is None:
+                            self.skips[
+                                "LOW_ACCEPTANCE_FAILURE_REVERSAL_COSTED_PLAN_REJECTED"
+                            ] += 1
+                            return None
+                        self.scenario_counts[scenario.value] += 1
+                        state.low_plan_emitted = True
+                        state.trade_plan_emitted = True
+                        return self._emit_plan(plan, allow_entry)
+                    return None
+
             if (
                 source.label is not SessionLabel.ASIA
                 or source.close_location
