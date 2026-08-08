@@ -1,0 +1,90 @@
+name: external-hourly-overreaction-screen
+
+on:
+  push:
+    branches: ["research/external-leverage-flow-router"]
+    paths:
+      - "research/external-leverage-flow-router/hourly_overreaction_screen.py"
+      - ".github/workflows/external-hourly-overreaction-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: external-hourly-overreaction-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  fixed-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/external-leverage-flow-router:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/external-hourly-overreaction-screen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify fixed external mechanism
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/external-leverage-flow-router/hourly_overreaction_screen.py
+          python - <<'PY'
+          import hourly_overreaction_screen as screen
+          assert screen.SYMBOLS == ('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT')
+          assert screen.HORIZONS == (1, 2, 4)
+          assert screen.ABS_RETURN_FLOOR_BPS == 100.0
+          assert screen.SIGMA_MULTIPLE == 2.5
+          assert screen.VOLUME_BURST_MIN == 2.0
+          assert screen.ROUND_TRIP_HURDLE_BPS == 20.0
+          print('fixed medium-frequency overreaction contract verified')
+          PY
+
+      - name: Run predeclared three-month development screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/external-leverage-flow-router/hourly_overreaction_screen.py \
+            --start 2023-09-01 \
+            --end 2023-11-30 \
+            --cache .cache/external-hourly-overreaction \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify evidence
+        if: always()
+        shell: bash
+        run: |
+          if test -e "$ROOT/hourly_overreaction_screen.json"; then
+            python -m json.tool "$ROOT/hourly_overreaction_screen.json" >/dev/null
+            python -m json.tool "$ROOT/raw_evidence.json" >/dev/null
+            test -e "$ROOT/hourly_overreaction_events.csv"
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('artifacts/external-hourly-overreaction-screen/hourly_overreaction_screen.json').read_text())
+          assert report['development_period'] == ['2023-09-01', '2023-11-30']
+          assert report['horizons_hours'] == [1, 2, 4]
+          assert report['round_trip_hurdle_bps'] == 20.0
+          print(json.dumps({
+              'events_by_symbol': {k: v['events'] for k, v in report['results'].items()},
+              'promising_fixed_cells': report['promising_fixed_cells'],
+          }, indent=2))
+          PY
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: external-hourly-overreaction-screen-${{ github.sha }}
+          path: artifacts/external-hourly-overreaction-screen/**
+          if-no-files-found: warn
+          retention-days: 90
