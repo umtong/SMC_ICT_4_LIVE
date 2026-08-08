@@ -6,7 +6,7 @@
     "risk_fraction": 0.03,
     "starting_nav": "100000"
   },
-  "candidate": "candidate-15-v6-residual-laggard-delivery",
+  "candidate": "candidate-15-v7-bounded-residual-information-transfer",
   "candidate15_protocol": {
     "base_candidate": {
       "branch": "research/candidate-14",
@@ -18,25 +18,35 @@
     "router": {
       "accepted_market_count_required": 3,
       "active_horizon": "observed_confirmation_span",
-      "atr_timeframe_minutes": 5,
-      "atr_uses_current_impulse": false,
       "common_flow_breadth": 3,
       "common_markets_required": 3,
+      "continuation_engine": "BoundedResidualTransferContinuationEngine",
       "distinct_events_required": 2,
       "entry_order": "POST_ONLY_LIMIT_GTD",
       "entry_timeframe_minutes": 5,
       "four_market_response": "NO_TRADE_NO_RESIDUAL_RECEIVER",
       "maximum_candidate_event_separation_hours": 4,
-      "module": "PERSISTENT_QH_MSS_FVG_CONTINUATION",
+      "module": "BOUNDED_RESIDUAL_TRANSFER_MSS_FVG",
       "origin_rule": "majority remains beyond the first confirming origins",
+      "parity_consumed_before_plan": "NO_TRADE",
+      "parity_costed_r_maximum_exclusive": 1.0,
+      "parity_costed_r_minimum_exclusive": 0.0,
       "portfolio_router": "residual_laggard_symbol",
       "progress_rule": "positive median signed log return and majority advance",
-      "state_router": "ResponseQualifiedPersistentQuarterHourRouter",
+      "receiver_atr_timeframe_minutes": 5,
+      "receiver_atr_uses_current_impulse": false,
+      "refresh_resets_effective_timestamp": true,
+      "residual_must_lag_sender_median": true,
+      "residual_to_weakest_sender_body_ratio_maximum_exclusive": 1.0,
+      "residual_to_weakest_sender_body_ratio_minimum": 0.5,
+      "sender_atr_timeframe_minutes": 5,
+      "sender_atr_uses_current_impulse": false,
+      "state_router": "BoundedTransferPersistentQuarterHourRouter",
       "stop_order": "STOP_MARKET_GTC",
       "take_profit_order": "POST_ONLY_LIMIT_GTC",
       "tradable_market_policy": "sole market excluded from current accepted_symbols"
     },
-    "schema": "candidate-15-residual-laggard-delivery-v6"
+    "schema": "candidate-15-bounded-residual-information-transfer-v7"
   },
   "execution": {
     "bar_adaptive_high_low_ordering": true,
@@ -162,8 +172,8 @@
   "schema_version": 2,
   "selection": {
     "evaluation_days": 7,
-    "seed": 202608081506,
-    "selection_rule": "E01-E06 are the same exposed diagnostic weeks used by V4 and V5. Reuse is intentional for controlled market-ownership comparison and cannot support a success claim.",
+    "seed": 202608081507,
+    "selection_rule": "E01-E06 are the same fully exposed mechanism-development intervals used by V4-V6. Reuse isolates causal timing, unit consistency and transfer-state changes; it can never support a success claim.",
     "warmup_days": 3,
     "weeks": {
       "E01": {
