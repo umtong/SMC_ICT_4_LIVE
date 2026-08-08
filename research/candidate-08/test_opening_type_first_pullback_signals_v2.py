@@ -34,26 +34,28 @@ def context(*, invalidate: bool = False) -> tuple[FiveMinuteBar, ...]:
             center = 99.5 if index % 2 == 0 else 100.5
             rows.append(bar(index, start, center - 0.05, center + 0.2, center - 0.2, center + 0.05))
         elif start < session + pd.Timedelta(minutes=30):
-            # Opens above previous value, tests it, and finishes with value accepted outside.
-            rows.append(bar(index, start, 102.0 if start.minute == 0 else 102.7, 104.0, 99.8, 103.0))
+            # The first IB bar tests prior value; later bars establish accepted value above it.
+            if start == session:
+                rows.append(bar(index, start, 102.0, 104.0, 99.8, 103.0))
+            else:
+                rows.append(bar(index, start, 102.7, 103.5, 102.5, 103.2))
         elif start == session + pd.Timedelta(minutes=30):
             if invalidate:
-                rows.append(bar(index, start, 103.0, 103.2, 99.7, 100.0))
+                rows.append(bar(index, start, 103.2, 103.4, 99.7, 100.0))
             else:
-                # Rotates inside the IB but remains outside previous value: state persists.
-                rows.append(bar(index, start, 103.4, 103.6, 103.1, 103.3))
+                # First pullback rotates through the IB high but still closes above prior value.
+                rows.append(bar(index, start, 103.3, 104.2, 103.95, 104.1))
         else:
-            # A distinct later M5 starts a new auction leg beyond the pullback and IB high.
-            rows.append(bar(index, start, 103.3, 105.2, 103.2, 105.0))
+            # A distinct later M5 starts a new auction leg beyond pullback and IB structure.
+            rows.append(bar(index, start, 104.1, 106.2, 104.0, 106.0))
     return tuple(rows)
 
 
 def execution(extra_rows: int = 0) -> pd.DataFrame:
     end = pd.Timestamp("2026-01-05T00:45:00Z") + pd.Timedelta(seconds=10 * extra_rows)
     index = pd.date_range("2026-01-04T23:00:10Z", end, freq="10s")
-    # Keep the synthetic executable observation inside the still-open auction leg so the
-    # contract test exercises state/causality rather than failing the independent cost gate.
-    close = np.full(len(index), 104.7)
+    # Synthetic execution stays inside the new leg and preserves ample cost-after geometry.
+    close = np.full(len(index), 105.2)
     return pd.DataFrame(
         {"open": close, "high": close + 0.05, "low": close - 0.05,
          "close": close, "volume": 10.0},
