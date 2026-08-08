@@ -171,7 +171,7 @@ def aggregate(artifacts: Path, output: Path) -> dict[str, Any]:
             "minimum_mean_after_16bps_bps_exclusive": 0.0,
             "minimum_median_after_16bps_bps_exclusive": 0.0,
             "minimum_mean_after_16bps_t_stat": 1.645,
-            "require_median_mfe_gt_abs_median_mae": true,
+            "require_median_mfe_gt_abs_median_mae": True,
             "maximum_positive_interval_share": 0.60,
             "eligible_route_families": ["ALL", "SYMBOL", "RELATION"],
             "selection_data": "E01_E06_EXPOSED_DEVELOPMENT_ONLY"
