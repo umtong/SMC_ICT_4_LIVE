@@ -1,0 +1,240 @@
+name: candidate-04-v57-micro-auction-sequential
+
+on:
+  push:
+    branches: ["research/candidate-04"]
+    paths:
+      - "research/candidate-04/v57_trigger.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-04-v57-micro-auction-sequential
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-04
+      ROOT: artifacts/candidate-04-v57
+      EVIDENCE: research/candidate-04/evidence-v57.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify foundation and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-04/micro_auction_balance_transition_compiler.py \
+            research/candidate-04/nt_backtest_v57_micro_auction.py
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_micro_auction_balance_transition_compiler.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_tail_adverse_fill_risk_sizing.py' -v
+          python -m unittest discover \
+            -s research/candidate-04/tests \
+            -p 'test_nt_rich_signal_strategy.py' -v
+
+      - name: Run sequential BTC weeks through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$ROOT"
+
+          run_retry() {
+            local label="$1"; shift
+            for attempt in 1 2 3 4; do
+              if "$@"; then return 0; fi
+              echo "$label failed attempt $attempt" >&2
+              sleep $((attempt * 8))
+            done
+            return 1
+          }
+
+          run_week() {
+            local order="$1" build_start="$2" eval_start="$3" eval_end="$4" build_end="$5"
+            local week="$ROOT/week_$order"
+            mkdir -p "$week"
+            export C04_BUILD_START="$build_start"
+            export C04_BUILD_END="$build_end"
+            export C04_EVALUATION_START="$eval_start"
+            export C04_EVALUATION_END="$eval_end"
+
+            run_retry "rich features week $order" \
+              python research/candidate-04/rich_features_for_symbol.py \
+                --symbol BTCUSDT \
+                --start "$build_start" \
+                --end "$build_end" \
+                --cache ".cache/candidate-04-v57/week_$order/rich" \
+                --output "$week/rich"
+            test -s "$week/rich/data_manifest.json"
+
+            run_retry "micro-auction compiler week $order" \
+              python research/candidate-04/micro_auction_balance_transition_compiler.py \
+                --base-config research/candidate-04/inventory_transfer_config.json \
+                --impact-config research/candidate-04/impact_exhaustion_config.json \
+                --router-config research/candidate-04/auction_activity_router_config.json \
+                --rich-dir "$week/rich" \
+                --kline-dir ".cache/candidate-04-v57/week_$order/klines" \
+                --evaluation-start "$eval_start" \
+                --evaluation-end "$eval_end" \
+                --output "$week/signals" \
+                --download-klines
+            test -s "$week/signals/signals.json"
+            test -s "$week/signals/summary.json"
+
+            run_retry "Nautilus week $order" env \
+              C04_SIGNALS_PATH="$GITHUB_WORKSPACE/$week/signals/signals.json" \
+              python research/candidate-04/nt_backtest_v57_micro_auction.py \
+                --config research/candidate-04/nt_liquidity_config.json \
+                --build-start "$build_start" \
+                --build-end "$build_end" \
+                --evaluation-start "$eval_start" \
+                --evaluation-end "$eval_end" \
+                --cache ".cache/candidate-04-v57/week_$order/nautilus" \
+                --output "$week/nautilus"
+            test -s "$week/nautilus/metrics.json"
+            test -e "$week/nautilus/positions.csv"
+            test -s "$week/nautilus/strategy_events.json"
+
+            python research/candidate-04/summarize_candidate_week.py \
+              --root "$week" \
+              --candidate candidate-04-v57-micro-auction-balance-transition \
+              --stage "sequential_week_$order" \
+              --min-trades 5 \
+              --min-active-days 3 \
+              --min-win-rate 0.55 \
+              --min-geometric-daily 0.01 \
+              --output "$week/summary.json"
+
+            python - "$week" "$order" "$build_start" "$eval_start" "$eval_end" "$build_end" <<'PY'
+          import json, sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          summary=json.loads((root/'summary.json').read_text())
+          compiler=json.loads((root/'signals/summary.json').read_text())
+          summary.update({
+              'order':int(sys.argv[2]),
+              'build_start':sys.argv[3],
+              'evaluation_start':sys.argv[4],
+              'evaluation_end':sys.argv[5],
+              'build_end':sys.argv[6],
+              'compiler_summary':compiler,
+          })
+          summary['progressive_pass']=bool(
+              summary.get('risk_pass')
+              and int(summary.get('trades') or 0)>=5
+              and int(summary.get('active_days') or 0)>=3
+              and float(summary.get('win_rate') or 0.0)>=0.55
+              and float(summary.get('total_return') or 0.0)>0.0
+              and float(summary.get('geometric_daily_growth') or 0.0)>=0.01
+          )
+          (root/'summary.json').write_text(json.dumps(summary,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(summary,indent=2,sort_keys=True))
+          PY
+          }
+
+          status="RUNNING"
+          completed=0
+          for spec in \
+            "1 2023-05-27 2023-05-29 2023-06-04 2023-06-04" \
+            "2 2024-07-13 2024-07-15 2024-07-21 2024-07-21" \
+            "3 2025-11-08 2025-11-10 2025-11-16 2025-11-16"; do
+            read -r order build_start eval_start eval_end build_end <<< "$spec"
+            run_week "$order" "$build_start" "$eval_start" "$eval_end" "$build_end"
+            completed="$order"
+            if [[ "$(python -c "import json; print(str(json.load(open('$ROOT/week_$order/summary.json'))['progressive_pass']).lower())")" != true ]]; then
+              status="FAILED_WEEK_$order"
+              break
+            fi
+          done
+          if [[ "$completed" == 3 ]]; then status="THREE_WEEKS_COMPLETED"; fi
+          printf '%s\n' "$status" > "$ROOT/status.txt"
+
+      - name: Aggregate evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$(dirname "$EVIDENCE")" "$ROOT"
+          python - <<'PY'
+          import json, math, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          rows=[json.loads(path.read_text()) for path in sorted(root.glob('week_*/summary.json'))]
+          returns=[float(row.get('total_return') or 0.0) for row in rows]
+          compounded=math.prod(1.0+x for x in returns)-1.0 if rows else 0.0
+          days=7*len(rows)
+          daily=(1.0+compounded)**(1.0/days)-1.0 if days and 1.0+compounded>0 else 0.0
+          trades=sum(int(row.get('trades') or 0) for row in rows)
+          wins=sum(int(row.get('wins') or 0) for row in rows)
+          active=sum(int(row.get('active_days') or 0) for row in rows)
+          all_pass=len(rows)==3 and all(bool(row.get('progressive_pass')) for row in rows)
+          evidence={
+              'candidate':'candidate-04-v57-micro-auction-balance-transition',
+              'stage':'sequential_btc',
+              'engine':'NautilusTrader 1.230.0 BacktestNode',
+              'weeks':rows,
+              'completed_weeks':len(rows),
+              'calendar_days':days,
+              'trades':trades,
+              'wins':wins,
+              'win_rate':wins/trades if trades else 0.0,
+              'active_days':active,
+              'compounded_return':compounded,
+              'geometric_daily_growth':daily,
+              'three_week_pass':all_pass,
+              'project_target_reached':False,
+              'decision':('PROMOTE_TO_LONG_EVALUATION' if all_pass else f'STOP_AFTER_{len(rows)}_WEEKS'),
+          }
+          Path(os.environ['EVIDENCE']).write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          (root/'decision.json').write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(evidence,indent=2,sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-04-v57-${{ github.run_id }}
+          path: |
+            artifacts/candidate-04-v57
+            research/candidate-04/evidence-v57.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Persist evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          test -s "$EVIDENCE"
+          git config user.name candidate-04-research-bot
+          git config user.email candidate-04-research-bot@users.noreply.github.com
+          git add "$EVIDENCE"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "research(candidate-04): record V57 evidence"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-04 && git push origin HEAD:research/candidate-04; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt*3))
+          done
+          exit 1
