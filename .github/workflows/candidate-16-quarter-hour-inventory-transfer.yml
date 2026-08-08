@@ -1,0 +1,184 @@
+name: candidate-16-quarter-hour-inventory-transfer
+
+on:
+  push:
+    branches: ["research/candidate-16"]
+    paths:
+      - ".github/workflows/candidate-16-quarter-hour-inventory-transfer.yml"
+      - "research/candidate-16/quarter_hour_active/**"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-quarter-hour-inventory-transfer
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 420
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16/quarter_hour_active:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-quarter-hour-inventory-transfer
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment, causal peer timing, and common strategy MRO
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05 research/candidate-16/quarter_hour_active
+          python - <<'PY'
+          from quarter_hour_context import CompletedQuarterHourContext, QuarterHourPulse
+          import shared_account_strategy_variants_v2 as variants
+          from strategy_quarter_hour_inventory_transfer import QuarterHourInventoryTransferStrategy
+
+          context = CompletedQuarterHourContext()
+          for symbol, flow, burst in (
+              ("BTCUSDT", 0.12, 1.30),
+              ("ETHUSDT", 0.15, 1.35),
+              ("SOLUSDT", 0.20, 1.45),
+              ("XRPUSDT", -0.02, 1.20),
+          ):
+              context.publish(QuarterHourPulse(
+                  symbol=symbol,
+                  ts_event=100,
+                  direction=1 if flow > 0 else -1,
+                  flow_open_10s=flow,
+                  notional_open_10s_burst=burst,
+                  ret_60s_bps=4.0 if flow > 0 else -1.0,
+                  efficiency_60s=0.25,
+                  close=100.0,
+                  high=101.0,
+                  low=99.0,
+                  atr=1.0,
+              ))
+          assert context.latest_consensus(before_ts=100) is None
+          consensus = context.latest_consensus(before_ts=101)
+          assert consensus is not None
+          assert consensus.direction == 1
+          assert consensus.owner == "SOLUSDT"
+          assert context.claim(owner=consensus.owner, boundary_ts=100, direction=1)
+          assert not context.claim(owner="BTCUSDT", boundary_ts=100, direction=1)
+          assert context.release(owner=consensus.owner, boundary_ts=100)
+
+          for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):
+              cls = variants.final_shared_strategy_class(variants.WINNER, symbol)
+              assert issubclass(cls, QuarterHourInventoryTransferStrategy)
+              print(symbol, cls.__mro__)
+          PY
+
+      - name: Run consumed seven-day development diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/qhit.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_quarter_hour_inventory_transfer:QuarterHourInventoryTransferStrategy",
+            "experiment_role": "CANDIDATE16_QH_INFORMATION_TRANSFER_DEVELOPMENT"
+          }
+          JSON
+          python research/candidate-16/quarter_hour_active/run_shared.py \
+            --winner-evidence "$ROOT/evidence/qhit.json" \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-07 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-07 \
+            --cache .cache/candidate-16-qhit-development \
+            --output "$ROOT/development-7d" \
+            2>&1 | tee "$ROOT/development-7d-console.log"
+
+      - name: Classify development without changing parameters
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics_path = root / "development-7d" / "metrics.json"
+          metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else None
+          diagnostics = {}
+          for path in sorted((root / "development-7d" / "symbols").glob("*/strategy_diagnostics.json")):
+              diagnostics[path.parent.name] = json.loads(path.read_text())
+          integrity = bool(metrics) and bool(metrics.get("integrity_pass"))
+          trades = int((metrics or {}).get("trades", 0) or 0)
+          growth = float((metrics or {}).get("geometric_daily_growth", 0.0) or 0.0)
+          total_return = float((metrics or {}).get("total_return", 0.0) or 0.0)
+          if not metrics:
+              classification = "IMPLEMENTATION_FAILURE"
+          elif not integrity:
+              classification = "INVALID_EXECUTION_EVIDENCE"
+          elif trades == 0:
+              classification = "NO_EXECUTABLE_OCCURRENCES"
+          elif total_return <= 0.0:
+              classification = "NEGATIVE_ALPHA"
+          elif trades < 7:
+              classification = "POSITIVE_BUT_INSUFFICIENT_OPPORTUNITY_DENSITY"
+          elif growth < 0.01:
+              classification = "POSITIVE_BUT_BELOW_GROWTH_GATE"
+          else:
+              classification = "PROMOTE_UNCHANGED_TO_PREDECLARED_OOS"
+          result = {
+              "schema": "candidate-16-qhit-development-v1",
+              "strategy": "strategy_quarter_hour_inventory_transfer:QuarterHourInventoryTransferStrategy",
+              "classification": classification,
+              "metrics": metrics,
+              "diagnostics": diagnostics,
+          }
+          (root / "development_summary.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Run predeclared untouched fourteen-day OOS only after full development pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          classification=$(python -c 'import json; print(json.load(open("artifacts/candidate-16-quarter-hour-inventory-transfer/development_summary.json"))["classification"])')
+          if [ "$classification" != "PROMOTE_UNCHANGED_TO_PREDECLARED_OOS" ]; then
+            echo "development did not earn OOS promotion: $classification"
+            exit 0
+          fi
+          python research/candidate-16/quarter_hour_active/run_shared.py \
+            --winner-evidence "$ROOT/evidence/qhit.json" \
+            --build-start 2024-03-30 \
+            --build-end 2024-04-14 \
+            --evaluation-start 2024-04-01 \
+            --evaluation-end 2024-04-14 \
+            --cache .cache/candidate-16-qhit-oos \
+            --output "$ROOT/oos-14d" \
+            2>&1 | tee "$ROOT/oos-14d-console.log"
+
+      - name: Verify development evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/development_summary.json"
+          test -s "$ROOT/development-7d/metrics.json"
+          test -s "$ROOT/development-7d/orders.csv"
+          test -s "$ROOT/development-7d/positions.csv"
+          test -s "$ROOT/development-7d/account.csv"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-quarter-hour-inventory-transfer-${{ github.sha }}
+          path: artifacts/candidate-16-quarter-hour-inventory-transfer/**
+          if-no-files-found: warn
+          retention-days: 90
