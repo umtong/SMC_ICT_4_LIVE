@@ -1,0 +1,159 @@
+name: Candidate 11 immutable liquidation exhaustion
+
+on:
+  push:
+    branches: ["research/candidate-11"]
+    paths:
+      - "research/candidate-11/liquidation_exhaustion_v1/hf_screen.py"
+      - "research/candidate-11/liquidation_exhaustion_v1/test_hf_screen.py"
+      - "research/candidate-11/liquidation_exhaustion_v1/HF_PROTOCOL.json"
+      - ".github/workflows/candidate-11-liquidation-exhaustion-hf-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-11-liquidation-exhaustion-hf-v1-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CAND: research/candidate-11/liquidation_exhaustion_v1
+      CACHE: .cache/candidate-11-liquidation-exhaustion-hf-v1
+      OUT: artifacts/candidate-11-liquidation-exhaustion-hf-v1
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_DOWNLOAD_TIMEOUT: "180"
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Verify runtime and event-level state contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          command -v uv
+          uv pip install --python "$(command -v python)" huggingface_hub==0.34.4
+          python -c 'import huggingface_hub, pandas, pyarrow'
+          python -m compileall -q "$CAND/hf_screen.py" "$CAND/test_hf_screen.py"
+          PYTHONPATH="$GITHUB_WORKSPACE/$CAND" python -m unittest "$CAND/test_hf_screen.py" -v
+          grep -F 'strictly later opposite trade initiative' "$CAND/hf_screen.py"
+          grep -F 'independent top-of-book support' "$CAND/hf_screen.py"
+          grep -F 'cannot authorize a success claim' "$CAND/hf_screen.py"
+
+      - name: Run immutable 2026-04-29 development screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT/DEVELOPMENT"
+          PYTHONPATH="$GITHUB_WORKSPACE/$CAND" python "$CAND/hf_screen.py" \
+            --day 2026-04-29 \
+            --cache "$CACHE" \
+            --output "$OUT/DEVELOPMENT" \
+            --validation-mode DEVELOPMENT \
+            2>&1 | tee "$OUT/DEVELOPMENT/console.log"
+
+      - name: Apply frozen development gate
+        id: development
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root=Path(os.environ["OUT"])/"DEVELOPMENT"
+          summary=json.loads((root/"summary.json").read_text())
+          audit={key: summary[key] for key in (
+              "day",
+              "validation_mode",
+              "trade_seconds",
+              "book_seconds",
+              "raw_cascades",
+              "tail_parent_records",
+              "executable_episodes",
+              "target_first",
+              "stop_first",
+              "timeouts",
+              "target_first_rate",
+              "mean_realized_r",
+              "median_realized_r",
+              "screen_pass",
+              "success_claim",
+          )}
+          (root/"SCREEN_AUDIT.json").write_text(
+              json.dumps(audit, indent=2, sort_keys=True)+"\n"
+          )
+          print(json.dumps(audit, indent=2, sort_keys=True))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+              stream.write(f"gate={str(bool(summary['screen_pass'])).lower()}\n")
+          PY
+
+      - name: Run locked 2026-04-30 fresh screen only after development success
+        if: steps.development.outputs.gate == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT/FRESH"
+          PYTHONPATH="$GITHUB_WORKSPACE/$CAND" python "$CAND/hf_screen.py" \
+            --day 2026-04-30 \
+            --cache "$CACHE" \
+            --output "$OUT/FRESH" \
+            --validation-mode FRESH_VALIDATION \
+            2>&1 | tee "$OUT/FRESH/console.log"
+
+      - name: Apply frozen fresh gate
+        if: steps.development.outputs.gate == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          root=Path(os.environ["OUT"])/"FRESH"
+          summary=json.loads((root/"summary.json").read_text())
+          audit={key: summary[key] for key in (
+              "day",
+              "validation_mode",
+              "trade_seconds",
+              "book_seconds",
+              "raw_cascades",
+              "tail_parent_records",
+              "executable_episodes",
+              "target_first",
+              "stop_first",
+              "timeouts",
+              "target_first_rate",
+              "mean_realized_r",
+              "median_realized_r",
+              "screen_pass",
+              "success_claim",
+          )}
+          (root/"SCREEN_AUDIT.json").write_text(
+              json.dumps(audit, indent=2, sort_keys=True)+"\n"
+          )
+          print(json.dumps(audit, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-11-liquidation-exhaustion-hf-v1-${{ github.sha }}
+          path: artifacts/candidate-11-liquidation-exhaustion-hf-v1/**
+          if-no-files-found: warn
+          retention-days: 90

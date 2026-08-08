@@ -1,0 +1,145 @@
+name: Candidate 11 core FAR continuous development
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/core_far_continuous_v1/**"
+      - ".github/workflows/candidate-11-core-far-continuous-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-core-far-continuous-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  develop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify research contract and materialized runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAND=research/candidate-11/core_far_continuous_v1
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/research/candidate-11/session_portfolio_v1:$GITHUB_WORKSPACE/src"
+          python -m py_compile "$CAND"/*.py
+          python -m unittest discover -s "$CAND" -p 'test_*.py' -v
+
+      - name: Run three precommitted continuous development blocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAND=research/candidate-11/core_far_continuous_v1
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/research/candidate-11/session_portfolio_v1:$GITHUB_WORKSPACE/src"
+          rm -rf "$CAND/results"
+          for block in D1 D2 D3; do
+            python "$CAND/run_block.py" "$block" "$CAND/results/$block"
+          done
+          python "$CAND/aggregate.py" \
+            --results "$CAND/results" \
+            --protocol "$CAND/protocol.json" \
+            --output "$CAND/aggregate.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("research/candidate-11/core_far_continuous_v1")
+          result = json.loads((root / "aggregate.json").read_text(encoding="utf-8"))
+          protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+          assert result["research_stage"] == "DEVELOPMENT"
+          assert result["validation_eligible"] is False
+          assert result["success_claim"] is False
+          assert protocol["success_claim_allowed"] is False
+          assert set(result["checks"]) == {
+              "all_blocks_complete",
+              "all_blocks_positive",
+              "minimum_economic_clusters",
+              "pooled_daily_geometric_growth",
+              "positive_leave_one_cluster_out_growth",
+              "growth_concentration",
+              "claimed_direction_cluster_coverage",
+              "claimed_direction_positive_growth",
+              "all_safety_audits",
+              "no_resolution_tail_forced_exit",
+              "trade_mapping_and_nav_reconciliation",
+          }
+          PY
+
+      - name: Persist compact reproducible evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          CAND=research/candidate-11/core_far_continuous_v1
+          SNAPSHOT=/tmp/core-far-continuous-output
+          rm -rf "$SNAPSHOT"
+          mkdir -p "$SNAPSHOT/results"
+          cp "$CAND/aggregate.json" "$SNAPSHOT/aggregate.json"
+          cp "$CAND/RESULT.md" "$SNAPSHOT/RESULT.md"
+
+          for block in D1 D2 D3; do
+            mkdir -p "$SNAPSHOT/results/$block"
+            for name in \
+              account.csv \
+              audit.json \
+              data_manifest.json \
+              effective_config.json \
+              metrics.json \
+              order_lifecycle.json \
+              orders.csv \
+              positions.csv \
+              run.json \
+              source_lock.json \
+              submitted_plans.json \
+              summary.json; do
+              cp "$CAND/results/$block/$name" "$SNAPSHOT/results/$block/$name"
+            done
+          done
+
+          git fetch origin research/candidate-11
+          latest_head="$(git rev-parse origin/research/candidate-11)"
+          if ! git diff --quiet "$GITHUB_SHA" "$latest_head" -- \
+            "$CAND/aggregate.py" \
+            "$CAND/continuous_far_materializer.py" \
+            "$CAND/protocol.json" \
+            "$CAND/run_block.py" \
+            "$CAND/runner.py" \
+            "$CAND/test_aggregate.py" \
+            "$CAND/test_materializer.py" \
+            "$CAND/test_protocol.py" \
+            ".github/workflows/candidate-11-core-far-continuous-v1.yml"; then
+            echo "core FAR development source changed during evaluation"
+            exit 1
+          fi
+
+          rm -rf "$CAND/results" "$CAND/aggregate.json" "$CAND/RESULT.md"
+          git checkout -B research/candidate-11 "$latest_head"
+          mkdir -p "$CAND"
+          cp "$SNAPSHOT/aggregate.json" "$CAND/aggregate.json"
+          cp "$SNAPSHOT/RESULT.md" "$CAND/RESULT.md"
+          cp -R "$SNAPSHOT/results" "$CAND/results"
+
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add "$CAND/aggregate.json" "$CAND/RESULT.md" "$CAND/results"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record continuous core FAR development [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi

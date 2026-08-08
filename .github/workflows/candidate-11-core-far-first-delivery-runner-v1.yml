@@ -1,0 +1,167 @@
+name: Candidate 11 core FAR first-delivery runner
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/core_far_first_delivery_runner_ablation_v1/**"
+      - ".github/workflows/candidate-11-core-far-first-delivery-runner-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-core-far-first-delivery-runner-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  ablate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify frozen first-delivery ablation
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXP=research/candidate-11/core_far_first_delivery_runner_ablation_v1
+          CORE=research/candidate-11/core_far_continuous_v1
+          SRC=research/candidate-11/session_portfolio_v1
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/$EXP:$GITHUB_WORKSPACE/$CORE:$GITHUB_WORKSPACE/$SRC:$GITHUB_WORKSPACE/src"
+          python -m py_compile "$EXP"/*.py
+          python -m unittest discover -s "$EXP" -p 'test_*.py' -v
+          python - <<'PY'
+          from inspect import signature
+          from nautilus_trader.common.factories import OrderFactory
+          from nautilus_trader.trading.strategy import Strategy
+
+          for method, required in (
+              (OrderFactory.market, ("reduce_only", "tags")),
+              (OrderFactory.limit, ("price", "post_only", "reduce_only", "tags")),
+              (OrderFactory.stop_market, ("trigger_price", "reduce_only", "tags")),
+          ):
+              text = str(signature(method))
+              for name in required:
+                  assert name in text, (method, text, name)
+          text = str(signature(Strategy.modify_order))
+          assert "order" in text and "quantity" in text, text
+          PY
+          # Importing materializes the exact locked base runner and fails before
+          # market data if any source boundary has drifted.
+          python - <<'PY'
+          import runner
+          assert runner._SOURCE.count("first-delivery-single-parent") == 1
+          assert runner._SOURCE.count("SELF_FINANCING_FIRST_DELIVERY_EXTERNAL_RUNNER") == 1
+          assert runner._SOURCE.count("self.submit_order_list(order_list)") == 1
+          PY
+
+      - name: Run paired NautilusTrader blocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXP=research/candidate-11/core_far_first_delivery_runner_ablation_v1
+          CORE=research/candidate-11/core_far_continuous_v1
+          SRC=research/candidate-11/session_portfolio_v1
+          export PYTHONPATH="$GITHUB_WORKSPACE/$EXP:$GITHUB_WORKSPACE/$CORE:$GITHUB_WORKSPACE/$SRC:$GITHUB_WORKSPACE/src"
+          rm -rf "$EXP/results"
+          for block in D1 D2 D3; do
+            python "$EXP/run_block.py" "$block" "$EXP/results/$block"
+          done
+          python "$EXP/compare.py" \
+            --results "$EXP/results" \
+            --protocol "$EXP/protocol.json" \
+            --output "$EXP/comparison.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("research/candidate-11/core_far_first_delivery_runner_ablation_v1")
+          result = json.loads((root / "comparison.json").read_text(encoding="utf-8"))
+          assert result["research_stage"] == "TEMPORARY_TEST"
+          assert result["validation_eligible"] is False
+          assert result["can_advance_candidate"] is False
+          assert result["can_claim_alpha"] is False
+          assert result["success_claim"] is False
+          assert result["fresh_validation_authorized"] is False
+          assert result["controlled_checks"]["exact_scenario_id_set"] is True
+          assert result["controlled_checks"]["same_trade_count"] is True
+          assert result["implementation_checks"]["all_safety_audits"] is True
+          assert result["implementation_checks"]["no_first_delivery_fail_close"] is True
+          assert result["implementation_checks"]["allocation_contract"] is True
+          PY
+
+      - name: Persist compact controlled evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          EXP=research/candidate-11/core_far_first_delivery_runner_ablation_v1
+          SNAPSHOT=/tmp/core-far-first-delivery-output
+          rm -rf "$SNAPSHOT"
+          mkdir -p "$SNAPSHOT/results"
+          cp "$EXP/comparison.json" "$SNAPSHOT/comparison.json"
+          cp "$EXP/RESULT.md" "$SNAPSHOT/RESULT.md"
+
+          for block in D1 D2 D3; do
+            mkdir -p "$SNAPSHOT/results/$block"
+            for name in \
+              account.csv \
+              audit.json \
+              data_manifest.json \
+              effective_config.json \
+              metrics.json \
+              order_lifecycle.json \
+              orders.csv \
+              positions.csv \
+              run.json \
+              source_lock.json \
+              submitted_plans.json \
+              summary.json; do
+              cp "$EXP/results/$block/$name" "$SNAPSHOT/results/$block/$name"
+            done
+          done
+
+          git fetch origin research/candidate-11
+          latest_head="$(git rev-parse origin/research/candidate-11)"
+          if ! git diff --quiet "$GITHUB_SHA" "$latest_head" -- \
+            "$EXP/compare.py" \
+            "$EXP/first_delivery_logic.py" \
+            "$EXP/first_delivery_materializer.py" \
+            "$EXP/protocol.json" \
+            "$EXP/run_block.py" \
+            "$EXP/runner.py" \
+            "$EXP/test_first_delivery_logic.py" \
+            "$EXP/test_materializer.py" \
+            "$EXP/test_protocol.py" \
+            ".github/workflows/candidate-11-core-far-first-delivery-runner-v1.yml"; then
+            echo "first-delivery source changed during evaluation"
+            exit 1
+          fi
+
+          rm -rf "$EXP/results" "$EXP/comparison.json" "$EXP/RESULT.md"
+          git checkout -B research/candidate-11 "$latest_head"
+          mkdir -p "$EXP"
+          cp "$SNAPSHOT/comparison.json" "$EXP/comparison.json"
+          cp "$SNAPSHOT/RESULT.md" "$EXP/RESULT.md"
+          cp -R "$SNAPSHOT/results" "$EXP/results"
+
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add "$EXP/comparison.json" "$EXP/RESULT.md" "$EXP/results"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record first-delivery runner ablation [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi

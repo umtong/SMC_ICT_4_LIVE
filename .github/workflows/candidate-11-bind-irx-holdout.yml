@@ -1,0 +1,44 @@
+name: Candidate 11 bind IRX holdout candidate
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/results/IRX_MATRIX/summary.json"
+      - "research/candidate-11/irx_holdout_protocol.json"
+      - "research/candidate-11/bind_irx_holdout_candidate.py"
+      - ".github/workflows/candidate-11-bind-irx-holdout.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-11-bind-irx-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bind:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Bind only a matrix-eligible variant
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-11/bind_irx_holdout_candidate.py
+          if [ -f research/candidate-11/irx_holdout_candidate.json ]; then
+            git config user.name "candidate-11-bot"
+            git config user.email "candidate-11-bot@users.noreply.github.com"
+            git add research/candidate-11/irx_holdout_candidate.json
+            if ! git diff --cached --quiet; then
+              git commit -m "candidate-11: bind IRX candidate before holdout data"
+              git push origin HEAD:research/candidate-11
+            fi
+          fi

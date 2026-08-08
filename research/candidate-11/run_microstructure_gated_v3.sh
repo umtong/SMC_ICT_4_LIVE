@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+CAND="$ROOT/research/candidate-11"
+python "$CAND/apply_microstructure_fixes.py"
+python "$CAND/apply_microstructure_lifecycle_fix.py"
+chmod +x "$CAND/run_microstructure_gated.sh"
+bash "$CAND/run_microstructure_gated.sh"

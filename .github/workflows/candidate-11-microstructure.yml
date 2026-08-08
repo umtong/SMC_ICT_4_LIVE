@@ -1,0 +1,99 @@
+name: Candidate 11 BTC aggTrades microstructure
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/microstructure_protocol.json"
+      - "research/candidate-11/microstructure.py"
+      - "research/candidate-11/run_microstructure_nautilus.py"
+      - "research/candidate-11/audit_microstructure.py"
+      - "research/candidate-11/test_microstructure.py"
+      - "research/candidate-11/apply_microstructure_fixes.py"
+      - "research/candidate-11/run_microstructure_gated.sh"
+      - "research/candidate-11/microstructure_run_trigger.txt"
+      - ".github/workflows/candidate-11-microstructure.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-microstructure-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Run frozen BTC microstructure evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git pull --rebase origin research/candidate-11
+          chmod +x research/candidate-11/run_microstructure_gated.sh
+          bash research/candidate-11/run_microstructure_gated.sh
+
+      - name: Publish evidence against latest branch head
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          SNAPSHOT=/tmp/c11-microstructure-publish
+          rm -rf "$SNAPSHOT"
+          mkdir -p "$SNAPSHOT"
+          cp -a research/candidate-11/results/MICROSTRUCTURE "$SNAPSHOT/"
+          for week in M1 M2 M3; do
+            if [ -d "research/candidate-11/results/MICRO_$week" ]; then
+              cp -a "research/candidate-11/results/MICRO_$week" "$SNAPSHOT/"
+            fi
+          done
+          git reset --hard HEAD
+          git clean -fd research/candidate-11
+          git pull --rebase origin research/candidate-11
+          rm -rf research/candidate-11/results/MICROSTRUCTURE \
+                 research/candidate-11/results/MICRO_M1 \
+                 research/candidate-11/results/MICRO_M2 \
+                 research/candidate-11/results/MICRO_M3
+          cp -a "$SNAPSHOT/MICROSTRUCTURE" research/candidate-11/results/
+          for week in M1 M2 M3; do
+            if [ -d "$SNAPSHOT/MICRO_$week" ]; then
+              cp -a "$SNAPSHOT/MICRO_$week" research/candidate-11/results/
+            fi
+          done
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add -A research/candidate-11/results/MICROSTRUCTURE
+          for week in M1 M2 M3; do
+            if [ -d "research/candidate-11/results/MICRO_$week" ]; then
+              git add -A "research/candidate-11/results/MICRO_$week"
+            fi
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record BTC microstructure evidence [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi
+
+      - name: Publish microstructure summary
+        if: always()
+        shell: bash
+        run: |
+          SUMMARY="research/candidate-11/results/MICROSTRUCTURE/summary.json"
+          if [ -s "$SUMMARY" ]; then cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"; fi

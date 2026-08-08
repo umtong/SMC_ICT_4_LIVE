@@ -1,0 +1,130 @@
+{
+  "baseline": {
+    "calendar_days": 84,
+    "classification": "DEVELOPMENT_GATE_FAILED",
+    "closed_trades": 9,
+    "losses": 8,
+    "pooled_daily_geometric_growth": -0.002190812443009116,
+    "pooled_log_growth": -0.1841923054425143,
+    "pooled_nav_multiple": 0.8317389238352838,
+    "result_path": "research/candidate-11/core_far_continuous_v1/aggregate.json",
+    "scenario_ids": [
+      "SOLUSDT-PERP.BINANCE-LONDON_CLOSE_1000_1200_NY-R000261-LOW",
+      "SOLUSDT-PERP.BINANCE-LONDON_CLOSE_1000_1200_NY-R000345-HIGH",
+      "BTCUSDT-PERP.BINANCE-LONDON_CLOSE_1000_1200_NY-R000121-LOW",
+      "XRPUSDT-PERP.BINANCE-US_LATE_1600_2000_NY-R000152-LOW",
+      "SOLUSDT-PERP.BINANCE-NY_PREMARKET_0500_0700_NY-R000426-HIGH",
+      "ETHUSDT-PERP.BINANCE-LONDON_0200_0500_NY-R000481-HIGH",
+      "ETHUSDT-PERP.BINANCE-LONDON_CLOSE_1000_1200_NY-R000233-HIGH",
+      "XRPUSDT-PERP.BINANCE-ASIA_2000_0000_NY-R000505-HIGH",
+      "SOLUSDT-PERP.BINANCE-ASIA_2000_0000_NY-R000813-LOW"
+    ],
+    "source_commit": "3d184df885fb0755c9a961d058b8e0df75259123",
+    "wins": 1
+  },
+  "can_advance_candidate": false,
+  "can_claim_alpha": false,
+  "candidate": "candidate-11-core-far-structure-transfer-ablation",
+  "comparison_contract": {
+    "mechanism_retain_diagnostic_only_if": [
+      "pooled after-cost log growth is positive",
+      "at least two of three block log growth values are positive",
+      "at least three stop transfers are confirmed",
+      "at least three paired scenarios improve versus baseline",
+      "leave-one-scenario-out pooled log growth remains positive",
+      "no one positive scenario supplies more than 60% of positive ablation log growth"
+    ],
+    "reject_if": [
+      "execution or evidence audit fails",
+      "scenario ID set changes",
+      "pooled log growth does not improve versus baseline"
+    ],
+    "require_all_safety_audits": true,
+    "require_exact_scenario_id_set": true,
+    "require_no_resolution_tail_forced_exit": true,
+    "retain_does_not_mean": [
+      "candidate advancement",
+      "fresh-validation authorization",
+      "alpha claim",
+      "frequency sufficiency"
+    ]
+  },
+  "created_utc": "2026-08-08",
+  "decision": {
+    "controlled_failure": "Reject structural risk transfer for this FAR contract. Do not tune pivot widths, MFE levels or buffer magnitudes.",
+    "implementation_failure": "Repair only the concrete implementation defect and rerun the same ablation; alpha variables remain frozen.",
+    "improved_but_insufficient": "Record the mechanism effect but do not retain it as a candidate component.",
+    "retain_diagnostic_only": "Retain the causal risk-ownership mechanism for a new separately defined development candidate. The current evidence cannot advance or validate it."
+  },
+  "mechanism_contract": {
+    "buffer": "reuse frozen LogicConfig.stop_buffer_atr and causal current ATR",
+    "fail_closed": [
+      "missing unique protective stop",
+      "non-improving stop",
+      "stop already non-executable at confirmation",
+      "modify rejection"
+    ],
+    "long_owner": "first post-fill causally confirmed internal low above both entry and swept pool level",
+    "maximum_transfers_per_trade": 1,
+    "modification": "modify the one live STOP_MARKET trigger through NautilusTrader; never cancel and replace with custom execution",
+    "pivot_right_wing_bars": 1,
+    "pivot_timeframe_minutes": 5,
+    "short_owner": "first post-fill causally confirmed internal high below both entry and swept pool level"
+  },
+  "research_question": "When a core FAR trade has opened, does transferring the existing stop behind the first causally confirmed favorable five-minute internal pivot preserve partial delivery better than retaining the original auction invalidation, without changing entry selection, target, initial risk or scenario set?",
+  "research_stage": "TEMPORARY_TEST",
+  "schema": "candidate-11-core-far-structure-transfer-ablation-v1",
+  "selection": {
+    "blocks": {
+      "D1": {
+        "end_exclusive": "2023-10-20",
+        "role": "development-gate",
+        "start": "2023-09-22"
+      },
+      "D2": {
+        "end_exclusive": "2024-10-29",
+        "role": "development-gate",
+        "start": "2024-10-01"
+      },
+      "D3": {
+        "end_exclusive": "2025-10-14",
+        "role": "development-gate",
+        "start": "2025-09-16"
+      }
+    },
+    "data_use": "OPENED_DEVELOPMENT_MECHANISM_ABLATION",
+    "evaluation_days": 28,
+    "resolution_tail_days": 2,
+    "seed": 2026080811,
+    "source_protocol": "research/candidate-11/core_far_continuous_v1/protocol.json",
+    "warmup_days": 3
+  },
+  "single_changed_variable": {
+    "ablation": "after entry, the first completed five-minute internal pivot whose event and confirmation both occur after the fill and which lies beyond both entry and reclaimed pool in the predicted direction may take ownership of the stop; the existing ATR buffer is retained",
+    "baseline": "original sweep-extreme or full-displacement-void invalidation remains until target or stop",
+    "name": "post_entry_risk_owner",
+    "not_used": [
+      "fixed MFE threshold",
+      "breakeven percentage",
+      "return-fitted magnitude",
+      "peer-persistence entry filter",
+      "target change",
+      "entry change",
+      "initial stop change",
+      "position-size change"
+    ]
+  },
+  "success_claim_allowed": false,
+  "unchanged_contract": [
+    "SCDAM_CORE/FAR detector and semantic market-leadership admission",
+    "same nine baseline scenario IDs only",
+    "same passive parent entries and fills when available",
+    "same initial structural stop and external target",
+    "same effective maker/taker costs",
+    "same current-NAV 3% planned-loss sizing",
+    "same global one pending-entry/open-position slot",
+    "same D1-D3 continuous decision windows and resolution tails",
+    "NautilusTrader owns clocks, orders, modifications, fills, fees, positions and NAV"
+  ],
+  "validation_eligible": false
+}

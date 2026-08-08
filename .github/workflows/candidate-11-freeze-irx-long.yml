@@ -1,0 +1,44 @@
+name: Candidate 11 freeze 90-day IRX interval
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/freeze_irx_long_protocol.py"
+      - "research/candidate-11/irx_long_freeze_trigger.txt"
+      - ".github/workflows/candidate-11-freeze-irx-long.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-11-freeze-irx-long-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Freeze only after untouched holdout approval
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase origin research/candidate-11
+          python research/candidate-11/freeze_irx_long_protocol.py
+          if [ -f research/candidate-11/irx_long_protocol.json ]; then
+            git config user.name "candidate-11-bot"
+            git config user.email "candidate-11-bot@users.noreply.github.com"
+            git add research/candidate-11/irx_long_protocol.json
+            if ! git diff --cached --quiet; then
+              git commit -m "candidate-11: freeze 90-day IRX interval before data"
+              git push origin HEAD:research/candidate-11
+            fi
+          fi

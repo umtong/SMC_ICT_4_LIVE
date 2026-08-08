@@ -1,0 +1,93 @@
+name: Candidate 11 internal-reclaim matrix v3
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/run_internal_reclaim_matrix_v3.sh"
+      - "research/candidate-11/apply_internal_reclaim_compatibility.py"
+      - "research/candidate-11/internal_matrix_v3_trigger.txt"
+      - ".github/workflows/candidate-11-internal-matrix-v3.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-internal-matrix-v3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Run compatibility-hardened semantic matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          chmod +x research/candidate-11/run_internal_reclaim_matrix_v3.sh
+          bash research/candidate-11/run_internal_reclaim_matrix_v3.sh
+
+      - name: Publish against latest branch head
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          SNAPSHOT=/tmp/c11-irx-publish
+          rm -rf "$SNAPSHOT"
+          mkdir -p "$SNAPSHOT"
+          cp -a research/candidate-11/results/IRX_MATRIX "$SNAPSHOT/"
+          for week in W3 W8 W9; do
+            if [ -d "research/candidate-11/results/IRX_SELECTED_$week" ]; then
+              cp -a "research/candidate-11/results/IRX_SELECTED_$week" "$SNAPSHOT/"
+            fi
+          done
+          git reset --hard HEAD
+          git clean -fd research/candidate-11
+          git pull --rebase origin research/candidate-11
+          rm -rf research/candidate-11/results/IRX_MATRIX \
+                 research/candidate-11/results/IRX_SELECTED_W3 \
+                 research/candidate-11/results/IRX_SELECTED_W8 \
+                 research/candidate-11/results/IRX_SELECTED_W9
+          cp -a "$SNAPSHOT/IRX_MATRIX" research/candidate-11/results/
+          for week in W3 W8 W9; do
+            if [ -d "$SNAPSHOT/IRX_SELECTED_$week" ]; then
+              cp -a "$SNAPSHOT/IRX_SELECTED_$week" research/candidate-11/results/
+            fi
+          done
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add -A research/candidate-11/results/IRX_MATRIX
+          for week in W3 W8 W9; do
+            if [ -d "research/candidate-11/results/IRX_SELECTED_$week" ]; then
+              git add -A "research/candidate-11/results/IRX_SELECTED_$week"
+            fi
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record compatibility-hardened IRX matrix [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi
+
+      - name: Publish result
+        if: always()
+        shell: bash
+        run: |
+          SUMMARY="research/candidate-11/results/IRX_MATRIX/summary.json"
+          if [ -s "$SUMMARY" ]; then cat "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"; fi

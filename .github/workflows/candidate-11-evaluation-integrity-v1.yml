@@ -1,0 +1,114 @@
+name: Candidate 11 evaluation integrity
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/evaluation_integrity_v1/**"
+      - ".github/workflows/candidate-11-evaluation-integrity-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-evaluation-integrity-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify evidence audit and binding protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAND=research/candidate-11/evaluation_integrity_v1
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/src"
+          python -m py_compile "$CAND"/*.py
+          python -m unittest discover -s "$CAND" -p 'test_*.py' -v
+          python "$CAND/audit_random_week_bias.py" \
+            --snapshot "$CAND/evidence_snapshot.json" \
+            --output "$CAND/audit.json"
+          python "$CAND/decompose_growth.py" \
+            --snapshot "$CAND/evidence_snapshot.json" \
+            --output "$CAND/growth_decomposition.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("research/candidate-11/evaluation_integrity_v1")
+          audit = json.loads((root / "audit.json").read_text(encoding="utf-8"))
+          decomposition = json.loads(
+              (root / "growth_decomposition.json").read_text(encoding="utf-8")
+          )
+          protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+          assert audit["classification"] == "RANDOM_WEEK_EVIDENCE_CONTAMINATED_AND_UNDERPOWERED"
+          assert audit["adaptive_reuse"] is True
+          assert audit["random_week_success_is_valid_holdout_evidence"] is False
+          assert decomposition["classification"] == "BOTH_EVENT_RATE_AND_EVENT_QUALITY_FAILED"
+          assert decomposition["development_to_holdout"]["event_rate_ratio"] < 0.5
+          assert decomposition["untouched_holdout"]["average_log_growth_per_trade"] < 0.0
+          assert protocol["fresh_validation"]["no_tuning_between_blocks"] is True
+          assert set(protocol["binding_interval_registry"]["development_only"]) == {
+              "W10", "W11", "W12", "W13", "W14"
+          }
+          assert set(protocol["binding_interval_registry"]["consumed_holdout"]) == {
+              "H1", "H2", "H3"
+          }
+          PY
+      - name: Persist deterministic audit outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          CAND=research/candidate-11/evaluation_integrity_v1
+          SNAPSHOT=/tmp/evaluation-integrity-output
+          rm -rf "$SNAPSHOT"
+          mkdir -p "$SNAPSHOT"
+          cp "$CAND/audit.json" "$SNAPSHOT/audit.json"
+          cp "$CAND/RESULT.md" "$SNAPSHOT/RESULT.md"
+          cp "$CAND/growth_decomposition.json" "$SNAPSHOT/growth_decomposition.json"
+          cp "$CAND/growth_decomposition.md" "$SNAPSHOT/growth_decomposition.md"
+
+          git fetch origin research/candidate-11
+          latest_head="$(git rev-parse origin/research/candidate-11)"
+          if ! git diff --quiet "$GITHUB_SHA" "$latest_head" -- \
+            "$CAND/audit_random_week_bias.py" \
+            "$CAND/decompose_growth.py" \
+            "$CAND/evidence_snapshot.json" \
+            "$CAND/protocol.json" \
+            "$CAND/test_audit_random_week_bias.py" \
+            "$CAND/test_growth_decomposition.py"; then
+            echo "evaluation-integrity source changed during audit"
+            exit 1
+          fi
+          git checkout -B research/candidate-11 "$latest_head"
+          cp "$SNAPSHOT/audit.json" "$CAND/audit.json"
+          cp "$SNAPSHOT/RESULT.md" "$CAND/RESULT.md"
+          cp "$SNAPSHOT/growth_decomposition.json" "$CAND/growth_decomposition.json"
+          cp "$SNAPSHOT/growth_decomposition.md" "$CAND/growth_decomposition.md"
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add \
+            "$CAND/audit.json" \
+            "$CAND/RESULT.md" \
+            "$CAND/growth_decomposition.json" \
+            "$CAND/growth_decomposition.md"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record evaluation-integrity audit [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi

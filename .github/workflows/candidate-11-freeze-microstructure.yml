@@ -1,0 +1,42 @@
+name: Candidate 11 freeze BTC microstructure weeks
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/freeze_microstructure_weeks.py"
+      - "research/candidate-11/microstructure_freeze_trigger.txt"
+      - ".github/workflows/candidate-11-freeze-microstructure.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-11-freeze-microstructure-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Freeze dates without downloading market data
+        shell: bash
+        run: |
+          set -euo pipefail
+          git pull --rebase origin research/candidate-11
+          python research/candidate-11/freeze_microstructure_weeks.py
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add research/candidate-11/microstructure_protocol.json
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: freeze BTC microstructure weeks before data"
+            git push origin HEAD:research/candidate-11
+          fi

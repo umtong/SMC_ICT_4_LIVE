@@ -1,0 +1,158 @@
+name: Candidate 11 repaired L1 liquidity-state router
+
+on:
+  push:
+    branches: ["research/candidate-11"]
+    paths:
+      - "research/candidate-11/liquidity_state_router_v1/**"
+      - ".github/workflows/candidate-11-liquidity-state-router-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-11-liquidity-state-router-v1-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      C11: research/candidate-11/liquidity_state_router_v1
+      VENDOR: vendor/candidate16
+      CACHE: .cache/candidate-11-liquidity-state-router-v1
+      OUT: artifacts/candidate-11-liquidity-state-router-v1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: af82ebc64e05aeaf2704eeb3af0709cdbf4c77c2
+          path: vendor/candidate16
+          fetch-depth: 1
+
+      - name: Verify environment and frozen timestamp repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m unittest discover -s "$C11" -p 'test_timestamp_contract.py' -v
+          python "$C11/patch_features_v4.py" "$VENDOR/research/candidate-16/features_v4.py"
+          grep -F 'timestamp.astype("datetime64[ns, UTC]").astype("int64")' "$VENDOR/research/candidate-16/features_v4.py"
+          python -m compileall -q "$C11" "$VENDOR/research/candidate-16"
+
+      - name: Re-run opened implementation smoke with repaired L1 join
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT/SMOKE"
+          export PYTHONPATH="$GITHUB_WORKSPACE/$VENDOR/research/candidate-16:$GITHUB_WORKSPACE/$VENDOR/research/candidate-05:$GITHUB_WORKSPACE/$VENDOR/src"
+          python "$VENDOR/research/candidate-16/candidate_v4.py" stage \
+            --config "$VENDOR/research/candidate-16/config_v4.json" \
+            --build-start 2023-11-17 \
+            --build-end 2023-11-26 \
+            --evaluation-start 2023-11-20 \
+            --evaluation-end 2023-11-26 \
+            --cache "$CACHE/smoke" \
+            --output "$OUT/SMOKE" \
+            2>&1 | tee "$OUT/SMOKE/console.log"
+
+      - name: Verify repaired information actually reaches the router
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+          root = Path(os.environ["OUT"]) / "SMOKE"
+          d = json.loads((root / "strategy_diagnostics.json").read_text())
+          f = pd.read_csv(root / "features.csv.gz")
+          l1_rows = int(f["l1_pressure_feature_ready"].fillna(False).astype(bool).sum())
+          payload = {
+              "l1_ready_rows": l1_rows,
+              "parent_auctions": int(d.get("candidate16_parent_auctions", 0)),
+              "pressure_observations": int(d.get("candidate16_v4_pressure_observations", 0)),
+              "entries": int(d.get("entry_submissions", 0)),
+          }
+          (root / "repair_funnel.json").write_text(json.dumps(payload, indent=2) + "\n")
+          print(json.dumps(payload, indent=2))
+          if l1_rows <= 0:
+              raise SystemExit("timestamp repair did not deliver any L1 observations")
+          PY
+
+      - name: Run frozen 21-day continuous development screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT/DEV21"
+          export PYTHONPATH="$GITHUB_WORKSPACE/$VENDOR/research/candidate-16:$GITHUB_WORKSPACE/$VENDOR/research/candidate-05:$GITHUB_WORKSPACE/$VENDOR/src"
+          python "$VENDOR/research/candidate-16/candidate_v4.py" stage \
+            --config "$VENDOR/research/candidate-16/config_v4.json" \
+            --build-start 2023-06-02 \
+            --build-end 2023-06-25 \
+            --evaluation-start 2023-06-05 \
+            --evaluation-end 2023-06-25 \
+            --cache "$CACHE/dev21" \
+            --output "$OUT/DEV21" \
+            2>&1 | tee "$OUT/DEV21/console.log"
+
+      - name: Apply absolute development decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math, os
+          from pathlib import Path
+          root = Path(os.environ["OUT"])
+          smoke = json.loads((root / "SMOKE/repair_funnel.json").read_text())
+          m = json.loads((root / "DEV21/metrics.json").read_text())
+          d = json.loads((root / "DEV21/strategy_diagnostics.json").read_text())
+          payoff = m.get("profit_factor")
+          if payoff is None or not math.isfinite(float(payoff)):
+              payoff = 0.0
+          checks = {
+              "l1_information_reached_router": smoke["l1_ready_rows"] > 0,
+              "minimum_closed_trades": int(m.get("trades", 0)) >= 12,
+              "minimum_win_rate": float(m.get("win_rate", 0.0)) >= 0.80,
+              "minimum_payoff_ratio": float(payoff) >= 1.20,
+              "minimum_daily_geometric_growth": float(m.get("geometric_daily_growth", 0.0)) >= 0.01,
+              "maximum_drawdown": float(m.get("max_drawdown", 1.0)) <= 0.20,
+              "no_liquidation": int(m.get("liquidations", 0)) == 0,
+              "no_order_rejections": int(d.get("order_rejections", 0)) == 0,
+              "global_slot": int(d.get("max_simultaneous_entry_intents", 99)) <= 1 and int(d.get("max_open_positions_observed", 99)) <= 1,
+          }
+          gate = all(checks.values())
+          decision = {
+              "schema": "candidate-11-liquidity-state-router-development-v1",
+              "classification": "DEVELOPMENT_GATE_PASSED" if gate else "GOAL_NOT_MET",
+              "gate_passed": gate,
+              "success_claim": False,
+              "checks": checks,
+              "metrics": m,
+              "diagnostics": d,
+              "repair_funnel": smoke,
+          }
+          (root / "DEVELOPMENT_DECISION.json").write_text(json.dumps(decision, indent=2, sort_keys=True, allow_nan=True) + "\n")
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-11-liquidity-state-router-v1-${{ github.sha }}
+          path: artifacts/candidate-11-liquidity-state-router-v1/**
+          retention-days: 90

@@ -1,0 +1,161 @@
+name: Candidate 11 market-leadership research
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/**"
+      - ".github/workflows/candidate-11.yml"
+  pull_request:
+    branches:
+      - main
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/**"
+      - ".github/workflows/candidate-11.yml"
+  workflow_dispatch:
+    inputs:
+      week:
+        description: Frozen market-leadership evaluation week
+        required: true
+        default: W1
+        type: choice
+        options: [W1, W2, W3, W4, W5, W6, W7, W8, W9]
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+
+      - name: Materialize causal research candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python research/candidate-11/materialize_scdam.py
+          python research/candidate-11/apply_boundary_consumption.py
+          python research/candidate-11/revert_rejected_episode_horizon.py
+          python research/candidate-11/materialize_portfolio.py
+          python research/candidate-11/apply_partial_fill_fail_closed.py
+          python research/candidate-11/apply_market_leadership.py
+          python research/candidate-11/repair_leadership_sweep_timestamp.py
+          chmod +x research/candidate-11/run_leadership_gated.sh
+          if [ "${{ github.event_name }}" != "pull_request" ] && [ -n "$(git status --porcelain -- research/candidate-11)" ]; then
+            git config user.name "candidate-11-bot"
+            git config user.email "candidate-11-bot@users.noreply.github.com"
+            git add -A research/candidate-11
+            git commit -m "candidate-11: materialize market-leadership candidate [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi
+
+      - name: Run frozen NautilusTrader market-leadership interval
+        shell: bash
+        env:
+          REQUESTED_WEEK: ${{ github.event.inputs.week }}
+        run: |
+          set -euo pipefail
+          WEEK="$REQUESTED_WEEK"
+          if [ -z "$WEEK" ]; then
+            if [ -s research/candidate-11/leadership_validation_week.txt ]; then
+              WEEK="$(tr -d '[:space:]' < research/candidate-11/leadership_validation_week.txt)"
+            else
+              WEEK=W1
+            fi
+          fi
+          bash research/candidate-11/run_leadership_gated.sh "$WEEK"
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            git config user.name "candidate-11-bot"
+            git config user.email "candidate-11-bot@users.noreply.github.com"
+            git add -A "research/candidate-11/results/LEADERSHIP_$WEEK"
+            if ! git diff --cached --quiet; then
+              git commit -m "candidate-11: record leadership $WEEK evidence [skip ci]"
+              git push origin HEAD:research/candidate-11
+            fi
+          fi
+
+      - name: Publish metrics summary
+        if: always()
+        shell: bash
+        env:
+          REQUESTED_WEEK: ${{ github.event.inputs.week }}
+        run: |
+          WEEK="$REQUESTED_WEEK"
+          if [ -z "$WEEK" ]; then
+            if [ -s research/candidate-11/leadership_validation_week.txt ]; then
+              WEEK="$(tr -d '[:space:]' < research/candidate-11/leadership_validation_week.txt)"
+            else
+              WEEK=W1
+            fi
+          fi
+          METRICS="research/candidate-11/results/LEADERSHIP_$WEEK/metrics.json"
+          AUDIT="research/candidate-11/results/LEADERSHIP_$WEEK/audit.json"
+          if [ -s "$METRICS" ]; then
+            python - "$METRICS" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          metrics = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print(f"## {metrics.get('candidate', 'Candidate 11')}")
+          for key in (
+              "week_id", "daily_geometric_growth", "closed_trades", "win_rate",
+              "payoff_ratio", "closed_trade_max_drawdown", "submitted_plans",
+              "scenario_counts", "symbol_counts", "leadership_rejection_counts",
+              "global_slot_overlap_count", "partial_entry_fail_closed_count",
+              "liquidation_detected", "promising_gate_passed",
+              "complete_gate_passed", "success_claim",
+          ):
+              print(f"- **{key}**: `{metrics.get(key)}`")
+          PY
+          fi
+          if [ -s "$AUDIT" ]; then
+            python - "$AUDIT" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          audit = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print("## Independent execution-safety audit")
+          for key in (
+              "classification", "advance_allowed", "success_claim_allowed",
+              "risk_budget_passed", "global_slot_passed",
+              "partial_entry_protection_passed", "no_liquidation_passed",
+          ):
+              print(f"- **{key}**: `{audit.get(key)}`")
+          PY
+          fi
+
+      - name: Upload full evidence and tested source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-11-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            research/candidate-11/results/LEADERSHIP_*/
+            research/candidate-11/*.py
+            research/candidate-11/*.json
+            research/candidate-11/*.md
+            research/candidate-11/*.sh
+            research/candidate-11/*.txt
+          if-no-files-found: warn
+          retention-days: 30

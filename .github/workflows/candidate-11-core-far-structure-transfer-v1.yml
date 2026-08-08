@@ -1,0 +1,147 @@
+name: Candidate 11 core FAR structural risk transfer
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/core_far_structure_transfer_ablation_v1/**"
+      - ".github/workflows/candidate-11-core-far-structure-transfer-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-core-far-structure-transfer-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  ablate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify frozen single-variable ablation
+        shell: bash
+        run: |
+          set -euo pipefail
+          ABL=research/candidate-11/core_far_structure_transfer_ablation_v1
+          CORE=research/candidate-11/core_far_continuous_v1
+          SRC=research/candidate-11/session_portfolio_v1
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/$ABL:$GITHUB_WORKSPACE/$CORE:$GITHUB_WORKSPACE/$SRC:$GITHUB_WORKSPACE/src"
+          python -m py_compile "$ABL"/*.py
+          python -m unittest discover -s "$ABL" -p 'test_*.py' -v
+          python - <<'PY'
+          from inspect import signature
+          from nautilus_trader.trading.strategy import Strategy
+          text = str(signature(Strategy.modify_order))
+          assert "order" in text, text
+          assert "trigger_price" in text, text
+          PY
+
+      - name: Run paired NautilusTrader blocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ABL=research/candidate-11/core_far_structure_transfer_ablation_v1
+          CORE=research/candidate-11/core_far_continuous_v1
+          SRC=research/candidate-11/session_portfolio_v1
+          export PYTHONPATH="$GITHUB_WORKSPACE/$ABL:$GITHUB_WORKSPACE/$CORE:$GITHUB_WORKSPACE/$SRC:$GITHUB_WORKSPACE/src"
+          rm -rf "$ABL/results"
+          for block in D1 D2 D3; do
+            python "$ABL/run_block.py" "$block" "$ABL/results/$block"
+          done
+          python "$ABL/compare.py" \
+            --results "$ABL/results" \
+            --protocol "$ABL/protocol.json" \
+            --output "$ABL/comparison.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("research/candidate-11/core_far_structure_transfer_ablation_v1")
+          result = json.loads((root / "comparison.json").read_text(encoding="utf-8"))
+          assert result["research_stage"] == "TEMPORARY_TEST"
+          assert result["validation_eligible"] is False
+          assert result["can_advance_candidate"] is False
+          assert result["can_claim_alpha"] is False
+          assert result["success_claim"] is False
+          assert result["fresh_validation_authorized"] is False
+          assert result["controlled_checks"]["exact_scenario_id_set"] is True
+          assert result["controlled_checks"]["same_trade_count"] is True
+          assert result["implementation_checks"]["all_safety_audits"] is True
+          assert result["implementation_checks"]["no_modify_rejection"] is True
+          PY
+
+      - name: Persist controlled comparison evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ABL=research/candidate-11/core_far_structure_transfer_ablation_v1
+          SNAPSHOT=/tmp/core-far-structure-transfer-output
+          rm -rf "$SNAPSHOT"
+          mkdir -p "$SNAPSHOT/results"
+          cp "$ABL/comparison.json" "$SNAPSHOT/comparison.json"
+          cp "$ABL/RESULT.md" "$SNAPSHOT/RESULT.md"
+
+          for block in D1 D2 D3; do
+            mkdir -p "$SNAPSHOT/results/$block"
+            for name in \
+              account.csv \
+              audit.json \
+              data_manifest.json \
+              effective_config.json \
+              metrics.json \
+              order_lifecycle.json \
+              orders.csv \
+              positions.csv \
+              run.json \
+              source_lock.json \
+              submitted_plans.json \
+              summary.json; do
+              cp "$ABL/results/$block/$name" "$SNAPSHOT/results/$block/$name"
+            done
+          done
+
+          git fetch origin research/candidate-11
+          latest_head="$(git rev-parse origin/research/candidate-11)"
+          if ! git diff --quiet "$GITHUB_SHA" "$latest_head" -- \
+            "$ABL/compare.py" \
+            "$ABL/protocol.json" \
+            "$ABL/run_block.py" \
+            "$ABL/runner.py" \
+            "$ABL/structure_transfer_materializer.py" \
+            "$ABL/test_materializer.py" \
+            "$ABL/test_protocol.py" \
+            ".github/workflows/candidate-11-core-far-structure-transfer-v1.yml"; then
+            echo "structural risk-transfer source changed during evaluation"
+            exit 1
+          fi
+
+          rm -rf "$ABL/results" "$ABL/comparison.json" "$ABL/RESULT.md"
+          git checkout -B research/candidate-11 "$latest_head"
+          mkdir -p "$ABL"
+          cp "$SNAPSHOT/comparison.json" "$ABL/comparison.json"
+          cp "$SNAPSHOT/RESULT.md" "$ABL/RESULT.md"
+          cp -R "$SNAPSHOT/results" "$ABL/results"
+
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add "$ABL/comparison.json" "$ABL/RESULT.md" "$ABL/results"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record structural risk-transfer ablation [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi

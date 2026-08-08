@@ -1,0 +1,55 @@
+name: Candidate 11 first-delivery source repair
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - ".github/workflows/candidate-11-first-delivery-bootstrap.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-11-first-delivery-repair-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Restore locked source and apply the exact Nautilus API boundary fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git checkout -B research/candidate-11 "$GITHUB_SHA"
+          EXP=research/candidate-11/core_far_first_delivery_runner_ablation_v1
+          LOCK=866f1e9ce97db2e70c4e7d6eb729a802c1fff1d9
+
+          git show "$LOCK:$EXP/first_delivery_materializer.py" > "$EXP/first_delivery_materializer.py"
+          git show "$LOCK:$EXP/test_materializer.py" > "$EXP/test_materializer.py"
+
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-11/core_far_first_delivery_runner_ablation_v1/first_delivery_materializer.py")
+          source = path.read_text(encoding="utf-8")
+          assert source.count(".is_closed()") == 3, source.count(".is_closed()")
+          source = source.replace(".is_closed()", ".is_closed")
+          assert ".is_closed()" not in source
+          compile(source, str(path), "exec")
+          path.write_text(source, encoding="utf-8")
+          PY
+
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add "$EXP/first_delivery_materializer.py" "$EXP/test_materializer.py"
+          git commit -m "candidate-11: restore locked materializer with property fix"
+          git push origin HEAD:research/candidate-11

@@ -1,0 +1,98 @@
+name: Candidate 11 internal-reclaim research
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/internal_reclaim.py"
+      - "research/candidate-11/apply_internal_reclaim.py"
+      - "research/candidate-11/test_internal_reclaim.py"
+      - "research/candidate-11/run_internal_reclaim_gated.sh"
+      - "research/candidate-11/internal_validation_week.txt"
+      - ".github/workflows/candidate-11-internal-reclaim.yml"
+  workflow_dispatch:
+    inputs:
+      week:
+        description: Frozen hybrid diagnostic week
+        required: true
+        default: W3
+        type: choice
+        options: [W1, W2, W3, W4, W5, W6, W7, W8, W9]
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-internal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout exact candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+
+      - name: Run causal hybrid through NautilusTrader
+        shell: bash
+        env:
+          REQUESTED_WEEK: ${{ github.event.inputs.week }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          WEEK="$REQUESTED_WEEK"
+          if [ -z "$WEEK" ]; then
+            WEEK="$(tr -d '[:space:]' < research/candidate-11/internal_validation_week.txt)"
+          fi
+          chmod +x research/candidate-11/run_internal_reclaim_gated.sh
+          bash research/candidate-11/run_internal_reclaim_gated.sh "$WEEK"
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            git config user.name "candidate-11-bot"
+            git config user.email "candidate-11-bot@users.noreply.github.com"
+            git add -A "research/candidate-11/results/HYBRID_$WEEK"
+            if ! git diff --cached --quiet; then
+              git commit -m "candidate-11: record hybrid $WEEK evidence [skip ci]"
+              git push origin HEAD:research/candidate-11
+            fi
+          fi
+
+      - name: Publish hybrid summary
+        if: always()
+        shell: bash
+        env:
+          REQUESTED_WEEK: ${{ github.event.inputs.week }}
+        run: |
+          WEEK="$REQUESTED_WEEK"
+          if [ -z "$WEEK" ]; then
+            WEEK="$(tr -d '[:space:]' < research/candidate-11/internal_validation_week.txt)"
+          fi
+          METRICS="research/candidate-11/results/HYBRID_$WEEK/metrics.json"
+          if [ -s "$METRICS" ]; then
+            python - "$METRICS" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          metrics = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print(f"## Hybrid {metrics.get('week_id')}")
+          for key in (
+              "daily_geometric_growth", "closed_trades", "wins", "losses",
+              "win_rate", "payoff_ratio", "closed_trade_max_drawdown",
+              "submitted_plans", "internal_reclaim_submitted_plans",
+              "global_slot_overlap_count", "liquidation_detected",
+          ):
+              print(f"- **{key}**: `{metrics.get(key)}`")
+          PY
+          fi

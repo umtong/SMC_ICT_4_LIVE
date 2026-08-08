@@ -1,0 +1,75 @@
+name: Candidate 11 freeze untouched session holdouts
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/session_portfolio_holdout_v1/freeze_holdouts.py"
+      - "research/candidate-11/session_portfolio_holdout_v1/freeze_trigger.txt"
+      - ".github/workflows/candidate-11-session-portfolio-freeze.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-session-holdout-freeze
+  cancel-in-progress: false
+
+jobs:
+  freeze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout candidate branch without market data
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: research/candidate-11
+
+      - name: Freeze source-locked untouched intervals
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git pull --rebase origin research/candidate-11
+          smc4 doctor
+          HOLDOUT=research/candidate-11/session_portfolio_holdout_v1
+          test ! -d "$HOLDOUT/results"
+          python "$HOLDOUT/freeze_holdouts.py"
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+
+          path = Path("research/candidate-11/session_portfolio_holdout_v1/holdout_protocol.json")
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          assert payload["validation_mode"] == "holdout"
+          assert payload["market_data_opened"] is False
+          assert payload["success_claim"] is False
+          assert tuple(sorted(payload["selection"]["holdouts"])) == ("H1", "H2", "H3")
+          assert payload["aggregate_gate"]["risk_fraction"] == 0.03
+          assert payload["aggregate_gate"]["global_pending_entry_plus_position_limit"] == 1
+          PY
+
+      - name: Commit the protocol before any holdout data access
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROTOCOL=research/candidate-11/session_portfolio_holdout_v1/holdout_protocol.json
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add "$PROTOCOL"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: freeze untouched session holdouts [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi
