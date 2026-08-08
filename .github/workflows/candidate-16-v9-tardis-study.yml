@@ -1,0 +1,101 @@
+name: candidate-16-v9-tardis-liquidation-router-study
+
+on:
+  push:
+    branches: ["research/candidate-16-v9-liquidation-vwap-basis"]
+    paths:
+      - "research/candidate-16/v9_tardis_liquidation_study.py"
+      - "research/candidate-16/tests/test_v9_tardis_liquidation_study.py"
+      - ".github/workflows/candidate-16-v9-tardis-study.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v9-tardis-liquidation-router-study
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  cross-regime-study:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v9-tardis-study
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-16/v9_liquidation_event_study.py \
+            research/candidate-16/v9_tardis_liquidation_study.py
+          python -m unittest discover \
+            -s research/candidate-16/tests \
+            -p 'test_v9_tardis_liquidation_study.py' -v
+
+      - name: Run 112-symbol-day external liquidation router study
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/v9_tardis_liquidation_study.py \
+            --cache .cache/candidate-16-v9-tardis \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify evidence and frozen promotion decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/study.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          study = json.loads((root / "study.json").read_text())
+          if study.get("role") != "causal mechanism study; no fills, PnL, account, or NAV claim":
+              raise SystemExit("study role drifted")
+          if set(study.get("symbols", [])) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
+              raise SystemExit("project symbol set drifted")
+          sample = study.get("sample_contract", {})
+          if int(sample.get("calendar_days", 0)) != 28 or int(sample.get("symbol_days", 0)) != 112:
+              raise SystemExit("sample contract drifted")
+          if abs(float(study["event_contract"]["round_trip_cost_rate"]) - 0.002) > 1e-12:
+              raise SystemExit("cost screen drifted")
+          coverage = study.get("coverage", {})
+          if set(coverage) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
+              raise SystemExit("coverage incomplete")
+          if not all(len(days) == 28 for days in coverage.values()):
+              raise SystemExit("symbol-day coverage incomplete")
+          if int(study.get("global_independent_events", 0)) <= 0:
+              raise SystemExit("no independent liquidation episodes")
+          print(json.dumps({
+              "decision": study["decision"],
+              "promote": study["promote"],
+              "global_independent_events": study["global_independent_events"],
+              "regime_counts": study["regime_counts"],
+              "forced": study["forced_deleveraging_reversal"],
+              "information": study["spot_confirmed_information_continuation"],
+          }, indent=2, sort_keys=True))
+          PY
+          test -s "$ROOT/events.csv"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v9-tardis-study-${{ github.sha }}
+          path: artifacts/candidate-16-v9-tardis-study/**
+          if-no-files-found: warn
+          retention-days: 90
