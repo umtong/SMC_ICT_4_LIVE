@@ -1,0 +1,95 @@
+name: external-session-liquidity-sweep-screen
+
+on:
+  push:
+    branches: ["research/external-leverage-flow-router"]
+    paths:
+      - "research/external-leverage-flow-router/vision_derivatives_contract.py"
+      - "research/external-leverage-flow-router/external_session_liquidity_sweep_screen.py"
+      - "research/external-leverage-flow-router/spot_participation_contract.py"
+      - ".github/workflows/external-session-liquidity-sweep-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: external-session-liquidity-sweep-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  fixed-session-sweep-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/external-leverage-flow-router:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/external-session-liquidity-sweep-screen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and fixed contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile \
+            research/external-leverage-flow-router/vision_derivatives_contract.py \
+            research/external-leverage-flow-router/external_session_liquidity_sweep_screen.py
+          python - <<'PY'
+          import external_session_liquidity_sweep_screen as screen
+          assert screen.SYMBOLS == ('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT')
+          assert screen.BAR_MINUTES == 5
+          assert screen.ROUND_TRIP_HURDLE_BPS == 20.0
+          assert screen.MIN_NET_RR == 1.0
+          assert screen.OPEN_WINDOW_BARS == 24
+          print('session liquidity sweep contract verified')
+          PY
+
+      - name: Run predeclared 2023 three-month development screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/external-leverage-flow-router/external_session_liquidity_sweep_screen.py \
+            --start 2023-06-01 \
+            --end 2023-08-31 \
+            --cache .cache/external-session-liquidity-sweep \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify causal evidence
+        if: always()
+        shell: bash
+        run: |
+          if test -e "$ROOT/session_sweep_screen.json"; then
+            python -m json.tool "$ROOT/session_sweep_screen.json" >/dev/null
+            python -m json.tool "$ROOT/raw_evidence.json" >/dev/null
+            test -e "$ROOT/session_sweep_events.csv"
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('artifacts/external-session-liquidity-sweep-screen/session_sweep_screen.json').read_text())
+          assert report['development_period'] == ['2023-06-01', '2023-08-31']
+          assert report['round_trip_hurdle_bps'] == 20.0
+          assert report['fixed_parameters']['min_net_rr'] == 1.0
+          print(json.dumps({
+              'diagnostics': report['diagnostics'],
+              'event_count': report['event_count'],
+              'event_counts': report['event_counts'],
+              'promising_fixed_families': report['promising_fixed_families'],
+          }, indent=2))
+          PY
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: external-session-liquidity-sweep-screen-${{ github.sha }}
+          path: artifacts/external-session-liquidity-sweep-screen/**
+          if-no-files-found: warn
+          retention-days: 90
