@@ -1,0 +1,119 @@
+name: Candidate 15 V24 exact aggTrades quarter-hour BTC screen
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - "research/candidate-15/protocol-v24-quarter-hour-aggtrades.json"
+      - "research/candidate-15/diagnose_v24_quarter_hour_aggtrades.py"
+      - ".github/workflows/candidate-15-v24-quarter-hour-aggtrades.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v24-quarter-hour-aggtrades-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 1
+
+      - name: Verify environment and frozen protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-15/diagnose_v23_quarter_hour_10s.py \
+            research/candidate-15/diagnose_v24_quarter_hour_aggtrades.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          protocol = json.loads(
+              Path('research/candidate-15/protocol-v24-quarter-hour-aggtrades.json').read_text()
+          )
+          assert protocol['schema'] == 'candidate-15-v24-quarter-hour-aggtrades-btc-screen-v1'
+          assert protocol['evaluation']['global_position_limit'] == 1
+          assert protocol['data']['symbols'] == ['BTCUSDT']
+          assert protocol['fixed_rules']['execution_round_trip_cost_bps'] == 16.0
+          assert protocol['fixed_rules']['funding_and_unmodeled_impact_reserve_bps'] == 4.0
+          PY
+
+      - name: Run exact aggTrades mechanism screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/src"
+          python research/candidate-15/diagnose_v24_quarter_hour_aggtrades.py \
+            --protocol research/candidate-15/protocol-v24-quarter-hour-aggtrades.json \
+            --output research/candidate-15/v24/quarter_hour_aggtrades/results
+
+      - name: Verify exact event and outcome contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+          root = Path('research/candidate-15/v24/quarter_hour_aggtrades/results')
+          candidates = pd.read_csv(root / 'all_routed_candidates.csv')
+          if len(candidates.index):
+              assert set(candidates['outcome_origin']) == {'EVENT_MINUTE_FINAL_TRADE'}
+              assert candidates['entry_price'].gt(0).all()
+          selected = pd.read_csv(root / 'selected_events.csv')
+          if len(selected.index):
+              opened = pd.to_datetime(selected['entry_ts'], utc=True)
+              closed = pd.to_datetime(selected['exit_ts'], utc=True)
+              assert (opened.iloc[1:].reset_index(drop=True) >= closed.iloc[:-1].reset_index(drop=True)).all()
+          PY
+
+      - name: Remove downloaded market archives
+        if: always()
+        shell: bash
+        run: rm -rf research/candidate-15/v24/quarter_hour_aggtrades/results/data
+
+      - name: Persist compact evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          result_dir="research/candidate-15/v24/quarter_hour_aggtrades/results"
+          cp "$result_dir/RESULT.md" research/candidate-15/V24_QUARTER_HOUR_AGGTRADES_RESULT.md
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-v24-bot
+          git config user.email candidate-15-v24-bot@users.noreply.github.com
+          git add \
+            research/candidate-15/V24_QUARTER_HOUR_AGGTRADES_RESULT.md \
+            research/candidate-15/v24/quarter_hour_aggtrades/results
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15 v24: persist exact aggTrades evidence [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+
+      - name: Upload compact evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v24-quarter-hour-aggtrades-${{ github.run_id }}
+          path: |
+            research/candidate-15/V24_QUARTER_HOUR_AGGTRADES_RESULT.md
+            research/candidate-15/v24/quarter_hour_aggtrades/results
+          if-no-files-found: warn
+          retention-days: 30
