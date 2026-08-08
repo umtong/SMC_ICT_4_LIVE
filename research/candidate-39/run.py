@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Candidate 39 through the reused four-asset NautilusTrader harness."""
+"""Run Candidate 39 V2 through the reused four-asset NautilusTrader harness."""
 from __future__ import annotations
 
 import argparse
@@ -32,18 +32,23 @@ def _activate_candidate39_modules() -> None:
     here = str(HERE)
     sys.path[:] = [item for item in sys.path if item != here]
     sys.path.insert(0, here)
-    # BacktestNode resolves importable strategies by module name.  Remove any
-    # earlier generic imports from the reused runner before it instantiates the
-    # Candidate 39 adapter.
     sys.modules.pop("strategy", None)
     sys.modules.pop("router", None)
     importlib.invalidate_caches()
 
 
-def _rewrite_identity(output: Path, metrics: dict[str, Any], base: Any) -> dict[str, Any]:
-    metrics["candidate"] = "candidate-39-causal-auction-state-router"
+def _rewrite_identity(
+    output: Path,
+    metrics: dict[str, Any],
+    base: Any,
+) -> dict[str, Any]:
+    metrics["candidate"] = "candidate-39-causal-auction-state-router-v2"
     metrics["non_scalping"] = True
-    metrics["signal_event"] = "completed 15-minute auction plus three-minute response"
+    metrics["signal_event"] = (
+        "completed 15-minute auction, frozen interaction, and separate entry confirmation"
+    )
+    metrics["entry_policy"] = "passive boundary-retest limit, one-auction expiry"
+    metrics["target_space_policy"] = "cost-after net reward/risk must clear state floor"
     metrics["intended_holding_horizon_minutes"] = [30, 240]
     metrics["state_families"] = [
         "BUILD_ACCEPT_CONTINUATION",
@@ -53,6 +58,7 @@ def _rewrite_identity(output: Path, metrics: dict[str, Any], base: Any) -> dict[
     metrics["open_interest_semantics"] = (
         "non-directional position change; direction requires price and signed aggressor flow"
     )
+    metrics["evidence_status"] = "DEVELOPMENT_REPLAY_AFTER_V1_INTERVAL_INSPECTION"
     base.write_json_atomic(output / "metrics.json", metrics)
 
     for filename in ("run.json", "data_manifest.json"):
@@ -60,12 +66,14 @@ def _rewrite_identity(output: Path, metrics: dict[str, Any], base: Any) -> dict[
         if not path.is_file():
             continue
         payload = json.loads(path.read_text(encoding="utf-8"))
-        payload["candidate"] = "candidate-39-causal-auction-state-router"
+        payload["candidate"] = "candidate-39-causal-auction-state-router-v2"
         if filename == "run.json":
-            payload["run_id"] = str(payload.get("run_id", "candidate-39")).replace(
-                "candidate-35", "candidate-39"
+            payload["run_id"] = str(payload.get("run_id", "candidate-39-v2")).replace(
+                "candidate-35",
+                "candidate-39-v2",
             )
         payload["non_scalping"] = True
+        payload["evidence_status"] = "DEVELOPMENT_REPLAY_AFTER_V1_INTERVAL_INSPECTION"
         base.write_json_atomic(path, payload)
     return metrics
 
