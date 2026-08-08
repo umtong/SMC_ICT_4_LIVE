@@ -1,0 +1,143 @@
+name: candidate-07-initiative-probe-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - ".github/workflows/candidate-07-initiative-probe-diagnostic.yml"
+      - "research/candidate-07/initiative_probe.py"
+      - "research/candidate-07/strategy_initiative_probe.py"
+      - "research/candidate-07/backtest_initiative_probe.py"
+      - "research/candidate-07/candidate_initiative_probe.py"
+      - "research/candidate-07/tests/test_initiative_probe.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify exact candidate contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          python -m unittest \
+            discover -s research/candidate-07/tests \
+            -p 'test_initiative_probe.py' -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+
+      - name: Run untouched frozen W3 directly
+        run: >-
+          python research/candidate-07/candidate_initiative_probe.py week
+          --config research/candidate-07/config.json
+          --stage week-3-diagnostic
+          --start 2024-06-24
+          --end 2024-07-01
+          --output artifacts/candidate-07-initiative-probe-diagnostic/week-3
+          --data-root .research-data/candidate-07
+
+      - name: Run 912-day continuous account directly
+        run: >-
+          python research/candidate-07/candidate_initiative_probe.py week
+          --config research/candidate-07/config.json
+          --stage long-evaluation-diagnostic
+          --start 2024-01-01
+          --end 2026-07-01
+          --output artifacts/candidate-07-initiative-probe-diagnostic/long-evaluation
+          --data-root .research-data/candidate-07
+
+      - name: Summarize state and opportunity diagnostics
+        if: always()
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          from collections import Counter
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-07-initiative-probe-diagnostic")
+          summary = {"candidate": "candidate-07-initiative-probe", "stages": {}}
+          reasons_of_interest = (
+              "INITIATIVE_OWNS_REVERSAL_SHADOW_ONLY",
+              "SHADOW_REVERSAL_TARGET_DELIVERED",
+              "SHADOW_REVERSAL_STOP_ACCEPTED",
+              "SHADOW_FAILURE_RECONFIRMS_INITIATIVE",
+              "SHADOW_STOP_ACCEPTANCE_CONTINUATION_READY",
+              "SHADOW_ACCEPTANCE_OUTSIDE_SIGNAL_SHOCK",
+              "INITIATIVE_SOURCE_RECLAIM_UNRESOLVED",
+              "MORE_EXTREME_SHADOW_SOURCE_SUPERSEDES_PROBE",
+              "ACTIVE_SHADOW_PROBE_OWNS_REVERSAL_DIRECTION",
+          )
+          for stage in ("week-3", "long-evaluation"):
+              stage_root = root / stage
+              metrics_path = stage_root / "metrics.json"
+              events_path = stage_root / "events.jsonl"
+              if not metrics_path.exists() or not events_path.exists():
+                  summary["stages"][stage] = {"present": False}
+                  continue
+              metrics = json.loads(metrics_path.read_text())
+              reasons = Counter(
+                  json.loads(line).get("reason_code")
+                  for line in events_path.read_text().splitlines()
+              )
+              summary["stages"][stage] = {
+                  "present": True,
+                  "days": metrics["period"]["days"],
+                  "trades": metrics["trades"],
+                  "wins": metrics["wins"],
+                  "losses": metrics["losses"],
+                  "win_rate": metrics["win_rate"],
+                  "net_return": metrics["net_return"],
+                  "daily_geometric_growth": metrics["daily_geometric_growth"],
+                  "profit_factor": metrics["profit_factor"],
+                  "max_drawdown": metrics["max_drawdown"],
+                  "active_days": metrics["active_days"],
+                  "trades_per_day": metrics["trades_per_day"],
+                  "target_met": metrics["target_met"],
+                  "probe_reasons": {
+                      reason: reasons[reason]
+                      for reason in reasons_of_interest
+                  },
+              }
+          destination = root / "diagnostic_summary.json"
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_text(json.dumps(summary, indent=2, sort_keys=True))
+          print(destination.read_text())
+          PY
+
+      - name: Print immutable result
+        if: always()
+        run: |
+          find artifacts/candidate-07-initiative-probe-diagnostic \
+            -name metrics.json -print -exec cat {} \;
+          test -f artifacts/candidate-07-initiative-probe-diagnostic/diagnostic_summary.json
+          cat artifacts/candidate-07-initiative-probe-diagnostic/diagnostic_summary.json
+
+      - name: Preserve diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-initiative-probe-diagnostic-${{ github.sha }}
+          path: artifacts/candidate-07-initiative-probe-diagnostic
+          retention-days: 14
+          if-no-files-found: error
