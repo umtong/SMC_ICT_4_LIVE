@@ -1,0 +1,263 @@
+name: candidate-16-v8-later-residual-convergence-screen
+
+on:
+  push:
+    branches: ["research/candidate-16-v8-later-residual-convergence"]
+    paths:
+      - "research/candidate-16/**"
+      - ".github/workflows/candidate-16-v8-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v8-later-residual-convergence-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  shared-account-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05:research/candidate-16
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v8-screen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment, unchanged v52 state, and v8 role separation
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-16 research/candidate-05
+          test "$(git hash-object research/candidate-05/strategy_v52_cross_sectional_residual.py)" = "7599036ecdf846175c7c8b3961470bdda241562e"
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v8_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v52_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_global_entry_slot_v3.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_global_entry_slot_v4.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_shared_account_backtest_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Verify deterministic non-overlapping untouched week
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          from hashlib import sha256
+
+          excluded = [
+              (date(2023, 7, 9), date(2023, 7, 15)),
+              (date(2024, 1, 15), date(2024, 1, 21)),
+              (date(2023, 9, 8), date(2023, 9, 14)),
+              (date(2023, 6, 5), date(2023, 6, 11)),
+              (date(2023, 8, 21), date(2023, 8, 27)),
+              (date(2023, 11, 20), date(2023, 11, 26)),
+              (date(2024, 2, 12), date(2024, 2, 18)),
+              (date(2024, 2, 19), date(2024, 3, 17)),
+          ]
+          starts = []
+          cursor = date(2023, 1, 2)
+          while cursor <= date(2025, 12, 22):
+              end = cursor + timedelta(days=6)
+              if not any(not (end < left or cursor > right) for left, right in excluded):
+                  starts.append(cursor)
+              cursor += timedelta(days=7)
+          seed = (
+              "candidate16-v8-later-residual-convergence|"
+              "c8b3cbff9c6b83cee4f170753cd689d1fc4e81f1|"
+              "independent-week-1"
+          )
+          digest = sha256(seed.encode()).hexdigest()
+          index = int(digest, 16) % len(starts)
+          if (
+              len(starts) != 143
+              or digest != "37a2b20eaaca3dff3e467dd62093d02c986aadf817509cc3d27c39304f6bc869"
+              or index != 50
+              or starts[index].isoformat() != "2024-03-18"
+          ):
+              raise SystemExit((len(starts), digest, index, starts[index]))
+          print({"eligible_weeks": len(starts), "index": index, "start": str(starts[index])})
+          PY
+
+      - name: Run one-account four-symbol untouched week through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence" "$ROOT/result"
+          cat > "$ROOT/evidence/v8.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "candidate_v8:Candidate16V8Strategy",
+            "experiment_role": "CANDIDATE16_V8_ROLE_SEPARATED_RESIDUAL"
+          }
+          JSON
+          python research/candidate-16/run_candidate_v8.py \
+            --winner-evidence "$ROOT/evidence/v8.json" \
+            --build-start 2024-03-16 \
+            --build-end 2024-03-24 \
+            --evaluation-start 2024-03-18 \
+            --evaluation-end 2024-03-24 \
+            --cache .cache/candidate-16-v8 \
+            --output "$ROOT/result" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Classify shared-account economics and v8 funnel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          result = root / "result"
+          metrics = json.loads((result / "metrics.json").read_text())
+          diagnostics = metrics.get("strategy_diagnostics", {})
+
+          def total(name):
+              return sum(int(item.get(name, 0) or 0) for item in diagnostics.values())
+
+          integrity = (
+              bool(metrics.get("integrity_pass"))
+              and int(metrics.get("calendar_days", 0)) == 7
+              and int(metrics.get("liquidations", 0)) == 0
+              and all(int(item.get("order_rejections", 0) or 0) == 0 for item in diagnostics.values())
+              and all(int(item.get("order_denials", 0) or 0) == 0 for item in diagnostics.values())
+              and bool(metrics.get("global_slot_audit", {}).get("audit_pass"))
+              and int(metrics.get("global_slot_audit", {}).get("max_entry_intents_plus_positions_replayed", 99)) <= 1
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+              and total("v52_same_timestamp_peer_uses") == 0
+          )
+          gate_checks = {
+              "geometric_daily_growth": float(metrics.get("geometric_daily_growth", -1.0)) >= 0.01,
+              "trades": int(metrics.get("trades", 0)) >= 7,
+              "wins": int(metrics.get("wins", 0)) >= 4,
+              "win_rate": float(metrics.get("win_rate", 0.0)) >= 0.40,
+              "active_days": int(metrics.get("active_days", 0)) >= 4,
+              "max_drawdown": float(metrics.get("max_drawdown", 1.0)) <= 0.20,
+              "largest_winner_share": float(metrics.get("largest_winner_share", 1.0)) <= 0.55,
+          }
+          gate_pass = integrity and all(gate_checks.values())
+          if not integrity:
+              classification = "INVALID_SCREEN; SHARED_ACCOUNT_OR_V8_EXECUTION_INTEGRITY_FAILURE"
+          elif gate_pass:
+              classification = "TARGET_WEEKLY_GATE_PASSED; ADVANCE UNCHANGED TO NEXT UNTOUCHED PERIOD"
+          elif float(metrics.get("total_return", 0.0)) > 0.0:
+              classification = "POSITIVE_BUT_GATE_FAILED; RETAIN UNCHANGED FOR DIAGNOSIS"
+          else:
+              classification = "VALID_LATER_RESIDUAL_SCREEN_FAILED; DO NOT CLAIM TARGET"
+          decision = {
+              "schema": "candidate-16-v8-screen-v1",
+              "evaluation": ["2024-03-18", "2024-03-24"],
+              "one_account": True,
+              "four_symbols": True,
+              "integrity_pass": integrity,
+              "gate_pass": gate_pass,
+              "gate_checks": gate_checks,
+              "classification": classification,
+              "metrics": metrics,
+              "funnel": {
+                  "peer_context_ready": total("v52_peer_context_ready"),
+                  "robust_extremes": total("v52_extremes"),
+                  "residual_inflections": total("v52_inflections"),
+                  "oi_contraction_pass": total("v52_oi_contraction_pass"),
+                  "state_flow_depth_pass": total("v52_flow_depth_pass"),
+                  "v52_setups": total("v52_setups"),
+                  "states_frozen": total("candidate16_v8_states_frozen"),
+                  "later_observations": total("candidate16_v8_later_observations"),
+                  "residual_contractions": total("candidate16_v8_residual_contractions"),
+                  "residual_neutralized": total("candidate16_v8_residual_neutralized"),
+                  "states_expired": total("candidate16_v8_states_expired"),
+                  "later_confirmations": total("candidate16_v8_later_confirmations"),
+                  "no_natural_target": total("candidate16_v8_no_natural_target"),
+                  "geometry_rejected": total("candidate16_v8_geometry_rejected"),
+                  "fok_limit_entries": total("candidate16_v8_fok_limit_entries"),
+                  "entry_submissions": total("entry_submissions"),
+                  "same_timestamp_peer_uses": total("v52_same_timestamp_peer_uses"),
+              },
+          }
+          (root / "screen_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify authoritative shared-account and FOK evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/result/metrics.json"
+          python -m json.tool "$ROOT/result/run.json"
+          python -m json.tool "$ROOT/result/candidate16_v8_contract.json"
+          python -m json.tool "$ROOT/result/global_slot_audit.json"
+          python -m json.tool "$ROOT/screen_decision.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path(os.environ["ROOT"])
+          result = root / "result"
+          run = json.loads((result / "run.json").read_text())
+          metrics = json.loads((result / "metrics.json").read_text())
+          audit = json.loads((result / "global_slot_audit.json").read_text())
+          if run.get("engine") != "NautilusTrader BacktestNode":
+              raise SystemExit("unexpected engine")
+          if not run.get("one_account") or not run.get("one_venue"):
+              raise SystemExit("not one shared account")
+          if set(run.get("symbols", [])) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
+              raise SystemExit("project symbol set drifted")
+          if run.get("strategy") != "candidate_v8:Candidate16V8Strategy":
+              raise SystemExit("v8 identity drifted")
+          if float(run.get("risk_fraction", -1.0)) != 0.03:
+              raise SystemExit("risk fraction drifted")
+          if not audit.get("audit_pass"):
+              raise SystemExit("global slot audit failed")
+          if int(audit.get("max_entry_intents_plus_positions_replayed", 99)) > 1:
+              raise SystemExit("global slot invariant failed")
+          same_timestamp = sum(
+              int(item.get("v52_same_timestamp_peer_uses", 0) or 0)
+              for item in metrics.get("strategy_diagnostics", {}).values()
+          )
+          if same_timestamp != 0:
+              raise SystemExit("same-timestamp peer information was used")
+          orders = pd.read_csv(result / "orders.csv")
+          entries = orders[
+              orders["tags"].astype(str).str.contains(
+                  "CANDIDATE16_V8_FOK_PRICE_CAP",
+                  na=False,
+              )
+          ]
+          if not entries.empty:
+              if not (entries["type"] == "LIMIT").all():
+                  raise SystemExit("non-LIMIT v8 entry")
+              if not (entries["time_in_force"] == "FOK").all():
+                  raise SystemExit("non-FOK v8 entry")
+              if not (entries["filled_qty"] == entries["quantity"]).all():
+                  raise SystemExit("partial v8 entry fill")
+          PY
+          for file in metrics.json run.json data_manifest.json account.csv orders.csv positions.csv shared_equity_observations.csv daily_returns.json closed_scenarios_all.json global_slot_events.json global_slot_audit.json candidate16_v8_contract.json; do
+            test -e "$ROOT/result/$file"
+          done
+          for symbol in BTCUSDT ETHUSDT SOLUSDT XRPUSDT; do
+            for file in features.csv.gz strategy_diagnostics.json scenario_events.jsonl closed_scenarios.json equity.csv; do
+              test -e "$ROOT/result/symbols/$symbol/$file"
+            done
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v8-screen-${{ github.sha }}
+          path: artifacts/candidate-16-v8-screen/**
+          if-no-files-found: warn
+          retention-days: 90
