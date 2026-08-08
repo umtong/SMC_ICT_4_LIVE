@@ -1,0 +1,104 @@
+name: candidate-23-quarter-hour-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-23"]
+    paths:
+      - "research/candidate-23/**"
+      - ".github/workflows/candidate-23-quarter-hour-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-23-quarter-hour-diagnostic
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  observed-periods:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: known-2023-12-25
+            build_start: "2023-12-22"
+            build_end: "2024-01-01"
+            evaluation_start: "2023-12-25"
+            evaluation_end: "2023-12-31"
+          - name: viewed-2024-07-08
+            build_start: "2024-07-05"
+            build_end: "2024-07-15"
+            evaluation_start: "2024-07-08"
+            evaluation_end: "2024-07-14"
+          - name: viewed-2023-10-16
+            build_start: "2023-10-13"
+            build_end: "2023-10-23"
+            evaluation_start: "2023-10-16"
+            evaluation_end: "2023-10-22"
+          - name: viewed-2025-09-22
+            build_start: "2025-09-19"
+            build_end: "2025-09-29"
+            evaluation_start: "2025-09-22"
+            evaluation_end: "2025-09-28"
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-23/${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-23
+
+      - name: Measure causal quarter-hour flow effect
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-23/qh_diagnostic.py \
+            --symbol BTCUSDT \
+            --build-start "${{ matrix.build_start }}" \
+            --build-end "${{ matrix.build_end }}" \
+            --evaluation-start "${{ matrix.evaluation_start }}" \
+            --evaluation-end "${{ matrix.evaluation_end }}" \
+            --cache ".cache/candidate-23/${{ matrix.name }}" \
+            --output "$ROOT" \
+            --round-trip-bps 20.0 \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify causal output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          result = json.loads((root / "diagnostic.json").read_text())
+          assert result["quarter_hour_rows"] >= 600, result
+          assert result["signal_observation"].startswith("first-ten-second")
+          assert result["round_trip_bps"] == 20.0
+          assert (root / "quarter_hour_observations.csv").stat().st_size > 0
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-23-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-23/${{ matrix.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
