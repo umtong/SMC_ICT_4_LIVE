@@ -1,0 +1,220 @@
+name: candidate-03-candidate31-quarter-hour-reclaim-stop-development
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  FROZEN_SOURCE_COMMIT: dfb180490b141fdafd5b5ac0b52d3dd0b842550d
+  RESULT_REL: research/candidate-03/results/candidate31-quarter-hour-reclaim-stop-development
+
+concurrency:
+  group: candidate-03-candidate31-quarter-hour-reclaim-stop-development
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", path: orchestrator}
+      - uses: actions/checkout@v4
+        with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
+      - name: Verify Candidate 31 reclaim-stop contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          test "$(git -C frozen-source rev-parse HEAD)" = "$FROZEN_SOURCE_COMMIT"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('orchestrator/research/candidate-03/results/candidate30-quarter-hour-boundary-retest-development/aggregate.json').read_text())
+          assert p['quarter_hour_boundary_retest_route_supported'] is False
+          PY
+          cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/candidate29_quarter_hour_failed_auction.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/candidate31_quarter_hour_reclaim_stop.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate16_failed_far.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate17_strict_target.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate20_inside_origin_acceptance.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate21_two_close_acceptance_entry.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate22_contested_countertrend.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate24_retire_semantic_rejection_watch.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate31_quarter_hour_reclaim_stop.py frozen-source/research/candidate-14/
+          python orchestrator/research/candidate-03/patch_candidate16_deep_reentry_call.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate17_strict_target.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate19_semantic_rejection_continuation.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate20_inside_origin_acceptance.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate21_two_close_acceptance_entry.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate22_contested_countertrend.py \
+            frozen-source/research/candidate-14/candidate16_failed_far.py \
+            frozen-source/research/candidate-14/semantic_market_leadership.py
+          python orchestrator/research/candidate-03/patch_candidate24_retire_semantic_rejection_watch.py \
+            frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate22_semantic_test_contract.py \
+            frozen-source/research/candidate-14/test_semantic_market_leadership.py
+          python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
+          python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
+          python orchestrator/research/candidate-03/patch_candidate31_stop_market_parent_v2.py \
+            frozen-source/research/candidate-14/runner_materializer.py
+          python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate31_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate16_native_exit_reason.py frozen-source/research/candidate-14/run_leadership_scdam_base.py
+          grep -q 'SCENARIO_KIND = "QUARTER_HOUR_FAILED_AUCTION_RECLAIM_STOP"' frozen-source/research/candidate-14/candidate31_quarter_hour_reclaim_stop.py
+          grep -q 'entry_order_type="STOP_MARKET"' frozen-source/research/candidate-14/candidate31_quarter_hour_reclaim_stop.py
+          grep -q 'candidate-31-native-gtd-stop-market-parent' frozen-source/research/candidate-14/runner_materializer.py
+          grep -q 'entry_trigger_price=instrument.make_price(plan.expected_entry)' frozen-source/research/candidate-14/runner_materializer.py
+          grep -q '_install_candidate31_quarter_hour_reclaim_stop()' frozen-source/research/candidate-14/run_leadership_scdam.py
+          grep -q 'SEMANTIC_REJECTED_FAR_WATCH_RETIRED' frozen-source/research/candidate-14/candidate16_failed_far.py
+          grep -q 'SEMANTIC_FAR_MODERATE_COUNTERTREND_CONTESTED' frozen-source/research/candidate-14/semantic_market_leadership.py
+          ! grep -q 'SEMANTIC_FAR_TREND_RESUMPTION_SYNCHRONIZED' frozen-source/research/candidate-14/semantic_market_leadership.py
+          export PYTHONPATH="$GITHUB_WORKSPACE/frozen-source/research/candidate-14:$GITHUB_WORKSPACE/frozen-source/src"
+          python - <<'PY'
+          from pathlib import Path
+          from runner_materializer import materialize_runner_source
+          source=Path('frozen-source/research/candidate-14/run_leadership_scdam_base.py').read_text()
+          materialized=materialize_runner_source(source)
+          assert materialized.count('candidate-31-native-gtd-stop-market-parent') == 1
+          compile(materialized, 'materialized-candidate31-runner.py', 'exec')
+          PY
+          python -m py_compile frozen-source/research/candidate-14/*.py
+          python -m unittest discover -s frozen-source/research/candidate-14 -p 'test_*.py' -v
+          python -m py_compile orchestrator/research/candidate-03/aggregate_candidate31_quarter_hour_reclaim_stop.py
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        week: [H01, H02, H03, H04, H05, H06, H07, H08, H09, H10, H11, H12, H13, H14, H15, H16]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", path: orchestrator}
+      - uses: actions/checkout@v4
+        with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
+      - name: Install identical Candidate 31 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/candidate29_quarter_hour_failed_auction.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/candidate31_quarter_hour_reclaim_stop.py frozen-source/research/candidate-14/
+          python orchestrator/research/candidate-03/patch_candidate16_deep_reentry_call.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate17_strict_target.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate19_semantic_rejection_continuation.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate20_inside_origin_acceptance.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate21_two_close_acceptance_entry.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate22_contested_countertrend.py \
+            frozen-source/research/candidate-14/candidate16_failed_far.py \
+            frozen-source/research/candidate-14/semantic_market_leadership.py
+          python orchestrator/research/candidate-03/patch_candidate24_retire_semantic_rejection_watch.py \
+            frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
+          python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
+          python orchestrator/research/candidate-03/patch_candidate31_stop_market_parent_v2.py \
+            frozen-source/research/candidate-14/runner_materializer.py
+          python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate31_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
+          python orchestrator/research/candidate-03/patch_candidate16_native_exit_reason.py frozen-source/research/candidate-14/run_leadership_scdam_base.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json').read_text())
+          p['schema']='candidate-31-quarter-hour-failed-auction-reclaim-stop-development-v1'
+          p['candidate']='candidate-31-quarter-hour-failed-auction-reclaim-stop'
+          p['validation_mode']='development_replay'
+          p['selection']['seed']=202608083131
+          p['claim_rules']=[
+              'Development replay only; success_claim is false.',
+              'Candidate 31 retains Candidate 29 causal detection and submits only after the completed opening minute.',
+              'The opening close must remain on the swept side, so the reclaim trigger cannot be crossed retroactively.',
+              'A native GTD STOP_MARKET parent at the inherited reclaim threshold expires at the next UTC quarter-hour boundary.',
+              'Target, raid-extreme invalidation, costs, exact 3% current-NAV risk and one global slot remain unchanged.',
+          ]
+          Path('frozen-source/research/candidate-14/protocol.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+      - name: Run Candidate 31 ${{ matrix.week }} through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/evidence/${{ matrix.week }}"
+          bash frozen-source/research/candidate-14/run_week.sh "${{ matrix.week }}" "$out"
+          rm -rf "$out/data"
+          for f in metrics.json summary.json audit.json source_lock.json effective_config.json submitted_plans.json order_lifecycle.json scenario_events.jsonl positions.csv account.csv; do test -s "$out/$f"; done
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate31-${{ matrix.week }}
+          path: evidence/${{ matrix.week }}/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+  aggregate:
+    if: ${{ always() && needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-03, fetch-depth: 0, path: orchestrator}
+      - uses: actions/download-artifact@v4
+        with: {pattern: "candidate31-H*", path: downloaded}
+      - name: Attribute reclaim stop and persist decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="orchestrator/$RESULT_REL"
+          rm -rf "$root"; mkdir -p "$root"
+          for week in H01 H02 H03 H04 H05 H06 H07 H08 H09 H10 H11 H12 H13 H14 H15 H16; do
+            src="downloaded/candidate31-$week"; test -d "$src"
+            mkdir -p "$root/$week"; cp -a "$src/." "$root/$week/"
+          done
+          python orchestrator/research/candidate-03/aggregate_candidate31_quarter_hour_reclaim_stop.py \
+            --root "$root" \
+            --baseline orchestrator/research/candidate-03/results/candidate14-frozen-holdout/aggregate.json \
+            --candidate15 orchestrator/research/candidate-03/results/candidate15-far-execution-development/comparison.json \
+            --candidate17 orchestrator/research/candidate-03/results/candidate17-strict-target-development/aggregate.json \
+            --candidate19 orchestrator/research/candidate-03/results/candidate19-semantic-rejection-continuation-development/aggregate.json \
+            --candidate20 orchestrator/research/candidate-03/results/candidate20-inside-origin-acceptance-development/aggregate.json \
+            --candidate21 orchestrator/research/candidate-03/results/candidate21-two-close-acceptance-entry-development/aggregate.json \
+            --candidate22 orchestrator/research/candidate-03/results/candidate22-contested-countertrend-resolution-development/aggregate.json \
+            --candidate25 orchestrator/research/candidate-03/results/candidate25-clean-allocator-development/aggregate.json \
+            --candidate26 orchestrator/research/candidate-03/results/candidate26-internal-liquidity-raid-development/aggregate.json \
+            --candidate27 orchestrator/research/candidate-03/results/candidate27-quarter-hour-delivery-development/aggregate.json \
+            --candidate28 orchestrator/research/candidate-03/results/candidate28-quarter-hour-internal-reload-development/aggregate.json \
+            --candidate29 orchestrator/research/candidate-03/results/candidate29-quarter-hour-failed-auction-development/aggregate.json \
+            --candidate30 orchestrator/research/candidate-03/results/candidate30-quarter-hour-boundary-retest-development/aggregate.json \
+            --output "$root/aggregate.json"
+          git -C orchestrator config user.name candidate-03-development-bot
+          git -C orchestrator config user.email candidate-03-development-bot@users.noreply.github.com
+          git -C orchestrator add "$RESULT_REL"
+          git -C orchestrator commit -m "candidate-03: record Candidate 31 reclaim-stop development [skip ci]"
+          git -C orchestrator fetch origin research/candidate-03
+          git -C orchestrator rebase origin/research/candidate-03
+          git -C orchestrator push origin HEAD:research/candidate-03
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate31-reclaim-stop-aggregate-${{ github.run_id }}
+          path: |
+            orchestrator/research/candidate-03/results/candidate31-quarter-hour-reclaim-stop-development/aggregate.json
+            orchestrator/research/candidate-03/results/candidate31-quarter-hour-reclaim-stop-development/RESULT.md
+          if-no-files-found: warn
+          retention-days: 30
