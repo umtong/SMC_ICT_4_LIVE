@@ -1,0 +1,136 @@
+name: Candidate 15 V25 session range delivery diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - "research/candidate-15/protocol-v25-session-range-delivery.json"
+      - "research/candidate-15/diagnose_v25_session_range_delivery.py"
+      - ".github/workflows/candidate-15-v25-session-range-delivery.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v25-session-range-delivery-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 1
+
+      - name: Verify environment and frozen scenario contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-15/diagnose_v23_quarter_hour_10s.py \
+            research/candidate-15/diagnose_v25_session_range_delivery.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          protocol = json.loads(
+              Path('research/candidate-15/protocol-v25-session-range-delivery.json').read_text()
+          )
+          assert protocol['schema'] == 'candidate-15-v25-session-range-delivery-v1'
+          assert protocol['evaluation']['global_position_limit'] == 1
+          assert protocol['fixed_rules']['opening_range_minutes'] == 15
+          assert protocol['fixed_rules']['minimum_net_structural_r'] == 1.25
+          assert protocol['fixed_rules']['same_bar_stop_and_target_policy'] == 'STOP_FIRST_CONSERVATIVE'
+          assert protocol['fixed_rules']['execution_round_trip_cost_bps'] == 16.0
+          assert protocol['fixed_rules']['funding_and_unmodeled_impact_reserve_bps'] == 4.0
+          PY
+
+      - name: Run integrated session-range mechanism diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/src"
+          python research/candidate-15/diagnose_v25_session_range_delivery.py \
+            --protocol research/candidate-15/protocol-v25-session-range-delivery.json \
+            --output research/candidate-15/v25/session_range_delivery/results
+
+      - name: Verify causal and global-slot evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          from pandas.errors import EmptyDataError
+
+          def read_optional(path: Path) -> pd.DataFrame:
+              if not path.is_file() or path.stat().st_size == 0:
+                  return pd.DataFrame()
+              try:
+                  return pd.read_csv(path)
+              except EmptyDataError:
+                  return pd.DataFrame()
+
+          root = Path('research/candidate-15/v25/session_range_delivery/results')
+          candidates = read_optional(root / 'all_executable_candidates.csv')
+          if len(candidates.index):
+              assert candidates['net_structural_r'].ge(1.25).all()
+              assert candidates['entry_ts'].notna().all()
+              assert candidates['exit_ts'].notna().all()
+          selected = read_optional(root / 'selected_trades.csv')
+          if len(selected.index):
+              opened = pd.to_datetime(selected['entry_ts'], utc=True)
+              closed = pd.to_datetime(selected['exit_ts'], utc=True)
+              assert (
+                  opened.iloc[1:].reset_index(drop=True)
+                  >= closed.iloc[:-1].reset_index(drop=True)
+              ).all()
+              assert not selected['session_id'].duplicated().any()
+          PY
+
+      - name: Remove downloaded market archives
+        if: always()
+        shell: bash
+        run: rm -rf research/candidate-15/v25/session_range_delivery/results/data
+
+      - name: Persist compact evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          result_dir="research/candidate-15/v25/session_range_delivery/results"
+          cp "$result_dir/RESULT.md" research/candidate-15/V25_SESSION_RANGE_DELIVERY_RESULT.md
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-v25-bot
+          git config user.email candidate-15-v25-bot@users.noreply.github.com
+          git add \
+            research/candidate-15/V25_SESSION_RANGE_DELIVERY_RESULT.md \
+            research/candidate-15/v25/session_range_delivery/results
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15 v25: persist session range evidence [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+
+      - name: Upload compact evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v25-session-range-delivery-${{ github.run_id }}
+          path: |
+            research/candidate-15/V25_SESSION_RANGE_DELIVERY_RESULT.md
+            research/candidate-15/v25/session_range_delivery/results
+          if-no-files-found: warn
+          retention-days: 30
