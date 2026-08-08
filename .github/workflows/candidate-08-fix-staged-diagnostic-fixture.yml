@@ -1,0 +1,36 @@
+name: candidate-08-fix-staged-diagnostic-fixture
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-fix-staged-diagnostic-fixture"
+
+permissions:
+  contents: write
+
+jobs:
+  fix-staged-diagnostic-fixture:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Make the fake diagnostic summary match the V3 runner output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c 'from pathlib import Path; p=Path("research/candidate-08/test_run_flow_response_staged_validation.py"); s=p.read_text(encoding="utf-8"); old_import="from run_flow_response_staged_validation import execute_staged_validation\n"; new_import=old_import+"from flow_response_trade_path_diagnostics_v2 import DIAGNOSTIC_REVISION\n"; assert s.count(old_import)==1 and "from flow_response_trade_path_diagnostics_v2 import DIAGNOSTIC_REVISION" not in s; s=s.replace(old_import,new_import); old_top="        \"implementation_revision\": IMPLEMENTATION_REVISION,\n        \"flow_response_family_mode\": mode,\n"; new_top="        \"implementation_revision\": IMPLEMENTATION_REVISION,\n        \"ten_second_cadence_contract\": \"EXACT_CONSECUTIVE_10_SECONDS\",\n        \"trade_path_diagnostic_revision\": DIAGNOSTIC_REVISION,\n        \"flow_response_family_mode\": mode,\n"; assert s.count(old_top)==1; s=s.replace(old_top,new_top); old_path="        \"trade_path_diagnostic_summary\": {\n            \"records\": 3,\n            \"complete_records\": 3,\n        },\n"; new_path="        \"trade_path_diagnostic_summary\": {\n            \"records\": 3,\n            \"complete_records\": 3,\n            \"diagnostic_revision_counts\": {DIAGNOSTIC_REVISION: 3},\n            \"expected_diagnostic_revision\": DIAGNOSTIC_REVISION,\n        },\n"; assert s.count(old_path)==1; p.write_text(s.replace(old_path,new_path),encoding="utf-8")'
+          python -m py_compile research/candidate-08/test_run_flow_response_staged_validation.py
+          rm -f research/candidate-08/.run-fix-staged-diagnostic-fixture
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- research/candidate-08/test_run_flow_response_staged_validation.py research/candidate-08/.run-fix-staged-diagnostic-fixture
+          git commit -m "candidate-08: align staged diagnostic fixture with V3 [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
+            git rebase --abort || true
+            sleep $((attempt * 3))
+          done
+          exit 1
