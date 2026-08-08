@@ -5,7 +5,12 @@ on:
     branches: [research/candidate-09]
     paths:
       - .github/workflows/candidate-09-v10-long-check.yml
-      - research/candidate-09/long_checks/v10_bundle_parts/**
+      - research/candidate-09/state_engine_v10_direct.py
+      - research/candidate-09/config_v10.json
+      - research/candidate-09/archive/v4/state_engine.py
+      - research/candidate-09/run.py
+      - research/candidate-09/data_loader.py
+      - research/candidate-09/nautilus_strategy.py
 
 permissions:
   contents: write
@@ -40,28 +45,43 @@ jobs:
           restore-keys: |
             candidate-09-binance-vision-v1
 
-      - name: Materialize and verify the exact v10 long-check source
+      - name: Materialize exact v10 logic on the verified common runner
         shell: bash
         run: |
           set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          root=research/candidate-09/long_checks/v10
-          parts=research/candidate-09/long_checks/v10_bundle_parts
+          src=research/candidate-09
+          root=$src/long_checks/v10
           rm -rf "$root"
-          mkdir -p "$root"
-          while read -r part digest bytes git_blob; do
-            [[ "$part" == part* ]] || continue
-            test "$(wc -c < "$parts/$part")" -eq "$bytes"
-            echo "$digest  $parts/$part" | sha256sum -c -
-            test "$(git hash-object "$parts/$part")" = "$git_blob"
-          done < "$parts/SHA256"
-          cat "$parts"/part* | base64 -d > /tmp/candidate-09-v10-longcheck.tar.gz
-          expected=$(awk '$1=="archive" {print $2}' "$parts/SHA256")
-          expected_bytes=$(awk '$1=="archive" {print $3}' "$parts/SHA256")
-          test "$(wc -c < /tmp/candidate-09-v10-longcheck.tar.gz)" -eq "$expected_bytes"
-          echo "$expected  /tmp/candidate-09-v10-longcheck.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/candidate-09-v10-longcheck.tar.gz -C "$root"
-          git show e0741d87a81f05139bab4b32d7a3f94c4bba35a7:research/candidate-09/data_loader.py > "$root/data_loader.py"
+          mkdir -p "$root/archive/v4" "$root/tests"
+
+          cp "$src/run.py" "$root/run.py"
+          cp "$src/data_loader.py" "$root/data_loader.py"
+          cp "$src/nautilus_strategy.py" "$root/nautilus_strategy.py"
+          cp "$src/state_engine_v10_direct.py" "$root/state_engine.py"
+          cp "$src/state_engine_v10_direct.py" "$root/state_engine_v10_direct.py"
+          cp "$src/archive/v4/state_engine.py" "$root/archive/v4/state_engine.py"
+          cp "$src/config_v10.json" "$root/config.json"
+          cp "$src/tests/test_accounting_contract.py" "$root/tests/test_accounting_contract.py"
+          cp "$src/tests/test_nautilus_contract.py" "$root/tests/test_nautilus_contract.py"
+          cp "$src/tests_v10/test_state_engine.py" "$root/tests/test_state_engine_v10.py"
+
+          # Add only final-validation requirements expected by the current runner.
+          # No strategy, signal, cost, risk, or date field is changed.
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('research/candidate-09/long_checks/v10/config.json')
+          cfg = json.loads(p.read_text())
+          cfg['long_evaluation'].update({
+              'minimum_trades_per_calendar_day': 0.5,
+              'minimum_active_months': 30,
+              'maximum_drawdown': 0.30,
+          })
+          p.write_text(json.dumps(cfg, indent=2, sort_keys=True) + '\n')
+          PY
+
+          test "$(git hash-object "$root/state_engine.py")" = "340952433ea17a4c77dd4f2445b226b8ddcf327a"
+          test "$(git hash-object "$root/archive/v4/state_engine.py")" = "2e71695b30b622f048cc63f4e858bb3f19220f64"
           test "$(git hash-object "$root/data_loader.py")" = "c076c7f47874552fb9e1d79878a43206d58f686b"
 
       - name: Run frozen v10 contracts and three-year NautilusTrader evaluation
