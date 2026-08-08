@@ -1,0 +1,253 @@
+name: candidate-18-v8-locked-untouched
+
+on:
+  push:
+    branches: ["research/candidate-18"]
+    paths:
+      - ".github/workflows/candidate-18-v8-locked-untouched.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: locked-week-1
+            length_days: 7
+            eligible_count: 188
+            expected_index: 68
+            build_start: "2023-07-07"
+            evaluation_start: "2023-07-10"
+            evaluation_end: "2023-07-16"
+          - name: locked-week-2
+            length_days: 7
+            eligible_count: 188
+            expected_index: 62
+            build_start: "2023-08-18"
+            evaluation_start: "2023-08-21"
+            evaluation_end: "2023-08-27"
+          - name: locked-28d-1
+            length_days: 28
+            eligible_count: 170
+            expected_index: 76
+            build_start: "2024-01-19"
+            evaluation_start: "2024-01-22"
+            evaluation_end: "2024-02-18"
+          - name: locked-91d-1
+            length_days: 91
+            eligible_count: 119
+            expected_index: 54
+            build_start: "2024-04-05"
+            evaluation_start: "2024-04-08"
+            evaluation_end: "2024-07-07"
+
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+
+    env:
+      LOCK_SHA: 56f008b87e31d476b03ba1a47a0d346c68b0b8fb
+      PYTHONPATH: research/candidate-18:research/candidate-16:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-18-v8-locked/${{ matrix.name }}
+      CACHE: .cache/candidate-18-v8-locked/${{ matrix.name }}
+      PERIOD_NAME: ${{ matrix.name }}
+      LENGTH_DAYS: ${{ matrix.length_days }}
+      ELIGIBLE_COUNT: ${{ matrix.eligible_count }}
+      EXPECTED_INDEX: ${{ matrix.expected_index }}
+      BUILD_START: ${{ matrix.build_start }}
+      EVALUATION_START: ${{ matrix.evaluation_start }}
+      EVALUATION_END: ${{ matrix.evaluation_end }}
+      SEED: candidate18-v8|56f008b87e31d476b03ba1a47a0d346c68b0b8fb|${{ matrix.name == 'locked-week-1' && 'week-1' || matrix.name == 'locked-week-2' && 'week-2' || matrix.name == 'locked-28d-1' && '28d-1' || '91d-1' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prove immutable code and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git cat-file -e "$LOCK_SHA^{commit}"
+          git diff --exit-code "$LOCK_SHA" HEAD -- \
+            research/candidate-18/basis_dislocation_strategy.py \
+            research/candidate-18/candidate18_basis_strategy.py \
+            research/candidate-18/candidate_v8.py \
+            research/candidate-18/validate_v8.py \
+            research/candidate-18/v8_contract_check.py \
+            research/candidate-18/local_twin_trigger_strategy.py \
+            research/candidate-18/bounded_gtd_entry_strategy.py \
+            research/candidate-18/trade_tick_emulated_protection_strategy.py \
+            research/candidate-18/managed_protection_ioc_strategy.py \
+            research/candidate-18/candidate.py \
+            research/candidate-18/config.json \
+            research/candidate-17 \
+            research/candidate-16 \
+            research/candidate-05/backtest.py \
+            research/candidate-05/strategy_base.py \
+            research/candidate-05/features.py \
+            research/candidate-05/logic.py \
+            research/candidate-05/instrument_contracts.py
+          python -m compileall -q research/candidate-18 research/candidate-17 research/candidate-16
+          python research/candidate-18/v8_contract_check.py
+
+      - name: Reproduce hash-selected non-overlapping period
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          from hashlib import sha256
+          import os
+
+          viewed = [
+              (date(2022, 4, 11), date(2022, 7, 10)),
+              (date(2022, 11, 21), date(2022, 12, 18)),
+              (date(2023, 10, 16), date(2023, 10, 22)),
+              (date(2023, 12, 25), date(2023, 12, 31)),
+              (date(2024, 7, 8), date(2024, 7, 14)),
+          ]
+          length = int(os.environ["LENGTH_DAYS"])
+          candidates = []
+          cursor = date(2022, 1, 3)
+          while cursor <= date(2025, 12, 29):
+              end = cursor + timedelta(days=length - 1)
+              if end > date(2025, 12, 31):
+                  break
+              overlaps = any(max(cursor, start) <= min(end, finish) for start, finish in viewed)
+              if not overlaps:
+                  candidates.append(cursor)
+              cursor += timedelta(days=7)
+          expected_count = int(os.environ["ELIGIBLE_COUNT"])
+          if len(candidates) != expected_count:
+              raise SystemExit({"eligible_count": len(candidates), "expected": expected_count})
+          index = int(sha256(os.environ["SEED"].encode("utf-8")).hexdigest(), 16) % len(candidates)
+          selected = candidates[index]
+          selected_end = selected + timedelta(days=length - 1)
+          if (
+              index != int(os.environ["EXPECTED_INDEX"])
+              or selected.isoformat() != os.environ["EVALUATION_START"]
+              or selected_end.isoformat() != os.environ["EVALUATION_END"]
+          ):
+              raise SystemExit(
+                  {
+                      "seed": os.environ["SEED"],
+                      "index": index,
+                      "selected": selected.isoformat(),
+                      "selected_end": selected_end.isoformat(),
+                  }
+              )
+          print(
+              {
+                  "seed": os.environ["SEED"],
+                  "eligible_windows": len(candidates),
+                  "index": index,
+                  "selected": selected.isoformat(),
+                  "selected_end": selected_end.isoformat(),
+              }
+          )
+          PY
+
+      - name: Run locked untouched v8 period
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-18/candidate_v8.py stage \
+            --config research/candidate-18/config.json \
+            --build-start "$BUILD_START" \
+            --build-end "$EVALUATION_END" \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --cache "$CACHE" \
+            --output "$ROOT" \
+            --validation-mode "v8-locked-untouched-$PERIOD_NAME" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify integrity and record independent decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-18/validate_v8.py \
+            --root "$ROOT" \
+            --period "$PERIOD_NAME"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          validation = json.loads((root / "v8_development_decision.json").read_text())
+          metrics = validation["metrics"]
+          exact_period = (
+              metrics.get("evaluation_start") == os.environ["EVALUATION_START"]
+              and metrics.get("evaluation_end") == os.environ["EVALUATION_END"]
+          )
+          growth = float(metrics.get("geometric_daily_growth", -1.0))
+          decision = {
+              "schema": "candidate-18-v8-locked-untouched-v1",
+              "code_lock_sha": os.environ["LOCK_SHA"],
+              "period": os.environ["PERIOD_NAME"],
+              "seed": os.environ["SEED"],
+              "evaluation_start": os.environ["EVALUATION_START"],
+              "evaluation_end": os.environ["EVALUATION_END"],
+              "exact_period": exact_period,
+              "integrity_pass": bool(validation.get("integrity_pass")) and exact_period,
+              "minimum_growth_pass": growth >= 0.01,
+              "project_goal_pass": (
+                  bool(validation.get("integrity_pass"))
+                  and exact_period
+                  and growth >= 0.01
+              ),
+              "geometric_daily_growth": growth,
+              "total_return": metrics.get("total_return"),
+              "trades": metrics.get("trades"),
+              "wins": metrics.get("wins"),
+              "win_rate": metrics.get("win_rate"),
+              "profit_factor": metrics.get("profit_factor"),
+              "max_drawdown": metrics.get("max_drawdown"),
+              "ending_nav": metrics.get("ending_nav"),
+              "validation": validation,
+          }
+          (root / "locked_untouched_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True, allow_nan=False) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=False))
+          if not decision["integrity_pass"]:
+              raise SystemExit("locked untouched integrity failure")
+          PY
+
+      - name: Verify authoritative evidence files
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            metrics.json v8_development_decision.json locked_untouched_decision.json \
+            run.json data_manifest.json raw_evidence.json orders.csv positions.csv \
+            account.csv equity.csv strategy_diagnostics.json closed_scenarios.json \
+            scenario_events.jsonl candidate18_contract.json
+          do
+            test -s "$ROOT/$file"
+          done
+          python -m json.tool "$ROOT/locked_untouched_decision.json" >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-18-v8-locked-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-18-v8-locked/${{ matrix.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
