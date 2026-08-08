@@ -42,15 +42,18 @@ jobs:
           python - <<'PY'
           import candidate
           import candidate21_strategy
+          import execution_window_ticks
           import features
           import market_entry_strategy
           from spot_perp_router import ParticipationRoute
           assert getattr(features.load_range, '_external_spot_participation_contract', False)
           assert candidate21_strategy.Candidate21Strategy.__module__ == 'candidate21_strategy'
-          assert market_entry_strategy.MarketEntryStrategy.__module__ == 'market_entry_strategy'
+          assert market_entry_strategy.WindowedLimitStrategy.__module__ == 'market_entry_strategy'
+          assert execution_window_ticks.WINDOW_START_NS == 1_000_000_000
+          assert execution_window_ticks.WINDOW_END_NS == 16_000_000_000
           assert ParticipationRoute.EXTERNAL_LIQUIDITY_EXHAUSTION.value == 'EXTERNAL_LIQUIDITY_EXHAUSTION'
           assert ParticipationRoute.UNRESOLVED.value == 'UNRESOLVED'
-          print('namespace, execution adapter, and causal feature wrapper verified')
+          print('namespace, actual-volume execution windows, and causal feature wrapper verified')
           PY
 
       - name: Run BTC development screen through NautilusTrader
@@ -69,7 +72,7 @@ jobs:
             --validation-mode development \
             2>&1 | tee "$ROOT/console.log"
 
-      - name: Classify economics and state funnel
+      - name: Classify economics, fill integrity, and state funnel
         if: always()
         shell: bash
         run: |
@@ -92,7 +95,10 @@ jobs:
 
           metrics = json.loads((result / 'metrics.json').read_text())
           diagnostics = json.loads((result / 'strategy_diagnostics.json').read_text())
+          clock = json.loads((result / 'execution_clock.json').read_text())
           features = pd.read_csv(result / 'features_clock.csv.gz', compression='gzip')
+          orders = pd.read_csv(result / 'orders.csv')
+
           observed = pd.to_numeric(features['observed_time_ns'], errors='raise').astype('int64')
           spot_observed = pd.to_numeric(features['spot_observed_time_ns'], errors='coerce')
           future_spot = int((spot_observed > observed).fillna(False).sum())
@@ -100,6 +106,40 @@ jobs:
           if ready.dtype != bool:
               ready = ready.astype(str).str.lower().isin({'true','1','yes'})
 
+          tags = orders['tags'].astype(str) if 'tags' in orders else pd.Series('', index=orders.index)
+          entry_orders = orders[tags.str.contains('EXTERNAL_EXHAUSTION_LIMIT_GTD', regex=False)].copy()
+          if entry_orders.empty:
+              entry_fill_fractions = []
+              minimum_fill_fraction = 1.0
+              maximum_fill_seconds = 0.0
+              price_limit_breaches = 0
+          else:
+              requested = pd.to_numeric(entry_orders['quantity'], errors='raise')
+              filled = pd.to_numeric(entry_orders['filled_qty'], errors='raise')
+              entry_fill_fractions = (filled / requested).tolist()
+              minimum_fill_fraction = float(min(entry_fill_fractions))
+              init_ts = pd.to_datetime(entry_orders['ts_init'], utc=True)
+              last_ts = pd.to_datetime(entry_orders['ts_last'], utc=True)
+              maximum_fill_seconds = float((last_ts - init_ts).dt.total_seconds().max())
+              price_limit_breaches = 0
+              if 'price' in entry_orders and 'avg_px' in entry_orders:
+                  limit_px = pd.to_numeric(entry_orders['price'], errors='coerce')
+                  avg_px = pd.to_numeric(entry_orders['avg_px'], errors='coerce')
+                  sides = entry_orders['side'].astype(str).str.upper()
+                  price_limit_breaches = int(
+                      (((sides == 'BUY') & (avg_px > limit_px + 1e-9))
+                       | ((sides == 'SELL') & (avg_px < limit_px - 1e-9))).fillna(False).sum()
+                  )
+
+          minimum_required_fill = 0.95
+          fill_integrity = (
+              entry_orders.empty
+              or (
+                  minimum_fill_fraction + 1e-12 >= minimum_required_fill
+                  and maximum_fill_seconds <= 16.0
+                  and price_limit_breaches == 0
+              )
+          )
           funnel_names = [
               'exhaustion_parent_candidates',
               'exhaustion_external_edge_rejected',
@@ -110,14 +150,22 @@ jobs:
               'exhaustion_states_expired',
               'exhaustion_target_consumed',
               'exhaustion_geometry_rejected',
-              'exhaustion_market_entries',
+              'exhaustion_windowed_limit_entries',
               'entry_submissions',
               'entry_worst_fill_breaches',
           ]
           funnel = {name: int(diagnostics.get(name, 0) or 0) for name in funnel_names}
           gate = metrics.get('gate_checks', {})
+          execution_integrity = (
+              clock.get('schema') == 'external-actual-aggtrade-execution-windows-v1'
+              and bool(clock.get('source_price_and_quantity_unchanged'))
+              and int(clock.get('selected_rows', 0) or 0) > 100_000
+              and int(clock.get('selected_rows', 0) or 0) == int(metrics.get('execution_tick_count', 0) or 0)
+          )
           integrity = (
               future_spot == 0
+              and execution_integrity
+              and fill_integrity
               and bool(gate.get('no_liquidation'))
               and bool(gate.get('no_order_rejections'))
               and bool(gate.get('positive_nav'))
@@ -134,28 +182,33 @@ jobs:
               classification = 'INVALID_DEVELOPMENT_RUN'
           elif funnel['exhaustion_states'] == 0:
               classification = 'NO_EXHAUSTION_STATES; REASSESS PARENT MECHANISM'
-          elif funnel['exhaustion_market_entries'] == 0:
+          elif funnel['exhaustion_windowed_limit_entries'] == 0:
               classification = 'STATES_OCCURRED_BUT_NO_EXECUTABLE_REVERSAL_LEG'
           elif int(metrics.get('trades', 0) or 0) == 0:
-              classification = 'ENTRY_SUBMITTED_BUT_NO_REALIZED_TRADE; DIAGNOSE EXECUTION'
+              classification = 'ENTRY_SUBMITTED_BUT_NO_REALIZED_TRADE; DIAGNOSE_EXECUTION'
           elif float(metrics.get('total_return', 0.0) or 0.0) > 0.0:
-              classification = 'POSITIVE_DEVELOPMENT; FREEZE AND MOVE TO UNTOUCHED'
+              classification = 'POSITIVE_VALID_DEVELOPMENT_MECHANISM; MOVE_TO_UNTOUCHED_DATA'
           else:
-              classification = 'VALID_NEGATIVE_DEVELOPMENT; DIAGNOSE MECHANISM BEFORE HOLDOUT'
+              classification = 'VALID_NEGATIVE_DEVELOPMENT; DIAGNOSE_MECHANISM_BEFORE_HOLDOUT'
           decision = {
-              'schema': 'external-liquidity-exhaustion-development-v2',
+              'schema': 'external-liquidity-exhaustion-development-v3',
               'evaluation': ['2024-02-19', '2024-02-25'],
               'integrity_pass': integrity,
+              'execution_integrity_pass': execution_integrity,
+              'fill_integrity_pass': fill_integrity,
               'classification': classification,
               'spot_feature_ready_rows': int(ready.sum()),
               'future_spot_rows': future_spot,
+              'execution_clock': clock,
               'funnel': funnel,
-              'entry_fill_budget': {
-                  'worst_fill_breaches': int(diagnostics.get('entry_worst_fill_breaches', 0) or 0),
-                  'max_worse_than_budget_bps': float(diagnostics.get('max_entry_worst_fill_slippage_bps', 0.0) or 0.0),
-                  'last_actual_fill': diagnostics.get('last_entry_actual_fill'),
-                  'last_worst_fill_budget': diagnostics.get('last_entry_worst_fill_budget'),
-                  'last_fill_vs_budget_bps': diagnostics.get('last_entry_fill_vs_budget_bps'),
+              'entry_fill': {
+                  'entry_orders': int(len(entry_orders)),
+                  'fill_fractions': entry_fill_fractions,
+                  'minimum_fill_fraction': minimum_fill_fraction,
+                  'minimum_required_fill_fraction': minimum_required_fill,
+                  'maximum_order_lifetime_seconds': maximum_fill_seconds,
+                  'price_limit_breaches': price_limit_breaches,
+                  'worst_fill_budget_breaches': int(diagnostics.get('entry_worst_fill_breaches', 0) or 0),
               },
               'metrics': metrics,
           }
