@@ -35,10 +35,25 @@ jobs:
           from pathlib import Path
           path = Path("research/candidate-12/materialize_i18.py")
           text = path.read_text(encoding="utf-8")
-          old = "bar(ts(y, m, d, 6, 50), 107.2, 110.5, 107.1, 110.2)"
-          new = "bar(ts(y, m, d, 6, 50), 107.2, 109.0, 107.1, 108.8)"
-          assert text.count(old) == 1, text.count(old)
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          old_bar = "bar(ts(y, m, d, 6, 50), 107.2, 110.5, 107.1, 110.2)"
+          new_bar = "bar(ts(y, m, d, 6, 50), 107.2, 109.0, 107.1, 108.8)"
+          assert text.count(old_bar) == 1, text.count(old_bar)
+          text = text.replace(old_bar, new_bar, 1)
+          old_gate = '''        self.assertEqual(expired.entry_order, EntryOrder.LIMIT_GTD)
+        self.assertTrue(
+            engine.rearm_unfilled_plan(
+'''
+          new_gate = '''        self.assertEqual(expired.entry_order, EntryOrder.LIMIT_GTD)
+        # The first decision deliberately used a stricter synthetic gate to
+        # force the protected-limit branch.  Rearm is then evaluated with the
+        # production costed minimum, without changing production config.
+        object.__setattr__(engine.config, "min_net_r", 0.65)
+        self.assertTrue(
+            engine.rearm_unfilled_plan(
+'''
+          assert text.count(old_gate) == 1, text.count(old_gate)
+          text = text.replace(old_gate, new_gate, 1)
+          path.write_text(text, encoding="utf-8")
           PY
           python research/candidate-12/materialize_i18.py
           python -m compileall -q research/candidate-12
