@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import unittest
 
-from aggtrade_flow_response_auction_signals_v2 import (
+from aggtrade_flow_response_auction_signals_v3 import (
     ABSORPTION_FAMILY,
     IMPLEMENTATION_REVISION,
     INITIATIVE_FAMILY,
 )
 from flow_response_diagnostic_evaluation import evaluate_diagnostic_summary
+from flow_response_trade_path_diagnostics_v2 import DIAGNOSTIC_REVISION
 
 
 def _summary(*, mode: str = "initiative_only") -> dict:
@@ -17,6 +18,8 @@ def _summary(*, mode: str = "initiative_only") -> dict:
     removed = ABSORPTION_FAMILY if retained == INITIATIVE_FAMILY else INITIATIVE_FAMILY
     return {
         "implementation_revision": IMPLEMENTATION_REVISION,
+        "ten_second_cadence_contract": "EXACT_CONSECUTIVE_10_SECONDS",
+        "trade_path_diagnostic_revision": DIAGNOSTIC_REVISION,
         "flow_response_family_mode": mode,
         "diagnostic_family_ablation": True,
         "promotable": False,
@@ -26,6 +29,8 @@ def _summary(*, mode: str = "initiative_only") -> dict:
         "trade_path_diagnostic_summary": {
             "records": 3,
             "complete_records": 3,
+            "diagnostic_revision_counts": {DIAGNOSTIC_REVISION: 3},
+            "expected_diagnostic_revision": DIAGNOSTIC_REVISION,
         },
         "suite_gate_checks": {
             "all_signal_times_processed": True,
