@@ -1,0 +1,103 @@
+{
+  "candidate": "candidate-08-opening-type-state-router-btc-nautilus-v1",
+  "description": "DST-aware previous-value and thirty-minute initial-balance opening-type router with separate five-minute trigger",
+  "implementation_revision": "OPENING_TYPE_STATE_ROUTER_V1",
+  "random_seed": 4082026,
+  "starting_nav_usdt": 100000.0,
+  "risk_fraction": 0.03,
+  "effective_fee_rate_per_fill": 0.0006,
+  "minimum_net_reward_risk": 1.2,
+  "maximum_hold_minutes": 240,
+  "funding_avoidance_minutes": 5,
+  "assets": {
+    "BTCUSDT": {
+      "instrument_id": "BTCUSDT-PERP.BINANCE",
+      "base_currency": "BTC",
+      "price_precision": 1,
+      "size_precision": 3,
+      "tick_size": "0.1",
+      "size_increment": "0.001",
+      "min_quantity": "0.001"
+    }
+  },
+  "cost_assumptions": {
+    "maker_fee_rate": 0.0006,
+    "taker_fee_rate": 0.0006,
+    "one_tick_slippage_probability": 1.0,
+    "bar_market_entry_reserve_ticks": 2.0,
+    "latency_ms": {"base": 0, "insert": 0, "update": 0, "cancel": 0},
+    "rationale": "Every fill costs 6 bp. Bar-only market entry reserves one tick for synthetic executable-side crossing and one tick from OneTickSlippageFillModel. Stop execution reserves shifted prior-hour ten-second true-range Q99. Official funding, mark price and native liquidation remain enabled.",
+    "actual_funding_settlement": "checksum-verified Binance Vision monthly fundingRate archives with native mark-price settlement",
+    "stop_market_slippage_reserve": "shifted Q99 of completed ten-second true range over the preceding sixty minutes, minimum one tick"
+  },
+  "venue": {
+    "default_leverage": 125,
+    "bar_adaptive_high_low_ordering": true,
+    "liquidation_enabled": true,
+    "liquidation_trigger_ratio": 1.0,
+    "liquidation_cancel_open_orders": true,
+    "runtime_liquidation_switch_supported": true
+  },
+  "pattern_source_config": "config_range_fvg.json",
+  "opening_type_router_config": {
+    "initial_balance_minutes": 30,
+    "opportunity_minutes_after_balance": 180,
+    "displacement_lookback": 12,
+    "displacement_close_location": 0.6666666666666666,
+    "breakout_excursion_atr": 0.05,
+    "stop_buffer_atr": 0.05,
+    "minimum_stop_distance_atr": 0.1,
+    "continuation_target_ib_multiple": 1.0
+  },
+  "scenario_contract": {
+    "market_mechanism": "Major activity windows in a continuous market behave as recurring opening auctions. Previous UTC-day value locates accepted inventory; the complete session initial balance reveals whether outside value was accepted, tested and accepted, or rejected. A separate post-IB displacement starts the tradeable leg.",
+    "sessions": {
+      "ASIA": "00:00 UTC",
+      "LONDON": "08:00 Europe/London converted to UTC for each local date",
+      "NEW_YORK": "09:30 America/New_York converted to UTC for each local date"
+    },
+    "previous_value": "Exactly 288 contiguous completed five-minute bars from the prior UTC day; volume-weighted typical-price VWAP plus/minus one weighted sigma.",
+    "initial_balance": "Exactly six contiguous completed five-minute bars at the actual session open.",
+    "state_router": {
+      "OPEN_DRIVE": "Session opens outside previous value and the entire completed IB remains beyond that value edge.",
+      "OPEN_TEST_DRIVE": "Session opens outside previous value, tests it during the IB, but completed IB close and IB VWAP remain outside.",
+      "OPEN_REJECTION_REVERSE": "Session opens outside previous value but completed IB close and IB VWAP return inside the rejected edge.",
+      "UNRESOLVED": "Session opens inside value or completed IB location and value disagree; no trade."
+    },
+    "trigger": "A separate completed M5 displacement. Initiative states require a close beyond the IB edge; responsive rejection requires a close through IB midpoint toward previous value.",
+    "entry": "First contiguous completed ten-second execution observation after the M5 trigger. Ten-second data does not choose context, state, direction, stop or target.",
+    "initiative_stop": "Beyond the more adverse of the accepted IB edge and trigger-bar opposite extreme, plus 0.05 trigger ATR and at least 0.10 ATR from entry.",
+    "initiative_target": "Exactly one completed IB width beyond the accepted edge, frozen before trigger.",
+    "responsive_stop": "Beyond the rejected IB extreme plus 0.05 trigger ATR and at least 0.10 ATR from entry.",
+    "responsive_target": "The opposite edge of the completed previous-day value range, frozen before the session.",
+    "one_attempt": "At most one routed trade per session; unresolved, invalidated, consumed or uneconomic states are not retried.",
+    "ten_second_alpha_inputs": false,
+    "parameter_search": "none",
+    "development_data": "Prior candidate weeks are not used. Three new weeks were selected before running this candidate using seed 4082026 and exclusion of previously used weeks plus/minus twenty-one days."
+  },
+  "suites": {
+    "first": [
+      {"name": "screen-01", "start": "2025-08-18T00:00:00Z", "end": "2025-08-25T00:00:00Z"}
+    ],
+    "screen": [
+      {"name": "screen-01", "start": "2025-08-18T00:00:00Z", "end": "2025-08-25T00:00:00Z"},
+      {"name": "screen-02", "start": "2025-01-20T00:00:00Z", "end": "2025-01-27T00:00:00Z"},
+      {"name": "screen-03", "start": "2026-05-18T00:00:00Z", "end": "2026-05-25T00:00:00Z"}
+    ]
+  },
+  "first_window_gate": {
+    "minimum_closed_trades": 3,
+    "cost_after_total_return_positive": true,
+    "no_execution_failures": true,
+    "no_residual_exposure": true
+  },
+  "screen_gate": {
+    "minimum_closed_trades_per_week": 3,
+    "all_three_cost_after_positive": true,
+    "minimum_positive_trade_share": 0.45,
+    "maximum_single_positive_pnl_share": 0.5,
+    "combined_daily_geometric_growth": 0.01,
+    "no_execution_failures": true,
+    "no_residual_exposure": true
+  }
+}
