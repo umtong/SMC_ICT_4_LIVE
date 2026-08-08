@@ -1,0 +1,79 @@
+name: candidate-39-strict-failure-reacceptance-audit
+
+on:
+  push:
+    branches: [research/candidate-39]
+    paths:
+      - ".github/workflows/candidate-39-reacceptance-audit.yml"
+      - "research/candidate-39/audit_v3_reacceptance.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-39-reacceptance-audit-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  exposed-structural-path-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      PYTHONPATH: research/candidate-39:research/candidate-35:research/candidate-29:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/c39-v3-reacceptance-audit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .cache/c39-v2-development
+          key: candidate39-binance-2026-07-08_2026-07-14-v1
+      - name: Reproduce V3 event stream in NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          mkdir -p "$ROOT/replay"
+          python research/candidate-39/run_v3.py \
+            --config research/candidate-39/config.json \
+            --start 2026-07-08 \
+            --end 2026-07-14 \
+            --cache .cache/c39-v2-development \
+            --workspace .cache/c39-v3-reacceptance-work \
+            --output "$ROOT/replay" \
+            > "$ROOT/replay/console.log" 2>&1
+      - name: Audit only true failures which later reaccept attack direction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-39/audit_v3_reacceptance.py \
+            --events "$ROOT/replay/scenario_events.jsonl" \
+            --cache .cache/c39-v2-development \
+            --source-root "$ROOT/replay/source" \
+            --output "$ROOT/audit" \
+            2>&1 | tee "$ROOT/audit.log"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['ROOT']) / 'audit'
+          result = json.loads((root / 'summary.json').read_text())
+          assert result['claim_scope'] == 'EXPOSED_DEVELOPMENT_STRUCTURAL_PATH_AUDIT_NO_ACCOUNT_CLAIM'
+          assert result['strict_failed_attack_events'] >= 1
+          print('C39_REACCEPTANCE_AUDIT=' + json.dumps(result, sort_keys=True, allow_nan=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate39-strict-reacceptance-audit-${{ github.sha }}
+          path: artifacts/c39-v3-reacceptance-audit/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
