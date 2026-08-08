@@ -15,7 +15,7 @@ class ClockPhaseFeatureTests(unittest.TestCase):
         observed = minutes + pd.Timedelta(seconds=59, milliseconds=999)
         features = pd.DataFrame(
             {
-                "observed_time_ns": observed.astype("int64"),
+                "observed_time_ns": observed.to_numpy(dtype="datetime64[ns]").astype("int64"),
                 "feature_ready": True,
             },
         )
@@ -80,7 +80,10 @@ class ClockPhaseFeatureTests(unittest.TestCase):
         minutes = pd.date_range("2025-01-01 00:01", periods=40, freq="min", tz="UTC")
         observed = minutes + pd.Timedelta(seconds=59)
         features = pd.DataFrame(
-            {"observed_time_ns": observed.astype("int64"), "feature_ready": True},
+            {
+                "observed_time_ns": observed.to_numpy(dtype="datetime64[ns]").astype("int64"),
+                "feature_ready": True,
+            },
         )
         opening = pd.DataFrame(
             {
