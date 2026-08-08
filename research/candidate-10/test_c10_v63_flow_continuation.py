@@ -17,7 +17,7 @@ class FlowShockContinuationEngineTest(unittest.TestCase):
         engine.bars = [
             BarObs(60_000_000_000, 99.0, 100.0, 98.5, 99.5, 100.0, 55.0),
             BarObs(120_000_000_000, 99.5, 100.2, 99.0, 100.0, 100.0, 55.0),
-            BarObs(180_000_000_000, 100.0, 102.5, 101.0, 102.0, 150.0, 105.0),
+            BarObs(180_000_000_000, 101.2, 102.5, 101.0, 102.0, 150.0, 105.0),
         ]
         engine._index = 2
         return engine
