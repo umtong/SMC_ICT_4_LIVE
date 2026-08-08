@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Idempotently register CIRB discharge half-back placement.
 
-This is a narrow source migration. It does not change the CIRB parent event,
-branch, direction, stop, target, costs, risk, or signal timestamp. It only lets
-the existing execution layer represent a post-signal passive retest at the
-midpoint between the completed reversal close and the already-observed
-liquidation-wave extreme.
+This narrow source migration leaves the CIRB parent event, branch, direction,
+stop, target, costs, risk and signal timestamp unchanged.  It adds a passive
+retest at the midpoint between the completed reversal close and the already-
+observed liquidation-wave extreme.  In rescue-only mode, already-economic
+market entries remain market orders; half-back is used only when the exact
+existing cost model would otherwise reject the response-close entry.
 """
 
 from __future__ import annotations
@@ -25,19 +26,22 @@ def _resolve_cirb_discharge_half_back(
     *,
     base_details: Mapping[str, Any],
 ) -> EntryPlacement:
-    """Return a passive half-back placement for a frozen CIRB discharge reversal.
+    """Return a causal half-back placement for a frozen CIRB discharge reversal.
 
     ``liquidity_level`` is the completed deleveraging-wave extreme already
     attached by the parent OIDB/CIRB state machine. The signal close and this
-    boundary are both known before the order exists. Their midpoint is used as
-    a non-fitted mitigation price. The order expires with the same completed
-    five-minute inventory-response auction.
+    boundary are known before the order exists. Their midpoint is a non-fitted
+    mitigation price. The order expires with the same five-minute response
+    auction.  Optional rescue-only routing preserves a response-close market
+    entry whenever the exact predeclared fee/slippage model already clears the
+    minimum net reward/risk gate.
     """
 
     decision_ts_ns = int(snapshot.observation.ts_ns)
     close = float(snapshot.observation.close)
     direction = str(getattr(resolved_signal, "direction", "")).upper()
     target = float(getattr(resolved_signal, "target_price"))
+    stop = float(getattr(resolved_signal, "stop_price"))
     signal_reference = float(getattr(resolved_signal, "reference_entry", close))
     boundary = float(getattr(resolved_signal, "liquidity_level"))
     expected_entry = (signal_reference + boundary) / 2.0
@@ -60,6 +64,49 @@ def _resolve_cirb_discharge_half_back(
             details={**base_details, "direction": direction},
         )
 
+    fee = float(params.get("cirb_entry_effective_fee_rate", 0.0))
+    tick = float(params.get("cirb_entry_tick_size", 0.0))
+    one_tick_slippage = bool(
+        params.get("cirb_entry_one_tick_slippage_per_fill", False),
+    )
+    slippage_loss = 2.0 * tick if one_tick_slippage else 0.0
+    market_loss_per_unit = (
+        abs(close - stop) + close * fee + stop * fee + slippage_loss
+    )
+    market_reward_after_cost = (
+        abs(target - close) - close * fee - target * fee - slippage_loss
+    )
+    market_net_rr = (
+        market_reward_after_cost / market_loss_per_unit
+        if market_loss_per_unit > 0.0
+        else -1.0
+    )
+    minimum_net_rr = float(
+        params.get("minimum_net_rr_after_entry_delay", 0.60),
+    )
+    rescue_only = bool(
+        params.get("cirb_discharge_half_back_rescue_only", False),
+    )
+    rescue_details = {
+        **base_details,
+        "direction": direction,
+        "crowd_discharge_rescue_only": rescue_only,
+        "market_entry_before_rescue": close,
+        "market_net_rr_before_rescue": market_net_rr,
+        "minimum_net_rr_after_entry_delay": minimum_net_rr,
+        "entry_fee_rate_used_for_rescue": fee,
+        "entry_tick_size_used_for_rescue": tick,
+        "entry_one_tick_slippage_used_for_rescue": one_tick_slippage,
+    }
+    if rescue_only and market_net_rr >= minimum_net_rr:
+        return _market_placement(
+            close=close,
+            details={
+                **rescue_details,
+                "crowd_discharge_rescue_decision": "MARKET_GEOMETRY_ALREADY_ECONOMIC",
+            },
+        )
+
     period_minutes = int(params.get("cirb_entry_auction_period_minutes", 5))
     logical_boundary_ts_ns = _next_interval_boundary_ns(
         decision_ts_ns,
@@ -67,8 +114,12 @@ def _resolve_cirb_discharge_half_back(
     )
     expiry_ts_ns = logical_boundary_ts_ns + BAR_BOUNDARY_GTD_ENCODING_NS
     details = {
-        **base_details,
-        "direction": direction,
+        **rescue_details,
+        "crowd_discharge_rescue_decision": (
+            "HALF_BACK_REQUIRED_BY_COST_AFTER_GEOMETRY"
+            if rescue_only
+            else "HALF_BACK_PREDECLARED_FOR_ALL_DISCHARGE_REVERSALS"
+        ),
         "crowd_discharge_extreme": boundary,
         "crowd_discharge_signal_close": signal_reference,
         "crowd_discharge_half_back_price": expected_entry,
