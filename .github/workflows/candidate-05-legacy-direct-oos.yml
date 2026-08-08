@@ -1,0 +1,193 @@
+name: candidate-05-legacy-direct-oos
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-legacy-direct-oos.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-legacy-direct-oos
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  v47-relative-value:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 420
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v47-direct-oos
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Generate frozen v47 shim and shared-account command
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python research/candidate-05/prepare_legacy_strategy.py \
+            --pattern 'strategy_v47*.py' \
+            --active-dir research/candidate-05/v47_direct_active \
+            --private-name _candidate05_v47_direct_base
+          python research/candidate-05/prepare_shared_command.py \
+            --workflow .github/workflows/candidate-05-v47-relative-value.yml \
+            --runner research/candidate-05/shared_account_backtest_v2.py \
+            --output "$ROOT" \
+            --cache .cache/candidate-05-v47-direct-oos \
+            --build-start 2024-05-30 \
+            --build-end 2024-08-31 \
+            --evaluation-start 2024-06-01 \
+            --evaluation-end 2024-08-31 \
+            --destination /tmp/v47-direct.sh
+          cat /tmp/v47-direct.sh
+      - name: Run v47 in one untouched shared Nautilus account
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v47_direct_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          bash /tmp/v47-direct.sh 2>&1 | tee "$ROOT/workflow-console.log"
+      - name: Build direct v47 OOS decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          paths=sorted(root.rglob('metrics.json'))
+          metrics=json.loads(paths[0].read_text()) if paths else None
+          integrity=bool(metrics) and int(metrics.get('liquidations',0))==0 and int(metrics.get('order_rejections',0))==0 and int(metrics.get('order_denials',0))==0 and float(metrics.get('min_equity',0.0))>0.0
+          target=integrity and float(metrics.get('geometric_daily_growth',0.0))>=0.01 and int(metrics.get('trades',0))>=30 and float(metrics.get('total_return',0.0))>0.0
+          positive=integrity and float(metrics.get('total_return',0.0))>0.0 and int(metrics.get('trades',0))>=5
+          classification='PROJECT_TARGET_REACHED_V47_DIRECT_OOS' if target else 'V47_DIRECT_POSITIVE_OOS' if positive else 'V47_DIRECT_FAILED_OOS' if metrics else 'V47_DIRECT_NO_AUTHORITATIVE_METRICS'
+          result={'schema':'candidate-05-v47-direct-oos-v1','classification':classification,'period':{'evaluation_start':'2024-06-01','evaluation_end':'2024-08-31','selected_before_observation':True},'metrics':metrics,'integrity_pass':integrity,'target_reached':target}
+          (root/'oos_decision.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=True)+'\n')
+          Path('research/candidate-05/loop_results/v47_direct_oos.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=True)+'\n')
+          print(json.dumps(result,indent=2,sort_keys=True,allow_nan=True))
+          PY
+      - name: Commit v47 direct OOS evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          path=research/candidate-05/loop_results/v47_direct_oos.json
+          if ! test -s "$path" || git diff --quiet -- "$path"; then exit 0; fi
+          git config user.name candidate-05-loop-bot
+          git config user.email candidate-05-loop-bot@users.noreply.github.com
+          git add "$path"
+          git commit -m "candidate-05: record direct v47 OOS decision"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            git pull --rebase origin research/candidate-05
+            sleep $((attempt*2))
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v47-direct-oos-${{ github.sha }}
+          path: artifacts/candidate-05-v47-direct-oos/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  v48b-session-value:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: research/candidate-05/v48b_direct_active:research/candidate-05
+      ROOT: artifacts/candidate-05-v48b-direct-oos
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Generate frozen v48b launcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python research/candidate-05/prepare_legacy_strategy.py \
+            --pattern 'strategy_v48b*.py' \
+            --pattern 'strategy_v48*.py' \
+            --active-dir research/candidate-05/v48b_direct_active \
+            --private-name _candidate05_v48b_direct_base \
+            --candidate
+          python - <<'PY'
+          import strategy
+          print(strategy.LiquidityResponseStrategy)
+          PY
+      - name: Run v48b on untouched continuous BTC path
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-05/v48b_direct_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-05-30 \
+            --build-end 2024-08-31 \
+            --evaluation-start 2024-06-01 \
+            --evaluation-end 2024-08-31 \
+            --cache .cache/candidate-05-v48b-direct-oos \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/workflow-console.log"
+      - name: Build direct v48b OOS decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          path=root/'metrics.json'
+          metrics=json.loads(path.read_text()) if path.exists() else None
+          integrity=bool(metrics) and int(metrics.get('liquidations',0))==0 and int(metrics.get('order_rejections',0))==0 and int(metrics.get('order_denials',0))==0 and float(metrics.get('min_equity',0.0))>0.0
+          target=integrity and float(metrics.get('geometric_daily_growth',0.0))>=0.01 and int(metrics.get('trades',0))>=30 and float(metrics.get('total_return',0.0))>0.0
+          positive=integrity and float(metrics.get('total_return',0.0))>0.0 and int(metrics.get('trades',0))>=5
+          classification='PROJECT_TARGET_REACHED_V48B_DIRECT_OOS' if target else 'V48B_DIRECT_POSITIVE_OOS' if positive else 'V48B_DIRECT_FAILED_OOS' if metrics else 'V48B_DIRECT_NO_AUTHORITATIVE_METRICS'
+          result={'schema':'candidate-05-v48b-direct-oos-v1','classification':classification,'period':{'evaluation_start':'2024-06-01','evaluation_end':'2024-08-31','selected_before_observation':True},'metrics':metrics,'integrity_pass':integrity,'target_reached':target}
+          (root/'oos_decision.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=True)+'\n')
+          Path('research/candidate-05/loop_results/v48b_direct_oos.json').write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=True)+'\n')
+          print(json.dumps(result,indent=2,sort_keys=True,allow_nan=True))
+          PY
+      - name: Commit v48b direct OOS evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          path=research/candidate-05/loop_results/v48b_direct_oos.json
+          if ! test -s "$path" || git diff --quiet -- "$path"; then exit 0; fi
+          git config user.name candidate-05-loop-bot
+          git config user.email candidate-05-loop-bot@users.noreply.github.com
+          git add "$path"
+          git commit -m "candidate-05: record direct v48b OOS decision"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            git pull --rebase origin research/candidate-05
+            sleep $((attempt*2))
+          done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v48b-direct-oos-${{ github.sha }}
+          path: artifacts/candidate-05-v48b-direct-oos/**
+          if-no-files-found: warn
+          retention-days: 90
