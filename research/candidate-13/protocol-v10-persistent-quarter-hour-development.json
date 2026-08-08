@@ -1,0 +1,101 @@
+{
+  "schema": "candidate-13-v10-persistent-quarter-hour-development-v1",
+  "candidate": "candidate-13-v10-persistent-quarter-hour-initiative",
+  "created_utc": "2026-08-08",
+  "validation_mode": "exposed_development",
+  "research_question": "Can repeated cross-market quarter-hour order-flow agreement identify a persistent information-driven initiative whose later independent five-minute auction legs are tradable after realistic costs?",
+  "evidence_basis": {
+    "external": [
+      "Kim and Hansen (2026), The Quarter-Hour Effect, arXiv:2607.09426: quarter-hour order imbalance forecasts returns over four to twelve hours, while finer clock frequencies are weaker.",
+      "Huth and Abergel (2011), High Frequency Lead/Lag Relationships: naive market-order exploitation is eliminated by the bid/ask spread.",
+      "Jia et al. (2023), A Seesaw Effect in the Cryptocurrency Market: large-coin lead-lag can be negative rather than equity-like positive continuation."
+    ],
+    "internal": [
+      "V9 generated 143 trades over 42 exposed days, so occurrence frequency was not the bottleneck.",
+      "After excluding only six exact unprotected child-stop-rejection episodes, the QH route had 126 trades, 42 wins, 84 losses, 33.33% win rate and negative realized PnL.",
+      "V9 trades ending within five minutes had 23.33% win rate and -80,824.14 USDT realized PnL, while the 16-60 minute group was the only positive duration band."
+    ]
+  },
+  "hypothesis": {
+    "pattern_detector": "At each UTC quarter-hour, observe the first completed five-minute interval. A common-flow event exists only when at least three of BTC, ETH, SOL and XRP have the same directional body, inherited displacement magnitude and same-signed taker flow.",
+    "state_transition": "The first common-flow event is only a candidate. A later distinct quarter-hour event in the same direction, before any opposite common-flow event, confirms persistence and activates a market initiative. An opposite event resets the candidate and terminates any active opposite initiative.",
+    "initiative_horizon": "Four hours from the confirming event, matching the shortest externally reported predictive horizon. A same-direction fresh event may refresh the observable state; expiry is never extended beyond four hours from the newest confirmation.",
+    "invalidation": "At a completed five-minute boundary, a majority of the latest accepted markets closing back through their confirming impulse origins terminates the initiative. Clock expiry or an opposite common-flow event also terminates it.",
+    "trading_scenario": "The periodic event itself is not traded. After initiative activation, each market must independently complete a fresh five-minute market-structure break, directional displacement, strict three-candle FVG and passive first consequent-encroachment retracement.",
+    "entry": "Post-only limit at the fresh FVG consequent encroachment. The information owner is not privileged or excluded once it forms its own independent post-activation auction leg.",
+    "stop": "Beyond the last opposing five-minute candle or protected swing plus the inherited ATR buffer. Entry, invalidation and target belong to the same post-activation leg.",
+    "target": "Next causally confirmed live external 4H or previous-day liquidity pool in the initiative direction.",
+    "execution_safety": "If a contingent protective order is denied or rejected after a parent fill, cancel remaining orders and flatten the residual position immediately. The event remains an implementation/evidence failure and cannot pass the safety gate.",
+    "independence": "One plan per distinct post-activation five-minute displacement identity. All core and V10 plans compete through the unchanged one-slot GlobalCandidateMutex."
+  },
+  "selection": {
+    "seed": 2026080810,
+    "method": "The same six already-exposed V9 diagnostic weeks are reused only to redesign and reject the mechanism. They can never support a success claim.",
+    "warmup_days": 3,
+    "evaluation_days": 7,
+    "holdouts": {
+      "E01": {
+        "start": "2021-07-12",
+        "end_exclusive": "2021-07-19",
+        "role": "exposed-adverse-development"
+      },
+      "E02": {
+        "start": "2022-05-09",
+        "end_exclusive": "2022-05-16",
+        "role": "exposed-strong-development"
+      },
+      "E03": {
+        "start": "2022-07-25",
+        "end_exclusive": "2022-08-01",
+        "role": "exposed-frequency-development"
+      },
+      "E04": {
+        "start": "2023-06-20",
+        "end_exclusive": "2023-06-27",
+        "role": "exposed-mid-regime-development"
+      },
+      "E05": {
+        "start": "2024-07-15",
+        "end_exclusive": "2024-07-22",
+        "role": "exposed-frequency-development"
+      },
+      "E06": {
+        "start": "2025-08-11",
+        "end_exclusive": "2025-08-18",
+        "role": "exposed-recent-development"
+      }
+    }
+  },
+  "development_gate": {
+    "minimum_closed_trades": 15,
+    "minimum_active_intervals": 5,
+    "minimum_daily_geometric_growth": 0.0,
+    "minimum_win_rate": 0.55,
+    "minimum_payoff_ratio": 1.2,
+    "maximum_trade_path_drawdown": 0.2,
+    "maximum_positive_log_growth_share_from_one_interval": 0.6,
+    "require_all_safety_audits": true
+  },
+  "execution_lock": {
+    "engine": "NautilusTrader 1.230.0",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ],
+    "starting_nav": "100000",
+    "risk_fraction": 0.03,
+    "global_pending_entry_plus_position_limit": 1,
+    "effective_maker_rate": "0.0004",
+    "effective_taker_rate": "0.0008",
+    "parent_order": "POST_ONLY_LIMIT_GTD",
+    "take_profit_order": "POST_ONLY_LIMIT_GTC",
+    "stop_order": "STOP_MARKET_GTC"
+  },
+  "claim_rules": [
+    "E01-E06 are exposed development periods and cannot support a success claim.",
+    "V10 changes the market-state transition and economic horizon; it does not select a V9 outcome subset or loosen a threshold.",
+    "Passing only advances the unchanged mechanism to a broader exposed screen, then a source freeze and untouched continuous validation."
+  ]
+}
