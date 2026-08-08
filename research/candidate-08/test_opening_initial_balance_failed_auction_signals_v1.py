@@ -49,8 +49,8 @@ def _bar(
         efficiency_60m=0.0,
         direction_60m=0,
         session_key=str(start.floor("4h")),
-        day_key=str(start.floor("1d")),
-        week_key=str((start - pd.Timedelta(days=start.weekday())).floor("1d")),
+        day_key=str(start.floor("1D")),
+        week_key=str((start - pd.Timedelta(days=start.weekday())).floor("1D")),
     )
 
 
@@ -73,18 +73,25 @@ def _synthetic_bars() -> tuple[FiveMinuteBar, ...]:
             )
         )
 
-    # Complete Asia 00:00-00:30 UTC initial balance: high 101, low 94.
-    for position in range(12, 18):
-        start = starts[position]
-        high = 101.0 if position == 13 else 100.0
-        low = 94.0 if position == 14 else 95.0
+    # Complete Asia 00:00-00:30 UTC initial balance: high 101, low 94. Individual bars remain
+    # narrow so the shifted displacement baseline is not accidentally inflated by the test fixture.
+    ib_values = {
+        12: (97.0, 97.3, 96.9, 97.1),
+        13: (100.2, 101.0, 100.0, 100.4),
+        14: (94.8, 95.0, 94.0, 94.6),
+        15: (97.0, 97.3, 96.9, 97.1),
+        16: (97.1, 97.4, 97.0, 97.2),
+        17: (97.2, 97.5, 97.1, 97.3),
+    }
+    for position, values in ib_values.items():
+        open_, high, low, close = values
         bars[position] = _bar(
             position,
-            start,
-            open_=97.0,
+            starts[position],
+            open_=open_,
             high=high,
             low=low,
-            close=97.2,
+            close=close,
         )
 
     # 00:30 upper-edge sweep and close back inside.
