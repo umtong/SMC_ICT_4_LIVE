@@ -1,0 +1,234 @@
+name: candidate-05-week-long-root-cause-finalizer
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-week-long-root-cause-finalizer.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-week-long-root-cause-finalizer
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for independent authoritative results
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            git fetch origin research/candidate-05
+            git reset --hard origin/research/candidate-05
+            if test -s research/candidate-05/WEEK_TO_LONG_FAILURE_RESULT.json \
+              && test -s research/candidate-05/V46_STATEFUL_91D_RESULT.json; then
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "authoritative audit results were not both available within 30 minutes" >&2
+          exit 1
+
+      - name: Build one canonical root-cause decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          root = Path("research/candidate-05")
+          restart = json.loads((root / "WEEK_TO_LONG_FAILURE_RESULT.json").read_text())
+          stateful = json.loads((root / "V46_STATEFUL_91D_RESULT.json").read_text())
+
+          restart_class = restart.get("classification")
+          stateful_class = stateful.get("classification")
+          continuous = restart.get("continuous", {})
+          blocks = restart.get("independently_restarted_blocks", {})
+          rolling = restart.get("continuous_rolling_seven_day_distribution", {})
+          density = stateful.get("opportunity_density_feasibility", {})
+          stateful_metrics = stateful.get("metrics", {})
+
+          causes = []
+          if restart_class == "STATEFUL_RESTART_OR_BOUNDARY_PATH_BIAS_CONFIRMED":
+              causes.append({
+                  "cause": "RESTART_AND_BOUNDARY_PATH_BIAS",
+                  "status": "CONFIRMED",
+                  "evidence": {
+                      "continuous_total_return": continuous.get("total_return"),
+                      "restarted_compound_total_return": blocks.get("compound_total_return"),
+                      "delta": blocks.get("delta_vs_continuous"),
+                  },
+              })
+          elif restart_class == "SHORT_SAMPLE_SELECTION_AND_REGIME_MIXTURE_CONFIRMED":
+              causes.append({
+                  "cause": "SHORT_SAMPLE_SELECTION_AND_REGIME_MIXTURE",
+                  "status": "CONFIRMED",
+                  "evidence": {
+                      "rolling_positive_share": rolling.get("positive_share"),
+                      "rolling_minimum": rolling.get("minimum"),
+                      "rolling_median": rolling.get("median"),
+                      "rolling_maximum": rolling.get("maximum"),
+                  },
+              })
+          elif restart_class == "CONTINUOUS_NEGATIVE_EXPECTANCY_CONFIRMED":
+              causes.append({
+                  "cause": "NEGATIVE_CONTINUOUS_EXPECTANCY",
+                  "status": "CONFIRMED",
+                  "evidence": continuous,
+              })
+
+          if stateful_class == "V46_STATEFUL_91D_POSITIVE_BUT_STRUCTURALLY_INSUFFICIENT_DENSITY":
+              causes.append({
+                  "cause": "STRUCTURALLY_INSUFFICIENT_OPPORTUNITY_DENSITY",
+                  "status": "CONFIRMED",
+                  "evidence": density,
+              })
+          elif stateful_class == "V46_STATEFUL_91D_NEGATIVE_CONTINUOUS_EXPECTANCY":
+              causes.append({
+                  "cause": "LONG_HORIZON_LOGIC_OR_REGIME_FAILURE",
+                  "status": "CONFIRMED",
+                  "evidence": {
+                      "total_return": stateful_metrics.get("total_return"),
+                      "geometric_daily_growth": stateful_metrics.get("geometric_daily_growth"),
+                      "trades": stateful_metrics.get("trades"),
+                      "wins": stateful_metrics.get("wins"),
+                      "profit_factor": stateful_metrics.get("profit_factor"),
+                      "max_drawdown": stateful_metrics.get("max_drawdown"),
+                  },
+              })
+          elif stateful_class == "V46_STATEFUL_91D_POSITIVE_BELOW_PROJECT_GROWTH":
+              causes.append({
+                  "cause": "POSITIVE_ALPHA_BELOW_REQUIRED_CONTINUOUS_GROWTH",
+                  "status": "CONFIRMED",
+                  "evidence": {
+                      "metrics": stateful_metrics,
+                      "density": density,
+                  },
+              })
+          elif stateful_class == "V46_STATEFUL_91D_PROJECT_GROWTH_REACHED":
+              causes.append({
+                  "cause": "WEEK_TO_LONG_FAILURE_NOT_PRESENT_IN_V46_91D",
+                  "status": "OBSERVED",
+                  "evidence": stateful_metrics,
+              })
+
+          implementation_cause = {
+              "cause": "SINGLE_VS_SHARED_FEATURE_SCHEMA_DRIFT",
+              "status": "REPAIRED_AND_CONTRACT_LOCKED",
+              "evidence": {
+                  "missing_before_repair": [
+                      "premium_index",
+                      "premium_change_1m",
+                      "premium_change_5m",
+                      "premium_change_15m",
+                      "premium_age_seconds",
+                      "basis_ready",
+                  ],
+                  "effect": "Missing premium change conservatively deferred the positioning-reset early entry path.",
+              },
+          }
+
+          project_goal = (
+              stateful_class == "V46_STATEFUL_91D_PROJECT_GROWTH_REACHED"
+              and bool(stateful_metrics.get("integrity_pass", True))
+          )
+          result = {
+              "schema": "candidate-05-week-long-root-cause-v1",
+              "classification": (
+                  "V46_91D_BTC_PROJECT_GROWTH_REACHED_REQUIRES_SHARED_VALIDATION"
+                  if project_goal
+                  else "WEEK_TO_LONG_FAILURE_ROOT_CAUSES_CONFIRMED"
+              ),
+              "project_goal_reached": False,
+              "reason_project_goal_not_declared": (
+                  "BTC 91-day evidence alone is not the final four-symbol shared-account requirement."
+                  if project_goal
+                  else "The uninterrupted 91-day candidate did not establish the final shared-account growth requirement."
+              ),
+              "implementation_cause": implementation_cause,
+              "measured_causes": causes,
+              "restart_audit_classification": restart_class,
+              "stateful_91d_classification": stateful_class,
+              "research_protocol": {
+                  "positive_week_is_validation": False,
+                  "negative_week_may_falsify": True,
+                  "viewed_week_is_development_data": True,
+                  "positive_evidence_requires_continuous_stateful_replay": True,
+                  "new_branch_requires_incremental_position_attribution": True,
+                  "final_requirement": "one BTC/ETH/SOL/XRP NautilusTrader account with cost-after GDG >= 1%",
+              },
+          }
+          json_path = root / "WEEK_TO_LONG_ROOT_CAUSE.json"
+          json_path.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n")
+
+          lines = [
+              "# Candidate 05 — canonical week-to-long root cause",
+              "",
+              f"**Classification: `{result['classification']}`**",
+              "",
+              f"- Restart audit: `{restart_class}`",
+              f"- Uninterrupted 91-day audit: `{stateful_class}`",
+              f"- Final project goal declared: `{result['project_goal_reached']}`",
+              "",
+              "## Repaired implementation cause",
+              "",
+              "The old shared-account route omitted the premium-index/basis feature",
+              "wrapper which the single BTC route installed before importing the",
+              "backtest loader. That schema drift changed positioning-reset entry",
+              "permission. The route now has import-time parity and a contract test.",
+              "",
+              "## Measured causes",
+              "",
+          ]
+          if causes:
+              for item in causes:
+                  lines.append(f"- **{item['cause']}** — {item['status']}")
+          else:
+              lines.append("- No supported market/statistical cause was produced; inspect the two source audits.")
+          lines.extend([
+              "",
+              "## Binding research decision",
+              "",
+              "A positive standalone week is a falsification survivor, not validation.",
+              "Every viewed period is development data. Positive evidence must come",
+              "from a frozen candidate in uninterrupted replay, with incremental branch",
+              "positions and then the one-account four-symbol evaluation.",
+              "",
+          ])
+          (root / "WEEK_TO_LONG_ROOT_CAUSE.md").write_text("\n".join(lines))
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+          PY
+
+      - name: Commit canonical result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/WEEK_TO_LONG_ROOT_CAUSE.json research/candidate-05/WEEK_TO_LONG_ROOT_CAUSE.md
+          git commit -m "candidate-05: record canonical week-to-long root cause [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-week-long-root-cause-${{ github.sha }}
+          path: |
+            research/candidate-05/WEEK_TO_LONG_ROOT_CAUSE.json
+            research/candidate-05/WEEK_TO_LONG_ROOT_CAUSE.md
+          if-no-files-found: warn
+          retention-days: 90
