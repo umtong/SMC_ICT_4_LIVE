@@ -2,7 +2,6 @@
 """V50 wrapper around the frozen gated single-symbol experiment harness."""
 from __future__ import annotations
 
-from datetime import date
 import importlib.util
 import json
 import math
@@ -19,6 +18,7 @@ if _spec is None or _spec.loader is None:
 _base = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = _base
 _spec.loader.exec_module(_base)
+_BASE_COMPACT = _base.compact
 
 DEVELOPMENT = {
     "build_start": "2024-09-24", "build_end": "2024-10-31",
@@ -70,7 +70,7 @@ def configured(
 
 
 def compact(metrics: dict[str, Any]) -> dict[str, Any]:
-    value = _base.compact(metrics)
+    value = _BASE_COMPACT(metrics)
     diagnostics = metrics.get("strategy_diagnostics", {})
     value["diagnostics"] = {
         key: item for key, item in diagnostics.items()
