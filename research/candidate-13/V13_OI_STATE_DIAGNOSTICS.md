@@ -23,7 +23,7 @@ Official Binance USD-M five-minute metrics are checksum verified and become obse
 
 - retained: 14 trades, 14 wins, 0 losses
 - retained net PnL: 86771.49 USDT
-- rejected: 9 trades, net 37882.60 USDT
+- rejected: 10 trades, net 34514.04 USDT
 
 No threshold was fitted to Candidate 13 outcomes. The 0.10% threshold is reused unchanged from Candidate 05's positioning-reset predicate.
 
