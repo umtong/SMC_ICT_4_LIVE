@@ -213,7 +213,9 @@ def load_range(
         )
         spot_kline_frames.append(_features.read_kline(kline_path))
         spot_agg_frames.append(_features.aggregate_agg_trades(agg_path))
-        manifest_files.extend([kline_path, kline_checksum, agg_path, agg_checksum])
+        # Do not expose spot aggTrades through the inherited raw_files list:
+        # Candidate 20/21 use that list to build the perpetual execution clock.
+        # Spot provenance is retained in raw_evidence.json instead.
         evidence.extend([kline_evidence, agg_evidence])
         day += timedelta(days=1)
 
