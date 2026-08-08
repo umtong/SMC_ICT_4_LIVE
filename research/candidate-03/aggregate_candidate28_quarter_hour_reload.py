@@ -152,7 +152,7 @@ def main() -> int:
     )
     stage_counts = {name: int(events.get(name, 0)) for name in stage_names}
     conversions: dict[str, float | None] = {}
-    for previous, current in zip(stage_names, stage_names[1:], strict=True):
+    for previous, current in zip(stage_names[:-1], stage_names[1:], strict=True):
         denominator = stage_counts[previous]
         conversions[f"{previous}_TO_{current}"] = (
             stage_counts[current] / denominator if denominator else None
