@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Prior-only common-factor beta and lead/lag diagnostics for V8 plans.
+
+Diagnostic only. All regressors use completed five-minute returns strictly before
+V8's first evidence event. Execution and plan selection are not modified.
+"""
+from __future__ import annotations
+
+import argparse
+from io import BytesIO
+import json
+from math import isfinite, log, sqrt
+from pathlib import Path
+import re
+from statistics import median
+from zipfile import ZipFile
+
+import numpy as np
+import pandas as pd
+
+SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+COLUMNS = (
+    "open_time", "open", "high", "low", "close", "volume", "close_time",
+    "quote_volume", "trades", "taker_buy_volume", "taker_buy_quote_volume", "ignore",
+)
+FIVE_MINUTES_NS = 5 * 60_000_000_000
+HORIZONS = (24, 48, 96, 192)
+
+
+def read_object(path: Path) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError(f"{path} must contain an object")
+    return payload
+
+
+def load_symbol(root: Path, symbol: str) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for path in sorted((root / "data" / symbol).glob("*.zip")):
+        with ZipFile(path) as archive:
+            names = [name for name in archive.namelist() if not name.endswith("/")]
+            if len(names) != 1:
+                raise ValueError(f"{path} must contain one CSV")
+            raw = archive.read(names[0])
+        frame = pd.read_csv(BytesIO(raw))
+        if not set(COLUMNS).issubset(frame.columns):
+            frame = pd.read_csv(BytesIO(raw), header=None, names=COLUMNS)
+        else:
+            frame = frame.loc[:, COLUMNS]
+        numeric = pd.to_numeric(frame.open_time, errors="coerce")
+        frame = frame.loc[numeric.notna()].copy()
+        frame.open_time = numeric[numeric.notna()].astype("int64")
+        frames.append(frame)
+    if not frames:
+        raise FileNotFoundError(f"no archives for {symbol}")
+    raw = pd.concat(frames, ignore_index=True).drop_duplicates("open_time").sort_values("open_time")
+    unit = "ms" if int(raw.open_time.iloc[0]) < 10**15 else "us"
+    index = pd.to_datetime(raw.open_time, unit=unit, utc=True) + pd.Timedelta(minutes=1)
+    result = pd.DataFrame(index=index)
+    for name in ("open", "high", "low", "close", "volume", "taker_buy_volume"):
+        result[name] = pd.to_numeric(raw[name], errors="raise").to_numpy()
+    return result[~result.index.duplicated(keep="last")].sort_index()
+
+
+def five_minute_closes(one_minute: pd.DataFrame) -> pd.Series:
+    # One-minute indexes are completed-bar close timestamps. The router forms
+    # windows (00,05], (05,10], ...; right-closed resampling matches that clock.
+    closes = one_minute["close"].resample("5min", closed="right", label="right", origin="epoch").last()
+    counts = one_minute["close"].resample("5min", closed="right", label="right", origin="epoch").count()
+    return closes[counts == 5].dropna()
+
+
+def safe_corr(x: np.ndarray, y: np.ndarray) -> float | None:
+    if len(x) < 8 or np.std(x, ddof=1) <= 0.0 or np.std(y, ddof=1) <= 0.0:
+        return None
+    value = float(np.corrcoef(x, y)[0, 1])
+    return value if isfinite(value) else None
+
+
+def regression(x: np.ndarray, y: np.ndarray) -> dict[str, float | None]:
+    if len(x) < 8:
+        return {"n": len(x), "beta": None, "beta_zero_intercept": None, "intercept": None, "corr": None, "idio_std": None, "r2": None}
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    valid = np.isfinite(x) & np.isfinite(y)
+    x, y = x[valid], y[valid]
+    if len(x) < 8 or np.var(x, ddof=1) <= 0.0:
+        return {"n": len(x), "beta": None, "beta_zero_intercept": None, "intercept": None, "corr": None, "idio_std": None, "r2": None}
+    beta = float(np.cov(x, y, ddof=1)[0, 1] / np.var(x, ddof=1))
+    intercept = float(np.mean(y) - beta * np.mean(x))
+    denom = float(np.dot(x, x))
+    beta0 = float(np.dot(x, y) / denom) if denom > 0.0 else None
+    residuals = y - (intercept + beta * x)
+    idio = float(np.std(residuals, ddof=2)) if len(residuals) > 2 else None
+    corr = safe_corr(x, y)
+    r2 = None if corr is None else corr * corr
+    return {
+        "n": len(x), "beta": beta, "beta_zero_intercept": beta0,
+        "intercept": intercept, "corr": corr, "idio_std": idio, "r2": r2,
+    }
+
+
+def lag_diagnostics(factor: pd.Series, residual: pd.Series, horizon: int) -> dict[str, float | None]:
+    joined = pd.concat({"x": factor, "y": residual}, axis=1).dropna().iloc[-horizon:]
+    result: dict[str, float | None] = {}
+    for lag in range(4):
+        pair = pd.concat({"x": joined.x.shift(lag), "y": joined.y}, axis=1).dropna()
+        result[f"sender_lead_{lag}_corr"] = safe_corr(pair.x.to_numpy(), pair.y.to_numpy())
+        fit = regression(pair.x.to_numpy(), pair.y.to_numpy())
+        result[f"sender_lead_{lag}_beta"] = fit["beta_zero_intercept"]
+    reverse = pd.concat({"x": joined.y.shift(1), "y": joined.x}, axis=1).dropna()
+    result["receiver_lead_1_corr"] = safe_corr(reverse.x.to_numpy(), reverse.y.to_numpy())
+    lead1 = result.get("sender_lead_1_corr")
+    reverse1 = result.get("receiver_lead_1_corr")
+    result["lead_edge"] = None if lead1 is None or reverse1 is None else float(lead1 - reverse1)
+    return result
+
+
+def close_at(frame: pd.DataFrame, ts_ns: int) -> float | None:
+    stamp = pd.Timestamp(ts_ns, unit="ns", tz="UTC")
+    if stamp in frame.index:
+        return float(frame.at[stamp, "close"])
+    earlier = frame.loc[frame.index <= stamp, "close"]
+    return float(earlier.iloc[-1]) if len(earlier) else None
+
+
+def money(value: object) -> float | None:
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value).replace(",", ""))
+    return float(match.group()) if match else None
+
+
+def first_limit_fill(events: list[dict], scenario_id: str) -> dict | None:
+    start = next((i for i, event in enumerate(events) if event.get("type") == "GLOBAL_ENTRY_SUBMITTED" and event.get("scenario_id") == scenario_id), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(events)) if events[i].get("type") == "GLOBAL_ENTRY_SUBMITTED"), len(events))
+    return next((event for event in events[start:end] if event.get("type") == "ORDER_FILLED" and "order_type=LIMIT" in str(event.get("event", ""))), None)
+
+
+def run(root: Path) -> dict:
+    one = {symbol: load_symbol(root, symbol) for symbol in SYMBOLS}
+    close5 = {symbol: five_minute_closes(one[symbol]) for symbol in SYMBOLS}
+    returns = pd.DataFrame({symbol: np.log(series / series.shift(1)) for symbol, series in close5.items()}).dropna(how="all")
+    plans = read_object(root / "submitted_plans.json").get("plans", [])
+    lifecycle = read_object(root / "order_lifecycle.json").get("events", [])
+    try:
+        positions = pd.read_csv(root / "positions.csv")
+    except pd.errors.EmptyDataError:
+        positions = pd.DataFrame()
+    position_map = {str(row["opening_order_id"]): row for row in positions.to_dict("records")} if len(positions) else {}
+    pending = read_object(root / "pending_path_diagnostics.json") if (root / "pending_path_diagnostics.json").is_file() else {"records": []}
+    pending_map = {str(record["scenario_id"]): record for record in pending.get("records", [])}
+
+    records: list[dict] = []
+    for plan in plans:
+        details = plan.get("details", {})
+        transfer = details.get("candidate15_v8_transfer", {})
+        accepted = tuple(str(symbol) for symbol in transfer.get("accepted_symbols", ()))
+        residual_symbol = str(transfer.get("residual_symbol", plan.get("symbol", "")))
+        event_ids = tuple(str(item) for item in transfer.get("evidence_event_ids", ()))
+        if len(accepted) != 3 or residual_symbol not in SYMBOLS or len(event_ids) != 2:
+            continue
+        first_ts = int(event_ids[0].split("-")[1])
+        second_ts = int(transfer["effective_ts_ns"])
+        observed_ts = int(plan["observed_ts_ns"])
+        sign = 1.0 if plan["direction"] == "LONG" else -1.0
+        history = returns.loc[returns.index < pd.Timestamp(first_ts, unit="ns", tz="UTC"), list((*accepted, residual_symbol))].dropna()
+        factor = history.loc[:, list(accepted)].median(axis=1)
+        residual_returns = history[residual_symbol]
+
+        first_prices = {symbol: close_at(one[symbol], first_ts) for symbol in (*accepted, residual_symbol)}
+        second_prices = {symbol: close_at(one[symbol], second_ts) for symbol in (*accepted, residual_symbol)}
+        plan_prices = {symbol: close_at(one[symbol], observed_ts) for symbol in (*accepted, residual_symbol)}
+        if any(value is None or value <= 0.0 for value in (*first_prices.values(), *second_prices.values(), *plan_prices.values())):
+            continue
+        sender_state_progress = median(sign * log(float(second_prices[symbol]) / float(first_prices[symbol])) for symbol in accepted)
+        sender_plan_progress = median(sign * log(float(plan_prices[symbol]) / float(first_prices[symbol])) for symbol in accepted)
+        residual_state_progress = sign * log(float(second_prices[residual_symbol]) / float(first_prices[residual_symbol]))
+        residual_plan_progress = sign * log(float(plan_prices[residual_symbol]) / float(first_prices[residual_symbol]))
+        span_bars = max(1.0, (second_ts - first_ts) / FIVE_MINUTES_NS)
+
+        horizon_results: dict[str, dict] = {}
+        for horizon in HORIZONS:
+            joined = pd.concat({"x": factor, "y": residual_returns}, axis=1).dropna().iloc[-horizon:]
+            fit = regression(joined.x.to_numpy(), joined.y.to_numpy())
+            beta = fit["beta_zero_intercept"]
+            expected_state = None if beta is None else float(beta * sender_state_progress)
+            expected_plan = None if beta is None else float(beta * sender_plan_progress)
+            idio = fit["idio_std"]
+            state_z = None
+            plan_z = None
+            if expected_state is not None and idio is not None and idio > 0.0:
+                state_z = float((residual_state_progress - expected_state) / (idio * sqrt(span_bars)))
+                plan_span = max(1.0, (observed_ts - first_ts) / FIVE_MINUTES_NS)
+                plan_z = float((residual_plan_progress - expected_plan) / (idio * sqrt(plan_span)))
+            horizon_results[str(horizon)] = {
+                **fit,
+                "expected_state_directional_progress": expected_state,
+                "expected_plan_directional_progress": expected_plan,
+                "state_delivery_gap": None if expected_state is None else float(expected_state - residual_state_progress),
+                "plan_delivery_gap": None if expected_plan is None else float(expected_plan - residual_plan_progress),
+                "state_residual_z": state_z,
+                "plan_residual_z": plan_z,
+                **lag_diagnostics(factor, residual_returns, horizon),
+            }
+
+        betas = [horizon_results[str(horizon)]["beta_zero_intercept"] for horizon in HORIZONS]
+        finite_betas = [float(value) for value in betas if value is not None and isfinite(float(value))]
+        positive_consensus = len(finite_betas) == len(HORIZONS) and all(value > 0.0 for value in finite_betas)
+        beta_spread = None if not finite_betas else max(finite_betas) - min(finite_betas)
+        fill = first_limit_fill(lifecycle, str(plan["scenario_id"]))
+        position = position_map.get(str(fill["client_order_id"])) if fill is not None else None
+        pnl = money(position.get("realized_pnl")) if position is not None else None
+        records.append({
+            "scenario_id": plan["scenario_id"],
+            "symbol": plan["symbol"],
+            "direction": plan["direction"],
+            "stage": transfer.get("stage"),
+            "accepted_symbols": list(accepted),
+            "first_evidence_ts_ns": first_ts,
+            "effective_ts_ns": second_ts,
+            "observed_ts_ns": observed_ts,
+            "confirmation_span_minutes": (second_ts - first_ts) / 60_000_000_000,
+            "state_to_plan_minutes": (observed_ts - second_ts) / 60_000_000_000,
+            "sender_state_directional_progress": sender_state_progress,
+            "sender_plan_directional_progress": sender_plan_progress,
+            "residual_state_directional_progress": residual_state_progress,
+            "residual_plan_directional_progress": residual_plan_progress,
+            "v8_equal_weight_parity_price": transfer.get("parity_price"),
+            "positive_beta_consensus": positive_consensus,
+            "beta_spread": beta_spread,
+            "horizons": horizon_results,
+            "filled": fill is not None,
+            "realized_pnl": pnl,
+            "win": None if pnl is None else pnl > 0.0,
+            "pending_first_passage": pending_map.get(str(plan["scenario_id"]), {}).get("classification"),
+        })
+
+    output = {
+        "schema": "candidate-15-prior-only-beta-transfer-diagnostics-v1",
+        "diagnostic_only": True,
+        "does_not_modify_execution": True,
+        "estimation_cutoff": "strictly_before_first_evidence_event",
+        "return_bar_minutes": 5,
+        "horizons": list(HORIZONS),
+        "submitted_plans": len(records),
+        "filled_plans": sum(bool(record["filled"]) for record in records),
+        "positive_beta_consensus_plans": sum(bool(record["positive_beta_consensus"]) for record in records),
+        "records": records,
+    }
+    (root / "beta_transfer_diagnostics.json").write_text(json.dumps(output, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    print(json.dumps({key: value for key, value in output.items() if key != "records"}, indent=2))
+    return output
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("output_dir", type=Path)
+    args = parser.parse_args()
+    run(args.output_dir.resolve())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
