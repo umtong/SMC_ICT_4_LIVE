@@ -1,4 +1,4 @@
-name: candidate-08-fix-flow-response-heredoc
+name: candidate-08-stage-fixed-flow-response-workflow-blob
 
 on:
   push:
@@ -10,25 +10,24 @@ permissions:
   contents: write
 
 jobs:
-  fix-exact-heredoc-indentation:
+  stage-fixed-workflow-blob:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Correct only the embedded Python heredoc indentation
+      - name: Stage corrected workflow content outside the workflows directory
         shell: bash
         run: |
           set -euo pipefail
-          target=.github/workflows/candidate-08-auction-router-nautilus-v4.yml
-          python -c 'from pathlib import Path; p=Path(".github/workflows/candidate-08-auction-router-nautilus-v4.yml"); s=p.read_text(encoding="utf-8"); a=s.index("            import json\n"); b=s.index("            PY\n", a)+len("            PY\n"); block=s[a:b]; fixed="".join(line[2:] for line in block.splitlines(keepends=True)); p.write_text(s[:a]+fixed+s[b:], encoding="utf-8")'
-          python -c 'from pathlib import Path; s=Path(".github/workflows/candidate-08-auction-router-nautilus-v4.yml").read_text(encoding="utf-8"); assert "          import json\n" in s; assert "\n          PY\n" in s; assert "            import json\n" not in s'
+          mkdir -p research/candidate-08/.workflow-staging
+          python -c 'from pathlib import Path; source=Path(".github/workflows/candidate-08-auction-router-nautilus-v4.yml"); target=Path("research/candidate-08/.workflow-staging/candidate-08-auction-router-nautilus-v4.yml"); s=source.read_text(encoding="utf-8"); a=s.index("            import json\n"); b=s.index("            PY\n", a)+len("            PY\n"); block=s[a:b]; fixed="".join(line[2:] for line in block.splitlines(keepends=True)); target.write_text(s[:a]+fixed+s[b:], encoding="utf-8")'
+          python -c 'from pathlib import Path; s=Path("research/candidate-08/.workflow-staging/candidate-08-auction-router-nautilus-v4.yml").read_text(encoding="utf-8"); assert "          import json\n" in s; assert "\n          PY\n" in s; assert "            import json\n" not in s'
           rm -f research/candidate-08/.run-fix-flow-response-heredoc
-          rm -f .github/workflows/candidate-08-fix-flow-response-heredoc.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A -- "$target" research/candidate-08/.run-fix-flow-response-heredoc .github/workflows/candidate-08-fix-flow-response-heredoc.yml
-          git commit -m "candidate-08: fix flow-response preflight heredoc indentation [skip ci]"
+          git add -A -- research/candidate-08/.workflow-staging/candidate-08-auction-router-nautilus-v4.yml research/candidate-08/.run-fix-flow-response-heredoc
+          git commit -m "candidate-08: stage corrected flow-response workflow blob [skip ci]"
           for attempt in 1 2 3 4 5; do
             git fetch origin research/candidate-08
             if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
