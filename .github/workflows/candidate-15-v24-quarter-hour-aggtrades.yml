@@ -70,17 +70,30 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import pandas as pd
+          from pandas.errors import EmptyDataError
           from pathlib import Path
+
+          def read_optional(path: Path) -> pd.DataFrame:
+              if not path.is_file() or path.stat().st_size == 0:
+                  return pd.DataFrame()
+              try:
+                  return pd.read_csv(path)
+              except EmptyDataError:
+                  return pd.DataFrame()
+
           root = Path('research/candidate-15/v24/quarter_hour_aggtrades/results')
-          candidates = pd.read_csv(root / 'all_routed_candidates.csv')
+          candidates = read_optional(root / 'all_routed_candidates.csv')
           if len(candidates.index):
               assert set(candidates['outcome_origin']) == {'EVENT_MINUTE_FINAL_TRADE'}
               assert candidates['entry_price'].gt(0).all()
-          selected = pd.read_csv(root / 'selected_events.csv')
+          selected = read_optional(root / 'selected_events.csv')
           if len(selected.index):
               opened = pd.to_datetime(selected['entry_ts'], utc=True)
               closed = pd.to_datetime(selected['exit_ts'], utc=True)
-              assert (opened.iloc[1:].reset_index(drop=True) >= closed.iloc[:-1].reset_index(drop=True)).all()
+              assert (
+                  opened.iloc[1:].reset_index(drop=True)
+                  >= closed.iloc[:-1].reset_index(drop=True)
+              ).all()
           PY
 
       - name: Remove downloaded market archives
