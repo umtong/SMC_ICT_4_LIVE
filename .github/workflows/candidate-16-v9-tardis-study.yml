@@ -6,6 +6,7 @@ on:
     paths:
       - "research/candidate-16/v9_tardis_liquidation_study.py"
       - "research/candidate-16/v9_tardis_liquidation_study_v2.py"
+      - "research/candidate-16/v9_tardis_liquidation_study_v3.py"
       - "research/candidate-16/tests/test_v9_tardis_liquidation_study.py"
       - ".github/workflows/candidate-16-v9-tardis-study.yml"
   workflow_dispatch:
@@ -40,18 +41,30 @@ jobs:
           python -m compileall -q \
             research/candidate-16/v9_liquidation_event_study.py \
             research/candidate-16/v9_tardis_liquidation_study.py \
-            research/candidate-16/v9_tardis_liquidation_study_v2.py
+            research/candidate-16/v9_tardis_liquidation_study_v2.py \
+            research/candidate-16/v9_tardis_liquidation_study_v3.py
           python -m unittest discover \
             -s research/candidate-16/tests \
             -p 'test_v9_tardis_liquidation_study.py' -v
           python - <<'PY'
           import pandas as pd
+          import v9_tardis_liquidation_study as base
           from v9_tardis_liquidation_study_v2 import normalize_completed_minute
+          from v9_tardis_liquidation_study_v3 import safe_within_symbol_decluster
           for unit in ("ms", "us"):
               frame = pd.DataFrame({"minute": pd.to_datetime([1696118400000], unit=unit, utc=True)})
               normalized = normalize_completed_minute(frame)
               if str(normalized["minute"].dtype) != "datetime64[ns, UTC]":
                   raise SystemExit((unit, normalized["minute"].dtype))
+          frame = pd.DataFrame({
+              "symbol": ["BTCUSDT"],
+              "minute": [pd.Timestamp("2023-01-01T00:00:00Z")],
+              "event_candidate": [True],
+              "event_direction": [-1],
+          })
+          selected = safe_within_symbol_decluster(frame)
+          if len(selected) != 1:
+              raise SystemExit("first-event sentinel failed")
           PY
 
       - name: Run 112-symbol-day external liquidation router study
@@ -59,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
-          python research/candidate-16/v9_tardis_liquidation_study_v2.py \
+          python research/candidate-16/v9_tardis_liquidation_study_v3.py \
             --cache .cache/candidate-16-v9-tardis \
             --output "$ROOT" \
             2>&1 | tee "$ROOT/console.log"
@@ -88,6 +101,9 @@ jobs:
           compatibility = study.get("timestamp_compatibility", {})
           if compatibility.get("canonical_dtype") != "datetime64[ns, UTC]" or compatibility.get("economic_logic_changed"):
               raise SystemExit("timestamp compatibility contract failed")
+          sentinel = study.get("first_event_sentinel", {})
+          if sentinel.get("representation") != "None until first event per direction" or sentinel.get("economic_logic_changed"):
+              raise SystemExit("first-event sentinel contract failed")
           coverage = study.get("coverage", {})
           if set(coverage) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
               raise SystemExit("coverage incomplete")
