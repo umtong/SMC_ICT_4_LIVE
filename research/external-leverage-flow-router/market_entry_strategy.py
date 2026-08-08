@@ -1,43 +1,48 @@
-"""Market-entry execution adapter for the external-liquidity exhaustion alpha.
+"""Price-protected bounded execution for the exhaustion-reversal alpha.
 
-The inherited sparse aggTrade stream exists to advance NautilusTrader's clock
-through the configured latency.  It intentionally retains only one actual
-aggregate trade per minute and therefore is not a complete liquidity book.
-Using the retained tick quantity as an all-or-none FOK capacity test makes a
-large but liquid BTC order structurally unfillable.  This adapter keeps the
-same alpha, state transition, stop, target, fees, latency, and 3% NAV risk, but
-uses NautilusTrader's native MARKET bracket for execution.  Quantity and
-minimum-net-R are calculated at a volatility-aware adverse fill budget.  Any
-actual fill worse than that budget is counted as an integrity breach.
+The alpha and risk geometry are unchanged.  A marketable LIMIT-GTD bracket is
+priced at the precomputed adverse-fill budget and may accumulate partial fills
+from the volume-preserving actual aggTrade window for fifteen seconds.  This is
+closer to a live pay-through order than either FOK against one sampled print or
+MARKET-IOC against one print: price is bounded, time is bounded, and quantity
+must be supported by recorded opposite-side trade volume.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import math
 from typing import Any
 
 from nautilus_trader.model.enums import OrderSide, OrderType, TimeInForce
 
-from candidate21_strategy import Candidate21Config
-from candidate21_strategy import Candidate21Strategy
+from candidate21_strategy import Candidate21Config, Candidate21Strategy
 from logic import floor_quantity, net_r_at_price, planned_loss_per_unit
 from strategy_base import PendingSetup, _as_float
 
 
-MarketEntryConfig = Candidate21Config
+class WindowedLimitConfig(Candidate21Config, frozen=True):
+    exhaustion_entry_expiry_seconds: float = 15.0
+    exhaustion_min_fill_fraction: float = 0.95
 
 
-class MarketEntryStrategy(Candidate21Strategy):
-    """Execute validated exhaustion reversals without sparse-tick FOK bias."""
+class WindowedLimitStrategy(Candidate21Strategy):
+    """Execute only price-protected reversals with recorded volume capacity."""
 
-    def __init__(self, config: Candidate21Config) -> None:
+    def __init__(self, config: WindowedLimitConfig) -> None:
         super().__init__(config=config)
+        if config.exhaustion_entry_expiry_seconds <= 0.0:
+            raise ValueError("exhaustion_entry_expiry_seconds must be positive")
+        if not 0.0 < config.exhaustion_min_fill_fraction <= 1.0:
+            raise ValueError("exhaustion_min_fill_fraction must be in (0, 1]")
         self.current_entry_worst_fill: float | None = None
         self.current_entry_side = 0
         self.diagnostics.update(
             {
-                "exhaustion_market_entries": 0,
+                "exhaustion_windowed_limit_entries": 0,
                 "entry_worst_fill_breaches": 0,
                 "max_entry_worst_fill_slippage_bps": 0.0,
+                "last_entry_requested_quantity": 0.0,
+                "last_entry_expiry_ns": 0,
             },
         )
 
@@ -56,9 +61,9 @@ class MarketEntryStrategy(Candidate21Strategy):
                 float(self.diagnostics["max_entry_worst_fill_slippage_bps"]),
                 signed_slippage_bps,
             )
-            self.diagnostics["last_entry_actual_fill"] = fill
+            self.diagnostics["last_entry_first_fill"] = fill
             self.diagnostics["last_entry_worst_fill_budget"] = worst
-            self.diagnostics["last_entry_fill_vs_budget_bps"] = signed_slippage_bps
+            self.diagnostics["last_entry_first_fill_vs_budget_bps"] = signed_slippage_bps
             if signed_slippage_bps > 1e-9:
                 self.diagnostics["entry_worst_fill_breaches"] = int(
                     self.diagnostics["entry_worst_fill_breaches"],
@@ -174,14 +179,21 @@ class MarketEntryStrategy(Candidate21Strategy):
             )
             return True
 
+        event_ns = int(row["ts"])
+        expiry_ns = event_ns + int(
+            self.config.exhaustion_entry_expiry_seconds * 1_000_000_000,
+        )
+        expire_time = datetime.fromtimestamp(expiry_ns / 1_000_000_000, tz=timezone.utc)
         order_list = self.order_factory.bracket(
             instrument_id=self.config.instrument_id,
             order_side=OrderSide.BUY if side > 0 else OrderSide.SELL,
             quantity=self.instrument.make_qty(quantity_value),
-            entry_order_type=OrderType.MARKET,
-            time_in_force=TimeInForce.IOC,
+            entry_order_type=OrderType.LIMIT,
+            entry_price=worst_entry_price,
+            expire_time=expire_time,
+            time_in_force=TimeInForce.GTD,
             entry_post_only=False,
-            entry_tags=["ENTRY", "EXTERNAL_EXHAUSTION_MARKET_IOC"],
+            entry_tags=["ENTRY", "EXTERNAL_EXHAUSTION_LIMIT_GTD"],
             tp_price=target_price,
             sl_trigger_price=stop_price,
         )
@@ -198,31 +210,36 @@ class MarketEntryStrategy(Candidate21Strategy):
         self.diagnostics["entry_submissions"] = int(
             self.diagnostics["entry_submissions"],
         ) + 1
-        self.diagnostics["exhaustion_market_entries"] = int(
-            self.diagnostics["exhaustion_market_entries"],
+        self.diagnostics["exhaustion_windowed_limit_entries"] = int(
+            self.diagnostics["exhaustion_windowed_limit_entries"],
         ) + 1
+        self.diagnostics["last_entry_requested_quantity"] = quantity_value
+        self.diagnostics["last_entry_expiry_ns"] = expiry_ns
         self.diagnostics["max_simultaneous_entry_intents"] = max(
             int(self.diagnostics["max_simultaneous_entry_intents"]),
             1,
         )
         self._transition(
             setup.scenario_id,
-            "EXHAUSTION_MARKET_ENTRY_SUBMITTED",
-            int(row["ts"]),
-            int(row["ts"]),
+            "EXHAUSTION_WINDOWED_LIMIT_ENTRY_SUBMITTED",
+            event_ns,
+            event_ns,
             "ENTRY_PENDING",
-            "EXTERNAL_LIQUIDITY_EXHAUSTION_REVERSAL_MARKET_IOC",
+            "EXTERNAL_LIQUIDITY_EXHAUSTION_REVERSAL_LIMIT_GTD",
             worst_entry,
             {
                 **setup.details,
                 "side": side,
                 "signal_close": signal_close,
-                "entry_order_type": "MARKET",
-                "entry_time_in_force": "IOC",
-                "entry_worst_fill_budget": worst_entry,
+                "entry_order_type": "LIMIT",
+                "entry_time_in_force": "GTD",
+                "entry_expiry_ns": expiry_ns,
+                "entry_expiry_seconds": self.config.exhaustion_entry_expiry_seconds,
+                "entry_limit_worst_fill": worst_entry,
                 "entry_adverse_fill_distance": adverse_fill_distance,
                 "entry_cap_atr_multiple": self.config.exhaustion_entry_cap_atr,
                 "entry_transition_range": transition_range,
+                "minimum_acceptable_fill_fraction": self.config.exhaustion_min_fill_fraction,
                 "stop": stop,
                 "target": target,
                 "target_net_r_at_worst_fill": target_r,
@@ -232,10 +249,21 @@ class MarketEntryStrategy(Candidate21Strategy):
                 "planned_loss_per_unit_at_worst_fill": planned_loss,
                 "planned_account_loss_at_worst_fill": quantity_value * planned_loss,
                 "strictly_later_entry_evidence": True,
-                "sparse_ticks_used_as_clock_not_liquidity_capacity": True,
+                "actual_trade_volume_required": True,
             },
         )
         return True
 
 
-__all__ = ["MarketEntryConfig", "MarketEntryStrategy"]
+# Stable aliases keep existing import paths usable while the runner explicitly
+# selects the new names.
+MarketEntryConfig = WindowedLimitConfig
+MarketEntryStrategy = WindowedLimitStrategy
+
+
+__all__ = [
+    "MarketEntryConfig",
+    "MarketEntryStrategy",
+    "WindowedLimitConfig",
+    "WindowedLimitStrategy",
+]
