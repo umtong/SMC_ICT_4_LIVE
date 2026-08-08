@@ -1,0 +1,196 @@
+name: candidate-05-v73-daily-value
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v73-daily-value.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v73-daily-value
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-and-conditional-oos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: research/candidate-05/v73_active:research/candidate-05
+      ROOT: artifacts/candidate-05-v73-daily-value
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify causal and execution contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_daily_value_failed_auction_logic.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v73_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_order_failure_idempotency_contract.py' -v
+          python - <<'PY'
+          import strategy
+          assert strategy.LiquidityResponseStrategy.__name__ == "DailyValueFailedAuctionStrategy"
+          print(strategy.LiquidityResponseStrategy)
+          PY
+
+      - name: Run exposed continuous 91-day BTC screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/development"
+          python research/candidate-05/v73_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-02-28 \
+            --build-end 2024-05-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-05-30 \
+            --cache .cache/candidate-05-v73-development \
+            --output "$ROOT/development" \
+            2>&1 | tee "$ROOT/development/console.log"
+
+      - name: Decide whether the independent family merits untouched data
+        id: development
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math, os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"]) / "development"
+          metrics = json.loads((root / "metrics.json").read_text())
+          closed = json.loads((root / "closed_scenarios.json").read_text())
+          pnls = []
+          for item in closed:
+              if item.get("branch") != "DAILY_VALUE_FAILED_AUCTION":
+                  continue
+              try:
+                  pnls.append(float(str(item.get("realized_pnl")).split()[0].replace(",", "")))
+              except Exception:
+                  pass
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          branch = {
+              "trades": len(pnls),
+              "wins": sum(value > 0.0 for value in pnls),
+              "net_pnl_usdt": sum(pnls),
+              "pnls_usdt": pnls,
+              "boundary_failures": diagnostics.get("daily_value_boundary_failures", 0),
+              "inventory_confirmations": diagnostics.get("daily_value_inventory_confirmations", 0),
+              "submissions": diagnostics.get("daily_value_submissions", 0),
+              "vwap_targets": diagnostics.get("daily_value_vwap_targets", 0),
+          }
+          integrity = (
+              int(metrics.get("liquidations", 0)) == 0
+              and int(metrics.get("order_rejections", 0)) == 0
+              and int(metrics.get("order_denials", 0)) == 0
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          promote = (
+              integrity
+              and branch["trades"] >= 3
+              and branch["net_pnl_usdt"] > 0.0
+              and float(metrics.get("total_return", -1.0)) > 0.0256520
+          )
+          result = {
+              "schema": "candidate-05-v73-development-v1",
+              "classification": "V73_PROMOTE_UNTOUCHED" if promote else "V73_DISCARD_DEVELOPMENT",
+              "promote": promote,
+              "integrity_pass": integrity,
+              "baseline_v46_return": 0.0256520,
+              "metrics": metrics,
+              "incremental_branch": branch,
+          }
+          (Path(os.environ["ROOT"]) / "development_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"promote={'true' if promote else 'false'}\n")
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Run untouched continuous BTC confirmation
+        if: steps.development.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/untouched"
+          python research/candidate-05/v73_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2025-12-30 \
+            --build-end 2026-03-31 \
+            --evaluation-start 2026-01-01 \
+            --evaluation-end 2026-03-31 \
+            --cache .cache/candidate-05-v73-untouched \
+            --output "$ROOT/untouched" \
+            2>&1 | tee "$ROOT/untouched/console.log"
+
+      - name: Classify untouched confirmation
+        if: steps.development.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"]) / "untouched"
+          metrics = json.loads((root / "metrics.json").read_text())
+          closed = json.loads((root / "closed_scenarios.json").read_text())
+          pnls = []
+          for item in closed:
+              if item.get("branch") != "DAILY_VALUE_FAILED_AUCTION":
+                  continue
+              try:
+                  pnls.append(float(str(item.get("realized_pnl")).split()[0].replace(",", "")))
+              except Exception:
+                  pass
+          integrity = (
+              int(metrics.get("liquidations", 0)) == 0
+              and int(metrics.get("order_rejections", 0)) == 0
+              and int(metrics.get("order_denials", 0)) == 0
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          branch = {
+              "trades": len(pnls),
+              "wins": sum(value > 0.0 for value in pnls),
+              "net_pnl_usdt": sum(pnls),
+              "pnls_usdt": pnls,
+          }
+          passed = (
+              integrity
+              and branch["trades"] >= 6
+              and branch["net_pnl_usdt"] > 0.0
+              and float(metrics.get("total_return", -1.0)) > 0.0
+          )
+          result = {
+              "schema": "candidate-05-v73-untouched-v1",
+              "classification": "V73_UNTOUCHED_EDGE" if passed else "V73_UNTOUCHED_FAILED",
+              "passed": passed,
+              "integrity_pass": integrity,
+              "metrics": metrics,
+              "incremental_branch": branch,
+          }
+          (Path(os.environ["ROOT"]) / "untouched_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v73-daily-value-${{ github.sha }}
+          path: artifacts/candidate-05-v73-daily-value/**
+          if-no-files-found: warn
+          retention-days: 90
