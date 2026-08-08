@@ -1,0 +1,180 @@
+name: candidate-02-v152-long-btc-continuous-nav
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths: ["research/candidate-02/v152_trigger.json"]
+
+permissions: {contents: write, packages: read, actions: read}
+concurrency: {group: candidate-02-v152-long-btc, cancel-in-progress: false}
+
+jobs:
+  v152-long:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", fetch-depth: 0}
+
+      - name: Verify and lock survivor before selecting long weeks
+        id: lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          mkdir -p /tmp/v152
+          python - <<'PY'
+          import hashlib,json,os,random
+          from datetime import date,timedelta
+          from pathlib import Path
+          paths=sorted(Path('.').glob('research/candidate-02/results/v150_holdout/*/artifacts-v150-decision.json'))
+          out={'candidate':'candidate-02-v152-long-btc-continuous-nav','engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':0.03,'selection_before_long_week_reveal':True}
+          if not paths:
+              out.update({'status':'NO_V150_DECISION','has_candidate':False})
+          else:
+              prior=json.loads(paths[-1].read_text()); out['source_v150_path']=str(paths[-1]); out['v150_status']=prior.get('status')
+              if prior.get('status')!='THIRD_PROSPECTIVE_PASS':
+                  out.update({'status':'NO_THREE_WEEK_SURVIVOR','has_candidate':False})
+              else:
+                  family=prior['selected_family']; excluded={'2024-12-30','2025-03-03',*prior.get('previous_revealed_weeks',[]),prior['holdout_week_start']}
+                  earliest=date(2024,12,9) if family=='v146' else date(2024,10,7)
+                  pool=[]; current=earliest
+                  while current<=date(2025,2,24):
+                      if current.isoformat() not in excluded: pool.append(current.isoformat())
+                      current+=timedelta(days=7)
+                  requested=8 if family=='v146' else 13
+                  count=min(requested,len(pool))
+                  seed=int(hashlib.sha256((os.environ['GITHUB_SHA']+family).encode()).hexdigest()[:16],16)
+                  random.Random(seed).shuffle(pool); weeks=sorted(pool[:count])
+                  out.update({'status':'LOCKED_BEFORE_LONG_REVEAL','has_candidate':True,'selected_family':family,'selected_variant':prior.get('selected_variant'),'selected_runner':prior['selected_runner'],'selected_scenario':prior['selected_scenario'],'long_week_starts':weeks,'long_week_count':len(weeks),'evaluation_days':7*len(weeks),'excluded_revealed_weeks':sorted(excluded),'week_selection':'SHA-seeded sample without replacement from untouched non-overlapping Mondays'})
+          Path('artifacts-v152-lock.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as fh:
+              fh.write(f"has_candidate={'true' if out.get('has_candidate') else 'false'}\n")
+              if out.get('has_candidate'): fh.write(f"runner={out['selected_runner']}\n")
+          PY
+
+      - name: Download immutable feature matrix
+        if: steps.lock.outputs.has_candidate == 'true'
+        uses: actions/download-artifact@v4
+        with: {name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e, path: inputs/v152, github-token: "${{ github.token }}", repository: umtong/SMC_ICT_4_LIVE, run-id: "31036754667"}
+
+      - name: Download bounded full historical raw data
+        if: steps.lock.outputs.has_candidate == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf inputs/v152/.cache
+          mkdir -p inputs/v152/.cache/candidate-02/v152-long/binance_1m /tmp/v152/download
+          python - <<'PY'
+          from datetime import date,timedelta
+          from pathlib import Path
+          base='https://data.binance.vision/data/futures/um'; out=Path('inputs/v152/.cache/candidate-02/v152-long/binance_1m'); commands=[]
+          for month in ('2024-09','2024-10','2024-11','2024-12','2025-01','2025-02'):
+              name=f'BTCUSDT-1m-{month}.zip'; commands.append((f'{base}/monthly/klines/BTCUSDT/1m/{name}',out/name))
+          day=date(2025,3,1)
+          while day<=date(2025,3,10):
+              name=f'BTCUSDT-1m-{day.isoformat()}.zip'; commands.append((f'{base}/daily/klines/BTCUSDT/1m/{name}',out/name)); day+=timedelta(days=1)
+          Path('/tmp/v152/downloads.tsv').write_text('\n'.join(f'{u}\t{p}' for u,p in commands)+'\n')
+          PY
+          cat /tmp/v152/downloads.tsv | xargs -P 8 -n 2 bash -c 'curl --fail --location --retry 5 --retry-delay 2 "$0" -o "$1"'
+          test "$(find inputs/v152/.cache/candidate-02/v152-long/binance_1m -name '*.zip' | wc -l)" -eq 16
+
+      - name: Run sequential weeks with continuous NAV handoff
+        if: steps.lock.outputs.has_candidate == 'true'
+        shell: bash
+        env: {RUNNER: "${{ steps.lock.outputs.runner }}"}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('artifacts-v152-lock.json').read_text())
+          Path('/tmp/v152/weeks.txt').write_text('\n'.join(lock['long_week_starts'])+'\n')
+          PY
+          nav="100000"
+          index=0
+          while read -r week; do
+            index=$((index+1))
+            out="artifacts/candidate-02-v152/week-$(printf '%02d' "$index")-${week}"
+            mkdir -p "$out"
+            python - "$week" "$nav" "$index" <<'PY'
+          import json,sys
+          from pathlib import Path
+          week,nav,index=sys.argv[1:]
+          lock=json.loads(Path('artifacts-v152-lock.json').read_text()); base=json.loads(Path('research/candidate-02/v107_week1_config.json').read_text())
+          base['candidate']=f"candidate-02-v152-{lock['selected_family']}-week-{index}"; base['scenario'].update(lock['selected_scenario']); base['validation']['first_week_start']=week; base['risk']['starting_nav_usdt']=str(nav)
+          Path('/tmp/v152/current-config.json').write_text(json.dumps(base,indent=2,sort_keys=True)+'\n')
+          PY
+            set +e
+            python "$RUNNER" --config /tmp/v152/current-config.json --input-root inputs/v152 --output "$out" | tee "artifacts-v152-week-$(printf '%02d' "$index")-${week}.log"
+            status=${PIPESTATUS[0]}; set -e; echo "$status" > "$out/validation_exit_code.txt"
+            if [[ "$status" != 0 && "$status" != 2 ]]; then exit "$status"; fi
+            nav=$(python - "$out/metrics.json" <<'PY'
+          import json,sys
+          print(json.load(open(sys.argv[1]))['final_nav_usdt'])
+          PY
+          )
+          done < /tmp/v152/weeks.txt
+
+      - name: Aggregate continuous-NAV evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,math
+          from pathlib import Path
+          lock=json.loads(Path('artifacts-v152-lock.json').read_text()); out=dict(lock)
+          metrics=[]
+          for path in sorted(Path('artifacts/candidate-02-v152').glob('week-*/metrics.json')):
+              item=json.loads(path.read_text()); item['_path']=str(path); metrics.append(item)
+          if not lock.get('has_candidate'):
+              out.update({'status':'NO_THREE_WEEK_SURVIVOR','long_target_met':False})
+          elif len(metrics)!=lock['long_week_count']:
+              out.update({'status':'LONG_EXECUTION_INCOMPLETE','long_target_met':False,'completed_weeks':len(metrics)})
+          else:
+              start=float(metrics[0]['starting_nav_usdt']); final=float(metrics[-1]['final_nav_usdt']); days=7*len(metrics)
+              trades=sum(int(m['trades']) for m in metrics); wins=sum(int(m['wins']) for m in metrics); losses=sum(int(m['losses']) for m in metrics)
+              gross_profit=sum(float(m['gross_profit_after_cost_usdt']) for m in metrics); gross_loss=sum(float(m['gross_loss_after_cost_usdt']) for m in metrics)
+              nav_points=[start]+[float(m['final_nav_usdt']) for m in metrics]; peak=nav_points[0]; close_dd=0.0
+              for value in nav_points:
+                  peak=max(peak,value); close_dd=min(close_dd,value/peak-1.0)
+              worst_week_mtm=min(float(m['maximum_mark_to_market_drawdown']) for m in metrics)
+              conservative_dd=min(close_dd,worst_week_mtm)
+              geo=(final/start)**(1.0/days)-1.0
+              pf=(gross_profit/abs(gross_loss)) if gross_loss<0 else (math.inf if gross_profit>0 else 0.0)
+              win_rate=wins/trades if trades else 0.0
+              positive_weeks=sum(float(m['final_nav_usdt'])>float(m['starting_nav_usdt']) for m in metrics)
+              active_weeks=sum(int(m['trades'])>0 for m in metrics)
+              max_budget=max(float(m['maximum_planned_loss_to_budget']) for m in metrics)
+              summary={'starting_nav_usdt':start,'final_nav_usdt':final,'nav_factor':final/start,'evaluation_days':days,'weeks':len(metrics),'trades':trades,'trades_per_day':trades/days,'wins':wins,'losses':losses,'win_rate':win_rate,'profit_factor_after_cost':pf,'geometric_daily_growth_after_cost':geo,'maximum_week_or_close_drawdown':conservative_dd,'positive_weeks':positive_weeks,'active_weeks':active_weeks,'maximum_planned_loss_to_budget':max_budget,'gross_profit_after_cost_usdt':gross_profit,'gross_loss_after_cost_usdt':gross_loss}
+              checks={'minimum_geometric_daily_growth':geo>=0.01,'minimum_trades_per_day':trades/days>=0.75,'minimum_win_rate':win_rate>=0.50,'minimum_profit_factor':pf>=1.50,'maximum_drawdown':conservative_dd>=-0.25,'planned_loss_budget':max_budget<=1.000001,'positive_week_majority':positive_weeks>=math.ceil(0.70*len(metrics)),'active_week_majority':active_weeks>=math.ceil(0.80*len(metrics))}
+              out.update({'long_summary':summary,'long_checks':checks,'weekly_metrics':metrics,'long_target_met':all(checks.values()),'status':'LONG_BTC_PASS' if all(checks.values()) else 'LONG_BTC_REJECT'})
+          Path('artifacts-v152-decision.json').write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({'status':out['status'],'summary':out.get('long_summary'),'checks':out.get('long_checks')},indent=2,sort_keys=True))
+          PY
+
+      - name: Commit long evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf compact-v152; mkdir compact-v152
+          cp -f artifacts-v152-*.json compact-v152/ 2>/dev/null || true; cp -f artifacts-v152-*.log compact-v152/ 2>/dev/null || true; cp -a artifacts/candidate-02-v152 compact-v152/ 2>/dev/null || true
+          git fetch origin research/candidate-02
+          if test "$(git rev-parse origin/research/candidate-02)" = "$GITHUB_SHA" && test -f artifacts-v152-decision.json; then
+            d="research/candidate-02/results/v152_long/$GITHUB_SHA"; mkdir -p "$d"; cp -a compact-v152/. "$d/"; git config user.name github-actions[bot]; git config user.email 41898282+github-actions[bot]@users.noreply.github.com; git add "$d"; git commit -m "research(candidate-02): record continuous-NAV long BTC evidence"; git push origin HEAD:research/candidate-02
+          fi
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: "candidate-02-v152-long-${{ github.sha }}", path: compact-v152, if-no-files-found: warn, retention-days: 30, compression-level: 9}
