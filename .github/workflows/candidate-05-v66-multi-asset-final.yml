@@ -1,0 +1,304 @@
+name: candidate-05-v66-multi-asset-final
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/loop_results/latest.json"
+      - "research/candidate-05/loop_results/v59_boundary_retest.json"
+      - "research/candidate-05/loop_results/v62_post_funding_reset.json"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v66-multi-asset-final
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.select.outputs.run }}
+      components: ${{ steps.select.outputs.components }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+      - name: Wait for all component decisions and freeze selection once
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          latest_path = Path("research/candidate-05/loop_results/latest.json")
+          v59_path = Path("research/candidate-05/loop_results/v59_boundary_retest.json")
+          v62_path = Path("research/candidate-05/loop_results/v62_post_funding_reset.json")
+          ready = latest_path.exists() and v59_path.exists() and v62_path.exists()
+          components = []
+          environment = {}
+          details = {}
+          if ready:
+              latest = json.loads(latest_path.read_text())
+              v59 = json.loads(v59_path.read_text())
+              v62 = json.loads(v62_path.read_text())
+              ready = bool(latest.get("all_expected_complete"))
+              mapping = {
+                  "v55_spot_price_discovery": "v55",
+                  "v56_early_flow_core": "v56",
+                  "v58_forced_basis_reversion": "v58",
+              }
+              components.extend(
+                  mapping[name]
+                  for name, passed in latest.get("promotion", {}).items()
+                  if passed and name in mapping
+              )
+              if v59.get("classification") == "V59_BOUNDARY_RETEST_PASSED_DEV_OOS_AND_CONTINUOUS":
+                  components.append("v59")
+              if v62.get("classification") == "V62_POST_FUNDING_RESET_PASSED_DEV_OOS_AND_CONTINUOUS":
+                  components.append("v62")
+              v55 = latest.get("decisions", {}).get("v55_loop") or {}
+              environment = (v55.get("selection") or {}).get("environment") or {}
+              details = {
+                  "latest_complete": latest.get("all_expected_complete"),
+                  "v59_classification": v59.get("classification"),
+                  "v62_classification": v62.get("classification"),
+              }
+          components = sorted(set(components))
+          run = ready and bool(components)
+          Path("/tmp/v66.env").write_text(
+              f"export CANDIDATE05_COMPONENTS={','.join(components)}\n"
+              + "".join(f"export {key}={value}\n" for key, value in environment.items()),
+          )
+          result = {
+              "ready": ready,
+              "run": run,
+              "components": components,
+              "v55_environment": environment,
+              "details": details,
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+              stream.write(f"run={'true' if run else 'false'}\n")
+              stream.write(f"components={','.join(components)}\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          cat /tmp/v66.env
+      - uses: actions/upload-artifact@v4
+        if: steps.select.outputs.run == 'true'
+        with:
+          name: candidate-05-v66-selection-${{ github.sha }}
+          path: /tmp/v66.env
+          if-no-files-found: error
+          retention-days: 7
+
+  baseline:
+    needs: select
+    if: needs.select.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v66-multi-asset-baseline
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover frozen shared-account command for v46
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python research/candidate-05/prepare_shared_command.py \
+            --workflow .github/workflows/candidate-05-v47-relative-value.yml \
+            --runner research/candidate-05/shared_account_backtest_v2.py \
+            --output "$ROOT" \
+            --cache .cache/candidate-05-v66-multi-asset-baseline \
+            --build-start 2025-04-29 \
+            --build-end 2025-06-30 \
+            --evaluation-start 2025-05-01 \
+            --evaluation-end 2025-06-30 \
+            --destination /tmp/shared-baseline.sh
+          cat /tmp/shared-baseline.sh
+      - name: Run v46 multi-asset reference account
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          bash /tmp/shared-baseline.sh 2>&1 | tee "$ROOT/workflow-console.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v66-multi-asset-baseline-${{ github.sha }}
+          path: artifacts/candidate-05-v66-multi-asset-baseline/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  composite:
+    needs: select
+    if: needs.select.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v66-multi-asset-composite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-05-v66-selection-*
+          path: /tmp/v66-selection
+          merge-multiple: true
+      - name: Verify selected five-family composition and recover command
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/v66-selection/v66.env
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v66_composite_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_spot_price_discovery_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_contract.py' -v
+          PYTHONPATH=research/candidate-05/v66_active:research/candidate-05 python - <<'PY'
+          import os
+          import strategy
+          print(os.environ["CANDIDATE05_COMPONENTS"])
+          print(strategy.LiquidityResponseStrategy.mro())
+          from strategy_v46_no_post_retrace_breakaway import NoPostRetraceBreakawayStrategy
+          assert strategy.LiquidityResponseStrategy.mro().count(NoPostRetraceBreakawayStrategy) == 1
+          PY
+          python research/candidate-05/prepare_shared_command.py \
+            --workflow .github/workflows/candidate-05-v47-relative-value.yml \
+            --runner research/candidate-05/shared_account_v66.py \
+            --output "$ROOT" \
+            --cache .cache/candidate-05-v66-multi-asset-composite \
+            --build-start 2025-04-29 \
+            --build-end 2025-06-30 \
+            --evaluation-start 2025-05-01 \
+            --evaluation-end 2025-06-30 \
+            --destination /tmp/shared-composite.sh
+          cat /tmp/shared-composite.sh
+      - name: Run selected multi-asset composite account
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/v66-selection/v66.env
+          export PYTHONPATH=research/candidate-05/v66_active:research/candidate-05
+          mkdir -p "$ROOT"
+          bash /tmp/shared-composite.sh 2>&1 | tee "$ROOT/workflow-console.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v66-multi-asset-composite-${{ github.sha }}
+          path: artifacts/candidate-05-v66-multi-asset-composite/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  compare:
+    needs: [select, baseline, composite]
+    if: always() && needs.select.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-05-v66-multi-asset-*-${{ github.sha }}
+          path: /tmp/v66-results
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-05-v66-selection-*
+          path: /tmp/v66-selection
+          merge-multiple: true
+      - name: Build multi-asset target decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/v66-selection/v66.env
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path("/tmp/v66-results")
+          metrics_files = sorted(root.rglob("metrics.json"))
+          baseline = next((p for p in metrics_files if "baseline" in str(p)), None)
+          composite = next((p for p in metrics_files if "composite" in str(p)), None)
+          if baseline is None or composite is None:
+              raise SystemExit(f"missing paired metrics: {metrics_files}")
+          v46 = json.loads(baseline.read_text())
+          v66 = json.loads(composite.read_text())
+          def integrity(value):
+              return (
+                  int(value.get("liquidations", 0)) == 0
+                  and int(value.get("order_rejections", 0)) == 0
+                  and int(value.get("order_denials", 0)) == 0
+                  and float(value.get("min_equity", 0.0)) > 0.0
+              )
+          target_reached = (
+              integrity(v66)
+              and float(v66.get("geometric_daily_growth", 0.0)) >= 0.01
+              and int(v66.get("trades", 0)) >= 30
+              and float(v66.get("total_return", 0.0)) > 0.0
+          )
+          improved = (
+              integrity(v46) and integrity(v66)
+              and float(v66.get("total_return", -1.0)) > float(v46.get("total_return", -1.0))
+              and float(v66.get("profit_factor", 0.0)) > float(v46.get("profit_factor", 0.0))
+              and float(v66.get("max_drawdown", 1.0)) <= float(v46.get("max_drawdown", 1.0))
+          )
+          classification = (
+              "PROJECT_TARGET_REACHED_MULTI_ASSET_UNTOUCHED"
+              if target_reached
+              else "MULTI_ASSET_COMPOSITE_IMPROVED_BUT_TARGET_NOT_REACHED"
+              if improved
+              else "MULTI_ASSET_COMPOSITE_FAILED_UNTOUCHED"
+          )
+          result = {
+              "schema": "candidate-05-v66-multi-asset-final-v1",
+              "classification": classification,
+              "components": os.environ["CANDIDATE05_COMPONENTS"].split(","),
+              "period": {
+                  "evaluation_start": "2025-05-01",
+                  "evaluation_end": "2025-06-30",
+                  "selected_before_observation": True,
+              },
+              "v46_shared_account": v46,
+              "v66_shared_account": v66,
+              "target_reached": target_reached,
+              "improved_over_v46": improved,
+          }
+          destination = Path("research/candidate-05/loop_results/multi_asset_final.json")
+          destination.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+      - name: Commit multi-asset final decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-05-loop-bot"
+          git config user.email "candidate-05-loop-bot@users.noreply.github.com"
+          git add research/candidate-05/loop_results/multi_asset_final.json
+          git commit -m "candidate-05: record multi-asset final decision"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            git pull --rebase origin research/candidate-05
+            sleep $((attempt * 2))
+          done
+          exit 1
