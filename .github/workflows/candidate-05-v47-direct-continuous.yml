@@ -1,0 +1,222 @@
+name: candidate-05-v47-direct-continuous
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v47-direct-continuous.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v47-direct-continuous
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-and-conditional-oos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v47-direct
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and direct shared-account route
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          PYTHONPATH=research/candidate-05 python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_shared_account_v47_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover \
+            -s research/candidate-05/tests \
+            -p 'test_strategy_v47_contract.py' -v
+
+      - name: Freeze v47 winner evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/v47.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_v47_relative_value:RelativeValueDislocationStrategy",
+            "experiment_role": "FROZEN_RELATIVE_VALUE_CAUSAL_SCREEN"
+          }
+          JSON
+
+      - name: Run exposed 30-day occurrence and direction screen
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_account_backtest_v47.py \
+            --winner-evidence "$ROOT/evidence/v47.json" \
+            --build-start 2024-02-28 \
+            --build-end 2024-03-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-03-30 \
+            --cache .cache/candidate-05-v47-direct-dev \
+            --output "$ROOT/development" \
+            | tee "$ROOT/development-console.json"
+
+      - name: Decide development promotion
+        id: development
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math, os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"]) / "development"
+          metrics = json.loads((root / "metrics.json").read_text())
+          scenario_ids = set()
+          for path in root.rglob("scenario_events.jsonl"):
+              for line in path.read_text().splitlines():
+                  if not line.strip():
+                      continue
+                  event = json.loads(line)
+                  details = event.get("details") or {}
+                  if details.get("branch") == "RELATIVE_VALUE_REJECTION":
+                      scenario_ids.add(str(event.get("scenario_id")))
+          pnls = []
+          for path in root.rglob("closed_scenarios.json"):
+              for item in json.loads(path.read_text()):
+                  if str(item.get("scenario_id")) not in scenario_ids:
+                      continue
+                  try:
+                      pnls.append(float(str(item.get("realized_pnl")).split()[0].replace(",", "")))
+                  except Exception:
+                      pass
+          branch = {
+              "scenario_ids": sorted(scenario_ids),
+              "trades": len(pnls),
+              "wins": sum(value > 0 for value in pnls),
+              "net_pnl_usdt": sum(pnls),
+              "pnls_usdt": pnls,
+          }
+          integrity = (
+              bool(metrics.get("integrity_pass"))
+              and int(metrics.get("liquidations", 0)) == 0
+              and int(metrics.get("order_rejections", 0)) == 0
+              and int(metrics.get("order_denials", 0)) == 0
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          promote = (
+              integrity
+              and branch["trades"] >= 3
+              and branch["net_pnl_usdt"] > 0.0
+              and float(metrics.get("total_return", -1.0)) > 0.0
+          )
+          out = {
+              "schema": "candidate-05-v47-direct-development-v1",
+              "classification": "V47_PROMOTE_UNTOUCHED" if promote else "V47_DISCARD_DEVELOPMENT",
+              "promote": promote,
+              "integrity_pass": integrity,
+              "metrics": metrics,
+              "incremental_branch": branch,
+          }
+          (Path(os.environ["ROOT"]) / "development_decision.json").write_text(
+              json.dumps(out, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"promote={'true' if promote else 'false'}\n")
+          print(json.dumps(out, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Run untouched continuous 60-day shared-account screen
+        if: steps.development.outputs.promote == 'true'
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_account_backtest_v47.py \
+            --winner-evidence "$ROOT/evidence/v47.json" \
+            --build-start 2026-03-30 \
+            --build-end 2026-05-30 \
+            --evaluation-start 2026-04-01 \
+            --evaluation-end 2026-05-30 \
+            --cache .cache/candidate-05-v47-direct-oos \
+            --output "$ROOT/untouched-60d" \
+            | tee "$ROOT/untouched-console.json"
+
+      - name: Classify untouched result
+        if: steps.development.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"]) / "untouched-60d"
+          metrics = json.loads((root / "metrics.json").read_text())
+          scenario_ids = set()
+          for path in root.rglob("scenario_events.jsonl"):
+              for line in path.read_text().splitlines():
+                  if not line.strip():
+                      continue
+                  event = json.loads(line)
+                  if (event.get("details") or {}).get("branch") == "RELATIVE_VALUE_REJECTION":
+                      scenario_ids.add(str(event.get("scenario_id")))
+          pnls = []
+          for path in root.rglob("closed_scenarios.json"):
+              for item in json.loads(path.read_text()):
+                  if str(item.get("scenario_id")) not in scenario_ids:
+                      continue
+                  try:
+                      pnls.append(float(str(item.get("realized_pnl")).split()[0].replace(",", "")))
+                  except Exception:
+                      pass
+          integrity = (
+              bool(metrics.get("integrity_pass"))
+              and int(metrics.get("liquidations", 0)) == 0
+              and int(metrics.get("order_rejections", 0)) == 0
+              and int(metrics.get("order_denials", 0)) == 0
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          branch = {
+              "trades": len(pnls),
+              "wins": sum(value > 0 for value in pnls),
+              "net_pnl_usdt": sum(pnls),
+              "pnls_usdt": pnls,
+          }
+          passed = (
+              integrity
+              and branch["trades"] >= 6
+              and branch["net_pnl_usdt"] > 0.0
+              and float(metrics.get("total_return", -1.0)) > 0.0
+          )
+          out = {
+              "schema": "candidate-05-v47-direct-untouched-v1",
+              "classification": "V47_UNTOUCHED_EDGE" if passed else "V47_UNTOUCHED_FAILED",
+              "passed": passed,
+              "integrity_pass": integrity,
+              "metrics": metrics,
+              "incremental_branch": branch,
+          }
+          (Path(os.environ["ROOT"]) / "untouched_decision.json").write_text(
+              json.dumps(out, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(out, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v47-direct-${{ github.sha }}
+          path: artifacts/candidate-05-v47-direct/**
+          if-no-files-found: error
+          retention-days: 90
