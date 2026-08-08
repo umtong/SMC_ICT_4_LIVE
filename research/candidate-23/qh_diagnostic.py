@@ -120,7 +120,8 @@ def build_diagnostic(
             "close",
         ]
     ].copy()
-    price["observed_time_ns"] = price["close_time_dt"].astype("int64")
+    close_times = pd.to_datetime(price["close_time_dt"], utc=True)
+    price["observed_time_ns"] = close_times.map(lambda stamp: int(stamp.value))
     frame = price.merge(features, on="observed_time_ns", how="inner", validate="one_to_one")
     frame = frame.sort_values("close_time_dt").reset_index(drop=True)
     if frame.empty:
