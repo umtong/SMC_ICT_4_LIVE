@@ -1,0 +1,59 @@
+name: Candidate 11 first-delivery bootstrap
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - ".github/workflows/candidate-11-first-delivery-bootstrap.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-11-first-delivery-bootstrap-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Decode verified research payload and publish frozen source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git checkout -B research/candidate-11 "$GITHUB_SHA"
+
+          BOOT=research/candidate-11/.first_delivery_bootstrap
+          PAYLOAD=/tmp/candidate-11-first-delivery.b64
+          ARCHIVE=/tmp/candidate-11-first-delivery.tar.gz
+          cat "$BOOT"/part-*.txt > "$PAYLOAD"
+          base64 --decode "$PAYLOAD" > "$ARCHIVE"
+          echo "8fce2a54138c96cf8bd966f88054a0ec338b942a35d48ee6d11f03914ce3b2d4  $ARCHIVE" | sha256sum --check --strict
+
+          tar -tzf "$ARCHIVE" | sort
+          tar -xzf "$ARCHIVE" -C "$GITHUB_WORKSPACE"
+          test -f research/candidate-11/core_far_first_delivery_runner_ablation_v1/protocol.json
+          test -f research/candidate-11/core_far_first_delivery_runner_ablation_v1/runner.py
+          test -f .github/workflows/candidate-11-core-far-first-delivery-runner-v1.yml
+
+          rm -rf "$BOOT"
+          rm -f .github/workflows/candidate-11-first-delivery-bootstrap.yml
+
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add -A \
+            research/candidate-11/.first_delivery_bootstrap \
+            research/candidate-11/core_far_first_delivery_runner_ablation_v1 \
+            .github/workflows/candidate-11-first-delivery-bootstrap.yml \
+            .github/workflows/candidate-11-core-far-first-delivery-runner-v1.yml
+          git commit -m "candidate-11: materialize first-delivery runner ablation"
+          git push origin HEAD:research/candidate-11
