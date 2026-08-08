@@ -1,17 +1,12 @@
-"""Install Candidate 15's sequential auction-state router.
+"""Install Candidate 15's causal-resolution-token router.
 
 Candidate 14's detector, execution semantics, cross-market leadership, exact
 current-NAV risk sizing, global slot and Nautilus accounting remain unchanged.
-This module only controls which already-defined branch of a competing auction may
-continue toward an entry:
+Candidate 15 controls only which inherited branch may continue toward entry:
 
-* resolved FAILURE may call the inherited FAR confirmation;
-* resolved ACCEPTANCE may call the inherited AAC confirmation;
-* UNRESOLVED admits neither.
-
-The router starts at the latest sweep extreme and uses completed bars only.  A
-new extreme replaces the episode, preventing stale evidence from a prior causal
-leg from being carried forward.
+* fresh FAILURE may call FAR;
+* fresh ACCEPTANCE may call AAC;
+* UNRESOLVED or STALE admits neither.
 """
 from __future__ import annotations
 
@@ -98,6 +93,7 @@ def _measure(
             {
                 **snapshot.to_dict(),
                 "episode_reset": observation.reset,
+                "previous_router_state": observation.previous_state.value,
                 "interpretation": (
                     "SWEPT_SIDE_PRICE_ACCEPTANCE"
                     if snapshot.state is AuctionResolution.ACCEPTANCE
@@ -105,11 +101,28 @@ def _measure(
                 ),
             },
         )
+    elif observation.expired_now:
+        self._event(
+            a.pool.scenario_id,
+            "AUCTION_STATE_EXPIRED",
+            int(a.sweep.ts_ns),
+            int(bar.ts_ns),
+            a.state,
+            a.state,
+            "C15_RESOLUTION_STALE",
+            boundary,
+            {
+                **snapshot.to_dict(),
+                "episode_reset": observation.reset,
+                "previous_router_state": observation.previous_state.value,
+                "interpretation": "RESOLUTION_NOT_CONFIRMED_WITHIN_SAME_NEW_AUCTION_LEG",
+            },
+        )
     return snapshot
 
 
 def install() -> None:
-    """Patch the inherited confirmation methods once, after Candidate 14 installs."""
+    """Patch inherited confirmation methods once, after Candidate 14 installs."""
     if getattr(CausalAuctionEngine, "_candidate15_router_installed", False):
         return
 
@@ -122,7 +135,10 @@ def install() -> None:
         bar: BarObs,
     ) -> TradePlan | None:
         snapshot = _measure(self, a, bar)
-        if snapshot.state is not AuctionResolution.FAILURE:
+        if (
+            snapshot.state is not AuctionResolution.FAILURE
+            or not snapshot.fresh_for_entry
+        ):
             return None
         return _annotate(self, inherited_far(self, a, bar), snapshot)
 
@@ -132,7 +148,10 @@ def install() -> None:
         bar: BarObs,
     ) -> TradePlan | None:
         snapshot = _measure(self, a, bar)
-        if snapshot.state is not AuctionResolution.ACCEPTANCE:
+        if (
+            snapshot.state is not AuctionResolution.ACCEPTANCE
+            or not snapshot.fresh_for_entry
+        ):
             return None
         return _annotate(self, inherited_aac(self, a, bar), snapshot)
 

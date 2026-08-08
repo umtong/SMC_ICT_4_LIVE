@@ -13,9 +13,6 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 CANDIDATE14 = ROOT.parent / "candidate-14"
 PROJECT_ROOT = ROOT.parents[1]
-# Deterministic import order is part of the candidate identity.  Candidate 15's
-# wrapper must win over Candidate 14's same-named runner, while inherited modules
-# remain available immediately after it.
 for path in (PROJECT_ROOT / "src", CANDIDATE14, ROOT):
     text = str(path)
     while text in sys.path:
@@ -44,15 +41,18 @@ def _write_object(path: Path, payload: Any) -> None:
 
 def _event_diagnostics(path: Path) -> dict[str, Any]:
     event_type_counts: Counter[str] = Counter()
-    reason_counts: Counter[str] = Counter()
+    transition_counts: Counter[str] = Counter()
     resolved_scenarios: set[str] = set()
+    stale_scenarios: set[str] = set()
     swept_scenarios: set[str] = set()
     if not path.is_file():
         return {
             "event_type_counts": {},
             "router_resolution_counts": {},
+            "router_transition_counts": {},
             "swept_scenarios": 0,
             "resolved_scenarios": 0,
+            "stale_scenarios": 0,
             "unresolved_scenarios_lower_bound": 0,
         }
     with path.open("r", encoding="utf-8") as stream:
@@ -66,14 +66,24 @@ def _event_diagnostics(path: Path) -> dict[str, Any]:
             event_type_counts[event_type] += 1
             if event_type == "LIQUIDITY_SWEEP":
                 swept_scenarios.add(scenario_id)
+            if reason.startswith("C15_"):
+                transition_counts[reason] += 1
             if event_type == "AUCTION_STATE_RESOLVED" and reason.startswith("C15_"):
-                reason_counts[reason] += 1
                 resolved_scenarios.add(scenario_id)
+            if event_type == "AUCTION_STATE_EXPIRED" and reason == "C15_RESOLUTION_STALE":
+                stale_scenarios.add(scenario_id)
+    resolution_counts = {
+        reason: count
+        for reason, count in sorted(transition_counts.items())
+        if reason in {"C15_ACCEPTANCE", "C15_FAILURE"}
+    }
     return {
         "event_type_counts": dict(sorted(event_type_counts.items())),
-        "router_resolution_counts": dict(sorted(reason_counts.items())),
+        "router_resolution_counts": resolution_counts,
+        "router_transition_counts": dict(sorted(transition_counts.items())),
         "swept_scenarios": len(swept_scenarios),
         "resolved_scenarios": len(resolved_scenarios),
+        "stale_scenarios": len(stale_scenarios),
         "unresolved_scenarios_lower_bound": len(swept_scenarios - resolved_scenarios),
     }
 
@@ -82,9 +92,7 @@ def execute(interval: str, output_dir: Path) -> dict[str, Any]:
     protocol = _read_object(ROOT / "protocol.json")
     intervals = protocol["selection"]["intervals"]
     if interval not in intervals:
-        raise ValueError(
-            f"unknown interval {interval!r}; expected one of {sorted(intervals)}",
-        )
+        raise ValueError(f"unknown interval {interval!r}; expected one of {sorted(intervals)}")
 
     config = _read_object(CANDIDATE14 / "base_config.json")
     config["candidate"] = protocol["candidate"]
@@ -93,10 +101,7 @@ def execute(interval: str, output_dir: Path) -> dict[str, Any]:
     config["selection"]["warmup_days"] = protocol["selection"]["warmup_days"]
     config["selection"]["evaluation_days"] = protocol["selection"]["evaluation_days"]
     config["selection"]["weeks"] = {
-        name: {
-            "start": record["start"],
-            "end_exclusive": record["end_exclusive"],
-        }
+        name: {"start": record["start"], "end_exclusive": record["end_exclusive"]}
         for name, record in intervals.items()
     }
     config["session_i7"] = _read_object(CANDIDATE14 / "session_i7_config.json")

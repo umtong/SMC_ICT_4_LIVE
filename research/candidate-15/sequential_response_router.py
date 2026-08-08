@@ -1,17 +1,13 @@
-"""Sequential price--aggressor-response router for Candidate 15.
+"""Candidate 15 sequential price--aggressor response router.
 
-The router does not predict a return target and never sizes a position.  It asks
-one narrower causal question after external liquidity is traded through:
+Version 2 treats a resolved auction state as a short-lived causal token, not as a
+permanent label.  A resolution may be used on the bar where it is produced or on
+the immediately following completed bar.  If inherited entry confirmation has
+not arrived by then, the episode becomes STALE and is a no-trade state.  A new
+sweep extreme starts a fresh episode.
 
-    Is aggressive flow being converted into durable price acceptance beyond the
-    swept boundary, or is the flow being absorbed and the auction failing?
-
-It calibrates a non-negative contemporaneous price/flow response from bars that
-were complete before the latest sweep extreme.  Each later completed bar supplies
-four bounded evidence channels: directional price change, aggressor flow,
-unexplained price response, and occupancy beyond the boundary.  Evidence is
-accumulated sequentially and remains UNRESOLVED until a symmetric decision
-boundary is crossed.  A new sweep extreme starts a new causal episode.
+This lifecycle rule is structural: entry, invalidation and target must belong to
+the same newly resolved auction leg.  It is not fitted from future PnL.
 """
 from __future__ import annotations
 
@@ -26,6 +22,7 @@ class AuctionResolution(StrEnum):
     UNRESOLVED = "UNRESOLVED"
     ACCEPTANCE = "ACCEPTANCE"
     FAILURE = "FAILURE"
+    STALE = "STALE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +46,10 @@ class RouterSnapshot:
     occupancy_channel: float
     bar_evidence: float
     evidence_odds_proxy: float
+    resolution_ts_ns: int | None
+    resolution_age_bars: int | None
+    max_resolution_age_bars: int
+    fresh_for_entry: bool
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +72,10 @@ class RouterSnapshot:
             "occupancy_channel": self.occupancy_channel,
             "bar_evidence": self.bar_evidence,
             "evidence_odds_proxy": self.evidence_odds_proxy,
+            "resolution_ts_ns": self.resolution_ts_ns,
+            "resolution_age_bars": self.resolution_age_bars,
+            "max_resolution_age_bars": self.max_resolution_age_bars,
+            "fresh_for_entry": self.fresh_for_entry,
         }
 
 
@@ -79,7 +84,19 @@ class RouterObservation:
     snapshot: RouterSnapshot
     created: bool
     reset: bool
-    resolved_now: bool
+    previous_state: AuctionResolution
+    state_changed: bool
+
+    @property
+    def resolved_now(self) -> bool:
+        return self.state_changed and self.snapshot.state in {
+            AuctionResolution.ACCEPTANCE,
+            AuctionResolution.FAILURE,
+        }
+
+    @property
+    def expired_now(self) -> bool:
+        return self.state_changed and self.snapshot.state is AuctionResolution.STALE
 
 
 def _robust_scale(values: Sequence[float], floor: float = 1e-12) -> float:
@@ -97,17 +114,19 @@ def _robust_scale(values: Sequence[float], floor: float = 1e-12) -> float:
 def _signed_flow(bar: Any, median_volume: float) -> float:
     volume = max(float(bar.volume), 0.0)
     relative_volume = volume / max(float(median_volume), 1e-12)
-    # Square-root volume weighting retains activity information while preventing
-    # one exceptional bar from dominating the whole sequential episode.
     return float(bar.signed_flow) * sqrt(max(relative_volume, 0.0))
 
 
 class ResponseEpisode:
-    """One latest-extreme causal episode with a frozen pre-event calibration."""
+    """One latest-extreme causal episode with frozen pre-event calibration."""
 
     ERROR_BUDGET = 0.10
     FULL_AGREEMENT_ODDS = 2.0
     MIN_OBSERVATIONS = 2
+    # One following completed bar is required because an inherited structural
+    # confirmation can become decidable one bar after the response boundary is
+    # crossed.  Anything later belongs to a different micro-auction.
+    MAX_RESOLUTION_AGE_BARS = 1
 
     def __init__(
         self,
@@ -149,6 +168,8 @@ class ResponseEpisode:
         self.previous_close = float(sweep_close)
         self.last_channels = (0.0, 0.0, 0.0, 0.0)
         self.last_bar_evidence = 0.0
+        self.resolution_ts_ns: int | None = None
+        self.resolution_age_bars: int | None = None
 
     @classmethod
     def calibrated(
@@ -201,6 +222,13 @@ class ResponseEpisode:
             residual_scale=_robust_scale(residuals),
         )
 
+    def _fresh_for_entry(self) -> bool:
+        return (
+            self.state in {AuctionResolution.ACCEPTANCE, AuctionResolution.FAILURE}
+            and self.resolution_age_bars is not None
+            and self.resolution_age_bars <= self.MAX_RESOLUTION_AGE_BARS
+        )
+
     def _snapshot(self, observed_ts_ns: int) -> RouterSnapshot:
         price, flow, residual, occupancy = self.last_channels
         return RouterSnapshot(
@@ -223,21 +251,42 @@ class ResponseEpisode:
             occupancy_channel=occupancy,
             bar_evidence=self.last_bar_evidence,
             evidence_odds_proxy=exp(min(abs(self.evidence), 40.0)),
+            resolution_ts_ns=self.resolution_ts_ns,
+            resolution_age_bars=self.resolution_age_bars,
+            max_resolution_age_bars=self.MAX_RESOLUTION_AGE_BARS,
+            fresh_for_entry=self._fresh_for_entry(),
         )
 
-    def observe(self, bar: Any) -> tuple[RouterSnapshot, bool]:
+    def observe(
+        self,
+        bar: Any,
+    ) -> tuple[RouterSnapshot, bool, AuctionResolution]:
         ts_ns = int(bar.ts_ns)
         if ts_ns < self.last_ts_ns:
             raise ValueError("router observations must be chronological")
         if ts_ns == self.last_ts_ns:
-            return self._snapshot(ts_ns), False
-        if self.state is not AuctionResolution.UNRESOLVED:
-            self.last_ts_ns = ts_ns
-            self.previous_close = float(bar.close)
-            return self._snapshot(ts_ns), False
+            return self._snapshot(ts_ns), False, self.state
 
+        previous_state = self.state
         close = float(bar.close)
-        if close <= 0.0 or self.previous_close <= 0.0:
+        if close <= 0.0:
+            raise ValueError("router prices must be positive")
+
+        if self.state in {AuctionResolution.ACCEPTANCE, AuctionResolution.FAILURE}:
+            self.last_ts_ns = ts_ns
+            self.previous_close = close
+            assert self.resolution_age_bars is not None
+            self.resolution_age_bars += 1
+            if self.resolution_age_bars > self.MAX_RESOLUTION_AGE_BARS:
+                self.state = AuctionResolution.STALE
+            return self._snapshot(ts_ns), self.state is not previous_state, previous_state
+
+        if self.state is AuctionResolution.STALE:
+            self.last_ts_ns = ts_ns
+            self.previous_close = close
+            return self._snapshot(ts_ns), False, previous_state
+
+        if self.previous_close <= 0.0:
             raise ValueError("router prices must be positive")
         raw_return = log(close / self.previous_close)
         flow = _signed_flow(bar, self.median_volume)
@@ -246,10 +295,6 @@ class ResponseEpisode:
 
         price_channel = tanh(side_sign * raw_return / self.return_scale)
         aggressor_pressure = tanh(side_sign * flow / self.flow_scale)
-        # Flow direction alone is not a state label.  The same aggressive burst
-        # can either move price (acceptance) or be absorbed (failure).  Weight the
-        # observed price response by pressure magnitude so trapped aggressors vote
-        # with the realized price response rather than with their submitted side.
         flow_channel = price_channel * abs(aggressor_pressure)
         residual_channel = tanh(side_sign * residual / self.residual_scale)
         occupancy_channel = tanh(
@@ -269,13 +314,15 @@ class ResponseEpisode:
         self.last_channels = channels
         self.last_bar_evidence = bar_evidence
 
-        previous_state = self.state
         if self.observations >= self.MIN_OBSERVATIONS:
             if self.evidence >= self.decision_boundary:
                 self.state = AuctionResolution.ACCEPTANCE
             elif self.evidence <= -self.decision_boundary:
                 self.state = AuctionResolution.FAILURE
-        return self._snapshot(ts_ns), self.state is not previous_state
+        if self.state is not AuctionResolution.UNRESOLVED:
+            self.resolution_ts_ns = ts_ns
+            self.resolution_age_bars = 0
+        return self._snapshot(ts_ns), self.state is not previous_state, previous_state
 
 
 class SequentialAuctionRouter:
@@ -338,10 +385,11 @@ class SequentialAuctionRouter:
                 if oldest != scenario_id:
                     self._episodes.pop(oldest, None)
 
-        snapshot, resolved_now = existing.observe(current_bar)
+        snapshot, state_changed, previous_state = existing.observe(current_bar)
         return RouterObservation(
             snapshot=snapshot,
             created=created,
             reset=reset,
-            resolved_now=resolved_now,
+            previous_state=previous_state,
+            state_changed=state_changed,
         )

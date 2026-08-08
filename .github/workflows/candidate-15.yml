@@ -1,4 +1,4 @@
-name: Candidate 15 sequential response screen
+name: Candidate 15 causal response screen
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Verify environment, inherited source freeze and router tests
+      - name: Verify frozen environment, inherited source and V2 contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -41,38 +41,36 @@ jobs:
           base_commit="$(python - <<'PY'
           import json
           from pathlib import Path
-          protocol = json.loads(
-              Path("research/candidate-15/protocol.json").read_text(encoding="utf-8")
-          )
+          protocol = json.loads(Path("research/candidate-15/protocol.json").read_text())
           print(protocol["base_candidate"]["commit"])
           PY
           )"
           git fetch --no-tags origin "$base_commit"
           git cat-file -e "${base_commit}^{commit}"
-          inherited_tree="$(git rev-parse "${base_commit}:research/candidate-14")"
-          current_tree="$(git rev-parse "HEAD:research/candidate-14")"
-          test "$inherited_tree" = "$current_tree"
+          test "$(git rev-parse "${base_commit}:research/candidate-14")" = \
+               "$(git rev-parse "HEAD:research/candidate-14")"
+
           export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
           python -m py_compile research/candidate-15/*.py
-          python -m unittest discover \
-            -s research/candidate-15 \
-            -p 'test_*.py' \
-            -v
+          python -m unittest discover -s research/candidate-15 -p 'test_*.py' -v
           python - <<'PY'
           import json
           from pathlib import Path
-
           root = Path("research/candidate-15")
-          protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
-          assert protocol["base_candidate"]["commit"] == "0f32715d90f4cf4a8bd252d53407ff20b097bbfb"
-          assert set(protocol["selection"]["intervals"]) == {"D1", "H1", "S1"}
+          protocol = json.loads((root / "protocol.json").read_text())
+          assert protocol["schema"] == "candidate-15-causal-decision-lease-v2"
+          assert set(protocol["selection"]["intervals"]) == {
+              "D1", "H1", "S1", "U1", "U2", "U3", "U4", "U5"
+          }
           assert protocol["execution_lock"]["risk_fraction"] == 0.03
           assert protocol["execution_lock"]["global_pending_entry_plus_position_limit"] == 1
+          assert protocol["router"]["decision_lease"]["immediately_following_completed_bars"] == 1
 
           import run_leadership_scdam
           from logic import CausalAuctionEngine
           assert Path(run_leadership_scdam.__file__).resolve().parent.name == "candidate-15"
           assert getattr(CausalAuctionEngine, "_candidate15_router_installed", False)
+          assert "C15_UNROUTED_SCENARIO_FAMILY" in run_leadership_scdam._SOURCE
           PY
 
   evaluate:
@@ -82,7 +80,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        interval: [D1, H1, S1]
+        interval: [D1, H1, S1, U1, U2, U3, U4, U5]
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -130,6 +128,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          intervals=(D1 H1 S1 U1 U2 U3 U4 U5)
           git fetch origin research/candidate-15
           current_head="$(git rev-parse origin/research/candidate-15)"
           if [[ "$current_head" != "$GITHUB_SHA" ]]; then
@@ -138,13 +137,10 @@ jobs:
           fi
 
           rm -rf research/candidate-15/results
-          for interval in D1 H1 S1; do
+          for interval in "${intervals[@]}"; do
             mkdir -p "research/candidate-15/results/$interval"
-            cp -a "artifacts/candidate15-$interval/." \
-              "research/candidate-15/results/$interval/"
-            for file in \
-              run.json data_manifest.json metrics.json summary.json \
-              effective_config.json submitted_plans.json positions.csv account.csv; do
+            cp -a "artifacts/candidate15-$interval/." "research/candidate-15/results/$interval/"
+            for file in run.json data_manifest.json metrics.json summary.json effective_config.json submitted_plans.json positions.csv account.csv; do
               test -s "research/candidate-15/results/$interval/$file"
             done
           done
@@ -159,9 +155,8 @@ jobs:
 
           git config user.name "candidate-15-bot"
           git config user.email "candidate-15-bot@users.noreply.github.com"
-          git add research/candidate-15/aggregate.json \
-                  research/candidate-15/RESULT.md
-          for interval in D1 H1 S1; do
+          git add research/candidate-15/aggregate.json research/candidate-15/RESULT.md
+          for interval in "${intervals[@]}"; do
             git add \
               "research/candidate-15/results/$interval/run.json" \
               "research/candidate-15/results/$interval/data_manifest.json" \
@@ -173,13 +168,13 @@ jobs:
               "research/candidate-15/results/$interval/account.csv"
           done
           if ! git diff --cached --quiet; then
-            git commit -m "candidate-15: record Nautilus screening evidence [skip ci]"
+            git commit -m "candidate-15: record V2 Nautilus evidence [skip ci]"
             git push origin HEAD:research/candidate-15
           fi
       - name: Upload aggregate evidence
         uses: actions/upload-artifact@v4
         with:
-          name: candidate15-aggregate-${{ github.run_id }}
+          name: candidate15-v2-aggregate-${{ github.run_id }}
           path: |
             research/candidate-15/aggregate.json
             research/candidate-15/RESULT.md

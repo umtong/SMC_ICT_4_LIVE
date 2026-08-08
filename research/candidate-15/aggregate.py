@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate Candidate 15's predeclared screening intervals.
-
-The intervals run as separate Nautilus accounts for parallel information gain.
-The aggregate is therefore explicitly a weekly-reset screen, not continuous
-account evidence and never a final success claim.
-"""
+"""Aggregate Candidate 15 V2's predeclared screening intervals."""
 from __future__ import annotations
 
 import argparse
@@ -38,15 +33,57 @@ def decimal_value(value: Any, default: str = "0") -> Decimal:
     return Decimal(str(value))
 
 
+def summarize_group(
+    records: list[dict[str, Any]],
+    *,
+    start_nav: Decimal,
+    evaluation_days: int,
+) -> dict[str, Any]:
+    multiples = [
+        decimal_value(record["final_nav"], str(start_nav)) / start_nav
+        for record in records
+    ]
+    nav_multiple = reduce(lambda x, y: x * y, multiples, Decimal("1"))
+    days = evaluation_days * len(records)
+    daily_geo = (
+        float(nav_multiple ** (Decimal("1") / Decimal(days)) - Decimal("1"))
+        if days > 0 and nav_multiple > 0
+        else None
+    )
+    trades = sum(record["closed_trades"] for record in records)
+    wins = sum(record["wins"] for record in records)
+    losses = sum(record["losses"] for record in records)
+    drawdowns = [
+        float(record["closed_trade_max_drawdown"])
+        for record in records
+        if record["closed_trade_max_drawdown"] is not None
+    ]
+    return {
+        "interval_count": len(records),
+        "weekly_reset_nav_multiple": float(nav_multiple),
+        "daily_geometric_growth": daily_geo,
+        "closed_trades": trades,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": wins / trades if trades else None,
+        "maximum_interval_closed_trade_drawdown": max(drawdowns, default=0.0),
+        "safety": all(
+            not record["engine_errors"]
+            and record["liquidation_detected"] is not True
+            for record in records
+        ),
+    }
+
+
 def aggregate(root: Path) -> dict[str, Any]:
     protocol = read_object(root / "protocol.json")
-    interval_records: list[dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
     for interval, selection in protocol["selection"]["intervals"].items():
         summary_path = root / "results" / interval / "summary.json"
         if not summary_path.is_file():
             raise FileNotFoundError(summary_path)
         summary = read_object(summary_path)
-        interval_records.append(
+        records.append(
             {
                 "interval": interval,
                 "role": selection["role"],
@@ -60,54 +97,50 @@ def aggregate(root: Path) -> dict[str, Any]:
                 "win_rate": summary.get("win_rate"),
                 "payoff_ratio": summary.get("payoff_ratio"),
                 "closed_trade_max_drawdown": summary.get("closed_trade_max_drawdown"),
-                "promising_gate_passed": bool(summary.get("promising_gate_passed")),
-                "complete_gate_passed": bool(summary.get("complete_gate_passed")),
                 "liquidation_detected": summary.get("liquidation_detected"),
                 "engine_errors": summary.get("engine_errors", []),
                 "router_diagnostics": summary.get("router_diagnostics", {}),
             },
         )
 
+    development = [record for record in records if record["role"].startswith("contaminated-")]
+    confirmation = [record for record in records if record["role"] == "predeclared-v2-confirmation"]
     start_nav = decimal_value(protocol["execution_lock"]["starting_nav"])
-    nav_multiples = [
-        decimal_value(record["final_nav"], str(start_nav)) / start_nav
-        for record in interval_records
-    ]
-    weekly_reset_nav_multiple = reduce(lambda x, y: x * y, nav_multiples, Decimal("1"))
-    days = protocol["selection"]["evaluation_days"] * len(interval_records)
-    daily_geo = (
-        float(weekly_reset_nav_multiple ** (Decimal("1") / Decimal(days)) - Decimal("1"))
-        if days > 0 and weekly_reset_nav_multiple > 0
-        else None
+    evaluation_days = int(protocol["selection"]["evaluation_days"])
+    development_stats = summarize_group(
+        development,
+        start_nav=start_nav,
+        evaluation_days=evaluation_days,
     )
-    trades = sum(record["closed_trades"] for record in interval_records)
-    wins = sum(record["wins"] for record in interval_records)
-    losses = sum(record["losses"] for record in interval_records)
-    win_rate = wins / trades if trades else None
-    drawdowns = [
-        float(record["closed_trade_max_drawdown"])
-        for record in interval_records
-        if record["closed_trade_max_drawdown"] is not None
-    ]
-    maximum_interval_drawdown = max(drawdowns, default=0.0)
-    safety = all(
-        not record["engine_errors"]
-        and record["liquidation_detected"] is not True
-        for record in interval_records
+    confirmation_stats = summarize_group(
+        confirmation,
+        start_nav=start_nav,
+        evaluation_days=evaluation_days,
     )
 
     checks = {
-        "all_intervals_present": len(interval_records)
-        == len(protocol["selection"]["intervals"]),
-        "screening_activity": trades >= 5,
-        "positive_costed_growth": daily_geo is not None and daily_geo > 0.0,
-        "project_growth_threshold": daily_geo is not None and daily_geo >= 0.01,
-        "win_rate_at_least_0_65": win_rate is not None and win_rate >= 0.65,
-        "maximum_interval_drawdown_at_most_0_20": maximum_interval_drawdown <= 0.20,
-        "safety": safety,
+        "all_intervals_present": len(records) == len(protocol["selection"]["intervals"]),
+        "five_predeclared_confirmation_intervals": len(confirmation) == 5,
+        "confirmation_activity": confirmation_stats["closed_trades"] >= 5,
+        "positive_costed_growth": (
+            confirmation_stats["daily_geometric_growth"] is not None
+            and confirmation_stats["daily_geometric_growth"] > 0.0
+        ),
+        "project_growth_threshold": (
+            confirmation_stats["daily_geometric_growth"] is not None
+            and confirmation_stats["daily_geometric_growth"] >= 0.01
+        ),
+        "win_rate_at_least_0_65": (
+            confirmation_stats["win_rate"] is not None
+            and confirmation_stats["win_rate"] >= 0.65
+        ),
+        "maximum_interval_drawdown_at_most_0_20": (
+            confirmation_stats["maximum_interval_closed_trade_drawdown"] <= 0.20
+        ),
+        "safety": confirmation_stats["safety"],
     }
-    if not checks["screening_activity"]:
-        classification = "CANDIDATE15_INSUFFICIENT_ACTIVITY"
+    if not checks["confirmation_activity"]:
+        classification = "CANDIDATE15_V2_INSUFFICIENT_ACTIVITY"
     elif all(
         checks[key]
         for key in (
@@ -117,25 +150,21 @@ def aggregate(root: Path) -> dict[str, Any]:
             "safety",
         )
     ):
-        classification = "CANDIDATE15_PROMISING_SCREEN"
+        classification = "CANDIDATE15_V2_PROMISING_SCREEN"
     else:
-        classification = "CANDIDATE15_SCREEN_REJECTED"
+        classification = "CANDIDATE15_V2_SCREEN_REJECTED"
 
     payload = {
-        "schema": "candidate-15-screen-aggregate-v1",
+        "schema": "candidate-15-v2-screen-aggregate-v1",
         "candidate": protocol["candidate"],
+        "protocol": protocol["schema"],
         "classification": classification,
         "success_claim": False,
         "continuous_account_evidence": False,
         "weekly_reset_screen": True,
-        "intervals": interval_records,
-        "weekly_reset_nav_multiple": float(weekly_reset_nav_multiple),
-        "daily_geometric_growth": daily_geo,
-        "closed_trades": trades,
-        "wins": wins,
-        "losses": losses,
-        "win_rate": win_rate,
-        "maximum_interval_closed_trade_drawdown": maximum_interval_drawdown,
+        "development_replay": development_stats,
+        "confirmation": confirmation_stats,
+        "intervals": records,
         "checks": checks,
         "next_evidence_required": (
             "A frozen continuous-account interval is required before any success claim."
@@ -144,27 +173,34 @@ def aggregate(root: Path) -> dict[str, Any]:
     write_object(root / "aggregate.json", payload)
 
     lines = [
-        "# Candidate 15 sequential response router",
+        "# Candidate 15 V2 causal decision lease",
         "",
         f"**{classification}**",
         "",
         "- success_claim: `False`",
         "- continuous_account_evidence: `False`",
         "- weekly_reset_screen: `True`",
-        f"- daily_geometric_growth: `{daily_geo}`",
-        f"- weekly_reset_nav_multiple: `{float(weekly_reset_nav_multiple):.10f}`",
-        f"- closed_trades: `{trades}`",
-        f"- wins / losses: `{wins} / {losses}`",
-        f"- win_rate: `{win_rate}`",
-        f"- maximum_interval_closed_trade_drawdown: `{maximum_interval_drawdown}`",
+        "",
+        "## Predeclared V2 confirmation",
+        f"- daily_geometric_growth: `{confirmation_stats['daily_geometric_growth']}`",
+        f"- weekly_reset_nav_multiple: `{confirmation_stats['weekly_reset_nav_multiple']:.10f}`",
+        f"- closed_trades: `{confirmation_stats['closed_trades']}`",
+        f"- wins / losses: `{confirmation_stats['wins']} / {confirmation_stats['losses']}`",
+        f"- win_rate: `{confirmation_stats['win_rate']}`",
+        f"- maximum_interval_closed_trade_drawdown: `{confirmation_stats['maximum_interval_closed_trade_drawdown']}`",
+        "",
+        "## Contaminated mechanism replay",
+        f"- closed_trades: `{development_stats['closed_trades']}`",
+        f"- wins / losses: `{development_stats['wins']} / {development_stats['losses']}`",
+        f"- daily_geometric_growth: `{development_stats['daily_geometric_growth']}`",
         "",
         "## Interval evidence",
     ]
-    for record in interval_records:
+    for record in records:
         router = record["router_diagnostics"].get("router_resolution_counts", {})
         lines.append(
             "- "
-            f"{record['interval']} ({record['start']}): "
+            f"{record['interval']} [{record['role']}] ({record['start']}): "
             f"daily_geo={record['daily_geometric_growth']}, "
             f"trades={record['closed_trades']}, "
             f"W/L={record['wins']}/{record['losses']}, "
@@ -175,8 +211,8 @@ def aggregate(root: Path) -> dict[str, Any]:
     lines.extend(
         (
             "",
-            "The three intervals are a parallel information-value screen. "
-            "They do not form one continuous account path.",
+            "Classification uses only U1-U5. D1/H1/S1 are contaminated mechanism replays. "
+            "The confirmation weeks do not form one continuous account path.",
         ),
     )
     (root / "RESULT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -185,11 +221,7 @@ def aggregate(root: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--root",
-        type=Path,
-        default=Path(__file__).resolve().parent,
-    )
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
     args = parser.parse_args()
     result = aggregate(args.root.resolve())
     print(json.dumps(result, indent=2, sort_keys=True, default=str))

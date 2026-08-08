@@ -1,8 +1,8 @@
 # Candidate 15 — Sequential Price–Flow Response Router
 
-Candidate 15 keeps Candidate 14's complete NautilusTrader path and changes one
-thing: the parent auction must resolve before either inherited child scenario may
-trade.
+Candidate 15 keeps Candidate 14's frozen NautilusTrader detector, order,
+portfolio, cost and current-NAV risk path. It adds an online state router between
+external-liquidity interaction and inherited FAR/AAC confirmation.
 
 ```text
 external liquidity trade-through
@@ -13,73 +13,79 @@ price / aggressor conversion evidence
    ↙          ↓           ↘
 FAILURE   UNRESOLVED   ACCEPTANCE
    ↓          ↓           ↓
-  FAR      NO TRADE       AAC
+fresh FAR   NO TRADE    fresh AAC
+   \          |           /
+      unused after one following bar
+                    ↓
+                  STALE
+                    ↓
+                 NO TRADE
 ```
 
-## Why this candidate exists
+## V1 and the structural failure
 
-Candidate 13 produced strong but sparse evidence: seven wins from seven closed
-trades across five holdout weeks, with aggregate daily geometric growth above the
-project threshold. Candidate 14 expanded opportunity density, but its frozen
-84-day continuous account produced 15 trades, only three wins and a 19.26% NAV
-loss. Its own failure analysis identified state aliasing: the same surface
-sweep/reclaim observations mixed genuine failure with true acceptance.
+V1 correctly separated local response states but stored the first resolution as
+a permanent episode label. Its weekly-reset screen lost 7.72% compounded: five
+trades, one win and four losses. The only core winner entered one bar after state
+resolution; the three core losses reused a resolution roughly 8, 13 and 27 bars
+later. A fifth loss came from `SESSION_I7`, which Candidate 14 injects at the
+portfolio layer and therefore bypassed the router.
 
-The next useful change is therefore not another threshold on the eventual trade
-outcome. It is an online state router based only on information visible before
-entry.
+`V1_FAILURE.md` preserves the evidence and the exact causal decomposition.
+
+## V2 causal decision lease
+
+A response resolution is an event, not an enduring market regime. V2 allows an
+inherited structural confirmation to consume the decision on the resolution bar
+or the immediately following completed bar. It then changes the router state to
+`STALE`, which cannot enter. A new sweep extreme starts a fresh episode.
+
+This timing follows the strategy's causal contract: entry, invalidation and
+target must belong to the same new auction leg. It is not a profitable-trade
+lookback fitted to return outcomes.
+
+`SESSION_I7` remains observed and logged but fails closed with
+`C15_UNROUTED_SCENARIO_FAMILY`. It lacks the continuously observed compatible
+external-liquidity episode needed to make the Candidate 15 decision. A future
+session router must be researched and validated independently before that family
+can contribute opportunities.
 
 ## State evidence
 
 For each newest sweep extreme, the router calibrates a non-negative
 contemporaneous response between one-minute log return and signed taker-flow
-pressure over completed pre-event bars. Every later completed bar contributes
-four bounded channels:
+pressure over completed pre-event bars. Each subsequent completed bar adds four
+bounded evidence channels:
 
 1. directional price response;
-2. price conversion under the magnitude of aggressive pressure;
-3. directional response unexplained by the calibrated impact;
+2. price conversion under aggressor-pressure magnitude;
+3. directional response unexplained by calibrated impact;
 4. close occupancy beyond the latest crossed external boundary.
 
-The channel mean accumulates sequentially. A symmetric `log(9)` boundary and
-`log(2)` full-agreement increment are fixed methodological conventions rather
-than PnL-fitted parameters. Until a boundary is crossed, the state is
-`UNRESOLVED` and neither FAR nor AAC may enter. A new extreme or boundary resets
-the episode, so stale evidence is not inherited by a new causal leg.
-
-The implementation deliberately calls the available bar field an aggressor-flow
-proxy, not full limit-order-book OFI. The external microstructure literature is
-used to choose the causal question; the repository's actual data contract
-determines what can be measured.
+A symmetric `log(9)` boundary with `log(2)` full-agreement increments is a fixed
+methodological convention, not a calibrated posterior probability. The available
+bar field is described as an aggressor-flow proxy, not full limit-order-book OFI.
 
 ## Preserved invariants
 
 - NautilusTrader owns orders, fills, fees, margin, positions and NAV.
 - Current whole-account NAV and 3% planned loss determine quantity.
 - At most one pending entry or open position exists across all four instruments.
-- Candidate 14's entry, invalidation, target, leadership and execution semantics
-  remain unchanged.
-- `UNRESOLVED` is a real no-trade state.
+- Candidate 14's entry, invalidation, target and leadership rules are unchanged.
 - No outcome-fitted route whitelist, risk multiplier or leverage cap is added.
+- `UNRESOLVED` and `STALE` are real no-trade states.
 
-## Predeclared screen
+## Validation protocol
 
-`protocol.json` freezes three seven-day intervals before Candidate 15 outcomes:
-
-- `D1`: known Candidate 14 loss cluster, used only for mechanism diagnosis;
-- `H1`: ordinary-regime confirmation;
-- `S1`: liquidation-stress confirmation.
-
-The jobs run independently for parallel information gain. Their aggregate is
-explicitly a weekly-reset screen, not continuous-account evidence and not a
-success claim.
-
-## Run
+D1/H1/S1 are contaminated V1 mechanism replays. U1-U5 were committed before V2
+outcomes and alone determine the V2 screen classification. The five confirmation
+weeks remain weekly-reset evidence; they cannot establish long-run success
+without a frozen continuous-account run.
 
 ```bash
-bash research/candidate-15/run_week.sh D1
-bash research/candidate-15/run_week.sh H1
-bash research/candidate-15/run_week.sh S1
+for interval in D1 H1 S1 U1 U2 U3 U4 U5; do
+  bash research/candidate-15/run_week.sh "$interval"
+done
 python research/candidate-15/aggregate.py
 ```
 
@@ -94,5 +100,5 @@ python research/candidate-15/aggregate.py
 - Hu & Zhang, *Stochastic Price Dynamics in Response to Order Flow Imbalance*,
   arXiv:2505.17388.
 
-`RESULT.md` and `aggregate.json` are generated from the fresh GitHub Actions
+`RESULT.md` and `aggregate.json` are generated from fresh GitHub Actions
 Nautilus runs.
