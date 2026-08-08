@@ -1,0 +1,200 @@
+{
+  "candidate": "candidate-11-core-far-transfer",
+  "created_utc": "2026-08-08",
+  "decision": {
+    "gate_fail": "Reject this scenario contract or replace one causally identified market-state assumption. Do not perform a return-targeted threshold sweep.",
+    "gate_pass": "Authorize a byte-frozen fresh-validation candidate. This is not a success claim."
+  },
+  "development_gate": {
+    "claimed_directions": [
+      "LONG",
+      "SHORT"
+    ],
+    "forbid_resolution_tail_forced_exit": true,
+    "maximum_positive_log_growth_share_from_one_cluster": 0.25,
+    "minimum_blocks": 3,
+    "minimum_clusters_per_claimed_direction": 5,
+    "minimum_economic_clusters": 20,
+    "minimum_pooled_daily_geometric_growth": 0.01,
+    "require_all_safety_audits": true,
+    "require_positive_leave_one_cluster_out_growth": true,
+    "require_positive_log_growth_each_block": true,
+    "require_positive_log_growth_per_claimed_direction": true
+  },
+  "execution_lock": {
+    "effective_maker_rate": "0.0004",
+    "effective_taker_rate": "0.0008",
+    "engine": "NautilusTrader",
+    "global_pending_entry_plus_position_limit": 1,
+    "risk_fraction": 0.03,
+    "starting_nav": "100000",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ]
+  },
+  "importance_contract": {
+    "decision_evidence": [
+      "one continuous NautilusTrader account/state timeline per 28-day block",
+      "economic-cluster expectancy rather than isolated trade or week point estimates",
+      "scenario-domain and direction coverage",
+      "natural target, stop or predeclared one-cycle time exit",
+      "after-cost NAV growth with safety and exact-risk audits"
+    ],
+    "evidence_hierarchy": {
+      "DEVELOPMENT_GATE": {
+        "advance_means": "authorize a byte-frozen fresh-validation candidate only",
+        "can_advance_candidate": true,
+        "can_claim_alpha": false,
+        "minimum_contract": "three precommitted continuous 28-day blocks and economic-cluster robustness",
+        "purpose": [
+          "estimate scenario-domain event quality and density on continuous opened data",
+          "test direction and regime coverage",
+          "decide whether fresh validation is worth spending"
+        ]
+      },
+      "FRESH_VALIDATION": {
+        "can_change_source_between_blocks": false,
+        "can_claim_alpha": "only after the separate fresh-validation protocol passes",
+        "purpose": [
+          "test the frozen scenario once on untouched continuous blocks"
+        ]
+      },
+      "LONG_EVALUATION": {
+        "can_repair_candidate": false,
+        "purpose": [
+          "measure durability, rolling growth and regime transitions after fresh validation"
+        ]
+      },
+      "TEMPORARY_TEST": {
+        "can_advance_candidate": false,
+        "can_claim_alpha": false,
+        "examples": [
+          "unit tests",
+          "source materialization tests",
+          "single short smoke run",
+          "diagnostic ablation on opened data"
+        ],
+        "purpose": [
+          "implementation correctness",
+          "causal state-order inspection",
+          "fast rejection of incoherent logic"
+        ]
+      }
+    },
+    "primary_object": "A causal trading scenario: completed liquidity pool, sweep, completed peer transfer, local reclaim/displacement, executable entry, structural invalidation, live target and one-cycle time invalidation.",
+    "primary_research_priority": "Discover and improve a causally coherent after-cost trading scenario. Backtest return, win rate and trade count are consequences and diagnostics, not variables to be forced by adding conditions.",
+    "temporary_tests": [
+      "unit and source-materialization checks",
+      "single-block smoke runs used only to find implementation or state-order defects",
+      "diagnostic ablations on already opened data"
+    ],
+    "temporary_tests_cannot": [
+      "claim strategy success",
+      "promote an interval to holdout evidence",
+      "justify threshold additions merely because NAV improves"
+    ]
+  },
+  "locked_source": {
+    "blobs": {
+      "bar_adapter.py": "c2ce386a42956c22039f0bf7490cf9493ab51003",
+      "base_config.json": "050b5b9413c22e4fc2ef247cc2b272657ff66f38",
+      "evidence_audit.py": "990dd8986246a7dac8d5c619ef930ffd54ba430e",
+      "global_allocator.py": "6dcc95a4f02a0613ad7c72ff0b738cee4b640fc4",
+      "logic.py": "08ac6c0119c2e83039c864ff3a0aff06d6a75c75",
+      "market_leadership.py": "272b1aee7468cbbd6b79a4bc6c8e421e93df6bf0",
+      "run_leadership_scdam_base.py": "e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f",
+      "runner_materializer.py": "7455c41ffa88f68e814256e37aa8a01d06af3bcd",
+      "semantic_execution.py": "a463710a65b0f85b290bb1424c350f720d394925",
+      "semantic_logic.py": "055e64acbb1c414ca80ef385b415827ba2eacc5f",
+      "semantic_market_leadership.py": "6b9a14648760d7c92a38c272e6d7994a357302c9",
+      "session_engine.py": "21180b2397f0ee63c887079764df1ee94e426a03"
+    },
+    "origin_branch": "research/candidate-11",
+    "origin_directory": "research/candidate-11/session_portfolio_v1"
+  },
+  "research_question": "Can the SCDAM core failed-auction transfer mechanism, evaluated as its own scenario domain rather than pooled with AAC or session-I7 routes, produce repeatable after-cost account growth across continuous opened-data blocks?",
+  "research_stage": "DEVELOPMENT",
+  "scenario_contract": {
+    "allowed_market_scenario": "FAR",
+    "allowed_module": "SCDAM_CORE",
+    "detector": "Candidate 11 SCDAM regional handoff auction engine",
+    "excluded_domains": [
+      "AAC",
+      "SESSION_I7_COUNTERTREND_TRANSFER",
+      "SESSION_I7_TREND_RESUMPTION"
+    ],
+    "exclusion_reason": "Opened evidence does not support pooling these economically different states under one account-level claim. They require independent scenario contracts and evidence.",
+    "new_fitted_thresholds": [],
+    "time_invalidation": {
+      "maximum_holding_minutes": 1440,
+      "semantics": "A failed-auction transfer must resolve within one complete 24-hour global liquidity cycle; otherwise the original causal episode is stale."
+    }
+  },
+  "schema": "candidate-11-core-far-continuous-development-v1",
+  "selection": {
+    "blocks": {
+      "D1": {
+        "end_exclusive": "2023-10-20",
+        "role": "development-gate",
+        "start": "2023-09-22"
+      },
+      "D2": {
+        "end_exclusive": "2024-10-29",
+        "role": "development-gate",
+        "start": "2024-10-01"
+      },
+      "D3": {
+        "end_exclusive": "2025-10-14",
+        "role": "development-gate",
+        "start": "2025-09-16"
+      }
+    },
+    "data_use": "OPENED_DEVELOPMENT_BY_DESIGN",
+    "eligible_start_first": "2022-01-01",
+    "eligible_start_last": "2025-12-04",
+    "evaluation_days": 28,
+    "method": "Before downloading market data, enumerate every daily 28-day start from 2022-01-01 through 2025-12-04, shuffle with random.Random(seed), exclude each W10-W14/H1-H3 interval together with its three-day warmup, then accept the first three non-overlapping starts from distinct calendar years. The selected intervals are intentionally opened as development data and can never become validation evidence.",
+    "opened_interval_exclusions": {
+      "H1": {
+        "end_exclusive": "2023-03-13",
+        "start": "2023-03-06"
+      },
+      "H2": {
+        "end_exclusive": "2023-09-15",
+        "start": "2023-09-08"
+      },
+      "H3": {
+        "end_exclusive": "2024-04-21",
+        "start": "2024-04-14"
+      },
+      "W10": {
+        "end_exclusive": "2025-04-21",
+        "start": "2025-04-14"
+      },
+      "W11": {
+        "end_exclusive": "2023-03-27",
+        "start": "2023-03-20"
+      },
+      "W12": {
+        "end_exclusive": "2023-06-27",
+        "start": "2023-06-20"
+      },
+      "W13": {
+        "end_exclusive": "2024-09-24",
+        "start": "2024-09-17"
+      },
+      "W14": {
+        "end_exclusive": "2025-01-07",
+        "start": "2024-12-31"
+      }
+    },
+    "resolution_tail_days": 2,
+    "seed": 2026080811,
+    "warmup_days": 3
+  },
+  "success_claim_allowed": false,
+  "validation_eligible": false
+}
