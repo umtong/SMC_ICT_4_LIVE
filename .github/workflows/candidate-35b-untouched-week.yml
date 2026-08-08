@@ -1,0 +1,107 @@
+name: candidate-35b-untouched-week
+on:
+  push:
+    branches: ["research/candidate-35"]
+    paths:
+      - ".github/workflows/candidate-35b-untouched-week.yml"
+  workflow_dispatch:
+concurrency:
+  group: candidate-35b-untouched-week
+  cancel-in-progress: true
+permissions:
+  contents: read
+  packages: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-35:research/candidate-29:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/c35b-untouched-2026-07-08_2026-07-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore verified raw-data cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/c35b-untouched-week
+          key: candidate35b-binance-2026-07-08_2026-07-14-v1
+      - name: Verify frozen implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-35
+          python -m unittest discover -s research/candidate-35 -p 'test_*.py' -v
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg=json.loads(Path('research/candidate-35/config.json').read_text())
+          s=cfg['strategy']
+          assert s['allow_reversal'] is False
+          assert s['context_bars']==60
+          assert s['min_context_breadth']==3
+          assert s['min_net_reward_r']==1.25
+          assert cfg['risk_fraction']==0.03
+          PY
+      - name: Run one untouched seven-day four-asset Nautilus account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-35/launch.py \
+            --config research/candidate-35/config.json \
+            --start 2026-07-08 \
+            --end 2026-07-14 \
+            --cache .cache/c35b-untouched-week \
+            --workspace .cache/c35b-untouched-week-work \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Verify account and claim boundary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$ROOT/metrics.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          x=json.loads((root/'metrics.json').read_text())
+          assert x['evaluation_start']=='2026-07-08'
+          assert x['evaluation_end']=='2026-07-14'
+          assert x['calendar_days']==7
+          assert x['single_continuous_account'] is True
+          assert x['single_strategy_process'] is True
+          assert x['global_entry_or_position_limit']==1
+          assert x['strategy_diagnostics']['policy_version']=='candidate-35b'
+          assert x['strategy_diagnostics']['max_open_positions_observed'] <= 1
+          assert x['strategy_diagnostics']['global_position_violations']==0
+          print(json.dumps({
+            'ending_nav':x['ending_nav'],
+            'total_return':x['total_return'],
+            'geometric_daily_growth':x['geometric_daily_growth'],
+            'max_drawdown':x['max_drawdown'],
+            'trades':x['trades'],
+            'wins':x['wins'],
+            'losses':x['losses'],
+            'win_rate':x['win_rate'],
+            'profit_factor':x['profit_factor'],
+            'expectancy_usdt':x['expectancy_usdt'],
+            'active_days':x['active_days'],
+            'gate_pass':x['gate_pass'],
+            'position_counts_by_symbol':x['position_counts_by_symbol'],
+            'strategy_diagnostics':x['strategy_diagnostics'],
+          },indent=2,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate35b-untouched-week-${{ github.sha }}
+          path: artifacts/c35b-untouched-2026-07-08_2026-07-14/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
