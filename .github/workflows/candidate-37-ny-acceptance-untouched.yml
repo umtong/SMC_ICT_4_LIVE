@@ -1,0 +1,188 @@
+name: candidate-37-ny-acceptance-untouched
+
+on:
+  push:
+    branches: ["research/candidate-37"]
+    paths:
+      - "research/candidate-37/ny_acceptance.py"
+      - "research/candidate-37/ny_acceptance_study.py"
+      - "research/candidate-37/test_ny_acceptance.py"
+      - ".github/workflows/candidate-37-ny-acceptance-untouched.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-37-ny-acceptance-untouched
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      chunks: ${{ steps.matrix.outputs.chunks }}
+    steps:
+      - id: matrix
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          periods = (
+              ("2025-11", "2025-10-31", "2025-11-30"),
+              ("2025-12", "2025-12-01", "2025-12-31"),
+              ("2026-01", "2026-01-01", "2026-01-31"),
+              ("2026-02", "2026-02-01", "2026-02-28"),
+          )
+          chunks = [
+              {"name": name, "start": start, "end": end, "symbol": symbol}
+              for name, start, end in periods
+              for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+          ]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write("chunks=" + json.dumps(chunks, separators=(",", ":")) + "\n")
+          print(json.dumps(chunks, indent=2))
+          PY
+
+  preprocess:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        chunk: ${{ fromJson(needs.plan.outputs.chunks) }}
+    env:
+      PYTHONPATH: research/candidate-37
+      PYTHONUNBUFFERED: "1"
+      PIN: e2a75507e9b98135907c761b844afe095a6f839c
+      TOOL: artifacts/c37-c30-pinned
+      ROOT: artifacts/c37-ny-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment, policy contracts and pinned builder blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-37
+          python -m unittest discover -s research/candidate-37 -p 'test_ny_acceptance.py' -v
+          python - <<'PY'
+          from hashlib import sha1
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          pin = os.environ["PIN"]
+          tool = Path(os.environ["TOOL"])
+          tool.mkdir(parents=True, exist_ok=True)
+          expected = {
+              "build_month.py": "388965682b8737752df22ef0f413e14841b32a88",
+              "build_month_v2.py": "fa93594cbc062e4e64d68dd44b60d55dc879a84d",
+              "build_month_v3.py": "b1c2faad0366ad7fd7d206133688bb3f349ba673",
+          }
+          for name, blob in expected.items():
+              url = f"https://raw.githubusercontent.com/umtong/SMC_ICT_4_LIVE/{pin}/research/candidate-30/{name}"
+              with urlopen(url, timeout=120) as response:
+                  data = response.read()
+              actual = sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+              if actual != blob:
+                  raise RuntimeError(f"pinned blob mismatch for {name}: {actual}")
+              (tool / name).write_bytes(data)
+          PY
+          python -m compileall -q "$TOOL"
+
+      - name: Build checksum-owned minute state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          PYTHONPATH="$TOOL" python "$TOOL/build_month_v3.py" \
+            --symbol "${{ matrix.chunk.symbol }}" \
+            --core-start "${{ matrix.chunk.start }}" \
+            --core-end "${{ matrix.chunk.end }}" \
+            --cache ".cache/c37-ny/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}" \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate37-ny-${{ matrix.chunk.name }}-${{ matrix.chunk.symbol }}-${{ github.sha }}
+          path: |
+            artifacts/c37-ny-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}/minute_state.csv.gz
+            artifacts/c37-ny-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}/month_manifest.json
+            artifacts/c37-ny-input/${{ matrix.chunk.name }}/${{ matrix.chunk.symbol }}/console.log
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  study:
+    needs: preprocess
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-37
+      PYTHONUNBUFFERED: "1"
+      INPUT: artifacts/c37-ny-downloaded
+      ROOT: artifacts/c37-ny-untouched
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate37-ny-*-${{ github.sha }}
+          path: ${{ env.INPUT }}
+          merge-multiple: false
+
+      - name: Run frozen four-month untouched continuous screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find "$INPUT" -name month_manifest.json | wc -l)" -eq 16
+          python -m compileall -q research/candidate-37
+          python -m unittest discover -s research/candidate-37 -p 'test_ny_acceptance.py' -v
+          mkdir -p "$ROOT"
+          python research/candidate-37/ny_acceptance_study.py \
+            --input-root "$INPUT" \
+            --output "$ROOT" \
+            --evaluation-start 2025-11-01 \
+            --evaluation-end 2026-02-28 \
+            --split-day 2026-01-01 \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Enforce claim boundary and causal invariants
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f "$ROOT/study.json"; then
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads((Path(os.environ["ROOT"]) / "study.json").read_text())
+          assert result["claim_scope"] == "CAUSAL_PATH_AND_CONTINUOUS_RISK_SCREEN_NO_NAUTILUS_ORDER_FILL_OR_MARGIN_CLAIM"
+          assert result["gates"]["exact_four_symbol_minute_clock"] is True
+          assert result["gates"]["future_input_violations"] == 0
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          else
+            echo "study.json absent; inspect console.log"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate37-ny-untouched-study-${{ github.sha }}
+          path: artifacts/c37-ny-untouched/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
