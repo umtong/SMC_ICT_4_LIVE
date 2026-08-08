@@ -1,0 +1,85 @@
+name: candidate-18-v11-liquidation-absorption-study
+
+on:
+  push:
+    branches: ["research/candidate-18"]
+    paths:
+      - ".github/workflows/candidate-18-v11-liquidation-absorption-study.yml"
+      - "research/candidate-18/liquidation_absorption_logic.py"
+      - "research/candidate-18/liquidation_absorption_study.py"
+      - "research/candidate-18/tests/test_liquidation_absorption_logic.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  study:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-18:.upstream/c16v9
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-18-v11-liquidation-absorption
+      CACHE: .cache/candidate-18-v11-liquidation-absorption
+      UPSTREAM_REF: origin/research/candidate-16-v9-liquidation-vwap-basis
+      UPSTREAM_TARDIS_BLOB: e33e7edf478cfcc70ed2761fb33522c50c766667
+      UPSTREAM_BINANCE_BLOB: ef3328e91392535b4001b00792b58a66e44d1d6f
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prove environment and materialize reused causal study
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          test "$(git rev-parse "$UPSTREAM_REF:research/candidate-16/v9_tardis_liquidation_study.py")" = "$UPSTREAM_TARDIS_BLOB"
+          test "$(git rev-parse "$UPSTREAM_REF:research/candidate-16/v9_liquidation_event_study.py")" = "$UPSTREAM_BINANCE_BLOB"
+          mkdir -p .upstream/c16v9
+          git show "$UPSTREAM_REF:research/candidate-16/v9_tardis_liquidation_study.py" > .upstream/c16v9/v9_tardis_liquidation_study.py
+          git show "$UPSTREAM_REF:research/candidate-16/v9_liquidation_event_study.py" > .upstream/c16v9/v9_liquidation_event_study.py
+          python -m compileall -q research/candidate-18 .upstream/c16v9
+          python research/candidate-18/tests/test_liquidation_absorption_logic.py
+
+      - name: Run delayed forced-basis absorption study
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-18/liquidation_absorption_study.py --cache "$CACHE" --output "$ROOT" 2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify causal evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in study.json trades.csv forced_basis_events.csv console.log; do test -s "$ROOT/$file"; done
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["ROOT"])
+          study = json.loads((root / "study.json").read_text())
+          assert study["schema"] == "candidate-18-v11-liquidation-absorption-study-v1"
+          assert study["event_family"] == "FORCED_BASIS_DISLOCATION"
+          assert study["event_count"] >= 20
+          assert study["validity"]["event_minute_is_context_not_entry"]
+          assert study["validity"]["confirmation_is_strictly_later"]
+          assert study["validity"]["same_bar_stop_target_collision_resolves_to_stop"]
+          assert study["validity"]["no_parameter_grid"]
+          assert set(study["policies"]) == {"OPEN_RECLAIM", "TWO_MINUTE_ABSORPTION", "VWAP_RECLAIM"}
+          print(json.dumps({"decision": study["decision"], "promoted_policies": study["promoted_policies"], "event_count": study["event_count"]}, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-18-v11-liquidation-absorption-${{ github.sha }}
+          path: artifacts/candidate-18-v11-liquidation-absorption/**
+          if-no-files-found: warn
+          retention-days: 90
