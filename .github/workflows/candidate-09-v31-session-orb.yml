@@ -1,0 +1,142 @@
+name: Candidate 09 v31 institution-window ORB
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths:
+      - .github/workflows/candidate-09-v31-session-orb.yml
+      - research/candidate-09/v31_session_orb/**
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v31-session-orb
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SMC4_DATA_ROOT: .cache/candidate-09-v31
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-09-v31
+          key: candidate-09-binance-vision-v31-v1
+          restore-keys: |
+            candidate-09-binance-vision-v2
+            candidate-09-binance-vision-v1
+
+      - name: Materialize verified Nautilus runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=research/candidate-09
+          root=$src/v31_session_orb
+          cp "$src/run.py" "$root/run.py"
+          cp "$src/data_loader.py" "$root/data_loader.py"
+          cp "$src/nautilus_strategy.py" "$root/nautilus_strategy.py"
+          cp "$src/tests/test_accounting_contract.py" "$root/tests/test_accounting_contract.py"
+          cp "$src/tests/test_nautilus_contract.py" "$root/tests/test_nautilus_contract.py"
+          cp "$src/v29_depth_router/apply_sizing_infeasible_contract.py" "$root/apply_sizing_infeasible_contract.py"
+          python "$root/apply_sizing_infeasible_contract.py"
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          path=Path('research/candidate-09/v31_session_orb/run.py')
+          text=path.read_text(encoding='utf-8')
+          text,count=re.subn(
+              r'ABLATIONS\s*=\s*\([^\)]*\)',
+              'ABLATIONS = ("baseline", "no-relative-volume", "no-flow", "off-session")',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1: raise RuntimeError('could not freeze v31 ablations')
+          needle=(
+              '        "profit_not_single_trade_dominated": pooled["maximum_single_trade_profit_share"]\n'
+              '        <= float(gate["maximum_single_trade_profit_share"]),\n'
+              '    }'
+          )
+          replacement=(
+              '        "profit_not_single_trade_dominated": pooled["maximum_single_trade_profit_share"]\n'
+              '        <= float(gate["maximum_single_trade_profit_share"]),\n'
+              '        "recoverable_drawdown": pooled["maximum_segment_drawdown"]\n'
+              '        <= float(gate["maximum_drawdown"]),\n'
+              '        "minimum_active_months": active_trade_months(trades)\n'
+              '        >= int(gate["minimum_active_months"]),\n'
+              '    }'
+          )
+          if '"minimum_active_months": active_trade_months(trades)' not in text:
+              if needle not in text: raise RuntimeError('could not strengthen v31 gate')
+              text=text.replace(needle,replacement,1)
+          path.write_text(text,encoding='utf-8')
+          PY
+
+      - name: Contracts, 2023 development, gated 2024 validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09/v31_session_orb
+          export PYTHONPATH="$GITHUB_WORKSPACE/$root:$GITHUB_WORKSPACE/src"
+          smc4 doctor | tee "$root/doctor.txt"
+          python -m compileall -q "$root"
+          python -m unittest discover -s "$root/tests" -p 'test_*.py' -v |& tee "$root/tests.txt"
+          rm -rf "$root/evidence/latest" "$root/evidence/final-2025"
+          python "$root/run.py" gate --auto-long \
+            --config "$root/config.json" \
+            --cache "$GITHUB_WORKSPACE/.cache/candidate-09-v31" \
+            --output "$root/evidence/latest" |& tee "$root/run.txt"
+          status=$(python -c "import json;print(json.load(open('$root/evidence/latest/summary.json'))['status'])")
+          if [[ "$status" == "SUCCESS" ]]; then
+            python -c "import json;from pathlib import Path;p=Path('$root/config.json');c=json.loads(p.read_text());c['long_evaluation']=dict(c['final_evaluation']);Path('$root/config.final.json').write_text(json.dumps(c,indent=2,sort_keys=True)+'\\n')"
+            python "$root/run.py" long --config "$root/config.final.json" --cache "$GITHUB_WORKSPACE/.cache/candidate-09-v31" --output "$root/evidence/final-2025" |& tee "$root/final-2025.txt"
+          fi
+
+      - name: Preserve full evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v31-${{ github.run_id }}
+          path: research/candidate-09/v31_session_orb
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Commit compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=research/candidate-09/v31_session_orb
+          [[ -f "$root/evidence/latest/summary.json" ]] || exit 0
+          tmp=$(mktemp -d); mkdir -p "$tmp/latest" "$tmp/final"
+          for n in summary.json REPORT.md outcomes.csv trades.csv fills.csv run.json data_manifest.json; do
+            [[ -f "$root/evidence/latest/$n" ]] && cp "$root/evidence/latest/$n" "$tmp/latest/$n"
+            [[ -f "$root/evidence/final-2025/$n" ]] && cp "$root/evidence/final-2025/$n" "$tmp/final/$n"
+          done
+          for n in doctor.txt tests.txt run.txt final-2025.txt; do [[ -f "$root/$n" ]] && cp "$root/$n" "$tmp/$n"; done
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name candidate-09-research-bot; git config user.email candidate-09-research-bot@users.noreply.github.com
+          git fetch origin "$GITHUB_REF_NAME"; git reset --hard "origin/$GITHUB_REF_NAME"
+          rm -rf "$root/evidence/latest" "$root/evidence/final-2025"; mkdir -p "$root/evidence/latest" "$root/evidence/final-2025"
+          cp -a "$tmp/latest/." "$root/evidence/latest/"; cp -a "$tmp/final/." "$root/evidence/final-2025/"
+          cp "$tmp"/*.txt "$root/" 2>/dev/null || true
+          git add "$root/evidence" "$root"/*.txt
+          git diff --cached --quiet && exit 0
+          status=$(python -c "import json;print(json.load(open('$root/evidence/latest/summary.json')).get('status','UNKNOWN'))")
+          git commit -m "candidate-09 v31: frozen result ${status}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
