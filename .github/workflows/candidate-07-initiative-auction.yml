@@ -75,16 +75,18 @@ jobs:
               events = [json.loads(line) for line in (long_root / "events.jsonl").read_text().splitlines()]
               active = {}
               lifetimes = []
+              release_reasons = {
+                  "INITIATIVE_ACCEPTED_SOURCE_RECLAIMED",
+                  "COUNTER_ACCEPTANCE_TRANSFERS_INITIATIVE",
+                  "OPPOSITE_FAILED_REVERSAL_TRANSFERS_INITIATIVE",
+              }
               for event in events:
                   reason = event.get("reason_code")
                   details = event.get("details") or {}
                   direction = details.get("blocked_reversal_direction")
                   if reason == "ABSORPTION_STOP_CONFIRMS_INITIATIVE_ACCEPTANCE" and direction:
                       active[direction] = (int(event["event_time_ns"]), event["scenario_id"])
-                  elif reason in {
-                      "INITIATIVE_OPPOSING_LIQUIDITY_DELIVERED",
-                      "COUNTER_ACCEPTANCE_TRANSFERS_INITIATIVE",
-                  } and direction in active:
+                  elif reason in release_reasons and direction in active:
                       start, scenario = active.pop(direction)
                       lifetimes.append({
                           "direction": direction,
@@ -96,6 +98,10 @@ jobs:
                   "completed_lifetimes": len(lifetimes),
                   "maximum_days": max((item["seconds"] for item in lifetimes), default=0.0) / 86400.0,
                   "unreleased_directions": sorted(active),
+                  "release_reason_counts": {
+                      reason: sum(item["release_reason"] == reason for item in lifetimes)
+                      for reason in sorted(release_reasons)
+                  },
               }
               continuous = pd.read_csv(long_root / "trades.csv")
               continuous["opened_dt"] = pd.to_datetime(continuous["opened_ns"], unit="ns", utc=True)
