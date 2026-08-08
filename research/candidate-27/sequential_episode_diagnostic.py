@@ -21,6 +21,37 @@ from funding_interval_episode_diagnostic import _episode_from_seed
 from funding_interval_episode_diagnostic import _funding_interval_start
 
 
+EPISODE_COLUMNS = [
+    "interval_start",
+    "next_funding",
+    "seed_time",
+    "reset_time",
+    "entry_time",
+    "exit_time",
+    "side",
+    "seed_flow_open_10s",
+    "seed_opening_participation_burst",
+    "seed_prior12_side",
+    "liquidity_state",
+    "seed_close",
+    "reset_close",
+    "entry_price_proxy",
+    "exit_price_proxy",
+    "signed_reset_bps",
+    "gross_time_exit_bps",
+    "net_time_exit_bps",
+    "mfe_bps",
+    "mae_bps",
+    "prior_interval_extreme_stop",
+    "prior_interval_extreme_risk_bps",
+    "prior_interval_extreme_hit",
+    "full_interval_extension_stop",
+    "full_interval_extension_risk_bps",
+    "full_interval_extension_hit",
+    "path_minutes",
+]
+
+
 def _summary(episodes: pd.DataFrame) -> dict[str, Any]:
     if episodes.empty:
         return {
@@ -108,7 +139,11 @@ def run_diagnostic(
         ].sort_values("minute")
 
         available_from = interval + pd.Timedelta(minutes=15)
-        for seed_index, seed in candidates.iterrows():
+        # Do not use DataFrame.iterrows(): Candidate 16's wrangler contract
+        # intentionally makes DataFrame.values numeric-only for Nautilus input,
+        # while this diagnostic retains categorical state labels.
+        for seed_index in candidates.index.tolist():
+            seed = frame.loc[int(seed_index)]
             seed_minute = seed["minute"]
             if seed_minute < available_from:
                 blocked_overlaps += 1
@@ -140,7 +175,7 @@ def run_diagnostic(
                 break
         interval = next_funding
 
-    episode_frame = pd.DataFrame(episodes)
+    episode_frame = pd.DataFrame(episodes, columns=EPISODE_COLUMNS)
     episode_frame.to_csv(output / "funding_interval_episodes.csv", index=False)
     result = {
         "candidate": "candidate-27-sequential-independent-funding-interval-diagnostic",
