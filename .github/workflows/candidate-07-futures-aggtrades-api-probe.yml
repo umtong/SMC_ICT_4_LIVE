@@ -1,0 +1,119 @@
+name: candidate-07-futures-aggtrades-api-probe
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - ".github/workflows/candidate-07-futures-aggtrades-api-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Probe historical aggregate trades and pagination
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          BASES = {
+              "pipai": "https://api.pipai.org/fapi/v1/aggTrades",
+              "official": "https://fapi.binance.com/fapi/v1/aggTrades",
+          }
+          START_MS = 1719187200000  # 2024-06-24 00:00:00 UTC
+
+          def request(base: str, params: dict[str, int | str]) -> tuple[int, object, dict[str, str]]:
+              url = base + "?" + urllib.parse.urlencode(params)
+              req = urllib.request.Request(url, headers={"User-Agent": "smc4-candidate07/1"})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      status = int(response.status)
+                      body = response.read().decode("utf-8")
+                      headers = {key.lower(): value for key, value in response.headers.items()}
+              except urllib.error.HTTPError as exc:
+                  status = int(exc.code)
+                  body = exc.read().decode("utf-8")
+                  headers = {key.lower(): value for key, value in exc.headers.items()}
+              try:
+                  payload: object = json.loads(body)
+              except json.JSONDecodeError:
+                  payload = body[:500]
+              return status, payload, headers
+
+          def summarize(payload: object) -> object:
+              if not isinstance(payload, list):
+                  return payload
+              if not payload:
+                  return {"rows": 0}
+              first = payload[0]
+              last = payload[-1]
+              return {
+                  "rows": len(payload),
+                  "first_id": first.get("a"),
+                  "last_id": last.get("a"),
+                  "first_time": first.get("T"),
+                  "last_time": last.get("T"),
+                  "first_price": first.get("p"),
+                  "last_price": last.get("p"),
+                  "buyer_maker_first": first.get("m"),
+              }
+
+          output: dict[str, object] = {}
+          for label, base in BASES.items():
+              label_result: dict[str, object] = {}
+              for seconds in (5, 60, 300):
+                  status, payload, headers = request(
+                      base,
+                      {
+                          "symbol": "BTCUSDT",
+                          "startTime": START_MS,
+                          "endTime": START_MS + seconds * 1000 - 1,
+                          "limit": 1000,
+                      },
+                  )
+                  key = f"window_{seconds}s"
+                  label_result[key] = {
+                      "status": status,
+                      "summary": summarize(payload),
+                      "used_weight": headers.get("x-mbx-used-weight-1m"),
+                  }
+                  if (
+                      label == "pipai"
+                      and isinstance(payload, list)
+                      and payload
+                      and len(payload) == 1000
+                  ):
+                      last_id = int(payload[-1]["a"])
+                      time.sleep(0.25)
+                      next_status, next_payload, next_headers = request(
+                          base,
+                          {
+                              "symbol": "BTCUSDT",
+                              "fromId": last_id + 1,
+                              "limit": 1000,
+                          },
+                      )
+                      label_result[f"window_{seconds}s_next_from_id"] = {
+                          "status": next_status,
+                          "summary": summarize(next_payload),
+                          "used_weight": next_headers.get("x-mbx-used-weight-1m"),
+                          "requested_from_id": last_id + 1,
+                          "requested_window_end": START_MS + seconds * 1000 - 1,
+                      }
+                  time.sleep(0.25)
+              output[label] = label_result
+
+          print(json.dumps(output, indent=2, sort_keys=True))
+          PY
