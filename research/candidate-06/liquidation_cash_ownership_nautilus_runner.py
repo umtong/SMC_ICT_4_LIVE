@@ -9,6 +9,9 @@ import pandas as pd
 
 from cross_venue_data import assert_synchronized_completed_bars
 from futures_metrics_data import LoadedFuturesMetrics
+from liquidation_cash_ownership_failure_router_engine import (
+    LiquidationCashOwnershipFailureRouterEngine,
+)
 from liquidation_cash_ownership_relay_engine import (
     LiquidationCashOwnershipRelayEngine,
 )
@@ -68,7 +71,12 @@ def run_liquidation_cash_ownership_nautilus_backtest(
                 logic_params=base_logic,
             )
             self._logic_params = dict(logic_params)
-            self._scenario_engine = LiquidationCashOwnershipRelayEngine(
+            engine_type = (
+                LiquidationCashOwnershipFailureRouterEngine
+                if bool(logic_params.get("lcor_enable_failure_reversal", False))
+                else LiquidationCashOwnershipRelayEngine
+            )
+            self._scenario_engine = engine_type(
                 logic_params,
                 spot_observations=spot_observations,
                 metrics=metrics_data.observations,
@@ -83,6 +91,9 @@ def run_liquidation_cash_ownership_nautilus_backtest(
                     "causal completed-minute timestamp"
                 ),
                 "orders_fills_positions_nav": "NautilusTrader BacktestEngine only",
+                "failure_reversal_router": bool(
+                    logic_params.get("lcor_enable_failure_reversal", False)
+                ),
             }
 
     strategy = LiquidationCashOwnershipStrategy(
