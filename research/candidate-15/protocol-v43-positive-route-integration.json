@@ -1,0 +1,57 @@
+{
+  "schema": "candidate-15-v43-positive-route-integration-v1",
+  "candidate": "candidate-15-v43-positive-route-integration",
+  "created_utc": "2026-08-09",
+  "research_question": "Do independently constructed V33-V42 routes that are each cost-positive in both development and year-long stability remain positive and sufficiently frequent when deduplicated and arbitrated as one portfolio policy in July and August 2026?",
+  "precondition": {
+    "skip_when_any_v33_v42_advance_exists": true
+  },
+  "source_versions": {
+    "33": {"summary": "research/candidate-15/v33/cross_sectional_8h_momentum/results/summary.json", "candidates": ["research/candidate-15/v33/cross_sectional_8h_momentum/results/all_executable_candidates.csv", "research/candidate-15/v33/cross_sectional_8h_momentum/results/selected_trades.csv"]},
+    "34": {"summary": "research/candidate-15/v34/liquidity_vacuum_reclaim/results/summary.json", "candidates": ["research/candidate-15/v34/liquidity_vacuum_reclaim/results/all_executable_candidates.csv", "research/candidate-15/v34/liquidity_vacuum_reclaim/results/selected_trades.csv"]},
+    "35": {"summary": "research/candidate-15/v35/beta_residual_discovery/results/summary.json", "candidates": ["research/candidate-15/v35/beta_residual_discovery/results/all_executable_candidates.csv", "research/candidate-15/v35/beta_residual_discovery/results/selected_trades.csv"]},
+    "36": {"summary": "research/candidate-15/v36/cvd_boundary_divergence/results/summary.json", "candidates": ["research/candidate-15/v36/cvd_boundary_divergence/results/all_executable_candidates.csv", "research/candidate-15/v36/cvd_boundary_divergence/results/selected_trades.csv"]},
+    "37": {"summary": "research/candidate-15/v37/opening_drive_vwap_retest/results/summary.json", "candidates": ["research/candidate-15/v37/opening_drive_vwap_retest/results/all_executable_candidates.csv", "research/candidate-15/v37/opening_drive_vwap_retest/results/selected_trades.csv"]},
+    "38": {"summary": "research/candidate-15/v38/walkforward_ensemble/results/summary.json", "candidates": ["research/candidate-15/v38/walkforward_ensemble/results/all_executable_candidates.csv", "research/candidate-15/v38/walkforward_ensemble/results/selected_trades.csv"]},
+    "39": {"summary": "research/candidate-15/v39/adaptive_positive_family_router/results/summary.json", "candidates": ["research/candidate-15/v39/adaptive_positive_family_router/results/all_active_family_proposals.csv", "research/candidate-15/v39/adaptive_positive_family_router/results/selected_integrated_trades.csv"]},
+    "40": {"summary": "research/candidate-15/v40/volume_profile_reentry/results/summary.json", "candidates": ["research/candidate-15/v40/volume_profile_reentry/results/all_executable_candidates.csv", "research/candidate-15/v40/volume_profile_reentry/results/selected_trades.csv"]},
+    "41": {"summary": "research/candidate-15/v41/adaptive_daily_dispersion/results/summary.json", "candidates": ["research/candidate-15/v41/adaptive_daily_dispersion/results/all_shadow_trades.csv", "research/candidate-15/v41/adaptive_daily_dispersion/results/selected_trades.csv"]},
+    "42": {"summary": "research/candidate-15/v42/volume_clock_toxicity/results/summary.json", "candidates": ["research/candidate-15/v42/volume_clock_toxicity/results/all_executable_candidates.csv", "research/candidate-15/v42/volume_clock_toxicity/results/selected_trades.csv"]}
+  },
+  "fixed_selection": {
+    "minimum_development_route_trades": 5,
+    "minimum_stability_route_trades": 5,
+    "minimum_development_mean_net_bps": 0.0,
+    "minimum_stability_mean_net_bps": 0.0,
+    "route_score": "minimum of development and stability mean net basis points",
+    "episode_bucket_minutes": 30,
+    "same_symbol_episode_deduplication": true,
+    "global_position_limit": 1,
+    "same_timestamp_winner": "larger frozen route score, then source rank score, then lower version, then symbol",
+    "overlap_policy": "reject every proposal whose entry is earlier than the selected position exit"
+  },
+  "evaluation": {
+    "diagnostic_start": "2024-07-01",
+    "diagnostic_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08"
+  },
+  "advance_gate": {
+    "minimum_independent_source_routes": 2,
+    "require_positive_july_mean_net": true,
+    "minimum_july_trades": 10,
+    "minimum_july_net_t_stat": 1.0,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 2,
+    "minimum_confirmation_trades_per_day": 0.5,
+    "maximum_single_route_share": 0.8,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per calendar day"
+  },
+  "decision_contract": {
+    "advance": "Freeze the selected route set and arbitration unchanged, then implement each route online inside one NautilusTrader account.",
+    "reject": "Do not relax source-route positivity, deduplication or recent confirmation gates."
+  }
+}
