@@ -1,0 +1,57 @@
+name: candidate-08-fix-flow-response-v3-tests
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-fix-flow-response-v3-tests"
+
+permissions:
+  contents: write
+
+jobs:
+  fix-v3-test-contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Align wrapper tests with V3 and the complete-horizon evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c 'from pathlib import Path; p=Path("research/candidate-08/test_aggtrade_flow_response_auction_runner.py"); s=p.read_text(encoding="utf-8"); old_import="from aggtrade_flow_response_auction_signals_v2 import ("; assert s.count(old_import)==1; s=s.replace(old_import, "from aggtrade_flow_response_auction_signals_v3 import ("); old="""def _path_frame() -> pd.DataFrame:
+    index = pd.date_range("2024-01-01T00:00:10Z", periods=4, freq="10s")
+    return pd.DataFrame(
+        {
+            "high": [100.1, 100.5, 104.2, 105.0],
+            "low": [99.9, 97.7, 99.0, 103.0],
+            "close": [100.0, 98.2, 104.0, 104.5],
+        },
+        index=index,
+    )
+"""; new="""def _path_frame() -> pd.DataFrame:
+    periods = 31
+    index = pd.date_range("2024-01-01T00:00:10Z", periods=periods, freq="10s")
+    return pd.DataFrame(
+        {
+            "high": [100.1, 100.5, 104.2] + [105.0] * (periods - 3),
+            "low": [99.9, 97.7, 99.0] + [103.0] * (periods - 3),
+            "close": [100.0, 98.2, 104.0] + [104.5] * (periods - 3),
+        },
+        index=index,
+    )
+"""; assert s.count(old)==1; p.write_text(s.replace(old,new), encoding="utf-8")'
+          python -m py_compile research/candidate-08/test_aggtrade_flow_response_auction_runner.py
+          rm -f research/candidate-08/.run-fix-flow-response-v3-tests
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- research/candidate-08/test_aggtrade_flow_response_auction_runner.py research/candidate-08/.run-fix-flow-response-v3-tests
+          git commit -m "candidate-08: align flow-response wrapper tests with V3 [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
+            git rebase --abort || true
+            sleep $((attempt * 3))
+          done
+          exit 1
