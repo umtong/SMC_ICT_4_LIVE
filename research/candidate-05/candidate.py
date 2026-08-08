@@ -15,11 +15,13 @@ from timestamp_contract import install as install_timestamp_contract
 from wrangler_contract import install as install_wrangler_contract
 from positioning_contract import install as install_positioning_contract
 from basis_contract import install as install_basis_contract
+from book_depth_gap_contract import install as install_book_depth_gap_contract
 
 install_timestamp_contract()
 install_wrangler_contract()
 install_positioning_contract()
 install_basis_contract()
+install_book_depth_gap_contract()
 
 from backtest import run_backtest
 from smc_ict_4.manifest import write_json_atomic
