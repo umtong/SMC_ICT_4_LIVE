@@ -1,0 +1,119 @@
+{
+  "schema": "candidate-15-v30-session-intraday-tsmom-v1",
+  "candidate": "candidate-15-v30-session-intraday-tsmom",
+  "created_utc": "2026-08-09",
+  "research_question": "Does the first half-hour return of each high-activity Asia, Europe or America crypto session predict the final half-hour strongly enough to trade after a separate final-window five-minute confirmation and twenty basis points of costs?",
+  "external_mechanism": {
+    "source": "Shen, Urquhart and Wang (2022), Bitcoin intraday time series momentum",
+    "reused": [
+      "first half-hour predicts the last half-hour",
+      "predictability is strongest when the opening interval has high volume or volatility",
+      "the effect is interpreted as liquidity provision rather than late information"
+    ],
+    "adapted": [
+      "three fixed eight-hour UTC global liquidity sessions",
+      "four-asset global arbitration",
+      "a separate completed first five minutes of the final half-hour confirms the entry leg",
+      "confirmation-bar structural stop and scheduled session-end exit"
+    ]
+  },
+  "scenario": {
+    "context": "one of three recurring eight-hour global liquidity sessions",
+    "interaction": "the session's first completed thirty minutes produces a directional return whose magnitude exceeds its own prior same-session median",
+    "state": {
+      "SESSION_BREADTH_TSMOM": "at least three of four markets share the opening direction and the selected market has high opening volume or range",
+      "HIGH_ACTIVITY_SESSION_TSMOM": "breadth is unresolved, but one market's opening volume or range is in the prior same-session top thirty percent",
+      "UNRESOLVED": "all remaining sessions are no-trade"
+    },
+    "confirmation": "the first completed five-minute bar of the final half-hour extends in the opening direction, closes directionally within its range and has aligned taker pressure",
+    "entry": "confirmation close, leaving twenty-five minutes until session end",
+    "invalidation": "beyond the confirmation-bar extreme plus ten percent of prior completed one-hour ATR",
+    "target_exit": "scheduled session-end close; stop-first conservative sequencing",
+    "arbitration": "one selected market per session and one global open position"
+  },
+  "data": {
+    "source": "Binance Vision USD-M monthly and latest daily five-minute klines",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ],
+    "interval": "5m",
+    "start": "2024-04-01",
+    "monthly_end_exclusive": "2026-08-01",
+    "end_exclusive": "2026-08-08",
+    "latest_daily_dates": [
+      "2026-08-01",
+      "2026-08-02",
+      "2026-08-03",
+      "2026-08-04",
+      "2026-08-05",
+      "2026-08-06",
+      "2026-08-07"
+    ],
+    "visibility": "opening state uses the first completed thirty minutes; final confirmation is a later completed bar; entry and stop use no later information"
+  },
+  "fixed_rules": {
+    "sessions": [
+      {
+        "name": "ASIA",
+        "start_hour_utc": 0,
+        "length_hours": 8
+      },
+      {
+        "name": "EUROPE",
+        "start_hour_utc": 8,
+        "length_hours": 8
+      },
+      {
+        "name": "AMERICA",
+        "start_hour_utc": 16,
+        "length_hours": 8
+      }
+    ],
+    "opening_window_minutes": 30,
+    "final_window_minutes": 30,
+    "confirmation_minutes": 5,
+    "activity_rolling_sessions": 120,
+    "activity_minimum_prior_sessions": 30,
+    "opening_absolute_return_quantile": 0.5,
+    "opening_activity_quantile": 0.7,
+    "breadth_fraction_min": 0.75,
+    "minimum_confirmation_body_fraction": 0.5,
+    "minimum_directional_taker_pressure": 0.0,
+    "atr_lookback_bars": 12,
+    "stop_atr_buffer": 0.1,
+    "execution_round_trip_cost_bps": 16.0,
+    "funding_and_unmodeled_impact_reserve_bps": 4.0,
+    "same_bar_stop_policy": "STOP_FIRST_CONSERVATIVE"
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-07-01",
+    "stability_start": "2025-07-01",
+    "stability_end_exclusive": "2026-07-01",
+    "july_confirmation_start": "2026-07-01",
+    "july_confirmation_end_exclusive": "2026-08-01",
+    "latest_pulse_start": "2026-08-01",
+    "latest_pulse_end_exclusive": "2026-08-08",
+    "global_position_limit": 1
+  },
+  "advance_gate": {
+    "require_positive_development_mean_net": true,
+    "minimum_stability_mean_net_bps": 0.0,
+    "minimum_stability_net_t_stat": 1.0,
+    "minimum_stability_positive_month_share": 0.6,
+    "minimum_stability_trades_per_calendar_day": 1.0,
+    "require_positive_july_confirmation_mean_net": true,
+    "minimum_july_confirmation_trades": 15,
+    "minimum_latest_pulse_mean_net_bps": 0.0,
+    "minimum_latest_pulse_trades": 3,
+    "maximum_single_symbol_share": 0.75,
+    "final_integrated_system_frequency_requirement": "at least one independent completed trade per evaluation calendar day"
+  },
+  "decision_contract": {
+    "advance": "Only a fixed route positive in development, year-long stability, July confirmation and the latest pulse advances to NautilusTrader.",
+    "reject": "Do not alter session clocks, activity quantiles, confirmation or stop rules after evaluation."
+  }
+}
