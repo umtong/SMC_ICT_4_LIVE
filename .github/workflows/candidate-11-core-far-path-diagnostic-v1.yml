@@ -1,0 +1,108 @@
+name: Candidate 11 core FAR path diagnostic
+
+on:
+  push:
+    branches:
+      - research/candidate-11
+    paths:
+      - "research/candidate-11/core_far_path_diagnostic_v1/**"
+      - ".github/workflows/candidate-11-core-far-path-diagnostic-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-11-core-far-path-diagnostic-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify diagnostic code
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIAG=research/candidate-11/core_far_path_diagnostic_v1
+          CORE=research/candidate-11/core_far_continuous_v1
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/$DIAG:$GITHUB_WORKSPACE/$CORE:$GITHUB_WORKSPACE/research/candidate-11/session_portfolio_v1:$GITHUB_WORKSPACE/src"
+          python -m py_compile "$DIAG"/*.py
+          python -m unittest discover -s "$DIAG" -p 'test_*.py' -v
+
+      - name: Diagnose recorded Nautilus paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIAG=research/candidate-11/core_far_path_diagnostic_v1
+          CORE=research/candidate-11/core_far_continuous_v1
+          export PYTHONPATH="$GITHUB_WORKSPACE/$DIAG:$GITHUB_WORKSPACE/$CORE:$GITHUB_WORKSPACE/research/candidate-11/session_portfolio_v1:$GITHUB_WORKSPACE/src"
+          rm -rf /tmp/core-far-path-data
+          python "$DIAG/diagnose_paths.py" \
+            --results "$CORE/results" \
+            --data-dir /tmp/core-far-path-data \
+            --output "$DIAG/path_diagnostics.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("research/candidate-11/core_far_path_diagnostic_v1/path_diagnostics.json")
+          result = json.loads(path.read_text(encoding="utf-8"))
+          assert result["research_stage"] == "TEMPORARY_TEST"
+          assert result["can_advance_candidate"] is False
+          assert result["can_claim_alpha"] is False
+          assert result["validation_eligible"] is False
+          assert result["success_claim"] is False
+          assert result["records_complete"] is True
+          assert result["trades"] == 9
+          assert result["wins"] == 1
+          assert result["losses"] == 8
+          PY
+
+      - name: Persist diagnostic only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          DIAG=research/candidate-11/core_far_path_diagnostic_v1
+          SNAPSHOT=/tmp/core-far-path-output
+          rm -rf "$SNAPSHOT"
+          mkdir -p "$SNAPSHOT"
+          cp "$DIAG/path_diagnostics.json" "$SNAPSHOT/path_diagnostics.json"
+          cp "$DIAG/path_diagnostics.md" "$SNAPSHOT/path_diagnostics.md"
+
+          git fetch origin research/candidate-11
+          latest_head="$(git rev-parse origin/research/candidate-11)"
+          if ! git diff --quiet "$GITHUB_SHA" "$latest_head" -- \
+            "$DIAG/diagnose_paths.py" \
+            "$DIAG/test_diagnostic_math.py" \
+            ".github/workflows/candidate-11-core-far-path-diagnostic-v1.yml"; then
+            echo "path diagnostic source changed during evaluation"
+            exit 1
+          fi
+
+          rm -f "$DIAG/path_diagnostics.json" "$DIAG/path_diagnostics.md"
+          git checkout -B research/candidate-11 "$latest_head"
+          cp "$SNAPSHOT/path_diagnostics.json" "$DIAG/path_diagnostics.json"
+          cp "$SNAPSHOT/path_diagnostics.md" "$DIAG/path_diagnostics.md"
+
+          git config user.name "candidate-11-bot"
+          git config user.email "candidate-11-bot@users.noreply.github.com"
+          git add "$DIAG/path_diagnostics.json" "$DIAG/path_diagnostics.md"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-11: record core FAR path diagnostic [skip ci]"
+            git push origin HEAD:research/candidate-11
+          fi
