@@ -1,0 +1,62 @@
+{
+  "schema": "candidate-11-session-auction-l1-router-v1",
+  "created_utc": "2026-08-08",
+  "hypothesis": "L1 effort/result distinguishes failed auction from true acceptance only when the parent liquidity is a completed inventory-bearing session auction rather than a micro swing.",
+  "source_pins": {
+    "candidate16_v4_commit": "af82ebc64e05aeaf2704eeb3af0709cdbf4c77c2",
+    "l1_dataset_commit": "2c8dce40261855c7b57113f5a157bbeb82280bb8",
+    "l1_dataset_sha256": "274eb8e87c7d7185a0162271144b30a0e387ae496fe657c6af83833448f08624"
+  },
+  "causal_contract": {
+    "liquidity": "paired high/low of one completed four-hour session",
+    "interaction": "first one-sided penetration of the completed session boundary",
+    "state_evidence": "only bars completed after the interaction bar",
+    "states": ["FAILED_AUCTION", "ACCEPTANCE_CONTINUATION", "UNRESOLVED"],
+    "entry": "existing Candidate16 L1 pressure transition after state completion",
+    "invalidation": "interaction extreme or source-boundary reacceptance",
+    "objective": "unconsumed completed-session liquidity only",
+    "same_event_reuse": "interaction bar cannot classify itself"
+  },
+  "single_structural_change_set": [
+    "preserve each completed session pair with one source id",
+    "prevent cross-source pool merging",
+    "allow only completed-session pools to open parent auctions",
+    "begin state observation on the next completed bar",
+    "allow only completed-session liquidity objectives"
+  ],
+  "development": {
+    "build_start": "2023-06-02",
+    "evaluation_start": "2023-06-05",
+    "evaluation_end": "2023-07-02",
+    "role": "DEVELOPMENT"
+  },
+  "fresh_if_authorized": {
+    "build_start": "2024-02-02",
+    "evaluation_start": "2024-02-05",
+    "evaluation_end": "2024-02-25",
+    "role": "FRESH_VALIDATION",
+    "data_access_allowed_only_after_development_gate": true
+  },
+  "absolute_development_gate": {
+    "minimum_closed_trades": 12,
+    "minimum_win_rate": 0.80,
+    "minimum_payoff_ratio": 1.20,
+    "minimum_daily_geometric_growth": 0.01,
+    "maximum_drawdown": 0.20,
+    "no_liquidation": true,
+    "no_order_rejections": true,
+    "global_slot_maximum": 1
+  },
+  "absolute_fresh_gate": {
+    "minimum_closed_trades": 8,
+    "minimum_win_rate": 0.80,
+    "minimum_payoff_ratio": 1.20,
+    "minimum_daily_geometric_growth": 0.01,
+    "maximum_drawdown": 0.20,
+    "no_liquidation": true,
+    "no_order_rejections": true,
+    "global_slot_maximum": 1
+  },
+  "risk_fraction": 0.03,
+  "success_claim_allowed": false
+}
