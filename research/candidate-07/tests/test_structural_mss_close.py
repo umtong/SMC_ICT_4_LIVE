@@ -61,7 +61,10 @@ def episode(direction: Direction = Direction.LONG) -> _StructuralEpisode:
             92 * NS_PER_MINUTE,
         )
         source_level, extreme = 99.0, 98.0
-        internal, external = 106.0, 110.0
+        # The ablation enters at the displacement close rather than a later
+        # retest. Keep the synthetic objective far enough away that the same
+        # unchanged 1.25R economic geometry can legitimately pass.
+        internal, external = 107.0, 110.0
     else:
         boundary = MinuteSwing(
             "1ML-boundary",
@@ -71,7 +74,7 @@ def episode(direction: Direction = Direction.LONG) -> _StructuralEpisode:
             92 * NS_PER_MINUTE,
         )
         source_level, extreme = 101.0, 102.0
-        internal, external = 94.0, 90.0
+        internal, external = 93.0, 90.0
     return _StructuralEpisode(
         scenario_id="structural-close-episode",
         direction=direction,
@@ -116,7 +119,7 @@ class StructuralMSSCloseTests(unittest.TestCase):
         warm(router)
         router._structural_episode = episode()
         result = router.observe_minute(
-            bar(101, open_=101.0, high=106.2, low=100.9, close=105.8)
+            bar(101, open_=101.0, high=107.2, low=100.9, close=106.8)
         )
         self.assertIsNone(result.plan)
         self.assertEqual(
