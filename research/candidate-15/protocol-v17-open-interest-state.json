@@ -1,0 +1,67 @@
+{
+  "schema": "candidate-15-v17-open-interest-state-transition-v1",
+  "candidate": "candidate-15-v17-open-interest-state-transition",
+  "created_utc": "2026-08-08",
+  "research_question": "Can an extreme five-minute directional auction be separated before entry into deleveraging exhaustion versus new-position acceptance by using base open-interest change and an independent confirmation bar?",
+  "scenario": {
+    "context": "abnormal five-minute futures return, quote volume and directional taker pressure",
+    "state": {
+      "DELEVERAGING_EXHAUSTION": "base open interest falls abnormally during the event, identifying position destruction rather than merely a large candle",
+      "POSITION_BUILDUP_ACCEPTANCE": "base open interest rises abnormally during the event, identifying new directional risk formation",
+      "UNRESOLVED": "ordinary OI change or contradictory flow is no-trade"
+    },
+    "confirmation": {
+      "DELEVERAGING_EXHAUSTION": "the next completed five-minute bar stops extending, OI stops collapsing and taker pressure opposes the event; trade reversal after that close",
+      "POSITION_BUILDUP_ACCEPTANCE": "the next completed bar extends, OI does not unwind, composite index follows, peers agree and taker pressure remains aligned; trade continuation after that close"
+    },
+    "invalidation_target_note": "This is an economic mechanism screen. A surviving route must use the event extreme as invalidation and causal liquidity/index objectives in NautilusTrader."
+  },
+  "data": {
+    "price_source": "Binance Vision USD-M monthly futures klines plus indexPriceKlines",
+    "state_source": "Binance Vision USD-M daily metrics",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+    "interval": "5m",
+    "start": "2024-06-01",
+    "end_exclusive": "2026-05-01",
+    "metrics_visibility": "native five-minute create_time; joined only at or after the observation timestamp"
+  },
+  "fixed_state_rules": {
+    "rolling_prior_bars": 2016,
+    "minimum_prior_bars": 1008,
+    "absolute_return_z_min": 2.0,
+    "quote_volume_z_min": 1.5,
+    "directional_event_taker_pressure_min": 0.10,
+    "open_interest_drop_z_max": -1.5,
+    "open_interest_build_z_min": 1.0,
+    "confirmation_open_interest_z_min": -0.25,
+    "confirmation_opposing_taker_pressure_max": 0.0,
+    "confirmation_aligned_taker_pressure_min": 0.0,
+    "index_follow_ratio_min": 0.25,
+    "cross_market_breadth_min": 0.5,
+    "round_trip_cost_bps": 16.0,
+    "reversal_horizon_minutes": 60,
+    "continuation_horizon_minutes": 120,
+    "same_symbol_event_cooldown_minutes": 60
+  },
+  "evaluation": {
+    "development_start": "2024-07-01",
+    "development_end_exclusive": "2025-01-01",
+    "evaluation_start": "2025-01-01",
+    "evaluation_end_exclusive": "2026-05-01",
+    "global_position_limit": 1,
+    "same_event_arbitration": "largest return-volume-OI-flow state score",
+    "overlap_policy": "no new selected episode while the selected route horizon is active"
+  },
+  "advance_gate": {
+    "minimum_evaluation_mean_net_bps": 0.0,
+    "minimum_evaluation_net_t_stat": 1.0,
+    "minimum_positive_evaluation_month_share": 0.65,
+    "minimum_selected_trades_per_calendar_day": 1.0,
+    "require_positive_development_mean_net": true,
+    "maximum_single_symbol_share": 0.75
+  },
+  "decision_contract": {
+    "advance": "Only a route/router passing development, untouched evaluation, costs, stability and frequency is frozen for NautilusTrader.",
+    "reject": "Do not tune these thresholds after seeing evaluation. Preserve only an independently positive route and move to another causal family."
+  }
+}
