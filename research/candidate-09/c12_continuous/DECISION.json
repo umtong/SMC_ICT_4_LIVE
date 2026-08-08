@@ -1,0 +1,46 @@
+{
+  "family": "Candidate 12 I13 state-priced reacceleration router",
+  "decision": "DISCARD",
+  "classification": "LOGIC_ERROR_NO_STRUCTURAL_PATH",
+  "continuous_interval": {
+    "start": "2022-01-01",
+    "end_exclusive": "2026-01-01",
+    "calendar_days": 1461
+  },
+  "implementation_correction": {
+    "issue": "a contingent protective STOP_MARKET could be rejected after the parent filled when the trigger was already in the market, leaving an unprotected position open until final liquidation",
+    "correction": "cancel contingent siblings and immediately market-close the position; treat the closed-position sibling rejection as an expected OCO consequence",
+    "economic_logic_changed": false
+  },
+  "fixed_baseline": {
+    "daily_geometric_growth": -0.0011279706621288867,
+    "net_return": -0.8077378636174,
+    "final_nav": 19226.21363826,
+    "closed_trades": 244,
+    "wins": 81,
+    "losses": 163,
+    "maximum_drawdown": 0.8261729281185032,
+    "active_months": 46
+  },
+  "single_ablation": {
+    "name": "remove LONDON_HIGH source pools",
+    "daily_geometric_growth": -0.00021924697499080877,
+    "net_return": -0.2741086639136,
+    "final_nav": 72589.13360864,
+    "closed_trades": 104,
+    "wins": 37,
+    "losses": 67,
+    "maximum_drawdown": 0.5063084850456184,
+    "active_months": 38,
+    "interpretation": "LONDON_HIGH was the largest loss source, but removing it did not create positive cost-after expectancy or sufficient opportunity density"
+  },
+  "largest_influence": "LONDON_HIGH source pools caused most losses, while the remaining Asia and London-low acceptance/rejection families also retained negative cost-after expectancy",
+  "valid_parts": [
+    "completed-session liquidity pools",
+    "explicit acceptance/rejection/reacceleration state separation",
+    "costed structural reward-to-risk admission",
+    "conservative emergency exit when a protective child is already marketable"
+  ],
+  "prohibited_followup": "do not tune thresholds, remove a second source family, or reuse the same continuous result as holdout evidence",
+  "next_action": "finish the exact Candidate 13 continuous baseline and its pre-registered FAR-only ablation; only a positive continuous specialist may advance"
+}
