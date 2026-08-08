@@ -53,3 +53,58 @@ jobs:
             probe "$path"
             probe "${path}.CHECKSUM"
           done
+
+      - name: Probe targeted historical USD-M REST 1s klines
+        shell: bash
+        run: |
+          set -u
+          BASE="https://fapi.binance.com/fapi/v1/klines"
+          probe_api() {
+            local label="$1"
+            local start_ms="$2"
+            local interval="$3"
+            local end_ms=$((start_ms + 5000))
+            local url="${BASE}?symbol=BTCUSDT&interval=${interval}&startTime=${start_ms}&endTime=${end_ms}&limit=10"
+            local body headers status
+            body=$(mktemp)
+            headers=$(mktemp)
+            status=$(curl --location --silent --show-error \
+              --connect-timeout 15 --max-time 60 \
+              --dump-header "$headers" --output "$body" \
+              --write-out '%{http_code}' "$url" 2>&1)
+            local exit_code=$?
+            printf 'REST|%s|interval=%s|curl_exit=%s|http=%s|rows_or_error=' \
+              "$label" "$interval" "$exit_code" "$status"
+            python - "$body" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          raw = Path(sys.argv[1]).read_text(encoding="utf-8")
+          try:
+              value = json.loads(raw)
+          except json.JSONDecodeError:
+              print(raw[:500])
+          else:
+              if isinstance(value, list):
+                  print({
+                      "rows": len(value),
+                      "first": value[0] if value else None,
+                      "last": value[-1] if value else None,
+                  })
+              else:
+                  print(value)
+          PY
+            grep -iE '^(x-mbx-used-weight|retry-after|content-type):' "$headers" || true
+            rm -f "$body" "$headers"
+          }
+
+          while IFS='|' read -r label start_ms; do
+            probe_api "$label" "$start_ms" 1s
+            probe_api "$label-control" "$start_ms" 1m
+          done <<'EOF'
+          2024-01-01|1704067200000
+          2024-06-24|1719187200000
+          2025-01-27|1737936000000
+          2025-12-22|1766361600000
+          2026-06-30|1782777600000
+          EOF
