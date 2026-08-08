@@ -1,0 +1,188 @@
+name: candidate-08-opening-type-first-pullback-bootstrap-v2
+
+on:
+  push:
+    branches: ["research/candidate-08"]
+    paths:
+      - "research/candidate-08/.run-opening-type-first-pullback-bootstrap-v2"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-08-opening-type-first-pullback-bootstrap-v2
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-08:src
+      MARKER: research/candidate-08/.run-opening-type-first-pullback-bootstrap-v2
+      OUTPUT: research/candidate-08/evidence/opening-type-first-pullback-v2
+      FIRST: research/candidate-08/evidence/opening-type-first-pullback-v2/first
+      SCREEN: research/candidate-08/evidence/opening-type-first-pullback-v2/screen
+      CACHE: .cache/candidate-08-opening-type-first-pullback-v2
+      CONFIG: research/candidate-08/config_opening_type_first_pullback_multiasset_v2.json
+      PATTERN: research/candidate-08/config_range_fvg.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: .cache/candidate-08-opening-type-first-pullback-v2
+          key: candidate-08-opening-type-first-pullback-v2-${{ hashFiles('research/candidate-08/.opening-type-v2-bundle.part*') }}
+          restore-keys: |
+            candidate-08-opening-type-first-pullback-v2-
+            candidate-08-opening-type-state-router-v1-
+            candidate-08-aggtrade-acceptance-
+
+      - name: Extract, test and replay
+        id: research
+        shell: bash
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          rm -rf "$OUTPUT" /tmp/opening-type-v2
+          mkdir -p "$OUTPUT" "$CACHE" /tmp/opening-type-v2
+          set +e
+          (
+            set -euo pipefail
+            cat research/candidate-08/.opening-type-v2-bundle.part* | base64 -d > /tmp/opening-type-v2/bundle.tgz
+            tar -xzf /tmp/opening-type-v2/bundle.tgz -C /tmp/opening-type-v2
+            for name in \
+              opening_type_first_pullback_signals_v2.py \
+              test_opening_type_first_pullback_signals_v2.py \
+              run_opening_type_first_pullback_nautilus_v2.py \
+              config_opening_type_first_pullback_multiasset_v2.json \
+              OPENING_TYPE_FIRST_PULLBACK_V2_PREREGISTRATION.md; do
+              install -m 0644 "/tmp/opening-type-v2/$name" "research/candidate-08/$name"
+            done
+            smc4 doctor
+            python -m compileall -q \
+              research/candidate-08/opening_type_first_pullback_signals_v2.py \
+              research/candidate-08/test_opening_type_first_pullback_signals_v2.py \
+              research/candidate-08/run_opening_type_first_pullback_nautilus_v2.py
+            python research/candidate-08/test_opening_type_first_pullback_signals_v2.py -v
+            python research/candidate-08/run_opening_type_first_pullback_nautilus_v2.py \
+              --suite first --config "$CONFIG" --pattern-config "$PATTERN" \
+              --output "$FIRST" --data-cache "$CACHE"
+
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['FIRST'])
+          suite=json.loads((root/'suite_metrics.json').read_text())
+          result=suite['window_results'][0]
+          checks=suite['suite_gate_checks']
+          clean=all(bool(checks.get(key,False)) for key in (
+              'entry_causality','fill_adjusted_risk_budget_respected',
+              'planned_risk_budget_respected','realized_loss_budget_respected',
+              'funding_cost_state_is_causal_and_complete','no_residual_exposure',
+              'no_unexpected_or_liquidation_closes','no_execution_failures'))
+          gate=(clean and int(result['closed_trades'])>=5 and float(result['total_return'])>0
+                and float(result['win_rate'])>=0.50
+                and float(suite.get('single_trade_positive_pnl_share',1.0))<=0.50)
+          Path(os.environ['OUTPUT']).joinpath('promote_screen.txt').write_text('1\n' if gate else '0\n')
+          print(json.dumps({'strict_first_gate':gate,'clean':clean,'result':result},indent=2))
+          PY
+
+            if [[ "$(cat "$OUTPUT/promote_screen.txt")" == "1" ]]; then
+              python research/candidate-08/run_opening_type_first_pullback_nautilus_v2.py \
+                --suite screen --config "$CONFIG" --pattern-config "$PATTERN" \
+                --output "$SCREEN" --reuse-first-dir "$FIRST" --data-cache "$CACHE"
+            fi
+
+            python - <<'PY'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+          output=Path(os.environ['OUTPUT']); first=Path(os.environ['FIRST']); screen=Path(os.environ['SCREEN'])
+          def read(path): return json.loads(path.read_text()) if path.exists() else None
+          fs=read(first/'suite_metrics.json') or {}; result=(fs.get('window_results') or [{}])[0]
+          checks=fs.get('suite_gate_checks') or {}
+          clean=bool(checks) and all(bool(checks.get(key,False)) for key in (
+              'entry_causality','fill_adjusted_risk_budget_respected','planned_risk_budget_respected',
+              'realized_loss_budget_respected','funding_cost_state_is_causal_and_complete',
+              'no_residual_exposure','no_unexpected_or_liquidation_closes','no_execution_failures'))
+          closed=int(result.get('closed_trades',0)); ret=float(result.get('total_return',0)); wr=float(result.get('win_rate',0))
+          concentration=float(fs.get('single_trade_positive_pnl_share',1.0 if ret>0 else 0.0))
+          gate=clean and closed>=5 and ret>0 and wr>=.50 and concentration<=.50
+          ss=read(screen/'suite_metrics.json')
+          if not clean: classification='IMPLEMENTATION_OR_EXECUTION_CONTRACT_FAILURE_FIRST_WEEK'
+          elif not gate:
+              classification=('CLEAN_LOGIC_FAILURE_INSUFFICIENT_INDEPENDENT_OPPORTUNITIES' if closed<5 else
+                  'CLEAN_LOGIC_FAILURE_FIRST_PULLBACK_EDGE_NEGATIVE' if ret<=0 else
+                  'CLEAN_LOGIC_FAILURE_FIRST_PULLBACK_ACCURACY' if wr<.50 else
+                  'CLEAN_LOGIC_FAILURE_POSITIVE_PNL_CONCENTRATION')
+          elif ss is None: classification='SCREEN_EVIDENCE_MISSING_AFTER_FIRST_GATE'
+          else:
+              rows=ss.get('window_results') or []
+              passed=(len(rows)==3 and all(int(row.get('closed_trades',0))>=5 and float(row.get('total_return',0))>0 for row in rows)
+                  and float(ss.get('combined_daily_geometric_growth',0))>=.01
+                  and float(ss.get('positive_trade_share',0))>=.55
+                  and float(ss.get('single_trade_positive_pnl_share',1))<=.40)
+              classification='PROMOTE_TO_CONTINUOUS_LONG_MULTI_ASSET_EVALUATION' if passed else 'MULTIWEEK_GENERALIZATION_OR_GROWTH_FAILURE'
+          manifest=read(first/'screen-01'/'data_manifest.json') or {}
+          by_symbol={symbol:asset.get('detector_diagnostics',{}) for symbol,asset in manifest.get('assets',{}).items()}
+          aggregate=Counter()
+          for values in by_symbol.values(): aggregate.update({key:int(value) for key,value in values.items()})
+          decision={
+              'candidate':'candidate-08-opening-type-first-pullback-multiasset-nautilus-v2',
+              'classification':classification,'implementation_clean':clean,
+              'first_window':result,'first_suite_summary':fs,'screen_suite_summary':ss,
+              'detector_diagnostics_by_symbol':by_symbol,
+              'detector_diagnostics_aggregate':dict(sorted(aggregate.items())),
+              'scenario_families':['OPENING_TYPE_INITIATIVE_FIRST_PULLBACK_CONTINUATION','OPENING_TYPE_RESPONSIVE_FIRST_PULLBACK_REVERSAL'],
+              'ten_second_alpha_inputs':False,'goal_verified':False,
+          }
+          (output/'decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+          ) 2>&1 | tee "$OUTPUT/workflow.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > "$OUTPUT/exit_status.txt"
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit source and evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "$MARKER" research/candidate-08/.opening-type-v2-bundle.part*
+          git add -A -- \
+            research/candidate-08/opening_type_first_pullback_signals_v2.py \
+            research/candidate-08/test_opening_type_first_pullback_signals_v2.py \
+            research/candidate-08/run_opening_type_first_pullback_nautilus_v2.py \
+            research/candidate-08/config_opening_type_first_pullback_multiasset_v2.json \
+            research/candidate-08/OPENING_TYPE_FIRST_PULLBACK_V2_PREREGISTRATION.md \
+            "$OUTPUT" "$MARKER" research/candidate-08/.opening-type-v2-bundle.part*
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate-08: implement and validate opening-type first-pullback V2 [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-08
+            if git rebase origin/research/candidate-08 && git push origin HEAD:research/candidate-08; then exit 0; fi
+            git rebase --abort || true
+            sleep $((attempt*4))
+          done
+          exit 1
+
+      - name: Enforce reproducible execution
+        if: ${{ always() }}
+        env:
+          STATUS_VALUE: ${{ steps.research.outputs.status }}
+        run: |
+          [[ -n "$STATUS_VALUE" ]]
+          [[ "$STATUS_VALUE" == "0" ]]
