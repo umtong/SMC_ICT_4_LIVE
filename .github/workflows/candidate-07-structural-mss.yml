@@ -1,0 +1,161 @@
+name: candidate-07-structural-mss
+
+on:
+  push:
+    branches: ["research/candidate-07"]
+    paths:
+      - "research/candidate-07/model_structural_mss.py"
+      - "research/candidate-07/strategy_structural_mss.py"
+      - "research/candidate-07/backtest_structural_mss.py"
+      - "research/candidate-07/candidate_structural_mss.py"
+      - "research/candidate-07/staged_structural_mss.py"
+      - "research/candidate-07/tests/test_structural_mss.py"
+      - ".github/workflows/candidate-07-structural-mss.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+
+      - name: Verify foundation and structural contracts
+        run: |
+          set -eu
+          export PYTHONPATH="$PWD/src:$PWD/research/candidate-07"
+          smc4 doctor
+          PYTHONPYCACHEPREFIX=/tmp/candidate07-structural-pyc \
+            python -m compileall -q research/candidate-07
+          python -m unittest discover \
+            -s research/candidate-07/tests -p 'test_*.py' -v
+
+      - name: Restore checksum-verified public data cache
+        uses: actions/cache@v4
+        with:
+          path: .research-data/candidate-07
+          key: candidate-07-btcusdt-2024-through-2026h1-v1
+          restore-keys: |
+            candidate-07-btcusdt-three-weeks-v3
+            candidate-07-btcusdt-three-weeks-v2
+            candidate-07-btcusdt-three-weeks-v1
+
+      - name: Run frozen weeks independently
+        run: |
+          set -eu
+          ROOT=artifacts/candidate-07-structural-mss
+          python research/candidate-07/candidate_structural_mss.py week \
+            --config research/candidate-07/config.json \
+            --stage week-1 --start 2025-12-22 --end 2025-12-29 \
+            --output "$ROOT/week-1" \
+            --data-root .research-data/candidate-07
+          python research/candidate-07/candidate_structural_mss.py week \
+            --config research/candidate-07/config.json \
+            --stage week-2 --start 2025-01-27 --end 2025-02-03 \
+            --output "$ROOT/week-2" \
+            --data-root .research-data/candidate-07
+          python research/candidate-07/candidate_structural_mss.py week \
+            --config research/candidate-07/config.json \
+            --stage week-3 --start 2024-06-24 --end 2024-07-01 \
+            --output "$ROOT/week-3" \
+            --data-root .research-data/candidate-07
+
+      - name: Run one 912-day continuous account
+        run: >-
+          python research/candidate-07/candidate_structural_mss.py week
+          --config research/candidate-07/config.json
+          --stage long-evaluation
+          --start 2024-01-01
+          --end 2026-07-01
+          --output artifacts/candidate-07-structural-mss/long-evaluation
+          --data-root .research-data/candidate-07
+
+      - name: Summarize structural state and performance
+        if: always()
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+          from collections import Counter
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-07-structural-mss")
+          stages = ("week-1", "week-2", "week-3", "long-evaluation")
+          reason_names = (
+              "LOWER_POOL_SWEEP_RECLAIM",
+              "UPPER_POOL_SWEEP_RECLAIM",
+              "NO_PRE_SWEEP_LOCAL_PROTECTED_SWING",
+              "SOURCE_SWEEP_AWAITS_INDEPENDENT_1M_MSS",
+              "INDEPENDENT_1M_DISPLACEMENT_MSS",
+              "INDEPENDENT_1M_MSS_NOT_CONFIRMED_WITHIN_WINDOW",
+              "FIRST_SAME_BOUNDARY_1M_RETEST_REJECTED",
+              "FIRST_1M_BOUNDARY_RETEST_NOT_DEFENDED",
+              "SAME_BOUNDARY_1M_RETEST_NOT_CONFIRMED",
+              "SOURCE_OBJECTIVE_DELIVERED_BEFORE_ENTRY",
+              "SOURCE_INVALIDATED_BEFORE_MSS",
+              "SOURCE_INVALIDATED_DURING_RETEST",
+              "STRUCTURAL_RETEST_GEOMETRY_UNTRADEABLE",
+          )
+          summary = {"candidate": "candidate-07-structural-mss", "stages": {}}
+          for stage in stages:
+              folder = root / stage
+              metrics_path = folder / "metrics.json"
+              events_path = folder / "events.jsonl"
+              if not metrics_path.exists() or not events_path.exists():
+                  summary["stages"][stage] = {"present": False}
+                  continue
+              metrics = json.loads(metrics_path.read_text())
+              reasons = Counter(
+                  json.loads(line).get("reason_code")
+                  for line in events_path.read_text().splitlines()
+              )
+              summary["stages"][stage] = {
+                  "present": True,
+                  "days": metrics["period"]["days"],
+                  "trades": metrics["trades"],
+                  "wins": metrics["wins"],
+                  "losses": metrics["losses"],
+                  "win_rate": metrics["win_rate"],
+                  "net_return": metrics["net_return"],
+                  "daily_geometric_growth": metrics["daily_geometric_growth"],
+                  "profit_factor": metrics["profit_factor"],
+                  "max_drawdown": metrics["max_drawdown"],
+                  "active_days": metrics["active_days"],
+                  "trades_per_day": metrics["trades_per_day"],
+                  "target_met": metrics["target_met"],
+                  "weekly_gate": metrics["weekly_gate"],
+                  "state_reasons": {
+                      name: reasons[name]
+                      for name in reason_names
+                  },
+              }
+          destination = root / "structural_summary.json"
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_text(json.dumps(summary, indent=2, sort_keys=True))
+          print(destination.read_text())
+          PY
+
+      - name: Print immutable result
+        if: always()
+        run: |
+          find artifacts/candidate-07-structural-mss \
+            -name metrics.json -print -exec cat {} \;
+          test -f artifacts/candidate-07-structural-mss/structural_summary.json
+          cat artifacts/candidate-07-structural-mss/structural_summary.json
+
+      - name: Preserve complete structural evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-07-structural-mss-${{ github.sha }}
+          path: artifacts/candidate-07-structural-mss
+          retention-days: 14
+          if-no-files-found: error
