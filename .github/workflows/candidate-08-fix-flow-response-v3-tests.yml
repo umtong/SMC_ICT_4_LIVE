@@ -20,28 +20,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -c 'from pathlib import Path; p=Path("research/candidate-08/test_aggtrade_flow_response_auction_runner.py"); s=p.read_text(encoding="utf-8"); old_import="from aggtrade_flow_response_auction_signals_v2 import ("; assert s.count(old_import)==1; s=s.replace(old_import, "from aggtrade_flow_response_auction_signals_v3 import ("); old="""def _path_frame() -> pd.DataFrame:
-    index = pd.date_range("2024-01-01T00:00:10Z", periods=4, freq="10s")
-    return pd.DataFrame(
-        {
-            "high": [100.1, 100.5, 104.2, 105.0],
-            "low": [99.9, 97.7, 99.0, 103.0],
-            "close": [100.0, 98.2, 104.0, 104.5],
-        },
-        index=index,
-    )
-"""; new="""def _path_frame() -> pd.DataFrame:
-    periods = 31
-    index = pd.date_range("2024-01-01T00:00:10Z", periods=periods, freq="10s")
-    return pd.DataFrame(
-        {
-            "high": [100.1, 100.5, 104.2] + [105.0] * (periods - 3),
-            "low": [99.9, 97.7, 99.0] + [103.0] * (periods - 3),
-            "close": [100.0, 98.2, 104.0] + [104.5] * (periods - 3),
-        },
-        index=index,
-    )
-"""; assert s.count(old)==1; p.write_text(s.replace(old,new), encoding="utf-8")'
+          python -c 'from pathlib import Path; import base64; p=Path("research/candidate-08/test_aggtrade_flow_response_auction_runner.py"); s=p.read_text(encoding="utf-8"); old_import="from aggtrade_flow_response_auction_signals_v2 import ("; assert s.count(old_import)==1; s=s.replace(old_import, "from aggtrade_flow_response_auction_signals_v3 import ("); old=base64.b64decode("ZGVmIF9wYXRoX2ZyYW1lKCkgLT4gcGQuRGF0YUZyYW1lOgogICAgaW5kZXggPSBwZC5kYXRlX3JhbmdlKCIyMDI0LTAxLTAxVDAwOjAwOjEwWiIsIHBlcmlvZHM9NCwgZnJlcT0iMTBzIikKICAgIHJldHVybiBwZC5EYXRhRnJhbWUoCiAgICAgICAgewogICAgICAgICAgICAiaGlnaCI6IFsxMDAuMSwgMTAwLjUsIDEwNC4yLCAxMDUuMF0sCiAgICAgICAgICAgICJsb3ciOiBbOTkuOSwgOTcuNywgOTkuMCwgMTAzLjBdLAogICAgICAgICAgICAiY2xvc2UiOiBbMTAwLjAsIDk4LjIsIDEwNC4wLCAxMDQuNV0sCiAgICAgICAgfSwKICAgICAgICBpbmRleD1pbmRleCwKICAgICkK").decode(); new=base64.b64decode("ZGVmIF9wYXRoX2ZyYW1lKCkgLT4gcGQuRGF0YUZyYW1lOgogICAgcGVyaW9kcyA9IDMxCiAgICBpbmRleCA9IHBkLmRhdGVfcmFuZ2UoIjIwMjQtMDEtMDFUMDA6MDA6MTBaIiwgcGVyaW9kcz1wZXJpb2RzLCBmcmVxPSIxMHMiKQogICAgcmV0dXJuIHBkLkRhdGFGcmFtZSgKICAgICAgICB7CiAgICAgICAgICAgICJoaWdoIjogWzEwMC4xLCAxMDAuNSwgMTA0LjJdICsgWzEwNS4wXSAqIChwZXJpb2RzIC0gMyksCiAgICAgICAgICAgICJsb3ciOiBbOTkuOSwgOTcuNywgOTkuMF0gKyBbMTAzLjBdICogKHBlcmlvZHMgLSAzKSwKICAgICAgICAgICAgImNsb3NlIjogWzEwMC4wLCA5OC4yLCAxMDQuMF0gKyBbMTA0LjVdICogKHBlcmlvZHMgLSAzKSwKICAgICAgICB9LAogICAgICAgIGluZGV4PWluZGV4LAogICAgKQo=").decode(); assert s.count(old)==1; p.write_text(s.replace(old,new), encoding="utf-8")'
           python -m py_compile research/candidate-08/test_aggtrade_flow_response_auction_runner.py
           rm -f research/candidate-08/.run-fix-flow-response-v3-tests
           git config user.name "github-actions[bot]"
