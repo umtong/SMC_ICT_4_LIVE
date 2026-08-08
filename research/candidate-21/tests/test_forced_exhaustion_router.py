@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 
 from forced_exhaustion_router import ForcedDecision
@@ -205,6 +206,28 @@ class ForcedResponseTests(unittest.TestCase):
             self.thresholds,
         )
         self.assertEqual(confirmed.decision, ForcedDecision.CONFIRMED)
+
+
+class ForcedExecutionContractTests(unittest.TestCase):
+    def test_exhaustion_arms_native_stop_limit_fok(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "candidate21_forced_exhaustion_strategy.py").read_text(
+            encoding="utf-8",
+        )
+        self.assertIn("entry_order_type=OrderType.STOP_LIMIT", source)
+        self.assertIn("time_in_force=TimeInForce.FOK", source)
+        self.assertIn("EXHAUSTION_CONFIRMED_STOP_LIMIT_REARM", source)
+        self.assertNotIn("def _submit_natural_target", source)
+
+    def test_event_geometry_is_checked_before_state_is_armed(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "candidate21_forced_exhaustion_strategy.py").read_text(
+            encoding="utf-8",
+        )
+        geometry = source.index("_event_has_tradeable_geometry(")
+        state = source.index("state = ForcedEpisode(")
+        self.assertLess(geometry, state)
+        self.assertIn("optimistic_target_net_r", source)
 
 
 if __name__ == "__main__":
