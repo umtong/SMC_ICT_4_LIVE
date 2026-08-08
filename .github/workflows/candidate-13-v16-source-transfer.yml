@@ -1,0 +1,164 @@
+name: Candidate 13 V16 source-versus-transfer diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-13]
+    paths:
+      - "research/candidate-13/protocol-v16-source-transfer-development.json"
+      - "research/candidate-13/run_v16_source_transfer_week.sh"
+      - "research/candidate-13/candidate13_runner_v16.py"
+      - "research/candidate-13/run_leadership_scdam_v16.py"
+      - "research/candidate-13/semantic_market_leadership_v16.py"
+      - "research/candidate-13/test_v16_rotation_transfer.py"
+      - ".github/workflows/candidate-13-v16-source-transfer.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-13-v16-source-transfer-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}"}
+      - name: Verify V16 source lock and role invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-13:$GITHUB_WORKSPACE/src"
+          python -m py_compile research/candidate-13/*.py
+          python -m unittest research/candidate-13/test_v15_execution_geometry.py research/candidate-13/test_v16_rotation_transfer.py -v
+          python - <<'PY'
+          from pathlib import Path
+          from candidate13_runner_v16 import load_object, source_lock
+          protocol = load_object(Path('research/candidate-13/protocol-v16-source-transfer-development.json'))
+          result = source_lock(protocol)
+          assert result['enforced'] and result['all_matched'], result
+          PY
+
+  evaluate:
+    needs: static
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        week: [W13, W20]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}"}
+      - name: Run V16 NautilusTrader focused week
+        shell: bash
+        run: bash research/candidate-13/run_v16_source_transfer_week.sh "${{ matrix.week }}"
+      - name: Verify mechanism-specific outcome
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          week = "${{ matrix.week }}"
+          root = Path(f"research/candidate-13/v16/source_transfer/development/results/{week}")
+          summary = json.loads((root / 'summary.json').read_text())
+          plans = json.loads((root / 'submitted_plans.json').read_text()).get('plans', [])
+          roles = [
+              (plan.get('details') or {}).get('post_leadership_role')
+              or ((plan.get('details') or {}).get('market_leadership') or {}).get('reason')
+              for plan in plans
+          ]
+          transfer = 'SEMANTIC_FAR_ROTATION_TRANSFER_EVENT_DISPLACEMENT'
+          if week == 'W13':
+              assert summary['closed_trades'] == 2, summary
+              assert summary['losses'] == 0, summary
+              assert transfer in roles, roles
+          else:
+              assert summary['closed_trades'] == 4, summary
+              assert summary['losses'] == 0, summary
+              assert transfer not in roles, roles
+              text = (root / 'scenario_events.jsonl').read_text()
+              assert 'SEMANTIC_FAR_ROTATION_SOURCE_NOT_TRANSFER' in text
+          assert summary['safety_audit_passed'] is True, summary
+          PY
+      - name: Remove downloaded market archives
+        if: always()
+        run: rm -rf "research/candidate-13/v16/source_transfer/development/results/${{ matrix.week }}/data"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate13-v16-source-transfer-${{ matrix.week }}
+          path: research/candidate-13/v16/source_transfer/development/results/${{ matrix.week }}
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: always()
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: candidate13-v16-source-transfer-W*
+          path: artifacts
+      - name: Aggregate and persist focused evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-13
+          [[ "$(git rev-parse origin/research/candidate-13)" == "$GITHUB_SHA" ]] || exit 0
+          mkdir -p research/candidate-13/v16/source_transfer/development/results
+          for dir in artifacts/candidate13-v16-source-transfer-W*; do
+            [[ -d "$dir" ]] || continue
+            week="${dir##*-}"
+            rm -rf "research/candidate-13/v16/source_transfer/development/results/$week"
+            mkdir -p "research/candidate-13/v16/source_transfer/development/results/$week"
+            cp -a "$dir/." "research/candidate-13/v16/source_transfer/development/results/$week/"
+          done
+          python research/candidate-13/aggregate.py \
+            --results research/candidate-13/v16/source_transfer/development/results \
+            --protocol research/candidate-13/protocol-v16-source-transfer-development.json \
+            --output research/candidate-13/v16/source_transfer/development/aggregate.json
+          [[ "$(git ls-remote origin refs/heads/research/candidate-13 | cut -f1)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-13-bot
+          git config user.email candidate-13-bot@users.noreply.github.com
+          git add research/candidate-13/v16/source_transfer/development
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-13 v16: record source-transfer diagnostic [skip ci]"
+            git push origin HEAD:research/candidate-13
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate13-v16-source-transfer-aggregate-${{ github.run_id }}
+          path: |
+            research/candidate-13/v16/source_transfer/development/aggregate.json
+            research/candidate-13/v16/source_transfer/development/RESULT.md
+          if-no-files-found: warn
+          retention-days: 30
