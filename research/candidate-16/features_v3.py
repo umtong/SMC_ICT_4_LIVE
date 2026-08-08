@@ -1,14 +1,13 @@
 """Candidate 16 v3 observational feature extension.
 
 Candidate 05 continues to prepare completed-minute klines, aggregate trades, and
-its frozen feature contract.  Candidate 03 supplies official checksum-verified
-Binance bookTicker archives and timestamp normalization.  This module appends
-actual best-bid/best-ask recovery features without touching orders, fills, PnL,
-or NAV.
+its frozen feature contract. Candidate 03's checksum/timestamp source contract is
+pinned locally in ``bookticker_source_v3`` because the candidate-16 branch tree
+does not otherwise contain candidate-03's latest file. This module appends actual
+best-bid/best-ask recovery features without touching orders, fills, PnL, or NAV.
 """
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import date, timedelta
 import json
 from pathlib import Path
@@ -16,8 +15,8 @@ from typing import Any
 
 import pandas as pd
 
+import bookticker_source_v3 as candidate03_data
 import features as candidate05_features
-import nt_lvcfr_data as candidate03_data
 from topbook_features import NS_PER_MINUTE
 from topbook_features import aggregate_book_ticker_paths
 
@@ -134,13 +133,14 @@ def load_range(
             "size_bytes": source.size_bytes,
             "sha256": source.sha256,
             "candidate03_source_contract": (
-                "research/candidate-03/nt_lvcfr_data.py"
+                "research/candidate-16/bookticker_source_v3.py"
+            ),
+            "candidate03_origin_blob": (
+                candidate03_data.CANDIDATE03_SOURCE_BLOB
             ),
         }
         for source in book_sources
     )
-    # Normalize the derived day field to a stable string without relying on a
-    # filename parser for evidence validity.
     for item in raw_payload:
         if isinstance(item.get("day"), list):
             item["day"] = "-".join(item["day"]).replace(".zip", "")

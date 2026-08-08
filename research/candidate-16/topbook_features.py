@@ -1,9 +1,9 @@
 """Causal top-of-book resilience features from Binance bookTicker updates.
 
-The feature builder is observational only.  It neither creates orders nor
-simulates fills.  Candidate 03's official archive, checksum, and timestamp
-contracts are reused; this module adds event-sequence aggregation at the actual
-best bid and ask.
+The feature builder is observational only. It neither creates orders nor
+simulates fills. Candidate 03's official archive, checksum, and timestamp
+contracts are pinned in ``bookticker_source_v3``; this module adds event-sequence
+aggregation at the actual best bid and ask.
 """
 from __future__ import annotations
 
@@ -170,9 +170,6 @@ class _MinuteAccumulator:
             and self.end_ask_qty > self.ask_episode_min_qty
         )
 
-        # Positive means best-quote resilience; negative means withdrawal ahead.
-        # No magnitude threshold is fitted: the state follows temporal order and
-        # strict dominance of observed add/remove and best-price transitions.
         bid_defense = spread_recovered and (
             bid_persistent_refill or self.end_bid > self.start_bid
         )
@@ -272,12 +269,12 @@ def aggregate_records(
 def iter_book_ticker_paths(
     paths: Sequence[Path],
 ) -> Iterator[BookTickerRecord]:
-    """Reuse Candidate 03's checksum/timestamp contract to stream bookTicker."""
-    import nt_lvcfr_data as source
+    """Stream bookTicker with the pinned Candidate 03 source contract."""
+    import bookticker_source_v3 as source
 
     previous_observed_ns = -1
     for path in sorted(paths, key=lambda item: item.name):
-        archive, reader = source._one_csv_reader(path)  # noqa: SLF001 frozen reuse
+        archive, reader = source.one_csv_reader(path)
         try:
             for row in reader:
                 if not row or not row[0] or not row[0][0].isdigit():
