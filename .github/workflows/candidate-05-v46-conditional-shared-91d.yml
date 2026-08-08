@@ -1,0 +1,209 @@
+name: candidate-05-v46-conditional-shared-91d
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v46-conditional-shared-91d.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v46-conditional-shared-91d
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  conditional-shared-91d:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v46-shared-91d
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for uninterrupted BTC decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            git fetch origin research/candidate-05
+            git reset --hard origin/research/candidate-05
+            if test -s research/candidate-05/V46_STATEFUL_91D_RESULT.json; then
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "BTC 91-day decision was not available within 30 minutes" >&2
+          exit 1
+
+      - name: Verify fixed environment and shared-account parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          python -m unittest discover -s research/candidate-05/tests -p 'test_shared_account_v46_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_shared_account_feature_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_global_entry_slot_v4.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_shared_daily_nav_alignment.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_basis_contract.py' -v
+
+      - name: Decide whether BTC evidence permits shared promotion
+        id: btc
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path("research/candidate-05/V46_STATEFUL_91D_RESULT.json").read_text())
+          promote = payload.get("classification") == "V46_STATEFUL_91D_PROJECT_GROWTH_REACHED"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"promote={'true' if promote else 'false'}\n")
+          print(json.dumps({"classification": payload.get("classification"), "promote": promote}, indent=2))
+          PY
+
+      - name: Freeze exact v46 identity
+        if: steps.btc.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/evidence"
+          cat > "$ROOT/evidence/v46.json" <<'JSON'
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "strategy_v46_no_post_retrace_breakaway:NoPostRetraceBreakawayStrategy",
+            "experiment_role": "UNCHANGED_V46_MARKET_LOGIC_UNDER_ONE_SHARED_ACCOUNT"
+          }
+          JSON
+
+      - name: Run one uninterrupted four-symbol 91-day Nautilus account
+        if: steps.btc.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/shared_account_backtest_v2.py \
+            --winner-evidence "$ROOT/evidence/v46.json" \
+            --build-start 2024-02-28 \
+            --build-end 2024-05-30 \
+            --evaluation-start 2024-03-01 \
+            --evaluation-end 2024-05-30 \
+            --cache .cache/candidate-05-v46-shared-91d \
+            --output "$ROOT/run" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Build authoritative shared result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          btc = json.loads(Path("research/candidate-05/V46_STATEFUL_91D_RESULT.json").read_text())
+          promoted = btc.get("classification") == "V46_STATEFUL_91D_PROJECT_GROWTH_REACHED"
+          metrics_path = root / "run/metrics.json"
+          if promoted and metrics_path.exists():
+              metrics = json.loads(metrics_path.read_text())
+              integrity = bool(metrics.get("integrity_pass"))
+              gdg = float(metrics.get("geometric_daily_growth", -1.0))
+              reached = integrity and gdg >= 0.01
+              classification = (
+                  "V46_SHARED_91D_PROJECT_GROWTH_REACHED"
+                  if reached
+                  else "V46_SHARED_91D_TRANSFER_OR_GROWTH_FAILURE"
+              )
+          elif promoted:
+              metrics = None
+              reached = False
+              classification = "V46_SHARED_91D_IMPLEMENTATION_OR_EVIDENCE_FAILURE"
+          else:
+              metrics = None
+              reached = False
+              classification = "V46_SHARED_91D_NOT_RUN_BTC_DID_NOT_QUALIFY"
+
+          result = {
+              "schema": "candidate-05-v46-conditional-shared-91d-v1",
+              "classification": classification,
+              "project_goal_reached": reached,
+              "btc_classification": btc.get("classification"),
+              "promoted": promoted,
+              "metrics": metrics,
+              "final_requirement": "one BTC/ETH/SOL/XRP account, cost-after geometric daily growth >= 1%",
+          }
+          json_path = Path("research/candidate-05/V46_SHARED_91D_RESULT.json")
+          json_path.write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n")
+
+          lines = [
+              "# Candidate 05 v46 — conditional four-symbol 91-day result",
+              "",
+              f"**Classification: `{classification}`**",
+              "",
+              f"- BTC prerequisite: `{btc.get('classification')}`",
+              f"- Shared run promoted: `{promoted}`",
+              f"- Project growth reached in this 91-day shared run: `{reached}`",
+          ]
+          if isinstance(metrics, dict):
+              lines.extend([
+                  f"- Total return: {float(metrics.get('total_return', 0.0)):.9%}",
+                  f"- Geometric daily growth: {float(metrics.get('geometric_daily_growth', 0.0)):.9%}",
+                  f"- Trades / wins: {int(metrics.get('trades', 0))} / {int(metrics.get('wins', 0))}",
+                  f"- Win rate: {float(metrics.get('win_rate', 0.0)):.6%}",
+                  f"- Profit factor: {float(metrics.get('profit_factor', 0.0)):.6f}",
+                  f"- Maximum drawdown: {float(metrics.get('max_drawdown', 0.0)):.6%}",
+              ])
+          lines.append("")
+          Path("research/candidate-05/V46_SHARED_91D_RESULT.md").write_text("\n".join(lines))
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+          PY
+
+      - name: Verify evidence when promoted
+        if: steps.btc.outputs.promote == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/run/metrics.json"
+          for file in run.json data_manifest.json orders.csv positions.csv account.csv shared_equity_observations.csv global_slot_events.json global_slot_audit.json; do
+            test -s "$ROOT/run/$file"
+          done
+
+      - name: Commit conditional result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-05/V46_SHARED_91D_RESULT.json research/candidate-05/V46_SHARED_91D_RESULT.md
+          git commit -m "candidate-05: record conditional shared v46 91-day result [skip ci]"
+          git pull --rebase origin research/candidate-05
+          git push origin HEAD:research/candidate-05
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v46-conditional-shared-91d-${{ github.sha }}
+          path: |
+            artifacts/candidate-05-v46-shared-91d/**
+            research/candidate-05/V46_SHARED_91D_RESULT.json
+            research/candidate-05/V46_SHARED_91D_RESULT.md
+          if-no-files-found: warn
+          retention-days: 90
