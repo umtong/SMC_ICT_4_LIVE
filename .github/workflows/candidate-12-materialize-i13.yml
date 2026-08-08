@@ -1,0 +1,247 @@
+name: candidate-12-materialize-i13
+
+on:
+  push:
+    branches: ["research/candidate-12"]
+    paths:
+      - "research/candidate-12/update-i13.patch"
+      - ".github/workflows/candidate-12-materialize-i13.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-12-materialize-i13-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user root
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Install reviewed I13 source and regression gate atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          PATCH=research/candidate-12/update-i13.patch
+          echo "3f77781127b74443042c2b350b4bcbca82a26af062c1062c139587c5201c5623  $PATCH" | sha256sum -c -
+          git apply --check "$PATCH"
+          git apply "$PATCH"
+          smc4 doctor
+          python -m compileall -q research/candidate-12
+          python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+
+          cat > .github/workflows/candidate-12-research.yml <<'RESEARCH_YAML'
+          name: candidate-12-i13-state-priced-reacceleration-regression
+
+          on:
+            push:
+              branches: ["research/candidate-12"]
+              paths:
+                - "research/candidate-12/**"
+                - ".github/workflows/candidate-12-research.yml"
+            workflow_dispatch:
+
+          permissions:
+            contents: read
+
+          concurrency:
+            group: candidate-12-i13-${{ github.ref }}-${{ github.sha }}
+            cancel-in-progress: false
+
+          jobs:
+            authoritative-regression:
+              runs-on: ubuntu-24.04
+              timeout-minutes: 60
+              container:
+                image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+                options: --user root
+              steps:
+                - name: Checkout I13 candidate
+                  uses: actions/checkout@v4
+
+                - name: Verify prebuilt environment
+                  run: smc4 doctor
+
+                - name: Verify frozen I13 identity
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    python - <<'PY'
+                    from pathlib import Path
+                    import json
+                    config = json.loads(Path("research/candidate-12/config.json").read_text())
+                    assert config["schema_version"] == 13, config
+                    assert config["candidate"] == "candidate-12-state-priced-reacceleration-router", config
+                    assert config["selection"]["implementation_week"] == "W2", config
+                    assert not Path("research/candidate-12/update-i13.patch").exists()
+                    PY
+
+                - name: Compile and run 27 causal tests
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    python -m compileall -q research/candidate-12
+                    python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
+
+                - name: Run W1 design gate through NautilusTrader
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    OUTPUT=artifacts/candidate-12/BTCUSDT-W1
+                    mkdir -p "$OUTPUT"
+                    python research/candidate-12/run.py --symbol BTCUSDT --week W1 --output "$OUTPUT" | tee "$OUTPUT.console.json"
+                    python - <<'PY'
+                    from pathlib import Path
+                    import json
+                    m = json.loads(Path("artifacts/candidate-12/BTCUSDT-W1/metrics.json").read_text())
+                    assert m["closed_trades"] == 6, m
+                    assert m["wins"] == 6 and m["losses"] == 0, m
+                    assert m["project_target_gate_passed"] is True, m
+                    assert m["risk_budget_passed"] and m["global_slot_passed"], m
+                    assert m["event_log_valid"] and not m["engine_errors"], m
+                    assert not m["liquidation_detected"], m
+                    PY
+
+                - name: Run W2 execution gate through NautilusTrader
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    OUTPUT=artifacts/candidate-12/BTCUSDT-W2
+                    mkdir -p "$OUTPUT"
+                    python research/candidate-12/run.py --symbol BTCUSDT --week W2 --output "$OUTPUT" | tee "$OUTPUT.console.json"
+                    python - <<'PY'
+                    from decimal import Decimal
+                    from pathlib import Path
+                    import json
+                    root = Path("artifacts/candidate-12/BTCUSDT-W2")
+                    m = json.loads((root / "metrics.json").read_text())
+                    plans = json.loads((root / "submitted_plans.json").read_text())["plans"]
+                    market = [
+                        p for p in plans
+                        if p["details"].get("route")
+                        == "FVG_BREACH_HELD_BOUNDARY_THEN_FRESH_REACCELERATION_MARKET"
+                    ]
+                    assert len(market) == 1, plans
+                    p = market[0]
+                    assert p["scenario"] == "LONDON_HIGH_ACCEPTANCE", p
+                    assert p["entry_order_type"] == "MARKET", p
+                    assert p["observed_ts_ns"] == 1695663900000000000, p
+                    assert p["net_r"] >= 0.65, p
+                    assert m["closed_trades"] >= 1, m
+                    assert m["wins"] == m["closed_trades"] and m["losses"] == 0, m
+                    assert Decimal(str(m["final_nav"])) > Decimal(str(m["starting_nav"])), m
+                    assert m["risk_budget_passed"] and m["global_slot_passed"], m
+                    assert m["event_log_valid"] and not m["engine_errors"], m
+                    assert not m["liquidation_detected"], m
+                    PY
+
+                - name: Run W5 protected-limit regression through NautilusTrader
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    OUTPUT=artifacts/candidate-12/BTCUSDT-W5
+                    mkdir -p "$OUTPUT"
+                    python research/candidate-12/run.py --symbol BTCUSDT --week W5 --output "$OUTPUT" | tee "$OUTPUT.console.json"
+                    python - <<'PY'
+                    from pathlib import Path
+                    import json
+                    root = Path("artifacts/candidate-12/BTCUSDT-W5")
+                    m = json.loads((root / "metrics.json").read_text())
+                    plans = json.loads((root / "submitted_plans.json").read_text())["plans"]
+                    target = [p for p in plans if p["observed_ts_ns"] == 1716222600000000000]
+                    assert len(target) == 1, plans
+                    p = target[0]
+                    assert p["details"].get("route") == "FVG_BREACH_HELD_BOUNDARY_THEN_FRESH_REACCELERATION_LIMIT", p
+                    assert p["entry_order_type"] == "LIMIT_GTD_PROTECTED", p
+                    assert m["closed_trades"] == 5, m
+                    assert m["wins"] == 5 and m["losses"] == 0, m
+                    assert m["project_target_gate_passed"] is True, m
+                    assert m["risk_budget_passed"] and m["global_slot_passed"], m
+                    assert m["event_log_valid"] and not m["engine_errors"], m
+                    assert not m["liquidation_detected"], m
+                    PY
+
+                - name: Run remaining exposed regression weeks
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    for WEEK in W6 W10 W11; do
+                      OUTPUT="artifacts/candidate-12/BTCUSDT-${WEEK}"
+                      mkdir -p "$OUTPUT"
+                      python research/candidate-12/run.py --symbol BTCUSDT --week "$WEEK" --output "$OUTPUT" | tee "$OUTPUT.console.json"
+                    done
+
+                - name: Enforce remaining NAV and causal invariants
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    python - <<'PY'
+                    from decimal import Decimal
+                    from pathlib import Path
+                    import json
+                    root = Path("artifacts/candidate-12")
+                    expected = {"W6": 5, "W10": 1, "W11": 0}
+                    summary = {}
+                    for week, trades in expected.items():
+                        m = json.loads((root / f"BTCUSDT-{week}" / "metrics.json").read_text())
+                        assert m["candidate"] == "candidate-12-state-priced-reacceleration-router", (week, m)
+                        assert m["closed_trades"] == trades, (week, m)
+                        assert m["losses"] == 0, (week, m)
+                        if trades:
+                            assert m["wins"] == trades, (week, m)
+                            assert Decimal(str(m["final_nav"])) > Decimal(str(m["starting_nav"])), m
+                        else:
+                            assert Decimal(str(m["final_nav"])) == Decimal(str(m["starting_nav"])), m
+                        assert m["risk_budget_passed"] and m["global_slot_passed"], m
+                        assert m["event_log_valid"] and not m["engine_errors"], m
+                        assert not m["liquidation_detected"], m
+                        summary[week] = {
+                            "closed_trades": m["closed_trades"],
+                            "wins": m["wins"],
+                            "losses": m["losses"],
+                            "final_nav": m["final_nav"],
+                            "daily_geometric_growth": m["daily_geometric_growth"],
+                            "scenario_plan_counts": m.get("scenario_plan_counts", {}),
+                        }
+                    (root / "I13-authoritative-regression.json").write_text(
+                        json.dumps(summary, indent=2, sort_keys=True) + "\n"
+                    )
+                    print(json.dumps(summary, indent=2, sort_keys=True))
+                    PY
+
+                - name: Surface I13 evidence
+                  if: always()
+                  shell: bash
+                  run: |
+                    for WEEK in W1 W2 W5 W6 W10 W11; do
+                      FILE="artifacts/candidate-12/BTCUSDT-${WEEK}/metrics.json"
+                      if [[ -f "$FILE" ]]; then
+                        echo "=== I13_${WEEK}_METRICS_BEGIN ==="
+                        cat "$FILE"
+                        echo "=== I13_${WEEK}_METRICS_END ==="
+                      fi
+                    done
+
+                - name: Preserve reproducible I13 evidence
+                  if: always()
+                  uses: actions/upload-artifact@v4
+                  with:
+                    name: candidate-12-I13-authoritative-${{ github.sha }}
+                    path: artifacts/candidate-12
+                    if-no-files-found: warn
+          RESEARCH_YAML
+
+          git rm "$PATCH" .github/workflows/candidate-12-materialize-i13.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add research/candidate-12/logic.py research/candidate-12/test_logic.py research/candidate-12/config.json .github/workflows/candidate-12-research.yml
+          git commit -m "candidate-12: install I13 state-priced reacceleration routing"
+          git push origin HEAD:research/candidate-12
