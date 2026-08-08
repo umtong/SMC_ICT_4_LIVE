@@ -1,0 +1,131 @@
+name: candidate-35-short-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-35"]
+    paths:
+      - "research/candidate-35/router.py"
+      - "research/candidate-35/diagnostic.py"
+      - "research/candidate-35/build_chunk.py"
+      - "research/candidate-35/config.json"
+      - "research/candidate-35/test_router.py"
+      - ".github/workflows/candidate-35-short-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-35-short-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+  actions: read
+
+jobs:
+  build-seven-day-input:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-35
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/c35-short-input/${{ matrix.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify router contracts only
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-35/router.py research/candidate-35/diagnostic.py research/candidate-35/build_chunk.py
+          python -m unittest discover -s research/candidate-35 -p 'test_router.py' -v
+
+      - name: Build checksum-verified seven-day observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-35/build_chunk.py \
+            --symbol "${{ matrix.symbol }}" \
+            --core-start 2026-07-01 \
+            --core-end 2026-07-07 \
+            --warmup-days 3 \
+            --cache ".cache/c35-short/${{ matrix.symbol }}" \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/build.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate35-short-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/c35-short-input/${{ matrix.symbol }}/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  diagnose-router:
+    needs: build-seven-day-input
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-35
+      PYTHONUNBUFFERED: "1"
+      INPUT: artifacts/c35-short-downloaded
+      ROOT: artifacts/c35-short-diagnostic
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate35-short-*-${{ github.sha }}
+          path: artifacts/c35-short-downloaded
+          merge-multiple: false
+
+      - name: Run no-PnL structural diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find "$INPUT" -name chunk_manifest.json | wc -l)" -eq 4
+          mkdir -p "$ROOT"
+          python research/candidate-35/diagnostic.py \
+            --input-root "$INPUT" \
+            --config research/candidate-35/config.json \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify diagnostic claim boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          result = json.loads((root / "router_diagnostic.json").read_text())
+          assert result["claim_scope"] == "STRUCTURAL_DIAGNOSTIC_ONLY_NO_ORDER_SIMULATION_NO_PNL_NO_NAV_CLAIM"
+          assert result["same_minute_four_symbol_clock"] is True
+          assert result["future_feature_violations"] == 0
+          assert result["episodes_evaluated"] > 0
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate35-short-diagnostic-${{ github.sha }}
+          path: artifacts/c35-short-diagnostic/**
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
