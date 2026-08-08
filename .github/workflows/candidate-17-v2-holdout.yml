@@ -29,23 +29,32 @@ jobs:
       FROZEN_SHA: 3bfc9a45f1fa29aef7479b2deb723944d13b87d0
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Verify frozen strategy and deterministic period
+      - name: Verify frozen strategy blobs and deterministic period
         shell: bash
         run: |
           set -euo pipefail
-          git diff --exit-code "$FROZEN_SHA" -- \
-            research/candidate-17/config.json \
-            research/candidate-17/candidate17_strategy.py \
-            research/candidate-17/defense_memory_router.py \
-            research/candidate-17/failure_retest_router.py \
-            research/candidate-17/remembered_defense_strategy.py \
-            research/candidate-17/remembered_defense_strategy_v2.py
           python - <<'PY'
           from datetime import date, timedelta
-          from hashlib import sha256
+          from hashlib import sha1, sha256
+          from pathlib import Path
+
+          frozen_blobs = {
+              "research/candidate-17/config.json": "67bee1e641327d04d6c0af2d987fa75ca0b80b98",
+              "research/candidate-17/candidate17_strategy.py": "d6bdfe08203f54b9ccb661992254f80f5613fbc3",
+              "research/candidate-17/defense_memory_router.py": "699d603bab3e14dd0b80b00039d9d90d3cb59f85",
+              "research/candidate-17/failure_retest_router.py": "e0364bef2a86fce76de9f54165311d043c9c2761",
+              "research/candidate-17/remembered_defense_strategy.py": "53c54a0c97ee9f2bfa7923f3a7a455bfbe4e515b",
+              "research/candidate-17/remembered_defense_strategy_v2.py": "9002b7e5e40cb2813a287a98bf2b05408f9d8cf0",
+          }
+          observed = {}
+          for name, expected in frozen_blobs.items():
+              data = Path(name).read_bytes()
+              header = f"blob {len(data)}\0".encode("ascii")
+              actual = sha1(header + data).hexdigest()
+              observed[name] = actual
+              if actual != expected:
+                  raise SystemExit({"path": name, "expected": expected, "actual": actual})
 
           seed = (
               "candidate17-v2-first-retest-cost-geometry|"
@@ -57,11 +66,16 @@ jobs:
               mondays.append(cursor)
               cursor += timedelta(days=7)
           index = int(sha256(seed.encode("utf-8")).hexdigest(), 16) % len(mondays)
-          expected = (209, 5, date(2022, 2, 7))
-          actual = (len(mondays), index, mondays[index])
-          if actual != expected:
-              raise SystemExit({"expected": expected, "actual": actual})
-          print({"candidate_weeks": len(mondays), "index": index, "start": str(mondays[index])})
+          expected_selection = (209, 5, date(2022, 2, 7))
+          actual_selection = (len(mondays), index, mondays[index])
+          if actual_selection != expected_selection:
+              raise SystemExit({"expected": expected_selection, "actual": actual_selection})
+          print({
+              "frozen_blobs": observed,
+              "candidate_weeks": len(mondays),
+              "index": index,
+              "start": str(mondays[index]),
+          })
           PY
 
       - name: Verify environment and all causal contracts
