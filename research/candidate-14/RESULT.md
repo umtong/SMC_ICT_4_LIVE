@@ -1,34 +1,13 @@
-# Candidate 14 aggregate result
+# Candidate 14 contiguous holdout status
 
-**CANDIDATE14_DIAGNOSTIC_GATE_FAILED**
+**CANDIDATE14_CONTIGUOUS_HOLDOUT_PENDING**
 
-- validation_mode: `diagnostic`
-- gate_passed: `False`
+- strategy source: `dfb180490b141fdafd5b5ac0b52d3dd0b842550d`
+- development evidence: `f859896a7c41792617bbc47b585623a5a9e55946`
+- frozen interval: `2026-05-11` through `2026-08-03`
+- continuous calendar days: `84`
+- weekly reset: `False`
 - success_claim: `False`
-- daily_geometric_growth: `0.0130048323`
-- pooled_nav_multiple: `1.5718210387`
-- closed_trades: `8`
-- wins / losses: `8 / 0`
-- win_rate: `1.000000`
-- payoff_ratio: `None`
-- active_weeks: `5 / 5`
-- maximum_weekly_closed_trade_drawdown: `0.0000000000`
-- maximum_positive_log_growth_share_from_one_week: `0.4376359659`
 
-## Gate checks
-- all_holdouts_complete: `True`
-- all_safety_audits: `True`
-- daily_geometric_growth: `True`
-- closed_trades: `False`
-- active_weeks: `True`
-- win_rate: `True`
-- payoff_ratio: `True`
-- max_drawdown: `True`
-- growth_concentration: `True`
-
-## Weekly evidence
-- W11 (2023-03-20): daily_geo=0.010862, trades=1, W/L=1/0, plans=2, safety=True
-- W12 (2023-06-20): daily_geo=0.015406, trades=3, W/L=3/0, plans=3, safety=True
-- W13 (2024-09-17): daily_geo=0.006919, trades=1, W/L=1/0, plans=1, safety=True
-- W14 (2024-12-31): daily_geo=0.003350, trades=1, W/L=1/0, plans=1, safety=True
-- W10 (2025-04-14): daily_geo=0.028677, trades=2, W/L=2/0, plans=2, safety=True
+The dates, gate and source blobs were committed before L1 outcomes were downloaded.
+Only the one-engine continuous aggregate may replace this status.

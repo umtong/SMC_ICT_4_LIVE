@@ -93,6 +93,7 @@ def execute(week: str, output_dir: Path) -> dict[str, Any]:
     config["candidate"] = protocol["candidate"]
     config["selection"]["seed"] = protocol["selection"]["seed"]
     config["selection"]["warmup_days"] = protocol["selection"]["warmup_days"]
+    config["selection"]["evaluation_days"] = protocol["selection"]["evaluation_days"]
     config["selection"]["weeks"] = {
         name: {
             "start": record["start"],

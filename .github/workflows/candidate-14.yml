@@ -1,34 +1,12 @@
-name: Candidate 14 frozen quarterly holdout
+name: Candidate 14 frozen contiguous validation
 
 on:
   push:
     branches:
       - research/candidate-14
     paths:
+      - "research/candidate-14/**"
       - ".github/workflows/candidate-14.yml"
-      - "research/candidate-14/holdout_protocol.json"
-      - "research/candidate-14/HOLDOUT_RESERVATION.json"
-      - "research/candidate-14/HOLDOUT_TRIGGER.md"
-      - "research/candidate-14/bar_adapter.py"
-      - "research/candidate-14/global_allocator.py"
-      - "research/candidate-14/logic.py"
-      - "research/candidate-14/market_leadership.py"
-      - "research/candidate-14/session_engine.py"
-      - "research/candidate-14/session_auction_i7.py"
-      - "research/candidate-14/session_auction_bridge.py"
-      - "research/candidate-14/session_i7_config.json"
-      - "research/candidate-14/semantic_execution.py"
-      - "research/candidate-14/semantic_logic.py"
-      - "research/candidate-14/semantic_market_leadership.py"
-      - "research/candidate-14/runner_materializer.py"
-      - "research/candidate-14/portfolio_materializer.py"
-      - "research/candidate-14/run_leadership_scdam.py"
-      - "research/candidate-14/run_leadership_scdam_base.py"
-      - "research/candidate-14/evidence_audit.py"
-      - "research/candidate-14/base_config.json"
-      - "research/candidate-14/candidate14_runner.py"
-      - "research/candidate-14/aggregate.py"
-      - "research/candidate-14/run_week.sh"
   workflow_dispatch:
 
 permissions:
@@ -36,7 +14,7 @@ permissions:
   packages: read
 
 concurrency:
-  group: candidate-14-holdout-${{ github.sha }}
+  group: candidate-14-contiguous-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -54,76 +32,52 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Verify environment, tests, reservation and frozen source
+      - name: Verify frozen source, reservation, environment and tests
         shell: bash
         run: |
           set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           smc4 doctor
           export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
           python -m py_compile research/candidate-14/*.py
           python -m unittest discover -s research/candidate-14 -p 'test_*.py' -v
-          source_commit="$(python -c 'import json; print(json.load(open("research/candidate-14/HOLDOUT_RESERVATION.json"))["strategy_source_commit"])')"
-          diagnostic_commit="$(python -c 'import json; print(json.load(open("research/candidate-14/HOLDOUT_RESERVATION.json"))["diagnostic_evidence_commit"])')"
-          git fetch --no-tags origin "$source_commit" "$diagnostic_commit"
           python - <<'PY'
-          from __future__ import annotations
-
           import json
-          from pathlib import Path
           import subprocess
+          from pathlib import Path
 
           root = Path("research/candidate-14")
-          protocol = json.loads((root / "holdout_protocol.json").read_text(encoding="utf-8"))
-          reservation = json.loads((root / "HOLDOUT_RESERVATION.json").read_text(encoding="utf-8"))
-
-          assert protocol["validation_mode"] == "frozen_holdout"
-          assert protocol["holdout_reservation"]["schema"] == reservation["schema"]
-          assert protocol["holdout_reservation"]["strategy_source_commit"] == reservation["strategy_source_commit"]
-          assert protocol["holdout_reservation"]["diagnostic_evidence_commit"] == reservation["diagnostic_evidence_commit"]
-          assert protocol["holdout_reservation"]["outcomes_inspected_before_reservation"] is False
-          assert reservation["selection"]["outcomes_inspected_before_reservation"] is False
-          assert protocol["selection"]["seed"] == reservation["selection"]["seed"]
-          assert protocol["selection"]["warmup_days"] == reservation["selection"]["warmup_days"]
-          assert protocol["selection"]["evaluation_days"] == reservation["selection"]["evaluation_days"]
-          assert protocol["selection"]["holdouts"] == reservation["selection"]["holdouts"]
-          assert protocol["aggregate_gate"] == reservation["aggregate_gate"]
-
-          source_commit = reservation["strategy_source_commit"]
-          expected = protocol["locked_source"]["blobs"]
-          for name, blob in expected.items():
-              path = root / name
-              current_blob = subprocess.check_output(
-                  ["git", "hash-object", str(path)],
+          protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+          reservation = json.loads(
+              (root / "CONTIGUOUS_HOLDOUT_RESERVATION.json").read_text(encoding="utf-8")
+          )
+          if protocol.get("validation_mode") != "frozen_holdout":
+              raise SystemExit("protocol is not a frozen holdout")
+          if protocol["selection"] != reservation["selection"]:
+              raise SystemExit("protocol selection differs from the pre-outcome reservation")
+          if protocol["aggregate_gate"] != reservation["aggregate_gate"]:
+              raise SystemExit("protocol gate differs from the pre-outcome reservation")
+          holdouts = protocol["selection"]["holdouts"]
+          if set(holdouts) != {"L1"}:
+              raise SystemExit(f"expected one contiguous interval L1, got {sorted(holdouts)}")
+          if protocol["selection"]["evaluation_days"] != 84:
+              raise SystemExit("L1 must be exactly 84 continuous calendar days")
+          if reservation.get("outcomes_inspected_before_reservation") is not False:
+              raise SystemExit("reservation outcome status is not fail-closed")
+          for name, expected in protocol["locked_source"]["blobs"].items():
+              actual = subprocess.check_output(
+                  ["git", "hash-object", str(root / name)],
                   text=True,
               ).strip()
-              source_blob = subprocess.check_output(
-                  ["git", "rev-parse", f"{source_commit}:research/candidate-14/{name}"],
-                  text=True,
-              ).strip()
-              if current_blob != blob or source_blob != blob:
+              if actual != expected:
                   raise SystemExit(
-                      f"frozen source mismatch {name}: "
-                      f"current={current_blob} reserved={source_blob} expected={blob}"
+                      f"locked strategy source drift: {name}: {actual} != {expected}"
                   )
-              if not path.is_file() or not path.read_bytes():
-                  raise SystemExit(f"missing frozen source {name}")
-
-          if len(protocol["selection"]["holdouts"]) != 16:
-              raise SystemExit("holdout protocol must contain H01-H16")
-          if set(protocol["selection"]["holdouts"]) != {f"H{i:02d}" for i in range(1, 17)}:
-              raise SystemExit("holdout identifiers are not exactly H01-H16")
           PY
 
   evaluate:
     needs: static
-    strategy:
-      fail-fast: false
-      max-parallel: 16
-      matrix:
-        interval: [H01, H02, H03, H04, H05, H06, H07, H08, H09, H10, H11, H12, H13, H14, H15, H16]
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user 0
@@ -134,52 +88,35 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-      - name: Activate immutable holdout protocol
+      - name: Run one 84-day Nautilus account path
         shell: bash
         run: |
           set -euo pipefail
-          cp research/candidate-14/holdout_protocol.json research/candidate-14/protocol.json
-      - name: Run frozen Candidate 14 Nautilus holdout
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash research/candidate-14/run_week.sh \
-            "${{ matrix.interval }}" \
-            "research/candidate-14/holdout/results/${{ matrix.interval }}"
-      - name: Upload raw bars only for explicit path diagnosis
-        if: contains(github.event.head_commit.message, '[raw]')
-        uses: actions/upload-artifact@v4
-        with:
-          name: candidate14-holdout-raw-${{ matrix.interval }}
-          path: research/candidate-14/holdout/results/${{ matrix.interval }}/data
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-      - name: Remove downloaded market archives
+          bash research/candidate-14/run_week.sh L1
+      - name: Remove downloaded market archives from evidence payload
         if: always()
         shell: bash
-        run: |
-          rm -rf "research/candidate-14/holdout/results/${{ matrix.interval }}/data"
-      - name: Upload auditable frozen evidence
+        run: rm -rf research/candidate-14/results/L1/data
+      - name: Upload auditable continuous evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate14-holdout-${{ matrix.interval }}
+          name: candidate14-L1
           path: |
-            research/candidate-14/holdout/results/${{ matrix.interval }}/run.json
-            research/candidate-14/holdout/results/${{ matrix.interval }}/data_manifest.json
-            research/candidate-14/holdout/results/${{ matrix.interval }}/metrics.json
-            research/candidate-14/holdout/results/${{ matrix.interval }}/summary.json
-            research/candidate-14/holdout/results/${{ matrix.interval }}/audit.json
-            research/candidate-14/holdout/results/${{ matrix.interval }}/audit.md
-            research/candidate-14/holdout/results/${{ matrix.interval }}/source_lock.json
-            research/candidate-14/holdout/results/${{ matrix.interval }}/effective_config.json
-            research/candidate-14/holdout/results/${{ matrix.interval }}/scenario_events.jsonl
-            research/candidate-14/holdout/results/${{ matrix.interval }}/submitted_plans.json
-            research/candidate-14/holdout/results/${{ matrix.interval }}/order_lifecycle.json
-            research/candidate-14/holdout/results/${{ matrix.interval }}/orders.csv
-            research/candidate-14/holdout/results/${{ matrix.interval }}/positions.csv
-            research/candidate-14/holdout/results/${{ matrix.interval }}/account.csv
+            research/candidate-14/results/L1/run.json
+            research/candidate-14/results/L1/data_manifest.json
+            research/candidate-14/results/L1/metrics.json
+            research/candidate-14/results/L1/summary.json
+            research/candidate-14/results/L1/audit.json
+            research/candidate-14/results/L1/audit.md
+            research/candidate-14/results/L1/source_lock.json
+            research/candidate-14/results/L1/effective_config.json
+            research/candidate-14/results/L1/scenario_events.jsonl
+            research/candidate-14/results/L1/submitted_plans.json
+            research/candidate-14/results/L1/order_lifecycle.json
+            research/candidate-14/results/L1/orders.csv
+            research/candidate-14/results/L1/positions.csv
+            research/candidate-14/results/L1/account.csv
           if-no-files-found: warn
           retention-days: 30
 
@@ -193,141 +130,119 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Download all fresh frozen holdout artifacts
+      - name: Download the fresh continuous artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: candidate14-holdout-H*
-          path: artifacts
-      - name: Validate provenance, aggregate and persist
+          name: candidate14-L1
+          path: artifacts/candidate14-L1
+      - name: Validate provenance, aggregate and persist the one-account path
         shell: bash
         run: |
           set -euo pipefail
           git fetch origin research/candidate-14
           current_head="$(git rev-parse origin/research/candidate-14)"
           if [[ "$current_head" != "$GITHUB_SHA" ]]; then
-            echo "stale holdout run: $GITHUB_SHA; current branch: $current_head"
+            echo "stale continuous run: $GITHUB_SHA; current branch: $current_head"
             exit 0
           fi
 
-          rm -rf research/candidate-14/holdout/results
-          mkdir -p research/candidate-14/holdout/results
-          for interval in H01 H02 H03 H04 H05 H06 H07 H08 H09 H10 H11 H12 H13 H14 H15 H16; do
-            src="artifacts/candidate14-holdout-$interval"
-            test -d "$src"
-            mkdir -p "research/candidate-14/holdout/results/$interval"
-            cp -a "$src/." "research/candidate-14/holdout/results/$interval/"
-            for file in \
-              run.json data_manifest.json metrics.json summary.json audit.json audit.md \
-              source_lock.json effective_config.json scenario_events.jsonl \
-              submitted_plans.json order_lifecycle.json orders.csv positions.csv account.csv; do
-              test -s "research/candidate-14/holdout/results/$interval/$file"
-            done
+          rm -rf research/candidate-14/results
+          mkdir -p research/candidate-14/results/L1
+          cp -a artifacts/candidate14-L1/. research/candidate-14/results/L1/
+
+          for file in \
+            run.json data_manifest.json metrics.json summary.json audit.json audit.md \
+            source_lock.json effective_config.json scenario_events.jsonl \
+            submitted_plans.json order_lifecycle.json orders.csv positions.csv account.csv; do
+            test -s "research/candidate-14/results/L1/$file"
           done
 
           python - <<'PY'
-          from __future__ import annotations
-
-          from hashlib import sha256
           import json
           from pathlib import Path
 
           root = Path("research/candidate-14")
-          protocol = json.loads((root / "holdout_protocol.json").read_text(encoding="utf-8"))
-          schema = protocol["schema"]
+          protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+          reservation = json.loads(
+              (root / "CONTIGUOUS_HOLDOUT_RESERVATION.json").read_text(encoding="utf-8")
+          )
+          folder = root / "results" / "L1"
+          effective = json.loads((folder / "effective_config.json").read_text(encoding="utf-8"))
+          run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+          metrics = json.loads((folder / "metrics.json").read_text(encoding="utf-8"))
+          summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
+          audit = json.loads((folder / "audit.json").read_text(encoding="utf-8"))
+          lock = json.loads((folder / "source_lock.json").read_text(encoding="utf-8"))
+
           candidate = protocol["candidate"]
-          mode = protocol["validation_mode"]
-          expected = set(protocol["selection"]["holdouts"])
-          results = root / "holdout" / "results"
-          actual = {path.name for path in results.iterdir() if path.is_dir()}
-          if actual != expected:
-              raise SystemExit(
-                  f"fresh artifact set mismatch: expected {sorted(expected)}, got {sorted(actual)}"
-              )
-
-          expected_source = protocol["locked_source"]["blobs"]
-          expected_sha256 = {
-              name: sha256((root / name).read_bytes()).hexdigest()
-              for name in expected_source
-          }
-          for interval in sorted(expected):
-              folder = results / interval
-              effective = json.loads((folder / "effective_config.json").read_text(encoding="utf-8"))
-              run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
-              metrics = json.loads((folder / "metrics.json").read_text(encoding="utf-8"))
-              summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
-              audit = json.loads((folder / "audit.json").read_text(encoding="utf-8"))
-              lock = json.loads((folder / "source_lock.json").read_text(encoding="utf-8"))
-
-              if effective.get("candidate") != candidate:
-                  raise SystemExit(f"{interval}: candidate mismatch in effective_config")
-              contract = effective.get("candidate14_protocol", {})
-              if (
-                  contract.get("schema") != schema
-                  or contract.get("validation_mode") != mode
-                  or contract.get("interval") != interval
-              ):
-                  raise SystemExit(f"{interval}: effective holdout protocol mismatch")
-              for name, payload in (
-                  ("run", run),
-                  ("metrics", metrics),
-                  ("summary", summary),
-                  ("audit", audit),
-              ):
-                  if payload.get("candidate") != candidate:
-                      raise SystemExit(f"{interval}: {name} candidate mismatch")
-                  if payload.get("validation_mode") != mode:
-                      raise SystemExit(f"{interval}: {name} validation mode mismatch")
-              if run.get("candidate14_protocol") != schema:
-                  raise SystemExit(f"{interval}: run protocol mismatch")
-              if metrics.get("candidate14_protocol") != schema:
-                  raise SystemExit(f"{interval}: metrics protocol mismatch")
-              if lock.get("candidate") != candidate or lock.get("validation_mode") != mode:
-                  raise SystemExit(f"{interval}: source-lock provenance mismatch")
-              for source_name, blob in expected_source.items():
-                  record = lock.get("files", {}).get(source_name, {})
-                  if record.get("origin_git_blob") != blob:
-                      raise SystemExit(f"{interval}: source blob mismatch for {source_name}")
-                  if record.get("sha256") != expected_sha256[source_name]:
-                      raise SystemExit(f"{interval}: source byte mismatch for {source_name}")
-              if not all(
-                  audit.get(key) is True
-                  for key in (
-                      "evidence_complete",
-                      "metric_recalculation_passed",
-                      "risk_budget_passed",
-                      "global_slot_passed",
-                      "partial_entry_protection_passed",
-                      "no_liquidation_passed",
-                      "engine_errors_absent",
-                  )
-              ):
-                  raise SystemExit(f"{interval}: safety audit failed")
+          schema = protocol["schema"]
+          if protocol["selection"] != reservation["selection"]:
+              raise SystemExit("reservation selection mismatch")
+          if protocol["aggregate_gate"] != reservation["aggregate_gate"]:
+              raise SystemExit("reservation gate mismatch")
+          if effective.get("candidate") != candidate:
+              raise SystemExit("effective candidate mismatch")
+          contract = effective.get("candidate14_protocol", {})
+          if contract.get("schema") != schema or contract.get("interval") != "L1":
+              raise SystemExit("effective protocol mismatch")
+          if effective.get("selection", {}).get("evaluation_days") != 84:
+              raise SystemExit("effective config did not inherit 84 evaluation days")
+          for name, payload in (
+              ("run", run),
+              ("metrics", metrics),
+              ("summary", summary),
+              ("audit", audit),
+          ):
+              if payload.get("candidate") != candidate:
+                  raise SystemExit(f"{name} candidate mismatch")
+              if payload.get("validation_mode") != "frozen_holdout":
+                  raise SystemExit(f"{name} validation mode mismatch")
+          if run.get("candidate14_protocol") != schema:
+              raise SystemExit("run protocol mismatch")
+          if metrics.get("candidate14_protocol") != schema:
+              raise SystemExit("metrics protocol mismatch")
+          if lock.get("candidate") != candidate or lock.get("validation_mode") != "frozen_holdout":
+              raise SystemExit("source-lock provenance mismatch")
+          for key in (
+              "evidence_complete",
+              "metric_recalculation_passed",
+              "risk_budget_passed",
+              "global_slot_passed",
+              "partial_entry_protection_passed",
+              "no_liquidation_passed",
+              "engine_errors_absent",
+          ):
+              if audit.get(key) is not True:
+                  raise SystemExit(f"independent evidence audit failed: {key}")
           PY
 
-          python research/candidate-14/aggregate.py \
-            --results research/candidate-14/holdout/results \
-            --protocol research/candidate-14/holdout_protocol.json \
-            --output research/candidate-14/holdout/aggregate.json
+          python research/candidate-14/continuous_aggregate.py \
+            --result-dir research/candidate-14/results/L1 \
+            --protocol research/candidate-14/protocol.json \
+            --output research/candidate-14/aggregate.json
 
           latest_head="$(git ls-remote origin refs/heads/research/candidate-14 | cut -f1)"
           if [[ "$latest_head" != "$GITHUB_SHA" ]]; then
-            echo "branch advanced during holdout; fresh evidence remains an artifact only"
+            echo "branch advanced during continuous evaluation; evidence remains artifact-only"
             exit 0
           fi
 
           git config user.name "candidate-14-bot"
           git config user.email "candidate-14-bot@users.noreply.github.com"
-          git add -A research/candidate-14/holdout
+          git add -A \
+            research/candidate-14/results \
+            research/candidate-14/aggregate.json \
+            research/candidate-14/RESULT.md
           if ! git diff --cached --quiet; then
-            git commit -m "candidate-14: record frozen H01-H16 Nautilus holdout [skip ci]"
+            git commit -m "candidate-14: record frozen continuous Nautilus evidence [skip ci]"
             git push origin HEAD:research/candidate-14
           fi
-      - name: Upload frozen aggregate
+      - name: Upload continuous aggregate evidence
         uses: actions/upload-artifact@v4
         with:
-          name: candidate14-holdout-aggregate-${{ github.run_id }}
+          name: candidate14-contiguous-aggregate-${{ github.run_id }}
           path: |
-            research/candidate-14/holdout/aggregate.json
-            research/candidate-14/holdout/RESULT.md
+            research/candidate-14/aggregate.json
+            research/candidate-14/RESULT.md
           if-no-files-found: error
           retention-days: 30
