@@ -1,0 +1,167 @@
+name: Candidate 06 CIRB Cost-Geometry Rescue
+
+on:
+  push:
+    branches:
+      - research/candidate-06
+    paths:
+      - ".github/workflows/candidate-06-cirb-halfback-rescue.yml"
+      - "research/candidate-06/register_cirb_discharge_half_back.py"
+      - "research/candidate-06/test_cirb_discharge_half_back.py"
+      - "research/candidate-06/defense_origin_limit.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-06-cirb-halfback-rescue
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[candidate-06 evidence]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      SMC4_PREBUILT_ENV: "1"
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-06
+      SMC4_RESEARCH_DATA: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/.research-data/candidate-06
+      EVIDENCE_ROOT: artifacts/candidate-06/cirb-halfback-rescue-dev
+
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Register and test cost-geometry rescue
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python research/candidate-06/register_cirb_discharge_half_back.py
+          git diff --check
+          smc4 doctor
+          python - <<'PY'
+          from importlib.metadata import version
+          actual = version("nautilus_trader")
+          assert actual == "1.230.0", actual
+          print(f"NAUTILUS_VERSION={actual}")
+          PY
+          python -m py_compile \
+            research/candidate-06/defense_origin_limit.py \
+            research/candidate-06/register_cirb_discharge_half_back.py \
+            research/candidate-06/test_cirb_discharge_half_back.py \
+            research/candidate-06/crowding_inventory_response_engine.py \
+            research/candidate-06/crowding_inventory_response_nautilus_runner.py \
+            research/candidate-06/run_crowding_inventory_response_validation.py
+          python research/candidate-06/test_cirb_discharge_half_back.py
+          python research/candidate-06/test_crowding_inventory_response_engine.py
+
+      - name: Freeze paired development configs
+        run: |
+          set -euo pipefail
+          rm -rf "$EVIDENCE_ROOT"
+          mkdir -p "$EVIDENCE_ROOT/configs" "$EVIDENCE_ROOT/runs"
+          python - <<'PY'
+          import copy
+          import json
+          import os
+          from pathlib import Path
+          from run_crowding_inventory_response_matrix import _base
+
+          root = Path(os.environ["EVIDENCE_ROOT"])
+          raw = json.loads(Path("research/candidate-06/config.json").read_text())
+          common = _base(raw)
+          common["candidate"] = "candidate-06-cirb-cost-geometry-rescue"
+          common["version"] = "6.1.0"
+          common["validation"]["stage"] = "three_week_validation"
+          common["logic"].update({
+              "cirb_use_all_account_composition": True,
+              "cirb_enable_discharge_response": True,
+              "cirb_enable_counter_inventory_continuation": True,
+              "cirb_entry_auction_period_minutes": 5,
+              "cirb_entry_effective_fee_rate": float(common["execution"]["effective_fee_rate_per_fill"]),
+              "cirb_entry_tick_size": 0.1,
+              "cirb_entry_one_tick_slippage_per_fill": bool(common["execution"]["one_tick_slippage_per_fill"]),
+          })
+          variants = {
+              "baseline": {
+                  "cirb_discharge_reversal_entry_execution": "MARKET_ON_RESPONSE_CLOSE",
+                  "cirb_discharge_half_back_rescue_only": False,
+              },
+              "rescue": {
+                  "cirb_discharge_reversal_entry_execution": "CROWD_DISCHARGE_HALF_BACK_LIMIT",
+                  "cirb_discharge_half_back_rescue_only": True,
+              },
+          }
+          for name, changes in variants.items():
+              config = copy.deepcopy(common)
+              config["candidate_variant"] = f"cirb_{name}_development_control"
+              config["logic"].update(changes)
+              (root / "configs" / f"{name}.json").write_text(
+                  json.dumps(config, indent=2, sort_keys=True) + "\n"
+              )
+          PY
+
+      - name: Run paired three-week NautilusTrader comparison
+        id: campaign
+        run: |
+          set +e
+          overall=0
+          for variant in baseline rescue; do
+            for week in 0 1 2; do
+              out="$EVIDENCE_ROOT/runs/$variant/week-$((week + 1))"
+              mkdir -p "$out"
+              python research/candidate-06/run_crowding_inventory_response_validation.py \
+                --config "$EVIDENCE_ROOT/configs/$variant.json" \
+                --output "$out" \
+                --week-index "$week" \
+                --allow-gate-fail \
+                > "$out/workflow_stdout.txt" \
+                2> "$out/workflow_stderr.txt"
+              code=$?
+              printf '%s\n' "$code" > "$out/workflow_exit_code.txt"
+              if [ "$code" -ne 0 ]; then overall=1; fi
+            done
+          done
+          echo "overall_exit_code=$overall" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit implementation and raw deterministic evidence
+        if: always() && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-06-research-bot"
+          git config user.email "candidate-06-research-bot@users.noreply.github.com"
+          git add research/candidate-06/defense_origin_limit.py
+          git add -f "$EVIDENCE_ROOT"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Record CIRB cost-geometry rescue evidence [candidate-06 evidence]"
+          git pull --rebase origin research/candidate-06
+          git push origin HEAD:research/candidate-06
+
+      - name: Upload raw comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-06-cirb-halfback-rescue-${{ github.sha }}
+          path: artifacts/candidate-06/cirb-halfback-rescue-dev
+          include-hidden-files: true
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Enforce implementation completion
+        if: always()
+        run: |
+          code='${{ steps.campaign.outputs.overall_exit_code }}'
+          if [ -z "$code" ]; then code=1; fi
+          exit "$code"
