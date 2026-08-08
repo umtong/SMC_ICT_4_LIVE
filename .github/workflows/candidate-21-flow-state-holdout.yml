@@ -1,0 +1,170 @@
+name: candidate-21-flow-state-untouched-holdout
+
+on:
+  push:
+    branches: ["research/candidate-21"]
+    paths:
+      - "research/candidate-21/PRE_REGISTRATION_FLOW_STATE_HOLDOUT.md"
+      - ".github/workflows/candidate-21-flow-state-holdout.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-21-flow-state-untouched-holdout
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  untouched-btc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-21/flow-state-holdout-2024-02-12
+      FROZEN_CODE: "5609a32671d01ca2c610c415c590fd61cbdc003f"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify reservation and frozen code
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          test -f research/candidate-21/PRE_REGISTRATION_FLOW_STATE_HOLDOUT.md
+          git merge-base --is-ancestor "$FROZEN_CODE" HEAD
+          changes="$(git diff --name-only "$FROZEN_CODE"..HEAD -- \
+            'research/candidate-21/*.py' \
+            'research/candidate-21/tests/*.py' \
+            'research/candidate-21/config.json')"
+          if [ -n "$changes" ]; then
+            printf '%s\n' "$changes"
+            echo "Frozen Candidate 21 economic or test code changed after reservation base" >&2
+            exit 1
+          fi
+          python -m compileall -q research/candidate-21
+          python -m unittest discover -s research/candidate-21/tests -p 'test_*.py' -v
+      - name: Run untouched BTC interval
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-21/candidate_flow_state.py stage \
+            --config research/candidate-21/config.json \
+            --build-start "2024-02-09" \
+            --build-end "2024-02-18" \
+            --evaluation-start "2024-02-12" \
+            --evaluation-end "2024-02-18" \
+            --cache ".cache/candidate-21/flow-state-holdout-2024-02-12" \
+            --output "$ROOT" \
+            --validation-mode "untouched-pre-registered-btc-holdout" \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Verify and publish every holdout result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads(
+              (root / "strategy_diagnostics.json").read_text()
+          )
+          contract = json.loads(
+              (root / "candidate21_flow_state_contract.json").read_text()
+          )
+          data = json.loads(
+              (root / "event_time_data_contract.json").read_text()
+          )
+          orders = pd.read_csv(root / "orders.csv")
+          positions = pd.read_csv(root / "positions.csv")
+          if metrics.get("validation_mode") != "untouched-pre-registered-btc-holdout":
+              raise SystemExit(metrics)
+          if contract.get("new_numeric_thresholds") is not None:
+              raise SystemExit(contract)
+          if contract.get("risk_fraction") != 0.03:
+              raise SystemExit(contract)
+          if contract.get("target") is not None:
+              raise SystemExit(contract)
+          if not data.get("actual_prices_only"):
+              raise SystemExit(data)
+          if int(diagnostics.get("max_simultaneous_entry_intents", 0)) > 1:
+              raise SystemExit(diagnostics)
+          if int(diagnostics.get("max_open_positions_observed", 0)) > 1:
+              raise SystemExit(diagnostics)
+          if int(metrics.get("liquidations", -1)) != 0:
+              raise SystemExit(metrics)
+          entries = orders[
+              orders["tags"].astype(str).str.contains(
+                  "CANDIDATE21_SYNC_FLOW_SWEEP_GTC",
+                  regex=False,
+              )
+          ]
+          entry_execution = []
+          for _, order in entries.iterrows():
+              quantity = float(order["quantity"])
+              filled = float(order["filled_qty"])
+              entry_execution.append(
+                  {
+                      "quantity": quantity,
+                      "filled_qty": filled,
+                      "fill_fraction": (
+                          filled / quantity if quantity > 0.0 else 0.0
+                      ),
+                      "status": str(order["status"]),
+                      "time_in_force": str(order["time_in_force"]),
+                  }
+              )
+          report = {
+              "reservation": {
+                  "frozen_code": os.environ["FROZEN_CODE"],
+                  "build_start": "2024-02-09",
+                  "build_end": "2024-02-18",
+                  "evaluation_start": "2024-02-12",
+                  "evaluation_end": "2024-02-18",
+                  "validation_mode": metrics.get("validation_mode"),
+              },
+              "metrics": metrics,
+              "contract": contract,
+              "data": data,
+              "entry_execution": entry_execution,
+              "positions": positions.to_dict(orient="records"),
+              "diagnostics": diagnostics,
+          }
+          (root / "candidate21_flow_state_holdout_report.json").write_text(
+              json.dumps(
+                  report,
+                  indent=2,
+                  sort_keys=True,
+                  allow_nan=True,
+                  default=str,
+              )
+              + "\n"
+          )
+          print(
+              json.dumps(
+                  report,
+                  indent=2,
+                  sort_keys=True,
+                  allow_nan=True,
+                  default=str,
+              )
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-21-flow-state-untouched-2024-02-12-${{ github.sha }}
+          path: artifacts/candidate-21/flow-state-holdout-2024-02-12/**
+          if-no-files-found: warn
+          retention-days: 90
