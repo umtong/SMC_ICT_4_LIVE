@@ -1,0 +1,126 @@
+name: Candidate 15 V14 exact Candidate 13 continuous account
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-15]
+    paths:
+      - "research/candidate-15/protocol-v14-c13-continuous.json"
+      - "research/candidate-15/run_c13_continuous.py"
+      - ".github/workflows/candidate-15-v14-c13-continuous.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-15-v14-c13-continuous-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  continuous:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ github.sha }}"
+          fetch-depth: 1
+
+      - name: Verify common environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+
+      - name: Materialize exact Candidate 13 frozen Git blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=5000 origin research/candidate-13
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import subprocess
+
+          protocol = json.loads(
+              Path('research/candidate-15/protocol-v14-c13-continuous.json').read_text()
+          )
+          target = Path('research/candidate-15/c13_frozen')
+          target.mkdir(parents=True, exist_ok=True)
+          for name, sha in sorted(protocol['source']['locked_blobs'].items()):
+              payload = subprocess.check_output(['git', 'cat-file', 'blob', sha])
+              (target / name).write_bytes(payload)
+              print(f'{name}: {sha} ({len(payload)} bytes)')
+          PY
+
+      - name: Compile and verify the frozen source
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15/c13_frozen:$GITHUB_WORKSPACE/src"
+          python -m py_compile research/candidate-15/c13_frozen/*.py
+          python -m py_compile research/candidate-15/run_c13_continuous.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'research/candidate-15')
+          from run_c13_continuous import verify_source
+          protocol = json.loads(Path('research/candidate-15/protocol-v14-c13-continuous.json').read_text())
+          lock = verify_source(Path('research/candidate-15/c13_frozen'), protocol)
+          assert lock['all_matched'] is True, lock
+          PY
+
+      - name: Run one recent continuous NautilusTrader account
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15/c13_frozen:$GITHUB_WORKSPACE/src"
+          python research/candidate-15/run_c13_continuous.py \
+            --protocol research/candidate-15/protocol-v14-c13-continuous.json \
+            --source research/candidate-15/c13_frozen \
+            --output research/candidate-15/v14/c13_continuous/results/C2026_MAY_JUN
+
+      - name: Remove downloaded market archives
+        if: always()
+        shell: bash
+        run: |
+          rm -rf research/candidate-15/v14/c13_continuous/results/C2026_MAY_JUN/data
+          rm -rf research/candidate-15/c13_frozen
+
+      - name: Persist compact evidence on the research branch
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          result_dir="research/candidate-15/v14/c13_continuous/results/C2026_MAY_JUN"
+          cp "$result_dir/RESULT.md" research/candidate-15/V14_C13_CONTINUOUS_RESULT.md
+          git fetch origin research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-v14-bot
+          git config user.email candidate-15-v14-bot@users.noreply.github.com
+          git add \
+            research/candidate-15/V14_C13_CONTINUOUS_RESULT.md \
+            research/candidate-15/v14/c13_continuous/results/C2026_MAY_JUN
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate15 v14: persist exact c13 continuous evidence [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+
+      - name: Upload compact evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v14-c13-continuous-${{ github.run_id }}
+          path: |
+            research/candidate-15/V14_C13_CONTINUOUS_RESULT.md
+            research/candidate-15/v14/c13_continuous/results/C2026_MAY_JUN
+          if-no-files-found: warn
+          retention-days: 30
