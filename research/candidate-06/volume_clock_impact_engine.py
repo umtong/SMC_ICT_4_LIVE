@@ -102,6 +102,39 @@ class VolumeClockImpactBifurcationEngine:
             },
         )
 
+    @staticmethod
+    def _entry_scenario_id(episode: _Episode) -> str:
+        """Return an execution namespace distinct from the market context."""
+        return f"{episode.scenario_id}:ENTRY"
+
+    @classmethod
+    def _entry_transition(
+        cls,
+        episode: _Episode,
+        snapshot: PrimitiveSnapshot,
+        *,
+        branch: str,
+        signal: ScenarioSignal,
+    ) -> ScenarioTransition:
+        """Arm execution only after a completed causal branch confirmation."""
+        return ScenarioTransition(
+            scenario_id=cls._entry_scenario_id(episode),
+            event_type="VCIB_ENTRY_TRANSITION",
+            previous_state="IDLE",
+            next_state="ENTRY_ARMED",
+            reason_code=f"VCIB_{branch}_ENTRY_ARMED_AFTER_COMPLETED_RESPONSE",
+            reference_price=signal.reference_entry,
+            details={
+                "context_scenario_id": episode.scenario_id,
+                "family": signal.family,
+                "direction": signal.direction,
+                "stop_price": signal.stop_price,
+                "target_price": signal.target_price,
+                "target_reason": signal.target_reason,
+                "decision_ts_ns": snapshot.observation.ts_ns,
+            },
+        )
+
     def _start_bucket(self, snapshot: PrimitiveSnapshot) -> bool:
         lookback = int(self.params.get("vcib_volume_lookback", 60))
         minimum = int(self.params.get("vcib_minimum_volume_history", 30))
@@ -258,7 +291,7 @@ class VolumeClockImpactBifurcationEngine:
         if risk <= 0.0 or reward <= 0.0 or reward / risk < float(self.params.get("minimum_structural_rr", 0.75)):
             return None
         return ScenarioSignal(
-            scenario_id=episode.scenario_id,
+            scenario_id=self._entry_scenario_id(episode),
             family=family,
             direction=direction,
             observed_ts_ns=snapshot.observation.ts_ns,
@@ -269,6 +302,7 @@ class VolumeClockImpactBifurcationEngine:
             atr=atr,
             liquidity_level=(combined_high + combined_low) / 2.0,
             details={
+                "context_scenario_id": episode.scenario_id,
                 "first_bucket_end_ts_ns": first.end_ts_ns,
                 "second_bucket_end_ts_ns": second.end_ts_ns,
                 "first_efficiency": first.efficiency,
@@ -297,11 +331,27 @@ class VolumeClockImpactBifurcationEngine:
             else:
                 confirmed = observation.close > midpoint and observation.close > observation.open and body_atr >= body_floor and snapshot.flow_ratio >= flow_floor and snapshot.close_location >= location
             if confirmed:
-                transition = self._transition(episode, "EXHAUSTION_CONTEXT", "EXHAUSTION_CONFIRMED", "MARGINAL_IMPACT_COLLAPSE_CONFIRMED_BY_OPPOSITE_RESPONSE", snapshot)
+                context_transition = self._transition(
+                    episode,
+                    "EXHAUSTION_CONTEXT",
+                    "EXHAUSTION_CONFIRMED",
+                    "MARGINAL_IMPACT_COLLAPSE_CONFIRMED_BY_OPPOSITE_RESPONSE",
+                    snapshot,
+                )
                 signal = self._signal(episode, snapshot, branch="EXHAUSTION") if allow_new else None
+                transitions = (context_transition,)
+                if signal is not None:
+                    transitions += (
+                        self._entry_transition(
+                            episode,
+                            snapshot,
+                            branch="EXHAUSTION",
+                            signal=signal,
+                        ),
+                    )
                 self._episode = None
                 self._cooldown_until = snapshot.index + int(self.params.get("vcib_cooldown_bars", 2))
-                return ScenarioStep(transitions=(transition,), signal=signal)
+                return ScenarioStep(transitions=transitions, signal=signal)
             return ScenarioStep()
         if episode.direction == "UP":
             held = observation.low <= episode.second.close and observation.close > midpoint
@@ -319,11 +369,27 @@ class VolumeClockImpactBifurcationEngine:
                 ),
             )
         if resumed and episode.retest_index is not None and snapshot.index > episode.retest_index:
-            transition = self._transition(episode, "CONTINUATION_RETEST", "CONTINUATION_CONFIRMED", "SEQUENTIAL_IMPACT_RETEST_HELD_AND_SEPARATE_RESPONSE_RESUMED", snapshot)
+            context_transition = self._transition(
+                episode,
+                "CONTINUATION_RETEST",
+                "CONTINUATION_CONFIRMED",
+                "SEQUENTIAL_IMPACT_RETEST_HELD_AND_SEPARATE_RESPONSE_RESUMED",
+                snapshot,
+            )
             signal = self._signal(episode, snapshot, branch="CONTINUATION") if allow_new else None
+            transitions = (context_transition,)
+            if signal is not None:
+                transitions += (
+                    self._entry_transition(
+                        episode,
+                        snapshot,
+                        branch="CONTINUATION",
+                        signal=signal,
+                    ),
+                )
             self._episode = None
             self._cooldown_until = snapshot.index + int(self.params.get("vcib_cooldown_bars", 2))
-            return ScenarioStep(transitions=(transition,), signal=signal)
+            return ScenarioStep(transitions=transitions, signal=signal)
         if episode.state == "CONTINUATION_RETEST" and episode.retest_extreme is not None:
             episode.retest_extreme = min(episode.retest_extreme, observation.low) if episode.direction == "UP" else max(episode.retest_extreme, observation.high)
         return ScenarioStep()
