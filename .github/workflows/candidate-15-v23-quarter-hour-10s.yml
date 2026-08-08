@@ -7,6 +7,7 @@ on:
     paths:
       - "research/candidate-15/protocol-v23-quarter-hour-10s.json"
       - "research/candidate-15/diagnose_v23_quarter_hour_10s.py"
+      - "research/candidate-15/diagnose_v23_quarter_hour_10s_v2.py"
       - ".github/workflows/candidate-15-v23-quarter-hour-10s.yml"
 
 permissions:
@@ -39,7 +40,9 @@ jobs:
           set -euo pipefail
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           smc4 doctor
-          python -m py_compile research/candidate-15/diagnose_v23_quarter_hour_10s.py
+          python -m py_compile \
+            research/candidate-15/diagnose_v23_quarter_hour_10s.py \
+            research/candidate-15/diagnose_v23_quarter_hour_10s_v2.py
           python - <<'PY'
           import json
           from pathlib import Path
@@ -52,6 +55,8 @@ jobs:
           assert protocol['fixed_rules']['funding_and_unmodeled_impact_reserve_bps'] == 4.0
           assert protocol['data']['first_second_inclusive'] == 0
           assert protocol['data']['last_second_inclusive'] == 9
+          assert protocol['fixed_rules']['same_phase_history_hours_max'] == 13.0
+          assert protocol['fixed_rules']['same_phase_freshness_hours_max'] == 4.1
           PY
 
       - name: Run exact ten-second quarter-hour mechanism diagnostic
@@ -59,9 +64,24 @@ jobs:
         run: |
           set -euo pipefail
           export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/src"
-          python research/candidate-15/diagnose_v23_quarter_hour_10s.py \
+          python research/candidate-15/diagnose_v23_quarter_hour_10s_v2.py \
             --protocol research/candidate-15/protocol-v23-quarter-hour-10s.json \
             --output research/candidate-15/v23/quarter_hour_10s/results
+
+      - name: Verify causal outcome origin
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+          path = Path('research/candidate-15/v23/quarter_hour_10s/results/all_routed_candidates.csv')
+          if path.is_file() and path.stat().st_size:
+              rows = pd.read_csv(path)
+              if len(rows.index):
+                  assert set(rows['outcome_origin']) == {'POST_CONFIRMATION_ENTRY_CLOSE'}
+                  assert set(rows['same_phase_definition']) == {'SAME_CLOCK_PHASE_WITH_FRESHNESS'}
+          PY
 
       - name: Remove downloaded market archives
         if: always()
