@@ -1,4 +1,4 @@
-name: Candidate 15 V5 response-qualified initiative development
+name: Candidate 15 V6 residual-laggard delivery development
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   packages: read
 
 concurrency:
-  group: candidate-15-v5-${{ github.sha }}
+  group: candidate-15-v6-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Verify frozen environment, source and V5 response contracts
+      - name: Verify frozen environment, source and V6 residual contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -51,6 +51,8 @@ jobs:
                "dcd2cdfe0426b6c68ffba68ad750de7097cab8f6"
           test "$(git hash-object research/candidate-15/response_qualified_persistent_initiative.py)" = \
                "19a30eb9a1d12a72ad1106436926f7fe504412f2"
+          test "$(git hash-object research/candidate-15/candidate15_v6_residual_laggard_materializer.py)" = \
+               "15909568d688650d07b14384578d2b8439ac7d0d"
 
           export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
           python -m py_compile research/candidate-15/*.py
@@ -59,7 +61,7 @@ jobs:
           import json
           from pathlib import Path
           protocol = json.loads(Path("research/candidate-15/protocol.json").read_text())
-          assert protocol["schema"] == "candidate-15-timeframe-consistent-response-initiative-v5"
+          assert protocol["schema"] == "candidate-15-residual-laggard-delivery-v6"
           assert set(protocol["selection"]["intervals"]) == {
               "E01", "E02", "E03", "E04", "E05", "E06"
           }
@@ -67,6 +69,13 @@ jobs:
           assert protocol["execution_lock"]["global_pending_entry_plus_position_limit"] == 1
           assert protocol["router"]["atr_timeframe_minutes"] == 5
           assert protocol["router"]["atr_uses_current_impulse"] is False
+          assert protocol["router"]["accepted_market_count_required"] == 3
+          assert protocol["router"]["tradable_market_policy"] == (
+              "sole market excluded from current accepted_symbols"
+          )
+          assert protocol["router"]["four_market_response"] == (
+              "NO_TRADE_NO_RESIDUAL_RECEIVER"
+          )
 
           import run_leadership_scdam
           source = run_leadership_scdam._SOURCE
@@ -74,12 +83,15 @@ jobs:
               "ResponseQualifiedPersistentQuarterHourRouter(": 1,
               "PersistentInitiativeContinuationEngine(": 1,
               "plans.append((continuation, continuation_candidate))": 1,
-              "C15_V5_CORE_FAMILY_QUARANTINED": 3,
+              "C15_V6_CORE_FAMILY_QUARANTINED": 3,
+              "C15_V6_NOT_RESIDUAL_LAGGARD": 3,
+              'continuation.details["candidate15_v6_route"]': 1,
               "C15_UNROUTED_SCENARIO_FAMILY": 3,
               "PASSIVE_ENTRY_REJECTED_UNFILLED": 3,
               "PROTECTIVE_ORDER_REJECTED_FAIL_CLOSED": 1,
           }.items():
               assert source.count(token) == expected, (token, source.count(token))
+          assert "C15_V5_CORE_FAMILY_QUARANTINED" not in source
           PY
 
   evaluate:
@@ -113,7 +125,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate15-v5-${{ matrix.interval }}
+          name: candidate15-v6-${{ matrix.interval }}
           path: research/candidate-15/results/${{ matrix.interval }}
           if-no-files-found: warn
           retention-days: 30
@@ -131,9 +143,9 @@ jobs:
       - name: Download interval evidence
         uses: actions/download-artifact@v4
         with:
-          pattern: candidate15-v5-*
+          pattern: candidate15-v6-*
           path: artifacts
-      - name: Aggregate and persist exposed V5 evidence
+      - name: Aggregate and persist exposed V6 evidence
         shell: bash
         run: |
           set -euo pipefail
@@ -147,12 +159,12 @@ jobs:
           rm -rf research/candidate-15/results
           for interval in "${intervals[@]}"; do
             mkdir -p "research/candidate-15/results/$interval"
-            cp -a "artifacts/candidate15-v5-$interval/." "research/candidate-15/results/$interval/"
+            cp -a "artifacts/candidate15-v6-$interval/." "research/candidate-15/results/$interval/"
             for file in run.json data_manifest.json metrics.json summary.json effective_config.json submitted_plans.json positions.csv account.csv; do
               test -s "research/candidate-15/results/$interval/$file"
             done
           done
-          python research/candidate-15/aggregate.py
+          python research/candidate-15/aggregate_v6.py
 
           if [[ "$(git ls-remote origin refs/heads/research/candidate-15 | cut -f1)" != "$GITHUB_SHA" ]]; then
             echo "branch advanced during evaluation; evidence remains artifact-only"
@@ -173,13 +185,13 @@ jobs:
               "research/candidate-15/results/$interval/account.csv"
           done
           if ! git diff --cached --quiet; then
-            git commit -m "candidate-15: record V5 development evidence [skip ci]"
+            git commit -m "candidate-15: record V6 development evidence [skip ci]"
             git push origin HEAD:research/candidate-15
           fi
       - name: Upload aggregate evidence
         uses: actions/upload-artifact@v4
         with:
-          name: candidate15-v5-aggregate-${{ github.run_id }}
+          name: candidate15-v6-aggregate-${{ github.run_id }}
           path: |
             research/candidate-15/aggregate.json
             research/candidate-15/RESULT.md

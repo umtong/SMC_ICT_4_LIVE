@@ -5,6 +5,10 @@ from pathlib import Path
 import unittest
 
 from candidate15_portfolio_materializer import materialize_candidate15_portfolio_source
+from candidate15_v6_residual_laggard_materializer import (
+    materialize_residual_laggard_source,
+    residual_laggard_symbol,
+)
 from logic import BarObs, Direction, LogicConfig, MINUTE_NS
 from portfolio_materializer import materialize_combined_portfolio_source
 from quarter_hour_persistent_initiative import SYMBOLS
@@ -33,7 +37,7 @@ class ResponseQualifiedInitiativeTests(unittest.TestCase):
         prices = {symbol: 100.0 + 10.0 * index for index, symbol in enumerate(SYMBOLS)}
         start = int(datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp() * 1_000_000_000)
         state = None
-        # LogicConfig uses a 30-bar ATR.  The first 180 one-minute observations
+        # LogicConfig uses a 30-bar ATR. The first 180 one-minute observations
         # provide 36 complete five-minute bars, so both synthetic events are
         # evaluated against a fully warmed, production-sized five-minute ATR.
         for minute in range(1, 201):
@@ -119,6 +123,26 @@ class ResponseQualifiedInitiativeTests(unittest.TestCase):
             ),
         )
 
+    def test_three_market_response_has_one_residual_receiver(self) -> None:
+        self.assertEqual(
+            residual_laggard_symbol(("BTCUSDT", "ETHUSDT", "SOLUSDT")),
+            "XRPUSDT",
+        )
+        self.assertEqual(
+            residual_laggard_symbol(("ETHUSDT", "SOLUSDT", "XRPUSDT")),
+            "BTCUSDT",
+        )
+
+    def test_four_market_or_malformed_response_has_no_residual_receiver(self) -> None:
+        self.assertIsNone(residual_laggard_symbol(SYMBOLS))
+        self.assertIsNone(residual_laggard_symbol(("BTCUSDT", "ETHUSDT")))
+        self.assertIsNone(
+            residual_laggard_symbol(("BTCUSDT", "ETHUSDT", "DOGEUSDT")),
+        )
+        self.assertIsNone(
+            residual_laggard_symbol(("BTCUSDT", "ETHUSDT", "ETHUSDT")),
+        )
+
     def test_full_candidate15_materialization_compiles_and_routes_once(self) -> None:
         root = Path(__file__).resolve().parent
         candidate14 = root.parent / "candidate-14"
@@ -126,17 +150,21 @@ class ResponseQualifiedInitiativeTests(unittest.TestCase):
         source = materialize_runner_source(source)
         source = materialize_combined_portfolio_source(source)
         source = materialize_candidate15_portfolio_source(source)
+        source = materialize_residual_laggard_source(source)
         compile(source, str(candidate14 / "run_leadership_scdam_base.py"), "exec")
         for token, expected in {
             "ResponseQualifiedPersistentQuarterHourRouter(": 1,
             "PersistentInitiativeContinuationEngine(": 1,
             "plans.append((continuation, continuation_candidate))": 1,
-            "C15_V5_CORE_FAMILY_QUARANTINED": 3,
+            "C15_V6_CORE_FAMILY_QUARANTINED": 3,
+            "C15_V6_NOT_RESIDUAL_LAGGARD": 3,
+            'continuation.details["candidate15_v6_route"]': 1,
             "C15_UNROUTED_SCENARIO_FAMILY": 3,
             "PASSIVE_ENTRY_REJECTED_UNFILLED": 3,
             "PROTECTIVE_ORDER_REJECTED_FAIL_CLOSED": 1,
         }.items():
             self.assertEqual(source.count(token), expected, token)
+        self.assertNotIn("C15_V5_CORE_FAMILY_QUARANTINED", source)
 
 
 if __name__ == "__main__":
