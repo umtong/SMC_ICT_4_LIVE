@@ -1,0 +1,159 @@
+name: candidate-21-flow-state-cross-asset-screen
+
+on:
+  push:
+    branches: ["research/candidate-21"]
+    paths:
+      - ".github/workflows/candidate-21-flow-state-cross-asset-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-21-flow-state-cross-asset-screen
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  liquid-alt-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - symbol: ETHUSDT
+            seed: 212122
+          - symbol: SOLUSDT
+            seed: 212123
+          - symbol: XRPUSDT
+            seed: 212124
+    env:
+      PYTHONPATH: research/candidate-21:research/candidate-16:research/candidate-20:research/candidate-19:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-21/cross-asset-${{ matrix.symbol }}-2025-09-22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate symbol-only config adaptation
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import os
+          source = Path("research/candidate-21/config.json")
+          config = json.loads(source.read_text())
+          config["symbol"] = "${{ matrix.symbol }}"
+          config["execution_seed"] = int("${{ matrix.seed }}")
+          destination = Path("/tmp/candidate21-${{ matrix.symbol }}.json")
+          destination.write_text(
+              json.dumps(config, indent=2, sort_keys=True) + "\n"
+          )
+          print(destination.read_text())
+          PY
+      - name: Run fixed state-resolved policy on liquid alt
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-21/candidate_flow_state.py stage \
+            --config "/tmp/candidate21-${{ matrix.symbol }}.json" \
+            --build-start "2025-09-19" \
+            --build-end "2025-09-28" \
+            --evaluation-start "2025-09-22" \
+            --evaluation-end "2025-09-28" \
+            --cache ".cache/candidate-21/cross-asset/${{ matrix.symbol }}-2025-09-22" \
+            --output "$ROOT" \
+            --validation-mode "cross-asset-transfer-screen" \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Verify transfer without symbol-specific tuning
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads(
+              (root / "strategy_diagnostics.json").read_text()
+          )
+          contract = json.loads(
+              (root / "candidate21_flow_state_contract.json").read_text()
+          )
+          orders = pd.read_csv(root / "orders.csv")
+          if metrics.get("validation_mode") != "cross-asset-transfer-screen":
+              raise SystemExit(metrics)
+          if contract.get("new_numeric_thresholds") is not None:
+              raise SystemExit(contract)
+          if contract.get("risk_fraction") != 0.03:
+              raise SystemExit(contract)
+          if int(metrics.get("liquidations", -1)) != 0:
+              raise SystemExit(metrics)
+          if int(diagnostics.get("max_simultaneous_entry_intents", 0)) > 1:
+              raise SystemExit(diagnostics)
+          if int(diagnostics.get("max_open_positions_observed", 0)) > 1:
+              raise SystemExit(diagnostics)
+          entries = orders[
+              orders["tags"].astype(str).str.contains(
+                  "CANDIDATE21_SYNC_FLOW_SWEEP_GTC",
+                  regex=False,
+              )
+          ]
+          fills = []
+          for _, order in entries.iterrows():
+              quantity = float(order["quantity"])
+              filled = float(order["filled_qty"])
+              fills.append(
+                  {
+                      "quantity": quantity,
+                      "filled_qty": filled,
+                      "fill_fraction": (
+                          filled / quantity if quantity > 0.0 else 0.0
+                      ),
+                      "status": str(order["status"]),
+                  }
+              )
+          report = {
+              "symbol": "${{ matrix.symbol }}",
+              "config_adaptation": "symbol and deterministic seed only",
+              "metrics": metrics,
+              "diagnostics": diagnostics,
+              "entry_execution": fills,
+          }
+          (root / "candidate21_cross_asset_summary.json").write_text(
+              json.dumps(
+                  report,
+                  indent=2,
+                  sort_keys=True,
+                  allow_nan=True,
+                  default=str,
+              )
+              + "\n"
+          )
+          print(
+              json.dumps(
+                  report,
+                  indent=2,
+                  sort_keys=True,
+                  allow_nan=True,
+                  default=str,
+              )
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-21-cross-asset-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-21/cross-asset-${{ matrix.symbol }}-2025-09-22/**
+          if-no-files-found: warn
+          retention-days: 90
