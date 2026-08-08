@@ -1,0 +1,93 @@
+name: Candidate 13 V14 causal tape re-acceptance diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/candidate-13
+    paths:
+      - research/candidate-13/tape_reacceptance_diagnostics.py
+      - .github/workflows/candidate-13-v14-tape-reacceptance.yml
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-13-v14-tape-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify common environment and diagnostic
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-13/tape_reacceptance_diagnostics.py
+          python -m json.tool research/candidate-13/v13_v4_trade_events.json >/dev/null
+      - name: Run checksum-verified causal tape diagnostic
+        run: |
+          set -euo pipefail
+          python research/candidate-13/tape_reacceptance_diagnostics.py \
+            --results-root research/candidate-13/v4/regression/results \
+            --outcomes research/candidate-13/v13_v4_trade_events.json \
+            --cache /tmp/candidate13-v14-kline-cache \
+            --output-json research/candidate-13/v14-tape-reacceptance-diagnostics.json \
+            --output-md research/candidate-13/V14_TAPE_REACCEPTANCE_DIAGNOSTICS.md \
+            --evidence-json research/candidate-13/v14-tape-raw-evidence.json \
+            2>&1 | tee research/candidate-13/V14_TAPE_REACCEPTANCE_RUN.log
+      - name: Verify causal products and loss accounting
+        run: |
+          set -euo pipefail
+          python -m json.tool research/candidate-13/v14-tape-reacceptance-diagnostics.json >/dev/null
+          python -m json.tool research/candidate-13/v14-tape-raw-evidence.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('research/candidate-13/v14-tape-reacceptance-diagnostics.json').read_text())
+          rows = result['records']
+          assert result['coverage']['plans'] == 24
+          assert len(rows) == 24
+          assert len({row['row_key'] for row in rows}) == 24
+          assert sum(row['pnl'] < 0 for row in rows) == 3
+          assert all(row['event_bar_count'] > 0 for row in rows)
+          assert result['causal_contract']['post_confirmation_bars_used'] is False
+          PY
+          test -s research/candidate-13/V14_TAPE_REACCEPTANCE_DIAGNOSTICS.md
+          test -s research/candidate-13/V14_TAPE_REACCEPTANCE_RUN.log
+      - name: Persist commit-scoped diagnostic evidence
+        env:
+          START_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global user.name candidate-13-bot
+          git config --global user.email candidate-13-bot@users.noreply.github.com
+          git add \
+            research/candidate-13/v14-tape-reacceptance-diagnostics.json \
+            research/candidate-13/v14-tape-raw-evidence.json \
+            research/candidate-13/V14_TAPE_REACCEPTANCE_DIAGNOSTICS.md \
+            research/candidate-13/V14_TAPE_REACCEPTANCE_RUN.log
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate-13 v14: record causal tape-state diagnostic [skip ci]"
+          git fetch origin research/candidate-13
+          test "$(git rev-parse origin/research/candidate-13)" = "$START_SHA"
+          git push origin HEAD:research/candidate-13
