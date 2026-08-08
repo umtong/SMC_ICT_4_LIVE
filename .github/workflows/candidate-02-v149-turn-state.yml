@@ -1,0 +1,97 @@
+name: candidate-02-v149-turn-two-state
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths: ["research/candidate-02/v149_trigger.json"]
+
+permissions: {contents: write, packages: read, actions: read}
+concurrency: {group: candidate-02-v149-turn-two-state, cancel-in-progress: false}
+
+jobs:
+  state:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials: {username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      options: --user 0:0
+    env: {SMC4_PREBUILT_ENV: "1", PYTHONUNBUFFERED: "1"}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: "${{ github.sha }}", fetch-depth: 0}
+      - name: Verify engine and build canonical state
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          smc4 doctor
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          families={
+              'v142':('results/v142_family','artifacts-v142-family-decision.json'),
+              'v143':('results/v143_route','artifacts-v143-route-decision.json'),
+              'v144':('results/v144_family','artifacts-v144-family-decision.json'),
+              'v145':('results/v145_family','artifacts-v145-family-decision.json'),
+              'v146':('results/v146_family','artifacts-v146-family-decision.json'),
+              'v147':('results/v147_prospective','artifacts-v147-prospective-decision.json'),
+              'v148':('results/v148_holdout','artifacts-v148-decision.json'),
+          }
+          root=Path('research/candidate-02')
+          state={
+              'candidate':'candidate-02-turn-two-canonical-state',
+              'engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+              'risk_fraction':0.03,
+              'project_target_met':False,
+              'stages':{},
+          }
+          for name,(folder,filename) in families.items():
+              paths=sorted((root/folder).glob(f'*/{filename}'))
+              if not paths:
+                  state['stages'][name]={'status':'NO_COMMITTED_RESULT'}
+                  continue
+              obj=json.loads(paths[-1].read_text())
+              compact={'path':str(paths[-1]),'status':obj.get('status')}
+              for key in ('plateau_pass','variant_both_week_pass','selected_route','selected_family','selected_variant','prospective_week_start','prospective_target_met','holdout_week_start','holdout_target_met','stage'):
+                  if key in obj: compact[key]=obj[key]
+              if 'variants' in obj:
+                  compact['metrics']={variant:{week:{key:metric.get(key) for key in ('trades','trades_per_day','win_rate','profit_factor_after_cost','geometric_daily_growth_after_cost','maximum_mark_to_market_drawdown','target_met')} for week,metric in weeks.items()} for variant,weeks in obj['variants'].items()}
+              for source,target in (('prospective_metrics','metrics'),('holdout_metrics','metrics')):
+                  if source in obj:
+                      compact[target]={key:obj[source].get(key) for key in ('trades','trades_per_day','win_rate','profit_factor_after_cost','geometric_daily_growth_after_cost','maximum_mark_to_market_drawdown','target_met')}
+              state['stages'][name]=compact
+
+          v148=state['stages'].get('v148',{})
+          v147=state['stages'].get('v147',{})
+          if v148.get('status')=='SECOND_PROSPECTIVE_PASS':
+              state['status']='TWO_PROSPECTIVE_WEEKS_PASSED'
+              state['next_action']='LOCK_AND_RUN_THIRD_UNTOUCHED_WEEK_FOR_SAME_CANDIDATE'
+          elif v148.get('status')=='FIRST_NEW_GENERATION_PASS':
+              state['status']='NEW_GENERATION_FIRST_PROSPECTIVE_PASS'
+              state['next_action']='LOCK_AND_RUN_SECOND_UNTOUCHED_WEEK_FOR_SAME_CANDIDATE'
+          elif v147.get('status')=='FIRST_PROSPECTIVE_PASS' and v148.get('status')=='NO_COMMITTED_RESULT':
+              state['status']='FIRST_PROSPECTIVE_PASS_ONLY'
+              state['next_action']='RUN_SECOND_UNTOUCHED_WEEK'
+          elif any(state['stages'].get(name,{}).get('status') in {'PROSPECTIVE_EXECUTION_ERROR','HOLDOUT_EXECUTION_ERROR','NO_COMMITTED_RESULT'} for name in ('v147','v148')):
+              state['status']='EXECUTION_OR_EVIDENCE_GAP'
+              state['next_action']='FIX_EXECUTION_BEFORE_NEW_RESEARCH'
+          else:
+              state['status']='NO_SURVIVING_PROSPECTIVE_CANDIDATE'
+              state['next_action']='REDESIGN_ALPHA_WITHOUT_REUSING_REVEALED_HOLDOUTS'
+          Path(root/'TURN2_STATUS.json').write_text(json.dumps(state,indent=2,sort_keys=True)+'\n')
+          lines=['# Candidate-02 Turn 2 Canonical State','',f"- Status: `{state['status']}`",f"- Next action: `{state['next_action']}`",'- Project target certified: `false`','', 'All numerical evidence is embedded in `TURN2_STATUS.json`.']
+          Path(root/'TURN2_STATUS.md').write_text('\n'.join(lines)+'\n')
+          print(json.dumps({'status':state['status'],'next_action':state['next_action'],'stage_statuses':{key:value.get('status') for key,value in state['stages'].items()}},indent=2,sort_keys=True))
+          PY
+      - name: Commit canonical state
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-02
+          test "$(git rev-parse origin/research/candidate-02)" = "$GITHUB_SHA"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-02/TURN2_STATUS.json research/candidate-02/TURN2_STATUS.md
+          git commit -m "research(candidate-02): record turn two canonical state"
+          git push origin HEAD:research/candidate-02
