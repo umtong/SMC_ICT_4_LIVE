@@ -4,4 +4,4 @@
 - Next action: `REDESIGN_ALPHA_WITHOUT_REUSING_REVEALED_HOLDOUTS`
 - Project target certified: `false`
 
-All numerical evidence is embedded in `TURN2_STATUS.json`.
+All stage metrics and evidence paths are embedded in `TURN2_STATUS.json`.
