@@ -1,16 +1,20 @@
-"""Candidate 35b: cross-context, sponsored, cost-aware continuation router.
+"""Candidate 35c: structurally valid, sponsored, cost-aware continuation router.
 
-The original Candidate 35 classifier is retained as an observation primitive, not
-as the final trading policy.  This router fixes three structural defects exposed
-by the first Nautilus diagnostic:
+The original Candidate 35 classifier remains an observation primitive, not the
+final trading policy.  The first Nautilus runs exposed four structural defects:
 
 * a quarter-hour clock phase is not standalone alpha;
-* a price breakout without same-direction aggressor sponsorship is not accepted;
-* raw price R/R is not economic R/R when round-trip costs are large.
+* a breakout without same-direction aggressor sponsorship is not accepted;
+* the final response bar may negate the earlier sponsorship before execution;
+* the legacy ``max_stop_atr`` clamp can pull a stop inside the very response
+  structure whose failure is supposed to invalidate the trade.
 
-Only accepted continuation can reach execution.  Exhaustion reversals remain
-observable in diagnostics but fail closed until a separate, economically complete
-reversal scenario is designed.
+Only accepted continuation can reach execution.  Before economic reward is
+measured, the stop is rebuilt outside the frozen response/acceptance structure;
+it is never shortened to satisfy a reward threshold.  If that truthful stop
+leaves insufficient objective space after costs, the trade fails closed.
+Exhaustion reversals remain observable in diagnostics but are disabled until a
+separate economically complete reversal scenario exists.
 """
 from __future__ import annotations
 
@@ -44,7 +48,7 @@ class RouteConfig:
     continuation_target_r: float = 2.20
     reversal_target_r: float = 1.80
 
-    # Candidate 35b policy.
+    # Candidate 35c policy.
     context_bars: int = 60
     context_deadband_atr: float = 0.25
     min_context_median_atr: float = 0.50
@@ -52,6 +56,8 @@ class RouteConfig:
     min_sponsored_flow: float = 0.02
     min_sponsored_return_bps: float = 0.50
     min_net_reward_r: float = 1.25
+    min_stop_atr: float = 0.42
+    stop_buffer_atr: float = 0.10
     all_in_cost_bps_each_side: float = 7.50
     adverse_slippage_bps_each_side: float = 2.50
     funding_reserve_bps: float = 1.00
@@ -109,6 +115,77 @@ def economic_net_reward_r(
     return net_profit / planned_loss, planned_loss, net_profit
 
 
+def preserve_structural_invalidation(
+    decision: RouteDecision,
+    config: RouteConfig,
+) -> RouteDecision | None:
+    """Rebuild a continuation stop outside its frozen auction structure.
+
+    The legacy router bounded stop distance above by ``max_stop_atr``.  During a
+    large response this moved the stop inside the response low/high, so ordinary
+    noise was treated as invalidation and the risk-sized quantity was inflated.
+    Candidate 35c may expand a too-small stop to the configured minimum, but it
+    never contracts a structurally required distance.
+    """
+    if decision.state != "PHASE_ACCEPTED_CONTINUATION":
+        return decision
+    side = int(decision.side)
+    entry = float(decision.entry_reference)
+    atr = float(decision.atr)
+    diagnostics = dict(decision.diagnostics)
+    try:
+        response_low = float(diagnostics["response_low"])
+        response_high = float(diagnostics["response_high"])
+        prior_high = float(diagnostics["prior_high"])
+        prior_low = float(diagnostics["prior_low"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    values = (entry, atr, response_low, response_high, prior_high, prior_low)
+    if side not in (-1, 1) or not all(math.isfinite(value) for value in values):
+        return None
+    if entry <= 0.0 or atr <= 0.0:
+        return None
+
+    anchor = (
+        min(response_low, prior_high)
+        if side > 0
+        else max(response_high, prior_low)
+    )
+    required_distance = side * (entry - anchor)
+    if not math.isfinite(required_distance) or required_distance <= 0.0:
+        return None
+    stop_distance = max(required_distance, config.min_stop_atr * atr)
+    stop = (
+        entry
+        - side * stop_distance
+        - side * config.stop_buffer_atr * atr
+    )
+    geometry_valid = stop < entry if side > 0 else stop > entry
+    outside_anchor = stop < anchor if side > 0 else stop > anchor
+    if not geometry_valid or not outside_anchor or stop <= 0.0:
+        return None
+
+    legacy_stop = float(decision.stop_reference)
+    diagnostics.update(
+        {
+            "legacy_stop_reference": legacy_stop,
+            "structural_invalidation_anchor": anchor,
+            "structural_required_distance_atr": required_distance / atr,
+            "structural_stop_distance_atr": abs(entry - stop) / atr,
+            "structural_stop_reference": stop,
+            "legacy_stop_inside_invalidation": (
+                legacy_stop >= anchor if side > 0 else legacy_stop <= anchor
+            ),
+            "stop_policy": "NEVER_SHRINK_INSIDE_FROZEN_AUCTION_STRUCTURE",
+        },
+    )
+    return replace(
+        decision,
+        stop_reference=stop,
+        diagnostics=diagnostics,
+    )
+
+
 def _context_score(
     bars: Sequence[BarObservation],
     config: RouteConfig,
@@ -142,6 +219,24 @@ def _response_opening_return_bps(
     return math.log(opening.close / opening.open) * 10_000.0
 
 
+def _final_response_return_bps(
+    bars: Sequence[BarObservation],
+    side: int,
+) -> float:
+    """Independent transition evidence from the final completed response bar."""
+    if not bars or side not in (-1, 1):
+        return math.nan
+    final = bars[-1]
+    if (
+        not math.isfinite(final.open)
+        or not math.isfinite(final.close)
+        or final.open <= 0.0
+        or final.close <= 0.0
+    ):
+        return math.nan
+    return side * math.log(final.close / final.open) * 10_000.0
+
+
 def _reject(
     decision: RouteDecision,
     reason: str,
@@ -169,7 +264,7 @@ def route_universe(
     features_by_symbol: Mapping[str, FeatureObservation],
     config: RouteConfig = RouteConfig(),
 ) -> tuple[RouteDecision | None, dict[str, RouteDecision]]:
-    """Route one coherent account decision after independent context checks."""
+    """Route one coherent account decision after independent state checks."""
     _, legacy = legacy_route_universe(
         bars_by_symbol=bars_by_symbol,
         features_by_symbol=features_by_symbol,
@@ -184,21 +279,42 @@ def route_universe(
     actionable: list[RouteDecision] = []
     ranks: dict[str, float] = {}
 
-    for symbol, decision in legacy.items():
+    for symbol, original in legacy.items():
         diagnostics: dict[str, float | int | bool | str] = {
-            "v2_policy": "CROSS_CONTEXT_SPONSORED_COST_AWARE_CONTINUATION",
+            "v2_policy": "STRUCTURAL_INVALIDATION_PERSISTENT_CONTINUATION",
             "context_bars": config.context_bars,
         }
-        if not decision.actionable:
-            decisions[symbol] = decision
+        if not original.actionable:
+            decisions[symbol] = original
             continue
-        if decision.state != "PHASE_ACCEPTED_CONTINUATION" and not config.allow_reversal:
+        if original.state != "PHASE_ACCEPTED_CONTINUATION" and not config.allow_reversal:
             decisions[symbol] = _reject(
-                decision,
+                original,
                 "REVERSAL_FAMILY_DISABLED_UNTIL_ECONOMIC_SCENARIO_EXISTS",
                 diagnostics,
             )
             continue
+
+        decision = preserve_structural_invalidation(original, config)
+        if decision is None:
+            decisions[symbol] = _reject(
+                original,
+                "STRUCTURAL_INVALIDATION_GEOMETRY_UNAVAILABLE",
+                diagnostics,
+            )
+            continue
+        diagnostics.update(
+            {
+                "legacy_stop_reference": float(original.stop_reference),
+                "structural_stop_reference": float(decision.stop_reference),
+                "legacy_stop_inside_invalidation": bool(
+                    decision.diagnostics.get(
+                        "legacy_stop_inside_invalidation",
+                        False,
+                    )
+                ),
+            },
+        )
 
         side = int(decision.side)
         directional = [
@@ -240,10 +356,15 @@ def route_universe(
             else math.nan
         )
         response_alignment_bps = side * response_return_bps
+        final_alignment_bps = _final_response_return_bps(
+            bars_by_symbol[symbol],
+            side,
+        )
         diagnostics.update(
             {
                 "opening_response_flow_alignment": flow_alignment,
                 "opening_response_return_alignment_bps": response_alignment_bps,
+                "final_response_return_alignment_bps": final_alignment_bps,
             },
         )
         if (
@@ -255,6 +376,13 @@ def route_universe(
             decisions[symbol] = _reject(
                 decision,
                 "OPENING_RESPONSE_NOT_SPONSORED_BY_FLOW_AND_PRICE",
+                diagnostics,
+            )
+            continue
+        if not math.isfinite(final_alignment_bps) or final_alignment_bps < 0.0:
+            decisions[symbol] = _reject(
+                decision,
+                "FINAL_RESPONSE_BAR_NEGATED_ACCEPTANCE_BEFORE_ENTRY",
                 diagnostics,
             )
             continue
@@ -273,7 +401,7 @@ def route_universe(
         if not math.isfinite(net_r) or net_r < config.min_net_reward_r:
             decisions[symbol] = _reject(
                 decision,
-                "OBJECTIVE_SPACE_INSUFFICIENT_AFTER_COSTS",
+                "OBJECTIVE_SPACE_INSUFFICIENT_WITH_STRUCTURAL_STOP_AFTER_COSTS",
                 diagnostics,
             )
             continue
@@ -284,6 +412,8 @@ def route_universe(
                 "PRE_EPISODE_CROSS_ASSET_CONTEXT",
                 "QUARTER_HOUR_ACCEPTANCE",
                 "OPENING_RESPONSE_SPONSORED",
+                "FINAL_RESPONSE_DID_NOT_NEGATE_ACCEPTANCE",
+                "STRUCTURAL_INVALIDATION_PRESERVED",
                 "NET_OBJECTIVE_SPACE_CONFIRMED",
             ),
             diagnostics={**dict(decision.diagnostics), **diagnostics},
@@ -316,5 +446,6 @@ __all__ = [
     "RouteConfig",
     "RouteDecision",
     "economic_net_reward_r",
+    "preserve_structural_invalidation",
     "route_universe",
 ]
