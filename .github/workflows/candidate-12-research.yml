@@ -1,4 +1,4 @@
-name: candidate-12-i24-spot-perp-ownership-diagnostic
+name: candidate-12-i24b-one-minute-ownership-diagnostic
 
 on:
   push:
@@ -6,13 +6,14 @@ on:
     paths:
       - ".github/workflows/candidate-12-research.yml"
       - "research/candidate-12/diagnose_i24_spot_perp.py"
+      - "research/candidate-12/diagnose_i24b_spot_perp.py"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i24-spot-perp-${{ github.sha }}
+  group: candidate-12-i24b-spot-perp-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -25,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify unchanged I19 strategy and spot-perpetual diagnostic
+      - name: Verify unchanged I19 strategy and I24b diagnostic
         shell: bash
         run: |
           set -euo pipefail
@@ -60,21 +61,21 @@ jobs:
               assert not item["liquidation_detected"], item
           PY
 
-      - name: Screen causal spot-perpetual ownership states
+      - name: Screen one-minute ownership and five-minute execution
         shell: bash
         run: |
           set -euo pipefail
-          python research/candidate-12/diagnose_i24_spot_perp.py \
+          python research/candidate-12/diagnose_i24b_spot_perp.py \
             --weeks W1 W12 \
-            --data-dir /tmp/candidate-12-i24-data \
+            --data-dir /tmp/candidate-12-i24b-data \
             --baseline-root artifacts/candidate-12 \
-            --output artifacts/candidate-12/I24-spot-perp-ownership.json
-          cat artifacts/candidate-12/I24-spot-perp-ownership.json
+            --output artifacts/candidate-12/I24b-spot-perp-ownership.json
+          cat artifacts/candidate-12/I24b-spot-perp-ownership.json
 
       - name: Preserve reproducible diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I24-spot-perp-ownership-${{ github.sha }}
+          name: candidate-12-I24b-spot-perp-ownership-${{ github.sha }}
           path: artifacts/candidate-12
           if-no-files-found: warn
