@@ -5,8 +5,29 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from c10_long_interval_event_identity_patch import patch as patch_event_identity
 from c10_v47_patch import patch as patch_v47
+
+
+_EVENT_ID_OLD = '''            self._event(
+                "AMBIGUOUS", "AMBIGUOUS_SWEEP", bar.ts_ns, bar.ts_ns,
+'''
+_EVENT_ID_NEW = '''            self._event(
+                f"{self.instrument_id}-AMBIGUOUS-{bar.ts_ns}",
+                "AMBIGUOUS_SWEEP", bar.ts_ns, bar.ts_ns,
+'''
+
+
+def patch_event_identity(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    count = text.count(_EVENT_ID_OLD)
+    if count != 1:
+        raise RuntimeError(
+            f"ambiguous event identity marker: expected one, found {count}",
+        )
+    path.write_text(
+        text.replace(_EVENT_ID_OLD, _EVENT_ID_NEW, 1),
+        encoding="utf-8",
+    )
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
