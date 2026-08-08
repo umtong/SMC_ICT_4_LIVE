@@ -1,12 +1,13 @@
-name: candidate-03-candidate18-retest-entry-development
+name: candidate-03-candidate19-semantic-rejection-continuation-development
 
 on:
   push:
     branches: ["research/candidate-03"]
     paths:
       - ".github/workflows/candidate-03-v30-staged-container.yml"
-      - "research/candidate-03/patch_candidate18_retest_entry.py"
-      - "research/candidate-03/aggregate_candidate18_retest_entry.py"
+      - "research/candidate-03/patch_candidate19_semantic_rejection_continuation.py"
+      - "research/candidate-03/test_candidate19_semantic_rejection_continuation.py"
+      - "research/candidate-03/aggregate_candidate19_semantic_rejection_continuation.py"
   workflow_dispatch:
 
 permissions:
@@ -15,10 +16,10 @@ permissions:
 
 env:
   FROZEN_SOURCE_COMMIT: dfb180490b141fdafd5b5ac0b52d3dd0b842550d
-  RESULT_REL: research/candidate-03/results/candidate18-retest-entry-development
+  RESULT_REL: research/candidate-03/results/candidate19-semantic-rejection-continuation-development
 
 concurrency:
-  group: candidate-03-candidate18-retest-entry-development
+  group: candidate-03-candidate19-semantic-rejection-continuation-development
   cancel-in-progress: true
 
 jobs:
@@ -34,7 +35,7 @@ jobs:
         with: {ref: "${{ github.sha }}", path: orchestrator}
       - uses: actions/checkout@v4
         with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
-      - name: Verify Candidate 18 completed-retest contract
+      - name: Verify Candidate 19 semantic-rejection continuation contract
         shell: bash
         run: |
           set -euo pipefail
@@ -43,25 +44,24 @@ jobs:
           cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/test_candidate16_failed_far.py frozen-source/research/candidate-14/
           cp orchestrator/research/candidate-03/test_candidate17_strict_target.py frozen-source/research/candidate-14/
+          cp orchestrator/research/candidate-03/test_candidate19_semantic_rejection_continuation.py frozen-source/research/candidate-14/
           python orchestrator/research/candidate-03/patch_candidate16_deep_reentry_call.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate17_strict_target.py frozen-source/research/candidate-14/candidate16_failed_far.py
-          python orchestrator/research/candidate-03/patch_candidate18_retest_entry.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate19_semantic_rejection_continuation.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
           python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
           python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
           python orchestrator/research/candidate-03/patch_candidate16_native_exit_reason.py frozen-source/research/candidate-14/run_leadership_scdam_base.py
-          grep -q 'FAILED_FAR_ACCEPTANCE_BOUNDARY_RETEST_MARKET' frozen-source/research/candidate-14/candidate16_failed_far.py
-          block="$(python - <<'PY'
-          from pathlib import Path
-          s=Path('frozen-source/research/candidate-14/candidate16_failed_far.py').read_text()
-          print(s[s.index('    if state.state == "WAIT_RETEST":'):s.index('    if state.state != "WAIT_REACCELERATION":')])
-          PY
-          )"
-          ! grep -q 'WAIT_REACCELERATION' <<<"$block"
+          grep -q 'def semantic_rejected_far_context' frozen-source/research/candidate-14/candidate16_failed_far.py
+          grep -q 'SEMANTIC_REJECTED_FAR_CONTINUATION_ARMED' frozen-source/research/candidate-14/candidate16_failed_far.py
+          grep -q 'SEMANTIC_FAR_REQUIRES_DOMINANT_PEER_RECLAIM' frozen-source/research/candidate-14/candidate16_failed_far.py
+          grep -q 'SEMANTIC_FAR_UNRESOLVED_ADVERSE_AUCTION' frozen-source/research/candidate-14/candidate16_failed_far.py
+          grep -q 'FAILED_FAR_ACCEPTANCE_RETEST_REACCELERATION_MARKET' frozen-source/research/candidate-14/candidate16_failed_far.py
+          ! grep -q 'FAILED_FAR_ACCEPTANCE_BOUNDARY_RETEST_MARKET' frozen-source/research/candidate-14/candidate16_failed_far.py
           export PYTHONPATH="$GITHUB_WORKSPACE/frozen-source/research/candidate-14:$GITHUB_WORKSPACE/frozen-source/src"
           python -m py_compile frozen-source/research/candidate-14/*.py
           python -m unittest discover -s frozen-source/research/candidate-14 -p 'test_*.py' -v
-          python -m py_compile orchestrator/research/candidate-03/aggregate_candidate18_retest_entry.py
+          python -m py_compile orchestrator/research/candidate-03/aggregate_candidate19_semantic_rejection_continuation.py
 
   evaluate:
     needs: static
@@ -81,14 +81,14 @@ jobs:
         with: {ref: "${{ github.sha }}", path: orchestrator}
       - uses: actions/checkout@v4
         with: {ref: "${{ env.FROZEN_SOURCE_COMMIT }}", path: frozen-source}
-      - name: Install identical Candidate 18 runtime
+      - name: Install identical Candidate 19 runtime
         shell: bash
         run: |
           set -euo pipefail
           cp orchestrator/research/candidate-03/candidate16_failed_far.py frozen-source/research/candidate-14/
           python orchestrator/research/candidate-03/patch_candidate16_deep_reentry_call.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate17_strict_target.py frozen-source/research/candidate-14/candidate16_failed_far.py
-          python orchestrator/research/candidate-03/patch_candidate18_retest_entry.py frozen-source/research/candidate-14/candidate16_failed_far.py
+          python orchestrator/research/candidate-03/patch_candidate19_semantic_rejection_continuation.py frozen-source/research/candidate-14/candidate16_failed_far.py
           python orchestrator/research/candidate-03/patch_candidate14_event_ids.py frozen-source/research/candidate-14/logic.py
           python orchestrator/research/candidate-03/patch_candidate15_far_execution.py frozen-source/research/candidate-14/semantic_logic.py SWEEP_MARKET
           python orchestrator/research/candidate-03/patch_candidate16_runner_install.py frozen-source/research/candidate-14/run_leadership_scdam.py
@@ -97,18 +97,20 @@ jobs:
           import json
           from pathlib import Path
           p=json.loads(Path('orchestrator/research/candidate-03/candidate14_frozen_holdout_protocol.json').read_text())
-          p['schema']='candidate-18-completed-retest-entry-development-v1'
-          p['candidate']='candidate-18-failed-far-completed-retest-continuation'
+          p['schema']='candidate-19-semantic-rejected-far-continuation-development-v1'
+          p['candidate']='candidate-19-semantic-rejected-far-continuation'
           p['validation_mode']='development_replay'
-          p['selection']['seed']=202608081818
+          p['selection']['seed']=202608081919
           p['claim_rules']=[
               'Development replay only; success_claim is false.',
-              'Candidate 18 differs from Candidate 17 only by entering after completed boundary-retest defense instead of waiting for duplicate reacceleration.',
-              'Strict external target, cross-market semantics, costs, exact 3% NAV loss budget and one global slot remain unchanged.',
+              'Candidate 19 is based on Candidate 17, not Candidate 18: full acceptance, defended retest and reacceleration remain mandatory.',
+              'A watch may also start after a complete FAR plan is rejected for dominant-peer-reclaim failure or an unresolved adverse auction.',
+              'Semantic rejection never enters or sizes a trade immediately; the later plan must pass the unchanged AAC cross-market gate.',
+              'Strict external target, costs, exact 3% NAV loss budget and one global slot remain unchanged.',
           ]
           Path('frozen-source/research/candidate-14/protocol.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
           PY
-      - name: Run Candidate 18 ${{ matrix.week }} through NautilusTrader
+      - name: Run Candidate 19 ${{ matrix.week }} through NautilusTrader
         shell: bash
         run: |
           set -euo pipefail
@@ -119,7 +121,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate18-${{ matrix.week }}
+          name: candidate19-${{ matrix.week }}
           path: evidence/${{ matrix.week }}/
           if-no-files-found: error
           retention-days: 30
@@ -134,18 +136,18 @@ jobs:
       - uses: actions/checkout@v4
         with: {ref: research/candidate-03, fetch-depth: 0, path: orchestrator}
       - uses: actions/download-artifact@v4
-        with: {pattern: "candidate18-H*", path: downloaded}
-      - name: Attribute completed-retest state and persist decision
+        with: {pattern: "candidate19-H*", path: downloaded}
+      - name: Attribute semantic-rejected FAR state and persist decision
         shell: bash
         run: |
           set -euo pipefail
           root="orchestrator/$RESULT_REL"
           rm -rf "$root"; mkdir -p "$root"
           for week in H01 H02 H03 H04 H05 H06 H07 H08 H09 H10 H11 H12 H13 H14 H15 H16; do
-            src="downloaded/candidate18-$week"; test -d "$src"
+            src="downloaded/candidate19-$week"; test -d "$src"
             mkdir -p "$root/$week"; cp -a "$src/." "$root/$week/"
           done
-          python orchestrator/research/candidate-03/aggregate_candidate18_retest_entry.py \
+          python orchestrator/research/candidate-03/aggregate_candidate19_semantic_rejection_continuation.py \
             --root "$root" \
             --baseline orchestrator/research/candidate-03/results/candidate14-frozen-holdout/aggregate.json \
             --candidate15 orchestrator/research/candidate-03/results/candidate15-far-execution-development/comparison.json \
@@ -154,16 +156,16 @@ jobs:
           git -C orchestrator config user.name candidate-03-development-bot
           git -C orchestrator config user.email candidate-03-development-bot@users.noreply.github.com
           git -C orchestrator add "$RESULT_REL"
-          git -C orchestrator commit -m "candidate-03: record Candidate 18 completed-retest development [skip ci]"
+          git -C orchestrator commit -m "candidate-03: record Candidate 19 semantic-rejection development [skip ci]"
           git -C orchestrator fetch origin research/candidate-03
           git -C orchestrator rebase origin/research/candidate-03
           git -C orchestrator push origin HEAD:research/candidate-03
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate18-retest-entry-aggregate-${{ github.run_id }}
+          name: candidate19-semantic-rejection-aggregate-${{ github.run_id }}
           path: |
-            orchestrator/research/candidate-03/results/candidate18-retest-entry-development/aggregate.json
-            orchestrator/research/candidate-03/results/candidate18-retest-entry-development/RESULT.md
+            orchestrator/research/candidate-03/results/candidate19-semantic-rejection-continuation-development/aggregate.json
+            orchestrator/research/candidate-03/results/candidate19-semantic-rejection-continuation-development/RESULT.md
           if-no-files-found: warn
           retention-days: 30
