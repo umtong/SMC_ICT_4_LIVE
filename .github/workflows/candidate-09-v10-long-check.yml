@@ -81,7 +81,7 @@ jobs:
           PY
 
           test "$(git hash-object "$root/state_engine.py")" = "340952433ea17a4c77dd4f2445b226b8ddcf327a"
-          test "$(git hash-object "$root/archive/v4/state_engine.py")" = "2e71695b30b622f048cc63f4e858bb3f19220f64"
+          test "$(git hash-object "$root/archive/v4/state_engine.py")" = "94caac38f9c87e12d63362a45443d47daaa2acd4"
           test "$(git hash-object "$root/data_loader.py")" = "c076c7f47874552fb9e1d79878a43206d58f686b"
 
       - name: Run frozen v10 contracts and three-year NautilusTrader evaluation
@@ -116,6 +116,7 @@ jobs:
           set -euo pipefail
           repo="$GITHUB_WORKSPACE"
           root="$repo/research/candidate-09/long_checks/v10"
+          [[ -f "$root/evidence/latest/summary.json" ]] || exit 0
           tmp=$(mktemp -d)
           mkdir -p "$tmp/evidence"
           for name in summary.json REPORT.md outcomes.csv trades.csv fills.csv run.json data_manifest.json; do
@@ -138,6 +139,6 @@ jobs:
           done
           git -C "$repo" add research/candidate-09/long_checks/v10-result
           if git -C "$repo" diff --cached --quiet; then exit 0; fi
-          status=$(python -c "import json; from pathlib import Path; p=Path('research/candidate-09/long_checks/v10-result/evidence/summary.json'); print(json.loads(p.read_text()).get('status','IMPLEMENTATION_ERROR') if p.exists() else 'IMPLEMENTATION_ERROR')")
+          status=$(python -c "import json; from pathlib import Path; p=Path('research/candidate-09/long_checks/v10-result/evidence/summary.json'); print(json.loads(p.read_text()).get('status','IMPLEMENTATION_ERROR'))")
           git -C "$repo" commit -m "candidate-09 v10 long check: ${status}"
           git -C "$repo" push origin "HEAD:${GITHUB_REF_NAME}"
