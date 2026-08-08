@@ -25,8 +25,13 @@ class Candidate16V16FastLaneTests(unittest.TestCase):
             center = 100.0 + (index + 0.5) * 0.1
             if 20 <= index <= 22 or 27 <= index <= 29:
                 total = 300.0
-            elif 23 <= index <= 26:
+            elif index in {24, 25}:
+                # Two-row bottom-quartile LVN trough.
                 total = 3.0
+            elif index in {23, 26}:
+                # The remainder of the HVN-to-HVN gap remains below profile
+                # median but above the LVN quartile.
+                total = 10.0
             else:
                 total = 5.0 if index % 2 == 0 else 15.0
             for _ in range(rows_per_bin):
