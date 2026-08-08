@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/candidate-09-c12-continuous.yml
       - research/candidate-09/c12_continuous/apply_monthly_loader.py
+      - research/candidate-09/c12_continuous/apply_protective_stop_fallback.py
       - research/candidate-09/c12_continuous/run_continuous.py
 
 permissions:
@@ -37,7 +38,9 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .cache/candidate-09-c12-continuous
-          key: candidate-09-c12-monthly-klines-v1
+          key: candidate-09-c12-monthly-klines-v2
+          restore-keys: |
+            candidate-09-c12-monthly-klines-v1
 
       - name: Materialize frozen Candidate 12 I13
         shell: bash
@@ -57,17 +60,18 @@ jobs:
           test "$(git hash-object "$source/config.json")" = "5e09edba38352acb5d89a7cdf2dfda23682bb641"
           test "$(git hash-object "$source/run.py")" = "d24065c0a056ef694572d489c9318af15153b17e"
           python "$root/apply_monthly_loader.py"
+          python "$root/apply_protective_stop_fallback.py"
           python - <<'PY'
           import hashlib, json
           from pathlib import Path
           root=Path('research/candidate-09/c12_continuous')
           source=root/'source'
-          names=('logic.py','config.json','run.py','data_loader_daily.py','bar_adapter.py','metrics.py','strategy_adapter.py')
+          names=('logic.py','config.json','run.py','data_loader_daily.py','data_loader.py','bar_adapter.py','metrics.py','strategy_adapter.py')
           files={}
           for name in names:
               payload=(source/name).read_bytes()
               files[name]={'git_blob':hashlib.sha1(f'blob {len(payload)}\0'.encode()+payload).hexdigest(),'sha256':hashlib.sha256(payload).hexdigest(),'bytes':len(payload)}
-          manifest={'source_commit':'6a28ed92f3320fa2a6841e113e6ecf6e46f8d1fd','source_branch':'research/candidate-12','frozen_candidate':'candidate-12-state-priced-reacceleration-router','transport_patch_only':True,'files':files}
+          manifest={'source_commit':'6a28ed92f3320fa2a6841e113e6ecf6e46f8d1fd','source_branch':'research/candidate-12','frozen_candidate':'candidate-12-state-priced-reacceleration-router','economic_logic_unchanged':True,'implementation_patches':['monthly-byte-equivalent transport','protective-stop-in-market emergency exit'],'files':files}
           (root/'source_manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
           PY
 
