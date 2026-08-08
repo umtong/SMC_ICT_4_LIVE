@@ -1,0 +1,135 @@
+name: Candidate 09 v38 stack-POC limit execution
+
+on:
+  push:
+    branches: [research/candidate-09]
+    paths:
+      - .github/workflows/candidate-09-v38-stack-poc-limit.yml
+      - research/candidate-09/v38_stack_poc_limit/strategy.py
+      - research/candidate-09/v38_stack_poc_limit/run_experiment.py
+      - research/candidate-09/v38_stack_poc_limit/test_contracts.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-09-v38-stack-poc-limit
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      SOURCE_SHA: 91317f522546afd837e330a2bde0f9c05e81b068
+      ROOT: research/candidate-09/v38_stack_poc_limit
+      CACHE: .cache/candidate-09-v38-stack-poc-limit
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.CACHE }}
+          key: candidate-09-v38-stack-poc-limit-v1
+
+      - name: Materialize frozen V35 signal and native limit execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags origin "$SOURCE_SHA"
+          rm -rf "$ROOT/work" "$ROOT/evidence/latest"
+          mkdir -p "$ROOT/work"
+          git archive "$SOURCE_SHA" research/candidate-05 research/candidate-16 | tar -x -C "$ROOT/work"
+          mv "$ROOT/work/research/candidate-05/features.py" "$ROOT/work/research/candidate-05/features_base.py"
+          mv "$ROOT/work/research/candidate-16/strategy.py" "$ROOT/work/research/candidate-16/strategy_v1.py"
+          cp research/candidate-09/v33_footprint_acceptance/features.py "$ROOT/work/research/candidate-05/features.py"
+          python research/candidate-09/v33_footprint_acceptance/apply_timestamp_bridge.py "$ROOT/work/research/candidate-05/features.py"
+          cp research/candidate-09/v33_footprint_acceptance/strategy.py "$ROOT/work/research/candidate-16/strategy_v33.py"
+          cp research/candidate-09/v35_completed_auction_footprint/strategy.py "$ROOT/work/research/candidate-16/strategy_v35.py"
+          cp "$ROOT/strategy.py" "$ROOT/work/research/candidate-16/strategy.py"
+          test "$(git hash-object "$ROOT/work/research/candidate-05/features_base.py")" = "6c784148effb4e1632c83eb03071f0050579c179"
+          test "$(git hash-object "$ROOT/work/research/candidate-16/strategy_v1.py")" = "3dddd221fbd1a7c3c518bb753c88dcffbbdac361"
+
+      - name: Verify environment and exact execution ablation contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/$ROOT/work/research/candidate-16:$GITHUB_WORKSPACE/$ROOT/work/research/candidate-05:$GITHUB_WORKSPACE/src"
+          smc4 doctor | tee "$ROOT/doctor.txt"
+          python -m compileall -q "$ROOT" "$ROOT/work/research/candidate-16" "$ROOT/work/research/candidate-05"
+          python research/candidate-09/v33_footprint_acceptance/test_contracts.py
+          python research/candidate-09/v35_completed_auction_footprint/test_contracts.py
+          python "$ROOT/test_contracts.py"
+          python -m unittest discover -s "$ROOT/work/research/candidate-16/tests" -p 'test_effort_result_router.py' -v
+          python -m unittest discover -s "$ROOT/work/research/candidate-05/tests" -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Run passive limit versus exact market control
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CACHE" "$ROOT/evidence/latest"
+          python "$ROOT/run_experiment.py" \
+            --source "$ROOT/work" \
+            --cache "$CACHE" \
+            --output "$ROOT/evidence/latest" \
+            |& tee "$ROOT/run.txt"
+          find "$ROOT/evidence/latest" -type d -name catalog -prune -exec rm -rf {} + || true
+          find "$ROOT/evidence/latest" -type f -name features.csv.gz -delete || true
+
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-09-v38-stack-poc-limit-${{ github.run_id }}
+          path: |
+            research/candidate-09/v38_stack_poc_limit/evidence/latest
+            research/candidate-09/v38_stack_poc_limit/doctor.txt
+            research/candidate-09/v38_stack_poc_limit/run.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Commit compact decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -f "$ROOT/evidence/latest/FINAL_DECISION.json" ]] || exit 0
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/evidence/latest"
+          cp "$ROOT/evidence/latest/FINAL_DECISION.json" "$tmp/evidence/latest/"
+          for stage in development holdout long; do
+            [[ -d "$ROOT/evidence/latest/$stage" ]] || continue
+            while IFS= read -r file; do
+              rel=${file#"$ROOT/evidence/latest/"}
+              mkdir -p "$tmp/evidence/latest/$(dirname "$rel")"
+              cp "$file" "$tmp/evidence/latest/$rel"
+            done < <(find "$ROOT/evidence/latest/$stage" -type f \( -name metrics.json -o -name config.json -o -name strategy_diagnostics.json -o -name candidate16_contract.json -o -name data_manifest.json \))
+          done
+          [[ -f "$ROOT/doctor.txt" ]] && cp "$ROOT/doctor.txt" "$tmp/doctor.txt"
+          [[ -f "$ROOT/run.txt" ]] && cp "$ROOT/run.txt" "$tmp/run.txt"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name candidate-09-research-bot
+          git config user.email candidate-09-research-bot@users.noreply.github.com
+          git fetch origin "$GITHUB_REF_NAME"
+          git reset --hard "origin/$GITHUB_REF_NAME"
+          rm -rf "$ROOT/evidence/latest"
+          mkdir -p "$ROOT/evidence/latest"
+          cp -a "$tmp/evidence/latest/." "$ROOT/evidence/latest/"
+          [[ -f "$tmp/doctor.txt" ]] && cp "$tmp/doctor.txt" "$ROOT/doctor.txt"
+          [[ -f "$tmp/run.txt" ]] && cp "$tmp/run.txt" "$ROOT/run.txt"
+          git add "$ROOT/evidence/latest" "$ROOT/doctor.txt" "$ROOT/run.txt"
+          git diff --cached --quiet && exit 0
+          status=$(python -c "import json;print(json.load(open('$ROOT/evidence/latest/FINAL_DECISION.json'))['status'])")
+          git commit -m "candidate-09 v38: ${status}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
