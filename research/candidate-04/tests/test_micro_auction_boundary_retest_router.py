@@ -15,7 +15,6 @@ class BoundaryRetestTests(unittest.TestCase):
         close[0] = 90.0
         close[250] = 100.7
         close[251] = 100.3
-        # The completed retest closes only 0.2 ATR inside the reclaimed boundary.
         close[252] = 100.2
         flow = [0.0] * rows
         ret = [0.0] * rows
@@ -47,7 +46,7 @@ class BoundaryRetestTests(unittest.TestCase):
             "side": 1,
             "signal_index": 250,
             "signal_time": "2023-01-01T04:10:00+00:00",
-            "observe_time": "2023-01-01T04:10:59.999000+00:00",
+            "observe_time": "2023-01-01T04:11:00+00:00",
             "observe_time_ns": 1,
             "stop_level": 98.0,
             "event_indices": [220, 249, 250],
@@ -71,9 +70,7 @@ class BoundaryRetestTests(unittest.TestCase):
         self.assertEqual(row["scenario"], candidate.OUTPUT_SCENARIO)
         self.assertEqual(row["signal_index"], 252)
         self.assertEqual(row["details"]["causal_target_reference"], 103.0)
-        self.assertEqual(
-            row["details"]["causal_target_observed_index"], 239
-        )
+        self.assertEqual(row["details"]["causal_target_observed_index"], 239)
         self.assertEqual(summary["counts"]["routed"], 1)
 
     def test_touch_without_aligned_confirmation_is_rejected(self) -> None:
@@ -81,9 +78,7 @@ class BoundaryRetestTests(unittest.TestCase):
             [self._signal()], self._rich(aligned=False)
         )
         self.assertEqual(routed, [])
-        self.assertGreater(
-            summary["counts"]["retest_without_aligned_confirmation"], 0
-        )
+        self.assertGreater(summary["counts"]["retest_without_aligned_confirmation"], 0)
 
     def test_no_exact_boundary_touch_is_not_a_retest(self) -> None:
         routed, summary = candidate.route_signals(
@@ -92,12 +87,9 @@ class BoundaryRetestTests(unittest.TestCase):
         self.assertEqual(routed, [])
         self.assertEqual(summary["counts"]["no_completed_boundary_retest"], 1)
 
-    def test_current_confirmation_is_observed_at_completed_bar_time(self) -> None:
+    def test_current_confirmation_uses_rich_observed_time(self) -> None:
         routed, _ = candidate.route_signals([self._signal()], self._rich())
-        self.assertEqual(
-            routed[0]["observe_time"],
-            "2023-01-01T04:12:59.999000+00:00",
-        )
+        self.assertEqual(routed[0]["observe_time"], "2023-01-01T04:13:00+00:00")
 
 
 if __name__ == "__main__":
