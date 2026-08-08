@@ -1,0 +1,161 @@
+name: candidate-05-v56-oos-comparison
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - ".github/workflows/candidate-05-v56-oos-comparison.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v56-oos-comparison
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  untouched-comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v56-oos-comparison
+      CACHE: .cache/candidate-05-v56-oos-comparison
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify frozen candidates and data contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_flow_maturity_logic.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v56_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v46_no_post_retrace_breakaway_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_contract.py' -v
+
+      - name: Run frozen v46 on untouched continuous BTC path
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/v46"
+          python research/candidate-05/v40_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-05-30 \
+            --build-end 2024-08-31 \
+            --evaluation-start 2024-06-01 \
+            --evaluation-end 2024-08-31 \
+            --cache "$CACHE" \
+            --output "$ROOT/v46" \
+            2>&1 | tee "$ROOT/v46/console.log"
+
+      - name: Run frozen v56 on the identical untouched path
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v56_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/v56"
+          python research/candidate-05/v56_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-05-30 \
+            --build-end 2024-08-31 \
+            --evaluation-start 2024-06-01 \
+            --evaluation-end 2024-08-31 \
+            --cache "$CACHE" \
+            --output "$ROOT/v56" \
+            2>&1 | tee "$ROOT/v56/console.log"
+
+      - name: Build untouched paired decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test ! -s "$ROOT/v46/metrics.json" || test ! -s "$ROOT/v56/metrics.json"; then
+            exit 0
+          fi
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          v46 = json.loads((root / "v46/metrics.json").read_text())
+          v56 = json.loads((root / "v56/metrics.json").read_text())
+          diagnostics = json.loads((root / "v56/strategy_diagnostics.json").read_text())
+
+          def integrity(value):
+              return (
+                  int(value.get("liquidations", 0)) == 0
+                  and int(value.get("order_rejections", 0)) == 0
+                  and int(value.get("order_denials", 0)) == 0
+                  and float(value.get("min_equity", 0.0)) > 0.0
+              )
+
+          minimum_retained_trades = max(3, int(v46.get("trades", 0)) // 2)
+          pass_pair = (
+              integrity(v46)
+              and integrity(v56)
+              and float(v56.get("total_return", -1.0)) > float(v46.get("total_return", -1.0))
+              and float(v56.get("profit_factor", 0.0)) > float(v46.get("profit_factor", 0.0))
+              and float(v56.get("max_drawdown", 1.0)) <= float(v46.get("max_drawdown", 1.0))
+              and int(v56.get("trades", 0)) >= minimum_retained_trades
+          )
+          result = {
+              "schema": "candidate-05-v56-oos-paired-v1",
+              "classification": (
+                  "V56_FROZEN_PHASE_GATE_REPLICATED_OUT_OF_SAMPLE"
+                  if pass_pair
+                  else "V56_FROZEN_PHASE_GATE_FAILED_OUT_OF_SAMPLE"
+              ),
+              "period": {
+                  "evaluation_start": "2024-06-01",
+                  "evaluation_end": "2024-08-31",
+                  "selected_before_observation": True,
+              },
+              "v46": v46,
+              "v56": v56,
+              "minimum_retained_trades": minimum_retained_trades,
+              "phase_gate": {
+                  "observations": diagnostics.get("first_retrace_phase_observations", 0),
+                  "passes": diagnostics.get("first_retrace_early_flow_pass", 0),
+                  "rejections": diagnostics.get("first_retrace_mature_flow_rejections", 0),
+                  "rejected_branches": diagnostics.get("first_retrace_rejected_branch_counts", {}),
+              },
+          }
+          (root / "paired_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify paired authoritative evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -s "$ROOT/paired_decision.json"; then
+            python -m json.tool "$ROOT/paired_decision.json"
+            for candidate in v46 v56; do
+              for file in metrics.json run.json data_manifest.json raw_evidence.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl; do
+                test -s "$ROOT/$candidate/$file"
+              done
+            done
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v56-oos-comparison-${{ github.sha }}
+          path: artifacts/candidate-05-v56-oos-comparison/**
+          if-no-files-found: warn
+          retention-days: 90
