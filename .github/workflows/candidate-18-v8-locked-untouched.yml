@@ -25,16 +25,16 @@ jobs:
             length_days: 7
             eligible_count: 188
             expected_index: 68
-            build_start: "2023-07-07"
-            evaluation_start: "2023-07-10"
-            evaluation_end: "2023-07-16"
+            build_start: "2023-08-18"
+            evaluation_start: "2023-08-21"
+            evaluation_end: "2023-08-27"
           - name: locked-week-2
             length_days: 7
             eligible_count: 188
             expected_index: 62
-            build_start: "2023-08-18"
-            evaluation_start: "2023-08-21"
-            evaluation_end: "2023-08-27"
+            build_start: "2023-07-07"
+            evaluation_start: "2023-07-10"
+            evaluation_end: "2023-07-16"
           - name: locked-28d-1
             length_days: 28
             eligible_count: 170
@@ -56,6 +56,7 @@ jobs:
 
     env:
       LOCK_SHA: 56f008b87e31d476b03ba1a47a0d346c68b0b8fb
+      DATA_CONTRACT_SHA: d29330d6faf4b4ae2d8c5cfcd43142cfbcbf813f
       PYTHONPATH: research/candidate-18:research/candidate-16:research/candidate-17:research/candidate-05
       PYTHONUNBUFFERED: "1"
       ROOT: artifacts/candidate-18-v8-locked/${{ matrix.name }}
@@ -74,13 +75,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Prove immutable code and environment
+      - name: Prove immutable strategy, repaired data contract, and environment
         shell: bash
         run: |
           set -euo pipefail
           smc4 doctor
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git cat-file -e "$LOCK_SHA^{commit}"
+          git cat-file -e "$DATA_CONTRACT_SHA^{commit}"
           git diff --exit-code "$LOCK_SHA" HEAD -- \
             research/candidate-18/basis_dislocation_strategy.py \
             research/candidate-18/candidate18_basis_strategy.py \
@@ -100,7 +102,11 @@ jobs:
             research/candidate-05/features.py \
             research/candidate-05/logic.py \
             research/candidate-05/instrument_contracts.py
-          python -m compileall -q research/candidate-18 research/candidate-17 research/candidate-16
+          git diff --exit-code "$DATA_CONTRACT_SHA" HEAD -- \
+            research/candidate-05/positioning_contract.py \
+            research/candidate-05/tests/test_positioning_contract.py
+          python -m compileall -q research/candidate-18 research/candidate-17 research/candidate-16 research/candidate-05
+          python research/candidate-05/tests/test_positioning_contract.py
           python research/candidate-18/v8_contract_check.py
 
       - name: Reproduce hash-selected non-overlapping period
@@ -197,8 +203,9 @@ jobs:
           )
           growth = float(metrics.get("geometric_daily_growth", -1.0))
           decision = {
-              "schema": "candidate-18-v8-locked-untouched-v1",
+              "schema": "candidate-18-v8-locked-untouched-v2",
               "code_lock_sha": os.environ["LOCK_SHA"],
+              "data_contract_sha": os.environ["DATA_CONTRACT_SHA"],
               "period": os.environ["PERIOD_NAME"],
               "seed": os.environ["SEED"],
               "evaluation_start": os.environ["EVALUATION_START"],
