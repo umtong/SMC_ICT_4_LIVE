@@ -1,0 +1,237 @@
+name: Candidate 14 v9 confirmed acceptance failure diagnostic
+
+on:
+  push:
+    branches:
+      - research/candidate-14-v9-confirmed-acceptance-failure
+    paths:
+      - "research/candidate-14/**"
+      - ".github/workflows/candidate-14-v9.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: candidate-14-v9-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Verify v9 lock, source provenance, environment and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
+          python -m py_compile research/candidate-14/*.py
+          python -m unittest discover -s research/candidate-14 -p 'test_*.py' -v
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          root = Path("research/candidate-14")
+          protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+          lock = json.loads((root / "V9_DEVELOPMENT_LOCK.json").read_text(encoding="utf-8"))
+          if protocol.get("validation_mode") != "diagnostic":
+              raise SystemExit("v9 must be diagnostic")
+          if protocol.get("candidate") != lock.get("candidate"):
+              raise SystemExit("v9 lock candidate mismatch")
+          if lock.get("claim_allowed") is not False:
+              raise SystemExit("v9 diagnostic must prohibit success claims")
+          if protocol["selection"]["holdouts"] != lock["selection"]["holdouts"]:
+              raise SystemExit("v9 interval drift")
+          if protocol["selection"]["evaluation_days"] != 84:
+              raise SystemExit("v9 requires one 84-day continuous account path")
+          change = protocol["strategy_change_control"]
+          if change.get("single_change") != "require frozen AAC completion before accepted-auction failure and later reversal initiative":
+              raise SystemExit("unexpected v9 strategy change")
+          if change.get("claim_allowed") is not False:
+              raise SystemExit("v9 protocol incorrectly permits a claim")
+          for name, expected in protocol["locked_source"]["blobs"].items():
+              actual = subprocess.check_output(
+                  ["git", "hash-object", str(root / name)],
+                  text=True,
+              ).strip()
+              if actual != expected:
+                  raise SystemExit(f"locked source drift: {name}: {actual} != {expected}")
+          PY
+
+  evaluate:
+    needs: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Run one 84-day Nautilus v9 diagnostic path
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash research/candidate-14/run_week.sh L1
+      - name: Remove downloaded market archives from evidence payload
+        if: always()
+        shell: bash
+        run: rm -rf research/candidate-14/results/L1/data
+      - name: Upload auditable v9 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate14-v9-L1
+          path: |
+            research/candidate-14/results/L1/run.json
+            research/candidate-14/results/L1/data_manifest.json
+            research/candidate-14/results/L1/metrics.json
+            research/candidate-14/results/L1/summary.json
+            research/candidate-14/results/L1/audit.json
+            research/candidate-14/results/L1/audit.md
+            research/candidate-14/results/L1/source_lock.json
+            research/candidate-14/results/L1/effective_config.json
+            research/candidate-14/results/L1/scenario_events.jsonl
+            research/candidate-14/results/L1/submitted_plans.json
+            research/candidate-14/results/L1/order_lifecycle.json
+            research/candidate-14/results/L1/orders.csv
+            research/candidate-14/results/L1/positions.csv
+            research/candidate-14/results/L1/account.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: ${{ needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Download fresh v9 evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate14-v9-L1
+          path: artifacts/candidate14-v9-L1
+      - name: Validate, aggregate and persist v9 diagnostic evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="research/candidate-14-v9-confirmed-acceptance-failure"
+          git fetch origin "$branch"
+          current_head="$(git rev-parse "origin/$branch")"
+          if [[ "$current_head" != "$GITHUB_SHA" ]]; then
+            echo "stale v9 run: $GITHUB_SHA; current branch: $current_head"
+            exit 0
+          fi
+
+          rm -rf research/candidate-14/results
+          mkdir -p research/candidate-14/results/L1
+          cp -a artifacts/candidate14-v9-L1/. research/candidate-14/results/L1/
+          for file in \
+            run.json data_manifest.json metrics.json summary.json audit.json audit.md \
+            source_lock.json effective_config.json scenario_events.jsonl \
+            submitted_plans.json order_lifecycle.json orders.csv positions.csv account.csv; do
+            test -s "research/candidate-14/results/L1/$file"
+          done
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("research/candidate-14")
+          protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+          folder = root / "results" / "L1"
+          effective = json.loads((folder / "effective_config.json").read_text(encoding="utf-8"))
+          run = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+          metrics = json.loads((folder / "metrics.json").read_text(encoding="utf-8"))
+          summary = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
+          audit = json.loads((folder / "audit.json").read_text(encoding="utf-8"))
+          source_lock = json.loads((folder / "source_lock.json").read_text(encoding="utf-8"))
+          candidate = protocol["candidate"]
+          schema = protocol["schema"]
+          for name, payload in (("run", run), ("metrics", metrics), ("summary", summary), ("audit", audit)):
+              if payload.get("candidate") != candidate:
+                  raise SystemExit(f"{name}: candidate mismatch")
+              if payload.get("validation_mode") != "diagnostic":
+                  raise SystemExit(f"{name}: diagnostic mode missing")
+          contract = effective.get("candidate14_protocol", {})
+          if effective.get("candidate") != candidate or contract.get("schema") != schema or contract.get("interval") != "L1":
+              raise SystemExit("effective protocol mismatch")
+          if run.get("candidate14_protocol") != schema or metrics.get("candidate14_protocol") != schema:
+              raise SystemExit("evidence protocol mismatch")
+          if source_lock.get("candidate") != candidate or source_lock.get("validation_mode") != "diagnostic":
+              raise SystemExit("source-lock provenance mismatch")
+          required = set(protocol["locked_source"]["blobs"])
+          locked = set(source_lock.get("files", {}))
+          if not required.issubset(locked):
+              raise SystemExit(f"source-lock omissions: {sorted(required - locked)}")
+          for key in (
+              "evidence_complete", "metric_recalculation_passed", "risk_budget_passed",
+              "global_slot_passed", "partial_entry_protection_passed",
+              "no_liquidation_passed", "engine_errors_absent",
+          ):
+              if audit.get(key) is not True:
+                  raise SystemExit(f"independent evidence audit failed: {key}")
+          if metrics.get("success_claim") is not False:
+              raise SystemExit("v9 diagnostic metrics attempted a success claim")
+          PY
+
+          python research/candidate-14/diagnostic_continuous_aggregate.py \
+            --result-dir research/candidate-14/results/L1 \
+            --protocol research/candidate-14/protocol.json \
+            --output research/candidate-14/aggregate.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path("research/candidate-14/aggregate.json").read_text(encoding="utf-8"))
+          if value.get("validation_mode") != "diagnostic":
+              raise SystemExit("aggregate diagnostic label missing")
+          if value.get("success_claim") is not False:
+              raise SystemExit("v9 diagnostic aggregate attempted a success claim")
+          if value.get("weekly_reset_aggregation") is not False:
+              raise SystemExit("continuous account path was not preserved")
+          PY
+
+          latest_head="$(git ls-remote origin "refs/heads/$branch" | cut -f1)"
+          if [[ "$latest_head" != "$GITHUB_SHA" ]]; then
+            echo "branch advanced during v9 evaluation; evidence remains artifact-only"
+            exit 0
+          fi
+          git config user.name "candidate-14-v9-bot"
+          git config user.email "candidate-14-v9-bot@users.noreply.github.com"
+          git add -A research/candidate-14/results research/candidate-14/aggregate.json research/candidate-14/RESULT.md
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-14 v9: record controlled diagnostic evidence [skip ci]"
+            git push origin "HEAD:$branch"
+          fi
+      - name: Upload aggregate v9 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate14-v9-aggregate-${{ github.run_id }}
+          path: |
+            research/candidate-14/aggregate.json
+            research/candidate-14/RESULT.md
+          if-no-files-found: error
+          retention-days: 30

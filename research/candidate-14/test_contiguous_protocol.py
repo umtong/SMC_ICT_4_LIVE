@@ -15,12 +15,13 @@ class ContiguousProtocolTests(unittest.TestCase):
         self.reservation = json.loads(
             (ROOT / "CONTIGUOUS_HOLDOUT_RESERVATION.json").read_text(encoding="utf-8")
         )
-        development_path = ROOT / "V6_DEVELOPMENT_LOCK.json"
-        self.development = (
-            json.loads(development_path.read_text(encoding="utf-8"))
-            if development_path.is_file()
-            else None
-        )
+        locks = sorted(ROOT.glob("V*_DEVELOPMENT_LOCK.json"))
+        matching = []
+        for path in locks:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("candidate") == self.protocol.get("candidate"):
+                matching.append(payload)
+        self.development = matching[0] if len(matching) == 1 else None
 
     def test_one_contiguous_interval_with_explicit_evidence_role(self) -> None:
         mode = self.protocol["validation_mode"]
@@ -40,6 +41,7 @@ class ContiguousProtocolTests(unittest.TestCase):
                 "post-holdout-controlled-development-diagnostic",
             )
             self.assertIsNotNone(self.development)
+            assert self.development is not None
             self.assertFalse(self.development["claim_allowed"])
             self.assertTrue(
                 self.development["diagnostic_interval_outcomes_previously_inspected"],
@@ -57,6 +59,7 @@ class ContiguousProtocolTests(unittest.TestCase):
 
         self.assertIsNotNone(self.development)
         assert self.development is not None
+        self.assertEqual(self.protocol["candidate"], self.development["candidate"])
         self.assertTrue(
             self.protocol["strategy_change_control"][
                 "diagnostic_interval_outcomes_previously_inspected"
@@ -75,8 +78,6 @@ class ContiguousProtocolTests(unittest.TestCase):
             self.protocol["selection"]["holdouts"],
             self.development["selection"]["holdouts"],
         )
-        # The original reservation remains immutable historical evidence and is
-        # deliberately not relabelled as a new holdout.
         self.assertFalse(self.reservation["outcomes_inspected_before_reservation"])
         self.assertNotEqual(self.protocol["selection"], self.reservation["selection"])
 
