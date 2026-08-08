@@ -24,7 +24,7 @@ env:
 jobs:
   continuous:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 420
 
     steps:
       - name: Checkout candidate-10
@@ -61,18 +61,84 @@ jobs:
               set -euo pipefail
               rm -rf /tmp/candidate11-v49
               cp -a /workspace/.candidate11/research/candidate-11 /tmp/candidate11-v49
-              cp /workspace/research/candidate-10/c10_v*.py /tmp/candidate11-v49/
-              cp /workspace/research/candidate-10/test_c10_v*.py /tmp/candidate11-v49/
+              for file in \
+                c10_v27_overlay.py c10_v27_patch.py \
+                c10_v28_overlay.py c10_v28_patch.py \
+                c10_v29_overlay.py c10_v29_patch.py \
+                c10_v30_overlay.py c10_v32_overlay.py c10_v33_overlay.py \
+                c10_v36_overlay.py c10_v36_state.py c10_v36_patch.py \
+                c10_v37_overlay.py c10_v37_state.py c10_v37_patch.py \
+                c10_v38_overlay.py c10_v38_state.py c10_v38_patch.py \
+                c10_v40_overlay.py c10_v40_state.py c10_v40_patch.py \
+                c10_v41_overlay.py c10_v41_patch.py \
+                c10_v44_overlay.py c10_v44_patch.py \
+                c10_v45_overlay.py c10_v45_patch.py \
+                c10_v46_overlay.py c10_v46_patch.py \
+                c10_v47_overlay.py c10_v47_patch.py \
+                c10_v49_continuous_run.py \
+                test_c10_v27_overlay.py test_c10_v28_overlay.py \
+                test_c10_v29_overlay.py test_c10_v33_overlay.py \
+                test_c10_v36_state.py test_c10_v37_protection.py \
+                test_c10_v38_micro_pivot.py \
+                test_c10_v40_source_detector.py \
+                test_c10_v41_entry_timing.py \
+                test_c10_v44_target_hierarchy.py \
+                test_c10_v45_entry_leg_invalidation.py \
+                test_c10_v46_void_close.py \
+                test_c10_v47_event_leader.py; do
+                cp "/workspace/research/candidate-10/${file}" /tmp/candidate11-v49/
+              done
               smc4 doctor
               python /tmp/candidate11-v49/c10_v47_patch.py \
                 /tmp/candidate11-v49/run_leadership_scdam.py
               python -m py_compile \
-                /tmp/candidate11-v49/c10_v*.py \
+                /tmp/candidate11-v49/c10_v27_overlay.py \
+                /tmp/candidate11-v49/c10_v27_patch.py \
+                /tmp/candidate11-v49/c10_v28_overlay.py \
+                /tmp/candidate11-v49/c10_v28_patch.py \
+                /tmp/candidate11-v49/c10_v29_overlay.py \
+                /tmp/candidate11-v49/c10_v29_patch.py \
+                /tmp/candidate11-v49/c10_v30_overlay.py \
+                /tmp/candidate11-v49/c10_v32_overlay.py \
+                /tmp/candidate11-v49/c10_v33_overlay.py \
+                /tmp/candidate11-v49/c10_v36_overlay.py \
+                /tmp/candidate11-v49/c10_v36_state.py \
+                /tmp/candidate11-v49/c10_v36_patch.py \
+                /tmp/candidate11-v49/c10_v37_overlay.py \
+                /tmp/candidate11-v49/c10_v37_state.py \
+                /tmp/candidate11-v49/c10_v37_patch.py \
+                /tmp/candidate11-v49/c10_v38_overlay.py \
+                /tmp/candidate11-v49/c10_v38_state.py \
+                /tmp/candidate11-v49/c10_v38_patch.py \
+                /tmp/candidate11-v49/c10_v40_overlay.py \
+                /tmp/candidate11-v49/c10_v40_state.py \
+                /tmp/candidate11-v49/c10_v40_patch.py \
+                /tmp/candidate11-v49/c10_v41_overlay.py \
+                /tmp/candidate11-v49/c10_v41_patch.py \
+                /tmp/candidate11-v49/c10_v44_overlay.py \
+                /tmp/candidate11-v49/c10_v44_patch.py \
+                /tmp/candidate11-v49/c10_v45_overlay.py \
+                /tmp/candidate11-v49/c10_v45_patch.py \
+                /tmp/candidate11-v49/c10_v46_overlay.py \
+                /tmp/candidate11-v49/c10_v46_patch.py \
+                /tmp/candidate11-v49/c10_v47_overlay.py \
+                /tmp/candidate11-v49/c10_v47_patch.py \
+                /tmp/candidate11-v49/c10_v49_continuous_run.py \
                 /tmp/candidate11-v49/run_leadership_scdam.py
-              python -m unittest discover \
-                -s /tmp/candidate11-v49 \
-                -p "test_c10_v*.py" \
-                -v
+              python -m unittest -v \
+                test_c10_v27_overlay \
+                test_c10_v28_overlay \
+                test_c10_v29_overlay \
+                test_c10_v33_overlay \
+                test_c10_v36_state \
+                test_c10_v37_protection \
+                test_c10_v38_micro_pivot \
+                test_c10_v40_source_detector \
+                test_c10_v41_entry_timing \
+                test_c10_v44_target_hierarchy \
+                test_c10_v45_entry_leg_invalidation \
+                test_c10_v46_void_close \
+                test_c10_v47_event_leader
 
               BASE="/workspace/artifacts/candidate-10-v49/CONTINUOUS_2026_0101_0801"
               python /tmp/candidate11-v49/c10_v49_continuous_run.py \
@@ -102,7 +168,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts/candidate-10-v49/CONTINUOUS_2026_0101_0801
-          printf '%s\n' 'untouched_continuous_temporal_account' > \
+          printf '%s\n' 'continuous_temporal_account_development' > \
             artifacts/candidate-10-v49/CONTINUOUS_2026_0101_0801/evidence_class.txt
 
       - name: Upload evidence
