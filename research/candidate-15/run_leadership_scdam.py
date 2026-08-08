@@ -14,7 +14,8 @@ if str(CANDIDATE14) not in sys.path:
     sys.path.insert(1, str(CANDIDATE14))
 
 import market_leadership as _market_leadership  # noqa: E402
-from candidate15_portfolio_materializer import (  # noqa: E402
+from candidate15_portfolio_materializer import (  # noqa: E402,F401
+    far_stop_preserves_sweep_invalidation,
     materialize_candidate15_portfolio_source,
 )
 from portfolio_materializer import materialize_combined_portfolio_source  # noqa: E402

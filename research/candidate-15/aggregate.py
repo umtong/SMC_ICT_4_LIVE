@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate Candidate 15 V2's predeclared screening intervals."""
+"""Aggregate Candidate 15 V3 screening and contaminated diagnostics."""
 from __future__ import annotations
 
 import argparse
@@ -20,43 +20,30 @@ def read_object(path: Path) -> dict[str, Any]:
 def write_object(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",
-        encoding="utf-8",
-    )
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
     temporary.replace(path)
 
 
 def decimal_value(value: Any, default: str = "0") -> Decimal:
-    if value is None:
-        return Decimal(default)
-    return Decimal(str(value))
+    return Decimal(default if value is None else str(value))
 
 
-def summarize_group(
-    records: list[dict[str, Any]],
-    *,
-    start_nav: Decimal,
-    evaluation_days: int,
-) -> dict[str, Any]:
-    multiples = [
-        decimal_value(record["final_nav"], str(start_nav)) / start_nav
-        for record in records
-    ]
-    nav_multiple = reduce(lambda x, y: x * y, multiples, Decimal("1"))
-    days = evaluation_days * len(records)
+def summarize(records: list[dict[str, Any]], start_nav: Decimal, days_per_interval: int) -> dict[str, Any]:
+    multiples = [decimal_value(item["final_nav"], str(start_nav)) / start_nav for item in records]
+    nav_multiple = reduce(lambda left, right: left * right, multiples, Decimal("1"))
+    days = days_per_interval * len(records)
     daily_geo = (
         float(nav_multiple ** (Decimal("1") / Decimal(days)) - Decimal("1"))
-        if days > 0 and nav_multiple > 0
+        if days and nav_multiple > 0
         else None
     )
-    trades = sum(record["closed_trades"] for record in records)
-    wins = sum(record["wins"] for record in records)
-    losses = sum(record["losses"] for record in records)
+    trades = sum(item["closed_trades"] for item in records)
+    wins = sum(item["wins"] for item in records)
+    losses = sum(item["losses"] for item in records)
     drawdowns = [
-        float(record["closed_trade_max_drawdown"])
-        for record in records
-        if record["closed_trade_max_drawdown"] is not None
+        float(item["closed_trade_max_drawdown"])
+        for item in records
+        if item["closed_trade_max_drawdown"] is not None
     ]
     return {
         "interval_count": len(records),
@@ -68,9 +55,8 @@ def summarize_group(
         "win_rate": wins / trades if trades else None,
         "maximum_interval_closed_trade_drawdown": max(drawdowns, default=0.0),
         "safety": all(
-            not record["engine_errors"]
-            and record["liquidation_detected"] is not True
-            for record in records
+            not item["engine_errors"] and item["liquidation_detected"] is not True
+            for item in records
         ),
     }
 
@@ -79,10 +65,7 @@ def aggregate(root: Path) -> dict[str, Any]:
     protocol = read_object(root / "protocol.json")
     records: list[dict[str, Any]] = []
     for interval, selection in protocol["selection"]["intervals"].items():
-        summary_path = root / "results" / interval / "summary.json"
-        if not summary_path.is_file():
-            raise FileNotFoundError(summary_path)
-        summary = read_object(summary_path)
+        summary = read_object(root / "results" / interval / "summary.json")
         records.append(
             {
                 "interval": interval,
@@ -103,20 +86,14 @@ def aggregate(root: Path) -> dict[str, Any]:
             },
         )
 
-    development = [record for record in records if record["role"].startswith("contaminated-")]
-    confirmation = [record for record in records if record["role"] == "predeclared-v2-confirmation"]
+    mechanism = [item for item in records if item["role"] == "contaminated-v2-mechanism-replay"]
+    reference = [item for item in records if item["role"] == "contaminated-candidate13-reference-replay"]
+    confirmation = [item for item in records if item["role"] == "predeclared-v3-confirmation"]
     start_nav = decimal_value(protocol["execution_lock"]["starting_nav"])
-    evaluation_days = int(protocol["selection"]["evaluation_days"])
-    development_stats = summarize_group(
-        development,
-        start_nav=start_nav,
-        evaluation_days=evaluation_days,
-    )
-    confirmation_stats = summarize_group(
-        confirmation,
-        start_nav=start_nav,
-        evaluation_days=evaluation_days,
-    )
+    days = int(protocol["selection"]["evaluation_days"])
+    mechanism_stats = summarize(mechanism, start_nav, days)
+    reference_stats = summarize(reference, start_nav, days)
+    confirmation_stats = summarize(confirmation, start_nav, days)
 
     checks = {
         "all_intervals_present": len(records) == len(protocol["selection"]["intervals"]),
@@ -140,7 +117,7 @@ def aggregate(root: Path) -> dict[str, Any]:
         "safety": confirmation_stats["safety"],
     }
     if not checks["confirmation_activity"]:
-        classification = "CANDIDATE15_V2_INSUFFICIENT_ACTIVITY"
+        classification = "CANDIDATE15_V3_INSUFFICIENT_ACTIVITY"
     elif all(
         checks[key]
         for key in (
@@ -150,30 +127,29 @@ def aggregate(root: Path) -> dict[str, Any]:
             "safety",
         )
     ):
-        classification = "CANDIDATE15_V2_PROMISING_SCREEN"
+        classification = "CANDIDATE15_V3_PROMISING_SCREEN"
     else:
-        classification = "CANDIDATE15_V2_SCREEN_REJECTED"
+        classification = "CANDIDATE15_V3_SCREEN_REJECTED"
 
     payload = {
-        "schema": "candidate-15-v2-screen-aggregate-v1",
+        "schema": "candidate-15-v3-screen-aggregate-v1",
         "candidate": protocol["candidate"],
         "protocol": protocol["schema"],
         "classification": classification,
         "success_claim": False,
         "continuous_account_evidence": False,
         "weekly_reset_screen": True,
-        "development_replay": development_stats,
+        "mechanism_replay": mechanism_stats,
+        "candidate13_reference_replay": reference_stats,
         "confirmation": confirmation_stats,
         "intervals": records,
         "checks": checks,
-        "next_evidence_required": (
-            "A frozen continuous-account interval is required before any success claim."
-        ),
+        "next_evidence_required": "A frozen continuous-account interval is required before any success claim.",
     }
     write_object(root / "aggregate.json", payload)
 
     lines = [
-        "# Candidate 15 V2 causal decision lease",
+        "# Candidate 15 V3 scenario-terminal invalidation",
         "",
         f"**{classification}**",
         "",
@@ -181,7 +157,7 @@ def aggregate(root: Path) -> dict[str, Any]:
         "- continuous_account_evidence: `False`",
         "- weekly_reset_screen: `True`",
         "",
-        "## Predeclared V2 confirmation",
+        "## Predeclared V3 confirmation",
         f"- daily_geometric_growth: `{confirmation_stats['daily_geometric_growth']}`",
         f"- weekly_reset_nav_multiple: `{confirmation_stats['weekly_reset_nav_multiple']:.10f}`",
         f"- closed_trades: `{confirmation_stats['closed_trades']}`",
@@ -189,29 +165,26 @@ def aggregate(root: Path) -> dict[str, Any]:
         f"- win_rate: `{confirmation_stats['win_rate']}`",
         f"- maximum_interval_closed_trade_drawdown: `{confirmation_stats['maximum_interval_closed_trade_drawdown']}`",
         "",
-        "## Contaminated mechanism replay",
-        f"- closed_trades: `{development_stats['closed_trades']}`",
-        f"- wins / losses: `{development_stats['wins']} / {development_stats['losses']}`",
-        f"- daily_geometric_growth: `{development_stats['daily_geometric_growth']}`",
+        "## Contaminated diagnostic replays",
+        f"- V2 mechanism replay trades W/L: `{mechanism_stats['closed_trades']}` / `{mechanism_stats['wins']}/{mechanism_stats['losses']}`",
+        f"- Candidate 13 reference replay trades W/L: `{reference_stats['closed_trades']}` / `{reference_stats['wins']}/{reference_stats['losses']}`",
+        f"- Candidate 13 reference replay daily_geo: `{reference_stats['daily_geometric_growth']}`",
         "",
         "## Interval evidence",
     ]
-    for record in records:
-        router = record["router_diagnostics"].get("router_resolution_counts", {})
+    for item in records:
+        transitions = item["router_diagnostics"].get("router_transition_counts", {})
         lines.append(
-            "- "
-            f"{record['interval']} [{record['role']}] ({record['start']}): "
-            f"daily_geo={record['daily_geometric_growth']}, "
-            f"trades={record['closed_trades']}, "
-            f"W/L={record['wins']}/{record['losses']}, "
-            f"router={router}"
+            f"- {item['interval']} [{item['role']}] ({item['start']}): "
+            f"daily_geo={item['daily_geometric_growth']}, trades={item['closed_trades']}, "
+            f"W/L={item['wins']}/{item['losses']}, router={transitions}"
         )
     lines.extend(("", "## Checks"))
     lines.extend(f"- {key}: `{value}`" for key, value in checks.items())
     lines.extend(
         (
             "",
-            "Classification uses only U1-U5. D1/H1/S1 are contaminated mechanism replays. "
+            "Classification uses only V1-V5. M1/M2 and C1-C5 are contaminated diagnostics. "
             "The confirmation weeks do not form one continuous account path.",
         ),
     )
@@ -223,8 +196,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
     args = parser.parse_args()
-    result = aggregate(args.root.resolve())
-    print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    print(json.dumps(aggregate(args.root.resolve()), indent=2, sort_keys=True, default=str))
     return 0
 
 

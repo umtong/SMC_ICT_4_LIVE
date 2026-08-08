@@ -1,20 +1,21 @@
 {
-  "schema": "candidate-15-causal-decision-lease-v2",
+  "schema": "candidate-15-scenario-terminal-invalidation-v3",
   "candidate": "candidate-15-sequential-price-flow-response-router",
   "created_utc": "2026-08-08",
-  "validation_mode": "v1_failure_development_plus_v2_predeclared_confirmation",
+  "validation_mode": "v1_v2_failure_development_plus_v3_predeclared_confirmation",
   "base_candidate": {
     "branch": "research/candidate-14",
     "commit": "0f32715d90f4cf4a8bd252d53407ff20b097bbfb",
     "role": "frozen detector, execution semantics, leadership, portfolio arbitration and Nautilus account path"
   },
   "hypothesis": {
-    "problem": "V1 correctly measured local response but stored ACCEPTANCE or FAILURE as a permanent episode label. The only V1 core winner entered one bar after resolution; the three V1 core losses reused the label approximately 8, 13 and 27 bars later. A separate SESSION_I7 loss bypassed the router entirely.",
-    "causal_claim": "A resolved response is an entry-enabling event only while inherited structural confirmation belongs to the same newly resolved auction leg.",
-    "router": "Fresh FAILURE admits inherited FAR; fresh ACCEPTANCE admits inherited AAC; UNRESOLVED or STALE is no trade.",
-    "lifecycle": "The decision is valid on its resolution bar and the immediately following completed bar, then becomes STALE. A new sweep extreme starts a new episode.",
-    "coverage": "SESSION_I7 fails closed as UNRESOLVED because it does not expose Candidate 15's continuously observed external-liquidity response episode.",
-    "non_goal": "V2 does not fit future return, change targets, change risk, add leverage caps or replace NautilusTrader."
+    "problem": "V2 removed stale state reuse but its sole unseen trade used a stop inside the original sweep invalidation, converting a rejected 0.8165R market entry into a nominal 1.5728R plan. The stop executed while the failed-auction thesis remained structurally valid.",
+    "causal_claim": "A FAR trade is valid only when its loss boundary is at or beyond the sweep invalidation that defines the failed auction. Entry-zone traversal cannot replace scenario invalidation merely to improve costed R.",
+    "router": "Fresh FAILURE admits FAR; fresh ACCEPTANCE admits AAC; UNRESOLVED or STALE is no trade.",
+    "decision_lease": "Resolution bar plus the immediately following completed bar.",
+    "invalidation_invariant": "FAR long stop <= original sweep stop; FAR short stop >= original sweep stop. Missing proof fails closed.",
+    "coverage": "SESSION_I7 remains UNRESOLVED and fail-closed until it exposes a compatible continuously observed response episode.",
+    "non_goal": "V3 does not alter targets, risk, position sizing, costs, leadership or NautilusTrader accounting."
   },
   "router": {
     "calibration": "up to 120 completed pre-sweep one-minute bars",
@@ -31,70 +32,31 @@
       "immediately_following_completed_bars": 1,
       "after_expiry": "STALE_NO_TRADE"
     },
-    "reset": "a new sweep extreme or crossed boundary starts a new causal episode",
-    "states": [
-      "UNRESOLVED",
-      "ACCEPTANCE",
-      "FAILURE",
-      "STALE"
-    ]
+    "states": ["UNRESOLVED", "ACCEPTANCE", "FAILURE", "STALE"]
   },
   "selection": {
-    "seed": 202608081502,
-    "method": "D1/H1/S1 are explicitly contaminated V1 mechanism replays. U1-U5 were committed before V2 outcomes, are disjoint from V1 and Candidate 13's five published holdout weeks, span different calendar regimes, and are Candidate-15-V2-unseen but not represented as project-wide untouched data.",
+    "seed": 202608081503,
+    "method": "M1/M2 and C1-C5 are explicitly contaminated diagnostic replays. V1-V5 were committed before V3 outcomes, are disjoint from Candidate 15 V1/V2 and Candidate 13's published weeks, span different dates, and alone determine classification. They are Candidate-15-V3-unseen but not represented as project-wide untouched data.",
     "warmup_days": 3,
     "evaluation_days": 7,
     "intervals": {
-      "D1": {
-        "start": "2026-06-08",
-        "end_exclusive": "2026-06-15",
-        "role": "contaminated-v1-mechanism-replay"
-      },
-      "H1": {
-        "start": "2026-04-06",
-        "end_exclusive": "2026-04-13",
-        "role": "contaminated-v1-mechanism-replay"
-      },
-      "S1": {
-        "start": "2025-10-10",
-        "end_exclusive": "2025-10-17",
-        "role": "contaminated-v1-mechanism-replay"
-      },
-      "U1": {
-        "start": "2026-03-02",
-        "end_exclusive": "2026-03-09",
-        "role": "predeclared-v2-confirmation"
-      },
-      "U2": {
-        "start": "2025-12-01",
-        "end_exclusive": "2025-12-08",
-        "role": "predeclared-v2-confirmation"
-      },
-      "U3": {
-        "start": "2025-08-18",
-        "end_exclusive": "2025-08-25",
-        "role": "predeclared-v2-confirmation"
-      },
-      "U4": {
-        "start": "2025-05-05",
-        "end_exclusive": "2025-05-12",
-        "role": "predeclared-v2-confirmation"
-      },
-      "U5": {
-        "start": "2025-01-13",
-        "end_exclusive": "2025-01-20",
-        "role": "predeclared-v2-confirmation"
-      }
+      "M1": {"start": "2026-04-06", "end_exclusive": "2026-04-13", "role": "contaminated-v2-mechanism-replay"},
+      "M2": {"start": "2025-12-01", "end_exclusive": "2025-12-08", "role": "contaminated-v2-mechanism-replay"},
+      "C1": {"start": "2023-03-20", "end_exclusive": "2023-03-27", "role": "contaminated-candidate13-reference-replay"},
+      "C2": {"start": "2023-06-20", "end_exclusive": "2023-06-27", "role": "contaminated-candidate13-reference-replay"},
+      "C3": {"start": "2024-09-17", "end_exclusive": "2024-09-24", "role": "contaminated-candidate13-reference-replay"},
+      "C4": {"start": "2024-12-31", "end_exclusive": "2025-01-07", "role": "contaminated-candidate13-reference-replay"},
+      "C5": {"start": "2025-04-14", "end_exclusive": "2025-04-21", "role": "contaminated-candidate13-reference-replay"},
+      "V1": {"start": "2026-02-09", "end_exclusive": "2026-02-16", "role": "predeclared-v3-confirmation"},
+      "V2": {"start": "2025-11-03", "end_exclusive": "2025-11-10", "role": "predeclared-v3-confirmation"},
+      "V3": {"start": "2025-09-15", "end_exclusive": "2025-09-22", "role": "predeclared-v3-confirmation"},
+      "V4": {"start": "2025-06-16", "end_exclusive": "2025-06-23", "role": "predeclared-v3-confirmation"},
+      "V5": {"start": "2025-03-10", "end_exclusive": "2025-03-17", "role": "predeclared-v3-confirmation"}
     }
   },
   "execution_lock": {
     "engine": "NautilusTrader 1.230.0",
-    "symbols": [
-      "BTCUSDT",
-      "ETHUSDT",
-      "SOLUSDT",
-      "XRPUSDT"
-    ],
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
     "starting_nav": "100000",
     "risk_fraction": 0.03,
     "global_pending_entry_plus_position_limit": 1,
@@ -108,24 +70,12 @@
     "require_no_liquidation": true,
     "require_realistic_costs": true,
     "confirmation_only_for_classification": true,
-    "interpretation": "Five isolated unseen weeks are screening evidence. They cannot establish long-run success without a frozen continuous account."
+    "interpretation": "Five isolated unseen weeks are screening evidence; a frozen continuous account is required before any success claim."
   },
   "research_basis": [
-    {
-      "source": "Cont, Kukanov and Stoikov, The Price Impact of Order Book Events, arXiv:1011.6402",
-      "use": "evaluate price conversion against order-flow imbalance rather than volume alone"
-    },
-    {
-      "source": "Adams and MacKay, Bayesian Online Changepoint Detection, arXiv:0710.3742",
-      "use": "a new sweep extreme starts a new causal run"
-    },
-    {
-      "source": "Abhishek and Mannor, A nonparametric sequential test for online randomized experiments, arXiv:1610.02490",
-      "use": "continuous monitoring requires an explicit decision boundary"
-    },
-    {
-      "source": "Hu and Zhang, Stochastic Price Dynamics in Response to Order Flow Imbalance, arXiv:2505.17388",
-      "use": "response horizon and regime dependence reject permanent static labels"
-    }
+    {"source": "Cont, Kukanov and Stoikov, The Price Impact of Order Book Events, arXiv:1011.6402", "use": "price conversion against order-flow imbalance"},
+    {"source": "Adams and MacKay, Bayesian Online Changepoint Detection, arXiv:0710.3742", "use": "new sweep starts a new causal run"},
+    {"source": "Abhishek and Mannor, A nonparametric sequential test for online randomized experiments, arXiv:1610.02490", "use": "explicit online decision boundary"},
+    {"source": "Hu and Zhang, Stochastic Price Dynamics in Response to Order Flow Imbalance, arXiv:2505.17388", "use": "response horizon and regime dependence reject permanent state labels"}
   ]
 }
