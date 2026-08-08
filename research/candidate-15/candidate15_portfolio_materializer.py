@@ -199,9 +199,6 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
         label="session-family-fail-closed",
     )
 
-    # A post-only parent rejection while the account is still flat is expected
-    # passive non-execution, not an engine failure.  Rejection after any fill is a
-    # protection failure: record an error and flatten immediately.
     source = _replace(
         source,
         '''        def on_order_rejected(self, event: OrderEvent) -> None:
@@ -215,6 +212,7 @@ def materialize_candidate15_portfolio_source(source: str) -> str:
             if self.active_plan is not None and self.active_symbol is not None:
                 instrument_id = instruments[self.active_symbol].id
                 account_flat = self.portfolio.is_flat(instrument_id)
+                # PASSIVE_ENTRY_REJECTED_UNFILLED is a causal flat-entry terminal.
                 if self.mutex.state == SlotState.ENTRY_PENDING and account_flat:
                     self.lifecycle.append({
                         "type": "PASSIVE_ENTRY_REJECTED_UNFILLED",

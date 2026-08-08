@@ -33,10 +33,13 @@ class ResponseQualifiedInitiativeTests(unittest.TestCase):
         prices = {symbol: 100.0 + 10.0 * index for index, symbol in enumerate(SYMBOLS)}
         start = int(datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp() * 1_000_000_000)
         state = None
-        for minute in range(1, 141):
-            first_window = 121 <= minute <= 125
-            second_window = 136 <= minute <= 140
-            between = 126 <= minute <= 135
+        # LogicConfig uses a 30-bar ATR.  The first 180 one-minute observations
+        # provide 36 complete five-minute bars, so both synthetic events are
+        # evaluated against a fully warmed, production-sized five-minute ATR.
+        for minute in range(1, 201):
+            first_window = 181 <= minute <= 185
+            second_window = 196 <= minute <= 200
+            between = 186 <= minute <= 195
             batch: dict[str, BarObs] = {}
             for index, symbol in enumerate(SYMBOLS):
                 accepted = symbol != "XRPUSDT"
@@ -91,11 +94,12 @@ class ResponseQualifiedInitiativeTests(unittest.TestCase):
     def test_active_state_terminates_on_majority_latest_origin_reacceptance(self) -> None:
         router, state, prices, start = self._run(reverse_between_events=False)
         assert state is not None
-        for minute in range(141, 146):
+        observed = state
+        for minute in range(201, 206):
             batch = {}
             for symbol in SYMBOLS:
                 opening = prices[symbol]
-                if minute == 145 and symbol in state.accepted_symbols:
+                if minute == 205 and symbol in state.accepted_symbols:
                     closing = float(state.origins[symbol]) - 0.10
                 else:
                     closing = opening
