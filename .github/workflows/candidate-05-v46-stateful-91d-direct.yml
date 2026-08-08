@@ -41,11 +41,77 @@ jobs:
           python -m unittest discover -s research/candidate-05/tests -p 'test_basis_contract.py' -v
           python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_reset_logic.py' -v
 
-      - name: Run one uninterrupted 91-day BTC path through NautilusTrader
+      - name: Probe required Binance archive coverage
+        id: coverage
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
+          python - <<'PY'
+          from datetime import date, timedelta
+          import json
+          import os
+          from pathlib import Path
+          import urllib.error
+          import urllib.request
+
+          start = date.fromisoformat("2024-02-28")
+          end = date.fromisoformat("2024-05-30")
+          base = "https://data.binance.vision/data/futures/um/daily"
+          endpoints = {
+              "klines": lambda d: f"{base}/klines/BTCUSDT/1m/BTCUSDT-1m-{d}.zip",
+              "aggTrades": lambda d: f"{base}/aggTrades/BTCUSDT/BTCUSDT-aggTrades-{d}.zip",
+              "bookDepth": lambda d: f"{base}/bookDepth/BTCUSDT/BTCUSDT-bookDepth-{d}.zip",
+              "metrics": lambda d: f"{base}/metrics/BTCUSDT/BTCUSDT-metrics-{d}.zip",
+              "premiumIndexKlines": lambda d: f"{base}/premiumIndexKlines/BTCUSDT/1m/BTCUSDT-1m-{d}.zip",
+          }
+          rows = []
+          missing = {name: [] for name in endpoints}
+          day = start
+          while day <= end:
+              stamp = day.isoformat()
+              row = {"day": stamp}
+              for name, make_url in endpoints.items():
+                  request = urllib.request.Request(make_url(stamp), method="HEAD")
+                  try:
+                      with urllib.request.urlopen(request, timeout=20) as response:
+                          status = int(response.status)
+                  except urllib.error.HTTPError as exc:
+                      status = int(exc.code)
+                  except Exception as exc:
+                      status = f"ERROR:{type(exc).__name__}:{exc}"
+                  row[name] = status
+                  if status != 200:
+                      missing[name].append(stamp)
+              rows.append(row)
+              day += timedelta(days=1)
+          result = {
+              "schema": "candidate-05-binance-coverage-v1",
+              "start": start.isoformat(),
+              "end": end.isoformat(),
+              "rows": rows,
+              "missing": missing,
+              "all_required_available": all(not values for values in missing.values()),
+          }
+          root = Path(os.environ["ROOT"])
+          (root / "coverage.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"complete={'true' if result['all_required_available'] else 'false'}\n")
+          print(json.dumps({
+              "start": result["start"],
+              "end": result["end"],
+              "all_required_available": result["all_required_available"],
+              "missing_counts": {key: len(value) for key, value in missing.items()},
+              "first_missing": {key: (value[0] if value else None) for key, value in missing.items()},
+              "last_missing": {key: (value[-1] if value else None) for key, value in missing.items()},
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Run one uninterrupted 91-day BTC path through NautilusTrader
+        if: steps.coverage.outputs.complete == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
           python research/candidate-05/v40_active/candidate.py stage \
             --config research/candidate-05/config.json \
             --build-start 2024-02-28 \
@@ -57,6 +123,7 @@ jobs:
             2>&1 | tee "$ROOT/console.log"
 
       - name: Verify authoritative NautilusTrader evidence
+        if: steps.coverage.outputs.complete == 'true'
         shell: bash
         run: |
           set -euo pipefail
