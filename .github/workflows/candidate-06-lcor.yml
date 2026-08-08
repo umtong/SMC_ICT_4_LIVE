@@ -11,6 +11,7 @@ on:
       - "research/candidate-06/run_liquidation_cash_ownership_validation.py"
       - "research/candidate-06/run_liquidation_cash_ownership_matrix.py"
       - "research/candidate-06/test_liquidation_cash_ownership_relay_engine.py"
+      - "research/candidate-06/diagnose_lcor_cash_ownership.py"
       - "research/candidate-06/causal_inventory_ownership_transfer_engine.py"
       - "research/candidate-06/cross_venue_data.py"
       - "research/candidate-06/futures_metrics_data.py"
@@ -63,7 +64,8 @@ jobs:
             research/candidate-06/liquidation_cash_ownership_nautilus_runner.py \
             research/candidate-06/run_liquidation_cash_ownership_validation.py \
             research/candidate-06/run_liquidation_cash_ownership_matrix.py \
-            research/candidate-06/test_liquidation_cash_ownership_relay_engine.py; do
+            research/candidate-06/test_liquidation_cash_ownership_relay_engine.py \
+            research/candidate-06/diagnose_lcor_cash_ownership.py; do
             test -s "$path"
           done
           grep -q 'LiquidationCashOwnershipRelayEngine' research/candidate-06/liquidation_cash_ownership_nautilus_runner.py
@@ -96,7 +98,8 @@ jobs:
             research/candidate-06/liquidation_cash_ownership_relay_engine.py \
             research/candidate-06/liquidation_cash_ownership_nautilus_runner.py \
             research/candidate-06/run_liquidation_cash_ownership_validation.py \
-            research/candidate-06/run_liquidation_cash_ownership_matrix.py
+            research/candidate-06/run_liquidation_cash_ownership_matrix.py \
+            research/candidate-06/diagnose_lcor_cash_ownership.py
           python research/candidate-06/test_liquidation_cash_ownership_relay_engine.py
           python research/candidate-06/test_futures_metrics_data.py
           python research/candidate-06/test_futures_metrics_timestamp_contract.py
@@ -117,6 +120,19 @@ jobs:
             2> artifacts/candidate-06-lcor.stderr
           code=$?
           echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Diagnose cash-ownership reset chronology
+        if: always()
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p artifacts/candidate-06/lcor-w2-first/diagnostics
+          python research/candidate-06/diagnose_lcor_cash_ownership.py \
+            --root artifacts/candidate-06/lcor-w2-first \
+            > artifacts/candidate-06/lcor-w2-first/diagnostics/workflow_stdout.txt \
+            2> artifacts/candidate-06/lcor-w2-first/diagnostics/workflow_stderr.txt
+          printf '%s\n' "$?" > artifacts/candidate-06/lcor-w2-first/diagnostics/workflow_exit_code.txt
           exit 0
 
       - name: Guarantee terminal LCOR evidence
