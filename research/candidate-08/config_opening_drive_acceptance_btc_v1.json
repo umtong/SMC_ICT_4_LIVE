@@ -1,0 +1,96 @@
+{
+  "candidate": "candidate-08-opening-drive-acceptance-btc-nautilus-v1",
+  "description": "DST-aware session-opening drive acceptance, separate boundary retest, and one initial-balance range extension",
+  "implementation_revision": "OPENING_DRIVE_ACCEPTANCE_CONTINUATION_V1",
+  "random_seed": 8808,
+  "starting_nav_usdt": 100000.0,
+  "risk_fraction": 0.03,
+  "effective_fee_rate_per_fill": 0.0006,
+  "minimum_net_reward_risk": 1.2,
+  "maximum_hold_minutes": 240,
+  "funding_avoidance_minutes": 5,
+  "assets": {
+    "BTCUSDT": {
+      "instrument_id": "BTCUSDT-PERP.BINANCE",
+      "base_currency": "BTC",
+      "price_precision": 1,
+      "size_precision": 3,
+      "tick_size": "0.1",
+      "size_increment": "0.001",
+      "min_quantity": "0.001"
+    }
+  },
+  "cost_assumptions": {
+    "maker_fee_rate": 0.0006,
+    "taker_fee_rate": 0.0006,
+    "one_tick_slippage_probability": 1.0,
+    "bar_market_entry_reserve_ticks": 2.0,
+    "latency_ms": {"base": 0, "insert": 0, "update": 0, "cancel": 0},
+    "rationale": "Every fill costs 6 bp. Bar-only market entry reserves one tick for the synthetic executable-side crossing and one tick from OneTickSlippageFillModel. Stop execution reserves shifted preceding-hour ten-second true-range Q99. Official funding, mark price and native liquidation remain enabled.",
+    "actual_funding_settlement": "checksum-verified Binance Vision monthly fundingRate archives with native mark-price settlement",
+    "stop_market_slippage_reserve": "shifted Q99 of completed ten-second true range over the preceding sixty minutes, minimum one tick"
+  },
+  "venue": {
+    "default_leverage": 125,
+    "bar_adaptive_high_low_ordering": true,
+    "liquidation_enabled": true,
+    "liquidation_trigger_ratio": 1.0,
+    "liquidation_cancel_open_orders": true,
+    "runtime_liquidation_switch_supported": true
+  },
+  "pattern_source_config": "config_range_fvg.json",
+  "opening_drive_config": {
+    "initial_balance_minutes": 30,
+    "opportunity_minutes_after_balance": 180,
+    "breakout_excursion_atr": 0.05,
+    "displacement_lookback": 12,
+    "displacement_close_location": 0.6666666666666666,
+    "retest_tolerance_atr": 0.05,
+    "stop_buffer_atr": 0.05,
+    "minimum_stop_distance_atr": 0.1,
+    "target_initial_balance_multiple": 1.0
+  },
+  "scenario_contract": {
+    "market_mechanism": "The first thirty minutes establish session opening inventory. A displaced close beyond one edge followed by an immediate second outside close indicates acceptance of a new auction area only after a later separate retest touches and holds the accepted edge.",
+    "sessions": {
+      "ASIA": "00:00 UTC",
+      "LONDON": "08:00 Europe/London converted to UTC for each local date",
+      "NEW_YORK": "09:30 America/New_York converted to UTC for each local date"
+    },
+    "initial_balance": "Exactly six contiguous completed five-minute bars; incomplete balances are unusable.",
+    "breakout": "First later M5 directional displacement closes at least 0.05 completed M5 ATR beyond one IB edge, with body and range not below their shifted prior-12-bar medians and close in the directional outer third.",
+    "acceptance": "The immediately following contiguous completed M5 bar must also close outside the same edge. An inside close terminates the session attempt.",
+    "retest": "A later separate completed M5 bar must touch the accepted boundary within 0.05 breakout-bar ATR and close outside; re-entry through the boundary terminates the attempt.",
+    "entry": "First contiguous completed ten-second execution observation after the retest. Ten-second data does not choose direction, session, setup quality, stop or target.",
+    "stop": "Beyond the most adverse accepted-boundary/retest/execution sequence extreme plus 0.05 breakout-bar ATR, at least 0.10 ATR from entry.",
+    "target": "Exactly one completed initial-balance width beyond the accepted edge, frozen at breakout and rejected if consumed before order submission.",
+    "one_attempt": "At most the first opening-drive attempt per session is eligible; a failed or uneconomic attempt is not retried.",
+    "ten_second_alpha_inputs": false,
+    "parameter_search": "none"
+  },
+  "suites": {
+    "first": [
+      {"name": "screen-01", "start": "2024-04-08T00:00:00Z", "end": "2024-04-15T00:00:00Z"}
+    ],
+    "screen": [
+      {"name": "screen-01", "start": "2024-04-08T00:00:00Z", "end": "2024-04-15T00:00:00Z"},
+      {"name": "screen-02", "start": "2025-06-09T00:00:00Z", "end": "2025-06-16T00:00:00Z"},
+      {"name": "screen-03", "start": "2025-09-29T00:00:00Z", "end": "2025-10-06T00:00:00Z"}
+    ]
+  },
+  "first_window_gate": {
+    "minimum_closed_trades": 3,
+    "cost_after_total_return_positive": true,
+    "no_execution_failures": true,
+    "no_residual_exposure": true
+  },
+  "screen_gate": {
+    "minimum_closed_trades_per_week": 3,
+    "all_three_cost_after_positive": true,
+    "minimum_positive_trade_share": 0.45,
+    "maximum_single_positive_pnl_share": 0.5,
+    "combined_daily_geometric_growth": 0.01,
+    "no_execution_failures": true,
+    "no_residual_exposure": true
+  }
+}
