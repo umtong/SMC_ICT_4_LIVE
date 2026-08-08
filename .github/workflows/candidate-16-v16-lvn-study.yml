@@ -1,0 +1,135 @@
+name: candidate-16-v16-external-lvn-fast-lane-study
+
+on:
+  push:
+    branches: ["research/candidate-16-v16-lvn-fast-lane"]
+    paths:
+      - "research/candidate-16/v16_lvn_fast_lane_study.py"
+      - "research/candidate-16/tests/test_v16_lvn_fast_lane_study.py"
+      - ".github/workflows/candidate-16-v16-lvn-study.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v16-external-lvn-fast-lane-study
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-and-conditional-holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 320
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v16-lvn-fast-lane-study
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and externally fixed node contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-16/v9_liquidation_event_study.py \
+            research/candidate-16/v10_open_drive_study.py \
+            research/candidate-16/v16_lvn_fast_lane_study.py
+          python -m unittest discover \
+            -s research/candidate-16/tests \
+            -p 'test_v16_lvn_fast_lane_study.py' -v
+
+      - name: Run checksum-verified 2023 development and conditional 2024 holdout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/v16_lvn_fast_lane_study.py \
+            --cache .cache/candidate-16-v16-lvn \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify frozen decision and evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/study.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          study = json.loads((root / "study.json").read_text())
+          if study.get("role") != "mechanism and geometry study; no fills, account, portfolio, or NAV claim":
+              raise SystemExit("study role drifted")
+          policy = study.get("external_policy", {})
+          if policy.get("family") != "prior-day Volume Profile HVN-LVN-HVN fast lane":
+              raise SystemExit("external policy identity drifted")
+          node = policy.get("node_contract", {})
+          expected = {
+              "profile_rows": 100,
+              "hvn_quantile": 0.75,
+              "minimum_hvn_rows": 3,
+              "lvn_quantile": 0.25,
+              "lvn_rows": [1, 3],
+              "maximum_complete_gap_rows": 8,
+              "complete_gap_volume_below_profile_median": True,
+          }
+          if node != expected:
+              raise SystemExit(("node contract drifted", node))
+          if set(study.get("data", {}).get("symbols", [])) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
+              raise SystemExit("symbol set drifted")
+          if study.get("data", {}).get("years") != [2023, 2024]:
+              raise SystemExit("development/holdout years drifted")
+          scenario = study.get("scenario_contract", {})
+          if not scenario.get("fresh_lane_first_contact_is_final") or not scenario.get("first_retest_is_final"):
+              raise SystemExit("first-contact or first-retest finality drifted")
+          if not scenario.get("no_order_on_gap_entry") or not scenario.get("no_order_on_retest"):
+              raise SystemExit("state evidence was reused as entry")
+          if abs(float(scenario.get("round_trip_cost_rate", -1.0)) - 0.002) > 1e-12:
+              raise SystemExit("cost screen drifted")
+          if float(scenario.get("minimum_target_net_r", -1.0)) != 1.0:
+              raise SystemExit("HVN target geometry drifted")
+          if int(scenario.get("global_entry_or_position_slot", 99)) != 1:
+              raise SystemExit("global slot contract drifted")
+          if not all(int(value) >= 700 for value in study.get("profile_counts", {}).values()):
+              raise SystemExit("prior-day profiles incomplete")
+          development = study.get("development", {})
+          holdout = study.get("holdout", {})
+          if not development.get("passed") and holdout.get("opened"):
+              raise SystemExit("holdout was opened after development failed")
+          print(json.dumps({
+              "decision": study["decision"],
+              "promote": study["promote"],
+              "funnel": study["funnel"],
+              "development": development,
+              "holdout": holdout,
+              "global_slot_conflicts_skipped": study["global_slot_conflicts_skipped"],
+          }, indent=2, sort_keys=True))
+          PY
+          test -e "$ROOT/development_trades.csv"
+          if python - <<'PY'
+          import json,os
+          from pathlib import Path
+          study=json.loads((Path(os.environ['ROOT'])/'study.json').read_text())
+          raise SystemExit(0 if study['holdout']['opened'] else 1)
+          PY
+          then
+            test -e "$ROOT/holdout_trades.csv"
+          else
+            test ! -e "$ROOT/holdout_trades.csv"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v16-lvn-fast-lane-${{ github.sha }}
+          path: artifacts/candidate-16-v16-lvn-fast-lane-study/**
+          if-no-files-found: warn
+          retention-days: 90
