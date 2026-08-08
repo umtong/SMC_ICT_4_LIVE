@@ -2,7 +2,9 @@
 
 **CANDIDATE13_AGGREGATE_GATE_PASSED**
 
-- success_claim: `True`
+- gate_passed: `True`
+- claim_eligible: `False`
+- success_claim: `False`
 - daily_geometric_growth: `0.0224754863`
 - pooled_nav_multiple: `1.3650251884`
 - closed_trades: `6`
