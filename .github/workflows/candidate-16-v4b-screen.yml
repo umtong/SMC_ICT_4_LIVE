@@ -1,0 +1,228 @@
+name: candidate-16-v4b-l1-time-unit-fix-screen
+
+on:
+  push:
+    branches: ["research/candidate-16-v4b-l1-time-unit-fix"]
+    paths:
+      - "research/candidate-16/**"
+      - ".github/workflows/candidate-16-v4b-screen.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v4b-l1-time-unit-fix-screen
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  causal-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v4b-screen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment, implementation repair, and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-16
+          python -m unittest discover -s research/candidate-16/tests -p 'test_features_v4b.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_l1_pressure_router_v4.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v4_contract.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_displayed_liquidity_router_v2.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_effort_result_router.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Verify unchanged pre-registered economic week
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          from hashlib import sha256
+
+          seed = (
+              "candidate16-v4-l1-pressure-persistence|"
+              "d6da25d44168a67a630e82093bffaec146845578|"
+              "coverage-constrained-week"
+          )
+          mondays = []
+          cursor = date(2023, 5, 22)
+          while cursor <= date(2024, 3, 18):
+              build_start = cursor - timedelta(days=3)
+              build_end = cursor + timedelta(days=6)
+              if (
+                  build_start.year == cursor.year == build_end.year
+                  and build_start.month == cursor.month == build_end.month
+              ):
+                  mondays.append(cursor)
+              cursor += timedelta(days=7)
+          digest = sha256(seed.encode("utf-8")).hexdigest()
+          index = int(digest, 16) % len(mondays)
+          if (
+              len(mondays) != 32
+              or digest != "fc6f6286693f25e184a7283703cf41432c80af5d200a32dace24e3dc12737ef2"
+              or index != 18
+              or mondays[index].isoformat() != "2023-11-20"
+          ):
+              raise SystemExit((len(mondays), digest, index, mondays[index]))
+          print({"implementation_fix_only": True, "start": str(mondays[index])})
+          PY
+
+      - name: Run repaired untouched BTC week through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/candidate_v4b.py stage \
+            --config research/candidate-16/config_v4.json \
+            --build-start 2023-11-17 \
+            --build-end 2023-11-26 \
+            --evaluation-start 2023-11-20 \
+            --evaluation-end 2023-11-26 \
+            --cache .cache/candidate-16-v4b \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Classify valid screen and pressure funnel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          join = json.loads((root / "candidate16_v4b_l1_join.json").read_text())
+          integrity = (
+              float(join.get("l1_join_coverage", 0.0)) >= 0.95
+              and int(join.get("strategy_feature_ready_rows", 0)) > 0
+              and int(metrics.get("liquidations", 0)) == 0
+              and int(diagnostics.get("order_rejections", 0)) == 0
+              and int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1
+              and int(diagnostics.get("max_open_positions_observed", 0)) <= 1
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          if not integrity:
+              classification = "INVALID_SCREEN; IMPLEMENTATION_OR_EXECUTION_INTEGRITY_FAILURE"
+          elif metrics.get("gate_pass", False):
+              classification = "ADVANCE_UNCHANGED_TO_NEXT_UNTOUCHED_PERIOD"
+          else:
+              classification = "DO_NOT_CLAIM_TARGET; VALID_L1_PRESSURE_SCREEN_FAILED_GATE"
+          decision = {
+              "schema": "candidate-16-v4b-screen-v1",
+              "pre_registered_evaluation": ["2023-11-20", "2023-11-26"],
+              "implementation_fix_only": True,
+              "integrity_pass": integrity,
+              "gate_pass": bool(metrics.get("gate_pass", False)),
+              "classification": classification,
+              "l1_join": join,
+              "metrics": metrics,
+              "router_counts": {
+                  "parents": diagnostics.get("candidate16_parent_auctions", 0),
+                  "effort_result_failed": diagnostics.get("candidate16_failed_auctions", 0),
+                  "failure_pressure_rejected": diagnostics.get(
+                      "candidate16_v2_failure_liquidity_rejected", 0
+                  ),
+                  "failure_frozen": diagnostics.get("candidate16_v2_failure_frozen", 0),
+                  "later_initiatives": diagnostics.get(
+                      "candidate16_v2_failure_initiatives", 0
+                  ),
+                  "initiative_invalidated": diagnostics.get(
+                      "candidate16_v2_failure_initiative_invalidated", 0
+                  ),
+                  "initiative_expired": diagnostics.get(
+                      "candidate16_v2_failure_initiative_expired", 0
+                  ),
+                  "acceptance_pressure_confirmed": diagnostics.get(
+                      "candidate16_v2_acceptance_liquidity_confirmed", 0
+                  ),
+                  "acceptance_pressure_rejected": diagnostics.get(
+                      "candidate16_v2_acceptance_liquidity_rejected", 0
+                  ),
+                  "pressure_observations": diagnostics.get(
+                      "candidate16_v4_pressure_observations", 0
+                  ),
+                  "failure_pressure_flips": diagnostics.get(
+                      "candidate16_v4_failure_pressure_flips", 0
+                  ),
+                  "parent_pressure_persistence": diagnostics.get(
+                      "candidate16_v4_parent_pressure_persistence", 0
+                  ),
+                  "pressure_unresolved": diagnostics.get(
+                      "candidate16_v4_pressure_unresolved", 0
+                  ),
+                  "later_pressure_persistence": diagnostics.get(
+                      "candidate16_v4_later_pressure_persistence", 0
+                  ),
+                  "unresolved": diagnostics.get("candidate16_unresolved", 0),
+                  "entries": diagnostics.get("entry_submissions", 0),
+                  "protective_fail_closes": diagnostics.get(
+                      "candidate16_v2_protective_stop_fail_closes", 0
+                  )
+              }
+          }
+          (root / "screen_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify authoritative evidence and repaired L1 provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          python -m json.tool "$ROOT/screen_decision.json"
+          python -m json.tool "$ROOT/candidate16_v4b_l1_join.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          evidence = json.loads((root / "raw_evidence.json").read_text())
+          l1 = [
+              item
+              for item in evidence
+              if item.get("endpoint") == "immutable_external_bookticker_1m"
+          ]
+          if len(l1) != 1:
+              raise SystemExit(f"expected one immutable L1 artifact, found {len(l1)}")
+          item = l1[0]
+          if item.get("dataset_commit") != "2c8dce40261855c7b57113f5a157bbeb82280bb8":
+              raise SystemExit("L1 dataset commit drifted")
+          if item.get("sha256") != "274eb8e87c7d7185a0162271144b30a0e387ae496fe657c6af83833448f08624":
+              raise SystemExit("L1 dataset checksum drifted")
+          join = json.loads((root / "candidate16_v4b_l1_join.json").read_text())
+          if float(join["l1_join_coverage"]) < 0.95:
+              raise SystemExit("L1 join coverage is invalid")
+          if int(join["strategy_feature_ready_rows"]) <= 0:
+              raise SystemExit("no strategy-ready rows")
+          PY
+          for file in run.json data_manifest.json raw_evidence.json account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl candidate16_v4b_contract.json candidate16_v4b_l1_join.json features.csv.gz; do
+            test -s "$ROOT/$file"
+          done
+          test -e "$ROOT/orders.csv"
+          test -e "$ROOT/positions.csv"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v4b-screen-${{ github.sha }}
+          path: artifacts/candidate-16-v4b-screen/**
+          if-no-files-found: warn
+          retention-days: 90
