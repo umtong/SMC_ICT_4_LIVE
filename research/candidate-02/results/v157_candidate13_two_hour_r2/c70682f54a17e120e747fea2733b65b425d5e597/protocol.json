@@ -1,0 +1,116 @@
+{
+  "aggregate_gate": {
+    "global_pending_entry_plus_position_limit": 1,
+    "maximum_positive_log_growth_share_from_one_week": 0.6,
+    "maximum_trade_path_drawdown": 0.2,
+    "minimum_active_weeks": 4,
+    "minimum_closed_trades": 10,
+    "minimum_daily_geometric_growth": 0.01,
+    "minimum_payoff_ratio": 1.2,
+    "minimum_win_rate": 0.8,
+    "observed_calendar_days": 35,
+    "require_all_safety_audits": true,
+    "risk_fraction": 0.03
+  },
+  "candidate": "candidate-02-v157-price-discovery-with-two-hour-auctions",
+  "claim_eligible": false,
+  "created_utc": "2026-08-08",
+  "execution_lock": {
+    "effective_maker_rate": "0.0004",
+    "effective_taker_rate": "0.0008",
+    "engine": "NautilusTrader",
+    "parent_order": "POST_ONLY_LIMIT_GTD",
+    "risk_fraction": 0.03,
+    "starting_nav": "100000",
+    "stop_order": "STOP_MARKET_GTC",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT"
+    ]
+  },
+  "hypothesis": {
+    "fail_closed": [
+      "missing or asynchronous peer observations",
+      "follower AAC without leadership",
+      "peer directional disagreement",
+      "weak local displacement",
+      "event laggard",
+      "unresolved adverse auction",
+      "leader recovery without directional support"
+    ],
+    "follower_scenarios": [
+      "FAR only when all three completed peer paths support the proposed reversal"
+    ],
+    "leader": "Determine the current price-discovery leader from trailing completed 24-hour quote notional, without hard-coding BTC.",
+    "leader_scenarios": [
+      "FAR",
+      "AAC"
+    ]
+  },
+  "locked_source": {
+    "blobs": {
+      "bar_adapter.py": "c2ce386a42956c22039f0bf7490cf9493ab51003",
+      "base_config.json": "050b5b9413c22e4fc2ef247cc2b272657ff66f38",
+      "evidence_audit.py": "990dd8986246a7dac8d5c619ef930ffd54ba430e",
+      "global_allocator.py": "6dcc95a4f02a0613ad7c72ff0b738cee4b640fc4",
+      "logic.py": "358703121666c904f002e1665b42ecad12092014",
+      "market_leadership.py": "272b1aee7468cbbd6b79a4bc6c8e421e93df6bf0",
+      "run_leadership_scdam.py": "e4cf81bd0e51aa2f4a7c0686571446bd1ac8314f",
+      "session_engine.py": "21180b2397f0ee63c887079764df1ee94e426a03"
+    },
+    "enforce_git_blobs": true,
+    "note": "Direct materialized source only; candidate-11 patch/materialization generators and historical results are intentionally not copied.",
+    "origin_branch": "research/candidate-13",
+    "strategy_freeze_commit": "f613cadff54c86eeb14bdb402aa17ce43474603b"
+  },
+  "prior_evidence_not_used_for_candidate13_validation": {
+    "candidate11_W4_to_W8": {
+      "calendar_days": 35,
+      "closed_trades": 12,
+      "description": "Motivation and source selection only; these intervals are not candidate-13 holdouts.",
+      "losses": 0,
+      "wins": 12
+    },
+    "candidate11_W9": {
+      "calendar_days": 7,
+      "closed_trades": 0,
+      "description": "Shows opportunity drought risk."
+    }
+  },
+  "research_question": "Can the unchanged Candidate-13 price-discovery FAR/AAC policy preserve its high accuracy while completed two-hour auction endpoints add enough independent external-liquidity opportunities to pass the activity gate?",
+  "schema": "candidate-02-v157-candidate13-two-hour-pools-development-v1",
+  "selection": {
+    "holdouts": {
+      "W10": {
+        "end_exclusive": "2025-04-21",
+        "role": "exposed-development",
+        "start": "2025-04-14"
+      },
+      "W11": {
+        "end_exclusive": "2023-03-27",
+        "role": "exposed-development",
+        "start": "2023-03-20"
+      },
+      "W12": {
+        "end_exclusive": "2023-06-27",
+        "role": "exposed-development",
+        "start": "2023-06-20"
+      },
+      "W13": {
+        "end_exclusive": "2024-09-24",
+        "role": "exposed-development",
+        "start": "2024-09-17"
+      },
+      "W14": {
+        "end_exclusive": "2025-01-07",
+        "role": "exposed-development",
+        "start": "2024-12-31"
+      }
+    },
+    "method": "Reuse Candidate-13 W10-W14 strictly as exposed development. They may reject V157 or authorize a later exact-source prospective freeze, but can never support a success claim.",
+    "seed": 2026080813,
+    "warmup_days": 3
+  }
+}
