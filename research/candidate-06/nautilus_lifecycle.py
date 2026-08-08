@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from excursion_diagnostics import calculate_excursion_diagnostics
+from nautilus_outcome_classification import classify_position_outcome
 from nautilus_strategy_common import money_to_float as _money_to_float, utc_day as _utc_day, utc_hour as _utc_hour
 
 
@@ -194,23 +195,14 @@ class NautilusLifecycleMixin:
             closed_ts_ns=closed_ts_ns,
             tick=tick,
         )
-        forced = trade.get("forced_exit_reason")
-        if forced:
-            outcome = str(forced)
-        elif trade["direction"] == "LONG":
-            if close_price >= float(trade["target_price"]) - tick:
-                outcome = "TARGET"
-            elif close_price <= float(trade["stop_price"]) + tick:
-                outcome = "STOP"
-            else:
-                outcome = "OTHER_EXIT"
-        else:
-            if close_price <= float(trade["target_price"]) + tick:
-                outcome = "TARGET"
-            elif close_price >= float(trade["stop_price"]) - tick:
-                outcome = "STOP"
-            else:
-                outcome = "OTHER_EXIT"
+        outcome = classify_position_outcome(
+            direction=str(trade["direction"]),
+            close_price=close_price,
+            target_price=float(trade["target_price"]),
+            stop_price=float(trade["stop_price"]),
+            tick=tick,
+            forced_exit_reason=trade.get("forced_exit_reason"),
+        )
         planned_budget = float(trade["planned_loss_budget"])
         record = {
             **trade,
