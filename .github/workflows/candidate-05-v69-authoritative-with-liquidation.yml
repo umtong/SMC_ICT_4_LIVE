@@ -1,0 +1,235 @@
+name: candidate-05-v69-authoritative-with-liquidation
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/loop_results/v68_liquidation_exhaustion.json"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v69-authoritative-with-liquidation
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.select.outputs.run }}
+      components: ${{ steps.select.outputs.components }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+      - name: Freeze liquidation-inclusive conflict-safe selection
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest=research/candidate-05/loop_results/latest.json
+          v59=research/candidate-05/loop_results/v59_boundary_retest.json
+          v62=research/candidate-05/loop_results/v62_post_funding_reset.json
+          v68=research/candidate-05/loop_results/v68_liquidation_exhaustion.json
+          if ! test -s "$latest" || ! test -s "$v59" || ! test -s "$v62" || ! test -s "$v68"; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "components=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python research/candidate-05/select_promoted_components_v2.py \
+            --latest "$latest" \
+            --v59 "$v59" \
+            --v62 "$v62" \
+            --v68 "$v68" \
+            --output /tmp/v69-selection.json \
+            --env-output /tmp/v69.env
+          run=$(python - <<'PY'
+          import json
+          value=json.load(open('/tmp/v69-selection.json'))
+          print('true' if value.get('ready') and value.get('run_later_authoritative') else 'false')
+          PY
+          )
+          components=$(python - <<'PY'
+          import json
+          print(','.join(json.load(open('/tmp/v69-selection.json')).get('components', [])))
+          PY
+          )
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "components=$components" >> "$GITHUB_OUTPUT"
+          cat /tmp/v69-selection.json
+          cat /tmp/v69.env
+      - uses: actions/upload-artifact@v4
+        if: steps.select.outputs.run == 'true'
+        with:
+          name: candidate-05-v69-selection-${{ github.sha }}
+          path: |
+            /tmp/v69-selection.json
+            /tmp/v69.env
+          if-no-files-found: error
+          retention-days: 7
+
+  baseline:
+    needs: select
+    if: needs.select.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v69-baseline
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run unchanged v46 shared-account reference
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          mkdir -p "$ROOT"
+          python research/candidate-05/prepare_shared_command.py \
+            --workflow .github/workflows/candidate-05-v47-relative-value.yml \
+            --runner research/candidate-05/shared_account_backtest_v2.py \
+            --output "$ROOT" \
+            --cache .cache/candidate-05-v69-baseline \
+            --build-start 2025-08-30 \
+            --build-end 2025-10-31 \
+            --evaluation-start 2025-09-01 \
+            --evaluation-end 2025-10-31 \
+            --destination /tmp/v69-baseline.sh
+          bash /tmp/v69-baseline.sh 2>&1 | tee "$ROOT/workflow-console.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v69-baseline-${{ github.sha }}
+          path: artifacts/candidate-05-v69-baseline/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  composite:
+    needs: select
+    if: needs.select.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v69-composite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-05-v69-selection-*
+          path: /tmp/v69-selection
+          merge-multiple: true
+      - name: Verify and run liquidation-inclusive promoted shared account
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/v69-selection/v69.env
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_select_promoted_components_v2.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v69_composite_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_spot_price_discovery_contract.py' -v
+          PYTHONPATH=research/candidate-05/v69_active:research/candidate-05 python - <<'PY'
+          import strategy
+          from strategy_v46_no_post_retrace_breakaway import NoPostRetraceBreakawayStrategy
+          print(strategy.LiquidityResponseStrategy.PROMOTED_COMPONENTS)
+          print(strategy.LiquidityResponseStrategy.mro())
+          assert 'v68' in strategy.LiquidityResponseStrategy.PROMOTED_COMPONENTS
+          assert strategy.LiquidityResponseStrategy.mro().count(NoPostRetraceBreakawayStrategy) == 1
+          PY
+          mkdir -p "$ROOT"
+          python research/candidate-05/prepare_shared_command.py \
+            --workflow .github/workflows/candidate-05-v47-relative-value.yml \
+            --runner research/candidate-05/shared_account_v66.py \
+            --output "$ROOT" \
+            --cache .cache/candidate-05-v69-composite \
+            --build-start 2025-08-30 \
+            --build-end 2025-10-31 \
+            --evaluation-start 2025-09-01 \
+            --evaluation-end 2025-10-31 \
+            --destination /tmp/v69-composite.sh
+          export PYTHONPATH=research/candidate-05/v69_active:research/candidate-05
+          bash /tmp/v69-composite.sh 2>&1 | tee "$ROOT/workflow-console.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v69-composite-${{ github.sha }}
+          path: artifacts/candidate-05-v69-composite/**
+          if-no-files-found: warn
+          retention-days: 90
+
+  compare:
+    needs: [select, baseline, composite]
+    if: always() && needs.select.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-05-v69-*-${{ github.sha }}
+          path: /tmp/v69-results
+      - name: Build liquidation-inclusive authoritative decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root=Path('/tmp/v69-results')
+          metrics=sorted(root.rglob('metrics.json'))
+          baseline=next((p for p in metrics if 'baseline' in str(p)),None)
+          composite=next((p for p in metrics if 'composite' in str(p)),None)
+          selection_path=next(root.rglob('v69-selection.json'),None)
+          if baseline is None or composite is None or selection_path is None:
+              raise SystemExit(f'missing paired evidence: metrics={metrics}, selection={selection_path}')
+          v46=json.loads(baseline.read_text())
+          v69=json.loads(composite.read_text())
+          selection=json.loads(selection_path.read_text())
+          def integrity(value):
+              return (int(value.get('liquidations',0))==0 and int(value.get('order_rejections',0))==0 and int(value.get('order_denials',0))==0 and float(value.get('min_equity',0.0))>0.0)
+          target=(integrity(v69) and float(v69.get('geometric_daily_growth',0.0))>=0.01 and int(v69.get('trades',0))>=30 and float(v69.get('total_return',0.0))>0.0)
+          improved=(integrity(v46) and integrity(v69) and float(v69.get('total_return',-1.0))>float(v46.get('total_return',-1.0)) and float(v69.get('profit_factor',0.0))>float(v46.get('profit_factor',0.0)) and float(v69.get('max_drawdown',1.0))<=float(v46.get('max_drawdown',1.0)))
+          classification='PROJECT_TARGET_REACHED_LIQUIDATION_INCLUSIVE_MULTI_ASSET' if target else 'LIQUIDATION_INCLUSIVE_MULTI_ASSET_IMPROVED_BELOW_TARGET' if improved else 'LIQUIDATION_INCLUSIVE_MULTI_ASSET_FAILED_UNTOUCHED'
+          result={
+              'schema':'candidate-05-v69-authoritative-with-liquidation-v1',
+              'classification':classification,
+              'selection':selection,
+              'period':{'evaluation_start':'2025-09-01','evaluation_end':'2025-10-31','selected_before_observation':True},
+              'v46_shared_account':v46,
+              'v69_shared_account':v69,
+              'target_reached':target,
+              'improved_over_v46':improved,
+          }
+          path=Path('research/candidate-05/loop_results/authoritative_with_liquidation.json')
+          path.write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=True)+'\n')
+          print(json.dumps(result,indent=2,sort_keys=True,allow_nan=True))
+          PY
+      - name: Commit liquidation-inclusive authoritative decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name candidate-05-loop-bot
+          git config user.email candidate-05-loop-bot@users.noreply.github.com
+          git add research/candidate-05/loop_results/authoritative_with_liquidation.json
+          git commit -m "candidate-05: record liquidation-inclusive authoritative decision"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            git pull --rebase origin research/candidate-05
+            sleep $((attempt*2))
+          done
+          exit 1
