@@ -288,7 +288,7 @@ class LogicTests(unittest.TestCase):
         self,
     ) -> None:
         y, m, d = self.DAY
-        engine = CausalLiquidityAuctionEngine(config(min_net_r=3.0), "X")
+        engine = CausalLiquidityAuctionEngine(config(min_net_r=1.5), "X")
         self.seed_asia(engine)
         # Initial acceptance peaks well above the first FVG.
         engine._on_five(bar(ts(y, m, d, 6, 5), 103, 104, 102, 103), True)
@@ -316,7 +316,7 @@ class LogicTests(unittest.TestCase):
         self,
     ) -> None:
         y, m, d = self.DAY
-        engine = CausalLiquidityAuctionEngine(config(min_net_r=1.0), "X")
+        engine = CausalLiquidityAuctionEngine(config(min_net_r=0.7), "X")
         self.seed_asia(engine)
         engine._on_five(bar(ts(y, m, d, 6, 5), 103, 104, 102, 103), True)
         engine._on_five(bar(ts(y, m, d, 6, 10), 103, 112, 103, 110), True)
@@ -338,7 +338,7 @@ class LogicTests(unittest.TestCase):
         )
         self.assertAlmostEqual(plan.expected_entry, 109.0)
         self.assertAlmostEqual(plan.target_price, 115.0)
-        self.assertGreaterEqual(plan.net_r, 1.0)
+        self.assertGreaterEqual(plan.net_r, 0.7)
 
     def test_opposite_boundaries_have_independent_causal_lifecycles(self) -> None:
         y, m, d = self.DAY

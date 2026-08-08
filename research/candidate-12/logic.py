@@ -1,4 +1,4 @@
-"""Causal completed-session auction router for Candidate 12 I14a.
+"""Causal completed-session auction router for Candidate 12 I14b.
 
 The engine distinguishes economically different interactions with a completed
 Asia or London dealing range instead of forcing one candle pattern onto every
@@ -2078,6 +2078,11 @@ class CausalLiquidityAuctionEngine:
                 sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE-REACCELERATION")
                 state.acceptance_scenario_id = sid
             prior_peak = state.acceptance_peak or source.high
+            assert state.acceptance_pullback_low is not None
+            reacceleration_invalidation = (
+                min(state.acceptance_pullback_low, fresh.lower)
+                - self.config.fvg_stop_buffer_atr * atr
+            )
 
             # A fresh FVG after the first mitigation failure is completed
             # reacceleration. Enter at the close only when that close still
@@ -2096,7 +2101,7 @@ class CausalLiquidityAuctionEngine:
                 bar=bar,
                 atr=atr,
                 entry_raw=bar.close,
-                stop_raw=fresh.lower - self.config.fvg_stop_buffer_atr * atr,
+                stop_raw=reacceleration_invalidation,
                 target_raw=prior_peak,
                 expire_ts_ns=None,
                 details={
@@ -2109,6 +2114,7 @@ class CausalLiquidityAuctionEngine:
                     "fvg_upper": fresh.upper,
                     "fvg_formed_ts_ns": fresh.formed_ts_ns,
                     "initial_pullback_low": state.acceptance_pullback_low,
+                    "structural_invalidation": reacceleration_invalidation,
                     "prior_acceptance_peak": prior_peak,
                     "decision_close": bar.close,
                     "execution_semantics": (
@@ -2135,7 +2141,7 @@ class CausalLiquidityAuctionEngine:
                 bar=bar,
                 atr=atr,
                 entry_raw=fresh.upper,
-                stop_raw=fresh.lower - self.config.fvg_stop_buffer_atr * atr,
+                stop_raw=reacceleration_invalidation,
                 target_raw=prior_peak,
                 expire_ts_ns=(
                     bar.ts_ns
@@ -2153,6 +2159,7 @@ class CausalLiquidityAuctionEngine:
                     "fvg_upper": fresh.upper,
                     "fvg_formed_ts_ns": fresh.formed_ts_ns,
                     "initial_pullback_low": state.acceptance_pullback_low,
+                    "structural_invalidation": reacceleration_invalidation,
                     "prior_acceptance_peak": prior_peak,
                     "decision_close": bar.close,
                     "execution_semantics": (
