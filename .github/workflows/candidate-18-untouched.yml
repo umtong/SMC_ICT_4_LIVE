@@ -1,0 +1,282 @@
+name: candidate-18-locked-untouched-validation
+
+on:
+  push:
+    branches: ["research/candidate-18"]
+    paths:
+      - ".github/workflows/candidate-18-untouched.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: independent-week-1
+            seed: "candidate18-latency-safe-initiative|3efdf932d37bb997cff95404fb40ee7026a58325|independent-week-1"
+            expected_index: 131
+            build_start: "2024-07-05"
+            evaluation_start: "2024-07-08"
+            evaluation_end: "2024-07-14"
+          - name: independent-week-2
+            seed: "candidate18-final|acd078c352712b3aa0440d00cbc5221f1f388ba3|independent-week-2"
+            expected_index: 93
+            build_start: "2023-10-13"
+            evaluation_start: "2023-10-16"
+            evaluation_end: "2023-10-22"
+          - name: independent-28d-1
+            seed: "candidate18-final|acd078c352712b3aa0440d00cbc5221f1f388ba3|independent-28d-1"
+            expected_index: 46
+            build_start: "2022-11-18"
+            evaluation_start: "2022-11-21"
+            evaluation_end: "2022-12-18"
+          - name: independent-91d-1
+            seed: "candidate18-final|acd078c352712b3aa0440d00cbc5221f1f388ba3|independent-91d-1"
+            expected_index: 14
+            build_start: "2022-04-08"
+            evaluation_start: "2022-04-11"
+            evaluation_end: "2022-07-10"
+
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+
+    env:
+      LOCK_SHA: acd078c352712b3aa0440d00cbc5221f1f388ba3
+      PYTHONPATH: research/candidate-16:research/candidate-18:research/candidate-17:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-18-untouched/${{ matrix.name }}
+      CACHE: .cache/candidate-18-untouched/${{ matrix.name }}
+      PERIOD_NAME: ${{ matrix.name }}
+      SEED: ${{ matrix.seed }}
+      EXPECTED_INDEX: ${{ matrix.expected_index }}
+      BUILD_START: ${{ matrix.build_start }}
+      EVALUATION_START: ${{ matrix.evaluation_start }}
+      EVALUATION_END: ${{ matrix.evaluation_end }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prove immutable code and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          git cat-file -e "$LOCK_SHA^{commit}"
+          git diff --exit-code "$LOCK_SHA" HEAD -- \
+            research/candidate-18/candidate.py \
+            research/candidate-18/candidate18_strategy.py \
+            research/candidate-18/initiative_quality_router.py \
+            research/candidate-18/execution_preserving_strategy.py \
+            research/candidate-18/latency_emulated_strategy.py \
+            research/candidate-18/latency_capped_ioc_strategy.py \
+            research/candidate-18/config.json \
+            research/candidate-17 \
+            research/candidate-16 \
+            research/candidate-05/backtest.py \
+            research/candidate-05/strategy_base.py \
+            research/candidate-05/features.py \
+            research/candidate-05/logic.py
+          python -m compileall -q research/candidate-18 research/candidate-17 research/candidate-16
+          python -m unittest discover -s research/candidate-18/tests -p 'test_*.py' -v
+
+      - name: Reproduce deterministic period selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date, timedelta
+          from hashlib import sha256
+          import os
+
+          mondays = []
+          cursor = date(2022, 1, 3)
+          while cursor <= date(2025, 12, 29):
+              mondays.append(cursor)
+              cursor += timedelta(days=7)
+          index = int(sha256(os.environ["SEED"].encode("utf-8")).hexdigest(), 16) % len(mondays)
+          selected = mondays[index].isoformat()
+          expected_index = int(os.environ["EXPECTED_INDEX"])
+          expected_start = os.environ["EVALUATION_START"]
+          if index != expected_index or selected != expected_start:
+              raise SystemExit(
+                  {
+                      "period": os.environ["PERIOD_NAME"],
+                      "index": index,
+                      "selected": selected,
+                      "expected_index": expected_index,
+                      "expected_start": expected_start,
+                  }
+              )
+          print(
+              {
+                  "period": os.environ["PERIOD_NAME"],
+                  "candidate_mondays": len(mondays),
+                  "index": index,
+                  "selected": selected,
+              }
+          )
+          PY
+
+      - name: Run locked untouched period
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-18/candidate.py stage \
+            --config research/candidate-18/config.json \
+            --build-start "$BUILD_START" \
+            --build-end "$EVALUATION_END" \
+            --evaluation-start "$EVALUATION_START" \
+            --evaluation-end "$EVALUATION_END" \
+            --cache "$CACHE" \
+            --output "$ROOT" \
+            --validation-mode "locked-untouched-$PERIOD_NAME" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify integrity and record independent decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          events = [
+              json.loads(line)
+              for line in (root / "scenario_events.jsonl").read_text().splitlines()
+              if line.strip()
+          ]
+          with (root / "orders.csv").open(newline="", encoding="utf-8") as stream:
+              orders = list(csv.DictReader(stream))
+
+          entries = [
+              row
+              for row in orders
+              if str(row.get("is_reduce_only", "")).lower() != "true"
+              and "ENTRY" in str(row.get("tags", ""))
+          ]
+          invalid_entries = [
+              row
+              for row in entries
+              if row.get("type") != "LIMIT"
+              or row.get("time_in_force") != "IOC"
+              or "CANDIDATE18_IOC_PRICE_CAP" not in str(row.get("tags", ""))
+          ]
+          submissions = [
+              event for event in events if event.get("event_type") == "ENTRY_SUBMITTED"
+          ]
+          risk_fractions = []
+          malformed_risk = []
+          for event in submissions:
+              details = event.get("details", {})
+              try:
+                  equity = float(details["equity"])
+                  planned = float(details["planned_account_loss_at_worst_fill"])
+                  fraction = planned / equity
+              except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                  malformed_risk.append(event.get("scenario_id"))
+                  continue
+              if not math.isfinite(fraction) or fraction < 0.0:
+                  malformed_risk.append(event.get("scenario_id"))
+              else:
+                  risk_fractions.append(fraction)
+
+          future_observations = [
+              event.get("event_id")
+              for event in events
+              if int(event.get("observed_time_ns", 0)) > int(event.get("event_time_ns", 0))
+          ]
+          exact_period = (
+              metrics.get("evaluation_start") == os.environ["EVALUATION_START"]
+              and metrics.get("evaluation_end") == os.environ["EVALUATION_END"]
+          )
+          max_risk_fraction = max(risk_fractions, default=0.0)
+          risk_contract = (
+              not malformed_risk
+              and len(risk_fractions) == len(submissions)
+              and max_risk_fraction <= 0.0300000001
+          )
+          integrity_checks = {
+              "exact_period": exact_period,
+              "positive_continuous_equity": float(metrics.get("min_equity", 0.0)) > 0.0,
+              "no_liquidation": int(metrics.get("liquidations", 0)) == 0,
+              "no_order_rejections": int(diagnostics.get("order_rejections", 0)) == 0,
+              "single_entry_intent": int(
+                  diagnostics.get("max_simultaneous_entry_intents", 0)
+              ) <= 1,
+              "single_position": int(
+                  diagnostics.get("max_open_positions_observed", 0)
+              ) <= 1,
+              "no_future_observation": not future_observations,
+              "ioc_limit_entry_contract": not invalid_entries,
+              "three_percent_worst_fill_risk": risk_contract,
+              "nautilus_positions_match": int(
+                  metrics.get("nautilus_result", {}).get("total_positions", -1)
+              ) == int(metrics.get("trades", -2)),
+          }
+          integrity_pass = all(integrity_checks.values())
+          decision = {
+              "schema": "candidate-18-locked-untouched-v1",
+              "code_lock_sha": os.environ["LOCK_SHA"],
+              "period": os.environ["PERIOD_NAME"],
+              "seed": os.environ["SEED"],
+              "evaluation_start": os.environ["EVALUATION_START"],
+              "evaluation_end": os.environ["EVALUATION_END"],
+              "integrity_pass": integrity_pass,
+              "integrity_checks": integrity_checks,
+              "gate_pass": bool(metrics.get("gate_pass", False)),
+              "entry_parent_count": len(entries),
+              "entry_submission_count": len(submissions),
+              "max_planned_worst_fill_risk_fraction": max_risk_fraction,
+              "malformed_risk_scenarios": malformed_risk,
+              "future_observation_event_ids": future_observations,
+              "invalid_entry_parents": invalid_entries,
+              "metrics": metrics,
+          }
+          (root / "untouched_decision.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True, allow_nan=False) + "\n"
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True, allow_nan=False))
+          if not integrity_pass:
+              raise SystemExit("untouched integrity failure")
+          PY
+
+      - name: Verify authoritative evidence files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json" >/dev/null
+          python -m json.tool "$ROOT/untouched_decision.json" >/dev/null
+          for file in \
+            run.json data_manifest.json raw_evidence.json orders.csv positions.csv \
+            account.csv equity.csv strategy_diagnostics.json closed_scenarios.json \
+            scenario_events.jsonl candidate18_contract.json untouched_decision.json
+          do
+            test -s "$ROOT/$file"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-18-${{ matrix.name }}-${{ github.sha }}
+          path: artifacts/candidate-18-untouched/${{ matrix.name }}/**
+          if-no-files-found: warn
+          retention-days: 90
