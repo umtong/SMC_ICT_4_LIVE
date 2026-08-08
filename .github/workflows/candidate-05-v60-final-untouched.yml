@@ -1,0 +1,309 @@
+name: candidate-05-v60-final-untouched
+
+on:
+  push:
+    branches: ["research/candidate-05"]
+    paths:
+      - "research/candidate-05/loop_results/latest.json"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v60-final-untouched
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.selection.outputs.run }}
+      components: ${{ steps.selection.outputs.components }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+      - name: Select only OOS-promoted components
+        id: selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("research/candidate-05/loop_results/latest.json")
+          if not path.exists():
+              result = {"run": False, "components": [], "reason": "NO_LOOP_REPORT"}
+          else:
+              report = json.loads(path.read_text())
+              promotion = report.get("promotion", {})
+              mapping = {
+                  "v55_spot_price_discovery": "v55",
+                  "v56_early_flow_core": "v56",
+                  "v58_forced_basis_reversion": "v58",
+              }
+              components = sorted(
+                  mapping[name]
+                  for name, passed in promotion.items()
+                  if passed and name in mapping
+              )
+              result = {
+                  "run": bool(components),
+                  "components": components,
+                  "all_expected_complete": report.get("all_expected_complete", False),
+                  "next_action": report.get("next_action"),
+              }
+              v55 = report.get("decisions", {}).get("v55_loop") or {}
+              environment = (v55.get("selection") or {}).get("environment") or {}
+              Path("/tmp/v60.env").write_text(
+                  f"export CANDIDATE05_COMPONENTS={','.join(components)}\n"
+                  + "".join(f"export {key}={value}\n" for key, value in environment.items()),
+              )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"run={'true' if result['run'] else 'false'}\n")
+              stream.write(f"components={','.join(result.get('components', []))}\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          cat /tmp/v60.env 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: steps.selection.outputs.run == 'true'
+        with:
+          name: candidate-05-v60-selection-${{ github.sha }}
+          path: /tmp/v60.env
+          if-no-files-found: error
+          retention-days: 7
+
+  final-untouched:
+    needs: select
+    if: needs.select.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 480
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v60-final-untouched
+      CACHE: .cache/candidate-05-v60-final-untouched
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-05
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-05-v60-selection-*
+          path: /tmp/v60-selection
+          merge-multiple: true
+
+      - name: Verify selected cooperative composition
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/v60-selection/v60.env
+          smc4 doctor
+          python -m compileall -q research/candidate-05
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v60_composite_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v46_no_post_retrace_breakaway_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+          PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_positioning_contract.py' -v
+          if [[ "$CANDIDATE05_COMPONENTS" == *v55* || "$CANDIDATE05_COMPONENTS" == *v58* ]]; then
+            PYTHONPATH=research/candidate-05 python -m unittest discover -s research/candidate-05/tests -p 'test_spot_price_discovery_contract.py' -v
+          fi
+          PYTHONPATH=research/candidate-05/v60_active:research/candidate-05 python - <<'PY'
+          import os
+          import strategy
+          print(os.environ["CANDIDATE05_COMPONENTS"])
+          print(strategy.LiquidityResponseStrategy)
+          assert strategy.LiquidityResponseStrategy.__name__ != "NoPostRetraceBreakawayStrategy"
+          PY
+
+      - name: Run v46 reference on final untouched path
+        shell: bash
+        env:
+          PYTHONPATH: research/candidate-05/v40_active:research/candidate-05
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/v46"
+          python research/candidate-05/v40_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-08-30 \
+            --build-end 2024-12-31 \
+            --evaluation-start 2024-09-01 \
+            --evaluation-end 2024-12-31 \
+            --cache "$CACHE" \
+            --output "$ROOT/v46" \
+            2>&1 | tee "$ROOT/v46/console.log"
+
+      - name: Run evidence-selected composite on the identical final path
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/v60-selection/v60.env
+          export PYTHONPATH=research/candidate-05/v60_active:research/candidate-05
+          mkdir -p "$ROOT/v60"
+          python research/candidate-05/v60_active/candidate.py stage \
+            --config research/candidate-05/config.json \
+            --build-start 2024-08-30 \
+            --build-end 2024-12-31 \
+            --evaluation-start 2024-09-01 \
+            --evaluation-end 2024-12-31 \
+            --cache "$CACHE" \
+            --output "$ROOT/v60" \
+            2>&1 | tee "$ROOT/v60/console.log"
+
+      - name: Build final untouched decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /tmp/v60-selection/v60.env
+          if test ! -s "$ROOT/v46/metrics.json" || test ! -s "$ROOT/v60/metrics.json"; then
+            exit 0
+          fi
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from collections import defaultdict
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          v46 = json.loads((root / "v46/metrics.json").read_text())
+          v60 = json.loads((root / "v60/metrics.json").read_text())
+          closed = json.loads((root / "v60/closed_scenarios.json").read_text())
+          diagnostics = json.loads((root / "v60/strategy_diagnostics.json").read_text())
+
+          def number(value):
+              try:
+                  return float(str(value).strip().split()[0].replace(",", ""))
+              except Exception:
+                  return None
+
+          branches = defaultdict(lambda: {"trades": 0, "wins": 0, "losses": 0, "net_pnl_usdt": 0.0})
+          for item in closed:
+              value = number(item.get("realized_pnl"))
+              if value is None or not math.isfinite(value):
+                  continue
+              branch = str(item.get("branch") or "UNKNOWN")
+              row = branches[branch]
+              row["trades"] += 1
+              row["wins"] += int(value > 0.0)
+              row["losses"] += int(value < 0.0)
+              row["net_pnl_usdt"] += value
+
+          def integrity(value):
+              return (
+                  int(value.get("liquidations", 0)) == 0
+                  and int(value.get("order_rejections", 0)) == 0
+                  and int(value.get("order_denials", 0)) == 0
+                  and float(value.get("min_equity", 0.0)) > 0.0
+              )
+
+          target_reached = (
+              integrity(v60)
+              and float(v60.get("geometric_daily_growth", 0.0)) >= 0.01
+              and int(v60.get("trades", 0)) >= 30
+              and float(v60.get("total_return", 0.0)) > 0.0
+          )
+          improved = (
+              integrity(v46)
+              and integrity(v60)
+              and float(v60.get("total_return", -1.0)) > float(v46.get("total_return", -1.0))
+              and float(v60.get("profit_factor", 0.0)) > float(v46.get("profit_factor", 0.0))
+              and float(v60.get("max_drawdown", 1.0)) <= float(v46.get("max_drawdown", 1.0))
+          )
+          classification = (
+              "PROJECT_TARGET_REACHED_FINAL_UNTOUCHED"
+              if target_reached
+              else "PROMOTED_COMPOSITE_IMPROVED_FINAL_UNTOUCHED"
+              if improved
+              else "PROMOTED_COMPOSITE_FAILED_FINAL_UNTOUCHED"
+          )
+          result = {
+              "schema": "candidate-05-v60-final-untouched-v1",
+              "classification": classification,
+              "components": os.environ["CANDIDATE05_COMPONENTS"].split(","),
+              "period": {
+                  "evaluation_start": "2024-09-01",
+                  "evaluation_end": "2024-12-31",
+                  "selected_before_observation": True,
+              },
+              "target_contract": {
+                  "minimum_geometric_daily_growth": 0.01,
+                  "minimum_trades": 30,
+                  "execution_integrity_required": True,
+              },
+              "v46": v46,
+              "v60": v60,
+              "branch_attribution": dict(sorted(branches.items())),
+              "strategy_diagnostics": diagnostics,
+              "target_reached": target_reached,
+              "improved_over_v46": improved,
+          }
+          (root / "final_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          Path("research/candidate-05/loop_results/final_untouched.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n",
+          )
+          lines = [
+              "# Candidate 05 final untouched decision",
+              "",
+              f"Classification: `{classification}`",
+              f"Components: `{os.environ['CANDIDATE05_COMPONENTS']}`",
+              f"Target reached: `{target_reached}`",
+              f"Improved over v46: `{improved}`",
+              "",
+              "## Metrics",
+              "",
+              f"- v46 total return: `{v46.get('total_return')}`",
+              f"- v60 total return: `{v60.get('total_return')}`",
+              f"- v46 geometric daily growth: `{v46.get('geometric_daily_growth')}`",
+              f"- v60 geometric daily growth: `{v60.get('geometric_daily_growth')}`",
+              f"- v46 trades: `{v46.get('trades')}`",
+              f"- v60 trades: `{v60.get('trades')}`",
+              f"- v46 profit factor: `{v46.get('profit_factor')}`",
+              f"- v60 profit factor: `{v60.get('profit_factor')}`",
+              f"- v46 max drawdown: `{v46.get('max_drawdown')}`",
+              f"- v60 max drawdown: `{v60.get('max_drawdown')}`",
+          ]
+          Path("research/candidate-05/loop_results/final_untouched.md").write_text("\n".join(lines) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Commit final untouched decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! test -s research/candidate-05/loop_results/final_untouched.json; then
+            exit 0
+          fi
+          if git diff --quiet -- research/candidate-05/loop_results/final_untouched.*; then
+            exit 0
+          fi
+          git config user.name "candidate-05-loop-bot"
+          git config user.email "candidate-05-loop-bot@users.noreply.github.com"
+          git add research/candidate-05/loop_results/final_untouched.*
+          git commit -m "candidate-05: record final untouched composite decision"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:research/candidate-05; then exit 0; fi
+            git pull --rebase origin research/candidate-05
+            sleep $((attempt * 2))
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v60-final-untouched-${{ github.sha }}
+          path: artifacts/candidate-05-v60-final-untouched/**
+          if-no-files-found: warn
+          retention-days: 90
