@@ -97,6 +97,7 @@ def patch(path: Path) -> None:
         '''        def on_order_denied(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_DENIED")
             self.errors.append({"type": "ORDER_DENIED", "event": str(event)})
+            self._fail_close_replacement_error(event)
             self._release_if_terminal(int(event.ts_event), "ORDER_DENIED")
 ''',
         method + '''        def on_order_denied(self, event: OrderEvent) -> None:
@@ -110,6 +111,7 @@ def patch(path: Path) -> None:
                     "type": "ORDER_DENIED",
                     "event": str(event),
                 })
+                self._fail_close_replacement_error(event)
             self._release_if_terminal(int(event.ts_event), "ORDER_DENIED")
 ''',
         "v40 denied fail-close",
@@ -119,6 +121,7 @@ def patch(path: Path) -> None:
         '''        def on_order_rejected(self, event: OrderEvent) -> None:
             self._record_order_event(event, "ORDER_REJECTED")
             self.errors.append({"type": "ORDER_REJECTED", "event": str(event)})
+            self._fail_close_replacement_error(event)
             self._release_if_terminal(int(event.ts_event), "ORDER_REJECTED")
 ''',
         '''        def on_order_rejected(self, event: OrderEvent) -> None:
@@ -132,6 +135,7 @@ def patch(path: Path) -> None:
                     "type": "ORDER_REJECTED",
                     "event": str(event),
                 })
+                self._fail_close_replacement_error(event)
             self._release_if_terminal(int(event.ts_event), "ORDER_REJECTED")
 ''',
         "v40 rejected fail-close",
