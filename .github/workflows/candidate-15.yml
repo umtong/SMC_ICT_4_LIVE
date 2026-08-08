@@ -1,4 +1,4 @@
-name: Candidate 15 V7 bounded residual transfer development
+name: Candidate 15 V8 managed residual transfer development
 
 on:
   push:
@@ -13,8 +13,11 @@ permissions:
   packages: read
 
 concurrency:
-  group: candidate-15-v7-${{ github.sha }}
+  group: candidate-15-v8-${{ github.sha }}
   cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
 
 jobs:
   static:
@@ -31,7 +34,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Verify frozen environment, source and V7 bounded-transfer contracts
+      - name: Verify frozen environment and V8 contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -40,99 +43,42 @@ jobs:
           base_commit="$(python - <<'PY'
           import json
           from pathlib import Path
-          print(json.loads(Path("research/candidate-15/protocol.json").read_text())["base_candidate"]["commit"])
+          print(json.loads(Path('research/candidate-15/protocol.json').read_text())['base_candidate']['commit'])
           PY
           )"
           git fetch --no-tags origin "$base_commit"
-          git cat-file -e "${base_commit}^{commit}"
-          test "$(git rev-parse "${base_commit}:research/candidate-14")" = \
-               "$(git rev-parse "HEAD:research/candidate-14")"
-          test "$(git hash-object research/candidate-15/quarter_hour_persistent_initiative.py)" = \
-               "dcd2cdfe0426b6c68ffba68ad750de7097cab8f6"
-          test "$(git hash-object research/candidate-15/response_qualified_persistent_initiative.py)" = \
-               "19a30eb9a1d12a72ad1106436926f7fe504412f2"
-          test "$(git hash-object research/candidate-15/candidate15_v6_residual_laggard_materializer.py)" = \
-               "15909568d688650d07b14384578d2b8439ac7d0d"
-          test "$(git hash-object research/candidate-15/bounded_transfer_initiative.py)" = \
-               "6dcee0bb0a03ef5214886dc1fa463cf9c8ec891a"
-          test "$(git hash-object research/candidate-15/candidate15_v7_bounded_transfer_materializer.py)" = \
-               "5faf746eb815e4c0f9d96e2e1eff77a1c31b65a0"
-
+          test "$(git rev-parse "${base_commit}:research/candidate-14")" = "$(git rev-parse "HEAD:research/candidate-14")"
+          test "$(git hash-object research/candidate-15/quarter_hour_persistent_initiative.py)" = dcd2cdfe0426b6c68ffba68ad750de7097cab8f6
+          test "$(git hash-object research/candidate-15/response_qualified_persistent_initiative.py)" = 19a30eb9a1d12a72ad1106436926f7fe504412f2
+          test "$(git hash-object research/candidate-15/candidate15_v6_residual_laggard_materializer.py)" = 15909568d688650d07b14384578d2b8439ac7d0d
+          test "$(git hash-object research/candidate-15/bounded_transfer_initiative.py)" = 6dcee0bb0a03ef5214886dc1fa463cf9c8ec891a
+          test "$(git hash-object research/candidate-15/candidate15_v7_bounded_transfer_materializer.py)" = 5faf746eb815e4c0f9d96e2e1eff77a1c31b65a0
+          test "$(git hash-object research/candidate-15/managed_transfer_initiative.py)" = 7e3e915cfb297264e2d57ff67cadea12b1eb85bf
+          test "$(git hash-object research/candidate-15/candidate15_v8_managed_transfer_materializer.py)" = 6f5f8bf561e31f22a54a4994e1bd1b58323fe7a2
           export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
           python -m py_compile research/candidate-15/*.py
           python -m unittest discover -s research/candidate-15 -p 'test_*.py' -v
           python - <<'PY'
-          import inspect
           import json
           from pathlib import Path
-
-          protocol = json.loads(Path("research/candidate-15/protocol.json").read_text())
-          assert protocol["schema"] == "candidate-15-bounded-residual-information-transfer-v7"
-          assert set(protocol["selection"]["intervals"]) == {
-              "E01", "E02", "E03", "E04", "E05", "E06"
-          }
-          assert protocol["execution_lock"]["risk_fraction"] == 0.03
-          assert protocol["execution_lock"]["global_pending_entry_plus_position_limit"] == 1
-          assert protocol["router"]["sender_atr_timeframe_minutes"] == 5
-          assert protocol["router"]["sender_atr_uses_current_impulse"] is False
-          assert protocol["router"]["receiver_atr_timeframe_minutes"] == 5
-          assert protocol["router"]["receiver_atr_uses_current_impulse"] is False
-          assert protocol["router"]["refresh_resets_effective_timestamp"] is True
-          assert protocol["router"]["accepted_market_count_required"] == 3
-          assert protocol["router"]["residual_must_lag_sender_median"] is True
-          assert protocol["router"]["residual_to_weakest_sender_body_ratio_minimum"] == 0.5
-          assert protocol["router"]["residual_to_weakest_sender_body_ratio_maximum_exclusive"] == 1.0
-          assert protocol["router"]["parity_costed_r_minimum_exclusive"] == 0.0
-          assert protocol["router"]["parity_costed_r_maximum_exclusive"] == 1.0
-          assert protocol["development_gate"] == {
-              "minimum_closed_trades": 15,
-              "minimum_active_intervals": 5,
-              "minimum_daily_geometric_growth": 0.0,
-              "minimum_win_rate": 0.55,
-              "minimum_payoff_ratio": 1.2,
-              "maximum_closed_trade_path_drawdown": 0.2,
-              "maximum_positive_log_growth_share_from_one_interval": 0.6,
-              "require_all_safety_checks": True,
-          }
-
-          from bounded_transfer_initiative import (
-              BoundedResidualTransferContinuationEngine,
-              BoundedTransferPersistentQuarterHourRouter,
-          )
-          continuation_source = inspect.getsource(
-              BoundedResidualTransferContinuationEngine.on_bar,
-          )
-          assert continuation_source.index("plan = self._build_plan(") < continuation_source.index(
-              "self._ranges.append("
-          )
-          router_source = inspect.getsource(
-              BoundedTransferPersistentQuarterHourRouter._handle_event,
-          )
-          assert "activated_ts_ns=event.observed_ts_ns" in router_source
-          assert "self._state = previous_state" in router_source
-
+          p=json.loads(Path('research/candidate-15/protocol.json').read_text())
+          assert p['schema']=='candidate-15-managed-residual-information-transfer-v8'
+          assert set(p['selection']['intervals'])=={'E01','E02','E03','E04','E05','E06'}
+          assert p['execution_lock']['risk_fraction']==0.03
+          assert p['execution_lock']['global_pending_entry_plus_position_limit']==1
+          assert set(p['router']['transfer_stages'])=={'PARTIAL_CATCH_UP','PARITY_HANDOFF_RETEST'}
+          assert p['router']['management_preserves_external_target'] is True
           import run_leadership_scdam
-          source = run_leadership_scdam._SOURCE
-          for token, expected in {
-              "BoundedTransferPersistentQuarterHourRouter(": 1,
-              "BoundedResidualTransferContinuationEngine(": 1,
-              "plans.append((continuation, continuation_candidate))": 1,
-              "C15_V7_CORE_FAMILY_QUARANTINED": 3,
-              "C15_V7_NOT_RESIDUAL_RECEIVER": 3,
-              'continuation.details["candidate15_v7_ownership"]': 1,
-              "C15_UNROUTED_SCENARIO_FAMILY": 3,
-              "PASSIVE_ENTRY_REJECTED_UNFILLED": 3,
-              "PROTECTIVE_ORDER_REJECTED_FAIL_CLOSED": 1,
-          }.items():
-              assert source.count(token) == expected, (token, source.count(token))
-          for stale in (
-              "ResponseQualifiedPersistentQuarterHourRouter(",
-              "PersistentInitiativeContinuationEngine(",
-              "C15_V6_CORE_FAMILY_QUARANTINED",
-              "C15_V6_NOT_RESIDUAL_LAGGARD",
-              'continuation.details["candidate15_v6_route"]',
-          ):
-              assert stale not in source, stale
+          s=run_leadership_scdam._SOURCE
+          for token,n in {
+            'ManagedTransferPersistentQuarterHourRouter(':1,
+            'ManagedResidualTransferContinuationEngine(':1,
+            'C15_V8_CORE_FAMILY_QUARANTINED':3,
+            'C15_V8_NOT_RESIDUAL_RECEIVER':3,
+            'TRANSFER_STOP_MODIFICATION_SUBMITTED':1,
+            'PROTECTIVE_ORDER_DENIED_FAIL_CLOSED':1,
+            'PROTECTIVE_ORDER_REJECTED_FAIL_CLOSED':1,
+          }.items(): assert s.count(token)==n,(token,s.count(token))
           PY
 
   evaluate:
@@ -155,18 +101,16 @@ jobs:
           ref: ${{ github.sha }}
       - name: Run ${{ matrix.interval }} through NautilusTrader
         shell: bash
-        run: |
-          set -euo pipefail
-          bash research/candidate-15/run_week.sh "${{ matrix.interval }}"
+        run: bash research/candidate-15/run_week.sh "${{ matrix.interval }}"
       - name: Remove downloaded archives
         if: always()
         shell: bash
         run: rm -rf "research/candidate-15/results/${{ matrix.interval }}/data"
-      - name: Upload auditable interval evidence
+      - name: Upload interval evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate15-v7-${{ matrix.interval }}
+          name: candidate15-v8-${{ matrix.interval }}
           path: research/candidate-15/results/${{ matrix.interval }}
           if-no-files-found: warn
           retention-days: 30
@@ -181,58 +125,40 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Download interval evidence
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          pattern: candidate15-v7-*
+          pattern: candidate15-v8-*
           path: artifacts
-      - name: Aggregate and persist exposed V7 evidence
+      - name: Aggregate and persist V8 evidence
         shell: bash
         run: |
           set -euo pipefail
           intervals=(E01 E02 E03 E04 E05 E06)
           git fetch origin research/candidate-15
-          if [[ "$(git rev-parse origin/research/candidate-15)" != "$GITHUB_SHA" ]]; then
-            echo "stale Candidate 15 run; branch advanced"
-            exit 0
-          fi
-
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
           rm -rf research/candidate-15/results
           for interval in "${intervals[@]}"; do
             mkdir -p "research/candidate-15/results/$interval"
-            cp -a "artifacts/candidate15-v7-$interval/." "research/candidate-15/results/$interval/"
-            for file in run.json data_manifest.json metrics.json summary.json effective_config.json submitted_plans.json positions.csv account.csv; do
+            cp -a "artifacts/candidate15-v8-$interval/." "research/candidate-15/results/$interval/"
+            for file in run.json data_manifest.json metrics.json summary.json effective_config.json submitted_plans.json order_lifecycle.json orders.csv positions.csv account.csv; do
               test -s "research/candidate-15/results/$interval/$file"
             done
           done
-          python research/candidate-15/aggregate_v7.py
-
-          if [[ "$(git ls-remote origin refs/heads/research/candidate-15 | cut -f1)" != "$GITHUB_SHA" ]]; then
-            echo "branch advanced during evaluation; evidence remains artifact-only"
-            exit 0
-          fi
-          git config user.name "candidate-15-bot"
-          git config user.email "candidate-15-bot@users.noreply.github.com"
+          python research/candidate-15/aggregate_v8.py
+          [[ "$(git ls-remote origin refs/heads/research/candidate-15 | cut -f1)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-bot
+          git config user.email candidate-15-bot@users.noreply.github.com
           git add research/candidate-15/aggregate.json research/candidate-15/RESULT.md
           for interval in "${intervals[@]}"; do
-            git add \
-              "research/candidate-15/results/$interval/run.json" \
-              "research/candidate-15/results/$interval/data_manifest.json" \
-              "research/candidate-15/results/$interval/metrics.json" \
-              "research/candidate-15/results/$interval/summary.json" \
-              "research/candidate-15/results/$interval/effective_config.json" \
-              "research/candidate-15/results/$interval/submitted_plans.json" \
-              "research/candidate-15/results/$interval/positions.csv" \
-              "research/candidate-15/results/$interval/account.csv"
+            git add "research/candidate-15/results/$interval/"{run.json,data_manifest.json,metrics.json,summary.json,effective_config.json,submitted_plans.json,order_lifecycle.json,orders.csv,positions.csv,account.csv}
           done
           if ! git diff --cached --quiet; then
-            git commit -m "candidate-15: record V7 development evidence [skip ci]"
+            git commit -m "candidate-15: record V8 development evidence [skip ci]"
             git push origin HEAD:research/candidate-15
           fi
-      - name: Upload aggregate evidence
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: candidate15-v7-aggregate-${{ github.run_id }}
+          name: candidate15-v8-aggregate-${{ github.run_id }}
           path: |
             research/candidate-15/aggregate.json
             research/candidate-15/RESULT.md

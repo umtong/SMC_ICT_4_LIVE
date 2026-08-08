@@ -12,6 +12,8 @@ smc4 doctor
 python -m py_compile \
   "$CAND/sequential_response_router.py" \
   "$CAND/candidate15_logic.py" \
+  "$CAND/managed_transfer_initiative.py" \
+  "$CAND/candidate15_v8_managed_transfer_materializer.py" \
   "$CAND/run_leadership_scdam.py" \
   "$CAND/candidate15_runner.py"
 python -m unittest discover -s "$CAND" -p 'test_*.py' -v
