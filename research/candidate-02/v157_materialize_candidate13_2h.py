@@ -31,9 +31,53 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _restore_locked_candidate13_runner(root: Path, protocol: dict[str, Any]) -> dict[str, str]:
+    """Restore the exact runner blob named by the frozen Candidate-13 protocol.
+
+    The pinned Candidate-13 commit stores a thin compatibility wrapper at
+    ``run_leadership_scdam.py`` and the byte-exact frozen runner at
+    ``run_leadership_scdam_base.py``. The protocol intentionally locks the
+    executable runner under the former name. Replacing the wrapper with the
+    verified base bytes is an implementation materialization repair, not an
+    alpha or execution-policy change.
+    """
+    runner = root / "run_leadership_scdam.py"
+    base = root / "run_leadership_scdam_base.py"
+    expected = str(protocol["locked_source"]["blobs"]["run_leadership_scdam.py"])
+    current_payload = runner.read_bytes()
+    current = git_blob_oid(current_payload)
+    if current == expected:
+        return {
+            "expected_git_blob": expected,
+            "pre_restore_git_blob": current,
+            "restored_from": "run_leadership_scdam.py",
+        }
+    if not base.is_file():
+        raise RuntimeError(
+            "Candidate-13 runner lock mismatch and run_leadership_scdam_base.py is missing"
+        )
+    base_payload = base.read_bytes()
+    base_oid = git_blob_oid(base_payload)
+    if base_oid != expected:
+        raise RuntimeError(
+            "Candidate-13 runner lock mismatch: "
+            f"wrapper={current}, base={base_oid}, expected={expected}"
+        )
+    runner.write_bytes(base_payload)
+    if git_blob_oid(runner.read_bytes()) != expected:
+        raise AssertionError("failed to restore exact Candidate-13 runner bytes")
+    return {
+        "expected_git_blob": expected,
+        "pre_restore_git_blob": current,
+        "restored_from": "run_leadership_scdam_base.py",
+    }
+
+
 def materialize(root: Path, *, source_commit: str) -> dict[str, Any]:
     logic_path = root / "logic.py"
     protocol_path = root / "protocol.json"
+    protocol = read_json(protocol_path)
+    runner_restore = _restore_locked_candidate13_runner(root, protocol)
     logic = logic_path.read_text(encoding="utf-8")
 
     init_old = """        self._internal_agg = _TimeAggregator(config.internal_tf_bars)\n        self._context_agg = _TimeAggregator(config.external_tf_bars)\n        self._day_agg = _TimeAggregator(1440)\n"""
@@ -46,7 +90,6 @@ def materialize(root: Path, *, source_commit: str) -> dict[str, Any]:
     compile(patched, str(logic_path), "exec")
     logic_path.write_text(patched, encoding="utf-8")
 
-    protocol = read_json(protocol_path)
     protocol["schema"] = "candidate-02-v157-candidate13-two-hour-pools-development-v1"
     protocol["candidate"] = "candidate-02-v157-price-discovery-with-two-hour-auctions"
     protocol["claim_eligible"] = False
@@ -69,10 +112,14 @@ def materialize(root: Path, *, source_commit: str) -> dict[str, Any]:
     write_json(root / "v157_protocol.json", protocol)
 
     manifest = {
-        "schema": "candidate-02-v157-materialization-v1",
+        "schema": "candidate-02-v157-materialization-v2",
         "candidate13_source_commit": source_commit,
         "logic_git_blob": git_blob_oid(patched.encode("utf-8")),
         "logic_sha256": sha256(patched.encode("utf-8")).hexdigest(),
+        "runner_restore": runner_restore,
+        "implementation_fix": (
+            "restore exact protocol-locked Candidate13 base runner over its thin compatibility wrapper"
+        ),
         "single_alpha_change": "add completed 2h auction endpoints as strength-1 external pools",
         "unchanged_components": [
             "dynamic price-discovery leader",
