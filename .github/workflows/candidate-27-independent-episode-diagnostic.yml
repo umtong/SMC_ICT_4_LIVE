@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$ROOT"
-          python research/candidate-27/funding_interval_episode_diagnostic.py \
+          python research/candidate-27/sequential_episode_diagnostic.py \
             --symbol "${{ matrix.market.symbol }}" \
             --required-state "${{ matrix.market.state }}" \
             --build-start "${{ matrix.period.build_start }}" \
@@ -98,6 +98,7 @@ jobs:
           episodes = pd.read_csv(root / "funding_interval_episodes.csv")
           assert result["configured_round_trip_bps"] == 20.0
           assert result["summary"]["episodes"] == len(episodes)
+          assert result["state_machine"]["episode_limit"] == "one per eight-hour funding interval"
           if not episodes.empty:
               interval = pd.to_datetime(episodes["interval_start"], utc=True)
               assert interval.is_unique
