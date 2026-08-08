@@ -56,6 +56,7 @@ jobs:
       matrix:
         chunk: ${{ fromJson(needs.plan.outputs.chunks) }}
     env:
+      PYTHONPATH: research/candidate-37
       PYTHONUNBUFFERED: "1"
       PIN: e2a75507e9b98135907c761b844afe095a6f839c
       TOOL: artifacts/c37-c30-pinned
@@ -71,7 +72,7 @@ jobs:
           set -euo pipefail
           smc4 doctor
           python -m compileall -q research/candidate-37
-          python -m unittest research/candidate-37/test_large_event_router.py -v
+          python -m unittest discover -s research/candidate-37 -p 'test_large_event_router.py' -v
           git fetch --depth=1 origin "$PIN"
           test "$(git rev-parse FETCH_HEAD)" = "$PIN"
           mkdir -p "$TOOL"
@@ -132,7 +133,7 @@ jobs:
           set -euo pipefail
           test "$(find "$INPUT" -name month_manifest.json | wc -l)" -eq 8
           python -m compileall -q research/candidate-37
-          python -m unittest research/candidate-37/test_large_event_router.py -v
+          python -m unittest discover -s research/candidate-37 -p 'test_large_event_router.py' -v
           mkdir -p "$ROOT"
           python research/candidate-37/v2_lightweight_study.py \
             --input-root "$INPUT" \
