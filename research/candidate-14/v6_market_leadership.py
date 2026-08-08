@@ -54,8 +54,10 @@ class OwnershipMarketLeadershipGate(SemanticMarketLeadershipGate):
         if decision.event_direction_rank != 1:
             return _reject(decision, f"V6_{scenario}_REQUIRES_EVENT_DIRECTION_OWNER")
 
+        # candidate_event_move is already direction-signed by the frozen
+        # measurement gate. Peer returns remain raw and are signed here once.
         sign = 1.0 if direction == "LONG" else -1.0
-        candidate_move = sign * float(decision.candidate_event_move or 0.0)
+        candidate_move = float(decision.candidate_event_move or 0.0)
         peer_signed = [sign * float(value) for value in decision.peer_returns.values()]
         peer_median = median(peer_signed) if peer_signed else float("-inf")
         if candidate_move <= 0.0 or candidate_move < peer_median:
