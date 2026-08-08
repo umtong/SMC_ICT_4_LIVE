@@ -1,4 +1,4 @@
-"""Causal completed-session auction router for Candidate 12 I13.
+"""Causal completed-session auction router for Candidate 12 I14a.
 
 The engine distinguishes economically different interactions with a completed
 Asia or London dealing range instead of forcing one candle pattern onto every
@@ -1937,6 +1937,7 @@ class CausalLiquidityAuctionEngine:
                 and bar.body / atr >= self.config.active_retest_body_atr
                 and bar.close_location >= self.config.active_retest_min_close_location
                 and bar.close > state.active_fvg.upper
+                and bar.low >= source.high
             )
             passive = (
                 bar.low >= state.active_fvg.lower
@@ -1976,33 +1977,44 @@ class CausalLiquidityAuctionEngine:
                 state.active_fvg = None
                 return None
 
-            # The first completed mitigation consumes this acceptance attempt.
-            # A weak/indecisive mitigation is not a trade, but it is still the
-            # causal event which can later make an Asia re-acceptance eligible.
+            # An unresolved first mitigation is not confirmation and is not
+            # terminal.  It starts a new auction leg which must create a fresh
+            # bullish FVG before continuation can be traded.
             state.initial_acceptance_attempted = True
-            state.acceptance_phase = "MONITOR_FAILURE"
             sid = state.acceptance_scenario_id
             if sid is None:
                 sid = self._next_scenario_id(source.label, "HIGH-ACCEPTANCE")
                 state.acceptance_scenario_id = sid
             if not active and not passive:
+                state.acceptance_phase = "WAIT_REACCELERATION"
+                state.acceptance_started_index = self._five_index
+                state.acceptance_pullback_low = bar.low
+                boundary_breached = bar.low < source.high
                 self.skips["FVG_RETEST_NOT_EXECUTABLE"] += 1
                 self._emit(
                     scenario_id=sid,
                     event_type="ACCEPTED_FVG_RETEST_REJECTED",
                     event_time_ns=bar.ts_ns,
                     observed_time_ns=bar.ts_ns,
-                    next_state="MONITOR_FAILURE",
-                    reason_code="FIRST_FVG_MITIGATION_LACKED_ACTIVE_HOLD_OR_PASSIVE_EXHAUSTION",
+                    next_state="WAIT_REACCELERATION",
+                    reason_code=(
+                        "ACTIVE_RETEST_REENTERED_COMPLETED_RANGE"
+                        if boundary_breached
+                        else "FIRST_FVG_MITIGATION_LACKED_ACTIVE_HOLD_OR_PASSIVE_EXHAUSTION"
+                    ),
                     reference_price=state.active_fvg.upper,
                     details={
                         "source": source.label.value,
+                        "session_high": source.high,
+                        "boundary_breached": boundary_breached,
+                        "pullback_low": bar.low,
                         "retest_body_atr": bar.body / atr,
                         "retest_close_location": bar.close_location,
                         "retest_close": bar.close,
                     },
                 )
                 return None
+            state.acceptance_phase = "MONITOR_FAILURE"
 
             # Passive exhaustion is actionable only when the protected buy
             # limit is marketable at the completed decision close.  A limit
