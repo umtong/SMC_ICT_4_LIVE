@@ -13,13 +13,14 @@ from strategy import Candidate07StrategyConfig
 
 
 class Candidate07Strategy(_BaseCandidate07Strategy):
-    """Prevent repeated fades inside one causally accepted auction leg.
+    """Prevent repeated fades while one swept boundary remains accepted.
 
     After a structural stop closes an absorption/reclaim, the opposite
-    initiative auction owns all later local pools in that reversal direction.
-    The state ends only when the original opposing liquidity is delivered, a
-    confirmed acceptance-continuation proves initiative changed sides, or an
-    opposite-direction reversal itself structurally fails and transfers control.
+    initiative auction owns later local pools in that reversal direction while
+    completed closes remain outside the accepted source boundary. The state
+    ends only when price closes back through that boundary, a confirmed
+    acceptance-continuation proves initiative changed sides, or an opposite
+    reversal structurally fails and transfers control.
     """
 
     def __init__(self, config: Candidate07StrategyConfig):
@@ -34,9 +35,9 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
                 scenario_id=released.source_scenario_id,
                 previous_state="INITIATIVE_AUCTION_ACTIVE",
                 next_state=ScenarioState.IDLE.value,
-                reason_code="INITIATIVE_OPPOSING_LIQUIDITY_DELIVERED",
+                reason_code="INITIATIVE_ACCEPTED_SOURCE_RECLAIMED",
                 event_time_ns=event_time_ns,
-                reference_price=released.opposing_delivery_price,
+                reference_price=released.accepted_source_level,
                 details={
                     "blocked_reversal_direction": (
                         released.blocked_reversal_direction.value
@@ -45,6 +46,7 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
                     "accepted_source_level": released.accepted_source_level,
                     "accepted_at_ns": released.accepted_at_ns,
                     "bar_close": close,
+                    "release_basis": "completed close reclaimed accepted source",
                     "state_owner": "INITIATIVE_AUCTION_LEG",
                 },
             )
@@ -79,7 +81,6 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
                 "candidate_source_liquidity_level": plan.liquidity_level,
                 "initiative_direction": state.initiative_direction.value,
                 "accepted_source_level": state.accepted_source_level,
-                "opposing_delivery_price": state.opposing_delivery_price,
                 "source_scenario_id": state.source_scenario_id,
                 "accepted_at_ns": state.accepted_at_ns,
                 "state_owner": "INITIATIVE_AUCTION_LEG",
@@ -100,10 +101,8 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
         ):
             return
         event_time_ns = int(event.ts_event)
-        delivery = self._structural_delivery_price(plan)
         state, displaced = self._initiative_gate.transfer_on_failed_reversal(
             blocked_reversal_direction=plan.direction,
-            opposing_delivery_price=delivery,
             source_scenario_id=plan.scenario_id,
             accepted_source_level=plan.liquidity_level,
             accepted_at_ns=event_time_ns,
@@ -142,14 +141,17 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
             next_state="INITIATIVE_AUCTION_ACTIVE",
             reason_code="ABSORPTION_STOP_CONFIRMS_INITIATIVE_ACCEPTANCE",
             event_time_ns=event_time_ns,
-            reference_price=delivery,
+            reference_price=plan.liquidity_level,
             details={
                 "blocked_reversal_direction": plan.direction.value,
                 "initiative_direction": state.initiative_direction.value,
                 "failed_stop_price": plan.stop_price,
                 "accepted_source_level": plan.liquidity_level,
-                "opposing_delivery_price": delivery,
-                "delivery_basis": "opposing internal liquidity known at entry",
+                "reclaim_boundary": plan.liquidity_level,
+                "acceptance_basis": (
+                    "structural stop beyond swept source; completed close must "
+                    "reclaim source to invalidate"
+                ),
                 "displaced_opposite_initiative": displaced is not None,
                 "state_owner": "INITIATIVE_AUCTION_LEG",
             },
@@ -183,7 +185,6 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
                 "counter_acceptance_scenario_id": plan.scenario_id,
                 "new_initiative_direction": plan.direction.value,
                 "accepted_source_level": state.accepted_source_level,
-                "opposing_delivery_price": state.opposing_delivery_price,
                 "state_owner": "INITIATIVE_AUCTION_LEG",
             },
         )
@@ -225,7 +226,14 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
         return abs(last_px - plan.stop_price) <= tolerance
 
     @staticmethod
-    def _structural_delivery_price(plan: TradePlan) -> float:
+    def _structural_reset_price(plan: TradePlan) -> float:
+        """Return the failed trade's original objective for progress state only.
+
+        Progress protection needs to know whether the declared trade target was
+        ultimately delivered after an early protected exit. This geometry is
+        intentionally separate from initiative-auction lifetime, which is owned
+        by acceptance of the swept source boundary.
+        """
         raw_internal: Any = plan.details.get("opposing_internal")
         candidate = (
             float(raw_internal)
@@ -237,16 +245,6 @@ class Candidate07Strategy(_BaseCandidate07Strategy):
         if plan.direction is Direction.SHORT and candidate >= plan.entry_reference:
             return plan.target_price
         return candidate
-
-    @staticmethod
-    def _structural_reset_price(plan: TradePlan) -> float:
-        """Expose the unchanged opposing-liquidity geometry to progress state.
-
-        The progress-protection mixin and the initiative-auction state machine
-        refer to the same causal objective with different lifecycle names. Keep
-        one calculation and make the composition contract explicit.
-        """
-        return Candidate07Strategy._structural_delivery_price(plan)
 
 
 __all__ = ["Candidate07Strategy", "Candidate07StrategyConfig"]
