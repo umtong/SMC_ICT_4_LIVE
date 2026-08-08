@@ -1,0 +1,184 @@
+name: Candidate 11 spot-perpetual session router
+
+on:
+  push:
+    branches: ["research/candidate-11"]
+    paths:
+      - "research/candidate-11/spot_perp_session_router_v1/**"
+      - ".github/workflows/candidate-11-spot-perp-session-router-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: candidate-11-spot-perp-session-router-v1-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CAND: research/candidate-11/spot_perp_session_router_v1
+      VENDOR: vendor/candidate16
+      CACHE: .cache/candidate-11-spot-perp-session-router-v1
+      OUT: artifacts/candidate-11-spot-perp-session-router-v1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: umtong/SMC_ICT_4_LIVE
+          ref: af82ebc64e05aeaf2704eeb3af0709cdbf4c77c2
+          path: vendor/candidate16
+          fetch-depth: 1
+
+      - name: Verify runtime and materialize frozen causal contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python research/candidate-11/liquidity_state_router_v1/patch_features_v4.py "$VENDOR/research/candidate-16/features_v4.py"
+          python research/candidate-11/session_auction_l1_router_v1/patch_vendor.py "$VENDOR"
+          python -m compileall -q "$CAND" "$VENDOR/research/candidate-05" "$VENDOR/research/candidate-16"
+          grep -F 'spot_perp_perp_only_attack' "$CAND/spot_perp_strategy.py"
+          grep -F 'Independent state evidence begins with the next completed bar.' "$VENDOR/research/candidate-16/strategy_v2.py"
+
+      - name: Run 28-day continuous development account
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT/DEVELOPMENT"
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/$VENDOR/research/candidate-16:$GITHUB_WORKSPACE/$VENDOR/research/candidate-05:$GITHUB_WORKSPACE/$VENDOR/src"
+          python "$CAND/candidate.py" \
+            --config "$VENDOR/research/candidate-16/config_v4.json" \
+            --build-start 2023-07-03 \
+            --build-end 2023-08-02 \
+            --evaluation-start 2023-07-06 \
+            --evaluation-end 2023-08-02 \
+            --cache "$CACHE/development" \
+            --output "$OUT/DEVELOPMENT" \
+            --validation-mode DEVELOPMENT \
+            2>&1 | tee "$OUT/DEVELOPMENT/console.log"
+
+      - name: Apply absolute development gate
+        id: development
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math, os
+          from pathlib import Path
+          import pandas as pd
+          root = Path(os.environ["OUT"]) / "DEVELOPMENT"
+          m = json.loads((root / "metrics.json").read_text())
+          d = json.loads((root / "strategy_diagnostics.json").read_text())
+          p = pd.read_csv(root / "positions.csv")
+          col = "realized_pnl" if "realized_pnl" in p else "pnl"
+          pnls = []
+          for value in p.get(col, []):
+              try: x = float(str(value).split()[0].replace(",", ""))
+              except ValueError: continue
+              if math.isfinite(x): pnls.append(x)
+          wins = [x for x in pnls if x > 0]; losses = [x for x in pnls if x < 0]
+          payoff = ((sum(wins)/len(wins))/abs(sum(losses)/len(losses))) if wins and losses else (float("inf") if wins else 0.0)
+          feature = pd.read_csv(root / "features.csv.gz")
+          feature_ready = int(feature["spot_perp_feature_ready"].fillna(False).astype(bool).sum())
+          checks = {
+              "spot_perp_information_present": feature_ready > 0,
+              "minimum_closed_trades": int(m.get("trades", 0)) >= 12,
+              "minimum_win_rate": float(m.get("win_rate", 0.0)) >= 0.80,
+              "minimum_payoff_ratio": payoff >= 1.20,
+              "minimum_daily_geometric_growth": float(m.get("geometric_daily_growth", 0.0)) >= 0.01,
+              "maximum_drawdown": float(m.get("max_drawdown", 1.0)) <= 0.20,
+              "no_liquidation": int(m.get("liquidations", 0)) == 0,
+              "no_order_rejections": int(d.get("order_rejections", 0)) == 0,
+              "global_slot": int(d.get("max_simultaneous_entry_intents", 99)) <= 1 and int(d.get("max_open_positions_observed", 99)) <= 1,
+          }
+          gate = all(checks.values())
+          result = {
+              "schema": "candidate-11-spot-perp-session-development-v1",
+              "classification": "DEVELOPMENT_GATE_PASSED" if gate else "GOAL_NOT_MET",
+              "gate_passed": gate,
+              "success_claim": False,
+              "checks": checks,
+              "payoff_ratio": payoff,
+              "spot_perp_feature_ready_rows": feature_ready,
+              "metrics": m,
+              "diagnostics": d,
+          }
+          out = Path(os.environ["OUT"])
+          (out / "DEVELOPMENT_AUDIT.json").write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as stream:
+              stream.write(f"gate={'true' if gate else 'false'}\n")
+          PY
+
+      - name: Run source-frozen fresh account only after development success
+        if: steps.development.outputs.gate == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT/FRESH"
+          export PYTHONPATH="$GITHUB_WORKSPACE/$CAND:$GITHUB_WORKSPACE/$VENDOR/research/candidate-16:$GITHUB_WORKSPACE/$VENDOR/research/candidate-05:$GITHUB_WORKSPACE/$VENDOR/src"
+          python "$CAND/candidate.py" \
+            --config "$VENDOR/research/candidate-16/config_v4.json" \
+            --build-start 2024-01-05 \
+            --build-end 2024-01-28 \
+            --evaluation-start 2024-01-08 \
+            --evaluation-end 2024-01-28 \
+            --cache "$CACHE/fresh" \
+            --output "$OUT/FRESH" \
+            --validation-mode FRESH_VALIDATION \
+            2>&1 | tee "$OUT/FRESH/console.log"
+
+      - name: Apply absolute fresh gate
+        if: steps.development.outputs.gate == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math, os
+          from pathlib import Path
+          import pandas as pd
+          root = Path(os.environ["OUT"]) / "FRESH"
+          m = json.loads((root / "metrics.json").read_text()); d = json.loads((root / "strategy_diagnostics.json").read_text())
+          p = pd.read_csv(root / "positions.csv"); col = "realized_pnl" if "realized_pnl" in p else "pnl"; pnls=[]
+          for value in p.get(col, []):
+              try: x=float(str(value).split()[0].replace(",", ""))
+              except ValueError: continue
+              if math.isfinite(x): pnls.append(x)
+          w=[x for x in pnls if x>0]; l=[x for x in pnls if x<0]
+          payoff=((sum(w)/len(w))/abs(sum(l)/len(l))) if w and l else (float("inf") if w else 0.0)
+          checks={
+              "minimum_closed_trades": int(m.get("trades",0))>=8,
+              "minimum_win_rate": float(m.get("win_rate",0.0))>=0.80,
+              "minimum_payoff_ratio": payoff>=1.20,
+              "minimum_daily_geometric_growth": float(m.get("geometric_daily_growth",0.0))>=0.01,
+              "maximum_drawdown": float(m.get("max_drawdown",1.0))<=0.20,
+              "no_liquidation": int(m.get("liquidations",0))==0,
+              "no_order_rejections": int(d.get("order_rejections",0))==0,
+              "global_slot": int(d.get("max_simultaneous_entry_intents",99))<=1 and int(d.get("max_open_positions_observed",99))<=1,
+          }
+          gate=all(checks.values())
+          result={"classification":"FRESH_GATE_PASSED" if gate else "GOAL_NOT_MET","gate_passed":gate,"success_claim":False,"checks":checks,"payoff_ratio":payoff,"metrics":m,"diagnostics":d}
+          (Path(os.environ["OUT"])/"FRESH_AUDIT.json").write_text(json.dumps(result,indent=2,sort_keys=True,allow_nan=True)+"\n")
+          print(json.dumps(result,indent=2,sort_keys=True,allow_nan=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-11-spot-perp-session-router-v1-${{ github.sha }}
+          path: artifacts/candidate-11-spot-perp-session-router-v1/**
+          retention-days: 90
