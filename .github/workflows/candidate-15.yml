@@ -1,62 +1,173 @@
-name: Candidate 15 V10 atomic source materialization
+name: Candidate 15 V10 execution-valid beta diffusion development
 
 on:
   push:
     branches: [research/candidate-15]
     paths:
-      - "research/candidate-15/v10patch.tar.xz"
+      - "research/candidate-15/**"
       - ".github/workflows/candidate-15.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
+  packages: read
 
 concurrency:
-  group: candidate-15-v10-materialize
+  group: candidate-15-v10-${{ github.sha }}
   cancel-in-progress: false
 
+env:
+  IMAGE: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+
 jobs:
-  materialize:
+  static:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Verify and atomically materialize V10 source
+      - name: Verify frozen environment and V10 contracts
         shell: bash
         run: |
           set -euo pipefail
-          payload="research/candidate-15/v10patch.tar.xz"
-          test -s "$payload"
-          echo "f7e0d3b5c05532d4f8b9f8a49facdfcbe561ffd0028c7d954898696f1031f8b7  $payload" | sha256sum -c -
-          tar -xJf "$payload"
-          git checkout -- .github/workflows/candidate-15.yml
-          rm -f "$payload"
+          smc4 doctor
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          base_commit="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          print(json.loads(Path('research/candidate-15/protocol.json').read_text())['base_candidate']['commit'])
+          PY
+          )"
+          git fetch --no-tags origin "$base_commit"
+          test "$(git rev-parse "${base_commit}:research/candidate-14")" = "$(git rev-parse "HEAD:research/candidate-14")"
+          test "$(git hash-object research/candidate-15/quarter_hour_persistent_initiative.py)" = dcd2cdfe0426b6c68ffba68ad750de7097cab8f6
+          test "$(git hash-object research/candidate-15/response_qualified_persistent_initiative.py)" = 19a30eb9a1d12a72ad1106436926f7fe504412f2
+          test "$(git hash-object research/candidate-15/candidate15_v6_residual_laggard_materializer.py)" = 15909568d688650d07b14384578d2b8439ac7d0d
+          test "$(git hash-object research/candidate-15/bounded_transfer_initiative.py)" = 6dcee0bb0a03ef5214886dc1fa463cf9c8ec891a
+          test "$(git hash-object research/candidate-15/candidate15_v7_bounded_transfer_materializer.py)" = 5faf746eb815e4c0f9d96e2e1eff77a1c31b65a0
+          test "$(git hash-object research/candidate-15/managed_transfer_initiative.py)" = 7e3e915cfb297264e2d57ff67cadea12b1eb85bf
+          test "$(git hash-object research/candidate-15/candidate15_v8_managed_transfer_materializer.py)" = 6f5f8bf561e31f22a54a4994e1bd1b58323fe7a2
           export PYTHONPATH="$GITHUB_WORKSPACE/research/candidate-15:$GITHUB_WORKSPACE/research/candidate-14:$GITHUB_WORKSPACE/src"
-          python -m py_compile \
-            research/candidate-15/positive_cost_cover.py \
-            research/candidate-15/candidate15_v10_cost_cover_materializer.py \
-            research/candidate-15/aggregate_v10.py \
-            research/candidate-15/run_leadership_scdam.py
+          python -m py_compile research/candidate-15/*.py
           python -m unittest discover -s research/candidate-15 -p 'test_*.py' -v
           python - <<'PY'
           import json
           from pathlib import Path
-          p = json.loads(Path('research/candidate-15/protocol.json').read_text())
-          assert p['schema'] == 'candidate-15-beta-coherent-diffusion-lag-v10'
-          assert p['execution_lock']['cost_cover_entry_reference'] == 'NAUTILUS_POSITION_AVG_PX_OPEN'
-          assert p['execution_lock']['stop_market_adverse_slippage_ticks'] == 2
-          assert p['execution_lock']['minimum_cost_cover_net_ticks'] == 1
-          runner = Path('research/candidate-15/run_leadership_scdam.py').read_text()
-          assert runner.count('materialize_execution_valid_cost_cover_source(_SOURCE)') == 1
-          assert runner.count('from positive_cost_cover import positive_cost_cover_trigger') == 1
+          p=json.loads(Path('research/candidate-15/protocol.json').read_text())
+          assert p['schema']=='candidate-15-beta-coherent-diffusion-lag-v10'
+          assert set(p['selection']['intervals'])=={'E01','E02','E03','E04','E05','E06'}
+          assert p['execution_lock']['risk_fraction']==0.03
+          assert p['execution_lock']['global_pending_entry_plus_position_limit']==1
+          assert p['router']['beta_horizons']==[24,48,96,192]
+          assert p['router']['beta_estimation_cutoff']=='STRICTLY_BEFORE_FIRST_EVIDENCE_EVENT'
+          assert p['router']['geometry_clock']=='COMPLETED_RECEIVER_MSS_BAR_END'
+          assert p['execution_lock']['cost_cover_entry_reference']=='NAUTILUS_POSITION_AVG_PX_OPEN'
+          assert p['execution_lock']['stop_market_adverse_slippage_ticks']==2
+          assert p['execution_lock']['minimum_cost_cover_net_ticks']==1
+          import run_leadership_scdam
+          s=run_leadership_scdam._SOURCE
+          for token,n in {
+            'BetaCoherentTransferPersistentQuarterHourRouter(':1,
+            'BetaCoherentResidualTransferContinuationEngine(':1,
+            'positive_cost_cover_trigger(':1,
+            'position.avg_px_open':1,
+            'TRANSFER_OPEN_POSITION_NOT_UNIQUE':1,
+            'TRANSFER_COMPLETION_WITH_LIVE_ENTRY_REMAINDER':1,
+            'TRANSFER_STOP_MODIFICATION_SUBMITTED':1,
+          }.items(): assert s.count(token)==n,(token,s.count(token))
           PY
-          git config user.name candidate-15-research
-          git config user.email candidate-15-research@users.noreply.github.com
-          git add -A
-          git commit -m "candidate-15: make V10 cost protection execution-valid"
+
+  evaluate:
+    needs: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        interval: [E01, E02, E03, E04, E05, E06]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Run ${{ matrix.interval }} through NautilusTrader
+        shell: bash
+        run: bash research/candidate-15/run_week.sh "${{ matrix.interval }}"
+      - name: Diagnose passive-parent first passage
+        shell: bash
+        run: python research/candidate-15/analyze_pending_invalidation.py "research/candidate-15/results/${{ matrix.interval }}"
+      - name: Remove downloaded archives
+        if: always()
+        shell: bash
+        run: rm -rf "research/candidate-15/results/${{ matrix.interval }}/data"
+      - name: Upload interval evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v10-${{ matrix.interval }}
+          path: research/candidate-15/results/${{ matrix.interval }}
+          if-no-files-found: warn
+          retention-days: 30
+
+  aggregate:
+    if: ${{ always() && needs.static.result == 'success' && needs.evaluate.result == 'success' }}
+    needs: [static, evaluate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate15-v10-*
+          path: artifacts
+      - name: Aggregate and persist V10 evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          intervals=(E01 E02 E03 E04 E05 E06)
           git fetch origin research/candidate-15
-          test "$(git rev-parse origin/research/candidate-15)" = "$GITHUB_SHA"
-          git push origin HEAD:research/candidate-15
+          [[ "$(git rev-parse origin/research/candidate-15)" == "$GITHUB_SHA" ]] || exit 0
+          rm -rf research/candidate-15/results
+          for interval in "${intervals[@]}"; do
+            mkdir -p "research/candidate-15/results/$interval"
+            cp -a "artifacts/candidate15-v10-$interval/." "research/candidate-15/results/$interval/"
+            for file in run.json data_manifest.json metrics.json summary.json effective_config.json submitted_plans.json order_lifecycle.json orders.csv positions.csv account.csv; do
+              test -s "research/candidate-15/results/$interval/$file"
+            done
+          done
+          python research/candidate-15/aggregate_v10.py
+          [[ "$(git ls-remote origin refs/heads/research/candidate-15 | cut -f1)" == "$GITHUB_SHA" ]] || exit 0
+          git config user.name candidate-15-bot
+          git config user.email candidate-15-bot@users.noreply.github.com
+          git add research/candidate-15/aggregate.json research/candidate-15/RESULT.md
+          for interval in "${intervals[@]}"; do
+            git add "research/candidate-15/results/$interval/"{run.json,data_manifest.json,metrics.json,summary.json,effective_config.json,submitted_plans.json,order_lifecycle.json,orders.csv,positions.csv,account.csv,pending_path_diagnostics.json}
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate-15: record V10 development evidence [skip ci]"
+            git push origin HEAD:research/candidate-15
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate15-v10-aggregate-${{ github.run_id }}
+          path: |
+            research/candidate-15/aggregate.json
+            research/candidate-15/RESULT.md
+          if-no-files-found: warn
+          retention-days: 30
