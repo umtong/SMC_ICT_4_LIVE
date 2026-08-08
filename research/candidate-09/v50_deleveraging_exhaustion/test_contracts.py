@@ -14,9 +14,9 @@ class Candidate50Contracts(unittest.TestCase):
     def test_full_metrics_delay_is_fixed_and_causal(self):
         config_source = inspect.getsource(strategy.Candidate16Config)
         arm_source = inspect.getsource(strategy.Candidate16Strategy._candidate50_maybe_arm)
-        self.assertIn("candidate50_event_minutes: int = _EVENT_MINUTES", config_source)
+        self.assertIn("candidate50_event_minutes: int = EVENT_MINUTES", config_source)
         self.assertIn(
-            "candidate50_publication_delay_minutes: int = _PUBLICATION_DELAY_MINUTES",
+            "candidate50_publication_delay_minutes: int = PUBLICATION_DELAY_MINUTES",
             config_source,
         )
         self.assertIn("event_end_ns = metrics_observed_ns - delay_ns", arm_source)
@@ -30,7 +30,7 @@ class Candidate50Contracts(unittest.TestCase):
 
     def test_exhaustion_is_effort_without_extension(self):
         source = inspect.getsource(strategy.Candidate16Strategy._candidate50_maybe_arm)
-        self.assertIn("directional_delay_flows", source)
+        self.assertIn("delay_flow_bars", source)
         self.assertIn("extension_atr > self.config.router_failed_max_progress_atr", source)
         self.assertIn("candidate50_delay_effort_without_result", source)
 
