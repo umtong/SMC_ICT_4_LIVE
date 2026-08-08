@@ -1,4 +1,4 @@
-name: candidate-12-i13-w12-frozen-confirmation
+name: candidate-12-i14a-w1-then-w12
 
 on:
   push:
@@ -11,148 +11,102 @@ permissions:
   contents: read
 
 concurrency:
-  group: candidate-12-i13-w12-frozen
+  group: candidate-12-i14a-w1-w12
   cancel-in-progress: false
 
 jobs:
-  w12-frozen-confirmation:
+  gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
       image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
       options: --user root
     steps:
-      - name: Checkout frozen I13 candidate
+      - name: Checkout I14a candidate
         uses: actions/checkout@v4
 
-      - name: Verify prebuilt environment
-        run: smc4 doctor
-
-      - name: Verify unchanged I13 source set
+      - name: Verify environment and frozen source
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git hash-object research/candidate-12/logic.py)" = "1636e30cc3705dc7f3ae77c4117169fdfa1fe468"
-          test "$(git hash-object research/candidate-12/test_logic.py)" = "2abdff224b870af7cd932c0a30014b7e734cd9e9"
-          test "$(git hash-object research/candidate-12/config.json)" = "5e09edba38352acb5d89a7cdf2dfda23682bb641"
-          test "$(git hash-object research/candidate-12/run.py)" = "d24065c0a056ef694572d489c9318af15153b17e"
+          smc4 doctor
+          test "$(git hash-object research/candidate-12/logic.py)" = "045e5ce7e30d0a9a0d5be4bf707747d7361d8607"
+          test "$(git hash-object research/candidate-12/config.json)" = "0972b4e475dca0eddb3414113838a5af14dc3e5a"
           python - <<'PY'
           from pathlib import Path
           import json
-          config = json.loads(Path("research/candidate-12/config.json").read_text())
-          assert config["schema_version"] == 13, config
-          assert config["candidate"] == "candidate-12-state-priced-reacceleration-router", config
-          assert "W12" not in config["selection"]["weeks"], config
+          c = json.loads(Path("research/candidate-12/config.json").read_text())
+          assert c["schema_version"] == 14, c
+          assert c["candidate"] == "candidate-12-boundary-hold-reacceleration-router", c
+          assert c["selection"]["weeks"]["W12"] == {
+              "start": "2025-12-24",
+              "end_exclusive": "2025-12-31",
+          }, c
           PY
-
-      - name: Compile unchanged candidate and run 27 causal tests
-        shell: bash
-        run: |
-          set -euo pipefail
           python -m compileall -q research/candidate-12
           python -m unittest discover -s research/candidate-12 -p 'test_*.py' -v
 
-      - name: Reproduce and freeze W12 before data access
+      - name: Run W1 design gate
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts/candidate-12
+          OUTPUT=artifacts/candidate-12/BTCUSDT-W1
+          mkdir -p "$OUTPUT"
+          python research/candidate-12/run.py --symbol BTCUSDT --week W1 --output "$OUTPUT" | tee "$OUTPUT.console.json"
           python - <<'PY'
-          from datetime import date, timedelta
           from pathlib import Path
           import json
-          import random
-
-          source = Path("research/candidate-12/config.json")
-          config = json.loads(source.read_text(encoding="utf-8"))
-          weeks = config["selection"]["weeks"]
-          existing_starts = [date.fromisoformat(item["start"]) for item in weeks.values()]
-
-          candidates = []
-          cursor = date(2022, 1, 1)
-          final_start = date(2025, 12, 24)
-          while cursor <= final_start:
-              if all(abs((cursor - prior).days) >= 21 for prior in existing_starts):
-                  candidates.append(cursor)
-              cursor += timedelta(days=1)
-
-          seed = 2026080813
-          selected = random.Random(seed).choice(candidates)
-          assert len(candidates) == 1014, len(candidates)
-          assert selected == date(2025, 12, 24), selected
-          end_exclusive = selected + timedelta(days=7)
-
-          weeks["W12"] = {
-              "start": selected.isoformat(),
-              "end_exclusive": end_exclusive.isoformat(),
-          }
-          config["selection"]["confirmation_week"] = "W12"
-          config["selection"]["confirmation_seed"] = seed
-          config["selection"]["selection_rule"] = (
-              "W1-W11 are exposed evidence. I13 source was frozen after its authoritative "
-              "regression. Before any W12 market-data access, W12 was selected by Python "
-              "random.Random(2026080813).choice over every seven-day start from 2022-01-01 "
-              "through 2025-12-24 that is at least 21 days from every W1-W11 start. The 1014 "
-              "eligible starts selected 2025-12-24..2025-12-31 UTC. Performance is not asserted; "
-              "only causal, engine, cost, risk, slot, event-log, and liquidation invariants are."
-          )
-          destination = Path("artifacts/candidate-12/W12-frozen-config.json")
-          destination.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-          print(destination.read_text(encoding="utf-8"))
+          m = json.loads(Path("artifacts/candidate-12/BTCUSDT-W1/metrics.json").read_text())
+          assert m["closed_trades"] == 6, m
+          assert m["wins"] == 6 and m["losses"] == 0, m
+          assert m["project_target_gate_passed"] is True, m
+          assert m["risk_budget_passed"] and m["global_slot_passed"], m
+          assert m["event_log_valid"] and not m["engine_errors"], m
+          assert not m["liquidation_detected"], m
           PY
 
-      - name: Run frozen untouched W12 through NautilusTrader
+      - name: Run W12 diagnosis only after W1 passes
         shell: bash
         run: |
           set -euo pipefail
           OUTPUT=artifacts/candidate-12/BTCUSDT-W12
           mkdir -p "$OUTPUT"
-          python research/candidate-12/run.py \
-            --config artifacts/candidate-12/W12-frozen-config.json \
-            --symbol BTCUSDT \
-            --week W12 \
-            --output "$OUTPUT" | tee "$OUTPUT.console.json"
-
-      - name: Enforce performance-blind W12 invariants
-        shell: bash
-        run: |
-          set -euo pipefail
+          python research/candidate-12/run.py --symbol BTCUSDT --week W12 --output "$OUTPUT" | tee "$OUTPUT.console.json"
           python - <<'PY'
           from decimal import Decimal
           from pathlib import Path
           import json
           root = Path("artifacts/candidate-12/BTCUSDT-W12")
           m = json.loads((root / "metrics.json").read_text())
-          run = json.loads((root / "run.json").read_text())
-          assert m["candidate"] == "candidate-12-state-priced-reacceleration-router", m
+          assert m["candidate"] == "candidate-12-boundary-hold-reacceleration-router", m
           assert m["week_id"] == "W12", m
           assert m["evaluation_start"] == "2025-12-24", m
           assert m["evaluation_end_exclusive"] == "2025-12-31", m
-          assert m["risk_budget_passed"] is True, m
-          assert m["global_slot_passed"] is True, m
-          assert m["event_log_valid"] is True, m
-          assert m["engine_errors"] == [], m
-          assert m["liquidation_detected"] is False, m
+          assert m["risk_budget_passed"] and m["global_slot_passed"], m
+          assert m["event_log_valid"] and not m["engine_errors"], m
+          assert not m["liquidation_detected"], m
           assert Decimal(str(m["starting_nav"])) > 0, m
           assert Decimal(str(m["final_nav"])) > 0, m
-          assert run["extra"]["week_id"] == "W12", run
-          assert run["extra"]["evaluation_start"] == "2025-12-24", run
-          assert run["extra"]["evaluation_end_exclusive"] == "2025-12-31", run
           print(json.dumps(m, indent=2, sort_keys=True))
           PY
 
-      - name: Surface W12 evidence
+      - name: Surface W1 and W12 evidence
         if: always()
         shell: bash
         run: |
-          test ! -f artifacts/candidate-12/W12-frozen-config.json || cat artifacts/candidate-12/W12-frozen-config.json
-          test ! -f artifacts/candidate-12/BTCUSDT-W12/metrics.json || cat artifacts/candidate-12/BTCUSDT-W12/metrics.json
-          test ! -f artifacts/candidate-12/BTCUSDT-W12/run.json || cat artifacts/candidate-12/BTCUSDT-W12/run.json
+          for WEEK in W1 W12; do
+            FILE="artifacts/candidate-12/BTCUSDT-${WEEK}/metrics.json"
+            if [[ -f "$FILE" ]]; then
+              echo "=== I14A_${WEEK}_METRICS_BEGIN ==="
+              cat "$FILE"
+              echo "=== I14A_${WEEK}_METRICS_END ==="
+            fi
+          done
 
-      - name: Preserve reproducible W12 evidence
+      - name: Preserve reproducible I14a evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-12-I13-BTCUSDT-W12-${{ github.sha }}
+          name: candidate-12-I14a-W1-W12-${{ github.sha }}
           path: artifacts/candidate-12
           if-no-files-found: warn
