@@ -1,0 +1,151 @@
+name: candidate-16-v3-development
+
+on:
+  push:
+    branches: ["research/candidate-16"]
+    paths:
+      - "research/candidate-16/candidate_v3.py"
+      - "research/candidate-16/strategy_v3.py"
+      - "research/candidate-16/tests/test_strategy_v3.py"
+      - ".github/workflows/candidate-16-v3-development.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v3-development
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-isolation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v3-development
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and isolated objective contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-16
+          python -m unittest discover -s research/candidate-16/tests -p 'test_accepted_failure_router.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v3.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_timestamp_contract.py' -v
+
+      - name: Run v3 on the already-consumed v2 development week
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/candidate_v3.py stage \
+            --config research/candidate-16/config.json \
+            --build-start 2025-02-07 \
+            --build-end 2025-02-16 \
+            --evaluation-start 2025-02-10 \
+            --evaluation-end 2025-02-16 \
+            --cache .cache/candidate-16-v3-development \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Attribute the single changed role
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = json.loads((root / "strategy_diagnostics.json").read_text())
+          trades = int(metrics.get("trades", 0))
+          wins = int(metrics.get("wins", 0))
+          total_return = float(metrics.get("total_return", 0.0))
+          integrity = (
+              int(metrics.get("liquidations", 0)) == 0
+              and int(diagnostics.get("order_rejections", 0)) == 0
+              and int(diagnostics.get("max_simultaneous_entry_intents", 0)) <= 1
+              and int(diagnostics.get("max_open_positions_observed", 0)) <= 1
+              and float(metrics.get("min_equity", 0.0)) > 0.0
+          )
+          if trades == 0:
+              classification = "V3_OBJECTIVE_DID_NOT_EXERCISE_ORDER_PATH"
+          elif not integrity:
+              classification = "V3_EXECUTION_OR_ACCOUNT_INTEGRITY_FAILURE"
+          elif total_return <= 0.0:
+              classification = "V3_OBJECTIVE_UNLOCKED_TRADES_BUT_ALPHA_WAS_NEGATIVE"
+          elif bool(metrics.get("gate_pass", False)):
+              classification = "V3_DEVELOPMENT_GATE_PASS_PRE_REGISTER_UNTOUCHED"
+          else:
+              classification = "V3_POSITIVE_DEVELOPMENT_BELOW_FULL_GATE"
+          result = {
+              "schema": "candidate-16-v3-development-v1",
+              "classification": classification,
+              "development_period_reused_from_v2": ["2025-02-10", "2025-02-16"],
+              "single_changed_role": "delivery objective",
+              "integrity_pass": integrity,
+              "gate_pass": bool(metrics.get("gate_pass", False)),
+              "metrics": {
+                  "starting_nav": metrics.get("starting_nav"),
+                  "ending_nav": metrics.get("ending_nav"),
+                  "total_return": total_return,
+                  "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                  "max_drawdown": metrics.get("max_drawdown"),
+                  "trades": trades,
+                  "wins": wins,
+                  "losses": metrics.get("losses"),
+                  "win_rate": metrics.get("win_rate"),
+                  "profit_factor": metrics.get("profit_factor"),
+                  "expectancy_usdt": metrics.get("expectancy_usdt"),
+                  "liquidations": metrics.get("liquidations"),
+              },
+              "diagnostics": {
+                  key: value
+                  for key, value in diagnostics.items()
+                  if key.startswith("candidate16_v2_")
+                  or key.startswith("candidate16_v3_")
+                  or key in {
+                      "entry_submissions",
+                      "order_rejections",
+                      "max_simultaneous_entry_intents",
+                      "max_open_positions_observed",
+                  }
+              },
+          }
+          (root / "v3_development_decision.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=True) + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True, allow_nan=True))
+          PY
+
+      - name: Verify authoritative evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/metrics.json"
+          python -m json.tool "$ROOT/v3_development_decision.json"
+          for file in run.json data_manifest.json raw_evidence.json orders.csv positions.csv account.csv equity.csv strategy_diagnostics.json closed_scenarios.json scenario_events.jsonl candidate16_contract.json; do
+            test -s "$ROOT/$file"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v3-development-${{ github.sha }}
+          path: artifacts/candidate-16-v3-development/**
+          if-no-files-found: warn
+          retention-days: 90
