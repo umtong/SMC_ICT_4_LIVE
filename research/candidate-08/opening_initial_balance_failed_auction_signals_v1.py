@@ -609,7 +609,7 @@ def build_opening_failed_auction_signals(
                 "initial_balance_low": balance.low,
                 "initial_balance_midpoint": balance.midpoint,
                 "swept_edge": attempt.swept_edge,
-                "ten_second_alpha_inputs": false,
+                "ten_second_alpha_inputs": False,
             }
             events = (
                 QuoteResiliencyLogicEvent(
