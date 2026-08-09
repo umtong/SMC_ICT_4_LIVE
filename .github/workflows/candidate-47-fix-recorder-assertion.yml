@@ -1,0 +1,41 @@
+name: candidate-47-fix-recorder-assertion
+
+on:
+  push:
+    branches: ["research/candidate-47"]
+    paths:
+      - ".github/workflows/candidate-47-fix-recorder-assertion.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-47
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Accept the runner's boolean-safe diagnostic representation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/candidate-47-structural-continuous-recorder.yml')
+          text = path.read_text(encoding='utf-8')
+          old = 'assert diagnostics.get("followthrough_recorder_changes_trading_policy") is False'
+          new = 'assert not bool(diagnostics.get("followthrough_recorder_changes_trading_policy", 0))'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one recorder assertion, found {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          git config user.name candidate-47-research-bot
+          git config user.email candidate-47-research-bot@users.noreply.github.com
+          git add .github/workflows/candidate-47-structural-continuous-recorder.yml
+          git commit -m "candidate47: fix recorder boolean assertion"
+          git push origin HEAD:research/candidate-47
