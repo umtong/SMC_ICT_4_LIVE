@@ -1,0 +1,62 @@
+{
+  "family": "real_binance_microauction_states",
+  "workflow_run": 31320431632,
+  "source": "azseza/smallfish_ ideas measured on real Binance aggTrades and bookDepth",
+  "source_performance_used_as_evidence": false,
+  "classification": "IMPLEMENTATION_CONTAMINATED_NO_FINAL_LOGIC_VERDICT",
+  "economic_results_quarantined": true,
+  "implementation_defect": {
+    "name": "actual fill outside frozen bracket was not revalidated",
+    "mechanism": "A signal was risk-sized and bracketed at the completed signal-bar close. The next-minute market fill sometimes opened beyond the structural stop. Nautilus correctly rejected the protective stop as already in the market, but the strategy retained the now-invalid unprotected position until another exit.",
+    "representative_rejection": "STOP_MARKET order stop price was in the market at the actual bid/ask",
+    "why_material": [
+      "The executed scenario no longer had the frozen entry-stop-target ordering.",
+      "The actual stop-out loss could exceed the current-NAV 3% budget.",
+      "Timeout and opposite-state outcomes after the stop rejection are not outcomes of the intended strategy."
+    ],
+    "fix": "event_lifecycle_patch actual-fill-v1 immediately flattens any fill outside the frozen bracket or above the 3% actual planned-loss budget without moving the stop or target.",
+    "fix_commit": "ea9509eea993b2168a81b2154c63bcf637f05ac7",
+    "frozen_rule_rerun": 31321121096
+  },
+  "quarantined_results": {
+    "continuation": {
+      "trades": 12,
+      "wins": 1,
+      "losses": 11,
+      "total_return": -0.25637438958540004,
+      "profit_factor": 0.05079336918124193,
+      "expectancy_usdt": -2136.4532465449997,
+      "order_rejections": 15,
+      "logic_signal": "Hundreds of accepted observations are not present, and multiple invalid fills are material; do not issue a clean logic verdict before rerun."
+    },
+    "absorption": {
+      "trades": 34,
+      "wins": 4,
+      "losses": 30,
+      "total_return": -0.40180205954939996,
+      "profit_factor": 0.028966757333515246,
+      "expectancy_usdt": -1181.7707633805883,
+      "order_rejections": 6,
+      "logic_signal": "The accepted valid-looking sample is strongly negative, but formal rejection is deferred until fill-invalidated episodes are handled correctly."
+    },
+    "unified": {
+      "trades": 45,
+      "wins": 4,
+      "losses": 41,
+      "total_return": -0.5885284472415,
+      "profit_factor": 0.014787576978361012,
+      "expectancy_usdt": -1307.8409938700001,
+      "order_rejections": 18,
+      "logic_signal": "Not eligible for integration because both component families are unclean and negative."
+    }
+  },
+  "invariants_that_did_pass": {
+    "real_checksum_verified_features": true,
+    "no_future_feature": true,
+    "single_continuous_account_per_run": true,
+    "global_position_violations": 0,
+    "max_open_positions": 1,
+    "liquidations": 0
+  },
+  "decision_rule": "Only the same frozen signals under actual-fill-v1 may determine LOGIC_FAILURE, LOGIC_OPPORTUNITY_FAILURE, or survivor status."
+}
