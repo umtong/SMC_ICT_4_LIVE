@@ -1,32 +1,63 @@
 name: candidate-53-doolmedia-silverbox
+
 on:
   push:
-    branches: [research/candidate-53]
+    branches: ["research/candidate-53"]
     paths:
-      - 'research/candidate-53/doolmedia_silverbox_causal_study.py'
-      - '.github/workflows/candidate-53-doolmedia-silverbox.yml'
+      - "research/candidate-53/doolmedia_silverbox_causal_study.py"
+      - ".github/workflows/candidate-53-doolmedia-silverbox.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   study:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     container:
-      image: ghcr.io/umtong/smc-ict-4-research:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/c53-doolmedia-2025
     steps:
       - uses: actions/checkout@v4
-      - name: Reuse monthly loader dependency
+        with:
+          ref: research/candidate-53
+          fetch-depth: 0
+
+      - name: Reuse checksum-verified Binance monthly loader
+        shell: bash
         run: |
-          cp research/candidate-29/v9_liquidation_event_study.py research/candidate-53/v9_liquidation_event_study.py
+          set -euo pipefail
+          git config --global --add safe.directory "$(pwd)"
+          git fetch origin research/candidate-16-v13-volatility-squeeze-release:refs/remotes/origin/c16-v13
+          rm -rf .deps/c16 && mkdir -p .deps
+          git worktree add --detach .deps/c16 refs/remotes/origin/c16-v13
+          git config --global --add safe.directory "$(pwd)/.deps/c16"
+          PYTHONPATH=.deps/c16/research/candidate-16:research/candidate-53 python -m py_compile \
+            research/candidate-53/doolmedia_silverbox_causal_study.py \
+            research/candidate-53/keltrader_causal_study.py \
+            .deps/c16/research/candidate-16/v9_liquidation_event_study.py
+
       - name: Execute frozen public-rule reconstruction on 2025
+        shell: bash
         env:
-          PYTHONPATH: research/candidate-53
+          PYTHONPATH: .deps/c16/research/candidate-16:research/candidate-53
         run: |
-          python research/candidate-53/doolmedia_silverbox_causal_study.py --year 2025 --output artifacts/c53-doolmedia-2025 | tee artifacts/c53-doolmedia-2025-console.log
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          python research/candidate-53/doolmedia_silverbox_causal_study.py \
+            --year 2025 \
+            --cache .cache/c53-doolmedia \
+            --output "$ROOT" 2>&1 | tee "$ROOT/console.log"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: candidate-53-doolmedia-2025-${{ github.sha }}
-          path: |
-            artifacts/c53-doolmedia-2025
-            artifacts/c53-doolmedia-2025-console.log
+          path: artifacts/c53-doolmedia-2025/**
+          if-no-files-found: warn
+          retention-days: 30
