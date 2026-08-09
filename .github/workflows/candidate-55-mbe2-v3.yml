@@ -1,0 +1,115 @@
+name: candidate-55-mbe2-v3
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-mbe2-v3.yml"
+      - "research/candidate-55/run_mbe2_tournament.py"
+      - "research/candidate-55/router_mbe2.py"
+      - "research/candidate-55/strategy_mbe2.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-55-mbe2-v3
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+          fetch-depth: 0
+
+      - name: Materialize reused Nautilus execution and corrected source policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_mbe2.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_mbe2.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and validate contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import RouteConfig, _decode_mode, _effective_leverage, _tema, source_entry_flags
+
+          assert _decode_mode("pair_both") == ("pair", "both")
+          assert _decode_mode("pair_short") == ("pair", "short")
+          assert _decode_mode("average_long") == ("average", "long")
+          cfg = RouteConfig(picasso_source_effective_leverage=6.46)
+          assert abs(_effective_leverage("BTCUSDT", cfg, "pair_both") - 10.0) < 1e-12
+          assert abs(_effective_leverage("XRPUSDT", cfg, "pair_both") - 4.166666666666667) < 1e-12
+          assert abs(_effective_leverage("SOLUSDT", cfg, "average_both") - 6.46) < 1e-12
+          assert source_entry_flags(
+              previous_rsi=29.0, current_rsi=31.0,
+              previous_tema=99.0, current_tema=100.0,
+              bb_middle=101.0, volume=1.0,
+          ) == (True, False)
+          assert source_entry_flags(
+              previous_rsi=71.0, current_rsi=69.0,
+              previous_tema=101.0, current_tema=100.0,
+              bb_middle=99.0, volume=1.0,
+          ) == (False, True)
+          tema = _tema([100.0] * 80, 9)
+          assert math.isfinite(tema[-1]) and abs(tema[-1] - 100.0) < 1e-9
+          print("Corrected MBE2 source and execution contracts verified")
+          PY
+
+      - name: Run source-first tournament
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_mbe2_tournament.py
+
+      - name: Persist evidence on candidate branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="research/candidate-55/evidence/v2-mbe2"
+          if [[ ! -f "$evidence/RESULT.json" ]]; then
+            echo "No complete tournament result to persist" >&2
+            exit 1
+          fi
+          git config user.name "candidate-55-research-bot"
+          git config user.email "candidate-55-research-bot@users.noreply.github.com"
+          git add "$evidence"
+          if git diff --cached --quiet; then
+            echo "Evidence already current"
+            exit 0
+          fi
+          git commit -m "candidate55: persist corrected MBE2 tournament evidence"
+          pushed=0
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-55 && git push origin HEAD:research/candidate-55; then
+              pushed=1
+              break
+            fi
+            sleep $((attempt * 4))
+          done
+          [[ "$pushed" -eq 1 ]]
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-mbe2-v3-${{ github.sha }}
+          path: artifacts/candidate-55/mbe2-v3-*
+          if-no-files-found: warn
