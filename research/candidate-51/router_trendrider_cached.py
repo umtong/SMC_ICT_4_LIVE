@@ -2,8 +2,11 @@
 
 This module preserves ``router_trendrider`` semantics but accepts already
 completed 1h/4h/1d candles from the strategy adapter.  It avoids repeatedly
-scanning tens of thousands of minute bars at every hourly decision.  No signal,
-threshold, context, geometry, or management rule changes.
+scanning tens of thousands of minute bars at every hourly decision.
+
+Source-parity details are explicit: the traded symbol uses the tuned RSI16,
+BTC context uses the source's RSI14, and an available-but-not-yet-warmed daily
+series leaves EMA200 unavailable rather than replacing it with zero.
 """
 from __future__ import annotations
 
@@ -64,15 +67,36 @@ def evaluate_entry_aggregated(
     is_bull_4h = int(four_snapshot.is_bull) if four_snapshot else 0
     adx_4h = float(four_snapshot.adx) if four_snapshot else 0.0
 
-    daily_ema_200 = 0.0
+    # The public Freqtrade dataframe contains the daily column whenever daily
+    # data exists.  Before 200 completed days its EMA is NaN, so the
+    # trend_pullback branch must remain false.  Zero is used only for the
+    # source's true no-data fallback.
+    daily_ema_200 = math.nan if days else 0.0
     if len(days) >= 200:
         values = _base._ema([float(candle.close) for candle in days], 200)
         if values and _base._finite(values[-1]):
             daily_ema_200 = float(values[-1])
 
-    btc_snapshot = _base._snapshot(btc_hours, config)
-    btc_rsi = float(btc_snapshot.rsi) if btc_snapshot else 50.0
-    btc_is_bull = int(btc_snapshot.is_bull) if btc_snapshot else 1
+    # BTC context in the public source is fixed RSI14 + EMA50/EMA200,
+    # independent of the traded symbol's tuned RSI16.
+    btc_rsi = 50.0
+    btc_is_bull = 1
+    if len(btc_hours) >= 201:
+        btc_closes = [float(candle.close) for candle in btc_hours]
+        btc_rsi_values = _base._rsi(btc_closes, 14)
+        btc_ema_50 = _base._ema(btc_closes, 50)
+        btc_ema_200 = _base._ema(btc_closes, 200)
+        if _base._finite(
+            btc_rsi_values[-1],
+            btc_ema_50[-1],
+            btc_ema_200[-1],
+        ):
+            btc_rsi = float(btc_rsi_values[-1])
+            btc_is_bull = int(
+                btc_closes[-1] > float(btc_ema_200[-1])
+                and float(btc_ema_50[-1]) > float(btc_ema_200[-1])
+            )
+
     context: dict[str, float | int | str] = {
         "is_bull_4h": is_bull_4h,
         "adx_4h": adx_4h,
@@ -104,6 +128,7 @@ def evaluate_entry_aggregated(
         and volume_positive
         and btc_ok
         and snapshot.rsi < 70.0
+        and math.isfinite(daily_ema_200)
         and snapshot.close > daily_ema_200
     ):
         tags.append("trend_pullback")
@@ -240,6 +265,8 @@ def route_universe_aggregated(
             "reject_reason": evaluation.reject_reason,
             **dict(evaluation.context),
             "evaluation_path": "cached-completed-1h-4h-1d",
+            "btc_context_rsi_period": 14,
+            "traded_symbol_rsi_period": int(config.trendrider_rsi_period),
         }
         if snapshot is not None:
             diagnostics.update(
