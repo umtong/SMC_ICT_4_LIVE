@@ -1,0 +1,174 @@
+name: candidate-55-zaratustra-v13-v1
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v13-v1.yml"
+      - "research/candidate-55/run_zaratustra_v13_tournament.py"
+      - "research/candidate-55/router_zaratustra_v13.py"
+      - "research/candidate-55/strategy_zaratustra_v13.py"
+      - "research/candidate-55/router_zaratustra.py"
+      - "research/candidate-55/strategy_zaratustra.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-55-zaratustra-v13-v1
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+          fetch-depth: 0
+
+      - name: Materialize reused Nautilus execution and V13 source policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra_v13.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install, doctor and validate source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import (
+              BarObservation,
+              _adx_dx,
+              _decode_mode,
+              _directional_indicators,
+              source_entry_flags,
+          )
+
+          assert _decode_mode("source_both") == ("source", "both")
+          assert _decode_mode("di_short") == ("di", "short")
+          assert _decode_mode("bb_long") == ("bb", "long")
+
+          long_di = source_entry_flags(
+              previous_close=100.0,
+              current_close=100.0,
+              previous_lower=95.0,
+              current_lower=95.0,
+              previous_upper=105.0,
+              current_upper=105.0,
+              dx=40.0,
+              adx=35.0,
+              pdi=30.0,
+              mdi=20.0,
+          )
+          assert long_di == {
+              "long_di": True,
+              "long_bb": False,
+              "short_di": False,
+              "short_bb": False,
+          }, long_di
+
+          long_bb = source_entry_flags(
+              previous_close=104.0,
+              current_close=106.0,
+              previous_lower=95.0,
+              current_lower=95.0,
+              previous_upper=105.0,
+              current_upper=105.0,
+              dx=10.0,
+              adx=10.0,
+              pdi=10.0,
+              mdi=10.0,
+          )
+          assert long_bb["long_bb"] and not long_bb["short_bb"], long_bb
+
+          short_di = source_entry_flags(
+              previous_close=100.0,
+              current_close=100.0,
+              previous_lower=95.0,
+              current_lower=95.0,
+              previous_upper=105.0,
+              current_upper=105.0,
+              dx=35.0,
+              adx=30.0,
+              pdi=15.0,
+              mdi=25.0,
+          )
+          assert short_di["short_di"] and not short_di["long_di"], short_di
+
+          bars = [
+              BarObservation(
+                  ts_event=index * 60_000_000_000,
+                  open=100.0 + index,
+                  high=102.0 + index,
+                  low=100.0 + index,
+                  close=101.0 + index,
+                  volume=1.0,
+              )
+              for index in range(80)
+          ]
+          plus, minus = _directional_indicators(bars, 14)
+          dx, adx = _adx_dx(plus, minus, 14)
+          assert math.isfinite(plus[-1]) and abs(plus[-1] - 50.0) < 1e-9
+          assert math.isfinite(minus[-1]) and abs(minus[-1]) < 1e-9
+          assert math.isfinite(dx[-1]) and abs(dx[-1] - 100.0) < 1e-9
+          assert math.isfinite(adx[-1]) and abs(adx[-1] - 100.0) < 1e-9
+          print("ZaratustraV13 source, DMI, ADX and variant contracts verified")
+          PY
+
+      - name: Run source-first tournament
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_zaratustra_v13_tournament.py
+
+      - name: Persist evidence on candidate branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="research/candidate-55/evidence/v4-zaratustra-v13"
+          if [[ ! -f "$evidence/RESULT.json" ]]; then
+            echo "No complete ZaratustraV13 tournament result to persist" >&2
+            exit 1
+          fi
+          git config user.name "candidate-55-research-bot"
+          git config user.email "candidate-55-research-bot@users.noreply.github.com"
+          git add "$evidence"
+          if git diff --cached --quiet; then
+            echo "Evidence already current"
+            exit 0
+          fi
+          git commit -m "candidate55: persist ZaratustraV13 tournament evidence"
+          pushed=0
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-55 && git push origin HEAD:research/candidate-55; then
+              pushed=1
+              break
+            fi
+            sleep $((attempt * 4))
+          done
+          [[ "$pushed" -eq 1 ]]
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v13-v1-${{ github.sha }}
+          path: artifacts/candidate-55/zaratustra-v13-v1-*
+          if-no-files-found: warn
