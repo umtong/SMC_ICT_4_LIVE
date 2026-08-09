@@ -1,0 +1,298 @@
+name: candidate-51-sma-offset-v5
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-sma-offset-v5.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-sma-offset-v5
+  cancel-in-progress: false
+
+jobs:
+  repair-and-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout Candidate 51
+        uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Repair close-timestamp phase handling and add regression contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          router = Path("research/candidate-51/router.py")
+          text = router.read_text(encoding="utf-8")
+          old = '''    minute_ns = 60_000_000_000
+              bucket_ns = bucket_minutes * minute_ns
+              grouped: dict[int, list[BarObservation]] = {}
+              for bar in bars:
+                  grouped.setdefault(int(bar.ts_event) // bucket_ns, []).append(bar)
+          
+              output: list[BarObservation] = []
+              for key in sorted(grouped):
+                  items = sorted(grouped[key], key=lambda item: item.ts_event)
+                  if len(items) != bucket_minutes:
+                      continue
+                  if any(
+                      items[index].ts_event - items[index - 1].ts_event != minute_ns
+                      for index in range(1, len(items))
+                  ):
+                      continue
+                  expected_end = (key + 1) * bucket_ns - 1
+                  if int(items[-1].ts_event) != expected_end:
+                      continue
+                  output.append(
+          '''.replace("              ", "    ")
+          new = '''    minute_ns = 60_000_000_000
+              if not bars:
+                  return []
+          
+              # Binance historical klines close one millisecond before a minute
+              # boundary, while synthetic contracts commonly use one nanosecond.
+              # Derive the phase from the observed stream instead of hard-coding
+              # either representation. A phase change is treated as a data gap.
+              phases = [int(bar.ts_event) % minute_ns for bar in bars]
+              phase = phases[-1]
+              grouped: dict[int, list[tuple[int, BarObservation]]] = {}
+              for bar, observed_phase in zip(bars, phases, strict=True):
+                  if observed_phase != phase:
+                      continue
+                  ordinal = (int(bar.ts_event) - phase) // minute_ns
+                  grouped.setdefault(ordinal // bucket_minutes, []).append((ordinal, bar))
+          
+              output: list[BarObservation] = []
+              for key in sorted(grouped):
+                  indexed = sorted(grouped[key], key=lambda item: item[0])
+                  if len(indexed) != bucket_minutes:
+                      continue
+                  ordinals = [item[0] for item in indexed]
+                  if ordinals[0] % bucket_minutes != 0:
+                      continue
+                  if ordinals[-1] % bucket_minutes != bucket_minutes - 1:
+                      continue
+                  if any(
+                      ordinals[index] - ordinals[index - 1] != 1
+                      for index in range(1, len(ordinals))
+                  ):
+                      continue
+                  items = [item[1] for item in indexed]
+                  output.append(
+          '''.replace("              ", "    ")
+          if old not in text:
+              raise RuntimeError("timestamp aggregation contract not found")
+          router.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          tests = Path("research/candidate-51/test_router.py")
+          test_text = tests.read_text(encoding="utf-8")
+          marker = "def test_binance_millisecond_close_phase_is_supported():"
+          if marker not in test_text:
+              test_text += '''
+          
+          
+          def test_binance_millisecond_close_phase_is_supported():
+              bars = _dip_bars()
+              shifted = [
+                  BarObservation(
+                      bar.ts_event - 999_999,
+                      bar.open,
+                      bar.high,
+                      bar.low,
+                      bar.close,
+                      bar.volume,
+                  )
+                  for bar in bars
+              ]
+              decision = classify_sma_offset(
+                  "BTCUSDT",
+                  shifted,
+                  FeatureObservation(shifted[-1].ts_event),
+                  RouteConfig(),
+              )
+              assert decision.actionable, (decision.reasons, decision.diagnostics)
+              assert decision.state == SMA_OFFSET_STATE
+          '''.replace("          ", "")
+              tests.write_text(test_text, encoding="utf-8")
+          PY
+
+      - name: Set up Python and locked runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify foundation
+        run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          uv run --with pytest python -m pytest -q research/candidate-51/test_router.py
+
+      - name: Predeclare repaired variants
+        run: |
+          python - <<'PY'
+          import copy
+          import hashlib
+          import json
+          from pathlib import Path
+
+          source = json.loads(Path("research/candidate-51/config.json").read_text())
+          variants = {"exact0960": 0.960, "moderate0980": 0.980, "shallow0990": 0.990}
+          work = Path(".work/candidate-51-v5")
+          work.mkdir(parents=True, exist_ok=True)
+          manifest = {
+              "family": "public_SMAOffsetV2_causal_adaptation",
+              "implementation_repair": "phase-robust completed-candle aggregation",
+              "invalid_predecessor": "v4 produced no completed 5m/1h candles because it hard-coded a one-nanosecond close phase",
+              "development_interval": ["2026-07-22", "2026-07-28"],
+              "variants": variants,
+              "selection_rule": "positive post-cost expectancy and geometric growth, at least seven completed trades, and no integrity violation",
+              "router_sha256": hashlib.sha256(Path("research/candidate-51/router.py").read_bytes()).hexdigest(),
+          }
+          (work / "variant_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          for name, offset in variants.items():
+              config = copy.deepcopy(source)
+              config["strategy"]["sma_offset_low"] = offset
+              (work / f"{name}.json").write_text(json.dumps(config, indent=2) + "\n")
+          PY
+
+      - name: Run exact source offset
+        run: |
+          uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-v5/exact0960.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v5 \
+            --output artifacts/candidate-51/v5-exact0960-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v5-exact
+
+      - name: Run moderate opportunity offset
+        run: |
+          uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-v5/moderate0980.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v5 \
+            --output artifacts/candidate-51/v5-moderate0980-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v5-moderate
+
+      - name: Run shallow opportunity offset
+        run: |
+          uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-v5/shallow0990.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v5 \
+            --output artifacts/candidate-51/v5-shallow0990-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v5-shallow
+
+      - name: Compare valid variants
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          roots = {
+              name: Path(f"artifacts/candidate-51/v5-{name}-development-2026-07-22_2026-07-28")
+              for name in ("exact0960", "moderate0980", "shallow0990")
+          }
+          comparison = {}
+          for name, root in roots.items():
+              metrics_path = root / "metrics.json"
+              diagnostics_path = root / "strategy_diagnostics.json"
+              if not metrics_path.is_file() or not diagnostics_path.is_file():
+                  comparison[name] = {"produced": False}
+                  continue
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              comparison[name] = {
+                  "produced": True,
+                  "ending_nav": metrics.get("ending_nav"),
+                  "total_return": metrics.get("total_return"),
+                  "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                  "max_drawdown": metrics.get("max_drawdown"),
+                  "trades": metrics.get("trades"),
+                  "wins": metrics.get("wins"),
+                  "win_rate": metrics.get("win_rate"),
+                  "profit_factor": metrics.get("profit_factor"),
+                  "expectancy_usdt": metrics.get("expectancy_usdt"),
+                  "source_signals": diagnostics.get("source_signals_before_execution_filters"),
+                  "entries": diagnostics.get("entry_submissions"),
+                  "funding_rejections": diagnostics.get("funding_runway_rejections"),
+                  "reward_rejections": diagnostics.get("economic_rejections_at_submit"),
+                  "source_exits": diagnostics.get("sma_offset_exit_submissions"),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "global_position_violations": diagnostics.get("global_position_violations"),
+                  "order_rejections": diagnostics.get("order_rejections"),
+                  "unresolved_reason_counts": diagnostics.get("unresolved_reason_counts"),
+              }
+          eligible = [
+              name for name, row in comparison.items()
+              if row.get("produced")
+              and int(row.get("trades") or 0) >= 7
+              and float(row.get("expectancy_usdt") or 0.0) > 0.0
+              and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+              and int(row.get("global_position_violations") or 0) == 0
+              and int(row.get("order_rejections") or 0) == 0
+          ]
+          eligible.sort(key=lambda name: (
+              -float(comparison[name].get("geometric_daily_growth") or 0.0),
+              -float(comparison[name].get("profit_factor") or 0.0),
+              name,
+          ))
+          decision = {
+              "comparison": comparison,
+              "eligible": eligible,
+              "selected": eligible[0] if eligible else None,
+              "family_status": "PROMOTE_TO_UNTOUCHED" if eligible else "REJECT_OR_ADD_INDEPENDENT_FAMILY",
+          }
+          output = Path("artifacts/candidate-51/v5-comparison.json")
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+
+      - name: Persist repaired implementation and compact evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="research/candidate-51/evidence/v5-sma-offset-timestamp-repair-development-2026-07-22_2026-07-28"
+          rm -rf "$root"
+          mkdir -p "$root"
+          cp .work/candidate-51-v5/variant_manifest.json "$root/variant_manifest.json"
+          cp artifacts/candidate-51/v5-comparison.json "$root/comparison.json"
+          for variant in exact0960 moderate0980 shallow0990; do
+            source="artifacts/candidate-51/v5-${variant}-development-2026-07-22_2026-07-28"
+            target="$root/$variant"
+            mkdir -p "$target"
+            for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
+              [[ ! -f "$source/$file" ]] || cp "$source/$file" "$target/$file"
+            done
+          done
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add research/candidate-51/router.py research/candidate-51/test_router.py "$root"
+          git commit -m "candidate51: repair candle phase and persist valid SMAOffsetV2 screen"
+          git push origin HEAD:research/candidate-51
+
+      - name: Preserve full diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-v5-sma-offset-${{ github.sha }}
+          path: |
+            artifacts/candidate-51/v5-*/**/*.json
+            artifacts/candidate-51/v5-*/**/*.csv
+            artifacts/candidate-51/v5-comparison.json
+          if-no-files-found: warn
