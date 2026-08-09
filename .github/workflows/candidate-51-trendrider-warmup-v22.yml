@@ -1,0 +1,470 @@
+name: candidate-51-trendrider-warmup-v22
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-trendrider-warmup-v22.yml"
+      - "research/candidate-51/router_trendrider.py"
+      - "research/candidate-51/router_trendrider_cached.py"
+      - "research/candidate-51/router_trendrider_ranging.py"
+      - "research/candidate-51/strategy_trendrider.py"
+      - "research/candidate-51/strategy_trendrider_cached.py"
+      - "research/candidate-51/launch_kline_only_warmup.py"
+      - "research/candidate-51/kline_only_inputs.py"
+      - "research/candidate-51/event_lifecycle_patch.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-51-trendrider-warmup-v22
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify warmup runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from datetime import date
+          from pathlib import Path
+          import importlib.util
+
+          path = Path("research/candidate-51/launch_kline_only_warmup.py")
+          spec = importlib.util.spec_from_file_location("warmup_contract", path)
+          assert spec is not None and spec.loader is not None
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          assert (date(2025, 3, 1) - date(2024, 8, 1)).days == 212
+          assert (date(2025, 7, 1) - date(2024, 12, 1)).days == 212
+          print("warmup launcher imports and both periods contain 200+ complete days")
+          PY
+
+      - name: Freeze full-source and ranging-router configs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          config = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in (
+              "sma_offset_low",
+              "sma_offset_high",
+              "sma_stop_min_fraction",
+              "sma_stop_max_fraction",
+              "sma_stop_atr_buffer",
+          ):
+              config["strategy"].pop(key, None)
+          frozen = {
+              "feature_max_age_seconds": 65.0,
+              "cooldown_minutes": 0,
+              "max_hold_minutes": 1440,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "trendrider_bucket_minutes": 60,
+              "trendrider_ema_fast": 9,
+              "trendrider_ema_slow": 16,
+              "trendrider_rsi_period": 16,
+              "trendrider_rsi_pullback_low": 30.0,
+              "trendrider_rsi_pullback_high": 65.0,
+              "trendrider_rsi_bounce": 35.0,
+              "trendrider_adx_threshold": 18.0,
+              "trendrider_volume_factor": 0.70,
+              "trendrider_rsi_exit": 78.0,
+              "trendrider_min_confidence_normal": 5,
+              "trendrider_min_confidence_bear": 6,
+              "trendrider_stop_fraction": 0.06,
+              "trendrider_remote_target_fraction": 0.229,
+              "trendrider_trailing_activation": 0.05,
+              "trendrider_trailing_distance": 0.03,
+              "trendrider_roi_124m": 0.136,
+              "trendrider_roi_290m": 0.044,
+              "trendrider_roi_764m": 0.0,
+          }
+          config["strategy"].update(frozen)
+          work = Path(".work/candidate-51-trendrider-v22")
+          work.mkdir(parents=True, exist_ok=True)
+          for variant in ("full", "ranging"):
+              (work / f"{variant}.json").write_text(
+                  json.dumps(config, indent=2, sort_keys=True) + "\n"
+              )
+          manifest = {
+              "family": "public_trendrider_v211_source_warm",
+              "external_source": "darkvolg/trendrider-strategy",
+              "external_performance_used_as_evidence": False,
+              "development_data": {
+                  "data_start": "2024-08-01",
+                  "evaluation_start": "2025-03-01",
+                  "evaluation_end": "2025-05-29",
+                  "warmup_days": 212,
+              },
+              "untouched_data": {
+                  "data_start": "2024-12-01",
+                  "evaluation_start": "2025-07-01",
+                  "evaluation_end": "2025-12-28",
+                  "warmup_days": 212,
+                  "evaluation_days": 181,
+              },
+              "variants": {
+                  "full": "all public long branches and source regime confidence gate",
+                  "ranging": "same public policy, assigned only to exact source RANGING state; routing choice developed on 2025-03-01..2025-05-29",
+              },
+              "engine": "NautilusTrader BacktestNode",
+              "input_mode": "checksum-verified Binance kline-only",
+              "continuous_warmup_and_evaluation": True,
+              "entries_disabled_during_warmup": True,
+              "account_restarts_within_each_run": 0,
+              "strategy_restarts_within_each_run": 0,
+              "risk_fraction": 0.03,
+              "global_position_limit": 1,
+              "actual_fill_contract": "actual-fill-v1",
+              "router_full_sha256": hashlib.sha256(
+                  Path("research/candidate-51/router_trendrider_cached.py").read_bytes()
+              ).hexdigest(),
+              "router_ranging_sha256": hashlib.sha256(
+                  Path("research/candidate-51/router_trendrider_ranging.py").read_bytes()
+              ).hexdigest(),
+              "strategy_sha256": hashlib.sha256(
+                  Path("research/candidate-51/strategy_trendrider_cached.py").read_bytes()
+              ).hexdigest(),
+              "frozen_parameters": frozen,
+          }
+          (work / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Run source-warm development accounts
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-51-trendrider-v22/status
+          for variant in full ranging; do
+            if [[ "$variant" == "full" ]]; then
+              cp research/candidate-51/router_trendrider_cached.py research/candidate-51/router.py
+            else
+              cp research/candidate-51/router_trendrider_ranging.py research/candidate-51/router.py
+            fi
+            cp research/candidate-51/strategy_trendrider_cached.py research/candidate-51/strategy.py
+            PYTHONPATH=research/candidate-51 uv run python \
+              research/candidate-51/launch_kline_only_warmup.py \
+              --config ".work/candidate-51-trendrider-v22/${variant}.json" \
+              --data-start 2024-08-01 \
+              --start 2025-03-01 --end 2025-05-29 \
+              --cache .cache/candidate-51-trendrider-v22 \
+              --output "artifacts/candidate-51/trendrider-v22-${variant}-development" \
+              --workspace ".work/candidate-51-trendrider-v22-${variant}-development"
+            echo $? > ".work/candidate-51-trendrider-v22/status/${variant}-development.txt"
+          done
+          exit 0
+
+      - name: Classify implementation, parity, and development logic
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          def pnl(text):
+              match = re.search(r"[-+]?\d+(?:\.\d+)?", str(text).replace("_", "").replace(",", ""))
+              return float(match.group()) if match else 0.0
+
+          rows = {}
+          eligible = []
+          for variant in ("full", "ranging"):
+              root = Path(
+                  f"artifacts/candidate-51/trendrider-v22-{variant}-development"
+              )
+              mp = root / "metrics.json"
+              dp = root / "strategy_diagnostics.json"
+              cp = root / "closed_scenarios.json"
+              if not mp.is_file() or not dp.is_file() or not cp.is_file():
+                  rows[variant] = {
+                      "classification": "IMPLEMENTATION_BLOCKED",
+                      "produced": False,
+                  }
+                  continue
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              scenarios = json.loads(cp.read_text())
+              valid = [
+                  scenario for scenario in scenarios
+                  if bool(scenario.get("actual_fill_risk_valid"))
+              ]
+              valid_pnls = [pnl(scenario.get("realized_pnl")) for scenario in valid]
+              valid_gp = sum(value for value in valid_pnls if value > 0.0)
+              valid_gl = -sum(value for value in valid_pnls if value < 0.0)
+              day_counts = diagnostics.get("trendrider_day_bars_by_symbol", {})
+              four_counts = diagnostics.get("trendrider_four_hour_bars_by_symbol", {})
+              warmup_ready = (
+                  day_counts
+                  and four_counts
+                  and min(int(value) for value in day_counts.values()) >= 200
+                  and min(int(value) for value in four_counts.values()) >= 200
+              )
+              clean = (
+                  int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+                  and bool(warmup_ready)
+              )
+              trades = int(metrics.get("trades") or 0)
+              positive = (
+                  clean
+                  and trades >= 20
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(metrics.get("max_drawdown") or 1.0) <= 0.20
+                  and sum(valid_pnls) > 0.0
+              )
+              if not warmup_ready:
+                  classification = "IMPLEMENTATION_WARMUP_INCOMPLETE"
+              elif not clean:
+                  classification = "IMPLEMENTATION_INVALID"
+              elif trades == 0:
+                  classification = "LOGIC_OPPORTUNITY_FAILURE"
+              elif positive:
+                  classification = "PROVISIONAL_ALPHA"
+                  eligible.append(variant)
+              else:
+                  classification = "LOGIC_FAILURE"
+              rows[variant] = {
+                  "produced": True,
+                  "classification": classification,
+                  "warmup_ready": bool(warmup_ready),
+                  "metrics": metrics,
+                  "valid_fill_only": {
+                      "trades": len(valid_pnls),
+                      "wins": sum(value > 0.0 for value in valid_pnls),
+                      "losses": sum(value < 0.0 for value in valid_pnls),
+                      "sum_realized_pnl_usdt": sum(valid_pnls),
+                      "expectancy_usdt": (
+                          sum(valid_pnls) / len(valid_pnls)
+                          if valid_pnls else 0.0
+                      ),
+                      "profit_factor": (
+                          valid_gp / valid_gl if valid_gl > 0.0
+                          else (None if valid_gp > 0.0 else 0.0)
+                      ),
+                  },
+                  "diagnostics": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "trendrider_hourly_decisions",
+                          "trendrider_source_candidates",
+                          "trendrider_confidence_rejections",
+                          "trendrider_management_exits",
+                          "unresolved_reason_counts",
+                          "selected_symbols",
+                          "order_rejections",
+                          "global_position_violations",
+                          "max_open_positions_observed",
+                          "fill_invalidations",
+                          "fill_beyond_bracket_invalidations",
+                          "fill_risk_budget_invalidations",
+                          "trendrider_hour_bars_by_symbol",
+                          "trendrider_four_hour_bars_by_symbol",
+                          "trendrider_day_bars_by_symbol",
+                      )
+                  },
+              }
+          result = {
+              "rows": rows,
+              "eligible_for_untouched": eligible,
+              "status": (
+                  "RUN_UNTOUCHED" if eligible
+                  else "NO_CLEAN_DEVELOPMENT_SURVIVOR"
+              ),
+          }
+          output = Path(
+              "artifacts/candidate-51/trendrider-v22-development-comparison.json"
+          )
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-51-trendrider-v22/eligible.txt").write_text(
+              "\n".join(eligible) + ("\n" if eligible else "")
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run every clean policy on 181 untouched days
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          while IFS= read -r variant; do
+            [[ -z "$variant" ]] && continue
+            if [[ "$variant" == "full" ]]; then
+              cp research/candidate-51/router_trendrider_cached.py research/candidate-51/router.py
+            else
+              cp research/candidate-51/router_trendrider_ranging.py research/candidate-51/router.py
+            fi
+            cp research/candidate-51/strategy_trendrider_cached.py research/candidate-51/strategy.py
+            PYTHONPATH=research/candidate-51 uv run python \
+              research/candidate-51/launch_kline_only_warmup.py \
+              --config ".work/candidate-51-trendrider-v22/${variant}.json" \
+              --data-start 2024-12-01 \
+              --start 2025-07-01 --end 2025-12-28 \
+              --cache .cache/candidate-51-trendrider-v22 \
+              --output "artifacts/candidate-51/trendrider-v22-${variant}-untouched" \
+              --workspace ".work/candidate-51-trendrider-v22-${variant}-untouched"
+            echo $? > ".work/candidate-51-trendrider-v22/status/${variant}-untouched.txt"
+          done < .work/candidate-51-trendrider-v22/eligible.txt
+          exit 0
+
+      - name: Write final implementation versus logic verdict
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          development_path = Path(
+              "artifacts/candidate-51/trendrider-v22-development-comparison.json"
+          )
+          development = (
+              json.loads(development_path.read_text())
+              if development_path.is_file() else None
+          )
+          result = {
+              "family": "public_trendrider_v211_source_warm",
+              "external_performance_used_as_evidence": False,
+              "development": development,
+              "untouched": {},
+              "project_gate_pass": False,
+          }
+          eligible = (
+              development.get("eligible_for_untouched", [])
+              if development else []
+          )
+          for variant in eligible:
+              root = Path(
+                  f"artifacts/candidate-51/trendrider-v22-{variant}-untouched"
+              )
+              mp = root / "metrics.json"
+              dp = root / "strategy_diagnostics.json"
+              if not mp.is_file() or not dp.is_file():
+                  result["untouched"][variant] = {
+                      "classification": "IMPLEMENTATION_BLOCKED"
+                  }
+                  continue
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              clean = (
+                  int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+                  and min(
+                      int(value)
+                      for value in diagnostics.get(
+                          "trendrider_day_bars_by_symbol", {"x": 0}
+                      ).values()
+                  ) >= 200
+              )
+              target = (
+                  clean
+                  and float(metrics.get("geometric_daily_growth") or 0.0) >= 0.01
+                  and int(metrics.get("trades") or 0) >= 181
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(metrics.get("max_drawdown") or 1.0) <= 0.20
+              )
+              positive = (
+                  clean
+                  and float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+              )
+              classification = (
+                  "PROJECT_GATE_PASS" if target
+                  else "LOGIC_INSUFFICIENT" if positive
+                  else "LOGIC_FAILURE"
+              )
+              result["untouched"][variant] = {
+                  "classification": classification,
+                  "metrics": metrics,
+                  "diagnostics": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "trendrider_source_candidates",
+                          "trendrider_management_exits",
+                          "unresolved_reason_counts",
+                          "selected_symbols",
+                          "order_rejections",
+                          "global_position_violations",
+                          "max_open_positions_observed",
+                          "fill_invalidations",
+                          "trendrider_hour_bars_by_symbol",
+                          "trendrider_four_hour_bars_by_symbol",
+                          "trendrider_day_bars_by_symbol",
+                      )
+                  },
+              }
+              result["project_gate_pass"] = (
+                  result["project_gate_pass"] or target
+              )
+          if result["project_gate_pass"]:
+              result["classification"] = "PROJECT_GATE_PASS"
+          elif any(
+              row.get("classification") == "LOGIC_INSUFFICIENT"
+              for row in result["untouched"].values()
+          ):
+              result["classification"] = "PRESERVE_UNTOUCHED_POSITIVE_FAMILY"
+          elif result["untouched"]:
+              result["classification"] = "LOGIC_FAILURE_ON_UNTOUCHED"
+          elif development and any(
+              row.get("classification", "").startswith("IMPLEMENTATION")
+              for row in development.get("rows", {}).values()
+          ):
+              result["classification"] = "IMPLEMENTATION_BLOCKED_OR_INVALID"
+          else:
+              result["classification"] = "NO_DEVELOPMENT_SURVIVOR"
+          output = Path(
+              "artifacts/candidate-51/trendrider-v22-final-verdict.json"
+          )
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-trendrider-warmup-v22
+          path: |
+            artifacts/candidate-51/trendrider-v22-*/metrics.json
+            artifacts/candidate-51/trendrider-v22-*/strategy_diagnostics.json
+            artifacts/candidate-51/trendrider-v22-*/positions.csv
+            artifacts/candidate-51/trendrider-v22-*/closed_scenarios.json
+            artifacts/candidate-51/trendrider-v22-*/events.jsonl
+            artifacts/candidate-51/trendrider-v22-*/data_manifest.json
+            artifacts/candidate-51/trendrider-v22-*.json
+            .work/candidate-51-trendrider-v22/*.json
+            .work/candidate-51-trendrider-v22/*.txt
+            .work/candidate-51-trendrider-v22/status/*.txt
+          if-no-files-found: warn
+          retention-days: 90
