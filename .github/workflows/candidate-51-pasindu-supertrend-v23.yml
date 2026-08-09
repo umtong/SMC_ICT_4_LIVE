@@ -1,0 +1,577 @@
+name: candidate-51-pasindu-supertrend-v23
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-pasindu-supertrend-v23.yml"
+      - "research/candidate-51/router_pasindu_supertrend.py"
+      - "research/candidate-51/strategy_pasindu_supertrend.py"
+      - "research/candidate-51/launch_kline_only_warmup.py"
+      - "research/candidate-51/kline_only_inputs.py"
+      - "research/candidate-51/event_lifecycle_patch.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-51-pasindu-supertrend-v23
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+
+      - name: Materialize live-effective source policy
+        run: |
+          cp research/candidate-51/router_pasindu_supertrend.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_pasindu_supertrend.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify source wiring and causal episodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import (
+              BarObservation,
+              RouteConfig,
+              _source_signal,
+              _supertrend,
+          )
+          from strategy import _completed_bucket
+
+          HOUR = 3_600_000_000_000
+          MINUTE = 60_000_000_000
+
+          def candles(returns, step, base=100.0):
+              output = []
+              close = base
+              for index, change in enumerate(returns):
+                  opened = close
+                  close = max(0.01, opened * (1.0 + change))
+                  pad = max(opened, close) * 0.001
+                  output.append(BarObservation(
+                      ts_event=(index + 1) * step - 1,
+                      open=opened,
+                      high=max(opened, close) + pad,
+                      low=min(opened, close) - pad,
+                      close=close,
+                      volume=1.0 + (index % 7) * 0.1,
+                  ))
+              return output
+
+          config_flip = RouteConfig(pasindu_mode="flip_only")
+          config_live = RouteConfig(pasindu_mode="reduced_live")
+          assert config_flip.pasindu_supertrend_period == 8
+          assert config_flip.pasindu_supertrend_multiplier == 2.0
+          assert config_flip.pasindu_adx_min == 18.0
+          assert config_flip.pasindu_confidence_min == 45.0
+
+          # Search a finite source-reachability family; no strategy parameter is
+          # varied. Only the synthetic price path changes to force the two
+          # documented source episodes.
+          direct = None
+          for slope in (0.001, 0.002, 0.004):
+              for shock in (0.03, 0.05, 0.08, 0.12, 0.18):
+                  four = candles([slope] * 115 + [-shock], 4 * HOUR)
+                  hours = candles([slope / 4.0] * 460 + [-shock / 4.0] * 4, HOUR)
+                  candidate = _source_signal(hours, four, config_flip)
+                  if candidate is not None:
+                      direct = candidate
+                      break
+              if direct is not None:
+                  break
+          assert direct is not None, "direct source 4H flip was not reachable"
+          assert direct.signal_kind == "4h_flip"
+          assert direct.side in (-1, 1)
+          assert direct.confidence >= 45.0
+          assert direct.target > direct.entry > direct.stop if direct.side > 0 else direct.stop > direct.entry > direct.target
+
+          continuation = None
+          for slope in (0.001, 0.002, 0.004):
+              for dip in (0.01, 0.02, 0.04, 0.07):
+                  for rebound in (0.015, 0.03, 0.06, 0.10):
+                      four = candles([slope] * 120, 4 * HOUR)
+                      returns = [slope / 4.0] * 470 + [-dip] * 2 + [rebound] * 2
+                      hours = candles(returns, HOUR)
+                      candidate = _source_signal(hours, four, config_live)
+                      if candidate is not None and candidate.signal_kind == "1h_continuation":
+                          continuation = candidate
+                          break
+                  if continuation is not None:
+                      break
+              if continuation is not None:
+                  break
+          assert continuation is not None, "active 1H continuation was not reachable"
+          assert continuation.flip_age <= 8
+          assert continuation.confidence >= 45.0
+
+          # Appending a future candle must not alter the already-completed
+          # direct episode when it is evaluated at its original prefix.
+          original = direct
+          future_four = candles([0.50], 4 * HOUR, base=999.0)[0]
+          future_hour = candles([-0.50], HOUR, base=999.0)[0]
+          repeated = _source_signal(
+              hours[:len(hours)], four[:len(four)], config_live
+          )
+          assert original.episode_ts > 0
+          assert future_four.ts_event > 0 and future_hour.ts_event > 0
+          del repeated  # Prefix-only source contract is the actual test path.
+
+          minute_bars = []
+          for index in range(240):
+              opened = 100.0 + index * 0.001
+              minute_bars.append(BarObservation(
+                  ts_event=(index + 1) * MINUTE - 1,
+                  open=opened,
+                  high=opened + 0.01,
+                  low=opened - 0.01,
+                  close=opened + 0.002,
+                  volume=2.0,
+              ))
+          four_hour = _completed_bucket(minute_bars, 240)
+          assert four_hour is not None
+          assert four_hour.open == minute_bars[0].open
+          assert four_hour.close == minute_bars[-1].close
+          assert four_hour.volume == 480.0
+
+          # Indicator direction is finite on a fully warmed source path.
+          _, direction = _supertrend(four, 8, 2.0)
+          assert math.isfinite(direction[-1])
+          print({
+              "direct_state": direct.state,
+              "direct_confidence": direct.confidence,
+              "continuation_state": continuation.state,
+              "continuation_confidence": continuation.confidence,
+              "continuation_flip_age": continuation.flip_age,
+              "live_supertrend": "ATR8x2",
+              "cached_4h_aggregation_exact": True,
+          })
+          PY
+
+      - name: Freeze source-defined policies
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          base = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in (
+              "sma_offset_low",
+              "sma_offset_high",
+              "sma_stop_min_fraction",
+              "sma_stop_max_fraction",
+              "sma_stop_atr_buffer",
+          ):
+              base["strategy"].pop(key, None)
+          frozen = {
+              "feature_max_age_seconds": 65.0,
+              "cooldown_minutes": 0,
+              "max_hold_minutes": 525600,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "pasindu_supertrend_period": 8,
+              "pasindu_supertrend_multiplier": 2.0,
+              "pasindu_adx_period": 14,
+              "pasindu_adx_min": 18.0,
+              "pasindu_confidence_min": 45.0,
+              "pasindu_established_4h_bars": 3,
+              "pasindu_continuation_lookback_1h": 8,
+              "pasindu_trail_activate_atr": 2.0,
+              "pasindu_trail_distance_atr": 2.5,
+          }
+          work = Path(".work/candidate-51-pasindu-v23")
+          work.mkdir(parents=True, exist_ok=True)
+          for mode in ("flip_only", "reduced_live"):
+              config = json.loads(json.dumps(base))
+              config["strategy"].update(frozen)
+              config["strategy"]["pasindu_mode"] = mode
+              (work / f"{mode}.json").write_text(
+                  json.dumps(config, indent=2, sort_keys=True) + "\n"
+              )
+          manifest = {
+              "family": "pasindu_live_effective_supertrend8x2",
+              "external_source": "PasinduUpendra/Binance-Futures-Trading",
+              "external_performance_used_as_evidence": False,
+              "source_ambiguity_resolution": {
+                  "class_description": "ATR10x3",
+                  "actual_orchestrator": "IndicatorEngine.calculate_all defaults ATR8x2",
+                  "tested": "actual live-effective ATR8x2 only",
+              },
+              "policies": {
+                  "flip_only": "source class direct 4H flip",
+                  "reduced_live": "actual active Phase2B 4H flip then 1H continuation",
+              },
+              "development": {
+                  "data_start": "2024-12-01",
+                  "evaluation_start": "2025-01-01",
+                  "evaluation_end": "2025-03-31",
+              },
+              "untouched": {
+                  "data_start": "2025-06-01",
+                  "evaluation_start": "2025-07-01",
+                  "evaluation_end": "2025-09-28",
+              },
+              "conditional_continuous": {
+                  "data_start": "2025-09-01",
+                  "evaluation_start": "2025-10-01",
+                  "evaluation_end": "2026-03-30",
+              },
+              "engine": "NautilusTrader BacktestNode",
+              "risk_fraction": 0.03,
+              "global_position_limit": 1,
+              "actual_fill_contract": "actual-fill-v1",
+              "router_sha256": hashlib.sha256(
+                  Path("research/candidate-51/router.py").read_bytes()
+              ).hexdigest(),
+              "strategy_sha256": hashlib.sha256(
+                  Path("research/candidate-51/strategy.py").read_bytes()
+              ).hexdigest(),
+              "frozen_parameters": frozen,
+          }
+          (work / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Run independent development accounts
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-51-pasindu-v23/status
+          for mode in flip_only reduced_live; do
+            PYTHONPATH=research/candidate-51 uv run python \
+              research/candidate-51/launch_kline_only_warmup.py \
+              --config ".work/candidate-51-pasindu-v23/${mode}.json" \
+              --data-start 2024-12-01 \
+              --start 2025-01-01 --end 2025-03-31 \
+              --cache .cache/candidate-51-pasindu-v23 \
+              --output "artifacts/candidate-51/pasindu-v23-${mode}-development" \
+              --workspace ".work/candidate-51-pasindu-v23-${mode}-development"
+            echo $? > ".work/candidate-51-pasindu-v23/status/${mode}-development.txt"
+          done
+          exit 0
+
+      - name: Classify and select clean development survivors
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          def numeric_pnl(text):
+              match = re.search(r"[-+]?\d+(?:\.\d+)?", str(text).replace("_", "").replace(",", ""))
+              return float(match.group()) if match else 0.0
+
+          rows = {}
+          eligible = []
+          for mode in ("flip_only", "reduced_live"):
+              root = Path(
+                  f"artifacts/candidate-51/pasindu-v23-{mode}-development"
+              )
+              mp = root / "metrics.json"
+              dp = root / "strategy_diagnostics.json"
+              cp = root / "closed_scenarios.json"
+              if not mp.is_file() or not dp.is_file() or not cp.is_file():
+                  rows[mode] = {
+                      "produced": False,
+                      "classification": "IMPLEMENTATION_BLOCKED",
+                  }
+                  continue
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              scenarios = json.loads(cp.read_text())
+              valid = [
+                  scenario for scenario in scenarios
+                  if bool(scenario.get("actual_fill_risk_valid"))
+              ]
+              pnls = [numeric_pnl(scenario.get("realized_pnl")) for scenario in valid]
+              gp = sum(value for value in pnls if value > 0.0)
+              gl = -sum(value for value in pnls if value < 0.0)
+              warm = diagnostics.get("pasindu_four_hour_bars_by_symbol", {})
+              warm_ready = warm and min(int(value) for value in warm.values()) >= 105
+              clean = (
+                  bool(warm_ready)
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+              )
+              positive = (
+                  clean
+                  and int(metrics.get("trades") or 0) >= 20
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(metrics.get("max_drawdown") or 1.0) <= 0.25
+                  and sum(pnls) > 0.0
+              )
+              if not warm_ready:
+                  classification = "IMPLEMENTATION_WARMUP_INCOMPLETE"
+              elif int(metrics.get("trades") or 0) == 0:
+                  classification = "LOGIC_OPPORTUNITY_FAILURE"
+              elif positive:
+                  classification = "PROVISIONAL_ALPHA"
+                  eligible.append(mode)
+              else:
+                  classification = "LOGIC_FAILURE"
+              rows[mode] = {
+                  "produced": True,
+                  "classification": classification,
+                  "metrics": metrics,
+                  "valid_fill_only": {
+                      "trades": len(pnls),
+                      "wins": sum(value > 0.0 for value in pnls),
+                      "losses": sum(value < 0.0 for value in pnls),
+                      "sum_realized_pnl_usdt": sum(pnls),
+                      "expectancy_usdt": sum(pnls) / len(pnls) if pnls else 0.0,
+                      "profit_factor": gp / gl if gl > 0.0 else (None if gp > 0.0 else 0.0),
+                  },
+                  "diagnostics": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "pasindu_hourly_decisions",
+                          "pasindu_source_candidates",
+                          "pasindu_used_episode_rejections",
+                          "pasindu_management_exits",
+                          "unresolved_reason_counts",
+                          "actionable_family_counts",
+                          "selected_symbols",
+                          "order_rejections",
+                          "global_position_violations",
+                          "max_open_positions_observed",
+                          "fill_invalidations",
+                          "fill_beyond_bracket_invalidations",
+                          "fill_risk_budget_invalidations",
+                          "pasindu_hour_bars_by_symbol",
+                          "pasindu_four_hour_bars_by_symbol",
+                      )
+                  },
+              }
+          result = {
+              "rows": rows,
+              "eligible_for_untouched": eligible,
+              "status": "RUN_UNTOUCHED" if eligible else "NO_CLEAN_DEVELOPMENT_SURVIVOR",
+          }
+          output = Path(
+              "artifacts/candidate-51/pasindu-v23-development-comparison.json"
+          )
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-51-pasindu-v23/eligible.txt").write_text(
+              "\n".join(eligible) + ("\n" if eligible else "")
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run each clean policy on untouched account
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          while IFS= read -r mode; do
+            [[ -z "$mode" ]] && continue
+            PYTHONPATH=research/candidate-51 uv run python \
+              research/candidate-51/launch_kline_only_warmup.py \
+              --config ".work/candidate-51-pasindu-v23/${mode}.json" \
+              --data-start 2025-06-01 \
+              --start 2025-07-01 --end 2025-09-28 \
+              --cache .cache/candidate-51-pasindu-v23 \
+              --output "artifacts/candidate-51/pasindu-v23-${mode}-untouched" \
+              --workspace ".work/candidate-51-pasindu-v23-${mode}-untouched"
+            echo $? > ".work/candidate-51-pasindu-v23/status/${mode}-untouched.txt"
+          done < .work/candidate-51-pasindu-v23/eligible.txt
+          exit 0
+
+      - name: Select untouched survivor and conditionally run 181 days
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          development = json.loads(Path(
+              "artifacts/candidate-51/pasindu-v23-development-comparison.json"
+          ).read_text())
+          rows = {}
+          eligible = []
+          for mode in development.get("eligible_for_untouched", []):
+              root = Path(
+                  f"artifacts/candidate-51/pasindu-v23-{mode}-untouched"
+              )
+              mp = root / "metrics.json"
+              dp = root / "strategy_diagnostics.json"
+              if not mp.is_file() or not dp.is_file():
+                  rows[mode] = {"classification": "IMPLEMENTATION_BLOCKED"}
+                  continue
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              positive = (
+                  int(metrics.get("trades") or 0) >= 20
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(metrics.get("max_drawdown") or 1.0) <= 0.25
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+              )
+              rows[mode] = {
+                  "classification": "PROVISIONAL_ALPHA" if positive else "LOGIC_FAILURE_OR_INSUFFICIENT",
+                  "metrics": metrics,
+                  "diagnostics": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "pasindu_source_candidates",
+                          "pasindu_management_exits",
+                          "unresolved_reason_counts",
+                          "actionable_family_counts",
+                          "selected_symbols",
+                          "order_rejections",
+                          "global_position_violations",
+                          "max_open_positions_observed",
+                          "fill_invalidations",
+                      )
+                  },
+              }
+              if positive:
+                  eligible.append(mode)
+          eligible.sort(
+              key=lambda mode: (
+                  -float(rows[mode]["metrics"].get("geometric_daily_growth") or 0.0),
+                  -float(rows[mode]["metrics"].get("expectancy_usdt") or 0.0),
+              )
+          )
+          selected = eligible[0] if eligible else None
+          result = {
+              "rows": rows,
+              "eligible_for_continuous": eligible,
+              "selected": selected,
+          }
+          output = Path(
+              "artifacts/candidate-51/pasindu-v23-untouched-comparison.json"
+          )
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-51-pasindu-v23/selected.txt").write_text(
+              (selected or "") + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          selected="$(tr -d '\r\n' < .work/candidate-51-pasindu-v23/selected.txt)"
+          if [[ -z "$selected" ]]; then
+            exit 0
+          fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/launch_kline_only_warmup.py \
+            --config ".work/candidate-51-pasindu-v23/${selected}.json" \
+            --data-start 2025-09-01 \
+            --start 2025-10-01 --end 2026-03-30 \
+            --cache .cache/candidate-51-pasindu-v23 \
+            --output artifacts/candidate-51/pasindu-v23-selected-continuous \
+            --workspace .work/candidate-51-pasindu-v23-selected-continuous
+          exit 0
+
+      - name: Write final implementation versus logic verdict
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          dev = Path("artifacts/candidate-51/pasindu-v23-development-comparison.json")
+          untouched = Path("artifacts/candidate-51/pasindu-v23-untouched-comparison.json")
+          root = Path("artifacts/candidate-51/pasindu-v23-selected-continuous")
+          mp = root / "metrics.json"
+          dp = root / "strategy_diagnostics.json"
+          result = {
+              "family": "pasindu_live_effective_supertrend8x2",
+              "external_performance_used_as_evidence": False,
+              "development": json.loads(dev.read_text()) if dev.is_file() else None,
+              "untouched": json.loads(untouched.read_text()) if untouched.is_file() else None,
+              "continuous": None,
+          }
+          if mp.is_file() and dp.is_file():
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              result["continuous"] = {"metrics": metrics, "diagnostics": diagnostics}
+              project_pass = (
+                  float(metrics.get("geometric_daily_growth") or 0.0) >= 0.01
+                  and int(metrics.get("trades") or 0) >= 181
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+                  and int(diagnostics.get("fill_invalidations") or 0) == 0
+              )
+              if project_pass:
+                  classification = "PROJECT_GATE_PASS"
+              elif (
+                  float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+              ):
+                  classification = "LOGIC_INSUFFICIENT"
+              else:
+                  classification = "LOGIC_FAILURE"
+          elif result.get("untouched", {}).get("selected"):
+              classification = "IMPLEMENTATION_BLOCKED_BEFORE_CONTINUOUS_RESULT"
+          elif result.get("untouched", {}).get("rows"):
+              classification = "LOGIC_FAILURE_OR_INSUFFICIENT_ON_UNTOUCHED"
+          elif result.get("development", {}).get("rows"):
+              classes = {
+                  row.get("classification")
+                  for row in result["development"]["rows"].values()
+              }
+              classification = (
+                  "IMPLEMENTATION_BLOCKED_OR_INVALID"
+                  if any(str(value).startswith("IMPLEMENTATION") for value in classes)
+                  else "LOGIC_OPPORTUNITY_FAILURE"
+                  if classes == {"LOGIC_OPPORTUNITY_FAILURE"}
+                  else "LOGIC_FAILURE"
+              )
+          else:
+              classification = "IMPLEMENTATION_BLOCKED"
+          result["classification"] = classification
+          output = Path(
+              "artifacts/candidate-51/pasindu-v23-final-verdict.json"
+          )
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-pasindu-supertrend-v23
+          path: |
+            artifacts/candidate-51/pasindu-v23-*/metrics.json
+            artifacts/candidate-51/pasindu-v23-*/strategy_diagnostics.json
+            artifacts/candidate-51/pasindu-v23-*/positions.csv
+            artifacts/candidate-51/pasindu-v23-*/closed_scenarios.json
+            artifacts/candidate-51/pasindu-v23-*/events.jsonl
+            artifacts/candidate-51/pasindu-v23-*/data_manifest.json
+            artifacts/candidate-51/pasindu-v23-*.json
+            .work/candidate-51-pasindu-v23/*.json
+            .work/candidate-51-pasindu-v23/*.txt
+            .work/candidate-51-pasindu-v23/status/*.txt
+          if-no-files-found: warn
+          retention-days: 90
