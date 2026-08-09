@@ -1,0 +1,72 @@
+name: candidate-53-l1-ofi-participation
+
+on:
+  push:
+    branches: ["research/candidate-53"]
+    paths:
+      - "research/candidate-53/l1_ofi_participation_study.py"
+      - "research/candidate-53/l1_ofi_participation_study_v2.py"
+      - ".github/workflows/candidate-53-l1-ofi-participation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        period:
+          - {label: "2025-03-10_12", start: "2025-03-10", end: "2025-03-12"}
+          - {label: "2025-06-09_11", start: "2025-06-09", end: "2025-06-11"}
+          - {label: "2025-09-08_10", start: "2025-09-08", end: "2025-09-10"}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-53-l1-ofi/${{ matrix.symbol }}/${{ matrix.period.label }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-53, fetch-depth: 0}
+
+      - name: Reuse Candidate16 bookTicker source and L1 parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$(pwd)"
+          git fetch origin research/candidate-16-v13-volatility-squeeze-release:refs/remotes/origin/c16-v13
+          rm -rf .deps/c16 && mkdir -p .deps
+          git worktree add --detach .deps/c16 refs/remotes/origin/c16-v13
+          git config --global --add safe.directory "$(pwd)/.deps/c16"
+          PYTHONPATH=.deps/c16/research/candidate-16 python -m py_compile \
+            research/candidate-53/l1_ofi_participation_study.py \
+            research/candidate-53/l1_ofi_participation_study_v2.py \
+            .deps/c16/research/candidate-16/bookticker_source_v3.py \
+            .deps/c16/research/candidate-16/topbook_features.py
+
+      - name: Screen true L1 OFI mechanism
+        shell: bash
+        env: {PYTHONPATH: .deps/c16/research/candidate-16}
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          python research/candidate-53/l1_ofi_participation_study_v2.py \
+            --symbol "${{ matrix.symbol }}" \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --cache ".cache/candidate-53-l1-ofi/${{ matrix.symbol }}/${{ matrix.period.label }}" \
+            --output "$ROOT" 2>&1 | tee "$ROOT/console.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-53-l1-ofi-${{ matrix.symbol }}-${{ matrix.period.label }}-${{ github.sha }}
+          path: artifacts/candidate-53-l1-ofi/${{ matrix.symbol }}/${{ matrix.period.label }}/**
+          if-no-files-found: warn
+          retention-days: 30
