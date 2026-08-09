@@ -1,0 +1,59 @@
+name: candidate-53-l1-ofi-jan2024
+
+on:
+  push:
+    branches: ["research/candidate-53"]
+    paths:
+      - ".github/workflows/candidate-53-l1-ofi-jan2024.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-53-l1-ofi-jan2024/${{ matrix.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-53, fetch-depth: 0}
+      - name: Reuse preserved Candidate16 bookTicker source and parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$(pwd)"
+          git fetch origin research/candidate-16-v13-volatility-squeeze-release:refs/remotes/origin/c16-v13
+          rm -rf .deps/c16 && mkdir -p .deps
+          git worktree add --detach .deps/c16 refs/remotes/origin/c16-v13
+          git config --global --add safe.directory "$(pwd)/.deps/c16"
+          PYTHONPATH=.deps/c16/research/candidate-16 python -m py_compile \
+            research/candidate-53/l1_ofi_participation_study.py \
+            research/candidate-53/l1_ofi_participation_study_v2.py
+      - name: Screen true L1 OFI on preserved archive
+        shell: bash
+        env: {PYTHONPATH: .deps/c16/research/candidate-16}
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          python research/candidate-53/l1_ofi_participation_study_v2.py \
+            --symbol "${{ matrix.symbol }}" --start 2024-01-08 --end 2024-01-10 \
+            --cache ".cache/candidate-53-l1-ofi-jan2024/${{ matrix.symbol }}" \
+            --output "$ROOT" 2>&1 | tee "$ROOT/console.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-53-l1-ofi-jan2024-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-53-l1-ofi-jan2024/${{ matrix.symbol }}/**
+          if-no-files-found: warn
+          retention-days: 30
