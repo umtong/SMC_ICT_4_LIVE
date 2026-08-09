@@ -1,0 +1,213 @@
+name: candidate-51-external-tournament-v17
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-external-tournament-v17.yml"
+      - "research/candidate-51/router_external_v17.py"
+      - "research/candidate-51/strategy_external_v17.py.gz"
+      - "research/candidate-51/external_v17_runner.py.gz"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-external-tournament-v17
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Materialize external-source policies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip
+          from pathlib import Path
+
+          root = Path("research/candidate-51")
+          for name in ("strategy_external_v17.py", "external_v17_runner.py"):
+              compressed = root / f"{name}.gz"
+              (root / name).write_bytes(gzip.decompress(compressed.read_bytes()))
+          PY
+          cp research/candidate-51/router_external_v17.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_external_v17.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install locked foundation and verify causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import (
+              BarObservation,
+              EDGE_MR_STATE,
+              FeatureObservation,
+              RouteConfig,
+              WINNER_STATE,
+              classify_symbol,
+              route_universe,
+          )
+
+          def minute_bars(candles, bucket=15):
+              output = []
+              index = 0
+              for opened, high, low, closed, volume in candles:
+                  for minute in range(bucket):
+                      left = minute / bucket
+                      right = (minute + 1) / bucket
+                      bar_open = opened + (closed - opened) * left
+                      bar_close = opened + (closed - opened) * right
+                      index += 1
+                      output.append(
+                          BarObservation(
+                              index * 60_000_000_000 - 1_000_000,
+                              bar_open,
+                              max(bar_open, bar_close) + max(0.001, (high - max(opened, closed)) / bucket),
+                              min(bar_open, bar_close) - max(0.001, (min(opened, closed) - low) / bucket),
+                              bar_close,
+                              volume / bucket,
+                          )
+                      )
+              return output
+
+          winner_candles = []
+          price = 100.0
+          for index in range(55):
+              opened = price
+              closed = opened + 0.02 * math.sin(index / 3)
+              winner_candles.append(
+                  (opened, max(opened, closed) + 0.1, min(opened, closed) - 0.1, closed, 1000.0)
+              )
+              price = closed
+          for index in range(5):
+              opened = price
+              closed = opened + 0.2 * (index + 1)
+              winner_candles.append(
+                  (opened, closed + 0.1, opened - 0.05, closed, 3000.0 if index == 4 else 1000.0)
+              )
+              price = closed
+          bars = minute_bars(winner_candles)
+          feature = FeatureObservation(bars[-1].ts_event)
+          decision = classify_symbol(
+              "BTCUSDT",
+              bars,
+              feature,
+              RouteConfig(external_family_mode="winner"),
+          )
+          assert decision.actionable and decision.state == WINNER_STATE
+          assert decision.stop_reference < decision.entry_reference < decision.objective_reference
+
+          edge_candles = []
+          price = 100.0
+          for index in range(25):
+              opened = price
+              closed = 100.0 + 0.1 * math.sin(index)
+              edge_candles.append(
+                  (opened, max(opened, closed) + 0.05, min(opened, closed) - 0.05, closed, 1000.0)
+              )
+              price = closed
+          edge_candles.append((price, price + 0.05, 94.95, 95.0, 1000.0))
+          edge_bars = minute_bars(edge_candles)
+          edge = classify_symbol(
+              "BTCUSDT",
+              edge_bars,
+              FeatureObservation(edge_bars[-1].ts_event),
+              RouteConfig(
+                  external_family_mode="edge",
+                  edge_entry_z=3.0,
+                  edge_stop_z=5.0,
+                  edge_min_sigma_fraction=0.0001,
+              ),
+          )
+          assert edge.actionable and edge.state == EDGE_MR_STATE
+          assert edge.stop_reference < edge.entry_reference < edge.objective_reference
+
+          future = classify_symbol(
+              "BTCUSDT",
+              bars,
+              FeatureObservation(bars[-1].ts_event + 1),
+              RouteConfig(external_family_mode="winner"),
+          )
+          assert not future.actionable and "FUTURE_FEATURE_REJECTED" in future.reasons
+
+          universe = {
+              symbol: bars
+              for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+          }
+          features = {
+              symbol: FeatureObservation(series[-1].ts_event)
+              for symbol, series in universe.items()
+          }
+          routed, decisions = route_universe(
+              universe,
+              features,
+              RouteConfig(external_family_mode="winner"),
+          )
+          assert routed is not None and routed.actionable
+          assert sum(item.actionable for item in decisions.values()) == 4
+          print("external tournament causal and geometry contracts passed")
+          PY
+
+      - name: Run source-first tournament and conditional continuous gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/external_v17_runner.py
+
+      - name: Persist exact compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -- research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/strategy_external_v17.py \
+            research/candidate-51/external_v17_runner.py
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git fetch origin research/candidate-51
+          git rebase origin/research/candidate-51
+          git add research/candidate-51/evidence/v17-external-tournament
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate51: persist external source tournament v17"
+            for attempt in 1 2 3 4 5; do
+              git fetch origin research/candidate-51
+              git rebase origin/research/candidate-51
+              if git push origin HEAD:research/candidate-51; then
+                exit 0
+              fi
+              sleep 2
+            done
+            exit 1
+          fi
+
+      - name: Upload full run diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-external-v17-${{ github.sha }}
+          path: |
+            artifacts/candidate-51/external-v17-*
+            research/candidate-51/evidence/v17-external-tournament
+          if-no-files-found: warn
