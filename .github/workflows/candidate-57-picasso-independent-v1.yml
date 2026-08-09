@@ -6,7 +6,11 @@ on:
     paths:
       - ".github/workflows/candidate-57-picasso-independent-v1.yml"
       - "research/candidate-57/campaign.py"
+      - "research/candidate-57/campaign_v2.py.gz.b64"
+      - "research/candidate-57/warmup_launch.py"
+      - "research/candidate-57/warmup_launch_v1.py.gz.b64"
       - "research/candidate-57/README.md"
+      - "research/candidate-57/evidence/seed_candidate55_picasso.json"
       - "research/candidate-55/router_picasso_1h.py"
       - "research/candidate-55/strategy_picasso_1h.py"
   workflow_dispatch:
@@ -48,6 +52,25 @@ jobs:
           uv sync --locked
           uv run smc4 doctor
           uv run python -m compileall -q research/candidate-51 research/candidate-55 research/candidate-57
+          uv run python - <<'PY'
+          import base64
+          import gzip
+          import hashlib
+          from pathlib import Path
+
+          checks = {
+              "research/candidate-57/campaign_v2.py.gz.b64": "159c7877ee0eb4691e50c7e3642d46b841ed5bc3173243ef9b3f963d795fcc39",
+              "research/candidate-57/warmup_launch_v1.py.gz.b64": "d4b29f1a337705058a0bde5a8e5da6934d6848a3587db726292557326ad1d112",
+          }
+          for name, expected in checks.items():
+              source = gzip.decompress(
+                  base64.b64decode(Path(name).read_text().strip(), validate=True)
+              )
+              actual = hashlib.sha256(source).hexdigest()
+              assert actual == expected, (name, actual, expected)
+              compile(source.decode("utf-8"), name, "exec")
+          print("Candidate 57 compressed source contracts verified")
+          PY
           PYTHONPATH=research/candidate-51 uv run python - <<'PY'
           from router import RouteConfig, _decode_mode, picasso_source_flags
 
@@ -88,10 +111,10 @@ jobs:
         shell: bash
         run: |
           set +e
-          mkdir -p .work/candidate-57-picasso-v1
+          mkdir -p .work/candidate-57-picasso-v2
           set -o pipefail
           PYTHONPATH=research/candidate-51 uv run python research/candidate-57/campaign.py \
-            2>&1 | tee .work/candidate-57-picasso-v1/campaign-console.log
+            2>&1 | tee .work/candidate-57-picasso-v2/campaign-console.log
           status=${PIPESTATUS[0]}
           echo "status=${status}" >> "$GITHUB_OUTPUT"
           exit 0
@@ -118,7 +141,7 @@ jobs:
           name: candidate-57-picasso-independent-v1-evidence
           path: |
             research/candidate-57/evidence
-            .work/candidate-57-picasso-v1/campaign-console.log
+            .work/candidate-57-picasso-v2/campaign-console.log
           if-no-files-found: warn
           retention-days: 7
 
