@@ -1,0 +1,52 @@
+name: candidate-53-infinity-rsi-short-confirm
+on:
+  push:
+    branches: ["research/candidate-53"]
+    paths:
+      - "research/candidate-53/INFINITY_RSI_SHORT_FREEZE.md"
+      - "research/candidate-53/infinity_rsi_short_confirmation.py"
+      - ".github/workflows/candidate-53-infinity-rsi-short-confirm.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+jobs:
+  study:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/c53-infinity-rsi-short-2024
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-53
+          fetch-depth: 0
+      - name: Reuse checksum-verified monthly loader
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$(pwd)"
+          git fetch origin research/candidate-16-v13-volatility-squeeze-release:refs/remotes/origin/c16-v13
+          rm -rf .deps/c16 && mkdir -p .deps
+          git worktree add --detach .deps/c16 refs/remotes/origin/c16-v13
+          git config --global --add safe.directory "$(pwd)/.deps/c16"
+          PYTHONPATH=.deps/c16/research/candidate-16:research/candidate-53 python -m py_compile research/candidate-53/infinity_rsi_short_confirmation.py
+      - name: Execute frozen confirmation on 2024
+        shell: bash
+        env:
+          PYTHONPATH: .deps/c16/research/candidate-16:research/candidate-53
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          python research/candidate-53/infinity_rsi_short_confirmation.py --year 2024 --cache .cache/c53-infinity-confirm --output "$ROOT" 2>&1 | tee "$ROOT/console.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-53-infinity-rsi-short-2024-${{ github.sha }}
+          path: artifacts/c53-infinity-rsi-short-2024/**
+          if-no-files-found: warn
+          retention-days: 30
