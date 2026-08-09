@@ -1,0 +1,161 @@
+name: candidate-47-squeeze-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-47"]
+    paths:
+      - ".github/workflows/candidate-47-squeeze-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-47-squeeze-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnose:
+    name: ${{ matrix.period.label }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        period:
+          - label: 2026-03-02_2026-03-08
+            start: "2026-03-02"
+            end: "2026-03-08"
+          - label: 2026-04-13_2026-04-19
+            start: "2026-04-13"
+            end: "2026-04-19"
+          - label: 2026-06-22_2026-06-28
+            start: "2026-06-22"
+            end: "2026-06-28"
+          - label: 2026-07-01_2026-07-07
+            start: "2026-07-01"
+            end: "2026-07-07"
+    env:
+      PYTHONPATH: research/candidate-47:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-47-squeeze/${{ matrix.period.label }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify environment, source ownership and causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-47/squeeze_release_strategy.py \
+            research/candidate-47/squeeze_release_launch.py \
+            research/candidate-47/test_squeeze_release.py
+          python - <<'PY'
+          import inspect
+          from pathlib import Path
+          import squeeze_release_strategy as strategy
+          import test_squeeze_release as tests_module
+
+          root = Path("research/candidate-47").resolve()
+          assert Path(strategy.__file__).resolve() == root / "squeeze_release_strategy.py"
+          assert strategy.Candidate35Strategy is strategy.Candidate47SqueezeReleaseStrategy
+          tests = [
+              (name, fn)
+              for name, fn in inspect.getmembers(tests_module, inspect.isfunction)
+              if name.startswith("test_")
+          ]
+          assert tests
+          for name, fn in tests:
+              fn()
+              print(f"PASS {name}")
+          print(f"executed {len(tests)} squeeze contracts")
+          PY
+
+      - name: Run four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          python research/candidate-47/squeeze_release_launch.py \
+            --config research/candidate-47/ichifan_structural_config.json \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --cache ".cache/candidate-47-squeeze-${{ matrix.period.label }}" \
+            --output "$ROOT" \
+            --workspace "$ROOT/workspace" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Preserve diagnostic evidence and verify invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = metrics["strategy_diagnostics"]
+          summary = {
+              "candidate": metrics["candidate"],
+              "evaluation_start": metrics["evaluation_start"],
+              "evaluation_end": metrics["evaluation_end"],
+              "calendar_days": metrics["calendar_days"],
+              "active_days": metrics["active_days"],
+              "ending_nav": metrics["ending_nav"],
+              "total_return": metrics["total_return"],
+              "geometric_daily_growth": metrics["geometric_daily_growth"],
+              "max_drawdown": metrics["max_drawdown"],
+              "trades": metrics["trades"],
+              "wins": metrics["wins"],
+              "losses": metrics["losses"],
+              "win_rate": metrics["win_rate"],
+              "profit_factor": metrics["profit_factor"],
+              "expectancy_usdt": metrics["expectancy_usdt"],
+              "squeeze_decisions": diagnostics.get("squeeze_five_minute_decisions", 0),
+              "squeeze_ready_states": diagnostics.get("squeeze_ready_symbol_states", 0),
+              "squeeze_candidates": diagnostics.get("squeeze_release_candidates", 0),
+              "squeeze_geometry_rejections": diagnostics.get(
+                  "squeeze_consumed_geometry_rejections", 0
+              ),
+              "squeeze_midline_exits": diagnostics.get("squeeze_midline_exits", 0),
+              "entry_submissions": diagnostics.get("entry_submissions", 0),
+              "selected_symbols": diagnostics.get("selected_symbols", {}),
+              "order_rejections": diagnostics.get("order_rejections", 0),
+              "global_position_violations": diagnostics.get("global_position_violations", 0),
+              "gate_checks": metrics["gate_checks"],
+          }
+          (root / "summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          assert metrics["engine"] == "NautilusTrader BacktestNode"
+          assert metrics["single_continuous_account"] is True
+          assert metrics["single_strategy_process"] is True
+          assert metrics["global_entry_or_position_limit"] == 1
+          assert metrics["gate_checks"]["risk_fraction_exactly_three_percent"] is True
+          assert metrics["gate_checks"]["no_global_position_violation"] is True
+          assert metrics["gate_checks"]["nautilus_positions_match"] is True
+          assert diagnostics.get("order_rejections", 0) == 0
+          assert diagnostics.get("global_position_violations", 0) == 0
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-47-squeeze-${{ matrix.period.label }}-${{ github.sha }}
+          path: artifacts/candidate-47-squeeze/${{ matrix.period.label }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
