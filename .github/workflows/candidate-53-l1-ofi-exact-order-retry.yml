@@ -1,0 +1,65 @@
+name: candidate-53-l1-ofi-frozen-exact-order
+
+on:
+  push:
+    branches: ["research/candidate-53"]
+    paths:
+      - "research/candidate-53/bookticker_exact_order.py"
+      - "research/candidate-53/l1_ofi_participation_study_v4.py"
+      - ".github/workflows/candidate-53-l1-ofi-exact-order-retry.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-53-l1-ofi-exact-order/FEB_CONFIRM/${{ matrix.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-53, fetch-depth: 0}
+
+      - name: Reuse preserved Candidate16 BBO source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$(pwd)"
+          git fetch origin research/candidate-16-v13-volatility-squeeze-release:refs/remotes/origin/c16-v13
+          rm -rf .deps/c16 && mkdir -p .deps
+          git worktree add --detach .deps/c16 refs/remotes/origin/c16-v13
+          git config --global --add safe.directory "$(pwd)/.deps/c16"
+          PYTHONPATH=.deps/c16/research/candidate-16 python -m py_compile \
+            research/candidate-53/bookticker_exact_order.py \
+            research/candidate-53/l1_ofi_participation_study.py \
+            research/candidate-53/l1_ofi_participation_study_v4.py
+
+      - name: Run unchanged frozen OFI rule on exactly ordered events
+        shell: bash
+        env: {PYTHONPATH: .deps/c16/research/candidate-16}
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          python research/candidate-53/l1_ofi_participation_study_v4.py \
+            --symbol "${{ matrix.symbol }}" --start 2024-02-05 --end 2024-02-11 \
+            --cache ".cache/candidate-53-l1-ofi-exact-order/FEB_CONFIRM/${{ matrix.symbol }}" \
+            --output "$ROOT" 2>&1 | tee "$ROOT/console.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-53-l1-ofi-exact-order-FEB_CONFIRM-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-53-l1-ofi-exact-order/FEB_CONFIRM/${{ matrix.symbol }}/**
+          if-no-files-found: warn
+          retention-days: 30
