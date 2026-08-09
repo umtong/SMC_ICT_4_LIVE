@@ -1,21 +1,39 @@
-"""Candidate 51 causal ichiV2_5 timing/exit adapter over Nautilus."""
+"""Candidate 51 standalone causal SMAOffsetV2 adapter over NautilusTrader."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
-from router import FeatureObservation, ICHI_STATE, ichi_exit_crossed, route_universe
+from router import FeatureObservation, SMA_OFFSET_STATE, route_universe, sma_offset_exit_ready
 from strategy_base import SYMBOLS
-from strategy_base import Candidate35Config
+from strategy_base import Candidate35Config as _ExecutionConfig
 from strategy_base import Candidate35Strategy as _ExecutionShell
 
 
+class Candidate35Config(_ExecutionConfig, frozen=True):
+    """Execution config extended only with source-policy parameters."""
+
+    sma_offset_low: float = 0.960
+    sma_offset_high: float = 1.012
+    sma_stop_min_fraction: float = 0.0075
+    sma_stop_max_fraction: float = 0.1000
+    sma_stop_atr_buffer: float = 0.50
+
+
 class Candidate35Strategy(_ExecutionShell):
-    """Public ichiV2_5 policy with one-use causal episodes and project execution."""
+    """Public SMAOffsetV2 policy with one-use causal episodes and one global slot."""
 
     def __init__(self, config: Candidate35Config) -> None:
         super().__init__(config)
-        self.diagnostics.setdefault("source_exit_submissions", 0)
-        self.diagnostics.setdefault("source_trailing_exit_submissions", 0)
+        self.route_config = replace(
+            self.route_config,
+            sma_offset_low=float(config.sma_offset_low),
+            sma_offset_high=float(config.sma_offset_high),
+            sma_stop_min_fraction=float(config.sma_stop_min_fraction),
+            sma_stop_max_fraction=float(config.sma_stop_max_fraction),
+            sma_stop_atr_buffer=float(config.sma_stop_atr_buffer),
+        )
+        self.diagnostics.setdefault("sma_offset_exit_submissions", 0)
         self.diagnostics.setdefault("source_signals_before_execution_filters", 0)
         self.diagnostics.setdefault("funding_runway_rejections", 0)
         self.diagnostics.setdefault("cooldown_rejections", 0)
@@ -47,8 +65,7 @@ class Candidate35Strategy(_ExecutionShell):
             return
         if self.entry_pending:
             self.diagnostics["max_simultaneous_entry_intents"] = max(
-                int(self.diagnostics["max_simultaneous_entry_intents"]),
-                1,
+                int(self.diagnostics["max_simultaneous_entry_intents"]), 1,
             )
             if self.minute_index - self.entry_pending_minute > 2:
                 assert self.current_symbol is not None
@@ -62,24 +79,23 @@ class Candidate35Strategy(_ExecutionShell):
         moment = datetime.fromtimestamp(ts_event / 1_000_000_000, tz=timezone.utc)
         if moment.minute % self.route_config.bucket_minutes != self.route_config.bucket_minutes - 1:
             return
-        required_bars = self.route_config.bucket_minutes * (
-            self.route_config.cloud_span_b + self.route_config.cloud_displacement + 8
+        required_bars = max(
+            self.route_config.bucket_minutes * (self.route_config.sma_offset_period + 4),
+            60 * (self.route_config.sma_trend_slow + 3),
         )
         if any(len(self.bars[symbol]) < required_bars for symbol in SYMBOLS):
             return
 
-        features: dict[str, FeatureObservation] = {}
-        for symbol in SYMBOLS:
-            features[symbol] = self.features[symbol].observation(
-                ts_event,
-                self.config.feature_max_age_seconds,
-            )
+        features: dict[str, FeatureObservation] = {
+            symbol: self.features[symbol].observation(ts_event, self.config.feature_max_age_seconds)
+            for symbol in SYMBOLS
+        }
         if not all(item.ready for item in features.values()):
             self.diagnostics["feature_stale_episodes"] += 1
             return
 
         self.diagnostics["quarter_hour_decisions"] += 1
-        winner, decisions = route_universe(
+        _, decisions = route_universe(
             bars_by_symbol={symbol: tuple(self.bars[symbol]) for symbol in SYMBOLS},
             features_by_symbol=features,
             config=self.route_config,
@@ -94,6 +110,7 @@ class Candidate35Strategy(_ExecutionShell):
             else:
                 for reason in decision.reasons:
                     reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+
         actionable = [decision for decision in decisions.values() if decision.actionable]
         self.diagnostics["source_signals_before_execution_filters"] += len(actionable)
         unused = []
@@ -121,39 +138,21 @@ class Candidate35Strategy(_ExecutionShell):
         if self.current_symbol is None:
             return
         scenario = self.current_scenario or {}
-        if scenario.get("state") == ICHI_STATE:
-            latest = self.bars[self.current_symbol][-1]
-            peak = max(float(scenario.get("peak_price", latest.high)), float(latest.high))
-            scenario["peak_price"] = peak
-            entry = float(scenario.get("entry_reference", latest.close))
-
-            # Public ichiV2 trailing semantics: activate after +40%, then trail
-            # by 3% from the high.  This normally leaves the EMA18 exit in charge.
-            trailing_active = peak >= entry * 1.40
-            trailing_exit = trailing_active and latest.close <= peak * (1.0 - 0.03)
-
+        if scenario.get("state") == SMA_OFFSET_STATE:
             moment = datetime.fromtimestamp(ts_event / 1_000_000_000, tz=timezone.utc)
-            source_exit = False
-            exit_details: dict[str, float | int] = {}
             if moment.minute % self.route_config.bucket_minutes == self.route_config.bucket_minutes - 1:
-                source_exit, exit_details = ichi_exit_crossed(
-                    tuple(self.bars[self.current_symbol]),
-                    self.route_config,
+                source_exit, exit_details = sma_offset_exit_ready(
+                    tuple(self.bars[self.current_symbol]), self.route_config,
                 )
-            if source_exit or trailing_exit:
-                instrument_id = self.instrument_ids[self.current_symbol]
-                self.cancel_all_orders(instrument_id)
-                self.close_all_positions(instrument_id)
-                key = "source_trailing_exit_submissions" if trailing_exit else "source_exit_submissions"
-                self.diagnostics[key] = int(self.diagnostics.get(key, 0)) + 1
-                self._event(
-                    "PUBLIC_ICHI_V25_EXIT",
-                    ts_event,
-                    trailing_exit=trailing_exit,
-                    peak_price=peak,
-                    **exit_details,
-                )
-                return
+                if source_exit:
+                    instrument_id = self.instrument_ids[self.current_symbol]
+                    self.cancel_all_orders(instrument_id)
+                    self.close_all_positions(instrument_id)
+                    self.diagnostics["sma_offset_exit_submissions"] = int(
+                        self.diagnostics.get("sma_offset_exit_submissions", 0)
+                    ) + 1
+                    self._event("PUBLIC_SMA_OFFSET_V2_EXIT", ts_event, **exit_details)
+                    return
         super()._manage_open_position(ts_event)
 
 
