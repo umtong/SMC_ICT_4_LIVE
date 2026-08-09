@@ -11,9 +11,16 @@ from dataclasses import asdict
 from datetime import date, timedelta
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 import pandas as pd
+
+HERE = Path(__file__).resolve().parent
+CANDIDATE05 = HERE.parent / "candidate-05"
+_candidate05_text = str(CANDIDATE05)
+if _candidate05_text not in sys.path:
+    sys.path.insert(0, _candidate05_text)
 
 import features as _base
 
