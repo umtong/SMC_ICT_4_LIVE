@@ -62,8 +62,10 @@ jobs:
           for encoded, target, expected in specs:
               source = gzip.decompress(
                   base64.b64decode(
-                      encoded.read_text(encoding="ascii").strip(),
-                      validate=True,
+                      "".join(
+                          encoded.read_text(encoding="ascii").split()
+                      ),
+                      validate=False,
                   )
               )
               actual = hashlib.sha256(source).hexdigest()
@@ -158,13 +160,17 @@ jobs:
           git config user.email \
             "41898282+github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin research/candidate-57
-          git add -f research/candidate-57/evidence/el-v1
-          if git diff --cached --quiet; then
-            echo "No new evidence to commit."
+          if [[ -d research/candidate-57/evidence/el-v1 ]]; then
+            git add -f research/candidate-57/evidence/el-v1
+            if git diff --cached --quiet; then
+              echo "No new evidence to commit."
+            else
+              git commit --no-gpg-sign \
+                -m "candidate57: persist public-el validation evidence"
+              git push origin HEAD:research/candidate-57
+            fi
           else
-            git commit --no-gpg-sign \
-              -m "candidate57: persist public-el validation evidence"
-            git push origin HEAD:research/candidate-57
+            echo "No evidence directory was produced."
           fi
 
       - name: Retain compact workflow evidence
