@@ -1,0 +1,84 @@
+name: candidate-51-ichi-v9
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-ichi-v9.yml"
+      - "research/candidate-51/router_ichi.py.gz"
+      - "research/candidate-51/strategy_ichi.py.gz"
+      - "research/candidate-51/ichi_v9_runner.py.gz"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-ichi-v9
+  cancel-in-progress: true
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    steps:
+      - name: Checkout Candidate 51
+        uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Materialize public Ichi policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip
+          from pathlib import Path
+          root = Path("research/candidate-51")
+          for name in ("router_ichi.py", "strategy_ichi.py", "ichi_v9_runner.py"):
+              (root / name).write_bytes(gzip.decompress((root / f"{name}.gz").read_bytes()))
+          (root / "router.py").write_bytes((root / "router_ichi.py").read_bytes())
+          (root / "strategy.py").write_bytes((root / "strategy_ichi.py").read_bytes())
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install locked foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+
+      - name: Run external Ichi source-family screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/ichi_v9_runner.py
+
+      - name: Persist compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add research/candidate-51/evidence/v9-ichi
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate51: persist public Ichi family screen"
+            git push origin HEAD:research/candidate-51
+          fi
+
+      - name: Upload full diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-ichi-v9-${{ github.sha }}
+          path: artifacts/candidate-51/ichi-v9-*
+          if-no-files-found: warn
