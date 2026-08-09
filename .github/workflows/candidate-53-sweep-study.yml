@@ -5,6 +5,7 @@ on:
     branches: ["research/candidate-53"]
     paths:
       - "research/candidate-53/sweep_reclaim_study.py"
+      - "research/candidate-53/sweep_reclaim_study_v2.py"
       - ".github/workflows/candidate-53-sweep-study.yml"
   workflow_dispatch:
 
@@ -47,16 +48,16 @@ jobs:
           mkdir -p .deps
           git worktree add --detach .deps/c16 refs/remotes/origin/c16-v13
           git config --global --add safe.directory "$(pwd)/.deps/c16"
-          python -m py_compile research/candidate-53/sweep_reclaim_study.py .deps/c16/research/candidate-16/v9_liquidation_event_study.py
+          python -m py_compile research/candidate-53/sweep_reclaim_study.py research/candidate-53/sweep_reclaim_study_v2.py .deps/c16/research/candidate-16/v9_liquidation_event_study.py
 
       - name: Screen one development week
         shell: bash
         env:
-          PYTHONPATH: .deps/c16/research/candidate-16
+          PYTHONPATH: research/candidate-53:.deps/c16/research/candidate-16
         run: |
           set -euo pipefail
           rm -rf "$ROOT" && mkdir -p "$ROOT"
-          python research/candidate-53/sweep_reclaim_study.py \
+          python research/candidate-53/sweep_reclaim_study_v2.py \
             --start "${{ matrix.start }}" \
             --end "${{ matrix.end }}" \
             --cache ".cache/candidate-53-sweep/${{ matrix.label }}" \
@@ -66,7 +67,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-53-sweep-${{ matrix.label }}-${{ github.sha }}
+          name: candidate-53-sweep-v2-${{ matrix.label }}-${{ github.sha }}
           path: artifacts/candidate-53-sweep/${{ matrix.label }}/**
           if-no-files-found: warn
           retention-days: 30
