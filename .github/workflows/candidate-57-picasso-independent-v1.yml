@@ -1,0 +1,137 @@
+name: candidate-57-picasso-independent-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-picasso-independent-v1.yml"
+      - "research/candidate-57/campaign.py"
+      - "research/candidate-57/README.md"
+      - "research/candidate-55/router_picasso_1h.py"
+      - "research/candidate-55/strategy_picasso_1h.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-picasso-independent-v1
+  cancel-in-progress: true
+
+jobs:
+  campaign:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - name: Materialize reused Candidate 55 source semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_picasso_1h.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_picasso_1h.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install once, doctor once, and prove campaign contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55 research/candidate-57
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import RouteConfig, _decode_mode, picasso_source_flags
+
+          assert _decode_mode("exact_level_short") == ("exact", "level", "short")
+          assert _decode_mode("exact_edge_short") == ("exact", "edge", "short")
+          assert _decode_mode("exact_edge") == ("exact", "edge", "all")
+
+          config = RouteConfig()
+          source_short = picasso_source_flags(
+              mode="exact_level_short",
+              adx=15.0,
+              trend_long=False,
+              trend_short=False,
+              volume=1.0,
+              volume_mean_long=2.0,
+              volume_mean_short=2.0,
+              pump_warning=False,
+              config=config,
+          )
+          independent_short = picasso_source_flags(
+              mode="exact_edge_short",
+              adx=15.0,
+              trend_long=False,
+              trend_short=False,
+              volume=1.0,
+              volume_mean_long=2.0,
+              volume_mean_short=2.0,
+              pump_warning=False,
+              config=config,
+          )
+          assert source_short == (False, True), source_short
+          assert independent_short == (False, True), independent_short
+          print("Candidate 57 source, side, and independence contracts verified")
+          PY
+
+      - name: Run adaptive short to intermediate to long campaign
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-picasso-v1
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-57/campaign.py \
+            2>&1 | tee .work/candidate-57-picasso-v1/campaign-console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Persist compact evidence on the research branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f research/candidate-57/evidence
+          if git diff --cached --quiet; then
+            echo "No new evidence to commit."
+          else
+            git commit --no-gpg-sign -m "candidate57: persist adaptive validation evidence"
+            git push origin HEAD:research/candidate-57
+          fi
+
+      - name: Retain compact campaign evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-picasso-independent-v1-evidence
+          path: |
+            research/candidate-57/evidence
+            .work/candidate-57-picasso-v1/campaign-console.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce campaign process integrity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "Campaign status was not produced."
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "Campaign process failed with status $status; fatal evidence was committed."
+            exit "$status"
+          fi
