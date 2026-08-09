@@ -1,0 +1,82 @@
+name: candidate-47-price-only-input-mode
+
+on:
+  push:
+    branches: ["research/candidate-47"]
+    paths:
+      - ".github/workflows/candidate-47-price-only-input-mode.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-47
+          fetch-depth: 0
+
+      - name: Make optional data contracts explicit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          runner = Path("research/candidate-47/run.py")
+          text = runner.read_text()
+          if "CANDIDATE47_PRICE_ONLY_INPUTS" not in text:
+              text = text.replace(
+                  "import math\nfrom pathlib import Path",
+                  "import math\nimport os\nfrom pathlib import Path",
+              )
+              old = '''install_timestamp_contract()
+          install_wrangler_contract()
+          install_positioning_contract()
+          install_basis_contract()
+          install_book_depth_gap_contract()
+          '''
+              new = '''install_timestamp_contract()
+          install_wrangler_contract()
+          # Price-only policies must not fail because optional positioning or basis
+          # archives contain conflicting vendor observations. Their strategy sees
+          # only completed OHLCV bars; installing unused contracts would couple its
+          # result to data it never consumes.
+          if os.environ.get("CANDIDATE47_PRICE_ONLY_INPUTS") != "1":
+              install_positioning_contract()
+              install_basis_contract()
+              install_book_depth_gap_contract()
+          '''
+              if old not in text:
+                  raise RuntimeError("runner contract-install block changed")
+              text = text.replace(old, new)
+              runner.write_text(text)
+
+          launcher = Path("research/candidate-47/ichifan_launch.py")
+          text = launcher.read_text()
+          if "CANDIDATE47_PRICE_ONLY_INPUTS" not in text:
+              text = text.replace(
+                  "import importlib.util\nfrom pathlib import Path",
+                  "import importlib.util\nimport os\nfrom pathlib import Path",
+              )
+              marker = 'HERE = Path(__file__).resolve().parent\n'
+              text = text.replace(
+                  marker,
+                  marker + 'os.environ["CANDIDATE47_PRICE_ONLY_INPUTS"] = "1"\n',
+                  1,
+              )
+              launcher.write_text(text)
+          PY
+
+          git add research/candidate-47/run.py research/candidate-47/ichifan_launch.py
+          if git diff --cached --quiet; then
+            echo "Price-only mode already installed."
+            exit 0
+          fi
+          git config user.name "candidate-47-research-bot"
+          git config user.email "candidate-47-research-bot@users.noreply.github.com"
+          git commit -m "candidate47: decouple price policies from unused positioning data"
+          git push origin HEAD:research/candidate-47
