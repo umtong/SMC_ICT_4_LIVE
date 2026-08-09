@@ -1,0 +1,140 @@
+name: candidate-57-public-mbe2-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-public-mbe2-v1.yml"
+      - "research/candidate-57/public_mbe2_router.py.gz.b64"
+      - "research/candidate-57/public_mbe2_strategy.py.gz.b64"
+      - "research/candidate-57/public_mbe2_campaign.py.gz.b64"
+      - "research/candidate-57/PUBLIC_MBE2_V1.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-public-mbe2-v1
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Materialize and verify the reused public MBE2 adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import gzip
+          import hashlib
+          from pathlib import Path
+
+          specs = [
+              (Path("research/candidate-57/public_mbe2_router.py.gz.b64"), Path("research/candidate-51/router.py"), "d9c7f7aa9a1d9d739b3ae4c54d7f8db0212047c1314a393546e97aa2ea9bada7"),
+              (Path("research/candidate-57/public_mbe2_strategy.py.gz.b64"), Path("research/candidate-51/strategy.py"), "5b31b9737b861c9bc1ce698a76517e9a87ba5a8d7a2216ac5bda13d992922ed2"),
+              (Path("research/candidate-57/public_mbe2_campaign.py.gz.b64"), Path("research/candidate-57/.run_mbe2_tournament_materialized.py"), "238388a1ad0e96fb4b8d51f8337a132747ecb9fd1e1014b67f3334d8c34e59ac"),
+          ]
+          for encoded, target, expected in specs:
+              source = gzip.decompress(base64.b64decode("".join(encoded.read_text(encoding="ascii").split()), validate=False))
+              actual = hashlib.sha256(source).hexdigest()
+              if actual != expected:
+                  raise RuntimeError(f"payload hash mismatch {encoded}: {actual} != {expected}")
+              compile(source.decode("utf-8"), str(encoded), "exec")
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(source)
+          print("Candidate 57 public MBE2 payloads materialized and verified")
+          PY
+
+      - name: Install locked environment and prove source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run python -m compileall -q research/candidate-51 research/candidate-57/.run_mbe2_tournament_materialized.py
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import _decode_mode, _tema, mbe_source_flags
+
+          assert _decode_mode("both_avg646") == "both"
+          assert _decode_mode("long_avg646") == "long"
+          assert _decode_mode("short_avg646") == "short"
+          assert mbe_source_flags(previous_rsi=29.0, rsi=31.0, previous_tema=99.0, tema=100.0, bb_middle=101.0, volume=1.0) == (True, False)
+          assert mbe_source_flags(previous_rsi=71.0, rsi=69.0, previous_tema=101.0, tema=100.0, bb_middle=99.0, volume=1.0) == (False, True)
+          tema = _tema([float(i) for i in range(1, 101)], 9)
+          assert any(math.isfinite(value) for value in tema[30:]), tema
+          print("Candidate 57 public MBE2 source and TEMA contracts verified")
+          PY
+
+      - name: Run adaptive development to long tournament
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-mbe2-v1
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-57/.run_mbe2_tournament_materialized.py 2>&1 | tee .work/candidate-57-mbe2-v1/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Persist compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f research/candidate-57/.run_mbe2_tournament_materialized.py
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin research/candidate-57
+          if [[ -d research/candidate-57/evidence/mbe2-v1 ]]; then
+            git add -f research/candidate-57/evidence/mbe2-v1
+            if git diff --cached --quiet; then
+              echo "No new evidence to commit."
+            else
+              git commit --no-gpg-sign -m "candidate57: persist public MBE2 validation evidence"
+              git push origin HEAD:research/candidate-57
+            fi
+          else
+            echo "No evidence directory was produced."
+          fi
+
+      - name: Retain compact workflow evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-public-mbe2-v1-evidence
+          path: |
+            research/candidate-57/evidence/mbe2-v1
+            .work/candidate-57-mbe2-v1/console.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce campaign process integrity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "Campaign status was not produced."
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "Campaign failed with status $status; evidence retained."
+            exit "$status"
+          fi
