@@ -1,0 +1,51 @@
+name: candidate-53-ofi-state
+on:
+  push:
+    branches: [research/candidate-53]
+    paths:
+      - research/candidate-53/l1_ofi_state_first_study.py
+      - .github/workflows/candidate-53-ofi-state.yml
+  workflow_dispatch:
+
+jobs:
+  state:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        period:
+          - {label: DEV_JAN08_10, start: '2024-01-08', end: '2024-01-10'}
+          - {label: UNTOUCHED_MAR18_24, start: '2024-03-18', end: '2024-03-24'}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-53
+          fetch-depth: 0
+      - name: Prepare reusable BBO code
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          git fetch origin research/candidate-16-v13-volatility-squeeze-release:refs/remotes/origin/c16-v13
+          rm -rf .deps/c16
+          mkdir -p .deps
+          git worktree add --detach .deps/c16 refs/remotes/origin/c16-v13
+          git config --global --add safe.directory "$(pwd)/.deps/c16"
+      - name: Run frozen selector
+        env:
+          PYTHONPATH: .deps/c16/research/candidate-16
+        run: |
+          ROOT="artifacts/candidate-53-ofi-state/${{ matrix.period.label }}/${{ matrix.symbol }}"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          python research/candidate-53/l1_ofi_state_first_study.py --symbol "${{ matrix.symbol }}" --start "${{ matrix.period.start }}" --end "${{ matrix.period.end }}" --cache ".cache/c53-ofi-state/${{ matrix.period.label }}/${{ matrix.symbol }}" --output "$ROOT" | tee "$ROOT/console.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c53-ofi-state-${{ matrix.period.label }}-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-53-ofi-state/${{ matrix.period.label }}/${{ matrix.symbol }}/**
+          if-no-files-found: warn
+          retention-days: 30
