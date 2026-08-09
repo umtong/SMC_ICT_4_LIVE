@@ -1,0 +1,458 @@
+name: candidate-51-keltrader-v15
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-keltrader-v15.yml"
+      - "research/candidate-51/router_keltrader.py"
+      - "research/candidate-51/strategy_keltrader.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.13"
+
+concurrency:
+  group: candidate-51-keltrader-v15
+  cancel-in-progress: true
+
+jobs:
+  develop:
+    name: develop-${{ matrix.variant.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        variant:
+          - {name: source_4h, signal: 240, atr: 60, hold: 1440, volume: 1.0, band: "false"}
+          - {name: source_1h, signal: 60, atr: 30, hold: 720, volume: 1.0, band: "false"}
+          - {name: source_30m, signal: 30, atr: 15, hold: 360, volume: 1.0, band: "false"}
+          - {name: source_15m, signal: 15, atr: 15, hold: 180, volume: 1.0, band: "false"}
+          - {name: strict_1h, signal: 60, atr: 30, hold: 720, volume: 1.2, band: "true"}
+          - {name: strict_30m, signal: 30, atr: 15, hold: 360, volume: 1.2, band: "true"}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+      - name: Materialize public Keltrader core
+        run: |
+          cp research/candidate-51/router_keltrader.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_keltrader.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install and verify public source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import RouteConfig
+          config = RouteConfig()
+          assert config.keltrader_bb_period == 19
+          assert config.keltrader_bb_std == 2.47
+          assert config.keltrader_kc_period == 17
+          assert config.keltrader_kc_atr_mult == 2.38
+          assert config.keltrader_min_squeeze_bars == 2
+          assert config.keltrader_stop_atr_mult == 3.45
+          assert config.keltrader_target_atr_mult == 4.0
+          print("public Keltrader parameters verified")
+          PY
+      - name: Build frozen variant config
+        shell: bash
+        env:
+          SIGNAL: ${{ matrix.variant.signal }}
+          ATRTF: ${{ matrix.variant.atr }}
+          HOLD: ${{ matrix.variant.hold }}
+          VOLUME: ${{ matrix.variant.volume }}
+          BAND: ${{ matrix.variant.band }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          config = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in ("sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+                      "sma_stop_max_fraction", "sma_stop_atr_buffer"):
+              config["strategy"].pop(key, None)
+          config["strategy"].update({
+              "cooldown_minutes": 0,
+              "max_hold_minutes": int(os.environ["HOLD"]),
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "keltrader_signal_minutes": int(os.environ["SIGNAL"]),
+              "keltrader_atr_minutes": int(os.environ["ATRTF"]),
+              "keltrader_bb_period": 19,
+              "keltrader_bb_std": 2.47,
+              "keltrader_kc_period": 17,
+              "keltrader_kc_atr_mult": 2.38,
+              "keltrader_indicator_atr_period": 14,
+              "keltrader_momentum_period": 12,
+              "keltrader_rsi_period": 14,
+              "keltrader_rsi_overbought": 70.0,
+              "keltrader_rsi_oversold": 30.0,
+              "keltrader_volume_period": 20,
+              "keltrader_min_volume_ratio": float(os.environ["VOLUME"]),
+              "keltrader_min_squeeze_bars": 2,
+              "keltrader_require_band_break": os.environ["BAND"].lower() == "true",
+              "keltrader_stop_atr_mult": 3.45,
+              "keltrader_target_atr_mult": 4.0
+          })
+          Path(".work").mkdir(exist_ok=True)
+          Path(".work/config.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Run post-source 30-day account
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant.name }}
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/config.json \
+            --start 2026-01-01 --end 2026-01-30 \
+            --cache .cache/candidate-51-keltrader-v15 \
+            --output "artifacts/candidate-51/keltrader-v15-${VARIANT}-development" \
+            --workspace ".work/keltrader-v15-${VARIANT}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: keltrader-v15-development-${{ matrix.variant.name }}
+          path: artifacts/candidate-51/keltrader-v15-${{ matrix.variant.name }}-development/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  select:
+    needs: develop
+    if: always()
+    runs-on: ubuntu-24.04
+    outputs:
+      selected: ${{ steps.choose.outputs.selected }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: keltrader-v15-development-*
+          path: downloaded
+      - id: choose
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          comparison = {}
+          for artifact in sorted(Path("downloaded").glob("keltrader-v15-development-*")):
+              variant = artifact.name.removeprefix("keltrader-v15-development-")
+              mp, dp = artifact / "metrics.json", artifact / "strategy_diagnostics.json"
+              if not mp.is_file() or not dp.is_file():
+                  comparison[variant] = {"produced": False}
+                  continue
+              metrics, diagnostics = json.loads(mp.read_text()), json.loads(dp.read_text())
+              comparison[variant] = {
+                  "produced": True,
+                  **{key: metrics.get(key) for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth", "max_drawdown",
+                      "trades", "wins", "losses", "win_rate", "profit_factor",
+                      "expectancy_usdt", "largest_winner_share")},
+                  "release_candidates": diagnostics.get("keltrader_release_candidates"),
+                  "entries": diagnostics.get("entry_submissions"),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "unresolved_reason_counts": diagnostics.get("unresolved_reason_counts"),
+                  "global_position_violations": diagnostics.get("global_position_violations"),
+                  "order_rejections": diagnostics.get("order_rejections")
+              }
+          eligible = [variant for variant, row in comparison.items()
+              if row.get("produced") and int(row.get("trades") or 0) >= 5
+              and float(row.get("expectancy_usdt") or 0.0) > 0.0
+              and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+              and int(row.get("global_position_violations") or 0) == 0
+              and int(row.get("order_rejections") or 0) == 0]
+          eligible.sort(key=lambda variant: (
+              -float(comparison[variant].get("geometric_daily_growth") or 0.0),
+              -float(comparison[variant].get("expectancy_usdt") or 0.0),
+              -int(comparison[variant].get("trades") or 0), variant))
+          selected = eligible[0] if eligible else ""
+          report = {"comparison": comparison, "eligible": eligible,
+                    "selected": selected or None,
+                    "status": "TEST_POST_SOURCE_HOLDOUT" if selected else "REJECT_OR_REDESIGN"}
+          Path("selection.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+          Path("selected.txt").write_text(selected + "\n")
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+          echo "selected=$(tr -d '\r\n' < selected.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keltrader-v15-selection
+          path: |
+            selection.json
+            selected.txt
+
+  holdout:
+    needs: select
+    if: needs.select.outputs.selected != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+      - run: |
+          cp research/candidate-51/router_keltrader.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_keltrader.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install and reconstruct selected config
+        shell: bash
+        env:
+          VARIANT: ${{ needs.select.outputs.selected }}
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          uv run smc4 doctor
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          specs = {
+              "source_4h": (240,60,1440,1.0,False),
+              "source_1h": (60,30,720,1.0,False),
+              "source_30m": (30,15,360,1.0,False),
+              "source_15m": (15,15,180,1.0,False),
+              "strict_1h": (60,30,720,1.2,True),
+              "strict_30m": (30,15,360,1.2,True)
+          }
+          signal, atrtf, hold, volume, band = specs[os.environ["VARIANT"]]
+          config = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in ("sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+                      "sma_stop_max_fraction", "sma_stop_atr_buffer"):
+              config["strategy"].pop(key, None)
+          config["strategy"].update({"cooldown_minutes":0,"max_hold_minutes":hold,
+              "funding_flatten_minute":60,"funding_blackout_before_minutes":-1,
+              "funding_blackout_after_minutes":-1,"keltrader_signal_minutes":signal,
+              "keltrader_atr_minutes":atrtf,"keltrader_bb_period":19,
+              "keltrader_bb_std":2.47,"keltrader_kc_period":17,
+              "keltrader_kc_atr_mult":2.38,"keltrader_indicator_atr_period":14,
+              "keltrader_momentum_period":12,"keltrader_rsi_period":14,
+              "keltrader_rsi_overbought":70.0,"keltrader_rsi_oversold":30.0,
+              "keltrader_volume_period":20,"keltrader_min_volume_ratio":volume,
+              "keltrader_min_squeeze_bars":2,"keltrader_require_band_break":band,
+              "keltrader_stop_atr_mult":3.45,"keltrader_target_atr_mult":4.0})
+          Path(".work").mkdir(exist_ok=True)
+          Path(".work/config.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Run untouched post-source 30-day account
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/config.json \
+            --start 2026-06-01 --end 2026-06-30 \
+            --cache .cache/candidate-51-keltrader-v15 \
+            --output artifacts/candidate-51/keltrader-v15-selected-holdout \
+            --workspace .work/keltrader-v15-holdout
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: keltrader-v15-holdout-${{ needs.select.outputs.selected }}
+          path: artifacts/candidate-51/keltrader-v15-selected-holdout/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  assess:
+    needs: [select, holdout]
+    if: always()
+    runs-on: ubuntu-24.04
+    outputs:
+      promote: ${{ steps.assess.outputs.promote }}
+      selected: ${{ needs.select.outputs.selected }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: keltrader-v15-holdout-*
+          path: downloaded
+      - id: assess
+        shell: bash
+        env:
+          VARIANT: ${{ needs.select.outputs.selected }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          variant = os.environ.get("VARIANT", "")
+          matches = list(Path("downloaded").glob("keltrader-v15-holdout-*/metrics.json"))
+          result = {"variant": variant or None, "produced": False, "component_pass": False}
+          if variant and matches:
+              mp = matches[0]; dp = mp.with_name("strategy_diagnostics.json")
+              metrics, diagnostics = json.loads(mp.read_text()), json.loads(dp.read_text())
+              checks = {"at_least_five_trades": int(metrics.get("trades") or 0) >= 5,
+                  "positive_growth": float(metrics.get("geometric_daily_growth") or 0.0) > 0.0,
+                  "positive_expectancy": float(metrics.get("expectancy_usdt") or 0.0) > 0.0,
+                  "one_position": int(diagnostics.get("global_position_violations") or 0) == 0,
+                  "no_rejections": int(diagnostics.get("order_rejections") or 0) == 0}
+              result = {"variant": variant, "produced": True,
+                  **{key: metrics.get(key) for key in ("ending_nav","total_return",
+                      "geometric_daily_growth","max_drawdown","trades","wins","losses",
+                      "win_rate","profit_factor","expectancy_usdt","largest_winner_share")},
+                  "checks": checks, "component_pass": all(checks.values())}
+          Path("assessment.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+          promote="$(python - <<'PY'
+          import json
+          print(str(json.load(open('assessment.json')).get('component_pass', False)).lower())
+          PY
+          )"
+          echo "promote=$promote" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keltrader-v15-holdout-assessment
+          path: assessment.json
+
+  continuous:
+    needs: assess
+    if: needs.assess.outputs.promote == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+      - run: |
+          cp research/candidate-51/router_keltrader.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_keltrader.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install and reconstruct promoted config
+        shell: bash
+        env:
+          VARIANT: ${{ needs.assess.outputs.selected }}
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          uv run smc4 doctor
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          specs={"source_4h":(240,60,1440,1.0,False),"source_1h":(60,30,720,1.0,False),
+              "source_30m":(30,15,360,1.0,False),"source_15m":(15,15,180,1.0,False),
+              "strict_1h":(60,30,720,1.2,True),"strict_30m":(30,15,360,1.2,True)}
+          signal,atrtf,hold,volume,band=specs[os.environ["VARIANT"]]
+          config=json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in ("sma_offset_low","sma_offset_high","sma_stop_min_fraction",
+                      "sma_stop_max_fraction","sma_stop_atr_buffer"):
+              config["strategy"].pop(key,None)
+          config["strategy"].update({"cooldown_minutes":0,"max_hold_minutes":hold,
+              "funding_flatten_minute":60,"funding_blackout_before_minutes":-1,
+              "funding_blackout_after_minutes":-1,"keltrader_signal_minutes":signal,
+              "keltrader_atr_minutes":atrtf,"keltrader_bb_period":19,"keltrader_bb_std":2.47,
+              "keltrader_kc_period":17,"keltrader_kc_atr_mult":2.38,
+              "keltrader_indicator_atr_period":14,"keltrader_momentum_period":12,
+              "keltrader_rsi_period":14,"keltrader_rsi_overbought":70.0,
+              "keltrader_rsi_oversold":30.0,"keltrader_volume_period":20,
+              "keltrader_min_volume_ratio":volume,"keltrader_min_squeeze_bars":2,
+              "keltrader_require_band_break":band,"keltrader_stop_atr_mult":3.45,
+              "keltrader_target_atr_mult":4.0})
+          Path(".work").mkdir(exist_ok=True)
+          Path(".work/config.json").write_text(json.dumps(config,indent=2,sort_keys=True)+"\n")
+          PY
+      - name: Run post-source 90-day continuous account
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/config.json \
+            --start 2026-02-01 --end 2026-05-01 \
+            --cache .cache/candidate-51-keltrader-v15 \
+            --output artifacts/candidate-51/keltrader-v15-selected-continuous-90d \
+            --workspace .work/keltrader-v15-continuous
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: keltrader-v15-continuous-${{ needs.assess.outputs.selected }}
+          path: artifacts/candidate-51/keltrader-v15-selected-continuous-90d/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  persist:
+    needs: [develop, select, holdout, assess, continuous]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: keltrader-v15-*
+          path: downloaded
+      - name: Assemble compact evidence
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, shutil
+          from pathlib import Path
+          evidence=Path("research/candidate-51/evidence/v15-keltrader")
+          if evidence.exists(): shutil.rmtree(evidence)
+          for name in ("development","holdout","continuous"): (evidence/name).mkdir(parents=True)
+          manifest={"family":"public_keltrader_squeeze_core",
+              "source":{"repository":"jicheolha/crypto-trading-bot","tree_commit":"9851eadd96c44db99a26d4ca3cbabcc53b199242",
+                  "public_parameters":"BB19 2.47std; KC17 2.38ATR; squeeze>=2; SL3.45ATR; TP4ATR",
+                  "claimed_multiasset_metrics":{"trades":512,"win_rate":.672,"profit_factor":1.94,
+                      "sharpe":2.27,"max_drawdown":.274,"return_after_costs":16.891},
+                  "redacted_signal_generator_used":false},
+              "development_interval":["2026-01-01","2026-01-30"],
+              "untouched_interval":["2026-06-01","2026-06-30"],
+              "conditional_continuous_interval":["2026-02-01","2026-05-01"],
+              "engine":"NautilusTrader BacktestNode","risk_fraction":.03,"global_position_limit":1}
+          (evidence/"manifest.json").write_text(json.dumps(manifest,indent=2,sort_keys=True)+"\n")
+          for artifact in sorted(Path("downloaded").glob("keltrader-v15-development-*")):
+              variant=artifact.name.removeprefix("keltrader-v15-development-")
+              target=evidence/"development"/variant; target.mkdir()
+              for source in artifact.iterdir():
+                  if source.is_file() and source.name in {"metrics.json","strategy_diagnostics.json","run.json","data_manifest.json","closed_scenarios.json"}:
+                      shutil.copy2(source,target/source.name)
+          selection=Path("downloaded/keltrader-v15-selection/selection.json")
+          if selection.is_file(): shutil.copy2(selection,evidence/"development/selection.json")
+          assessment=Path("downloaded/keltrader-v15-holdout-assessment/assessment.json")
+          if assessment.is_file(): shutil.copy2(assessment,evidence/"holdout/assessment.json")
+          for artifact in Path("downloaded").glob("keltrader-v15-holdout-*"):
+              if artifact.name=="keltrader-v15-holdout-assessment": continue
+              for source in artifact.iterdir():
+                  if source.is_file() and source.name in {"metrics.json","strategy_diagnostics.json","run.json","data_manifest.json","closed_scenarios.json"}:
+                      shutil.copy2(source,evidence/"holdout"/source.name)
+          result={"produced":False,"project_gate_pass":False}
+          for artifact in Path("downloaded").glob("keltrader-v15-continuous-*"):
+              mp,dp=artifact/"metrics.json",artifact/"strategy_diagnostics.json"
+              if not mp.is_file() or not dp.is_file(): continue
+              metrics,diagnostics=json.loads(mp.read_text()),json.loads(dp.read_text())
+              checks={"daily_geometric_growth_at_least_1pct":float(metrics.get("geometric_daily_growth") or 0)>=.01,
+                  "trades_at_least_calendar_days":int(metrics.get("trades") or 0)>=90,
+                  "positive_expectancy":float(metrics.get("expectancy_usdt") or 0)>0,
+                  "one_position":int(diagnostics.get("global_position_violations") or 0)==0,
+                  "no_rejections":int(diagnostics.get("order_rejections") or 0)==0}
+              result={"produced":True,**{key:metrics.get(key) for key in ("ending_nav","total_return",
+                  "geometric_daily_growth","max_drawdown","trades","wins","losses","win_rate",
+                  "profit_factor","expectancy_usdt","largest_winner_share")},
+                  "checks":checks,"project_gate_pass":all(checks.values())}
+              for source in artifact.iterdir():
+                  if source.is_file() and source.name in {"metrics.json","strategy_diagnostics.json","run.json","data_manifest.json","closed_scenarios.json"}:
+                      shutil.copy2(source,evidence/"continuous"/source.name)
+          (evidence/"continuous/assessment.json").write_text(json.dumps(result,indent=2,sort_keys=True)+"\n")
+          print(json.dumps(result,indent=2,sort_keys=True))
+          PY
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add research/candidate-51/evidence/v15-keltrader
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate51: persist Keltrader external tournament"
+            for attempt in 1 2 3 4; do
+              git pull --rebase origin research/candidate-51 && git push origin HEAD:research/candidate-51 && break
+              sleep $((attempt * 5))
+            done
+          fi
