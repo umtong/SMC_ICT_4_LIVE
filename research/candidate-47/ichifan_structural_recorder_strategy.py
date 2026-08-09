@@ -51,6 +51,12 @@ class Candidate47IchiFanStructuralRecorderStrategy(
         if symbol is None or not self.bars[symbol]:
             return
         latest = self.bars[symbol][-1]
+        five_minute = _exact.aggregate_five_minute(tuple(self.bars[symbol]))
+        signal_high = (
+            float(five_minute[-2].high)
+            if len(five_minute) >= 2
+            else math.nan
+        )
         scenario["followthrough_fill_ts"] = int(
             getattr(event, "ts_event", latest.ts_event)
         )
@@ -58,6 +64,7 @@ class Candidate47IchiFanStructuralRecorderStrategy(
         scenario["followthrough_recorded_offsets"] = []
         scenario["followthrough_peak"] = float(latest.high)
         scenario["followthrough_trough"] = float(latest.low)
+        scenario["followthrough_signal_high"] = signal_high
 
     def _record_followthrough(self, ts_event: int) -> None:
         scenario = self.current_scenario
@@ -104,14 +111,7 @@ class Candidate47IchiFanStructuralRecorderStrategy(
         five_minute = _exact.aggregate_five_minute(tuple(self.bars[symbol]))
         states = _exact.fan_states(five_minute)
         state = states[-1] if states and states[-1].ready else None
-        signal_high = float(
-            scenario.get("diagnostics", {}).get("signal_bar_high", math.nan)
-        )
-        if not math.isfinite(signal_high):
-            # Structural submission stores the signal low, but the corresponding
-            # shifted source bar is still available causally in current history.
-            if len(five_minute) >= 2:
-                signal_high = float(five_minute[-2].high)
+        signal_high = float(scenario.get("followthrough_signal_high", math.nan))
 
         close = float(latest.close)
         open_price = float(latest.open)
@@ -131,6 +131,7 @@ class Candidate47IchiFanStructuralRecorderStrategy(
                 "entry_reference": entry,
                 "initial_stop": stop,
                 "initial_risk_per_unit": initial_risk,
+                "signal_high": signal_high if math.isfinite(signal_high) else None,
                 "close": close,
                 "high_to_date": peak,
                 "low_to_date": trough,
