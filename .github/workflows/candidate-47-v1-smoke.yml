@@ -49,7 +49,21 @@ jobs:
             research/candidate-47/strategy.py \
             research/candidate-47/launch.py \
             research/candidate-47/run.py
-          python -m pytest research/candidate-47/test_router.py -q
+          python - <<'PY'
+          import inspect
+          import test_router
+
+          tests = [
+              (name, fn)
+              for name, fn in inspect.getmembers(test_router, inspect.isfunction)
+              if name.startswith("test_")
+          ]
+          assert tests, "no router contract tests discovered"
+          for name, fn in tests:
+              fn()
+              print(f"PASS {name}")
+          print(f"executed {len(tests)} router contract tests")
+          PY
           python - <<'PY'
           from pathlib import Path
           import strategy
