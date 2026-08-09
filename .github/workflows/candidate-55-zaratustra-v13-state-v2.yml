@@ -1,0 +1,122 @@
+name: candidate-55-zaratustra-v13-state-v2
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v13-state-v2.yml"
+      - "research/candidate-55/run_zaratustra_v13_state_tournament.py"
+      - "research/candidate-55/router_zaratustra.py"
+      - "research/candidate-55/router_zaratustra_v13.py"
+      - "research/candidate-55/strategy_zaratustra.py"
+      - "research/candidate-55/strategy_zaratustra_v13.py"
+      - "research/candidate-55/strategy_zaratustra_v13_state.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-55-zaratustra-v13-state-v2
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+          fetch-depth: 0
+
+      - name: Materialize reused Nautilus shell and V13 repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra_v13.py research/candidate-51/strategy_zaratustra_v13.py
+          cp research/candidate-55/strategy_zaratustra_v13_state.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install, doctor and prove management contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import BarObservation
+          from strategy import _decode_exit_mode, _di_components
+
+          assert _decode_exit_mode("strict_5m") == (5, 1)
+          assert _decode_exit_mode("majority_15m") == (15, 2)
+          minute = 60_000_000_000
+          bars = tuple(
+              BarObservation(
+                  ts_event=index * minute,
+                  open=200.0 - 0.1 * index,
+                  high=200.2 - 0.1 * index,
+                  low=199.7 - 0.1 * index,
+                  close=199.8 - 0.1 * index,
+                  volume=1.0,
+              )
+              for index in range(500)
+          )
+          components, values = _di_components(
+              bars, timeframe=5, period=14, side=-1
+          )
+          assert components is not None, values
+          assert components[2], (components, values)
+          print("V13 DI invalidation contracts verified", components, values)
+          PY
+
+      - name: Run frozen-entry management tournament
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_zaratustra_v13_state_tournament.py
+
+      - name: Persist evidence on candidate branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="research/candidate-55/evidence/v7-zaratustra-v13-state"
+          if [[ ! -f "$evidence/RESULT.json" ]]; then
+            echo "No complete V13 state-management result to persist" >&2
+            exit 1
+          fi
+          git config user.name "candidate-55-research-bot"
+          git config user.email "candidate-55-research-bot@users.noreply.github.com"
+          git add "$evidence"
+          git commit -m "candidate55: persist V13 DI-management evidence"
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_zaratustra.py \
+            research/candidate-51/strategy_zaratustra.py \
+            research/candidate-51/strategy_zaratustra_v13.py
+          pushed=0
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-55 && git push origin HEAD:research/candidate-55; then
+              pushed=1
+              break
+            fi
+            sleep $((attempt * 4))
+          done
+          [[ "$pushed" -eq 1 ]]
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v13-state-v2-${{ github.sha }}
+          path: artifacts/candidate-55/zaratustra-v13-state-v2-*
+          if-no-files-found: warn
