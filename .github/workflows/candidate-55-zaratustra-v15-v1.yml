@@ -1,0 +1,127 @@
+name: candidate-55-zaratustra-v15-v1
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v15-v1.yml"
+      - "research/candidate-55/router_zaratustra_v15.py"
+      - "research/candidate-55/strategy_zaratustra_v15.py"
+      - "research/candidate-55/run_zaratustra_v15_tournament.py"
+      - "research/candidate-55/router_zaratustra_v13.py"
+      - "research/candidate-55/router_zaratustra.py"
+      - "research/candidate-55/strategy_zaratustra.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-zaratustra-v15-v1
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - name: Materialize reused Nautilus shell and V15 policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_picasso.py research/candidate-51/router_picasso.py
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/router_zaratustra_v15.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra_v15.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and prove V15 contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import (
+              BarObservation,
+              _atr,
+              _decode_mode,
+              _mfi,
+              _obv,
+              source_entry_flags,
+          )
+
+          assert _decode_mode("source_level_exact") == ("level", "absolute", "source")
+          assert _decode_mode("edge_normalized") == ("edge", "normalized", "source")
+          assert _decode_mode("edge_normalized_di") == ("edge", "normalized", "di")
+          assert _decode_mode("bb_only") == ("edge", "absolute", "bb")
+
+          base = dict(
+              dx=30.0,
+              adx=31.0,
+              pdi=25.0,
+              mdi=10.0,
+              obv=2.0,
+              previous_obv=1.0,
+              mfi=60.0,
+              close=100.0,
+              previous_close=100.0,
+              upper=101.0,
+              previous_upper=101.0,
+              lower=99.0,
+              previous_lower=99.0,
+          )
+          exact = source_entry_flags(atr=0.1, normalized_atr=False, **base)
+          assert exact["long_di"] and not exact["short_di"]
+          high_price = dict(base)
+          high_price["close"] = 100000.0
+          high_price["previous_close"] = 100000.0
+          high_price["upper"] = 101000.0
+          high_price["previous_upper"] = 101000.0
+          high_price["lower"] = 99000.0
+          high_price["previous_lower"] = 99000.0
+          literal = source_entry_flags(atr=100.0, normalized_atr=False, **high_price)
+          repaired = source_entry_flags(atr=100.0, normalized_atr=True, **high_price)
+          assert not literal["long_di"] and repaired["long_di"]
+
+          breakout = dict(base)
+          breakout.update(previous_close=100.0, previous_upper=101.0, close=102.0, upper=101.5)
+          assert source_entry_flags(atr=0.1, normalized_atr=False, **breakout)["long_bb"]
+
+          candles = [
+              BarObservation(
+                  ts_event=index * 300_000_000_000,
+                  open=100.0 + index * 0.1,
+                  high=101.0 + index * 0.1,
+                  low=99.0 + index * 0.1,
+                  close=100.5 + index * 0.1,
+                  volume=1000.0 + index,
+              )
+              for index in range(80)
+          ]
+          assert math.isfinite(_atr(candles, 14)[-1])
+          assert math.isfinite(_mfi(candles, 14)[-1])
+          assert math.isfinite(_obv(candles)[-1])
+          print("ZaratustraV15 literal, normalized and causal indicator contracts verified")
+          PY
+      - name: Run structural-capacity tournament
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_zaratustra_v15_tournament.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v15-v1-${{ github.sha }}
+          path: artifacts/candidate-55/zaratustra-v15-v1-*
+          if-no-files-found: warn
