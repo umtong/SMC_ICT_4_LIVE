@@ -1,0 +1,44 @@
+name: candidate-47-nasosv5-contracts
+
+on:
+  push:
+    branches: ["research/candidate-47"]
+    paths:
+      - ".github/workflows/candidate-47-nasosv5-contracts.yml"
+      - "research/candidate-47/nasosv5_logic.py"
+      - "research/candidate-47/test_nasosv5_logic.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    env:
+      PYTHONPATH: research/candidate-47
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Compile and execute exact source branch contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q \
+            research/candidate-47/nasosv5_logic.py \
+            research/candidate-47/test_nasosv5_logic.py
+          python - <<'PY'
+          import inspect
+          import test_nasosv5_logic as module
+          tests = [
+              (name, fn)
+              for name, fn in inspect.getmembers(module, inspect.isfunction)
+              if name.startswith("test_")
+          ]
+          assert tests
+          for name, fn in tests:
+              fn()
+              print(f"PASS {name}")
+          print(f"executed {len(tests)} NASOSv5 contracts")
+          PY
