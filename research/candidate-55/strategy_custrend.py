@@ -2,7 +2,8 @@
 
 The mature Candidate 55 MBE2 shell is reused for continuous NAV, one global
 slot, current-NAV 3% sizing, real Binance 1m execution, source ROI and causal
-1m trailing.  This layer adds only CusTrend's complete-hour 5-bar exit signal.
+1m trailing.  This layer adds only CusTrend's exact ROI times and complete-hour
+5-bar exit signal.
 """
 from __future__ import annotations
 
@@ -12,7 +13,9 @@ from pathlib import Path
 import sys
 
 _BASE_PATH = Path(__file__).resolve().with_name("strategy_mbe2.py")
-_SPEC = importlib.util.spec_from_file_location("candidate55_custrend_reused_execution", _BASE_PATH)
+_SPEC = importlib.util.spec_from_file_location(
+    "candidate55_custrend_reused_execution", _BASE_PATH
+)
 if _SPEC is None or _SPEC.loader is None:
     raise RuntimeError(f"cannot load reused MBE2 execution: {_BASE_PATH}")
 _BASE = importlib.util.module_from_spec(_SPEC)
@@ -29,17 +32,39 @@ class Candidate35Strategy(_BASE.Candidate35Strategy):
 
     def __init__(self, config: Candidate35Config) -> None:
         super().__init__(config)
+        # The reused MBE2 shell offers the same profit-ratio management, but its
+        # original timestamps differ.  Restore the public CusTrend schedule.
+        self._roi_schedule = (
+            (0, 0.101),
+            (373, 0.068),
+            (1088, 0.025),
+            (1336, 0.0),
+        )
         self._last_source_exit_candle: int | None = None
-        self.diagnostics.update({
-            "candidate": "candidate-55",
-            "external_source": "remiotore/ccxt-freqtrade:strategies/CusTrend_coralTrend_Adx_EMA_Oct_1h.py",
-            "external_source_blob": "f2f50e7e6fdc8505c9a0602f1b88aacb0f59d6e0",
-            "source_timeframes_minutes": [60, 240],
-            "source_exit_checks": 0,
-            "source_exit_signals": 0,
-            "complete_delayed_4h_ema_only": 1,
-            "real_binance_1m_execution": 1,
-        })
+        self.diagnostics.update(
+            {
+                "candidate": "candidate-55",
+                "external_source": (
+                    "remiotore/ccxt-freqtrade:strategies/"
+                    "CusTrend_coralTrend_Adx_EMA_Oct_1h.py"
+                ),
+                "external_source_blob": (
+                    "49f5057b67ac8a41ccc63ffa92f5810704b79c4c"
+                ),
+                "source_timeframes_minutes": [60, 240],
+                "source_roi_schedule": {
+                    "0": 0.101,
+                    "373": 0.068,
+                    "1088": 0.025,
+                    "1336": 0.0,
+                },
+                "source_exit_checks": 0,
+                "source_exit_signals": 0,
+                "complete_delayed_4h_ema_only": 1,
+                "exact_shifted_volume_mean": 1,
+                "real_binance_1m_execution": 1,
+            }
+        )
 
     def _source_exit(self) -> tuple[bool, dict[str, float | int]]:
         assert self.current_symbol is not None
@@ -74,7 +99,10 @@ class Candidate35Strategy(_BASE.Candidate35Strategy):
 
     def _manage_open_position(self, ts_event: int) -> None:
         scenario = self.current_scenario or {}
-        if self.current_symbol is not None and scenario.get("state") == CUSTREND_STATE:
+        if (
+            self.current_symbol is not None
+            and scenario.get("state") == CUSTREND_STATE
+        ):
             signal, values = self._source_exit()
             candle_ts = int(values.get("source_exit_candle_ts", 0))
             if candle_ts and candle_ts != self._last_source_exit_candle:
@@ -85,7 +113,9 @@ class Candidate35Strategy(_BASE.Candidate35Strategy):
                     self.cancel_all_orders(instrument_id)
                     self.close_all_positions(instrument_id)
                     self.diagnostics["source_exit_signals"] += 1
-                    self._event("PUBLIC_CUSTREND_EXIT_SIGNAL", ts_event, **values)
+                    self._event(
+                        "PUBLIC_CUSTREND_EXIT_SIGNAL", ts_event, **values
+                    )
                     return
         super()._manage_open_position(ts_event)
 
