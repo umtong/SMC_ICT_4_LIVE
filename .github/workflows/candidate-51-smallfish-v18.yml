@@ -1,0 +1,247 @@
+name: candidate-51-smallfish-real-flow-v18
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-smallfish-v18.yml"
+      - "research/candidate-51/router_smallfish_v18.py.gz"
+      - "research/candidate-51/strategy_smallfish_v18.py.gz"
+      - "research/candidate-51/smallfish_v18_runner.py.gz"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-smallfish-real-flow-v18
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Materialize Smallfish real-flow policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip
+          from pathlib import Path
+
+          root = Path("research/candidate-51")
+          for name in ("router_smallfish_v18.py", "strategy_smallfish_v18.py", "smallfish_v18_runner.py"):
+              (root / name).write_bytes(
+                  gzip.decompress((root / f"{name}.gz").read_bytes())
+              )
+          (root / "router.py").write_bytes(
+              (root / "router_smallfish_v18.py").read_bytes()
+          )
+          (root / "strategy.py").write_bytes(
+              (root / "strategy_smallfish_v18.py").read_bytes()
+          )
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install locked foundation and verify real-data contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from pathlib import Path
+          import tempfile
+          import pandas as pd
+
+          from router import (
+              BarObservation,
+              FeatureObservation,
+              RouteConfig,
+              SMALLFISH_STATE,
+              classify_symbol,
+              route_universe,
+          )
+          from strategy import _SmallfishFeatureStore
+
+          def make_bars(direction: int, bucket: int = 5, candles: int = 30):
+              output = []
+              price = 100.0
+              minute_index = 0
+              for index in range(candles):
+                  drift = (
+                      0.02 * math.sin(index / 2.0)
+                      if index < candles - 6
+                      else direction * (0.25 + 0.05 * (index - candles + 6))
+                  )
+                  opened = price
+                  closed = price + drift
+                  for minute in range(bucket):
+                      left = minute / bucket
+                      right = (minute + 1) / bucket
+                      bar_open = opened + (closed - opened) * left
+                      bar_close = opened + (closed - opened) * right
+                      minute_index += 1
+                      output.append(
+                          BarObservation(
+                              minute_index * 60_000_000_000 - 1_000_000,
+                              bar_open,
+                              max(bar_open, bar_close) + 0.03,
+                              min(bar_open, bar_close) - 0.03,
+                              bar_close,
+                              1000.0 + 100.0 * minute,
+                          )
+                      )
+                  price = closed
+              return output
+
+          def feature(bars, direction):
+              return FeatureObservation(
+                  observed_time_ns=bars[-1].ts_event,
+                  ready=True,
+                  flow_15s=0.8 * direction,
+                  flow_60s=0.65 * direction,
+                  flow_open_10s=0.8 * direction,
+                  flow_3m=0.45 * direction,
+                  notional_60s=10_000_000.0,
+                  notional_burst=3.0,
+                  notional_open_10s_burst=3.0,
+                  trade_count_60s=1200.0,
+                  trade_count_burst=3.0,
+                  trade_vwap_60s=bars[-1].close,
+                  ret_60s_bps=8.0 * direction,
+                  path_60s_bps=10.0,
+                  efficiency_60s=0.8,
+                  flow_price_alignment_60s=5.0,
+                  absorption_60s=0.1,
+                  depth_snapshot_age_seconds=5.0,
+                  depth_imbalance_1=0.5 * direction,
+                  depth_imbalance_2=0.4 * direction,
+                  depth_imbalance_delta_1=0.1 * direction,
+                  bid_depth_change_1_1m=0.2 * direction,
+                  ask_depth_change_1_1m=-0.7 * direction,
+                  bid_depth_change_1_5m=0.2 * direction,
+                  ask_depth_change_1_5m=-0.8 * direction,
+              )
+
+          for direction in (1, -1):
+              bars = make_bars(direction)
+              decision = classify_symbol(
+                  "BTCUSDT",
+                  bars,
+                  feature(bars, direction),
+                  RouteConfig(),
+              )
+              assert decision.actionable, (decision.reasons, decision.diagnostics)
+              assert decision.state == SMALLFISH_STATE
+              assert decision.side == direction
+              if direction > 0:
+                  assert decision.stop_reference < decision.entry_reference < decision.objective_reference
+              else:
+                  assert decision.objective_reference < decision.entry_reference < decision.stop_reference
+              assert decision.diagnostics["agreement"] >= 3
+              assert decision.diagnostics["feature_policy"] == "REAL_BINANCE_AGGTRADES_BOOKDEPTH_NOT_SYNTHETIC"
+
+          bars = make_bars(1)
+          future = classify_symbol(
+              "BTCUSDT",
+              bars,
+              FeatureObservation(bars[-1].ts_event + 1),
+              RouteConfig(),
+          )
+          assert not future.actionable and "FUTURE_FEATURE_REJECTED" in future.reasons
+          universe = {
+              symbol: bars
+              for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+          }
+          observations = {symbol: feature(series, 1) for symbol, series in universe.items()}
+          winner, decisions = route_universe(universe, observations, RouteConfig())
+          assert winner is not None and winner.actionable
+          assert sum(item.actionable for item in decisions.values()) == 4
+
+          # Verify that the strategy reads only an observed row at or before ts_event.
+          fields = list(_SmallfishFeatureStore._FIELDS)
+          rows = []
+          for index in range(3):
+              row = {
+                  "observed_time_ns": (index + 1) * 60_000_000_000 - 1_000_000,
+                  "feature_ready": True,
+              }
+              for field in fields:
+                  row[field] = 1.0
+              row["flow_60s"] = 0.1 * (index + 1)
+              row["depth_imbalance_1"] = 0.2 * index
+              rows.append(row)
+          with tempfile.TemporaryDirectory() as directory:
+              path = Path(directory) / "features.csv"
+              pd.DataFrame(rows).to_csv(path, index=False)
+              store = _SmallfishFeatureStore(path)
+              observation = store.observation(rows[1]["observed_time_ns"], 65.0)
+              assert observation.ready
+              assert abs(observation.flow_60s - 0.2) < 1e-12
+              assert abs(observation.depth_imbalance_delta_1 - 0.2) < 1e-12
+              future_safe = store.observation(
+                  rows[1]["observed_time_ns"] + 1,
+                  65.0,
+              )
+              assert abs(future_safe.flow_60s - 0.2) < 1e-12
+          print("Smallfish real-flow causality, geometry and feature-store contracts passed")
+          PY
+
+      - name: Run source profiles and conditional continuous gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/smallfish_v18_runner.py
+
+      - name: Persist exact compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -- research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_smallfish_v18.py \
+            research/candidate-51/strategy_smallfish_v18.py \
+            research/candidate-51/smallfish_v18_runner.py
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git fetch origin research/candidate-51
+          git rebase origin/research/candidate-51
+          git add research/candidate-51/evidence/v18-smallfish-real-flow
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate51: persist Smallfish real-flow screen v18"
+            for attempt in 1 2 3 4 5; do
+              git fetch origin research/candidate-51
+              git rebase origin/research/candidate-51
+              if git push origin HEAD:research/candidate-51; then
+                exit 0
+              fi
+              sleep 2
+            done
+            exit 1
+          fi
+
+      - name: Upload full diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-smallfish-v18-${{ github.sha }}
+          path: |
+            artifacts/candidate-51/smallfish-v18-*
+            research/candidate-51/evidence/v18-smallfish-real-flow
+          if-no-files-found: warn
