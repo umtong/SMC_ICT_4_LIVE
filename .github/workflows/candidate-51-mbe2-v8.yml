@@ -1,20 +1,20 @@
-name: candidate-51-ichi-v9-reused-runner
+name: candidate-51-winner-v11
 
 on:
   push:
     branches: ["research/candidate-51"]
     paths:
       - ".github/workflows/candidate-51-mbe2-v8.yml"
-      - "research/candidate-51/router_ichi.py.gz"
-      - "research/candidate-51/strategy_ichi.py.gz"
-      - "research/candidate-51/ichi_v9_runner.py.gz"
+      - "research/candidate-51/router_winner.py.gz"
+      - "research/candidate-51/strategy_winner.py.gz"
+      - "research/candidate-51/winner_v11_runner.py.gz"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: candidate-51-ichi-v9-reused-runner
+  group: candidate-51-winner-v11
   cancel-in-progress: true
 
 jobs:
@@ -28,25 +28,22 @@ jobs:
           ref: research/candidate-51
           fetch-depth: 0
 
-      - name: Materialize public Ichi policy
+      - name: Materialize public Winner15m source family
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import gzip
-          from pathlib import Path
-          root = Path("research/candidate-51")
-          for name in ("router_ichi.py", "strategy_ichi.py", "ichi_v9_runner.py"):
-              (root / name).write_bytes(gzip.decompress((root / f"{name}.gz").read_bytes()))
-          (root / "router.py").write_bytes((root / "router_ichi.py").read_bytes())
-          (root / "strategy.py").write_bytes((root / "strategy_ichi.py").read_bytes())
-          PY
+          root="research/candidate-51"
+          gzip -dc "$root/router_winner.py.gz" > "$root/router_winner.py"
+          gzip -dc "$root/strategy_winner.py.gz" > "$root/strategy_winner.py"
+          gzip -dc "$root/winner_v11_runner.py.gz" > "$root/winner_v11_runner.py"
+          cp "$root/router_winner.py" "$root/router.py"
+          cp "$root/strategy_winner.py" "$root/strategy.py"
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      - name: Install locked foundation
+      - name: Install locked NautilusTrader foundation
         shell: bash
         run: |
           set -euo pipefail
@@ -56,29 +53,41 @@ jobs:
           uv run smc4 doctor
           uv run python -m compileall -q research/candidate-51
 
-      - name: Run external Ichi source-family screen
+      - name: Run external Winner15m source-family screen
         shell: bash
         run: |
           set -euo pipefail
-          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/ichi_v9_runner.py
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/winner_v11_runner.py
 
-      - name: Persist compact evidence
+      - name: Persist compact evidence without branch races
         if: always()
         shell: bash
         run: |
           set -euo pipefail
+          test -d research/candidate-51/evidence/v11-winner15m
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f research/candidate-51/router_winner.py research/candidate-51/strategy_winner.py research/candidate-51/winner_v11_runner.py
           git config user.name "candidate-51-research-bot"
           git config user.email "candidate-51-research-bot@users.noreply.github.com"
-          git add research/candidate-51/evidence/v9-ichi
-          if ! git diff --cached --quiet; then
-            git commit -m "candidate51: persist public Ichi family screen"
-            git push origin HEAD:research/candidate-51
+          git add research/candidate-51/evidence/v11-winner15m
+          if git diff --cached --quiet; then
+            exit 0
           fi
+          git commit -m "candidate51: persist public Winner15m family screen"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-51
+            if git rebase origin/research/candidate-51 && git push origin HEAD:research/candidate-51; then
+              exit 0
+            fi
+            git rebase --abort >/dev/null 2>&1 || true
+            sleep $((attempt * 2))
+          done
+          exit 1
 
       - name: Upload full diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-51-ichi-v9-${{ github.sha }}
-          path: artifacts/candidate-51/ichi-v9-*
+          name: candidate-51-winner-v11-${{ github.sha }}
+          path: artifacts/candidate-51/winner-v11-*
           if-no-files-found: warn
