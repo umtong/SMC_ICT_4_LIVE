@@ -1,22 +1,21 @@
-"""Candidate 51 timing adapter over the audited Candidate 35 execution shell.
-
-Only the decision clock is changed: Candidate 51 evaluates completed data every
-five minutes and waits for enough history for the 8h fan/Ichimoku context. Order,
-fee, latency, bracket, risk, portfolio and continuous-NAV handling remain in the
-reused base strategy.
-"""
+"""Candidate 51 causal timing/exit adapter over the reused Nautilus executor."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from router import FeatureObservation, route_universe
+from router import FeatureObservation, ICHI_STATE, ichi_exit_crossed, route_universe
 from strategy_base import SYMBOLS
 from strategy_base import Candidate35Config
 from strategy_base import Candidate35Strategy as _ExecutionShell
 
 
 class Candidate35Strategy(_ExecutionShell):
-    """Five-minute causal router using the inherited single-account executor."""
+    """Exact-ish public ichiV2 policy with project-account execution constraints."""
+
+    def __init__(self, config: Candidate35Config) -> None:
+        super().__init__(config)
+        self.diagnostics.setdefault("source_exit_submissions", 0)
+        self.diagnostics.setdefault("source_trailing_exit_submissions", 0)
 
     def _on_complete_universe_minute(self, ts_event: int) -> None:
         self.minute_index += 1
@@ -61,19 +60,20 @@ class Candidate35Strategy(_ExecutionShell):
             return
 
         moment = datetime.fromtimestamp(ts_event / 1_000_000_000, tz=timezone.utc)
-        if moment.minute % 5 != 4:
+        if moment.minute % self.route_config.bucket_minutes != self.route_config.bucket_minutes - 1:
             return
-        required_bars = max(self.route_config.cloud_span_b, self.route_config.fan_slow) + 20
+        required_bars = self.route_config.bucket_minutes * (
+            self.route_config.cloud_span_b + self.route_config.cloud_displacement + 8
+        )
         if any(len(self.bars[symbol]) < required_bars for symbol in SYMBOLS):
             return
 
         features: dict[str, FeatureObservation] = {}
         for symbol in SYMBOLS:
-            observation = self.features[symbol].observation(
+            features[symbol] = self.features[symbol].observation(
                 ts_event,
                 self.config.feature_max_age_seconds,
             )
-            features[symbol] = observation
         if not all(item.ready for item in features.values()):
             self.diagnostics["feature_stale_episodes"] += 1
             return
@@ -98,6 +98,45 @@ class Candidate35Strategy(_ExecutionShell):
             self.diagnostics["unresolved_episodes"] += 1
             return
         self._submit_decision(winner, ts_event)
+
+    def _manage_open_position(self, ts_event: int) -> None:
+        if self.current_symbol is None:
+            return
+        scenario = self.current_scenario or {}
+        if scenario.get("state") == ICHI_STATE:
+            latest = self.bars[self.current_symbol][-1]
+            peak = max(float(scenario.get("peak_price", latest.high)), float(latest.high))
+            scenario["peak_price"] = peak
+            entry = float(scenario.get("entry_reference", latest.close))
+
+            # Public ichiV2 trailing semantics: activate after +8%, then trail
+            # by 6% from the high.  This normally leaves the EMA18 exit in charge.
+            trailing_active = peak >= entry * 1.08
+            trailing_exit = trailing_active and latest.close <= peak * (1.0 - 0.06)
+
+            moment = datetime.fromtimestamp(ts_event / 1_000_000_000, tz=timezone.utc)
+            source_exit = False
+            exit_details: dict[str, float | int] = {}
+            if moment.minute % self.route_config.bucket_minutes == self.route_config.bucket_minutes - 1:
+                source_exit, exit_details = ichi_exit_crossed(
+                    tuple(self.bars[self.current_symbol]),
+                    self.route_config,
+                )
+            if source_exit or trailing_exit:
+                instrument_id = self.instrument_ids[self.current_symbol]
+                self.cancel_all_orders(instrument_id)
+                self.close_all_positions(instrument_id)
+                key = "source_trailing_exit_submissions" if trailing_exit else "source_exit_submissions"
+                self.diagnostics[key] = int(self.diagnostics.get(key, 0)) + 1
+                self._event(
+                    "PUBLIC_ICHI_V2_EXIT",
+                    ts_event,
+                    trailing_exit=trailing_exit,
+                    peak_price=peak,
+                    **exit_details,
+                )
+                return
+        super()._manage_open_position(ts_event)
 
 
 __all__ = ["Candidate35Config", "Candidate35Strategy"]

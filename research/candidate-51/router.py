@@ -1,43 +1,22 @@
-"""Causal multi-timeframe trend/volatility router for Candidate 51.
+"""Candidate 51 open-book router: causal adaptation of public Freqtrade ichiV2.
 
-The primary family is a direct, auditable adaptation of the public Freqtrade
-``ichiV1/ichiV2`` idea: multi-horizon EMA/Heikin-Ashi agreement, price above or
-below a causal Ichimoku cloud, and an accelerating 1h/8h fan magnitude.  A
-second, independent NR7 range-expansion family reuses the classic narrow-range
-breakout mechanism.  Both families operate only on completed one-minute bars.
+The public strategy is not treated as evidence.  Its complete decision policy is
+reproduced first, then adapted only where the project constraints require it:
+completed five-minute bars, one global slot, causal one-bar input shift,
+structural risk sizing, and an explicit independent episode edge.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-from statistics import median
-from typing import Mapping, Sequence
-
-_EPS = 1e-12
-_NS_MINUTE = 60_000_000_000
+from typing import Iterable, Mapping, Sequence
 
 
-def _finite(value: float, default: float = 0.0) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return default
-    return number if math.isfinite(number) else default
+ICHI_STATE = "ICHI_V2_FAN_ACCELERATION_LONG"
+UNRESOLVED = "UNRESOLVED"
 
 
-def _clamp(value: float, low: float, high: float) -> float:
-    return min(high, max(low, value))
-
-
-def _sign(value: float, deadband: float = 0.0) -> int:
-    if value > deadband:
-        return 1
-    if value < -deadband:
-        return -1
-    return 0
-
-
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class BarObservation:
     ts_event: int
     open: float
@@ -47,7 +26,7 @@ class BarObservation:
     volume: float
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FeatureObservation:
     observed_time_ns: int
     ready: bool = True
@@ -59,564 +38,492 @@ class FeatureObservation:
     premium_z: float = math.nan
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RouteConfig:
-    # Existing Candidate 35 constructor fields are retained so the audited
-    # Nautilus execution shell can be reused without changing its contract.
+    # Legacy constructor fields retained because the reused Nautilus executor
+    # instantiates RouteConfig from its StrategyConfig.
     atr_period: int = 30
-    prior_bars: int = 15
-    response_bars: int = 3
     min_impulse_atr_continuation: float = 0.20
     min_impulse_atr_reversal: float = 1.05
     min_response_atr: float = 0.08
-    min_break_acceptance_atr: float = 0.015
-    min_sweep_penetration_atr: float = 0.06
     min_participation_ratio: float = 0.85
-    min_flow_alignment: float = 0.02
-    min_efficiency: float = 0.20
-    min_breadth_fraction: float = 0.50
-    continuation_target_r: float = 2.00
-    reversal_target_r: float = 1.65
     min_route_score: float = 3.20
     ambiguity_score_gap: float = 0.10
-    stop_buffer_atr: float = 0.10
-    min_stop_atr: float = 0.55
-    max_stop_atr: float = 1.85
+    continuation_target_r: float = 2.00
+    reversal_target_r: float = 1.65
 
-    # Public ichiV1/ichiV2 structure, scaled from 5m candles to 1m bars.
-    trend_periods: tuple[int, ...] = (5, 15, 30, 60, 120, 240, 360, 480)
+    # Public ichiV2 parameters (5m source strategy).
+    bucket_minutes: int = 5
     bullish_levels: int = 4
-    cloud_tenkan: int = 100
-    cloud_kijun: int = 300
-    cloud_span_b: int = 600
-    fan_fast: int = 60
-    fan_slow: int = 480
-    fan_shift_minutes: int = 5
-    fan_rising_steps: int = 3
-    min_fan_magnitude: float = 1.00045
-    min_fan_gain: float = 1.00008
-    max_extension_atr: float = 3.20
+    cloud_levels: int = 1
+    fan_rising_lookback: int = 3
+    min_fan_gain: float = 1.0013
+    fan_fast: int = 12
+    fan_slow: int = 96
+    exit_ema_period: int = 18
+    cloud_conversion: int = 20
+    cloud_base: int = 60
+    cloud_span_b: int = 120
+    cloud_displacement: int = 30
 
-    # Independent narrow-range expansion family.
-    nr_interval_minutes: int = 15
-    nr_lookback: int = 7
-    nr_break_buffer_atr: float = 0.05
-    nr_max_range_atr: float = 2.20
-    nr_target_r: float = 1.90
+    # Project-required hard invalidation.  The public strategy used a 10%
+    # emergency stop; here expected trend invalidation determines quantity.
+    hard_stop_min_fraction: float = 0.0035
+    hard_stop_max_fraction: float = 0.0250
+    stop_atr_buffer: float = 0.25
+    public_roi_target_fraction: float = 0.30
+    max_entry_extension_atr: float = 4.0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RouteDecision:
     symbol: str
     state: str
     side: int
     score: float
-    expected_target_r: float
-    atr: float
     entry_reference: float
     stop_reference: float
     objective_reference: float
     episode_ts: int
     reasons: tuple[str, ...] = ()
-    diagnostics: Mapping[str, float | int | bool | str] = field(default_factory=dict)
+    diagnostics: Mapping[str, float | int | str] = field(default_factory=dict)
 
     @property
     def actionable(self) -> bool:
-        return self.state != "UNRESOLVED" and self.side in (-1, 1)
+        return self.side != 0 and self.state != UNRESOLVED
 
 
-def true_range(current: BarObservation, previous_close: float) -> float:
-    return max(
-        current.high - current.low,
-        abs(current.high - previous_close),
-        abs(current.low - previous_close),
-    )
+def _finite(value: float) -> bool:
+    return math.isfinite(value)
 
 
-def causal_atr(bars: Sequence[BarObservation], period: int) -> float:
-    if period < 2 or len(bars) < period + 1:
-        return math.nan
-    selected = bars[-(period + 1) :]
-    values = [
-        true_range(selected[index], selected[index - 1].close)
-        for index in range(1, len(selected))
-    ]
-    clean = [value for value in values if math.isfinite(value) and value > 0.0]
+def _mean(values: Sequence[float]) -> float:
+    clean = [float(value) for value in values if _finite(float(value))]
     return sum(clean) / len(clean) if clean else math.nan
 
 
-def _ema_series(values: Sequence[float], period: int) -> list[float]:
-    if period <= 0 or len(values) < period:
-        return [math.nan] * len(values)
+def _ema(values: Sequence[float], period: int) -> list[float]:
+    """Causal TA-Lib-compatible EMA seeded by the first full SMA window."""
+    if period <= 0:
+        raise ValueError("EMA period must be positive")
     result = [math.nan] * len(values)
-    seed = sum(float(value) for value in values[:period]) / period
-    result[period - 1] = seed
+    finite_start = next(
+        (index for index, value in enumerate(values) if _finite(float(value))),
+        None,
+    )
+    if finite_start is None or finite_start + period > len(values):
+        return result
+    seed_values = [float(value) for value in values[finite_start : finite_start + period]]
+    if not all(_finite(value) for value in seed_values):
+        return result
+    seed_index = finite_start + period - 1
+    current = sum(seed_values) / period
+    result[seed_index] = current
     alpha = 2.0 / (period + 1.0)
-    previous = seed
-    for index in range(period, len(values)):
-        previous = alpha * float(values[index]) + (1.0 - alpha) * previous
-        result[index] = previous
+    for index in range(seed_index + 1, len(values)):
+        value = float(values[index])
+        if not _finite(value):
+            result[index] = math.nan
+            continue
+        current = alpha * value + (1.0 - alpha) * current
+        result[index] = current
     return result
 
 
-def _heikin_open(bars: Sequence[BarObservation]) -> list[float]:
-    if not bars:
-        return []
-    output = [(bars[0].open + bars[0].close) / 2.0]
-    previous_close = (bars[0].open + bars[0].high + bars[0].low + bars[0].close) / 4.0
-    for bar in bars[1:]:
-        current_open = (output[-1] + previous_close) / 2.0
-        output.append(current_open)
-        previous_close = (bar.open + bar.high + bar.low + bar.close) / 4.0
-    return output
+def _rolling_midpoint(highs: Sequence[float], lows: Sequence[float], period: int) -> list[float]:
+    result = [math.nan] * len(highs)
+    for index in range(period - 1, len(highs)):
+        window_high = highs[index - period + 1 : index + 1]
+        window_low = lows[index - period + 1 : index + 1]
+        if all(_finite(float(value)) for value in (*window_high, *window_low)):
+            result[index] = (max(window_high) + min(window_low)) / 2.0
+    return result
 
 
-def _midpoint(bars: Sequence[BarObservation], length: int) -> float:
-    if len(bars) < length:
+def _true_range_at(bars: Sequence[BarObservation], index: int) -> float:
+    bar = bars[index]
+    if index <= 0:
+        return max(0.0, bar.high - bar.low)
+    previous = bars[index - 1].close
+    return max(bar.high - bar.low, abs(bar.high - previous), abs(bar.low - previous))
+
+
+def _atr(bars: Sequence[BarObservation], period: int = 14) -> float:
+    if len(bars) < period + 1:
         return math.nan
-    selected = bars[-length:]
-    return (max(bar.high for bar in selected) + min(bar.low for bar in selected)) / 2.0
-
-
-def _volume_ratio(bars: Sequence[BarObservation]) -> float:
-    if len(bars) < 65:
-        return 0.0
-    recent = [bar.volume for bar in bars[-5:] if bar.volume > 0.0]
-    baseline = [bar.volume for bar in bars[-65:-5] if bar.volume > 0.0]
-    if not recent or not baseline:
-        return 0.0
-    return (sum(recent) / len(recent)) / max(median(baseline), _EPS)
+    ranges = [_true_range_at(bars, index) for index in range(len(bars) - period, len(bars))]
+    return _mean(ranges)
 
 
 def _aggregate_complete(
     bars: Sequence[BarObservation],
-    interval_minutes: int,
-) -> list[tuple[int, BarObservation, int]]:
-    groups: list[tuple[int, list[BarObservation]]] = []
-    current_key: int | None = None
-    current: list[BarObservation] = []
-    divisor = interval_minutes * _NS_MINUTE
+    bucket_minutes: int,
+) -> list[BarObservation]:
+    """Aggregate only complete, contiguous UTC minute buckets."""
+    if bucket_minutes <= 0:
+        raise ValueError("bucket_minutes must be positive")
+    minute_ns = 60_000_000_000
+    bucket_ns = bucket_minutes * minute_ns
+    grouped: dict[int, list[BarObservation]] = {}
     for bar in bars:
-        key = int(bar.ts_event // divisor)
-        if current_key is None or key == current_key:
-            current_key = key
-            current.append(bar)
-            continue
-        groups.append((current_key, current))
-        current_key = key
-        current = [bar]
-    if current_key is not None:
-        groups.append((current_key, current))
+        grouped.setdefault(int(bar.ts_event) // bucket_ns, []).append(bar)
 
-    completed: list[tuple[int, BarObservation, int]] = []
-    for key, items in groups:
-        if len(items) != interval_minutes:
+    output: list[BarObservation] = []
+    for key in sorted(grouped):
+        items = sorted(grouped[key], key=lambda item: item.ts_event)
+        if len(items) != bucket_minutes:
             continue
-        completed.append(
-            (
-                key,
-                BarObservation(
-                    ts_event=items[-1].ts_event,
-                    open=items[0].open,
-                    high=max(item.high for item in items),
-                    low=min(item.low for item in items),
-                    close=items[-1].close,
-                    volume=sum(max(item.volume, 0.0) for item in items),
-                ),
-                len(items),
+        if any(items[i].ts_event - items[i - 1].ts_event != minute_ns for i in range(1, len(items))):
+            continue
+        output.append(
+            BarObservation(
+                ts_event=items[-1].ts_event,
+                open=items[0].open,
+                high=max(item.high for item in items),
+                low=min(item.low for item in items),
+                close=items[-1].close,
+                volume=sum(max(0.0, item.volume) for item in items),
             ),
         )
-    return completed
+    return output
 
 
-def _raw_context(
-    bars: Sequence[BarObservation],
-    feature: FeatureObservation,
-    config: RouteConfig,
-) -> dict[str, float | int | bool | str]:
-    required = max(config.cloud_span_b, config.fan_slow) + 20
-    if len(bars) < required:
-        raise ValueError(f"need at least {required} completed bars, got {len(bars)}")
-    if any(bars[index].ts_event >= bars[index + 1].ts_event for index in range(len(bars) - 1)):
-        raise ValueError("bar timestamps must be strictly increasing")
-
-    atr = causal_atr(bars, config.atr_period)
-    if not math.isfinite(atr) or atr <= 0.0:
-        raise ValueError("causal ATR is unavailable")
-
-    closes = [bar.close for bar in bars]
-    ha_open = _heikin_open(bars)
-    close_emas = {period: _ema_series(closes, period) for period in config.trend_periods}
-    open_emas = {period: _ema_series(ha_open, period) for period in config.trend_periods}
-    fast = _ema_series(closes, config.fan_fast)
-    slow = _ema_series(closes, config.fan_slow)
-
-    last = bars[-1]
-    trend_votes: list[int] = []
-    for period in config.trend_periods:
-        close_value = close_emas[period][-1]
-        open_value = open_emas[period][-1]
-        trend_votes.append(_sign(close_value - open_value, deadband=0.005 * atr))
-
-    tenkan = _midpoint(bars, config.cloud_tenkan)
-    kijun = _midpoint(bars, config.cloud_kijun)
-    span_b = _midpoint(bars, config.cloud_span_b)
-    span_a = (tenkan + kijun) / 2.0
-    cloud_top = max(span_a, span_b)
-    cloud_bottom = min(span_a, span_b)
-    cloud_side = 1 if last.close > cloud_top else -1 if last.close < cloud_bottom else 0
-
-    fan_values: list[float] = []
-    endpoints = [len(bars) - 1 - config.fan_shift_minutes * step for step in range(config.fan_rising_steps + 1)]
-    for endpoint in endpoints:
-        fast_value = fast[endpoint] if endpoint >= 0 else math.nan
-        slow_value = slow[endpoint] if endpoint >= 0 else math.nan
-        if not (math.isfinite(fast_value) and math.isfinite(slow_value) and slow_value > 0.0):
-            fan_values.append(math.nan)
+def _heikin_ashi(bars: Sequence[BarObservation]) -> tuple[list[float], list[float], list[float], list[float]]:
+    ha_open: list[float] = []
+    ha_high: list[float] = []
+    ha_low: list[float] = []
+    ha_close: list[float] = []
+    for index, bar in enumerate(bars):
+        close = (bar.open + bar.high + bar.low + bar.close) / 4.0
+        if index == 0:
+            open_ = (bar.open + bar.close) / 2.0
         else:
-            fan_values.append(fast_value / slow_value)
+            open_ = (ha_open[-1] + ha_close[-1]) / 2.0
+        ha_open.append(open_)
+        ha_close.append(close)
+        ha_high.append(max(bar.high, open_, close))
+        ha_low.append(min(bar.low, open_, close))
+    return ha_open, ha_high, ha_low, ha_close
 
-    current_fan = fan_values[0]
-    previous_fan = fan_values[1] if len(fan_values) > 1 else math.nan
-    fan_side = _sign(current_fan - 1.0, deadband=config.min_fan_magnitude - 1.0)
-    directional_fan = current_fan if fan_side > 0 else (1.0 / current_fan if fan_side < 0 and current_fan > 0.0 else 0.0)
-    if fan_side > 0:
-        directional_history = fan_values
-    elif fan_side < 0:
-        directional_history = [1.0 / value if value > 0.0 else math.nan for value in fan_values]
-    else:
-        directional_history = fan_values
-    fan_gain = (
-        directional_history[0] / directional_history[1]
-        if len(directional_history) > 1
-        and math.isfinite(directional_history[0])
-        and math.isfinite(directional_history[1])
-        and directional_history[1] > 0.0
-        else 0.0
-    )
-    rising_steps = sum(
-        math.isfinite(directional_history[index])
-        and math.isfinite(directional_history[index + 1])
-        and directional_history[index] > directional_history[index + 1]
-        for index in range(len(directional_history) - 1)
-    )
 
-    positive_votes = sum(vote > 0 for vote in trend_votes)
-    negative_votes = sum(vote < 0 for vote in trend_votes)
-    background_side = 1 if positive_votes >= config.bullish_levels else -1 if negative_votes >= config.bullish_levels else 0
-    background_levels = positive_votes if background_side > 0 else negative_votes if background_side < 0 else 0
-    trend_side = cloud_side if cloud_side != 0 and cloud_side == fan_side else 0
-    aligned_levels = sum(vote == trend_side for vote in trend_votes) if trend_side else 0
-    opposite_levels = sum(vote == -trend_side for vote in trend_votes) if trend_side else 0
-    recent_progress = trend_side * (last.close - bars[-6].close) / atr if trend_side else 0.0
-    ema30 = close_emas[30][-1]
-    extension_atr = trend_side * (last.close - ema30) / atr if trend_side else math.inf
-    volume_ratio = _volume_ratio(bars)
-    flow_alignment = trend_side * _finite(feature.flow_60s) if trend_side else 0.0
-    opening_flow_alignment = trend_side * _finite(feature.flow_open_10s) if trend_side else 0.0
-    efficiency = _finite(feature.efficiency_60s)
-    oi_alignment = trend_side * _finite(feature.oi_change_15m) if trend_side else 0.0
-    crowd_alignment = trend_side * _finite(feature.premium_z) if trend_side else 0.0
+def _shift(values: Sequence[float], amount: int = 1) -> list[float]:
+    if amount < 0:
+        raise ValueError("only causal positive shifts are allowed")
+    return [math.nan] * amount + [float(value) for value in values[:-amount or None]]
 
-    current_bucket = int(last.ts_event // (config.nr_interval_minutes * _NS_MINUTE))
-    aggregated = _aggregate_complete(bars[-(config.nr_interval_minutes * (config.nr_lookback + 3)) :], config.nr_interval_minutes)
-    nr_side = 0
-    nr_range = math.nan
-    nr_high = math.nan
-    nr_low = math.nan
-    nr_key = 0
-    if len(aggregated) >= config.nr_lookback:
-        candidate_key, candidate, _ = aggregated[-1]
-        history = [item[1].high - item[1].low for item in aggregated[-config.nr_lookback :]]
-        nr_range = candidate.high - candidate.low
-        nr_high = candidate.high
-        nr_low = candidate.low
-        nr_key = candidate_key
-        is_nr7 = nr_range <= min(history) + _EPS and nr_range / atr <= config.nr_max_range_atr
-        if is_nr7 and current_bucket == candidate_key + 1:
-            if last.close > candidate.high + config.nr_break_buffer_atr * atr:
-                nr_side = 1
-            elif last.close < candidate.low - config.nr_break_buffer_atr * atr:
-                nr_side = -1
+
+def _ichimoku_cloud(
+    highs: Sequence[float],
+    lows: Sequence[float],
+    config: RouteConfig,
+) -> tuple[list[float], list[float]]:
+    tenkan = _rolling_midpoint(highs, lows, config.cloud_conversion)
+    kijun = _rolling_midpoint(highs, lows, config.cloud_base)
+    leading_a = [
+        (a + b) / 2.0 if _finite(a) and _finite(b) else math.nan
+        for a, b in zip(tenkan, kijun, strict=True)
+    ]
+    leading_b = _rolling_midpoint(highs, lows, config.cloud_span_b)
+    displacement = max(0, config.cloud_displacement - 1)
+    return _shift(leading_a, displacement), _shift(leading_b, displacement)
+
+
+def _level_periods(levels: int) -> tuple[int, ...]:
+    all_periods = (1, 3, 6, 12, 24, 48, 72, 96)
+    return all_periods[: max(0, min(levels, len(all_periods)))]
+
+
+def _indicator_frame(
+    minute_bars: Sequence[BarObservation],
+    config: RouteConfig,
+) -> dict[str, object] | None:
+    candles = _aggregate_complete(minute_bars, config.bucket_minutes)
+    required = config.cloud_span_b + config.cloud_displacement + 8
+    if len(candles) < required:
+        return None
+
+    ha_open, ha_high, ha_low, _ = _heikin_ashi(candles)
+    raw_close = [bar.close for bar in candles]
+    shifted_close = _shift(raw_close, 1)
+    shifted_open = _shift(ha_open, 1)
+    shifted_high = _shift(ha_high, 1)
+    shifted_low = _shift(ha_low, 1)
+
+    close_emas = {period: _ema(shifted_close, period) for period in _level_periods(8)}
+    open_emas = {period: _ema(shifted_open, period) for period in _level_periods(8)}
+    fan_fast = close_emas[config.fan_fast]
+    fan_slow = close_emas[config.fan_slow]
+    fan = [
+        fast / slow if _finite(fast) and _finite(slow) and slow > 0.0 else math.nan
+        for fast, slow in zip(fan_fast, fan_slow, strict=True)
+    ]
+    fan_gain = [math.nan]
+    for index in range(1, len(fan)):
+        previous = fan[index - 1]
+        fan_gain.append(fan[index] / previous if _finite(fan[index]) and _finite(previous) and previous > 0 else math.nan)
+
+    cloud_a, cloud_b = _ichimoku_cloud(shifted_high, shifted_low, config)
+    exit_ema = _ema(shifted_close, config.exit_ema_period)
 
     return {
-        "atr": atr,
-        "entry": last.close,
-        "episode_ts": last.ts_event,
-        "trend_side": trend_side,
-        "background_side": background_side,
-        "background_levels": background_levels,
-        "cloud_side": cloud_side,
-        "fan_side": fan_side,
-        "aligned_levels": aligned_levels,
-        "opposite_levels": opposite_levels,
-        "fan_magnitude": directional_fan,
+        "candles": candles,
+        "shifted_close": shifted_close,
+        "close_emas": close_emas,
+        "open_emas": open_emas,
+        "fan": fan,
         "fan_gain": fan_gain,
-        "fan_rising_steps": rising_steps,
-        "recent_progress_atr": recent_progress,
-        "extension_atr": extension_atr,
-        "volume_ratio": volume_ratio,
-        "flow_alignment": flow_alignment,
-        "opening_flow_alignment": opening_flow_alignment,
-        "efficiency": efficiency,
-        "oi_alignment": oi_alignment,
-        "crowd_alignment": crowd_alignment,
-        "recent_high": max(bar.high for bar in bars[-20:]),
-        "recent_low": min(bar.low for bar in bars[-20:]),
-        "nr_side": nr_side,
-        "nr_range": nr_range,
-        "nr_high": nr_high,
-        "nr_low": nr_low,
-        "nr_key": nr_key,
-        "current_bucket": current_bucket,
-        "feature_ready": feature.ready,
-        "feature_observed_time_ns": feature.observed_time_ns,
+        "cloud_a": cloud_a,
+        "cloud_b": cloud_b,
+        "exit_ema": exit_ema,
     }
 
 
-def _unresolved(symbol: str, context: Mapping[str, float | int | bool | str], reason: str) -> RouteDecision:
-    return RouteDecision(
-        symbol=symbol,
-        state="UNRESOLVED",
-        side=0,
-        score=0.0,
-        expected_target_r=0.0,
-        atr=_finite(context.get("atr", math.nan), math.nan),
-        entry_reference=_finite(context.get("entry", math.nan), math.nan),
-        stop_reference=math.nan,
-        objective_reference=math.nan,
-        episode_ts=int(context.get("episode_ts", 0)),
-        reasons=(reason,),
-        diagnostics=dict(context),
-    )
+def _eligible(frame: Mapping[str, object], index: int, config: RouteConfig) -> tuple[bool, dict[str, float | int]]:
+    shifted_close = frame["shifted_close"]
+    close_emas = frame["close_emas"]
+    open_emas = frame["open_emas"]
+    fan = frame["fan"]
+    fan_gain = frame["fan_gain"]
+    cloud_a = frame["cloud_a"]
+    cloud_b = frame["cloud_b"]
+
+    assert isinstance(shifted_close, list)
+    assert isinstance(close_emas, dict)
+    assert isinstance(open_emas, dict)
+    assert isinstance(fan, list)
+    assert isinstance(fan_gain, list)
+    assert isinstance(cloud_a, list)
+    assert isinstance(cloud_b, list)
+
+    close5 = float(shifted_close[index])
+    current_fan = float(fan[index])
+    current_gain = float(fan_gain[index])
+    cloud_top = max(float(cloud_a[index]), float(cloud_b[index]))
+
+    trend_votes = 0
+    for period in _level_periods(config.bullish_levels):
+        close_value = float(close_emas[period][index])
+        open_value = float(open_emas[period][index])
+        if _finite(close_value) and _finite(open_value) and close_value > open_value:
+            trend_votes += 1
+
+    rising_votes = 0
+    for shift in range(1, config.fan_rising_lookback + 1):
+        if index - shift >= 0 and _finite(current_fan) and _finite(float(fan[index - shift])) and float(fan[index - shift]) < current_fan:
+            rising_votes += 1
+
+    cloud_clear = _finite(close5) and _finite(cloud_top) and close5 > cloud_top
+    trend_ok = trend_votes == config.bullish_levels
+    fan_gain_ok = _finite(current_gain) and current_gain >= config.min_fan_gain
+    fan_magnitude_ok = _finite(current_fan) and current_fan > 1.0
+    fan_rising_ok = rising_votes == config.fan_rising_lookback
+    eligible = cloud_clear and trend_ok and fan_gain_ok and fan_magnitude_ok and fan_rising_ok
+    return eligible, {
+        "trend_votes": trend_votes,
+        "rising_votes": rising_votes,
+        "cloud_clear": int(cloud_clear),
+        "trend_ok": int(trend_ok),
+        "fan_gain_ok": int(fan_gain_ok),
+        "fan_magnitude_ok": int(fan_magnitude_ok),
+        "fan_rising_ok": int(fan_rising_ok),
+        "trend_close_5m": close5,
+        "cloud_top": cloud_top,
+        "fan_magnitude": current_fan,
+        "fan_gain": current_gain,
+    }
 
 
-def _geometry(
-    *,
-    side: int,
-    entry: float,
-    atr: float,
-    anchor: float,
-    target_r: float,
+def ichi_exit_crossed(
+    bars: Sequence[BarObservation],
     config: RouteConfig,
-) -> tuple[float, float]:
-    raw = side * (entry - anchor)
-    distance = _clamp(
-        raw + config.stop_buffer_atr * atr,
-        config.min_stop_atr * atr,
-        config.max_stop_atr * atr,
+) -> tuple[bool, dict[str, float | int]]:
+    frame = _indicator_frame(bars, config)
+    if frame is None:
+        return False, {"exit_ready": 0}
+    shifted_close = frame["shifted_close"]
+    exit_ema = frame["exit_ema"]
+    assert isinstance(shifted_close, list)
+    assert isinstance(exit_ema, list)
+    index = len(shifted_close) - 1
+    previous = index - 1
+    values = (
+        float(shifted_close[index]),
+        float(exit_ema[index]),
+        float(shifted_close[previous]),
+        float(exit_ema[previous]),
     )
-    stop = entry - side * distance
-    target = entry + side * target_r * distance
-    return stop, target
+    ready = all(_finite(value) for value in values)
+    crossed = ready and values[0] < values[1] and values[2] >= values[3]
+    return crossed, {
+        "exit_ready": int(ready),
+        "exit_close": values[0],
+        "exit_ema": values[1],
+        "previous_exit_close": values[2],
+        "previous_exit_ema": values[3],
+    }
 
 
 def classify_symbol(
-    *,
     symbol: str,
     bars: Sequence[BarObservation],
     feature: FeatureObservation,
-    breadth_fraction: float,
-    btc_impulse_side: int,
-    config: RouteConfig = RouteConfig(),
+    config: RouteConfig,
 ) -> RouteDecision:
-    try:
-        context = _raw_context(bars, feature, config)
-    except ValueError as exc:
-        return _unresolved(symbol, {}, str(exc))
     if not feature.ready:
-        return _unresolved(symbol, context, "FEATURE_NOT_READY")
+        return RouteDecision(symbol, UNRESOLVED, 0, 0.0, math.nan, math.nan, math.nan, 0, ("FEATURE_NOT_READY",))
+    frame = _indicator_frame(bars, config)
+    if frame is None:
+        return RouteDecision(symbol, UNRESOLVED, 0, 0.0, math.nan, math.nan, math.nan, 0, ("INSUFFICIENT_5M_HISTORY",))
 
-    atr = float(context["atr"])
-    entry = float(context["entry"])
-    trend_side = int(context["trend_side"])
-    nr_side = int(context["nr_side"])
+    candles = frame["candles"]
+    assert isinstance(candles, list)
+    if feature.observed_time_ns > candles[-1].ts_event:
+        return RouteDecision(
+            symbol,
+            UNRESOLVED,
+            0,
+            0.0,
+            candles[-1].close,
+            math.nan,
+            math.nan,
+            candles[-1].ts_event,
+            ("FUTURE_FEATURE_REJECTED",),
+            {"feature_observed_time_ns": feature.observed_time_ns},
+        )
+    index = len(candles) - 1
+    current_ok, diagnostics = _eligible(frame, index, config)
+    previous_ok, _ = _eligible(frame, index - 1, config)
+    if not current_ok:
+        reasons: list[str] = []
+        if not int(diagnostics["cloud_clear"]):
+            reasons.append("ICHI_CLOUD_NOT_CLEAR")
+        if not int(diagnostics["trend_ok"]):
+            reasons.append("ICHI_BULLISH_LEVELS_NOT_ALIGNED")
+        if not int(diagnostics["fan_magnitude_ok"]):
+            reasons.append("ICHI_FAN_NOT_BULLISH")
+        if not int(diagnostics["fan_gain_ok"]):
+            reasons.append("ICHI_FAN_GAIN_BELOW_PUBLIC_THRESHOLD")
+        if not int(diagnostics["fan_rising_ok"]):
+            reasons.append("ICHI_FAN_NOT_RISING_THREE_STEPS")
+        return RouteDecision(
+            symbol,
+            UNRESOLVED,
+            0,
+            0.0,
+            candles[-1].close,
+            math.nan,
+            math.nan,
+            candles[-1].ts_event,
+            tuple(reasons or ("ICHI_V2_ENTRY_NOT_READY",)),
+            diagnostics,
+        )
+    if previous_ok:
+        return RouteDecision(
+            symbol,
+            UNRESOLVED,
+            0,
+            0.0,
+            candles[-1].close,
+            math.nan,
+            math.nan,
+            candles[-1].ts_event,
+            ("ICHI_V2_EPISODE_ALREADY_ACTIVE",),
+            diagnostics,
+        )
 
-    ichi_eligible = (
-        trend_side in (-1, 1)
-        and int(context["aligned_levels"]) >= config.bullish_levels
-        and float(context["fan_magnitude"]) >= config.min_fan_magnitude
-        and float(context["fan_gain"]) >= config.min_fan_gain
-        and int(context["fan_rising_steps"]) >= config.fan_rising_steps - 1
-        and float(context["recent_progress_atr"]) >= config.min_response_atr
-        and -0.25 <= float(context["extension_atr"]) <= config.max_extension_atr
-        and float(context["volume_ratio"]) >= config.min_participation_ratio
-        and (breadth_fraction >= 0.25 or btc_impulse_side in (0, trend_side) or symbol == "BTCUSDT")
+    entry = float(candles[-1].close)
+    atr5 = _atr(candles, 14)
+    exit_ema = frame["exit_ema"]
+    assert isinstance(exit_ema, list)
+    ema18 = float(exit_ema[index])
+    recent_swing = min(bar.low for bar in candles[-6:])
+    if not (_finite(entry) and _finite(atr5) and atr5 > 0.0 and _finite(ema18)):
+        return RouteDecision(symbol, UNRESOLVED, 0, 0.0, entry, math.nan, math.nan, candles[-1].ts_event, ("INVALID_RISK_INPUT",), diagnostics)
+
+    natural_stop = min(ema18, recent_swing) - config.stop_atr_buffer * atr5
+    natural_distance = entry - natural_stop
+    min_distance = entry * config.hard_stop_min_fraction
+    max_distance = entry * config.hard_stop_max_fraction
+    if natural_distance <= 0.0 or natural_distance > max_distance:
+        diagnostics = dict(diagnostics)
+        diagnostics.update({"atr5": atr5, "ema18": ema18, "natural_stop_distance_fraction": natural_distance / entry})
+        return RouteDecision(symbol, UNRESOLVED, 0, 0.0, entry, math.nan, math.nan, candles[-1].ts_event, ("STRUCTURAL_STOP_TOO_FAR",), diagnostics)
+    stop_distance = max(natural_distance, min_distance)
+    stop = entry - stop_distance
+
+    fast = float(frame["close_emas"][config.fan_fast][index])
+    extension_atr = (entry - fast) / atr5 if atr5 > 0.0 else math.inf
+    if extension_atr > config.max_entry_extension_atr:
+        diagnostics = dict(diagnostics)
+        diagnostics.update({"atr5": atr5, "ema18": ema18, "extension_atr": extension_atr})
+        return RouteDecision(symbol, UNRESOLVED, 0, 0.0, entry, stop, math.nan, candles[-1].ts_event, ("ENTRY_TOO_EXTENDED",), diagnostics)
+
+    fan_gain = float(diagnostics["fan_gain"])
+    fan_mag = float(diagnostics["fan_magnitude"])
+    cloud_top = float(diagnostics["cloud_top"])
+    score = (
+        5.0
+        + min(4.0, max(0.0, (fan_gain - 1.0) * 10_000.0 / 3.0))
+        + min(2.0, max(0.0, (fan_mag - 1.0) * 1_000.0))
+        + min(2.0, max(0.0, (entry - cloud_top) / atr5))
+        - 0.25 * max(0.0, extension_atr)
     )
-    ichi_score = 0.0
-    if trend_side:
-        ichi_score = (
-            0.50 * min(int(context["aligned_levels"]), 8)
-            + 1.10 * _clamp((float(context["fan_magnitude"]) - 1.0) / max(config.min_fan_magnitude - 1.0, _EPS), 0.0, 2.0)
-            + 0.90 * _clamp((float(context["fan_gain"]) - 1.0) / max(config.min_fan_gain - 1.0, _EPS), 0.0, 2.0)
-            + 0.45 * _clamp(float(context["recent_progress_atr"]) / max(config.min_response_atr, _EPS), 0.0, 2.0)
-            + 0.35 * _clamp(float(context["volume_ratio"]) / max(config.min_participation_ratio, _EPS), 0.0, 2.0)
-            + 0.35 * _clamp(breadth_fraction / 0.50, 0.0, 2.0)
-            + 0.20 * _clamp(max(float(context["flow_alignment"]), float(context["opening_flow_alignment"]), 0.0) / max(config.min_flow_alignment, _EPS), 0.0, 2.0)
-            + 0.10 * _clamp(max(float(context["oi_alignment"]), 0.0) / 0.0025, 0.0, 2.0)
-            - 0.10 * _clamp(max(float(context["crowd_alignment"]), 0.0) / 2.0, 0.0, 2.0)
-        )
-
-    background_side = int(context["background_side"])
-    nr_trend_support = nr_side != 0 and (
-        background_side == nr_side
-        or (
-            int(context["background_levels"]) >= 3
-            and btc_impulse_side in (0, nr_side)
-        )
-    )
-    nr_eligible = (
-        nr_side in (-1, 1)
-        and nr_trend_support
-        and float(context["volume_ratio"]) >= max(config.min_participation_ratio, 1.0)
-    )
-    nr_score = 0.0
-    if nr_side:
-        nr_score = (
-            2.20
-            + 0.45 * min(int(context["background_levels"]), 6)
-            + 0.75 * _clamp(float(context["volume_ratio"]), 0.0, 2.0)
-            + 0.35 * _clamp(breadth_fraction / 0.50, 0.0, 2.0)
-            + 0.25 * _clamp(max(nr_side * _finite(feature.flow_60s), 0.0) / max(config.min_flow_alignment, _EPS), 0.0, 2.0)
-        )
-
-    if ichi_eligible and ichi_score >= config.min_route_score and ichi_score >= nr_score:
-        side = trend_side
-        anchor = float(context["recent_low"] if side > 0 else context["recent_high"])
-        stop, target = _geometry(
-            side=side,
-            entry=entry,
-            atr=atr,
-            anchor=anchor,
-            target_r=config.continuation_target_r,
-            config=config,
-        )
-        state = "ICHI_FAN_ACCELERATION_CONTINUATION"
-        score = ichi_score
-        target_r = config.continuation_target_r
-        reasons = (
-            "CAUSAL_CLOUD_CLEARANCE",
-            "MULTI_HORIZON_TREND_ALIGNMENT",
-            "FAN_MAGNITUDE_ACCELERATION",
-            "RECENT_PROGRESS_WITH_PARTICIPATION",
-        )
-    elif nr_eligible and nr_score >= config.min_route_score:
-        side = nr_side
-        anchor = float(context["nr_low"] if side > 0 else context["nr_high"])
-        stop, target = _geometry(
-            side=side,
-            entry=entry,
-            atr=atr,
-            anchor=anchor,
-            target_r=config.nr_target_r,
-            config=config,
-        )
-        state = "NR7_RANGE_EXPANSION"
-        score = nr_score
-        target_r = config.nr_target_r
-        reasons = (
-            "COMPLETED_NR7_COMPRESSION",
-            "ADJACENT_BUCKET_BREAKOUT",
-            "TREND_AND_PARTICIPATION_SUPPORT",
-        )
-    else:
-        reason = "ICHI_THRESHOLDS_NOT_COHERENT"
-        if trend_side == 0 and nr_side == 0:
-            reason = "NO_DIRECTIONAL_STATE"
-        elif nr_side != 0 and not nr_trend_support:
-            reason = "NR7_BREAKOUT_WITHOUT_TREND_SUPPORT"
-        return _unresolved(symbol, context, reason)
-
-    diagnostics = dict(context)
+    objective = entry * (1.0 + config.public_roi_target_fraction)
+    diagnostics = dict(diagnostics)
     diagnostics.update(
         {
-            "breadth_fraction": breadth_fraction,
-            "btc_impulse_side": btc_impulse_side,
-            "ichi_eligible": ichi_eligible,
-            "ichi_score": ichi_score,
-            "nr_eligible": nr_eligible,
-            "nr_score": nr_score,
+            "atr5": atr5,
+            "ema18": ema18,
+            "recent_swing_low": recent_swing,
+            "natural_stop_distance_fraction": natural_distance / entry,
+            "planned_stop_distance_fraction": stop_distance / entry,
+            "extension_atr": extension_atr,
+            "feature_observed_time_ns": feature.observed_time_ns,
         },
     )
     return RouteDecision(
         symbol=symbol,
-        state=state,
-        side=side,
+        state=ICHI_STATE,
+        side=1,
         score=score,
-        expected_target_r=target_r,
-        atr=atr,
         entry_reference=entry,
         stop_reference=stop,
-        objective_reference=target,
-        episode_ts=int(context["episode_ts"]),
-        reasons=reasons,
+        objective_reference=objective,
+        episode_ts=candles[-1].ts_event,
+        reasons=(
+            "PUBLIC_ICHI_V2_CAUSAL_ENTRY",
+            "ONE_BAR_SHIFTED_INPUTS",
+            "FAN_ACCELERATION_EDGE",
+            "EMA18_STRUCTURAL_INVALIDATION",
+        ),
         diagnostics=diagnostics,
     )
 
 
 def route_universe(
-    *,
     bars_by_symbol: Mapping[str, Sequence[BarObservation]],
     features_by_symbol: Mapping[str, FeatureObservation],
-    config: RouteConfig = RouteConfig(),
+    config: RouteConfig,
 ) -> tuple[RouteDecision | None, dict[str, RouteDecision]]:
-    contexts: dict[str, dict[str, float | int | bool | str]] = {}
-    for symbol, bars in bars_by_symbol.items():
-        feature = features_by_symbol.get(symbol, FeatureObservation(0, ready=False))
-        try:
-            contexts[symbol] = _raw_context(bars, feature, config)
-        except ValueError:
-            contexts[symbol] = {"trend_side": 0, "nr_side": 0}
-
-    market_sides = [
-        int(context.get("trend_side", 0)) or int(context.get("nr_side", 0)) or int(context.get("background_side", 0))
-        for context in contexts.values()
-    ]
-    btc_side = (
-        int(contexts.get("BTCUSDT", {}).get("trend_side", 0))
-        or int(contexts.get("BTCUSDT", {}).get("nr_side", 0))
-        or int(contexts.get("BTCUSDT", {}).get("background_side", 0))
-    )
-
-    decisions: dict[str, RouteDecision] = {}
-    for symbol, bars in bars_by_symbol.items():
-        side = (
-            int(contexts.get(symbol, {}).get("trend_side", 0))
-            or int(contexts.get(symbol, {}).get("nr_side", 0))
-            or int(contexts.get(symbol, {}).get("background_side", 0))
-        )
-        nonzero = [other for other in market_sides if other != 0]
-        breadth = sum(other == side for other in nonzero) / len(nonzero) if side and nonzero else 0.0
-        decisions[symbol] = classify_symbol(
-            symbol=symbol,
-            bars=bars,
-            feature=features_by_symbol.get(symbol, FeatureObservation(0, ready=False)),
-            breadth_fraction=breadth,
-            btc_impulse_side=btc_side,
-            config=config,
-        )
-
-    actionable = [decision for decision in decisions.values() if decision.actionable]
-    if not actionable:
+    decisions = {
+        symbol: classify_symbol(symbol, bars_by_symbol[symbol], features_by_symbol[symbol], config)
+        for symbol in sorted(bars_by_symbol)
+    }
+    candidates = [decision for decision in decisions.values() if decision.actionable]
+    if not candidates:
         return None, decisions
-    actionable.sort(
-        key=lambda item: (
-            item.score * item.expected_target_r,
-            item.score,
-            1 if item.symbol == "BTCUSDT" else 0,
-            item.symbol,
-        ),
-        reverse=True,
-    )
-    return actionable[0], decisions
+    candidates.sort(key=lambda item: (-item.score, item.symbol))
+    return candidates[0], decisions
 
 
 __all__ = [
     "BarObservation",
     "FeatureObservation",
+    "ICHI_STATE",
     "RouteConfig",
     "RouteDecision",
-    "causal_atr",
+    "UNRESOLVED",
     "classify_symbol",
+    "ichi_exit_crossed",
     "route_universe",
 ]
