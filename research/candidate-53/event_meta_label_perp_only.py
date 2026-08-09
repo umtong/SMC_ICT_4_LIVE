@@ -2,10 +2,8 @@
 """Perpetual-only input ablation of Candidate 53 frozen meta-label study.
 
 Only the data layer changes: spot OHLC fields are set equal to completed perp
-OHLC, making basis zero and spot alignment redundant. Primary events, features,
-model form, splits, costs, target geometry and probability threshold are
-otherwise unchanged. This is both faster and a direct test of spot's incremental
-value.
+OHLC, making basis zero and spot alignment redundant. Primary events, model
+form, splits, costs, target geometry and probability threshold are unchanged.
 """
 from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
@@ -37,5 +35,16 @@ def load_perp_only(symbol: str, cache: Path) -> pd.DataFrame:
         raise base.StudyError(f"invalid minute clock: {symbol}")
     return panel.set_index("minute",drop=False)
 
+_original_aggregate = base.aggregate_fifteen
+
+def aggregate_without_spot_information(panel: pd.DataFrame) -> pd.DataFrame:
+    bars = _original_aggregate(panel)
+    # spot==perp makes rolling basis variance exactly zero. Missing basis
+    # information is represented by neutral zero, not NaN (which would reject
+    # every candidate in build_candidates).
+    bars["basis_z"] = 0.0
+    return bars
+
 base.load_symbol = load_perp_only
+base.aggregate_fifteen = aggregate_without_spot_information
 base.main()
