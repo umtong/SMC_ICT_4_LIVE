@@ -1,0 +1,197 @@
+name: candidate-51-directionalscalper-v22
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-directionalscalper-v22.yml"
+      - "research/candidate-51/router_directionalscalper_v22.py.gz.b64.part*"
+      - "research/candidate-51/strategy_directionalscalper_v22.py.gz.b64.part*"
+      - "research/candidate-51/event_lifecycle_patch.py"
+      - "research/candidate-51/strategy_base.py"
+      - "research/candidate-51/run.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-51-directionalscalper-v22
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+
+      - name: Materialize public DirectionalScalper policies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat research/candidate-51/router_directionalscalper_v22.py.gz.b64.part* \
+            | base64 -d | gzip -d > research/candidate-51/router.py
+          cat research/candidate-51/strategy_directionalscalper_v22.py.gz.b64.part* \
+            | base64 -d | gzip -d > research/candidate-51/strategy.py
+          cp research/candidate-51/router.py research/candidate-51/router_directionalscalper.py
+          cp research/candidate-51/strategy.py research/candidate-51/strategy_directionalscalper.py
+          test "$(sha256sum research/candidate-51/router.py | cut -d' ' -f1)" = \
+            "1e7227cab49650ba4f005d76a153787f6788a5779684a719106c5cb50de6d88b"
+          test "$(sha256sum research/candidate-51/strategy.py | cut -d' ' -f1)" = \
+            "5cd18de7a28af18b503e6d2bc092074ed54ee0ca62b6e6f4cadd5837a6e2c34b"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install locked foundation and verify contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import RouteConfig
+          c = RouteConfig()
+          assert c.mfi_period == 14 and c.rsi_period == 14
+          assert c.primary_ema_span == 5 and c.secondary_ema_span == 3
+          assert c.mfi_long_max == 30.0 and c.rsi_long_max == 40.0
+          assert c.mfi_short_min == 70.0 and c.rsi_short_min == 60.0
+          print("source constants frozen")
+          PY
+
+      - name: Freeze exact source profiles
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path('.work/candidate-51-directionalscalper-v22')
+          root.mkdir(parents=True, exist_ok=True)
+          base = json.loads(Path('research/candidate-51/config.json').read_text())
+          for key in ('sma_offset_low','sma_offset_high','sma_stop_min_fraction','sma_stop_max_fraction','sma_stop_atr_buffer'):
+              base['strategy'].pop(key, None)
+          common = {
+              'feature_max_age_seconds': 65.0,
+              'cooldown_minutes': 5,
+              'max_hold_minutes': 90,
+              'funding_flatten_minute': 45,
+              'funding_blackout_before_minutes': 25,
+              'funding_blackout_after_minutes': 5,
+              'mfi_period': 14, 'rsi_period': 14,
+              'primary_ema_span': 5, 'secondary_ema_span': 3,
+              'eri_period': 13, 'atr_stop_period': 20,
+              'qfl_lookback_5m': 12, 'local_band_lookback': 3,
+              'stop_buffer_atr': 0.12, 'min_reward_r': 1.20,
+              'mfi_long_max': 30.0, 'rsi_long_max': 40.0,
+              'mfi_short_min': 70.0, 'rsi_short_min': 60.0,
+              'initial_notional_burst_min': 0.90,
+              'initial_trade_burst_min': 0.85,
+              'initial_max_opposing_depth': 0.35,
+              'wall_qfl_tolerance_atr': 0.20,
+              'wall_absorption_min': 0.08,
+              'wall_crowded_flow_min': 0.08,
+              'wall_depth_defense_min': -0.02,
+              'wall_notional_burst_min': 0.90,
+              'wall_trade_burst_min': 0.85,
+              'wall_efficiency_max': 0.45,
+              'directionalscalper_exit_on_opposite_state': False,
+          }
+          for name, mode in [('initial_exact','initial'),('wall_exact','wall'),('unified_exact','unified')]:
+              cfg = json.loads(json.dumps(base))
+              cfg['strategy'].update(common)
+              cfg['strategy']['directionalscalper_mode'] = mode
+              (root / f'{name}.json').write_text(json.dumps(cfg, indent=2, sort_keys=True) + '\n')
+          manifest = {
+              'external_source': 'donewiththedollar/directionalscalper',
+              'performance_claim_used_as_evidence': False,
+              'reused': ['MFIRSI secondary EMA relation','Elder-Ray direction','three-bar band','QFL base/ceiling','wall absorption'],
+              'rejected': ['grid','DCA','hedge','loss averaging','leverage escalation','opaque remote labels'],
+              'development_interval': ['2025-06-02','2025-06-15'],
+              'engine': 'NautilusTrader BacktestNode',
+              'input': 'checksum-verified Binance klines+aggTrades+bookDepth',
+              'risk_fraction': 0.03,
+              'global_position_limit': 1,
+              'router_sha256': hashlib.sha256(Path('research/candidate-51/router.py').read_bytes()).hexdigest(),
+              'strategy_sha256': hashlib.sha256(Path('research/candidate-51/strategy.py').read_bytes()).hexdigest(),
+              'common': common,
+          }
+          (root / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+          PY
+
+      - name: Run three source profiles on development data
+        shell: bash
+        run: |
+          set +e
+          mkdir -p artifacts/candidate-51/directionalscalper-v22
+          for profile in initial_exact wall_exact unified_exact; do
+            PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+              --config ".work/candidate-51-directionalscalper-v22/${profile}.json" \
+              --start 2025-06-02 --end 2025-06-15 \
+              --cache .cache/candidate-51-directionalscalper-v22 \
+              --output "artifacts/candidate-51/directionalscalper-v22/development-${profile}" \
+              --workspace ".work/candidate-51-directionalscalper-v22/development-${profile}"
+            echo $? > ".work/candidate-51-directionalscalper-v22/${profile}-exit.txt"
+          done
+          exit 0
+
+      - name: Classify implementation versus economic failure
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('artifacts/candidate-51/directionalscalper-v22')
+          work = Path('.work/candidate-51-directionalscalper-v22')
+          rows = []
+          for profile in ('initial_exact','wall_exact','unified_exact'):
+              run = root / f'development-{profile}'
+              mp, dp = run/'metrics.json', run/'strategy_diagnostics.json'
+              exit_code = int((work/f'{profile}-exit.txt').read_text().strip()) if (work/f'{profile}-exit.txt').exists() else 999
+              if not mp.exists() or not dp.exists():
+                  rows.append({'profile':profile,'classification':'IMPLEMENTATION_BLOCKED','exit_code':exit_code})
+                  continue
+              m, d = json.loads(mp.read_text()), json.loads(dp.read_text())
+              clean = (
+                  int(d.get('order_rejections') or 0) == 0
+                  and int(d.get('global_position_violations') or 0) == 0
+                  and int(d.get('max_open_positions_observed') or 0) <= 1
+                  and int(d.get('fill_beyond_bracket_invalidations') or 0) == 0
+              )
+              trades = int(m.get('trades') or 0)
+              if not clean:
+                  label = 'IMPLEMENTATION_OR_FILL_CONTAMINATED'
+              elif trades == 0:
+                  label = 'LOGIC_OPPORTUNITY_FAILURE'
+              elif float(m.get('expectancy_usdt') or 0) > 0 and float(m.get('geometric_daily_growth') or 0) > 0 and float(m.get('profit_factor') or 0) > 1:
+                  label = 'PROVISIONAL_ALPHA'
+              else:
+                  label = 'ECONOMIC_LOGIC_FAILURE'
+              rows.append({
+                  'profile': profile, 'classification': label, 'exit_code': exit_code,
+                  'metrics': {k:m.get(k) for k in ('trades','ending_nav','total_return','geometric_daily_growth','profit_factor','expectancy_usdt','win_rate','max_drawdown','gate_pass')},
+                  'diagnostics': {k:d.get(k) for k in ('entry_submissions','fill_risk_budget_invalidations','fill_beyond_bracket_invalidations','order_rejections','global_position_violations','max_open_positions_observed','directionalscalper_edges','actionable_family_counts','unresolved_reason_counts')},
+              })
+          summary = {'candidate':'candidate-51-directionalscalper-v22','development_only':True,'profiles':rows}
+          (root/'SUMMARY.json').write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload full diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-directionalscalper-v22-${{ github.sha }}
+          path: |
+            artifacts/candidate-51/directionalscalper-v22
+            .work/candidate-51-directionalscalper-v22/manifest.json
+          if-no-files-found: warn
+          retention-days: 14
