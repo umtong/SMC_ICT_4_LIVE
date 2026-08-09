@@ -8,6 +8,11 @@ timestamp columns to integers before ``to_datetime`` is an input-validity fix;
 it does not alter any strategy rule, signal, fill, fee, risk, or accounting
 policy.
 
+pandas 3 Copy-on-Write also exposes ``DataFrame.values`` as read-only, while
+NautilusTrader 1.230's official Cython ``BarDataWrangler`` requests a writable
+memoryview.  ``WritableWranglerFrame`` preserves every observation and only
+returns an independent C-contiguous writable copy at that interface boundary.
+
 Unused aggTrades, bookDepth, positioning and basis files are intentionally not
 loaded.  A minimal causal feature clock is emitted because the shared execution
 shell requires a feature path even when a policy never reads feature values.
@@ -22,6 +27,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
@@ -35,6 +41,22 @@ if _spec is None or _spec.loader is None:
 _base = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = _base
 _spec.loader.exec_module(_base)
+
+
+class WritableWranglerFrame(pd.DataFrame):
+    """DataFrame whose Cython wrangler view is writable without value changes."""
+
+    @property
+    def _constructor(self):  # type: ignore[override]
+        return WritableWranglerFrame
+
+    @property
+    def values(self) -> np.ndarray:  # type: ignore[override]
+        array = self.to_numpy(dtype=np.float64, copy=True)
+        if not array.flags.c_contiguous:
+            array = np.ascontiguousarray(array)
+        array.setflags(write=True)
+        return array
 
 
 def _timestamp_unit(values: pd.Series) -> str:
@@ -172,7 +194,7 @@ def load_range(
         json.dumps(
             {
                 "mode": "checksum-verified-binance-kline-only",
-                "parser": "candidate51-strict-numeric-timestamp-pandas3-compatible",
+                "parser": "candidate51-strict-numeric-timestamp-pandas3-writable",
                 "symbol": symbol,
                 "start": start.isoformat(),
                 "end": end.isoformat(),
@@ -193,7 +215,8 @@ def load_range(
         + "\n",
         encoding="utf-8",
     )
-    return klines, feature_path, manifest_files, evidence
+    writable = WritableWranglerFrame(klines.copy(deep=True))
+    return writable, feature_path, manifest_files, evidence
 
 
-__all__ = ["load_range"]
+__all__ = ["WritableWranglerFrame", "load_range"]
