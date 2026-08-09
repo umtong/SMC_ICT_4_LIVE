@@ -1,0 +1,94 @@
+{
+  "external_source": {
+    "repository": "PasinduUpendra/Binance-Futures-Trading",
+    "strategy": "SupertrendTrend",
+    "active_router": "AdaptiveStrategy under Phase 2B reduced live mode"
+  },
+  "classification": "PUBLIC_LIVE_POLICY_TESTABLE_REPORTED_PERFORMANCE_UNVERIFIED",
+  "reported_performance_not_used_as_evidence": {
+    "class_docstring_claim": {
+      "return": "+94%",
+      "win_rate": "60.9%",
+      "sharpe": 3.31,
+      "period_days": 172
+    },
+    "later_orchestrator_comment": {
+      "return": "+855%",
+      "sharpe": 6.98,
+      "frequency": "0.69 trades/day",
+      "pairs": 9
+    },
+    "reason": "No committed result artifact and exact data/cost/account reproduction was found beside these code comments. They are discovery signals only."
+  },
+  "implementation_findings": [
+    {
+      "finding": "The strategy class documents Supertrend ATR10 x 3.0, but does not calculate it.",
+      "classification": "DOCUMENTATION_IMPLEMENTATION_MISMATCH"
+    },
+    {
+      "finding": "The orchestrator enriches 4H, 1H, and 15m data through IndicatorEngine.calculate_all() without Supertrend arguments.",
+      "classification": "LIVE_WIRING_CONFIRMED"
+    },
+    {
+      "finding": "IndicatorEngine.calculate_all() therefore calls calculate_supertrend(period=8, multiplier=2.0).",
+      "classification": "LIVE_EFFECTIVE_INDICATOR_RESOLVED",
+      "live_supertrend_period": 8,
+      "live_supertrend_multiplier": 2.0
+    },
+    {
+      "finding": "Reduced live mode enables only the direct 4H flip and 1H continuation cascade levels. 15m fast and aligned-trend entries are disabled.",
+      "classification": "LIVE_ROUTE_RESOLVED"
+    },
+    {
+      "finding": "The higher-timeframe cascade route was disabled after a code-recorded April 2026 audit of 11 wins in 45 signals (24.4%).",
+      "classification": "FAILED_ROUTE_NOT_REUSED"
+    },
+    {
+      "finding": "The actual active signal confidence threshold is 45, not the older 25 shown in historical descriptions.",
+      "classification": "LIVE_GATE_RESOLVED"
+    },
+    {
+      "finding": "Adaptive routing selects Supertrend only when the 4H regime is TRENDING with ADX>=18 or the detector says RANGING while ADX>=18; QUIET and VOLATILE routes are no-trade in reduced mode.",
+      "classification": "LIVE_STATE_ROUTER_RESOLVED"
+    },
+    {
+      "finding": "Direct 4H flip and 1H continuation use 4H ATR, regime-specific 2R brackets, current 1H close as entry reference, and confidence from 4H ADX/EMA9/EMA21/RSI.",
+      "classification": "LIVE_SCENARIO_RESOLVED"
+    },
+    {
+      "finding": "Position management outside the signal class activates a trail after +2 ATR, trails by 2.5 ATR, and exits on opposing Supertrend reversal.",
+      "classification": "LIVE_MANAGEMENT_REQUIRED"
+    },
+    {
+      "finding": "The public framework can hold several simultaneous positions and apply dynamic portfolio limits.",
+      "classification": "ACCOUNT_MODEL_INCOMPATIBILITY",
+      "project_adaptation": "Run one four-symbol Nautilus account with one global slot and current-NAV 3% planned loss."
+    }
+  ],
+  "source_defined_policies_to_test": {
+    "flip_only": {
+      "description": "The class-claimed highest-performing 4H direction flip policy only.",
+      "entry": "4H Supertrend8x2 flips direction and ADX14>=18; current completed 1H close is the entry reference.",
+      "confidence_gate": 45,
+      "management": "2R bracket, opposite 4H reversal, +2 ATR activation and 2.5 ATR trail."
+    },
+    "reduced_live": {
+      "description": "Actual Phase 2B active cascade.",
+      "entry_order": [
+        "4H flip",
+        "if none: established 4H direction for >=3 bars plus current aligned 1H and a same-direction 1H flip within the last 8 completed bars"
+      ],
+      "disabled": ["15m_fast", "aligned_trend", "higher_timeframe_cascade"],
+      "confidence_gate": 45,
+      "management": "same as flip_only"
+    }
+  },
+  "causality_contract": [
+    "Only completed 1H and 4H bars are used.",
+    "The actual live-effective Supertrend8x2 is recomputed rather than the unused class description ATR10x3.",
+    "The recent 1H flip episode timestamp, not the current polling bar, prevents repeated entries from one causal flip.",
+    "A next-minute fill outside the frozen bracket or above the 3% planned-loss budget is invalidated by actual-fill-v1 without moving the stop.",
+    "No website or code-comment performance is substituted for the Nautilus account result."
+  ],
+  "decision": "Implement both source-defined policies as independent one-account experiments. Do not tune period, multiplier, ADX, confidence, lookback, R multiple, or trailing geometry before their clean verdicts."
+}
