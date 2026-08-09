@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import os
 from pathlib import Path
 import sys
 
 HERE = Path(__file__).resolve().parent
+os.environ["CANDIDATE47_PRICE_ONLY_INPUTS"] = "1"
 CANDIDATE16 = HERE.parent / "candidate-16"
 CANDIDATE05 = HERE.parent / "candidate-05"
 

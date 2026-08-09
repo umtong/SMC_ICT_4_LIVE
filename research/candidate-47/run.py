@@ -13,6 +13,7 @@ from collections import Counter
 from datetime import date, timedelta
 import json
 import math
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -34,9 +35,14 @@ from book_depth_gap_contract import install as install_book_depth_gap_contract
 
 install_timestamp_contract()
 install_wrangler_contract()
-install_positioning_contract()
-install_basis_contract()
-install_book_depth_gap_contract()
+# Price-only policies must not fail because optional positioning or basis
+# archives contain conflicting vendor observations. Their strategy sees
+# only completed OHLCV bars; installing unused contracts would couple its
+# result to data it never consumes.
+if os.environ.get("CANDIDATE47_PRICE_ONLY_INPUTS") != "1":
+    install_positioning_contract()
+    install_basis_contract()
+    install_book_depth_gap_contract()
 
 import backtest as c05
 from features import load_range, sha256_file
