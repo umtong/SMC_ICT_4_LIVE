@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json, urllib.request, urllib.error
 symbols=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT']
-months=['2024-01','2024-03','2024-04','2024-06','2025-01','2025-06','2026-01','2026-06']
+months=['2024-01','2024-02','2024-03','2024-04','2024-05','2024-06','2025-01','2026-01']
 base='https://data.binance.vision/data/futures/um/monthly/bookTicker'
 out={}
 for s in symbols:
