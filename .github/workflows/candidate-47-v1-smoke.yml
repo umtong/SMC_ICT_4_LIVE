@@ -1,0 +1,123 @@
+name: candidate-47-v1-smoke
+
+on:
+  push:
+    branches: ["research/candidate-47"]
+    paths:
+      - "research/candidate-47/router.py"
+      - "research/candidate-47/strategy.py"
+      - "research/candidate-47/test_router.py"
+      - "research/candidate-47/config.json"
+      - "research/candidate-47/launch.py"
+      - "research/candidate-47/run.py"
+      - "research/candidate-39/strategy.py"
+      - "research/candidate-35/strategy.py"
+      - ".github/workflows/candidate-47-v1-smoke.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-47-v1-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-47:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-47-v1-smoke
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment, router contracts, and module ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-35/strategy.py \
+            research/candidate-39/strategy.py \
+            research/candidate-47/router.py \
+            research/candidate-47/strategy.py \
+            research/candidate-47/launch.py \
+            research/candidate-47/run.py
+          python -m unittest discover \
+            -s research/candidate-47 \
+            -p 'test_router.py' -v
+          python - <<'PY'
+          from pathlib import Path
+          import strategy
+          import router
+
+          root = Path("research/candidate-47").resolve()
+          assert Path(strategy.__file__).resolve().parent == root
+          assert Path(router.__file__).resolve().parent == root
+          assert strategy.Candidate35Strategy is strategy.Candidate47Strategy
+          assert strategy.Candidate35Config is strategy.Candidate47Config
+          print("candidate47 module ownership verified")
+          PY
+
+      - name: Run one-day four-symbol continuous-account Nautilus smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          python research/candidate-47/launch.py \
+            --config research/candidate-47/config.json \
+            --start 2026-07-01 \
+            --end 2026-07-01 \
+            --cache .cache/candidate-47-v1-smoke \
+            --output "$ROOT" \
+            --workspace "$ROOT/workspace" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify execution and accounting invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          checks = metrics["gate_checks"]
+          assert metrics["engine"] == "NautilusTrader BacktestNode"
+          assert metrics["single_continuous_account"] is True
+          assert metrics["single_strategy_process"] is True
+          assert metrics["global_entry_or_position_limit"] == 1
+          assert checks["risk_fraction_exactly_three_percent"] is True
+          assert checks["no_global_position_violation"] is True
+          assert checks["nautilus_positions_match"] is True
+          diagnostics = metrics["strategy_diagnostics"]
+          assert "candidate47_scenario_bindings" in diagnostics
+          assert "duplicate_causal_episode_rejections" in diagnostics
+          assert diagnostics["global_position_violations"] == 0
+          print(json.dumps({
+              "ending_nav": metrics["ending_nav"],
+              "trades": metrics["trades"],
+              "route_counts": diagnostics.get("route_counts", {}),
+              "unresolved_reason_counts": diagnostics.get("unresolved_reason_counts", {}),
+              "entry_submissions": diagnostics.get("entry_submissions", 0),
+              "cost_space_rejections": diagnostics.get("cost_space_rejections", 0),
+          }, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-47-v1-smoke-${{ github.sha }}
+          path: artifacts/candidate-47-v1-smoke/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
