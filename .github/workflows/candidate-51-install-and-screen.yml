@@ -1,4 +1,4 @@
-name: candidate-51-install-and-screen
+name: candidate-51-sma-offset-screen
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  materialize-and-screen:
+  screen:
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
@@ -22,7 +22,7 @@ jobs:
           ref: research/candidate-51
           fetch-depth: 0
 
-      - name: Materialize public ichiV2_5 adaptation
+      - name: Materialize standalone SMAOffsetV2 policy
         shell: bash
         run: |
           set -euo pipefail
@@ -38,36 +38,32 @@ jobs:
           root = Path("research/candidate-51")
           payload = root / ".payload"
           chunks = sorted(payload.glob("part-*"))
-          if len(chunks) != 4:
-              raise RuntimeError(f"expected four payload chunks, got {len(chunks)}")
+          if len(chunks) != 2:
+              raise RuntimeError(f"expected two payload chunks, got {len(chunks)}")
           encoded = "".join(path.read_text(encoding="utf-8").strip() for path in chunks)
           archive = base64.b64decode(encoded, validate=True)
           digest = hashlib.sha256(archive).hexdigest()
-          expected = "e58f22d5f30ad63751af744ca837f57a8f516b2807c50f95b157cacad47f8347"
+          expected = "3a93fe964bf816e02ec33f17ba4a32afc3861d7540cdb77d4461c5ce19825219"
           if digest != expected:
               raise RuntimeError(f"payload sha256 mismatch: {digest} != {expected}")
-
-          destination = Path(".candidate51-v3-materialized")
+          destination = Path(".candidate51-v4-materialized")
           if destination.exists():
               shutil.rmtree(destination)
           destination.mkdir()
           with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as stream:
               stream.extractall(destination)
-
-          for name in ("router.py", "strategy.py", "config.json", "test_router.py"):
+          for name in ("router.py", "strategy.py", "test_router.py", "config.json"):
               source = destination / name
               if not source.is_file():
                   raise RuntimeError(f"missing materialized file: {source}")
               (root / name).write_bytes(source.read_bytes())
-
           shutil.rmtree(payload)
           shutil.rmtree(destination)
           PY
-
           git config user.name "candidate-51-research-bot"
           git config user.email "candidate-51-research-bot@users.noreply.github.com"
-          git add -A
-          git commit -m "candidate51: install public ichiV2_5 causal episode policy"
+          git add -A research/candidate-51
+          git commit -m "candidate51: install standalone public SMAOffsetV2 family"
           git push origin HEAD:research/candidate-51
 
       - name: Set up Python
@@ -86,112 +82,174 @@ jobs:
       - name: Runtime doctor
         run: uv run smc4 doctor
 
-      - name: Compile and test Candidate 51
+      - name: Compile and test standalone public-policy adaptation
         run: |
           uv run python -m compileall -q research/candidate-51
           uv run --with pytest python -m pytest -q research/candidate-51/test_router.py
 
-      - name: Build execution-runway variants
+      - name: Predeclare source and opportunity-map variants
         run: |
           python - <<'PY'
           import copy
+          import hashlib
           import json
           from pathlib import Path
+
           source = json.loads(Path("research/candidate-51/config.json").read_text())
-          for runway in (25, 90):
+          variants = {
+              "exact0960": 0.960,
+              "moderate0980": 0.980,
+              "shallow0990": 0.990,
+          }
+          manifest = {
+              "family": "public_SMAOffsetV2_causal_adaptation",
+              "source": {
+                  "repository": "PeetCrypto/freqtrade-stuff",
+                  "commit": "f6c38def0b2fe01d8d42e47740cdeab53511527b",
+                  "path": "SMAOffsetV2.py",
+                  "exact_buy_offset": 0.960,
+                  "exact_sell_offset": 1.012,
+              },
+              "development_interval": ["2026-07-22", "2026-07-28"],
+              "variants": variants,
+              "selection_rule": "promote only positive post-cost expectancy with >=7 completed trades; otherwise reject family",
+              "router_sha256": hashlib.sha256(Path("research/candidate-51/router.py").read_bytes()).hexdigest(),
+              "strategy_sha256": hashlib.sha256(Path("research/candidate-51/strategy.py").read_bytes()).hexdigest(),
+          }
+          Path(".work/candidate-51-v4").mkdir(parents=True, exist_ok=True)
+          Path(".work/candidate-51-v4/variant_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          for name, offset in variants.items():
               config = copy.deepcopy(source)
-              config["strategy"]["funding_blackout_before_minutes"] = runway
-              Path(f".work/candidate-51-v3-config-{runway}.json").parent.mkdir(parents=True, exist_ok=True)
-              Path(f".work/candidate-51-v3-config-{runway}.json").write_text(json.dumps(config, indent=2) + "\n")
+              config["strategy"]["sma_offset_low"] = offset
+              path = Path(f".work/candidate-51-v4/{name}.json")
+              path.write_text(json.dumps(config, indent=2) + "\n")
           PY
 
-      - name: Run source-near 25-minute funding-runway diagnostic
+      - name: Run exact public SMAOffsetV2 policy
         run: |
-          rm -rf artifacts/candidate-51/v3-runway25-development-2026-07-22_2026-07-28
+          rm -rf artifacts/candidate-51/v4-exact0960-development-2026-07-22_2026-07-28
           uv run python research/candidate-51/launch.py \
-            --config .work/candidate-51-v3-config-25.json \
-            --start 2026-07-22 \
-            --end 2026-07-28 \
-            --cache .cache/candidate-51-v3 \
-            --output artifacts/candidate-51/v3-runway25-development-2026-07-22_2026-07-28 \
-            --workspace .work/candidate-51-v3-runway25
+            --config .work/candidate-51-v4/exact0960.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v4 \
+            --output artifacts/candidate-51/v4-exact0960-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v4-exact
 
-      - name: Run 90-minute causal-runway diagnostic
+      - name: Run moderate opportunity expansion
         run: |
-          rm -rf artifacts/candidate-51/v3-runway90-development-2026-07-22_2026-07-28
+          rm -rf artifacts/candidate-51/v4-moderate0980-development-2026-07-22_2026-07-28
           uv run python research/candidate-51/launch.py \
-            --config .work/candidate-51-v3-config-90.json \
-            --start 2026-07-22 \
-            --end 2026-07-28 \
-            --cache .cache/candidate-51-v3 \
-            --output artifacts/candidate-51/v3-runway90-development-2026-07-22_2026-07-28 \
-            --workspace .work/candidate-51-v3-runway90
+            --config .work/candidate-51-v4/moderate0980.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v4 \
+            --output artifacts/candidate-51/v4-moderate0980-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v4-moderate
 
-      - name: Print compact comparison
+      - name: Run shallow opportunity expansion
+        run: |
+          rm -rf artifacts/candidate-51/v4-shallow0990-development-2026-07-22_2026-07-28
+          uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-v4/shallow0990.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v4 \
+            --output artifacts/candidate-51/v4-shallow0990-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v4-shallow
+
+      - name: Compare variants and select mechanically
         if: always()
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          for runway in (25, 90):
-              root = Path(f"artifacts/candidate-51/v3-runway{runway}-development-2026-07-22_2026-07-28")
-              print(f"\nRUNWAY {runway}")
-              for name in ("metrics.json", "strategy_diagnostics.json"):
-                  path = root / name
-                  if not path.is_file():
-                      print(f"{name} not produced")
-                      continue
-                  data = json.loads(path.read_text())
-                  if name == "metrics.json":
-                      keys = (
-                          "ending_nav", "total_return", "geometric_daily_growth",
-                          "max_drawdown", "trades", "wins", "win_rate",
-                          "profit_factor", "expectancy_usdt", "gate_pass",
-                      )
-                  else:
-                      keys = (
-                          "source_signals_before_execution_filters", "entry_submissions",
-                          "funding_runway_rejections", "cooldown_rejections",
-                          "used_episode_rejections", "source_exit_submissions",
-                          "source_trailing_exit_submissions", "route_counts",
-                          "actionable_family_counts", "selected_symbols",
-                          "global_position_violations", "order_rejections",
-                      )
-                  print(name)
-                  print(json.dumps({key: data.get(key) for key in keys}, indent=2, sort_keys=True))
+          roots = {
+              "exact0960": Path("artifacts/candidate-51/v4-exact0960-development-2026-07-22_2026-07-28"),
+              "moderate0980": Path("artifacts/candidate-51/v4-moderate0980-development-2026-07-22_2026-07-28"),
+              "shallow0990": Path("artifacts/candidate-51/v4-shallow0990-development-2026-07-22_2026-07-28"),
+          }
+          comparison = {}
+          for name, root in roots.items():
+              metrics_path = root / "metrics.json"
+              diag_path = root / "strategy_diagnostics.json"
+              if not metrics_path.is_file() or not diag_path.is_file():
+                  comparison[name] = {"produced": False}
+                  continue
+              metrics = json.loads(metrics_path.read_text())
+              diag = json.loads(diag_path.read_text())
+              comparison[name] = {
+                  "produced": True,
+                  "ending_nav": metrics.get("ending_nav"),
+                  "total_return": metrics.get("total_return"),
+                  "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                  "max_drawdown": metrics.get("max_drawdown"),
+                  "trades": metrics.get("trades"),
+                  "wins": metrics.get("wins"),
+                  "win_rate": metrics.get("win_rate"),
+                  "profit_factor": metrics.get("profit_factor"),
+                  "expectancy_usdt": metrics.get("expectancy_usdt"),
+                  "source_signals": diag.get("source_signals_before_execution_filters"),
+                  "entries": diag.get("entry_submissions"),
+                  "funding_rejections": diag.get("funding_runway_rejections"),
+                  "source_exits": diag.get("sma_offset_exit_submissions"),
+                  "selected_symbols": diag.get("selected_symbols"),
+                  "global_position_violations": diag.get("global_position_violations"),
+                  "order_rejections": diag.get("order_rejections"),
+              }
+          eligible = [
+              name for name, row in comparison.items()
+              if row.get("produced")
+              and int(row.get("trades") or 0) >= 7
+              and float(row.get("expectancy_usdt") or 0.0) > 0.0
+              and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+              and int(row.get("global_position_violations") or 0) == 0
+              and int(row.get("order_rejections") or 0) == 0
+          ]
+          eligible.sort(key=lambda name: (
+              -float(comparison[name]["geometric_daily_growth"]),
+              -float(comparison[name]["profit_factor"]), name,
+          ))
+          decision = {
+              "comparison": comparison,
+              "eligible": eligible,
+              "selected": eligible[0] if eligible else None,
+              "family_status": "PROMOTE_TO_UNTOUCHED" if eligible else "REJECT_OR_REDESIGN",
+          }
+          Path("artifacts/candidate-51/v4-comparison.json").write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
           PY
 
-      - name: Persist compact v3 development evidence
+      - name: Persist compact v4 development evidence
         if: success()
         shell: bash
         run: |
           set -euo pipefail
-          for runway in 25 90; do
-            source_dir="artifacts/candidate-51/v3-runway${runway}-development-2026-07-22_2026-07-28"
-            evidence_dir="research/candidate-51/evidence/v3-runway${runway}-development-2026-07-22_2026-07-28"
-            rm -rf "$evidence_dir"
-            mkdir -p "$evidence_dir"
+          root="research/candidate-51/evidence/v4-sma-offset-development-2026-07-22_2026-07-28"
+          rm -rf "$root"
+          mkdir -p "$root"
+          cp .work/candidate-51-v4/variant_manifest.json "$root/variant_manifest.json"
+          cp artifacts/candidate-51/v4-comparison.json "$root/comparison.json"
+          for variant in exact0960 moderate0980 shallow0990; do
+            source_dir="artifacts/candidate-51/v4-${variant}-development-2026-07-22_2026-07-28"
+            target="$root/$variant"
+            mkdir -p "$target"
             for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
-              if [[ -f "$source_dir/$file" ]]; then
-                cp "$source_dir/$file" "$evidence_dir/$file"
-              fi
+              [[ ! -f "$source_dir/$file" ]] || cp "$source_dir/$file" "$target/$file"
             done
           done
-          git add research/candidate-51/evidence/v3-*
-          if git diff --cached --quiet; then
-            exit 0
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add "$root"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate51: persist standalone SMAOffsetV2 development screen"
+            git push origin HEAD:research/candidate-51
           fi
-          git commit -m "candidate51: persist ichiV2_5 runway comparison"
-          git push origin HEAD:research/candidate-51
 
-      - name: Preserve full v3 diagnostics
+      - name: Preserve full diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-51-v3-development-${{ github.sha }}
+          name: candidate-51-v4-sma-offset-${{ github.sha }}
           path: |
-            artifacts/candidate-51/v3-runway25-development-2026-07-22_2026-07-28/*.json
-            artifacts/candidate-51/v3-runway25-development-2026-07-22_2026-07-28/*.csv
-            artifacts/candidate-51/v3-runway90-development-2026-07-22_2026-07-28/*.json
-            artifacts/candidate-51/v3-runway90-development-2026-07-22_2026-07-28/*.csv
+            artifacts/candidate-51/v4-*/**/*.json
+            artifacts/candidate-51/v4-*/**/*.csv
+            artifacts/candidate-51/v4-comparison.json
           if-no-files-found: warn
