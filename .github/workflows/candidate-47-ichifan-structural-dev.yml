@@ -1,0 +1,151 @@
+name: candidate-47-ichifan-structural-dev
+
+on:
+  push:
+    branches: ["research/candidate-47"]
+    paths:
+      - "research/candidate-47/ichifan_structural_strategy.py"
+      - "research/candidate-47/ichifan_structural_launch.py"
+      - "research/candidate-47/ichifan_structural_config.json"
+      - "research/candidate-47/test_ichifan_structural.py"
+      - ".github/workflows/candidate-47-ichifan-structural-dev.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-47-ichifan-structural-dev
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  development-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-47:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-47-ichifan-structural-dev
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-47
+
+      - name: Verify environment and geometry contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-47/ichifan_structural_strategy.py \
+            research/candidate-47/ichifan_structural_launch.py \
+            research/candidate-47/test_ichifan_structural.py
+          python - <<'PY'
+          import inspect
+          import test_ichifan_structural
+
+          tests = [
+              (name, fn)
+              for name, fn in inspect.getmembers(test_ichifan_structural, inspect.isfunction)
+              if name.startswith("test_")
+          ]
+          assert tests
+          for name, fn in tests:
+              fn()
+              print(f"PASS {name}")
+          print(f"executed {len(tests)} structural-risk contracts")
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          import ichifan_structural_strategy as strategy
+
+          root = Path("research/candidate-47").resolve()
+          assert Path(strategy.__file__).resolve() == root / "ichifan_structural_strategy.py"
+          assert strategy.Candidate35Strategy is strategy.Candidate47IchiFanStructuralStrategy
+          print("candidate47 structural strategy ownership verified")
+          PY
+
+      - name: Run seven-day four-symbol continuous account
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          python research/candidate-47/ichifan_structural_launch.py \
+            --config research/candidate-47/ichifan_structural_config.json \
+            --start 2026-07-01 \
+            --end 2026-07-07 \
+            --cache .cache/candidate-47-ichifan-structural-dev \
+            --output "$ROOT" \
+            --workspace "$ROOT/workspace" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Diagnose growth and risk geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = metrics["strategy_diagnostics"]
+          count = diagnostics.get("ichifan_structural_stop_submissions", 0)
+          distance_sum = diagnostics.get("ichifan_structural_stop_distance_sum", 0.0)
+          summary = {
+              "candidate": metrics["candidate"],
+              "evaluation_start": metrics["evaluation_start"],
+              "evaluation_end": metrics["evaluation_end"],
+              "calendar_days": metrics["calendar_days"],
+              "starting_nav": metrics["starting_nav"],
+              "ending_nav": metrics["ending_nav"],
+              "total_return": metrics["total_return"],
+              "geometric_daily_growth": metrics["geometric_daily_growth"],
+              "max_drawdown": metrics["max_drawdown"],
+              "trades": metrics["trades"],
+              "wins": metrics["wins"],
+              "losses": metrics["losses"],
+              "win_rate": metrics["win_rate"],
+              "profit_factor": metrics["profit_factor"],
+              "expectancy_usdt": metrics["expectancy_usdt"],
+              "largest_winner_share": metrics["largest_winner_share"],
+              "entry_submissions": diagnostics.get("entry_submissions", 0),
+              "structural_candidates": diagnostics.get("ichifan_structural_stop_candidates", 0),
+              "structural_submissions": count,
+              "structural_failures": diagnostics.get("ichifan_structural_stop_failures", 0),
+              "mean_structural_stop_fraction": distance_sum / count if count else None,
+              "min_structural_stop_fraction": diagnostics.get("ichifan_structural_stop_distance_min"),
+              "max_structural_stop_fraction": diagnostics.get("ichifan_structural_stop_distance_max"),
+              "exchange_max_quantity_bounds": diagnostics.get("exchange_max_quantity_bounds", 0),
+              "trend_cross_exits": diagnostics.get("ichifan_exit_signals", 0),
+              "trailing_exits": diagnostics.get("ichifan_trailing_exits", 0),
+              "order_rejections": diagnostics.get("order_rejections", 0),
+              "global_position_violations": diagnostics.get("global_position_violations", 0),
+              "position_counts_by_symbol": metrics.get("position_counts_by_symbol", {}),
+              "gate_checks": metrics["gate_checks"],
+          }
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          assert metrics["engine"] == "NautilusTrader BacktestNode"
+          assert metrics["single_continuous_account"] is True
+          assert metrics["single_strategy_process"] is True
+          assert metrics["global_entry_or_position_limit"] == 1
+          assert metrics["gate_checks"]["risk_fraction_exactly_three_percent"] is True
+          assert metrics["gate_checks"]["no_global_position_violation"] is True
+          assert metrics["gate_checks"]["nautilus_positions_match"] is True
+          assert diagnostics.get("global_position_violations", 0) == 0
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-47-ichifan-structural-dev-${{ github.sha }}
+          path: artifacts/candidate-47-ichifan-structural-dev/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
