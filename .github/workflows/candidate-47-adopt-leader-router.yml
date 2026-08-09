@@ -1,0 +1,170 @@
+name: candidate-47-adopt-leader-router
+
+on:
+  push:
+    branches: ["research/candidate-47"]
+    paths:
+      - ".github/workflows/candidate-47-adopt-leader-router.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  adopt:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-47
+          fetch-depth: 0
+
+      - name: Reuse the strongest unexecuted integrated router and its execution layers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin research/candidate-41
+
+          mkdir -p research/candidate-35 research/candidate-39 research/candidate-47
+
+          # Reuse exact, already-written layers rather than reimplementing them:
+          # Candidate 35: audited Nautilus strategy/account shell.
+          # Candidate 39: passive retest LIMIT parent and cost-after geometry.
+          # Candidate 41: cross-asset leader continuation + mature failed re-entry.
+          git show origin/research/candidate-41:research/candidate-35/strategy.py \
+            > research/candidate-35/strategy.py
+          git show origin/research/candidate-41:research/candidate-39/strategy.py \
+            > research/candidate-39/strategy.py
+          git show origin/research/candidate-41:research/candidate-41/router.py \
+            > research/candidate-47/router.py
+          git show origin/research/candidate-41:research/candidate-41/strategy.py \
+            > research/candidate-47/strategy.py
+          git show origin/research/candidate-41:research/candidate-41/test_router.py \
+            > research/candidate-47/test_router.py
+          git show origin/research/candidate-41:research/candidate-41/config.json \
+            > research/candidate-47/config.json
+
+          # Candidate 47 owns the reused policy and its evidence from this point.
+          sed -i \
+            -e 's/Candidate 41/Candidate 47/g' \
+            -e 's/Candidate41/Candidate47/g' \
+            -e 's/candidate41/candidate47/g' \
+            -e 's/candidate-41/candidate-47/g' \
+            research/candidate-47/router.py \
+            research/candidate-47/strategy.py
+
+          cat > research/candidate-47/launch.py <<'PY'
+          #!/usr/bin/env python3
+          """Collision-safe Candidate 47 entry point over the verified runner."""
+          from __future__ import annotations
+
+          import importlib
+          import importlib.util
+          from pathlib import Path
+          import sys
+
+          HERE = Path(__file__).resolve().parent
+          CANDIDATE16 = HERE.parent / "candidate-16"
+          CANDIDATE05 = HERE.parent / "candidate-05"
+
+          for path in (CANDIDATE05, CANDIDATE16, HERE):
+              text = str(path)
+              while text in sys.path:
+                  sys.path.remove(text)
+              sys.path.insert(0, text)
+
+          strategy_module = importlib.import_module("strategy")
+          resolved = Path(strategy_module.__file__).resolve()
+          expected = (HERE / "strategy.py").resolve()
+          if resolved != expected:
+              raise RuntimeError(f"Candidate 47 strategy collision: {resolved} != {expected}")
+
+          import event_lifecycle_patch  # noqa: F401,E402 -- installs corrected callback
+
+          spec = importlib.util.spec_from_file_location(
+              "candidate47_direct_runner",
+              HERE / "run.py",
+          )
+          if spec is None or spec.loader is None:
+              raise RuntimeError("cannot load Candidate 47 runner")
+          runner = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = runner
+          spec.loader.exec_module(runner)
+
+          original_load_inputs = runner.load_inputs
+
+
+          def diagnostic_load_inputs(*, start, end, cache, output):
+              klines, feature_paths, records = original_load_inputs(
+                  start=start,
+                  end=end,
+                  cache=cache,
+                  output=output,
+              )
+              for symbol, frame in klines.items():
+                  destination = output / "source" / symbol / "klines.csv.gz"
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  frame.to_csv(destination, index=False, compression="gzip")
+              return klines, feature_paths, records
+
+
+          runner.load_inputs = diagnostic_load_inputs
+          runner.main()
+          PY
+
+          cat > research/candidate-47/README.md <<'MD'
+          # Candidate 47 — leader transfer and failed-reentry router
+
+          Candidate 47 reuses, rather than rewrites, three existing layers:
+
+          1. Candidate 35's four-symbol, one-account NautilusTrader execution/account shell;
+          2. Candidate 39's passive structural-retest LIMIT entry and cost-after reward-space gate;
+          3. Candidate 41's unexecuted cross-asset leader-continuation and mature failed-reentry router.
+
+          The inherited Candidate 35c alpha is rejected and receives no performance credit.
+          Candidate 47 must earn evidence through its own four-symbol continuous-account runs.
+
+          The two independent scenario families are:
+
+          - `LEADER_FIRST_PULLBACK_CONTINUATION`: a fresh 15-minute cross-asset leader reprices,
+            survives its first shallow six-minute pullback, and resumes with new initiative;
+          - `MATURE_EXTENSION_FAILED_REENTRY`: a mature one-hour trend probes external value,
+            cracks back inside, fails its re-entry attempt, and resumes away from the failed boundary.
+
+          Both use one stable causal-episode identifier, one global pending-entry/position slot,
+          current-NAV 3% planned-loss sizing, realistic costs, and NautilusTrader orders/fills/NAV.
+
+          Current status: implementation adopted; no Candidate 47 performance claim until the
+          branch workflows produce reproducible metrics.
+          MD
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("research/candidate-47/config.json")
+          data = json.loads(path.read_text())
+          data["execution_seed"] = 470047
+          path.write_text(json.dumps(data, indent=2) + "\n")
+          PY
+
+          chmod +x research/candidate-47/launch.py
+          git add \
+            research/candidate-35/strategy.py \
+            research/candidate-39/strategy.py \
+            research/candidate-47/router.py \
+            research/candidate-47/strategy.py \
+            research/candidate-47/test_router.py \
+            research/candidate-47/config.json \
+            research/candidate-47/launch.py \
+            research/candidate-47/README.md
+
+          if git diff --cached --quiet; then
+            echo "Candidate 47 policy already adopted."
+            exit 0
+          fi
+
+          git config user.name "candidate-47-research-bot"
+          git config user.email "candidate-47-research-bot@users.noreply.github.com"
+          git commit -m "candidate47: reuse leader transfer and failed reentry system"
+          git push origin HEAD:research/candidate-47
