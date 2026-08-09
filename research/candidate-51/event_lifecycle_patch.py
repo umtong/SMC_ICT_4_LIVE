@@ -13,6 +13,12 @@ Two generic execution defects are corrected without changing any alpha rule:
    valid action is immediate flattening; moving the stop would rewrite the
    scenario after seeing the fill.
 
+Strategies may implement ``_after_position_opened(event, scenario)`` and/or
+``_after_position_closed(event, record)`` lifecycle hooks.  These hooks are
+called only after the generic validity/accounting work and let an imported
+public policy retain state such as a source-defined post-trade cooldown without
+replacing the shared execution correction.
+
 This patch is installed before the importable strategy is instantiated.  It
 changes neither signal classification nor thresholds, objectives, planned
 stops, risk fraction, fees, slippage model, or account accounting.
@@ -57,8 +63,6 @@ def _on_position_opened(self: Any, event: Any) -> None:
     risk_budget = _as_float(scenario.get("risk_budget"), 0.0)
     fill = _as_float(getattr(event, "avg_px_open", None))
     if not math.isfinite(fill):
-        # The textual PositionOpened contract contains avg_px_open even on
-        # engines that do not expose it as a direct attribute.
         text = str(event)
         marker = "avg_px_open="
         if marker in text:
@@ -89,17 +93,18 @@ def _on_position_opened(self: Any, event: Any) -> None:
         {
             "actual_entry_fill": fill if math.isfinite(fill) else None,
             "actual_planned_loss_per_unit": (
-                actual_loss_per_unit
-                if math.isfinite(actual_loss_per_unit) else None
+                actual_loss_per_unit if math.isfinite(actual_loss_per_unit) else None
             ),
             "actual_planned_account_loss": (
-                actual_account_loss
-                if math.isfinite(actual_account_loss) else None
+                actual_account_loss if math.isfinite(actual_account_loss) else None
             ),
             "actual_fill_geometry_valid": bool(geometry_valid),
             "actual_fill_risk_valid": bool(risk_valid),
         }
     )
+    hook = getattr(self, "_after_position_opened", None)
+    if callable(hook):
+        hook(event, scenario)
     if risk_valid:
         return
 
@@ -150,6 +155,9 @@ def _on_position_closed(self: Any, event: Any) -> None:
     )
     self.closed_scenarios.append(record)
     self._event("POSITION_CLOSED", ts_event, **record)
+    hook = getattr(self, "_after_position_closed", None)
+    if callable(hook):
+        hook(event, record)
     self._clear_trade_state()
 
 
