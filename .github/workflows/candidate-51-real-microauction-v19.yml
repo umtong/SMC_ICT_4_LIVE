@@ -1,0 +1,574 @@
+name: candidate-51-real-microauction-v19
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-real-microauction-v19.yml"
+      - "research/candidate-51/router_microauction.py"
+      - "research/candidate-51/router_microauction_boundary.py"
+      - "research/candidate-51/strategy_microauction.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-51-real-microauction-v19
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+
+      - name: Materialize real-data auction policy
+        run: |
+          cp research/candidate-51/router_microauction_boundary.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_microauction.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify causal scenario contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import (
+              ABSORPTION_STATE,
+              CONTINUATION_STATE,
+              BarObservation,
+              FeatureObservation,
+              RouteConfig,
+              classify_absorption,
+              classify_continuation,
+          )
+
+          minute = 60_000_000_000
+          bars = [
+              BarObservation(
+                  ts_event=(i + 1) * minute - 1,
+                  open=100.0,
+                  high=100.2,
+                  low=99.8,
+                  close=100.0,
+                  volume=1.0,
+              )
+              for i in range(40)
+          ]
+          continuation_bar = BarObservation(
+              ts_event=41 * minute - 1,
+              open=100.0,
+              high=100.35,
+              low=99.95,
+              close=100.25,
+              volume=2.0,
+          )
+          continuation_feature = FeatureObservation(
+              observed_time_ns=continuation_bar.ts_event,
+              ready=True,
+              flow_15s=0.45,
+              flow_60s=0.40,
+              flow_3m=0.20,
+              notional_burst=2.0,
+              trade_count_burst=1.5,
+              ret_60s_bps=25.0,
+              path_60s_bps=35.0,
+              efficiency_60s=0.70,
+              flow_price_alignment_60s=25.0,
+              absorption_60s=0.12,
+              depth_imbalance_1=0.10,
+              depth_imbalance_2=0.05,
+              bid_depth_change_1_1m=0.10,
+              ask_depth_change_1_1m=-0.10,
+              bid_depth_change_1_5m=0.10,
+              ask_depth_change_1_5m=-0.10,
+              depth_snapshot_age_seconds=5.0,
+          )
+          continuation = classify_continuation(
+              "BTCUSDT",
+              [*bars, continuation_bar],
+              continuation_feature,
+              RouteConfig(microauction_mode="continuation"),
+          )
+          assert continuation.actionable, continuation
+          assert continuation.state == CONTINUATION_STATE
+          assert continuation.side == 1
+          assert continuation.stop_reference < 100.2 < continuation.entry_reference
+          assert continuation.objective_reference > continuation.entry_reference
+
+          absorption_bar = BarObservation(
+              ts_event=41 * minute - 1,
+              open=99.80,
+              high=99.90,
+              low=99.75,
+              close=99.82,
+              volume=2.0,
+          )
+          absorption_feature = FeatureObservation(
+              observed_time_ns=absorption_bar.ts_event,
+              ready=True,
+              flow_15s=-0.40,
+              flow_60s=-0.45,
+              flow_3m=-0.10,
+              notional_burst=2.0,
+              trade_count_burst=1.5,
+              ret_60s_bps=2.0,
+              path_60s_bps=25.0,
+              efficiency_60s=0.08,
+              flow_price_alignment_60s=-2.0,
+              absorption_60s=0.414,
+              depth_imbalance_1=0.10,
+              depth_imbalance_2=0.05,
+              bid_depth_change_1_1m=0.10,
+              ask_depth_change_1_1m=-0.05,
+              bid_depth_change_1_5m=0.10,
+              ask_depth_change_1_5m=-0.05,
+              depth_snapshot_age_seconds=5.0,
+          )
+          absorption = classify_absorption(
+              "BTCUSDT",
+              [*bars, absorption_bar],
+              absorption_feature,
+              RouteConfig(microauction_mode="absorption"),
+          )
+          assert absorption.actionable, absorption
+          assert absorption.state == ABSORPTION_STATE
+          assert absorption.side == 1
+          assert absorption.stop_reference < absorption_bar.low
+          assert absorption.objective_reference == 100.0
+
+          future = FeatureObservation(
+              observed_time_ns=continuation_bar.ts_event + 1,
+              ready=True,
+          )
+          rejected = classify_continuation(
+              "BTCUSDT",
+              [*bars, continuation_bar],
+              future,
+              RouteConfig(),
+          )
+          assert not rejected.actionable
+          assert rejected.reasons == ("MICROAUCTION_FUTURE_FEATURE_REJECTED",)
+          print("continuation, absorption, geometry, and future-feature contracts pass")
+          PY
+
+      - name: Freeze development configs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy
+          import hashlib
+          import json
+          from pathlib import Path
+
+          base = json.loads(Path("research/candidate-51/config.json").read_text())
+          work = Path(".work/candidate-51-real-microauction-v19")
+          work.mkdir(parents=True, exist_ok=True)
+          legacy = {
+              "sma_offset_low",
+              "sma_offset_high",
+              "sma_stop_min_fraction",
+              "sma_stop_max_fraction",
+              "sma_stop_atr_buffer",
+          }
+          modes = {
+              "continuation": 60,
+              "absorption": 30,
+              "unified": 60,
+          }
+          frozen = {
+              "microauction_atr_period": 30,
+              "microauction_balance_lookback": 10,
+              "microauction_stop_buffer_atr": 0.15,
+              "microauction_min_reward_r": 1.25,
+              "continuation_flow_min": 0.20,
+              "continuation_flow_3m_min": 0.10,
+              "continuation_notional_burst_min": 1.50,
+              "continuation_trade_burst_min": 1.20,
+              "continuation_efficiency_min": 0.35,
+              "continuation_displacement_atr_min": 0.20,
+              "continuation_depth_support_min": -0.10,
+              "continuation_opposite_depth_thinning_min": 0.05,
+              "continuation_same_depth_growth_min": 0.05,
+              "continuation_measured_move_multiple": 1.00,
+              "absorption_flow_min": 0.25,
+              "absorption_flow_15s_min": 0.15,
+              "absorption_flow_3m_min": 0.05,
+              "absorption_notional_burst_min": 1.50,
+              "absorption_trade_burst_min": 1.20,
+              "absorption_efficiency_max": 0.25,
+              "absorption_strength_min": 0.15,
+              "absorption_alignment_max_bps": 0.50,
+              "absorption_sweep_buffer_atr": 0.05,
+              "absorption_depth_defense_min": 0.00,
+              "absorption_same_depth_growth_min": 0.00,
+              "microauction_exit_on_opposite_state": True,
+          }
+          for mode, hold in modes.items():
+              config = copy.deepcopy(base)
+              for key in legacy:
+                  config["strategy"].pop(key, None)
+              config["strategy"].update(frozen)
+              config["strategy"].update({
+                  "microauction_mode": mode,
+                  "feature_max_age_seconds": 65.0,
+                  "cooldown_minutes": 0,
+                  "max_hold_minutes": hold,
+                  "funding_flatten_minute": 60,
+                  "funding_blackout_before_minutes": -1,
+                  "funding_blackout_after_minutes": -1,
+              })
+              (work / f"{mode}.json").write_text(
+                  json.dumps(config, indent=2, sort_keys=True) + "\n"
+              )
+          manifest = {
+              "family": "real_binance_microauction_states",
+              "external_source": {
+                  "repository": "azseza/smallfish_",
+                  "performance_used_as_evidence": False,
+                  "invalid_source_backtest_component": (
+                      "synthetic order book and trade tape generated from completed OHLCV"
+                  ),
+                  "reused_ideas": [
+                      "trade intensity plus aggressor direction",
+                      "flow-price efficiency separates momentum from absorption",
+                      "depth transition confirms liquidity consumption or defense",
+                  ],
+              },
+              "development_interval": ["2026-04-13", "2026-04-19"],
+              "untouched_interval": ["2025-11-03", "2025-11-09"],
+              "conditional_continuous_interval": ["2025-07-01", "2025-07-30"],
+              "router_sha256": hashlib.sha256(
+                  Path("research/candidate-51/router.py").read_bytes()
+              ).hexdigest(),
+              "strategy_sha256": hashlib.sha256(
+                  Path("research/candidate-51/strategy.py").read_bytes()
+              ).hexdigest(),
+              "engine": "NautilusTrader BacktestNode",
+              "risk_fraction": 0.03,
+              "global_position_limit": 1,
+              "frozen_parameters": frozen,
+          }
+          (work / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Run independent development accounts
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-51-real-microauction-v19/status
+          for mode in continuation absorption unified; do
+            PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+              --config ".work/candidate-51-real-microauction-v19/${mode}.json" \
+              --start 2026-04-13 --end 2026-04-19 \
+              --cache .cache/candidate-51-real-microauction-v19 \
+              --output "artifacts/candidate-51/microauction-v19-${mode}-development" \
+              --workspace ".work/candidate-51-microauction-v19-${mode}"
+            echo $? > ".work/candidate-51-real-microauction-v19/status/${mode}.txt"
+          done
+          exit 0
+
+      - name: Select only a clean cost-after survivor
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          modes = ("continuation", "absorption", "unified")
+          rows = {}
+          for mode in modes:
+              root = Path(
+                  f"artifacts/candidate-51/microauction-v19-{mode}-development"
+              )
+              mp = root / "metrics.json"
+              dp = root / "strategy_diagnostics.json"
+              if not mp.is_file() or not dp.is_file():
+                  rows[mode] = {"produced": False}
+                  continue
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              rows[mode] = {
+                  "produced": True,
+                  **{
+                      key: metrics.get(key)
+                      for key in (
+                          "ending_nav",
+                          "total_return",
+                          "geometric_daily_growth",
+                          "max_drawdown",
+                          "trades",
+                          "wins",
+                          "losses",
+                          "win_rate",
+                          "profit_factor",
+                          "expectancy_usdt",
+                          "largest_winner_share",
+                          "gate_pass",
+                      )
+                  },
+                  "entry_submissions": diagnostics.get("entry_submissions"),
+                  "microauction_edges": diagnostics.get("microauction_edges"),
+                  "family_counts": diagnostics.get("actionable_family_counts"),
+                  "unresolved_reason_counts": diagnostics.get(
+                      "unresolved_reason_counts"
+                  ),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "order_rejections": diagnostics.get("order_rejections"),
+                  "global_position_violations": diagnostics.get(
+                      "global_position_violations"
+                  ),
+                  "max_open_positions": diagnostics.get(
+                      "max_open_positions_observed"
+                  ),
+              }
+
+          def clean_positive(mode):
+              row = rows.get(mode, {})
+              return (
+                  row.get("produced")
+                  and int(row.get("trades") or 0) >= 7
+                  and float(row.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(row.get("max_drawdown") or 1.0) <= 0.20
+                  and int(row.get("order_rejections") or 0) == 0
+                  and int(row.get("global_position_violations") or 0) == 0
+                  and int(row.get("max_open_positions") or 0) <= 1
+              )
+
+          individual = [
+              mode for mode in ("continuation", "absorption")
+              if clean_positive(mode)
+          ]
+          if len(individual) == 2 and clean_positive("unified"):
+              selected = "unified"
+          elif individual:
+              selected = max(
+                  individual,
+                  key=lambda mode: (
+                      float(rows[mode].get("geometric_daily_growth") or 0.0),
+                      float(rows[mode].get("expectancy_usdt") or 0.0),
+                      int(rows[mode].get("trades") or 0),
+                  ),
+              )
+          else:
+              selected = None
+          result = {
+              "rows": rows,
+              "clean_positive_individual_families": individual,
+              "selected": selected,
+              "status": "TEST_UNTOUCHED" if selected else "REJECT_LOGIC_OR_OPPORTUNITY",
+          }
+          output = Path(
+              "artifacts/candidate-51/microauction-v19-development-comparison.json"
+          )
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(
+              ".work/candidate-51-real-microauction-v19/selected.txt"
+          ).write_text((selected or "") + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run untouched frozen survivor
+        if: always()
+        shell: bash
+        run: |
+          selected="$(tr -d '\r\n' < .work/candidate-51-real-microauction-v19/selected.txt)"
+          if [[ -z "$selected" ]]; then
+            exit 0
+          fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config ".work/candidate-51-real-microauction-v19/${selected}.json" \
+            --start 2025-11-03 --end 2025-11-09 \
+            --cache .cache/candidate-51-real-microauction-v19 \
+            --output artifacts/candidate-51/microauction-v19-selected-holdout \
+            --workspace .work/candidate-51-microauction-v19-holdout
+          exit 0
+
+      - name: Assess untouched result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          selected = Path(
+              ".work/candidate-51-real-microauction-v19/selected.txt"
+          ).read_text().strip()
+          root = Path(
+              "artifacts/candidate-51/microauction-v19-selected-holdout"
+          )
+          mp = root / "metrics.json"
+          dp = root / "strategy_diagnostics.json"
+          if not selected:
+              result = {
+                  "selected": None,
+                  "status": "NO_DEVELOPMENT_SURVIVOR",
+                  "run_continuous": False,
+              }
+          elif not mp.is_file() or not dp.is_file():
+              result = {
+                  "selected": selected,
+                  "status": "IMPLEMENTATION_BLOCKED_BEFORE_ECONOMIC_RESULT",
+                  "run_continuous": False,
+              }
+          else:
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              clean = (
+                  int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+              )
+              passed = (
+                  clean
+                  and int(metrics.get("trades") or 0) >= 7
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(metrics.get("max_drawdown") or 1.0) <= 0.20
+              )
+              result = {
+                  "selected": selected,
+                  "status": "RUN_CONTINUOUS" if passed else "UNTOUCHED_LOGIC_FAILURE",
+                  "run_continuous": passed,
+                  "metrics": metrics,
+                  "diagnostics": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "entry_submissions",
+                          "microauction_edges",
+                          "actionable_family_counts",
+                          "unresolved_reason_counts",
+                          "selected_symbols",
+                          "order_rejections",
+                          "global_position_violations",
+                          "max_open_positions_observed",
+                      )
+                  },
+              }
+          output = Path(
+              "artifacts/candidate-51/microauction-v19-holdout-assessment.json"
+          )
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(
+              ".work/candidate-51-real-microauction-v19/run-continuous.txt"
+          ).write_text(("yes" if result["run_continuous"] else "no") + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run conditional thirty-day continuous account
+        if: always()
+        shell: bash
+        run: |
+          flag="$(tr -d '\r\n' < .work/candidate-51-real-microauction-v19/run-continuous.txt)"
+          selected="$(tr -d '\r\n' < .work/candidate-51-real-microauction-v19/selected.txt)"
+          if [[ "$flag" != "yes" || -z "$selected" ]]; then
+            exit 0
+          fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config ".work/candidate-51-real-microauction-v19/${selected}.json" \
+            --start 2025-07-01 --end 2025-07-30 \
+            --cache .cache/candidate-51-real-microauction-v19 \
+            --output artifacts/candidate-51/microauction-v19-selected-continuous \
+            --workspace .work/candidate-51-microauction-v19-continuous
+          exit 0
+
+      - name: Write implementation versus logic verdict
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          comparison_path = Path(
+              "artifacts/candidate-51/microauction-v19-development-comparison.json"
+          )
+          holdout_path = Path(
+              "artifacts/candidate-51/microauction-v19-holdout-assessment.json"
+          )
+          continuous_root = Path(
+              "artifacts/candidate-51/microauction-v19-selected-continuous"
+          )
+          continuous_metrics = continuous_root / "metrics.json"
+          continuous_diagnostics = continuous_root / "strategy_diagnostics.json"
+          result = {
+              "family": "real_binance_microauction_states",
+              "source_performance_used_as_evidence": False,
+              "development": (
+                  json.loads(comparison_path.read_text())
+                  if comparison_path.is_file() else None
+              ),
+              "holdout": (
+                  json.loads(holdout_path.read_text())
+                  if holdout_path.is_file() else None
+              ),
+              "continuous": None,
+          }
+          if continuous_metrics.is_file() and continuous_diagnostics.is_file():
+              result["continuous"] = {
+                  "metrics": json.loads(continuous_metrics.read_text()),
+                  "diagnostics": json.loads(continuous_diagnostics.read_text()),
+              }
+              metrics = result["continuous"]["metrics"]
+              diagnostics = result["continuous"]["diagnostics"]
+              project_pass = (
+                  float(metrics.get("geometric_daily_growth") or 0.0) >= 0.01
+                  and int(metrics.get("trades") or 0) >= 30
+                  and int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+              )
+              result["classification"] = (
+                  "PROJECT_GATE_PASS" if project_pass else "LOGIC_INSUFFICIENT"
+              )
+          elif result.get("holdout", {}).get("status") == "IMPLEMENTATION_BLOCKED_BEFORE_ECONOMIC_RESULT":
+              result["classification"] = "IMPLEMENTATION_BLOCKED"
+          elif not result.get("development", {}).get("selected"):
+              rows = result.get("development", {}).get("rows", {})
+              produced = [row for row in rows.values() if row.get("produced")]
+              any_trades = any(int(row.get("trades") or 0) > 0 for row in produced)
+              result["classification"] = (
+                  "LOGIC_FAILURE" if any_trades else "LOGIC_OPPORTUNITY_FAILURE"
+              )
+          else:
+              result["classification"] = "LOGIC_FAILURE_ON_UNTOUCHED"
+          output = Path(
+              "artifacts/candidate-51/microauction-v19-final-verdict.json"
+          )
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-real-microauction-v19
+          path: |
+            artifacts/candidate-51/microauction-v19-*/**
+            artifacts/candidate-51/microauction-v19-*.json
+            .work/candidate-51-real-microauction-v19/manifest.json
+            .work/candidate-51-real-microauction-v19/*.json
+            .work/candidate-51-real-microauction-v19/status/*.txt
+          if-no-files-found: warn
+          retention-days: 90
