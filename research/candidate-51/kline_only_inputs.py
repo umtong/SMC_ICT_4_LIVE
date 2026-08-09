@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import date, timedelta
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -17,12 +18,16 @@ from typing import Any
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
-CANDIDATE05 = HERE.parent / "candidate-05"
-_candidate05_text = str(CANDIDATE05)
-if _candidate05_text not in sys.path:
-    sys.path.insert(0, _candidate05_text)
-
-import features as _base
+CANDIDATE05_FEATURES = HERE.parent / "candidate-05" / "features.py"
+_spec = importlib.util.spec_from_file_location(
+    "candidate51_reused_candidate05_features",
+    CANDIDATE05_FEATURES,
+)
+if _spec is None or _spec.loader is None:
+    raise RuntimeError(f"cannot load Candidate 05 feature verifier: {CANDIDATE05_FEATURES}")
+_base = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _base
+_spec.loader.exec_module(_base)
 
 
 def load_range(
