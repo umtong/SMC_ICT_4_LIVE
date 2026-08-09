@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Untouched 2024-03-25..31 confirmation of the already-frozen delayed OFI policy.
+"""Untouched 2024-03-25..30 confirmation of the already-frozen delayed OFI policy.
 
-The economic policy is exactly SOL_OFI_DELAYED_ACCEPTANCE_FREEZE.md. This runner
-uses the preserved daily bookTicker archives (rather than the questionable
-monthly archive) and exact chronological reconstruction. No rule is selected
-from this interval.
+The economic policy is exactly SOL_OFI_DELAYED_ACCEPTANCE_FREEZE.md. The first
+attempt requested March 31 and failed before outcomes because Binance Vision has
+no SOLUSDT daily bookTicker archive for that date. March 25-30 was not opened by
+that failed attempt, so this is still an untouched confirmation interval. It
+uses preserved daily BBO plus exact chronological reconstruction. No rule is
+selected from this interval.
 """
 from __future__ import annotations
 
@@ -20,7 +22,8 @@ from bookticker_exact_order import iter_book_ticker_paths_exact
 
 COST=21.0
 START=date(2024,3,25)
-END=date(2024,3,31)
+END=date(2024,3,30)
+DAYS=(END-START).days+1
 
 class Proxy:
     def __init__(self,r):
@@ -41,8 +44,8 @@ def main():
     accepted['delayed_net_bps']=accepted['delayed_gross_bps']-COST
     accepted.to_csv(a.output/'accepted.csv',index=False); episodes.to_csv(a.output/'episodes.csv',index=False)
     v=accepted['delayed_gross_bps'].dropna().to_numpy(dtype=float); gains=v[v>0].sum() if len(v) else 0.; losses=-v[v<0].sum() if len(v) else 0.
-    stats={'trades':int(len(v)),'trades_per_day':len(v)/7,'mean_gross_bps':float(v.mean()) if len(v) else 0.,'mean_net_bps':float(v.mean()-COST) if len(v) else 0.,'median_gross_bps':float(np.median(v)) if len(v) else 0.,'hit_rate':float(np.mean(v>0)) if len(v) else 0.,'cost_clear_rate':float(np.mean(v>COST)) if len(v) else 0.,'gross_pf':float(gains/losses) if losses>0 else (999999. if gains>0 else 0.)}
-    result={'study':'Frozen delayed SOL true-L1 OFI untouched daily-BBO confirmation','freeze':'SOL_OFI_DELAYED_ACCEPTANCE_FREEZE.md','start':START.isoformat(),'end':END.isoformat(),'q90_events':int(len(q90)),'nonoverlap_episodes':int(len(episodes)),'accepted_events':int(len(v)),'stats':stats,'sources':evidence}
+    stats={'trades':int(len(v)),'trades_per_day':len(v)/DAYS,'mean_gross_bps':float(v.mean()) if len(v) else 0.,'mean_net_bps':float(v.mean()-COST) if len(v) else 0.,'median_gross_bps':float(np.median(v)) if len(v) else 0.,'hit_rate':float(np.mean(v>0)) if len(v) else 0.,'cost_clear_rate':float(np.mean(v>COST)) if len(v) else 0.,'gross_pf':float(gains/losses) if losses>0 else (999999. if gains>0 else 0.)}
+    result={'study':'Frozen delayed SOL true-L1 OFI untouched daily-BBO confirmation','freeze':'SOL_OFI_DELAYED_ACCEPTANCE_FREEZE.md','start':START.isoformat(),'end':END.isoformat(),'calendar_days':DAYS,'q90_events':int(len(q90)),'nonoverlap_episodes':int(len(episodes)),'accepted_events':int(len(v)),'stats':stats,'sources':evidence}
     (a.output/'summary.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n'); print(json.dumps(result,indent=2,sort_keys=True))
 
 if __name__=='__main__':main()
