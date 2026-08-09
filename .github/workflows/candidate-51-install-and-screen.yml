@@ -16,17 +16,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
-      - name: Checkout candidate 51
+      - name: Checkout Candidate 51
         uses: actions/checkout@v4
         with:
           ref: research/candidate-51
           fetch-depth: 0
 
-      - name: Materialize the open-book policy and preserve the verified executor
+      - name: Materialize exact causal public ichiV2 adaptation
         shell: bash
         run: |
           set -euo pipefail
-          cp research/candidate-51/strategy.py research/candidate-51/strategy_base.py
           python - <<'PY'
           from __future__ import annotations
           import base64
@@ -39,52 +38,28 @@ jobs:
           root = Path("research/candidate-51")
           payload = root / ".payload"
           chunks = sorted(payload.glob("part-*"))
-          if len(chunks) != 6:
-              raise RuntimeError(f"expected six payload chunks, got {len(chunks)}")
+          if len(chunks) != 4:
+              raise RuntimeError(f"expected four payload chunks, got {len(chunks)}")
           encoded = "".join(path.read_text(encoding="utf-8").strip() for path in chunks)
           archive = base64.b64decode(encoded, validate=True)
           digest = hashlib.sha256(archive).hexdigest()
-          expected = "a0849adc9252984e0f7cc4c1390abe3e62728c962afb068c63099c514d72726b"
+          expected = "75a1fbc5a762009daf4f92095d2b6a894d06819155a684c0c67a2e334cbffb2d"
           if digest != expected:
               raise RuntimeError(f"payload sha256 mismatch: {digest} != {expected}")
 
-          destination = Path(".candidate51-materialized")
+          destination = Path(".candidate51-v2-materialized")
           if destination.exists():
               shutil.rmtree(destination)
           destination.mkdir()
           with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as stream:
               stream.extractall(destination)
 
-          mapping = {
-              "c51_router.py": root / "router.py",
-              "c51_strategy.py": root / "strategy.py",
-              "c51_test_router.py": root / "test_router.py",
-              "c51_launch.py": root / "launch.py",
-              "c51_config.json": root / "config.json",
-              "c51_README.md": root / "README.md",
-          }
-          for source_name, target in mapping.items():
-              source = destination / source_name
+          for name in ("router.py", "strategy.py", "config.json", "test_router.py"):
+              source = destination / name
               if not source.is_file():
                   raise RuntimeError(f"missing materialized file: {source}")
-              target.parent.mkdir(parents=True, exist_ok=True)
-              target.write_bytes(source.read_bytes())
+              (root / name).write_bytes(source.read_bytes())
 
-          for obsolete in (
-              root / "router_v2.py",
-              root / "strategy_v2.py",
-              root / "test_router_v2.py",
-          ):
-              obsolete.unlink(missing_ok=True)
-          old_evidence = root / "evidence"
-          if old_evidence.exists():
-              shutil.rmtree(old_evidence)
-          (root / ".bootstrapped-from-candidate-35").write_text(
-              "Candidate 51 reuses Candidate 35's exercised NautilusTrader data, order, "
-              "risk and continuous-account shell only. Candidate 35 alpha and evidence "
-              "receive no Candidate 51 performance credit.\n",
-              encoding="utf-8",
-          )
           shutil.rmtree(payload)
           shutil.rmtree(destination)
           PY
@@ -92,7 +67,7 @@ jobs:
           git config user.name "candidate-51-research-bot"
           git config user.email "candidate-51-research-bot@users.noreply.github.com"
           git add -A
-          git commit -m "candidate51: install open-book trend acceleration system"
+          git commit -m "candidate51: install causal public ichiV2 policy"
           git push origin HEAD:research/candidate-51
 
       - name: Set up Python
@@ -116,15 +91,16 @@ jobs:
           uv run python -m compileall -q research/candidate-51
           uv run --with pytest python -m pytest -q research/candidate-51/test_router.py
 
-      - name: Run seven-day continuous four-asset development diagnostic
+      - name: Run exact-policy seven-day continuous diagnostic
         run: |
+          rm -rf artifacts/candidate-51/v2-development-2026-07-22_2026-07-28
           uv run python research/candidate-51/launch.py \
             --config research/candidate-51/config.json \
             --start 2026-07-22 \
             --end 2026-07-28 \
-            --cache .cache/candidate-51 \
-            --output artifacts/candidate-51/2026-07-22_2026-07-28 \
-            --workspace .work/candidate-51
+            --cache .cache/candidate-51-v2 \
+            --output artifacts/candidate-51/v2-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v2
 
       - name: Print compact account result
         if: always()
@@ -132,7 +108,7 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          root = Path("artifacts/candidate-51/2026-07-22_2026-07-28")
+          root = Path("artifacts/candidate-51/v2-development-2026-07-22_2026-07-28")
           for name in ("metrics.json", "strategy_diagnostics.json"):
               path = root / name
               if not path.is_file():
@@ -148,21 +124,23 @@ jobs:
               else:
                   keys = (
                       "quarter_hour_decisions", "entry_submissions",
-                      "entry_expirations", "route_counts",
+                      "entry_expirations", "order_rejections", "route_counts",
                       "actionable_family_counts", "unresolved_reason_counts",
-                      "selected_symbols", "global_position_violations",
+                      "selected_symbols", "source_exit_submissions",
+                      "source_trailing_exit_submissions", "global_position_violations",
                   )
               print(name)
               print(json.dumps({key: data.get(key) for key in keys}, indent=2, sort_keys=True))
           PY
 
-      - name: Persist compact development evidence
+      - name: Persist compact v2 development evidence
         if: success()
         shell: bash
         run: |
           set -euo pipefail
-          source_dir="artifacts/candidate-51/2026-07-22_2026-07-28"
-          evidence_dir="research/candidate-51/evidence/development-2026-07-22_2026-07-28"
+          source_dir="artifacts/candidate-51/v2-development-2026-07-22_2026-07-28"
+          evidence_dir="research/candidate-51/evidence/v2-development-2026-07-22_2026-07-28"
+          rm -rf "$evidence_dir"
           mkdir -p "$evidence_dir"
           for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
             if [[ -f "$source_dir/$file" ]]; then
@@ -173,15 +151,15 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "candidate51: persist seven-day Nautilus development evidence"
+          git commit -m "candidate51: persist exact-policy v2 development evidence"
           git push origin HEAD:research/candidate-51
 
-      - name: Preserve full diagnostic artifact
+      - name: Preserve full v2 diagnostic artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-51-development-${{ github.sha }}
+          name: candidate-51-v2-development-${{ github.sha }}
           path: |
-            artifacts/candidate-51/2026-07-22_2026-07-28/*.json
-            artifacts/candidate-51/2026-07-22_2026-07-28/*.csv
+            artifacts/candidate-51/v2-development-2026-07-22_2026-07-28/*.json
+            artifacts/candidate-51/v2-development-2026-07-22_2026-07-28/*.csv
           if-no-files-found: warn
