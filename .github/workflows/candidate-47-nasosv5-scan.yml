@@ -1,0 +1,102 @@
+name: candidate-47-nasosv5-scan
+
+on:
+  push:
+    branches: ["research/candidate-47"]
+    paths:
+      - ".github/workflows/candidate-47-nasosv5-scan.yml"
+      - "research/candidate-47/nasosv5_signal_scan.py"
+      - "research/candidate-47/kline_only_inputs.py"
+      - "research/candidate-47/e0v1e_reversion_strategy.py"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-47-nasosv5-scan
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  scan:
+    name: ${{ matrix.period.label }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        period:
+          - {label: "2026-02-09_2026-02-15", start: "2026-02-09", end: "2026-02-15"}
+          - {label: "2026-03-02_2026-03-08", start: "2026-03-02", end: "2026-03-08"}
+          - {label: "2026-04-13_2026-04-19", start: "2026-04-13", end: "2026-04-19"}
+          - {label: "2026-06-22_2026-06-28", start: "2026-06-22", end: "2026-06-28"}
+          - {label: "2026-07-01_2026-07-07", start: "2026-07-01", end: "2026-07-07"}
+    env:
+      PYTHONPATH: research/candidate-47:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-47-nasosv5-scan/${{ matrix.period.label }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify environment and source scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-47/kline_only_inputs.py \
+            research/candidate-47/e0v1e_reversion_strategy.py \
+            research/candidate-47/nasosv5_signal_scan.py
+
+      - name: Scan exact public defaults without simulating PnL
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          python research/candidate-47/nasosv5_signal_scan.py \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --cache ".cache/candidate-47-nasosv5-${{ matrix.period.label }}" \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify causal geometry report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          report = json.loads((root / "nasosv5_scan.json").read_text())
+          aggregate = report["aggregate"]
+          print(json.dumps(aggregate, indent=2, sort_keys=True))
+          assert report["source"]["commit"] == "b9feaaa2f845aed5612b3c7726a0590ee233c846"
+          assert report["calendar_days"] == 7
+          assert aggregate["ready_states"] > 0
+          assert aggregate["valid_geometry_episodes"] <= aggregate["rising_edge_episodes"]
+          assert aggregate["maximum_same_timestamp_candidates"] <= 4
+          for event in report["events"]:
+              assert event["structural_stop"] < event["close"] < event["objective_15m_high"]
+              assert event["reward_risk"] > 0.0
+              assert event["profit_space"] >= 0.037 - 1e-12
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-47-nasosv5-scan-${{ matrix.period.label }}-${{ github.sha }}
+          path: artifacts/candidate-47-nasosv5-scan/${{ matrix.period.label }}/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
