@@ -1,0 +1,32 @@
+name: candidate-53-doolmedia-silverbox
+on:
+  push:
+    branches: [research/candidate-53]
+    paths:
+      - 'research/candidate-53/doolmedia_silverbox_causal_study.py'
+      - '.github/workflows/candidate-53-doolmedia-silverbox.yml'
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/umtong/smc-ict-4-research:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reuse monthly loader dependency
+        run: |
+          cp research/candidate-29/v9_liquidation_event_study.py research/candidate-53/v9_liquidation_event_study.py
+      - name: Execute frozen public-rule reconstruction on 2025
+        env:
+          PYTHONPATH: research/candidate-53
+        run: |
+          python research/candidate-53/doolmedia_silverbox_causal_study.py --year 2025 --output artifacts/c53-doolmedia-2025 | tee artifacts/c53-doolmedia-2025-console.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-53-doolmedia-2025-${{ github.sha }}
+          path: |
+            artifacts/c53-doolmedia-2025
+            artifacts/c53-doolmedia-2025-console.log
