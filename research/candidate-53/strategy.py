@@ -1,4 +1,4 @@
-"""Candidate 53 multi-mechanism policy over the reused Nautilus execution shell."""
+"""Candidate 53 sparse auction policy over the exercised Nautilus shell."""
 from __future__ import annotations
 
 import math
@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from router import FeatureObservation, RouteDecision, route_universe, thesis_invalidated
+from router import FeatureObservation, RouteConfig, RouteDecision, route_universe, thesis_invalidated
 from strategy_base import SYMBOLS
 from strategy_base import Candidate35Config
 from strategy_base import Candidate35Strategy as _ExecutionShell
@@ -73,29 +73,28 @@ class _RichFeatureStore:
             return FeatureObservation(observed, ready=False)
 
         def value(name: str, default: float = math.nan) -> float:
-            array = self.values.get(name)
-            if array is None:
+            arr = self.values.get(name)
+            if arr is None:
                 return default
-            number = float(array[index])
-            return number if math.isfinite(number) else default
+            x = float(arr[index])
+            return x if math.isfinite(x) else default
 
         oi_change = math.nan
         oi = self.values.get("open_interest")
         if oi is not None and index >= 15:
-            current, previous = float(oi[index]), float(oi[index - 15])
-            if math.isfinite(current) and math.isfinite(previous) and previous > 0.0:
-                oi_change = current / previous - 1.0
+            cur, prev = float(oi[index]), float(oi[index - 15])
+            if math.isfinite(cur) and math.isfinite(prev) and prev > 0:
+                oi_change = cur / prev - 1.0
         premium_z = math.nan
         premium = self.values.get("premium")
         if premium is not None:
-            start = max(0, index - 95)
-            clean = premium[start:index + 1]
+            clean = premium[max(0, index - 95):index + 1]
             clean = clean[np.isfinite(clean)]
-            current = float(premium[index])
-            if clean.size >= 24 and math.isfinite(current):
+            cur = float(premium[index])
+            if clean.size >= 24 and math.isfinite(cur):
                 std = float(clean.std(ddof=0))
                 if std > 1e-12:
-                    premium_z = (current - float(clean.mean())) / std
+                    premium_z = (cur - float(clean.mean())) / std
         return FeatureObservation(
             observed_time_ns=observed, ready=True,
             flow_open_10s=value("flow_open_10s"), notional_open_10s_burst=value("notional_open_10s_burst"),
@@ -111,10 +110,26 @@ class _RichFeatureStore:
 
 
 class Candidate35Strategy(_ExecutionShell):
-    FAMILY_REENTRY_MINUTES = 20
+    FAMILY_REENTRY_MINUTES = 35
 
     def __init__(self, config: Candidate35Config) -> None:
         super().__init__(config)
+        # Base shell constructs RouteConfig before Candidate53-specific cost fields
+        # exist. Replace it with the sparse cost-aware contract.
+        self.route_config = RouteConfig(
+            atr_period=config.atr_period,
+            min_impulse_atr_continuation=config.min_impulse_atr_continuation,
+            min_impulse_atr_reversal=config.min_impulse_atr_reversal,
+            min_response_atr=config.min_response_atr,
+            min_participation_ratio=config.min_participation_ratio,
+            min_route_score=config.min_route_score,
+            ambiguity_score_gap=config.ambiguity_score_gap,
+            continuation_target_r=config.continuation_target_r,
+            reversal_target_r=config.reversal_target_r,
+            fee_rate_each_side=config.all_in_cost_bps_each_side / 10_000.0,
+            slippage_rate_each_side=config.adverse_slippage_bps_each_side / 10_000.0,
+            funding_reserve_rate=config.funding_reserve_bps / 10_000.0,
+        )
         self.used_episode_keys: set[tuple[str, str, int, int]] = set()
         self.last_family_entry_minute: dict[tuple[str, str, int], int] = {}
         for key in ("source_signals_before_execution_filters", "used_episode_rejections", "family_reentry_rejections", "prospective_exit_submissions", "funding_runway_rejections", "cooldown_rejections"):
@@ -130,13 +145,12 @@ class Candidate35Strategy(_ExecutionShell):
         self.minute_index += 1
         self.diagnostics["complete_universe_minutes"] += 1
         self._record_equity(ts_event)
-        open_symbols = [symbol for symbol in SYMBOLS if not self.portfolio.is_flat(self.instrument_ids[symbol])]
+        open_symbols = [s for s in SYMBOLS if not self.portfolio.is_flat(self.instrument_ids[s])]
         self.diagnostics["max_open_positions_observed"] = max(int(self.diagnostics["max_open_positions_observed"]), len(open_symbols))
         if len(open_symbols) > 1:
             self.diagnostics["global_position_violations"] += 1
             for symbol in open_symbols:
-                self.cancel_all_orders(self.instrument_ids[symbol])
-                self.close_all_positions(self.instrument_ids[symbol])
+                self.cancel_all_orders(self.instrument_ids[symbol]); self.close_all_positions(self.instrument_ids[symbol])
             return
         if open_symbols:
             self.current_symbol = open_symbols[0]
@@ -153,7 +167,7 @@ class Candidate35Strategy(_ExecutionShell):
             return
         if not (self.config.evaluation_start_ns <= ts_event <= self.config.evaluation_end_ns):
             return
-        if any(len(self.bars[symbol]) < 70 for symbol in SYMBOLS):
+        if any(len(self.bars[s]) < 110 for s in SYMBOLS):
             return
         if self._funding_blackout(ts_event):
             self.diagnostics["funding_runway_rejections"] += 1
@@ -161,38 +175,37 @@ class Candidate35Strategy(_ExecutionShell):
         if self.minute_index - self.last_entry_minute < self.config.cooldown_minutes:
             self.diagnostics["cooldown_rejections"] += 1
             return
-        features = {symbol: self.features[symbol].observation(ts_event, self.config.feature_max_age_seconds) for symbol in SYMBOLS}
-        if not all(item.ready for item in features.values()):
+        features = {s: self.features[s].observation(ts_event, self.config.feature_max_age_seconds) for s in SYMBOLS}
+        if not all(x.ready for x in features.values()):
             self.diagnostics["feature_stale_episodes"] += 1
             return
         self.diagnostics["quarter_hour_decisions"] += 1
-        _, decisions = route_universe(bars_by_symbol={symbol: tuple(self.bars[symbol]) for symbol in SYMBOLS}, features_by_symbol=features, config=self.route_config)
-        reason_counts = self.diagnostics["unresolved_reason_counts"]
-        family_counts = self.diagnostics["actionable_family_counts"]
+        _, decisions = route_universe(bars_by_symbol={s: tuple(self.bars[s]) for s in SYMBOLS}, features_by_symbol=features, config=self.route_config)
+        reasons = self.diagnostics["unresolved_reason_counts"]
+        families = self.diagnostics["actionable_family_counts"]
         actionable: list[RouteDecision] = []
-        for decision in decisions.values():
+        for d in decisions.values():
             counts = self.diagnostics["route_counts"]
-            counts[decision.state] = int(counts.get(decision.state, 0)) + 1
-            if decision.actionable:
-                family_counts[decision.state] = int(family_counts.get(decision.state, 0)) + 1
-                actionable.append(decision)
+            counts[d.state] = int(counts.get(d.state, 0)) + 1
+            if d.actionable:
+                families[d.state] = int(families.get(d.state, 0)) + 1
+                actionable.append(d)
             else:
-                for reason in decision.reasons:
-                    reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+                for reason in d.reasons:
+                    reasons[reason] = int(reasons.get(reason, 0)) + 1
         self.diagnostics["source_signals_before_execution_filters"] += len(actionable)
         available: list[RouteDecision] = []
-        for decision in actionable:
-            exact = (decision.symbol, decision.state, decision.side, int(decision.episode_ts))
-            family = (decision.symbol, decision.state, decision.side)
+        for d in actionable:
+            exact = (d.symbol, d.state, d.side, int(d.episode_ts))
+            family = (d.symbol, d.state, d.side)
             if exact in self.used_episode_keys:
                 self.diagnostics["used_episode_rejections"] += 1
                 continue
-            last = self.last_family_entry_minute.get(family, -10**12)
-            if self.minute_index - last < self.FAMILY_REENTRY_MINUTES:
+            if self.minute_index - self.last_family_entry_minute.get(family, -10**12) < self.FAMILY_REENTRY_MINUTES:
                 self.diagnostics["family_reentry_rejections"] += 1
                 continue
-            available.append(decision)
-        available.sort(key=lambda item: (-item.score, item.symbol, item.state))
+            available.append(d)
+        available.sort(key=lambda x: (-x.score, x.symbol, x.state))
         if not available:
             self.diagnostics["unresolved_episodes"] += 1
             return
@@ -206,34 +219,19 @@ class Candidate35Strategy(_ExecutionShell):
             return
         scenario = self.current_scenario or {}
         elapsed = self.minute_index - self.position_open_minute if self.position_open_minute >= 0 else 0
-        if elapsed >= 4:
+        # Do not repeat v1's 5-minute micro-flow exits.  The bracket owns normal
+        # resolution; only a completed hard rejection of the external release can
+        # terminate early after the trade has had time to develop.
+        if elapsed >= 10:
             feature = self.features[self.current_symbol].observation(ts_event, self.config.feature_max_age_seconds)
             if feature.ready:
                 invalid, reason = thesis_invalidated(state=str(scenario.get("state", "")), side=int(scenario.get("side", 0)), bars=tuple(self.bars[self.current_symbol]), feature=feature, diagnostics=scenario.get("diagnostics", {}), config=self.route_config)
                 if invalid:
                     instrument_id = self.instrument_ids[self.current_symbol]
-                    self.cancel_all_orders(instrument_id)
-                    self.close_all_positions(instrument_id)
+                    self.cancel_all_orders(instrument_id); self.close_all_positions(instrument_id)
                     self.diagnostics["prospective_exit_submissions"] += 1
                     self._event("PROSPECTIVE_THESIS_EXIT", ts_event, reason=reason, elapsed_minutes=elapsed)
                     return
-                side = int(scenario.get("side", 0))
-                entry = float(scenario.get("entry_reference", math.nan))
-                stop = float(scenario.get("stop", math.nan))
-                latest = self.bars[self.current_symbol][-1].close
-                risk = side * (entry - stop) if side else math.nan
-                if math.isfinite(risk) and risk > 0.0:
-                    gain_r = side * (latest - entry) / risk
-                    flow = feature.flow_3m if math.isfinite(feature.flow_3m) else feature.flow_60s
-                    if gain_r >= 0.65:
-                        scenario["armed_profit_protection"] = True
-                    if scenario.get("armed_profit_protection") and gain_r <= 0.18 and math.isfinite(flow) and side * flow < -0.08:
-                        instrument_id = self.instrument_ids[self.current_symbol]
-                        self.cancel_all_orders(instrument_id)
-                        self.close_all_positions(instrument_id)
-                        self.diagnostics["prospective_exit_submissions"] += 1
-                        self._event("PROSPECTIVE_PROFIT_PROTECTION", ts_event, gain_r=gain_r, flow_side=side * flow)
-                        return
         super()._manage_open_position(ts_event)
 
 
