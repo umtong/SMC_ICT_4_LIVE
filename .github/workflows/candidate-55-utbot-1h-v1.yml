@@ -1,0 +1,123 @@
+name: candidate-55-utbot-1h-v1
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-utbot-1h-v1.yml"
+      - "research/candidate-55/run_utbot_1h_tournament.py"
+      - "research/candidate-55/router_utbot_1h.py"
+      - "research/candidate-55/strategy_utbot_1h.py"
+      - "research/candidate-55/strategy_utbot_1h_exact.py"
+      - "research/candidate-55/router_zaratustra.py"
+      - "research/candidate-55/router_zaratustra_v13.py"
+      - "research/candidate-55/strategy_mbe2.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-55-utbot-1h-v1
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+          fetch-depth: 0
+
+      - name: Materialize reused Nautilus shell and UTBot interpretations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/router_utbot_1h.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_mbe2.py research/candidate-51/strategy_mbe2.py
+          cp research/candidate-55/strategy_utbot_1h.py research/candidate-51/strategy_utbot_1h.py
+          cp research/candidate-55/strategy_utbot_1h_exact.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install, doctor and prove source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import (
+              _decode_mode,
+              _exact_vectorized_stops,
+              _recursive_stops,
+              _rolling_shifted,
+              _trend_flags,
+          )
+          from strategy import Candidate35Strategy
+
+          assert _decode_mode("exact_both") == ("exact", "both")
+          assert _decode_mode("recursive_short") == ("recursive", "short")
+          shifted = _rolling_shifted([1.0, 2.0, 3.0, 100.0], 3)
+          assert math.isnan(shifted[2]) and abs(shifted[3] - 2.0) < 1e-12
+          closes = [100.0, 103.0, 104.0]
+          atr = [1.0, 1.0, 1.0]
+          exact = _exact_vectorized_stops(closes, atr, 2.0)
+          assert exact == [98.0, 101.0, 102.0], exact
+          ema = [99.0, 100.0, 101.0]
+          assert _trend_flags(closes, exact, ema, 1) == (True, False)
+          recursive = _recursive_stops(closes, atr, 2.0)
+          assert all(math.isfinite(value) for value in recursive), recursive
+          assert Candidate35Strategy.__name__ == "Candidate35Strategy"
+          print("UTBot bug-compatible, recursive, shifted-volume and execution contracts verified")
+          PY
+
+      - name: Run completed-solution tournament
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_utbot_1h_tournament.py
+
+      - name: Persist evidence on candidate branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="research/candidate-55/evidence/v8-utbot-1h"
+          [[ -f "$evidence/RESULT.json" ]]
+          git config user.name "candidate-55-research-bot"
+          git config user.email "candidate-55-research-bot@users.noreply.github.com"
+          git add "$evidence"
+          git commit -m "candidate55: persist UTBot 1h tournament evidence"
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_zaratustra.py \
+            research/candidate-51/router_zaratustra_v13.py \
+            research/candidate-51/strategy_mbe2.py \
+            research/candidate-51/strategy_utbot_1h.py
+          pushed=0
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-55 && git push origin HEAD:research/candidate-55; then
+              pushed=1
+              break
+            fi
+            sleep $((attempt * 4))
+          done
+          [[ "$pushed" -eq 1 ]]
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-utbot-1h-v1-${{ github.sha }}
+          path: artifacts/candidate-55/utbot-1h-v1-*
+          if-no-files-found: warn
