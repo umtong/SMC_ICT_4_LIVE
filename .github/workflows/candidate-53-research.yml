@@ -1,0 +1,119 @@
+name: candidate-53-result-first-research
+
+on:
+  push:
+    branches: ["research/candidate-53"]
+    paths:
+      - ".github/workflows/candidate-53-research.yml"
+      - "research/candidate-53/**"
+      - "!research/candidate-53/evidence/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout Candidate 53
+        uses: actions/checkout@v4
+        with:
+          ref: research/candidate-53
+          fetch-depth: 0
+
+      - name: Materialize exercised Nautilus shell from Candidate 51
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-51:refs/remotes/origin/research/candidate-51
+          rm -rf .deps/c51
+          mkdir -p .deps
+          git worktree add --detach .deps/c51 refs/remotes/origin/research/candidate-51
+          cp research/candidate-53/router.py .deps/c51/research/candidate-51/router.py
+          cp research/candidate-53/strategy.py .deps/c51/research/candidate-51/strategy.py
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check "uv==0.11.25"
+
+      - name: Install locked project
+        run: |
+          uv lock --check
+          uv sync --locked
+
+      - name: Runtime doctor
+        run: uv run smc4 doctor
+
+      - name: Compile and unit-test Candidate 53
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run python -m py_compile research/candidate-53/router.py research/candidate-53/strategy.py
+          PYTHONPATH=".deps/c51/research/candidate-51" uv run --with pytest python -m pytest -q research/candidate-53/test_router.py
+
+      - name: Run four-asset continuous development diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifacts/candidate-53/development-2026-07-22_2026-07-28
+          mkdir -p artifacts/candidate-53
+          uv run python .deps/c51/research/candidate-51/launch.py \
+            --config research/candidate-53/config.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-53 \
+            --output artifacts/candidate-53/development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-53 \
+            | tee artifacts/candidate-53/development.log
+
+      - name: Print decision metrics
+        if: success()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('artifacts/candidate-53/development-2026-07-22_2026-07-28/metrics.json')
+          m=json.loads(p.read_text())
+          keep={k:m.get(k) for k in ('ending_nav','total_return','geometric_daily_growth','max_drawdown','trades','wins','losses','win_rate','profit_factor','expectancy_usdt','active_days','gate_pass')}
+          keep['families']=m.get('strategy_diagnostics',{}).get('actionable_family_counts',{})
+          keep['selected_symbols']=m.get('strategy_diagnostics',{}).get('selected_symbols',{})
+          keep['prospective_exits']=m.get('strategy_diagnostics',{}).get('prospective_exit_submissions',0)
+          print(json.dumps(keep,indent=2,sort_keys=True))
+          PY
+
+      - name: Persist compact development evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="artifacts/candidate-53/development-2026-07-22_2026-07-28"
+          target="research/candidate-53/evidence/development-2026-07-22_2026-07-28"
+          rm -rf "$target"
+          mkdir -p "$target"
+          for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json scenario_events.jsonl; do
+            [[ ! -f "$source/$file" ]] || cp "$source/$file" "$target/$file"
+          done
+          git config user.name "candidate-53-research-bot"
+          git config user.email "candidate-53-research-bot@users.noreply.github.com"
+          git add "$target"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate53: persist development diagnostic [skip ci]"
+            git push origin HEAD:research/candidate-53
+          fi
+
+      - name: Preserve diagnostics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-53-development-${{ github.sha }}
+          path: |
+            artifacts/candidate-53/development.log
+            artifacts/candidate-53/development-2026-07-22_2026-07-28/*.json
+            artifacts/candidate-53/development-2026-07-22_2026-07-28/*.jsonl
+            artifacts/candidate-53/development-2026-07-22_2026-07-28/*.csv
+          if-no-files-found: warn
