@@ -169,7 +169,7 @@ class Candidate47IchiFanStructuralAcceptanceStrategy(
                             age_minutes=age,
                             close=decision.close,
                             signal_high=decision.signal_high,
-                            reason=(
+                            failure_cause=(
                                 "NO_CLOSE_ABOVE_COMPLETED_SOURCE_SIGNAL_HIGH_"
                                 "WITHIN_FIFTEEN_MINUTES"
                             ),
