@@ -1,0 +1,400 @@
+name: candidate-51-post-v22-v24-v25
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - "research/candidate-51/evidence/V22_V24_COLLECTION_SUMMARY_2026-08-09.json"
+      - "research/candidate-51/evidence/TRENDRIDER_V22_SOURCE_WARM_VERDICT_2026-08-09.json"
+      - "research/candidate-51/evidence/PASINDU_SUPERTREND_V24_DEVELOPMENT_VERDICT_2026-08-09.json"
+      - ".github/workflows/candidate-51-post-v22-v24-v25.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: candidate-51-post-v22-v24-v25
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Wait for collected evidence when this workflow self-starts first
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            research/candidate-51/evidence/TRENDRIDER_V22_SOURCE_WARM_VERDICT_2026-08-09.json
+            research/candidate-51/evidence/PASINDU_SUPERTREND_V24_DEVELOPMENT_VERDICT_2026-08-09.json
+          )
+          for attempt in $(seq 1 360); do
+            git fetch origin research/candidate-51 --quiet
+            ready=yes
+            for path in "${required[@]}"; do
+              if ! git cat-file -e "origin/research/candidate-51:${path}" 2>/dev/null; then
+                ready=no
+              fi
+            done
+            if [[ "$ready" == "yes" ]]; then
+              git reset --hard origin/research/candidate-51
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "collected evidence did not arrive" >&2
+          exit 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Read exact survivors and freeze promotion configs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("research/candidate-51/evidence")
+          trend = json.loads((root / "TRENDRIDER_V22_SOURCE_WARM_VERDICT_2026-08-09.json").read_text())
+          pasindu = json.loads((root / "PASINDU_SUPERTREND_V24_DEVELOPMENT_VERDICT_2026-08-09.json").read_text())
+
+          trend_positive = []
+          for variant, row in (trend.get("untouched") or {}).items():
+              if row.get("classification") in {"PROJECT_GATE_PASS", "LOGIC_INSUFFICIENT"}:
+                  metrics = row.get("metrics") or {}
+                  if (
+                      float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                      and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  ):
+                      trend_positive.append(variant)
+
+          pasindu_survivors = list(pasindu.get("survivors") or [])
+          work = Path(".work/candidate-51-post-v25")
+          work.mkdir(parents=True, exist_ok=True)
+          (work / "trend-positive.txt").write_text(
+              "\n".join(trend_positive) + ("\n" if trend_positive else "")
+          )
+          (work / "pasindu-development-survivors.txt").write_text(
+              "\n".join(pasindu_survivors) + ("\n" if pasindu_survivors else "")
+          )
+
+          base = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in (
+              "sma_offset_low", "sma_offset_high",
+              "sma_stop_min_fraction", "sma_stop_max_fraction",
+              "sma_stop_atr_buffer",
+          ):
+              base["strategy"].pop(key, None)
+          frozen = {
+              "feature_max_age_seconds": 65.0,
+              "cooldown_minutes": 0,
+              "max_hold_minutes": 525600,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "pasindu_supertrend_period": 8,
+              "pasindu_supertrend_multiplier": 2.0,
+              "pasindu_adx_period": 14,
+              "pasindu_adx_min": 18.0,
+              "pasindu_confidence_min": 45.0,
+              "pasindu_established_4h_bars": 3,
+              "pasindu_continuation_lookback_1h": 8,
+              "pasindu_trail_activate_atr": 2.0,
+              "pasindu_trail_distance_atr": 2.5,
+          }
+          for mode in pasindu_survivors:
+              if mode not in {"flip_only", "reduced_live"}:
+                  raise RuntimeError(f"unexpected Pasindu survivor {mode!r}")
+              config = json.loads(json.dumps(base))
+              config["strategy"].update(frozen)
+              config["strategy"]["pasindu_mode"] = mode
+              (work / f"pasindu-{mode}.json").write_text(
+                  json.dumps(config, indent=2, sort_keys=True) + "\n"
+              )
+
+          decision = {
+              "trendrider_untouched_positive": trend_positive,
+              "pasindu_development_survivors": pasindu_survivors,
+              "trendrider_project_gate_pass": bool(trend.get("project_gate_pass")),
+              "pasindu_project_gate_pass": False,
+              "negative_family_merge_forbidden": True,
+          }
+          (work / "promotion-input.json").write_text(
+              json.dumps(decision, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+
+      - name: Install reusable environment only when Pasindu survived development
+        shell: bash
+        run: |
+          if [[ ! -s .work/candidate-51-post-v25/pasindu-development-survivors.txt ]]; then
+            exit 0
+          fi
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          cp research/candidate-51/router_pasindu_supertrend_diagnostic.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_pasindu_supertrend.py research/candidate-51/strategy.py
+          uv run python -m compileall -q research/candidate-51
+
+      - name: Run every Pasindu development survivor on untouched account
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-51-post-v25/status
+          while IFS= read -r mode; do
+            [[ -z "$mode" ]] && continue
+            PYTHONPATH=research/candidate-51 uv run python \
+              research/candidate-51/launch_kline_only_warmup.py \
+              --config ".work/candidate-51-post-v25/pasindu-${mode}.json" \
+              --data-start 2025-06-01 \
+              --start 2025-07-01 --end 2025-09-28 \
+              --cache .cache/candidate-51-post-v25 \
+              --output "artifacts/candidate-51/post-v25-pasindu-${mode}-untouched" \
+              --workspace ".work/candidate-51-post-v25-pasindu-${mode}-untouched"
+            echo $? > ".work/candidate-51-post-v25/status/${mode}-untouched.txt"
+          done < .work/candidate-51-post-v25/pasindu-development-survivors.txt
+          exit 0
+
+      - name: Classify untouched Pasindu accounts and choose one frozen survivor
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          def pnl(text):
+              match = re.search(r"[-+]?\d+(?:\.\d+)?", str(text).replace("_", "").replace(",", ""))
+              return float(match.group()) if match else 0.0
+
+          work = Path(".work/candidate-51-post-v25")
+          modes = [line.strip() for line in (work / "pasindu-development-survivors.txt").read_text().splitlines() if line.strip()]
+          rows = {}
+          eligible = []
+          for mode in modes:
+              root = Path(f"artifacts/candidate-51/post-v25-pasindu-{mode}-untouched")
+              mp, dp, cp = root / "metrics.json", root / "strategy_diagnostics.json", root / "closed_scenarios.json"
+              if not mp.is_file() or not dp.is_file() or not cp.is_file():
+                  rows[mode] = {"classification": "IMPLEMENTATION_BLOCKED"}
+                  continue
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              scenarios = json.loads(cp.read_text())
+              valid = [item for item in scenarios if bool(item.get("actual_fill_risk_valid"))]
+              pnls = [pnl(item.get("realized_pnl")) for item in valid]
+              clean = (
+                  int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+                  and min(int(value) for value in diagnostics.get("pasindu_four_hour_bars_by_symbol", {"x": 0}).values()) >= 105
+              )
+              positive = (
+                  clean
+                  and int(metrics.get("trades") or 0) >= 20
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(metrics.get("max_drawdown") or 1.0) <= 0.25
+                  and sum(pnls) > 0.0
+              )
+              classification = "PROVISIONAL_ALPHA" if positive else "LOGIC_FAILURE_OR_INSUFFICIENT"
+              rows[mode] = {
+                  "classification": classification,
+                  "metrics": metrics,
+                  "valid_fill_only": {
+                      "trades": len(pnls),
+                      "wins": sum(value > 0.0 for value in pnls),
+                      "losses": sum(value < 0.0 for value in pnls),
+                      "sum_realized_pnl_usdt": sum(pnls),
+                      "expectancy_usdt": sum(pnls) / len(pnls) if pnls else 0.0,
+                  },
+                  "diagnostics": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "pasindu_source_candidates", "pasindu_management_exits",
+                          "unresolved_reason_counts", "actionable_family_counts",
+                          "selected_symbols", "order_rejections",
+                          "global_position_violations", "max_open_positions_observed",
+                          "fill_invalidations",
+                      )
+                  },
+              }
+              if positive:
+                  eligible.append(mode)
+          eligible.sort(key=lambda mode: (
+              -float(rows[mode]["metrics"].get("geometric_daily_growth") or 0.0),
+              -float(rows[mode]["metrics"].get("expectancy_usdt") or 0.0),
+              -int(rows[mode]["metrics"].get("trades") or 0),
+          ))
+          selected = eligible[0] if eligible else None
+          result = {"rows": rows, "eligible": eligible, "selected": selected}
+          Path("artifacts/candidate-51/post-v25-pasindu-untouched-verdict.json").parent.mkdir(parents=True, exist_ok=True)
+          Path("artifacts/candidate-51/post-v25-pasindu-untouched-verdict.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n"
+          )
+          (work / "pasindu-selected.txt").write_text((selected or "") + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run selected Pasindu policy on 181-day continuous account
+        if: always()
+        shell: bash
+        run: |
+          selected="$(tr -d '\r\n' < .work/candidate-51-post-v25/pasindu-selected.txt)"
+          if [[ -z "$selected" ]]; then
+            exit 0
+          fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/launch_kline_only_warmup.py \
+            --config ".work/candidate-51-post-v25/pasindu-${selected}.json" \
+            --data-start 2025-09-01 \
+            --start 2025-10-01 --end 2026-03-30 \
+            --cache .cache/candidate-51-post-v25 \
+            --output artifacts/candidate-51/post-v25-pasindu-selected-continuous \
+            --workspace .work/candidate-51-post-v25-pasindu-selected-continuous
+          exit 0
+
+      - name: Build one survivor manifest; never sum or merge account results
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          work = Path(".work/candidate-51-post-v25")
+          inputs = json.loads((work / "promotion-input.json").read_text())
+          untouched_path = Path("artifacts/candidate-51/post-v25-pasindu-untouched-verdict.json")
+          untouched = json.loads(untouched_path.read_text()) if untouched_path.is_file() else None
+          selected = (work / "pasindu-selected.txt").read_text().strip() if (work / "pasindu-selected.txt").is_file() else ""
+          root = Path("artifacts/candidate-51/post-v25-pasindu-selected-continuous")
+          mp, dp = root / "metrics.json", root / "strategy_diagnostics.json"
+          pasindu_continuous = None
+          pasindu_classification = "NO_UNTOUCHED_SURVIVOR"
+          if mp.is_file() and dp.is_file():
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              project_pass = (
+                  float(metrics.get("geometric_daily_growth") or 0.0) >= 0.01
+                  and int(metrics.get("trades") or 0) >= 181
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+                  and int(diagnostics.get("fill_invalidations") or 0) == 0
+              )
+              positive = (
+                  float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+              )
+              pasindu_classification = (
+                  "PROJECT_GATE_PASS" if project_pass
+                  else "LOGIC_INSUFFICIENT" if positive
+                  else "LOGIC_FAILURE"
+              )
+              pasindu_continuous = {
+                  "selected": selected,
+                  "classification": pasindu_classification,
+                  "metrics": metrics,
+                  "diagnostics": diagnostics,
+              }
+
+          survivor_families = []
+          for variant in inputs.get("trendrider_untouched_positive", []):
+              survivor_families.append({
+                  "family": "public_trendrider_v211",
+                  "variant": variant,
+                  "evidence": "TRENDRIDER_V22_SOURCE_WARM_VERDICT_2026-08-09.json",
+                  "status": "UNTOUCHED_POSITIVE_BUT_NOT_ACCOUNT_SUMMABLE",
+              })
+          if pasindu_continuous and pasindu_classification in {"PROJECT_GATE_PASS", "LOGIC_INSUFFICIENT"}:
+              survivor_families.append({
+                  "family": "pasindu_live_effective_supertrend8x2",
+                  "variant": selected,
+                  "evidence": "POST_V25_PASINDU_CONTINUOUS_VERDICT_2026-08-09.json",
+                  "status": pasindu_classification,
+              })
+          # Keltrader source4h was already clean positive but sparse. It remains
+          # a possible independent family, never an account result to add.
+          survivor_families.append({
+              "family": "public_keltrader_source4h",
+              "variant": "source_4h",
+              "evidence": "KELTRADER_UNTOUCHED_IMPLEMENTATION_LOGIC_VERDICT_2026-08-09.json",
+              "status": "SPARSE_CONDITIONAL_ALPHA_ONLY",
+          })
+
+          manifest = {
+              "project_gate_pass": (
+                  bool(inputs.get("trendrider_project_gate_pass"))
+                  or pasindu_classification == "PROJECT_GATE_PASS"
+              ),
+              "survivor_families": survivor_families,
+              "pasindu_untouched": untouched,
+              "pasindu_continuous": pasindu_continuous,
+              "account_results_summed": False,
+              "integration_rule": (
+                  "Only independently clean positive mechanisms may be encoded into one new router and rerun as one fresh continuous account."
+              ),
+              "negative_family_merge_forbidden": True,
+          }
+          evidence = Path("research/candidate-51/evidence")
+          evidence.mkdir(parents=True, exist_ok=True)
+          (evidence / "POST_V25_SURVIVOR_MANIFEST_2026-08-09.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          (evidence / "POST_V25_PASINDU_CONTINUOUS_VERDICT_2026-08-09.json").write_text(
+              json.dumps(pasindu_continuous or {
+                  "selected": selected or None,
+                  "classification": pasindu_classification,
+                  "untouched": untouched,
+              }, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit compact survivor evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git pull --rebase origin research/candidate-51
+          git add \
+            research/candidate-51/evidence/POST_V25_SURVIVOR_MANIFEST_2026-08-09.json \
+            research/candidate-51/evidence/POST_V25_PASINDU_CONTINUOUS_VERDICT_2026-08-09.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate51: persist post-v25 survivor evidence"
+          git push origin HEAD:research/candidate-51
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-post-v22-v24-v25
+          path: |
+            artifacts/candidate-51/post-v25-*/metrics.json
+            artifacts/candidate-51/post-v25-*/strategy_diagnostics.json
+            artifacts/candidate-51/post-v25-*/closed_scenarios.json
+            artifacts/candidate-51/post-v25-*.json
+            .work/candidate-51-post-v25/*.json
+            .work/candidate-51-post-v25/*.txt
+            .work/candidate-51-post-v25/status/*.txt
+          if-no-files-found: warn
+          retention-days: 90
