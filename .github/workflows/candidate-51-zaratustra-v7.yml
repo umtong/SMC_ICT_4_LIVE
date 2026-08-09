@@ -1,0 +1,420 @@
+name: candidate-51-zaratustra-v7
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-zaratustra-v7.yml"
+      - "research/candidate-51/router_zaratustra.py"
+      - "research/candidate-51/strategy_zaratustra.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-zaratustra-v7
+  cancel-in-progress: true
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    steps:
+      - name: Checkout Candidate 51
+        uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Materialize public ZaratustraV5 policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_zaratustra.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_zaratustra.py research/candidate-51/strategy.py
+
+      - name: Set up locked NautilusTrader foundation
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import (
+              BarObservation,
+              FeatureObservation,
+              RouteConfig,
+              ZARATUSTRA_STATE,
+              classify_symbol,
+              route_universe,
+          )
+
+          def synthetic(side: int, shift: float = 0.0, length: int = 1_800):
+              bars = []
+              price = 100.0 + shift
+              for index in range(length):
+                  drift = side * (0.018 + 0.005 * math.sin(index / 11.0))
+                  opened = price
+                  closed = max(1.0, opened + drift)
+                  wiggle = 0.025 + 0.007 * abs(math.sin(index / 7.0))
+                  bars.append(BarObservation(
+                      (index + 1) * 60_000_000_000 - 1_000_000,
+                      opened,
+                      max(opened, closed) + wiggle,
+                      min(opened, closed) - wiggle,
+                      closed,
+                      1_000.0 + index % 97,
+                  ))
+                  price = closed
+              return bars
+
+          config = RouteConfig()
+          for side in (1, -1):
+              bars = synthetic(side)
+              decision = classify_symbol(
+                  "BTCUSDT", bars, FeatureObservation(bars[-1].ts_event), config,
+              )
+              assert decision.actionable, (side, decision.reasons, decision.diagnostics)
+              assert decision.state == ZARATUSTRA_STATE
+              assert decision.side == side
+              if side > 0:
+                  assert decision.stop_reference < decision.entry_reference < decision.objective_reference
+              else:
+                  assert decision.objective_reference < decision.entry_reference < decision.stop_reference
+              stop_fraction = abs(decision.stop_reference / decision.entry_reference - 1.0)
+              assert abs(stop_fraction - 0.0296) < 1e-10
+
+              extended = synthetic(side, length=1_805)
+              same_episode = classify_symbol(
+                  "BTCUSDT", extended,
+                  FeatureObservation(extended[-1].ts_event), config,
+              )
+              assert same_episode.actionable
+              assert same_episode.episode_ts == decision.episode_ts
+
+          bars = synthetic(1)
+          future = classify_symbol(
+              "BTCUSDT", bars,
+              FeatureObservation(bars[-1].ts_event + 1), config,
+          )
+          assert not future.actionable
+          assert "FUTURE_FEATURE_REJECTED" in future.reasons
+
+          bars_by_symbol = {
+              symbol: synthetic(1 if index % 2 == 0 else -1, float(index * 10))
+              for index, symbol in enumerate(("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"))
+          }
+          features = {
+              symbol: FeatureObservation(series[-1].ts_event)
+              for symbol, series in bars_by_symbol.items()
+          }
+          winner, decisions = route_universe(bars_by_symbol, features, config)
+          assert winner is not None and winner.actionable
+          assert sum(item.actionable for item in decisions.values()) == 4
+          assert winner.symbol in bars_by_symbol
+          PY
+
+      - name: Predeclare source and threshold variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import copy
+          import hashlib
+          import json
+          from pathlib import Path
+
+          source = json.loads(Path("research/candidate-51/config.json").read_text())
+          variants = {
+              "source_di25": {"di": 25.0, "rsi": 50.0},
+              "dense_di20": {"di": 20.0, "rsi": 50.0},
+              "strict_di30": {"di": 30.0, "rsi": 50.0},
+          }
+          work = Path(".work/candidate-51-zara-v7")
+          work.mkdir(parents=True, exist_ok=True)
+          manifest = {
+              "family": "public_ZaratustraV5_multi_timeframe_trend",
+              "source": {
+                  "repository": "remiotore/ccxt-freqtrade",
+                  "path": "strategies/ZaratustraV5.py",
+                  "timeframes_minutes": [5, 15, 30],
+                  "source_rsi_level": 50.0,
+                  "source_di_level": 25.0,
+                  "source_leverage": 10.0,
+                  "source_stoploss_profit_ratio": -0.296,
+                  "source_trailing_positive": 0.013,
+                  "source_trailing_offset": 0.071,
+              },
+              "development_interval": ["2026-07-22", "2026-07-28"],
+              "untouched_interval": ["2026-07-29", "2026-08-04"],
+              "variants": variants,
+              "selection_rule": (
+                  "at least one independent completed trade per calendar day, positive post-cost "
+                  "expectancy and geometric growth, max drawdown <=20%, no account integrity violation"
+              ),
+              "router_sha256": hashlib.sha256(
+                  Path("research/candidate-51/router.py").read_bytes()
+              ).hexdigest(),
+              "strategy_sha256": hashlib.sha256(
+                  Path("research/candidate-51/strategy.py").read_bytes()
+              ).hexdigest(),
+          }
+          (work / "variant_manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          legacy = {
+              "sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+              "sma_stop_max_fraction", "sma_stop_atr_buffer",
+          }
+          for name, values in variants.items():
+              config = copy.deepcopy(source)
+              for key in legacy:
+                  config["strategy"].pop(key, None)
+              config["strategy"].update({
+                  "cooldown_minutes": 0,
+                  "max_hold_minutes": 720,
+                  "funding_flatten_minute": 60,
+                  "funding_blackout_before_minutes": -1,
+                  "funding_blackout_after_minutes": -1,
+                  "zara_rsi_period": 14,
+                  "zara_di_period": 14,
+                  "zara_bb_period": 20,
+                  "zara_rsi_level": values["rsi"],
+                  "zara_di_level": values["di"],
+                  "zara_source_leverage": 10.0,
+                  "zara_source_stoploss": 0.296,
+                  "zara_trailing_positive": 0.013,
+                  "zara_trailing_offset": 0.071,
+                  "zara_emergency_target_fraction": 0.10,
+              })
+              (work / f"{name}.json").write_text(
+                  json.dumps(config, indent=2, sort_keys=True) + "\n"
+              )
+          PY
+
+      - name: Run exact public threshold on development interval
+        continue-on-error: true
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-zara-v7/source_di25.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-zara-v7 \
+            --output artifacts/candidate-51/zara-v7-source_di25-development \
+            --workspace .work/candidate-51-zara-v7-source
+
+      - name: Run denser DI threshold on development interval
+        continue-on-error: true
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-zara-v7/dense_di20.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-zara-v7 \
+            --output artifacts/candidate-51/zara-v7-dense_di20-development \
+            --workspace .work/candidate-51-zara-v7-dense
+
+      - name: Run stricter DI threshold on development interval
+        continue-on-error: true
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-zara-v7/strict_di30.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-zara-v7 \
+            --output artifacts/candidate-51/zara-v7-strict_di30-development \
+            --workspace .work/candidate-51-zara-v7-strict
+
+      - name: Select only a valid development variant
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          names = ("source_di25", "dense_di20", "strict_di30")
+          comparison = {}
+          for name in names:
+              root = Path(f"artifacts/candidate-51/zara-v7-{name}-development")
+              metrics_path = root / "metrics.json"
+              diagnostics_path = root / "strategy_diagnostics.json"
+              if not metrics_path.is_file() or not diagnostics_path.is_file():
+                  comparison[name] = {"produced": False}
+                  continue
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              comparison[name] = {
+                  "produced": True,
+                  "ending_nav": metrics.get("ending_nav"),
+                  "total_return": metrics.get("total_return"),
+                  "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                  "max_drawdown": metrics.get("max_drawdown"),
+                  "trades": metrics.get("trades"),
+                  "wins": metrics.get("wins"),
+                  "losses": metrics.get("losses"),
+                  "win_rate": metrics.get("win_rate"),
+                  "profit_factor": metrics.get("profit_factor"),
+                  "expectancy_usdt": metrics.get("expectancy_usdt"),
+                  "largest_winner_share": metrics.get("largest_winner_share"),
+                  "source_signals": diagnostics.get("source_signals_before_execution_filters"),
+                  "entries": diagnostics.get("entry_submissions"),
+                  "trailing_activations": diagnostics.get("zara_trailing_activations"),
+                  "trailing_exits": diagnostics.get("zara_trailing_exits"),
+                  "used_episode_rejections": diagnostics.get("used_episode_rejections"),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "unresolved_reason_counts": diagnostics.get("unresolved_reason_counts"),
+                  "global_position_violations": diagnostics.get("global_position_violations"),
+                  "order_rejections": diagnostics.get("order_rejections"),
+              }
+          eligible = [
+              name for name, row in comparison.items()
+              if row.get("produced")
+              and int(row.get("trades") or 0) >= 7
+              and float(row.get("expectancy_usdt") or 0.0) > 0.0
+              and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+              and float(row.get("max_drawdown") or 1.0) <= 0.20
+              and int(row.get("global_position_violations") or 0) == 0
+              and int(row.get("order_rejections") or 0) == 0
+          ]
+          eligible.sort(key=lambda name: (
+              -float(comparison[name].get("geometric_daily_growth") or 0.0),
+              -float(comparison[name].get("expectancy_usdt") or 0.0),
+              -int(comparison[name].get("trades") or 0),
+              name,
+          ))
+          selected = eligible[0] if eligible else None
+          decision = {
+              "comparison": comparison,
+              "eligible": eligible,
+              "selected": selected,
+              "family_status": "TEST_UNTOUCHED" if selected else "REJECT_OR_REDESIGN",
+          }
+          output = Path("artifacts/candidate-51/zara-v7-development-comparison.json")
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-51-zara-v7/selected.txt").write_text(
+              (selected or "") + "\n"
+          )
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+
+      - name: Run selected variant on untouched interval
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected="$(tr -d '\n\r' < .work/candidate-51-zara-v7/selected.txt)"
+          if [[ -z "$selected" ]]; then
+            echo "No development variant qualified; untouched run skipped."
+            exit 0
+          fi
+          cp ".work/candidate-51-zara-v7/${selected}.json" \
+             .work/candidate-51-zara-v7/selected-holdout.json
+          printf '%s\n' "$selected" > .work/candidate-51-zara-v7/holdout_variant.txt
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-zara-v7/selected-holdout.json \
+            --start 2026-07-29 --end 2026-08-04 \
+            --cache .cache/candidate-51-zara-v7 \
+            --output artifacts/candidate-51/zara-v7-selected-holdout \
+            --workspace .work/candidate-51-zara-v7-holdout
+
+      - name: Assess untouched result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          variant_path = Path(".work/candidate-51-zara-v7/holdout_variant.txt")
+          variant = variant_path.read_text().strip() if variant_path.is_file() else None
+          root = Path("artifacts/candidate-51/zara-v7-selected-holdout")
+          metrics_path = root / "metrics.json"
+          diagnostics_path = root / "strategy_diagnostics.json"
+          assessment = {"variant": variant, "produced": False, "gate_pass": False}
+          if variant and metrics_path.is_file() and diagnostics_path.is_file():
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              checks = {
+                  "independent_trades_at_least_calendar_days": int(metrics.get("trades") or 0) >= 7,
+                  "positive_post_cost_growth": float(metrics.get("geometric_daily_growth") or 0.0) > 0.0,
+                  "positive_expectancy": float(metrics.get("expectancy_usdt") or 0.0) > 0.0,
+                  "max_drawdown_lte_20pct": float(metrics.get("max_drawdown") or 1.0) <= 0.20,
+                  "no_global_position_violation": int(diagnostics.get("global_position_violations") or 0) == 0,
+                  "no_order_rejection": int(diagnostics.get("order_rejections") or 0) == 0,
+              }
+              assessment = {
+                  "variant": variant,
+                  "produced": True,
+                  "ending_nav": metrics.get("ending_nav"),
+                  "total_return": metrics.get("total_return"),
+                  "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                  "max_drawdown": metrics.get("max_drawdown"),
+                  "trades": metrics.get("trades"),
+                  "wins": metrics.get("wins"),
+                  "losses": metrics.get("losses"),
+                  "win_rate": metrics.get("win_rate"),
+                  "profit_factor": metrics.get("profit_factor"),
+                  "expectancy_usdt": metrics.get("expectancy_usdt"),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "checks": checks,
+                  "gate_pass": all(checks.values()),
+              }
+          output = Path("artifacts/candidate-51/zara-v7-holdout-assessment.json")
+          output.write_text(json.dumps(assessment, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(assessment, indent=2, sort_keys=True))
+          PY
+
+      - name: Persist compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="research/candidate-51/evidence/v7-zaratustra"
+          rm -rf "$root"
+          mkdir -p "$root/development" "$root/holdout"
+          cp .work/candidate-51-zara-v7/variant_manifest.json "$root/variant_manifest.json"
+          cp artifacts/candidate-51/zara-v7-development-comparison.json "$root/development/comparison.json"
+          cp artifacts/candidate-51/zara-v7-holdout-assessment.json "$root/holdout/assessment.json"
+          for variant in source_di25 dense_di20 strict_di30; do
+            source="artifacts/candidate-51/zara-v7-${variant}-development"
+            target="$root/development/$variant"
+            [[ ! -d "$source" ]] || mkdir -p "$target"
+            for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
+              [[ ! -f "$source/$file" ]] || cp "$source/$file" "$target/$file"
+            done
+          done
+          source="artifacts/candidate-51/zara-v7-selected-holdout"
+          if [[ -d "$source" ]]; then
+            for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
+              [[ ! -f "$source/$file" ]] || cp "$source/$file" "$root/holdout/$file"
+            done
+          fi
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add "$root"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate51: persist ZaratustraV5 screen"
+            git push origin HEAD:research/candidate-51
+          fi
+
+      - name: Preserve full diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-zaratustra-v7-${{ github.sha }}
+          path: |
+            artifacts/candidate-51/zara-v7-*/**/*.json
+            artifacts/candidate-51/zara-v7-*/**/*.csv
+            artifacts/candidate-51/zara-v7-development-comparison.json
+            artifacts/candidate-51/zara-v7-holdout-assessment.json
+          if-no-files-found: warn
