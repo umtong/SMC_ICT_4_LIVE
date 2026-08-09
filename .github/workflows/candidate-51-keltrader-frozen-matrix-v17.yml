@@ -1,0 +1,324 @@
+name: candidate-51-keltrader-frozen-matrix-v17
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-keltrader-frozen-matrix-v17.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-51-keltrader-frozen-matrix-v17
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  validate:
+    name: ${{ matrix.variant.name }}-${{ matrix.period.label }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        variant:
+          - {name: strict_30m, signal: 30, atr: 15, hold: 360, volume: 1.2, band: "true"}
+          - {name: source_4h, signal: 240, atr: 60, hold: 1440, volume: 1.0, band: "false"}
+        period:
+          - {label: "2025-04", start: "2025-04-01", end: "2025-04-30"}
+          - {label: "2025-09", start: "2025-09-01", end: "2025-09-30"}
+          - {label: "2026-06", start: "2026-06-01", end: "2026-06-30"}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+      - name: Materialize frozen public core
+        run: |
+          cp research/candidate-51/router_keltrader.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_keltrader.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install pinned environment
+        run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+      - name: Build exact frozen config
+        shell: bash
+        env:
+          SIGNAL: ${{ matrix.variant.signal }}
+          ATRTF: ${{ matrix.variant.atr }}
+          HOLD: ${{ matrix.variant.hold }}
+          VOLUME: ${{ matrix.variant.volume }}
+          BAND: ${{ matrix.variant.band }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in (
+              "sma_offset_low",
+              "sma_offset_high",
+              "sma_stop_min_fraction",
+              "sma_stop_max_fraction",
+              "sma_stop_atr_buffer",
+          ):
+              config["strategy"].pop(key, None)
+          config["strategy"].update(
+              {
+                  "cooldown_minutes": 0,
+                  "max_hold_minutes": int(os.environ["HOLD"]),
+                  "funding_flatten_minute": 60,
+                  "funding_blackout_before_minutes": -1,
+                  "funding_blackout_after_minutes": -1,
+                  "keltrader_signal_minutes": int(os.environ["SIGNAL"]),
+                  "keltrader_atr_minutes": int(os.environ["ATRTF"]),
+                  "keltrader_bb_period": 19,
+                  "keltrader_bb_std": 2.47,
+                  "keltrader_kc_period": 17,
+                  "keltrader_kc_atr_mult": 2.38,
+                  "keltrader_indicator_atr_period": 14,
+                  "keltrader_momentum_period": 12,
+                  "keltrader_rsi_period": 14,
+                  "keltrader_rsi_overbought": 70.0,
+                  "keltrader_rsi_oversold": 30.0,
+                  "keltrader_volume_period": 20,
+                  "keltrader_min_volume_ratio": float(os.environ["VOLUME"]),
+                  "keltrader_min_squeeze_bars": 2,
+                  "keltrader_require_band_break": (
+                      os.environ["BAND"].lower() == "true"
+                  ),
+                  "keltrader_stop_atr_mult": 3.45,
+                  "keltrader_target_atr_mult": 4.0,
+              }
+          )
+          Path(".work").mkdir(exist_ok=True)
+          Path(".work/config.json").write_text(
+              json.dumps(config, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+      - name: Run one continuous four-symbol account
+        shell: bash
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/config.json \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --cache .cache/candidate-51-keltrader-v17 \
+            --output "artifacts/candidate-51/keltrader-v17-${{ matrix.variant.name }}-${{ matrix.period.label }}" \
+            --workspace ".work/keltrader-v17-${{ matrix.variant.name }}-${{ matrix.period.label }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: keltrader-v17-${{ matrix.variant.name }}-${{ matrix.period.label }}
+          path: artifacts/candidate-51/keltrader-v17-${{ matrix.variant.name }}-${{ matrix.period.label }}/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  decide:
+    needs: validate
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: keltrader-v17-*
+          path: downloaded
+      - name: Aggregate regime evidence
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from functools import reduce
+          from operator import mul
+          from pathlib import Path
+
+          families = {}
+          for variant in ("strict_30m", "source_4h"):
+              rows = []
+              for artifact in sorted(
+                  Path("downloaded").glob(f"keltrader-v17-{variant}-*")
+              ):
+                  metrics_path = artifact / "metrics.json"
+                  diagnostics_path = artifact / "strategy_diagnostics.json"
+                  scenarios_path = artifact / "closed_scenarios.json"
+                  if not metrics_path.is_file() or not diagnostics_path.is_file():
+                      rows.append(
+                          {
+                              "period": artifact.name,
+                              "produced": False,
+                          }
+                      )
+                      continue
+                  metrics = json.loads(metrics_path.read_text())
+                  diagnostics = json.loads(diagnostics_path.read_text())
+                  scenarios = (
+                      json.loads(scenarios_path.read_text())
+                      if scenarios_path.is_file()
+                      else []
+                  )
+                  rows.append(
+                      {
+                          "period": artifact.name.removeprefix(
+                              f"keltrader-v17-{variant}-"
+                          ),
+                          "produced": True,
+                          **{
+                              key: metrics.get(key)
+                              for key in (
+                                  "ending_nav",
+                                  "total_return",
+                                  "geometric_daily_growth",
+                                  "max_drawdown",
+                                  "trades",
+                                  "wins",
+                                  "losses",
+                                  "win_rate",
+                                  "profit_factor",
+                                  "expectancy_usdt",
+                                  "largest_winner_share",
+                              )
+                          },
+                          "episode_keys": [
+                              [
+                                  item.get("symbol"),
+                                  int(item.get("side", 0)),
+                                  int(item.get("episode_ts", 0)),
+                              ]
+                              for item in scenarios
+                          ],
+                          "selected_symbols": diagnostics.get(
+                              "selected_symbols"
+                          ),
+                          "global_position_violations": diagnostics.get(
+                              "global_position_violations"
+                          ),
+                          "order_rejections": diagnostics.get(
+                              "order_rejections"
+                          ),
+                      }
+                  )
+              produced = [row for row in rows if row.get("produced")]
+              positive = [
+                  row
+                  for row in produced
+                  if float(row.get("total_return") or 0.0) > 0.0
+              ]
+              compounded = (
+                  reduce(
+                      mul,
+                      (
+                          1.0 + float(row["total_return"])
+                          for row in produced
+                      ),
+                      1.0,
+                  )
+                  - 1.0
+                  if produced
+                  else None
+              )
+              total_trades = sum(
+                  int(row.get("trades") or 0) for row in produced
+              )
+              weighted_expectancy = (
+                  sum(
+                      float(row.get("expectancy_usdt") or 0.0)
+                      * int(row.get("trades") or 0)
+                      for row in produced
+                  )
+                  / total_trades
+                  if total_trades
+                  else None
+              )
+              operational = all(
+                  int(row.get("global_position_violations") or 0) == 0
+                  and int(row.get("order_rejections") or 0) == 0
+                  for row in produced
+              )
+              survive = (
+                  len(produced) == 3
+                  and len(positive) >= 2
+                  and (compounded or 0.0) > 0.0
+                  and (weighted_expectancy or 0.0) > 0.0
+                  and operational
+              )
+              families[variant] = {
+                  "rows": rows,
+                  "positive_periods": len(positive),
+                  "compounded_sequential_return": compounded,
+                  "total_trades": total_trades,
+                  "weighted_expectancy_usdt": weighted_expectancy,
+                  "operational": operational,
+                  "survive": survive,
+              }
+
+          overlaps = []
+          for period in ("2025-04", "2025-09", "2026-06"):
+              thirty = next(
+                  (
+                      row
+                      for row in families["strict_30m"]["rows"]
+                      if row.get("period") == period
+                  ),
+                  None,
+              )
+              four = next(
+                  (
+                      row
+                      for row in families["source_4h"]["rows"]
+                      if row.get("period") == period
+                  ),
+                  None,
+              )
+              keys_30 = {
+                  tuple(item) for item in (thirty or {}).get("episode_keys", [])
+              }
+              keys_4h = {
+                  tuple(item) for item in (four or {}).get("episode_keys", [])
+              }
+              overlaps.append(
+                  {
+                      "period": period,
+                      "strict_30m_trades": len(keys_30),
+                      "source_4h_trades": len(keys_4h),
+                      "exact_episode_overlap": len(keys_30 & keys_4h),
+                  }
+              )
+          both_survive = all(
+              families[name]["survive"]
+              for name in ("strict_30m", "source_4h")
+          )
+          report = {
+              "frozen_development_reference": {
+                  "period": ["2026-01-01", "2026-01-30"],
+                  "strict_30m_return": 0.1267921667505001,
+                  "source_4h_return": 0.09389917613129994,
+              },
+              "families": families,
+              "episode_overlaps": overlaps,
+              "both_survive": both_survive,
+              "next_action": (
+                  "build one multi-timeframe Keltrader arbitration strategy and evaluate it on a new continuous account"
+                  if both_survive
+                  else "retain only each family that survived; do not merge failed family"
+              ),
+          }
+          Path("keltrader-v17-validation.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keltrader-v17-validation
+          path: keltrader-v17-validation.json
