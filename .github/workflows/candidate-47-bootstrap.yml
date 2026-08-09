@@ -1,0 +1,53 @@
+name: candidate-47-bootstrap
+
+on:
+  push:
+    branches:
+      - research/candidate-47
+    paths:
+      - .github/workflows/candidate-47-bootstrap.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout candidate 47
+        uses: actions/checkout@v4
+        with:
+          ref: research/candidate-47
+          fetch-depth: 0
+
+      - name: Inherit Candidate 35 Nautilus shell once
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f research/candidate-47/.bootstrapped-from-candidate-35 ]]; then
+            echo "Candidate 47 is already bootstrapped."
+            exit 0
+          fi
+
+          git fetch --no-tags origin research/candidate-35
+          rm -rf research/candidate-47
+          mkdir -p research
+          git archive origin/research/candidate-35 research/candidate-35 | tar -x
+          mv research/candidate-35 research/candidate-47
+
+          while IFS= read -r -d '' file; do
+            sed -i 's#research/candidate-35#research/candidate-47#g' "$file"
+          done < <(find research/candidate-47 -type f \( -name '*.py' -o -name '*.json' -o -name '*.md' \) -print0)
+
+          cat > research/candidate-47/.bootstrapped-from-candidate-35 <<'EOF'
+          Candidate 47 inherited Candidate 35's NautilusTrader execution, accounting,
+          data assembly, continuous-account runner, and tests. Candidate 35 alpha is
+          not accepted as evidence and will be replaced inside Candidate 47.
+          EOF
+
+          git config user.name "candidate-47-research-bot"
+          git config user.email "candidate-47-research-bot@users.noreply.github.com"
+          git add research/candidate-47
+          git commit -m "candidate47: inherit candidate35 Nautilus execution shell"
+          git push origin HEAD:research/candidate-47
