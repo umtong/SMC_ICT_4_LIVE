@@ -1,0 +1,193 @@
+name: candidate-57-public-el-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-public-el-v1.yml"
+      - "research/candidate-57/public_el_router.py.gz.b64"
+      - "research/candidate-57/public_el_strategy.py.gz.b64"
+      - "research/candidate-57/public_el_campaign.py.gz.b64"
+      - "research/candidate-57/PUBLIC_EL_V1.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-public-el-v1
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Materialize and verify the reused public-el adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import gzip
+          import hashlib
+          from pathlib import Path
+
+          specs = [
+              (
+                  Path("research/candidate-57/public_el_router.py.gz.b64"),
+                  Path("research/candidate-51/router.py"),
+                  "50129f449d085bc36fabe0c33589395200317169c2fdcda5c443892bfad7dcf3",
+              ),
+              (
+                  Path("research/candidate-57/public_el_strategy.py.gz.b64"),
+                  Path("research/candidate-51/strategy.py"),
+                  "d59168e799c1628ba80565cf557ff5bb60ee9af42ff4b4622592120b8450620a",
+              ),
+              (
+                  Path("research/candidate-57/public_el_campaign.py.gz.b64"),
+                  Path("research/candidate-57/.run_el_tournament_materialized.py"),
+                  "cf78d6e778a7eee0b32a688ed0854c9ba62d0bbb3017f9a3456f2e181544a2b3",
+              ),
+          ]
+          for encoded, target, expected in specs:
+              source = gzip.decompress(
+                  base64.b64decode(
+                      encoded.read_text(encoding="ascii").strip(),
+                      validate=True,
+                  )
+              )
+              actual = hashlib.sha256(source).hexdigest()
+              if actual != expected:
+                  raise RuntimeError(
+                      f"payload hash mismatch {encoded}: {actual} != {expected}"
+                  )
+              compile(source.decode("utf-8"), str(encoded), "exec")
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(source)
+          print("Candidate 57 public-el payloads materialized and verified")
+          PY
+
+      - name: Install locked environment and prove source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run python -m compileall -q \
+            research/candidate-51 \
+            research/candidate-57/.run_el_tournament_materialized.py
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import _decode_mode, el_source_flags
+
+          assert _decode_mode("edge_both") == ("edge", "both")
+          assert _decode_mode("edge_long") == ("edge", "long")
+          assert _decode_mode("edge_short") == ("edge", "short")
+          assert _decode_mode("level_both") == ("level", "both")
+
+          assert el_source_flags(
+              close=90.0,
+              volume=1.0,
+              ema_buy=100.0,
+              ema_sell=100.0,
+              ewo=5.0,
+              rsi=40.0,
+          ) == (True, False)
+          assert el_source_flags(
+              close=90.0,
+              volume=1.0,
+              ema_buy=100.0,
+              ema_sell=100.0,
+              ewo=-13.0,
+              rsi=70.0,
+          ) == (True, False)
+          assert el_source_flags(
+              close=102.0,
+              volume=1.0,
+              ema_buy=100.0,
+              ema_sell=100.0,
+              ewo=0.0,
+              rsi=50.0,
+          ) == (False, True)
+          assert el_source_flags(
+              close=100.0,
+              volume=0.0,
+              ema_buy=100.0,
+              ema_sell=100.0,
+              ewo=0.0,
+              rsi=50.0,
+          ) == (False, False)
+          print("Candidate 57 public-el source contracts verified")
+          PY
+
+      - name: Run adaptive development to long tournament
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-el-v1
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python \
+              research/candidate-57/.run_el_tournament_materialized.py \
+            2>&1 | tee .work/candidate-57-el-v1/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Persist compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f research/candidate-57/.run_el_tournament_materialized.py
+          git restore \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy.py
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin research/candidate-57
+          git add -f research/candidate-57/evidence/el-v1
+          if git diff --cached --quiet; then
+            echo "No new evidence to commit."
+          else
+            git commit --no-gpg-sign \
+              -m "candidate57: persist public-el validation evidence"
+            git push origin HEAD:research/candidate-57
+          fi
+
+      - name: Retain compact workflow evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-public-el-v1-evidence
+          path: |
+            research/candidate-57/evidence/el-v1
+            .work/candidate-57-el-v1/console.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce campaign process integrity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "Campaign status was not produced."
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "Campaign failed with status $status; evidence retained."
+            exit "$status"
+          fi
