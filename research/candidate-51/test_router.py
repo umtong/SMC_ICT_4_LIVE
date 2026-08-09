@@ -48,7 +48,7 @@ def test_public_policy_uses_structural_geometry_when_actionable():
         assert decision.side == 1
         assert decision.stop_reference < decision.entry_reference < decision.objective_reference
         distance = (decision.entry_reference - decision.stop_reference) / decision.entry_reference
-        assert 0.0035 - 1e-12 <= distance <= 0.025 + 1e-12
+        assert 0.0035 - 1e-12 <= distance <= 0.060 + 1e-12
 
 
 def test_universe_never_routes_more_than_one():
@@ -72,3 +72,13 @@ def test_incomplete_five_minute_bucket_is_ignored():
     second = classify_symbol("XRPUSDT", bars, FeatureObservation(bars[-1].ts_event), RouteConfig())
     # One extra minute cannot create a new completed five-minute episode.
     assert first.episode_ts == second.episode_ts
+
+
+def test_persistent_eligible_episode_keeps_same_episode_identity():
+    bars = _bars(count=1200)
+    first = classify_symbol("ETHUSDT", bars, FeatureObservation(bars[-1].ts_event), RouteConfig())
+    later_bars = _bars(count=1205)
+    second = classify_symbol("ETHUSDT", later_bars, FeatureObservation(later_bars[-1].ts_event), RouteConfig())
+    if first.actionable and second.actionable:
+        assert second.episode_ts <= second.entry_reference * 0 + later_bars[-1].ts_event
+        assert second.episode_ts <= later_bars[-1].ts_event

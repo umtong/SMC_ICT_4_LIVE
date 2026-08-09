@@ -1,4 +1,4 @@
-"""Candidate 51 open-book router: causal adaptation of public Freqtrade ichiV2.
+"""Candidate 51 open-book router: causal adaptation of public Freqtrade ichiV2_5.
 
 The public strategy is not treated as evidence.  Its complete decision policy is
 reproduced first, then adapted only where the project constraints require it:
@@ -12,7 +12,7 @@ import math
 from typing import Iterable, Mapping, Sequence
 
 
-ICHI_STATE = "ICHI_V2_FAN_ACCELERATION_LONG"
+ICHI_STATE = "ICHI_V25_FAN_ACCELERATION_LONG"
 UNRESOLVED = "UNRESOLVED"
 
 
@@ -56,8 +56,8 @@ class RouteConfig:
     bucket_minutes: int = 5
     bullish_levels: int = 4
     cloud_levels: int = 1
-    fan_rising_lookback: int = 3
-    min_fan_gain: float = 1.0013
+    fan_rising_lookback: int = 2
+    min_fan_gain: float = 1.0007
     fan_fast: int = 12
     fan_slow: int = 96
     exit_ema_period: int = 18
@@ -69,7 +69,7 @@ class RouteConfig:
     # Project-required hard invalidation.  The public strategy used a 10%
     # emergency stop; here expected trend invalidation determines quantity.
     hard_stop_min_fraction: float = 0.0035
-    hard_stop_max_fraction: float = 0.0250
+    hard_stop_max_fraction: float = 0.0600
     stop_atr_buffer: float = 0.25
     public_roi_target_fraction: float = 0.30
     max_entry_extension_atr: float = 4.0
@@ -237,7 +237,7 @@ def _indicator_frame(
     minute_bars: Sequence[BarObservation],
     config: RouteConfig,
 ) -> dict[str, object] | None:
-    candles = _aggregate_complete(minute_bars, config.bucket_minutes)
+    candles = _aggregate_complete(minute_bars[-1_000:], config.bucket_minutes)
     required = config.cloud_span_b + config.cloud_displacement + 8
     if len(candles) < required:
         return None
@@ -402,9 +402,9 @@ def classify_symbol(
         if not int(diagnostics["fan_magnitude_ok"]):
             reasons.append("ICHI_FAN_NOT_BULLISH")
         if not int(diagnostics["fan_gain_ok"]):
-            reasons.append("ICHI_FAN_GAIN_BELOW_PUBLIC_THRESHOLD")
+            reasons.append("ICHI_V25_FAN_GAIN_BELOW_PUBLIC_THRESHOLD")
         if not int(diagnostics["fan_rising_ok"]):
-            reasons.append("ICHI_FAN_NOT_RISING_THREE_STEPS")
+            reasons.append("ICHI_V25_FAN_NOT_RISING_REQUIRED_STEPS")
         return RouteDecision(
             symbol,
             UNRESOLVED,
@@ -414,22 +414,18 @@ def classify_symbol(
             math.nan,
             math.nan,
             candles[-1].ts_event,
-            tuple(reasons or ("ICHI_V2_ENTRY_NOT_READY",)),
+            tuple(reasons or ("ICHI_V25_ENTRY_NOT_READY",)),
             diagnostics,
         )
-    if previous_ok:
-        return RouteDecision(
-            symbol,
-            UNRESOLVED,
-            0,
-            0.0,
-            candles[-1].close,
-            math.nan,
-            math.nan,
-            candles[-1].ts_event,
-            ("ICHI_V2_EPISODE_ALREADY_ACTIVE",),
-            diagnostics,
-        )
+    # Preserve the source strategy's persistent buy condition, but attach every
+    # eligible bar to the first bar of its contiguous causal episode.  The
+    # execution adapter consumes each episode at most once across the universe.
+    episode_index = index
+    while episode_index > 0:
+        was_ok, _ = _eligible(frame, episode_index - 1, config)
+        if not was_ok:
+            break
+        episode_index -= 1
 
     entry = float(candles[-1].close)
     atr5 = _atr(candles, 14)
@@ -489,11 +485,11 @@ def classify_symbol(
         entry_reference=entry,
         stop_reference=stop,
         objective_reference=objective,
-        episode_ts=candles[-1].ts_event,
+        episode_ts=candles[episode_index].ts_event,
         reasons=(
-            "PUBLIC_ICHI_V2_CAUSAL_ENTRY",
+            "PUBLIC_ICHI_V25_CAUSAL_ENTRY",
             "ONE_BAR_SHIFTED_INPUTS",
-            "FAN_ACCELERATION_EDGE",
+            "PERSISTENT_ELIGIBLE_CAUSAL_EPISODE",
             "EMA18_STRUCTURAL_INVALIDATION",
         ),
         diagnostics=diagnostics,

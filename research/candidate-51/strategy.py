@@ -1,4 +1,4 @@
-"""Candidate 51 causal timing/exit adapter over the reused Nautilus executor."""
+"""Candidate 51 causal ichiV2_5 timing/exit adapter over Nautilus."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -10,12 +10,17 @@ from strategy_base import Candidate35Strategy as _ExecutionShell
 
 
 class Candidate35Strategy(_ExecutionShell):
-    """Exact-ish public ichiV2 policy with project-account execution constraints."""
+    """Public ichiV2_5 policy with one-use causal episodes and project execution."""
 
     def __init__(self, config: Candidate35Config) -> None:
         super().__init__(config)
         self.diagnostics.setdefault("source_exit_submissions", 0)
         self.diagnostics.setdefault("source_trailing_exit_submissions", 0)
+        self.diagnostics.setdefault("source_signals_before_execution_filters", 0)
+        self.diagnostics.setdefault("funding_runway_rejections", 0)
+        self.diagnostics.setdefault("cooldown_rejections", 0)
+        self.diagnostics.setdefault("used_episode_rejections", 0)
+        self.used_episode_keys: set[tuple[str, str, int]] = set()
 
     def _on_complete_universe_minute(self, ts_event: int) -> None:
         self.minute_index += 1
@@ -54,11 +59,6 @@ class Candidate35Strategy(_ExecutionShell):
             return
         if not (self.config.evaluation_start_ns <= ts_event <= self.config.evaluation_end_ns):
             return
-        if self._funding_blackout(ts_event):
-            return
-        if self.minute_index - self.last_entry_minute < self.config.cooldown_minutes:
-            return
-
         moment = datetime.fromtimestamp(ts_event / 1_000_000_000, tz=timezone.utc)
         if moment.minute % self.route_config.bucket_minutes != self.route_config.bucket_minutes - 1:
             return
@@ -94,9 +94,27 @@ class Candidate35Strategy(_ExecutionShell):
             else:
                 for reason in decision.reasons:
                     reason_counts[reason] = int(reason_counts.get(reason, 0)) + 1
+        actionable = [decision for decision in decisions.values() if decision.actionable]
+        self.diagnostics["source_signals_before_execution_filters"] += len(actionable)
+        unused = []
+        for decision in actionable:
+            key = (decision.symbol, decision.state, int(decision.episode_ts))
+            if key in self.used_episode_keys:
+                self.diagnostics["used_episode_rejections"] += 1
+            else:
+                unused.append(decision)
+        unused.sort(key=lambda item: (-item.score, item.symbol))
+        winner = unused[0] if unused else None
         if winner is None:
             self.diagnostics["unresolved_episodes"] += 1
             return
+        if self._funding_blackout(ts_event):
+            self.diagnostics["funding_runway_rejections"] += 1
+            return
+        if self.minute_index - self.last_entry_minute < self.config.cooldown_minutes:
+            self.diagnostics["cooldown_rejections"] += 1
+            return
+        self.used_episode_keys.add((winner.symbol, winner.state, int(winner.episode_ts)))
         self._submit_decision(winner, ts_event)
 
     def _manage_open_position(self, ts_event: int) -> None:
@@ -109,10 +127,10 @@ class Candidate35Strategy(_ExecutionShell):
             scenario["peak_price"] = peak
             entry = float(scenario.get("entry_reference", latest.close))
 
-            # Public ichiV2 trailing semantics: activate after +8%, then trail
-            # by 6% from the high.  This normally leaves the EMA18 exit in charge.
-            trailing_active = peak >= entry * 1.08
-            trailing_exit = trailing_active and latest.close <= peak * (1.0 - 0.06)
+            # Public ichiV2 trailing semantics: activate after +40%, then trail
+            # by 3% from the high.  This normally leaves the EMA18 exit in charge.
+            trailing_active = peak >= entry * 1.40
+            trailing_exit = trailing_active and latest.close <= peak * (1.0 - 0.03)
 
             moment = datetime.fromtimestamp(ts_event / 1_000_000_000, tz=timezone.utc)
             source_exit = False
@@ -129,7 +147,7 @@ class Candidate35Strategy(_ExecutionShell):
                 key = "source_trailing_exit_submissions" if trailing_exit else "source_exit_submissions"
                 self.diagnostics[key] = int(self.diagnostics.get(key, 0)) + 1
                 self._event(
-                    "PUBLIC_ICHI_V2_EXIT",
+                    "PUBLIC_ICHI_V25_EXIT",
                     ts_event,
                     trailing_exit=trailing_exit,
                     peak_price=peak,
