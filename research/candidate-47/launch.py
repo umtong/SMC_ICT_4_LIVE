@@ -36,6 +36,7 @@ sys.modules[spec.name] = runner
 spec.loader.exec_module(runner)
 
 original_load_inputs = runner.load_inputs
+original_build_metrics = runner.build_metrics
 
 
 def diagnostic_load_inputs(*, start, end, cache, output):
@@ -52,5 +53,17 @@ def diagnostic_load_inputs(*, start, end, cache, output):
     return klines, feature_paths, records
 
 
+def candidate47_build_metrics(**kwargs):
+    metrics = original_build_metrics(**kwargs)
+    config = kwargs["config"]
+    metrics["candidate"] = "candidate-47-leader-transfer-failed-reentry-router"
+    metrics["gate_checks"]["risk_fraction_exactly_three_percent"] = (
+        abs(float(config["risk_fraction"]) - 0.03) <= 1e-12
+    )
+    metrics["gate_pass"] = all(metrics["gate_checks"].values())
+    return metrics
+
+
 runner.load_inputs = diagnostic_load_inputs
+runner.build_metrics = candidate47_build_metrics
 runner.main()
