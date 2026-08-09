@@ -12,7 +12,7 @@ import gzip
 import hashlib
 from pathlib import Path
 
-EXPECTED_SOURCE_SHA256 = "1d797d5ff3e656f614ef13e520b422df81bdca97b2410f4da0ccaff7b1973874"
+EXPECTED_SOURCE_SHA256 = "0c84acf14504056e0a751f5bc537e9b91c64753e938092220abb96b7bba97153"
 PAYLOAD = Path(__file__).with_name("campaign_v2.py.gz.b64")
 compressed = base64.b64decode(PAYLOAD.read_text(encoding="ascii").strip(), validate=True)
 source_bytes = gzip.decompress(compressed)
