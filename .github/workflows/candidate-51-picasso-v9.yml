@@ -1,0 +1,365 @@
+name: candidate-51-picasso-v9
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-picasso-v9.yml"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/strategy_picasso.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-picasso-v9
+  cancel-in-progress: true
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Materialize external policy
+        run: |
+          cp research/candidate-51/router_picasso.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_picasso.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and prove source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import RouteConfig, picasso_source_flags
+          config = RouteConfig()
+          exact = picasso_source_flags(
+              mode="exact", adx=6.0, trend_long=False, trend_short=False,
+              volume=1.0, volume_mean_long=2.0, volume_mean_short=2.0,
+              pump_warning=False, config=config,
+          )
+          corrected = picasso_source_flags(
+              mode="corrected", adx=6.0, trend_long=False, trend_short=False,
+              volume=1.0, volume_mean_long=2.0, volume_mean_short=2.0,
+              pump_warning=False, config=config,
+          )
+          assert exact == (True, False), exact
+          assert corrected == (False, False), corrected
+          assert picasso_source_flags(
+              mode="corrected", adx=30.0, trend_long=True, trend_short=False,
+              volume=3.0, volume_mean_long=2.0, volume_mean_short=2.0,
+              pump_warning=False, config=config,
+          ) == (True, False)
+          assert picasso_source_flags(
+              mode="corrected", adx=35.0, trend_long=False, trend_short=True,
+              volume=3.0, volume_mean_long=2.0, volume_mean_short=2.0,
+              pump_warning=True, config=config,
+          ) == (False, False)
+          print("public precedence contracts verified")
+          PY
+
+      - name: Predeclare variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import copy, hashlib, json
+          from pathlib import Path
+          source = json.loads(Path("research/candidate-51/config.json").read_text())
+          variants = {
+              "exact_15m": {"mode": "exact", "bucket": 15},
+              "corrected_15m": {"mode": "corrected", "bucket": 15},
+              "exact_5m": {"mode": "exact", "bucket": 5},
+              "corrected_5m": {"mode": "corrected", "bucket": 5},
+              "directional_5m": {"mode": "directional_relaxed", "bucket": 5},
+          }
+          work = Path(".work/candidate-51-picasso-v9")
+          work.mkdir(parents=True, exist_ok=True)
+          manifest = {
+              "family": "public_picasso_RSI_BB_MACD_ADX_long_short",
+              "source": {
+                  "repository": "syuraj/freq-test",
+                  "commit": "f065569c4881ed646e6629f2509f1afa092f7227",
+                  "path": "user_data/strategies/picasso_RSI_BB_MACD_Dec_2023_15m_3_rls.py",
+                  "embedded_claim_period": ["2021-01-01", "2023-12-12"],
+                  "embedded_claim_trades": 50682,
+                  "embedded_claim_trades_per_day": 47.19,
+                  "embedded_claim_win_rate": 0.846,
+                  "embedded_claim_profit_factor": 1.28,
+                  "embedded_claim_total_profit": 8.6495,
+                  "embedded_claim_account_drawdown": 0.0468,
+                  "source_stoploss": -0.317,
+                  "source_leverage": 5,
+                  "source_trailing_positive": 0.012,
+                  "source_trailing_offset": 0.03,
+                  "source_operator_precedence_is_material": True,
+              },
+              "development_interval": ["2026-07-22", "2026-07-28"],
+              "untouched_interval": ["2025-11-03", "2025-11-09"],
+              "conditional_continuous_interval": ["2025-09-01", "2025-09-30"],
+              "variants": variants,
+              "router_sha256": hashlib.sha256(Path("research/candidate-51/router.py").read_bytes()).hexdigest(),
+              "strategy_sha256": hashlib.sha256(Path("research/candidate-51/strategy.py").read_bytes()).hexdigest(),
+          }
+          (work / "variant_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          legacy = {"sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+                    "sma_stop_max_fraction", "sma_stop_atr_buffer"}
+          common = {
+              "cooldown_minutes": 0,
+              "max_hold_minutes": 720,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "picasso_adx_period": 14,
+              "picasso_rsi_long_period": 22,
+              "picasso_rsi_short_period": 17,
+              "picasso_bb_long_period": 16,
+              "picasso_bb_short_period": 20,
+              "picasso_volume_long_period": 38,
+              "picasso_volume_short_period": 20,
+              "picasso_adx_long_min_1": 5.7,
+              "picasso_adx_long_max_1": 6.5,
+              "picasso_adx_long_min_2": 20.9,
+              "picasso_adx_long_max_2": 50.7,
+              "picasso_adx_short_min_1": 9.9,
+              "picasso_adx_short_max_1": 21.4,
+              "picasso_adx_short_min_2": 30.3,
+              "picasso_adx_short_max_2": 50.8,
+              "picasso_source_effective_leverage": 5.0,
+              "picasso_source_stoploss": 0.317,
+              "picasso_trailing_positive": 0.012,
+              "picasso_trailing_offset": 0.030,
+              "picasso_emergency_target_fraction": 0.10,
+              "picasso_roi_0": 0.184,
+              "picasso_roi_416": 0.140,
+              "picasso_roi_933": 0.073,
+              "picasso_roi_1982": 0.0,
+              "picasso_atr_period": 20,
+              "picasso_ema_long_exit": 91,
+              "picasso_ema_short_exit": 147,
+              "picasso_atr_long_multiple": 3.8,
+              "picasso_atr_short_multiple": 5.0,
+              "picasso_volume_long_exit": 19,
+              "picasso_volume_short_exit": 41,
+          }
+          for name, variant in variants.items():
+              config = copy.deepcopy(source)
+              for key in legacy:
+                  config["strategy"].pop(key, None)
+              config["strategy"].update(common)
+              config["strategy"]["picasso_precedence_mode"] = variant["mode"]
+              config["strategy"]["picasso_bucket_minutes"] = variant["bucket"]
+              (work / f"{name}.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Run development tournament
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-51-picasso-v9/status
+          for variant in exact_15m corrected_15m exact_5m corrected_5m directional_5m; do
+            PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+              --config ".work/candidate-51-picasso-v9/${variant}.json" \
+              --start 2026-07-22 --end 2026-07-28 \
+              --cache .cache/candidate-51-picasso-v9 \
+              --output "artifacts/candidate-51/picasso-v9-${variant}-development" \
+              --workspace ".work/candidate-51-picasso-v9-${variant}"
+            echo $? > ".work/candidate-51-picasso-v9/status/${variant}.txt"
+          done
+          exit 0
+
+      - name: Select development survivor
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          names = ("exact_15m", "corrected_15m", "exact_5m", "corrected_5m", "directional_5m")
+          comparison = {}
+          for name in names:
+              root = Path(f"artifacts/candidate-51/picasso-v9-{name}-development")
+              mp, dp = root / "metrics.json", root / "strategy_diagnostics.json"
+              if not mp.is_file() or not dp.is_file():
+                  comparison[name] = {"produced": False}
+                  continue
+              metrics, diagnostics = json.loads(mp.read_text()), json.loads(dp.read_text())
+              comparison[name] = {
+                  "produced": True,
+                  **{key: metrics.get(key) for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth", "max_drawdown",
+                      "trades", "wins", "losses", "win_rate", "profit_factor",
+                      "expectancy_usdt", "largest_winner_share")},
+                  "source_signals": diagnostics.get("source_signals_before_execution_filters"),
+                  "entries": diagnostics.get("entry_submissions"),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "unresolved_reason_counts": diagnostics.get("unresolved_reason_counts"),
+                  "global_position_violations": diagnostics.get("global_position_violations"),
+                  "order_rejections": diagnostics.get("order_rejections"),
+              }
+          eligible = [name for name, row in comparison.items()
+              if row.get("produced") and int(row.get("trades") or 0) >= 7
+              and float(row.get("expectancy_usdt") or 0.0) > 0.0
+              and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+              and float(row.get("max_drawdown") or 1.0) <= 0.20
+              and int(row.get("global_position_violations") or 0) == 0
+              and int(row.get("order_rejections") or 0) == 0]
+          eligible.sort(key=lambda name: (
+              -float(comparison[name].get("geometric_daily_growth") or 0.0),
+              -float(comparison[name].get("expectancy_usdt") or 0.0),
+              -int(comparison[name].get("trades") or 0), name))
+          selected = eligible[0] if eligible else None
+          decision = {"comparison": comparison, "eligible": eligible, "selected": selected,
+                      "family_status": "TEST_UNTOUCHED" if selected else "REJECT_OR_REDESIGN"}
+          output = Path("artifacts/candidate-51/picasso-v9-development-comparison.json")
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-51-picasso-v9/selected.txt").write_text((selected or "") + "\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+
+      - name: Run untouched week
+        if: always()
+        shell: bash
+        run: |
+          selected="$(tr -d '\r\n' < .work/candidate-51-picasso-v9/selected.txt)"
+          if [[ -z "$selected" ]]; then exit 0; fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config ".work/candidate-51-picasso-v9/${selected}.json" \
+            --start 2025-11-03 --end 2025-11-09 \
+            --cache .cache/candidate-51-picasso-v9 \
+            --output artifacts/candidate-51/picasso-v9-selected-holdout \
+            --workspace .work/candidate-51-picasso-v9-holdout
+          exit 0
+
+      - name: Assess holdout and conditionally promote
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          variant = Path(".work/candidate-51-picasso-v9/selected.txt").read_text().strip()
+          root = Path("artifacts/candidate-51/picasso-v9-selected-holdout")
+          mp, dp = root / "metrics.json", root / "strategy_diagnostics.json"
+          assessment = {"variant": variant or None, "produced": False, "gate_pass": False}
+          if variant and mp.is_file() and dp.is_file():
+              metrics, diagnostics = json.loads(mp.read_text()), json.loads(dp.read_text())
+              checks = {
+                  "trades_at_least_days": int(metrics.get("trades") or 0) >= 7,
+                  "positive_growth": float(metrics.get("geometric_daily_growth") or 0.0) > 0.0,
+                  "positive_expectancy": float(metrics.get("expectancy_usdt") or 0.0) > 0.0,
+                  "drawdown_lte_20pct": float(metrics.get("max_drawdown") or 1.0) <= 0.20,
+                  "one_position": int(diagnostics.get("global_position_violations") or 0) == 0,
+                  "no_rejections": int(diagnostics.get("order_rejections") or 0) == 0,
+              }
+              assessment = {"variant": variant, "produced": True,
+                  **{key: metrics.get(key) for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth", "max_drawdown",
+                      "trades", "wins", "losses", "win_rate", "profit_factor", "expectancy_usdt")},
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "checks": checks, "gate_pass": all(checks.values())}
+          Path("artifacts/candidate-51/picasso-v9-holdout-assessment.json").write_text(
+              json.dumps(assessment, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-51-picasso-v9/promote.txt").write_text(
+              assessment["variant"] + "\n" if assessment.get("gate_pass") else "")
+          print(json.dumps(assessment, indent=2, sort_keys=True))
+          PY
+          selected="$(tr -d '\r\n' < .work/candidate-51-picasso-v9/promote.txt)"
+          if [[ -z "$selected" ]]; then exit 0; fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config ".work/candidate-51-picasso-v9/${selected}.json" \
+            --start 2025-09-01 --end 2025-09-30 \
+            --cache .cache/candidate-51-picasso-v9 \
+            --output artifacts/candidate-51/picasso-v9-selected-continuous-30d \
+            --workspace .work/candidate-51-picasso-v9-continuous
+          exit 0
+
+      - name: Persist evidence
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-51/picasso-v9-selected-continuous-30d")
+          assessment = {"produced": False, "project_gate_pass": False}
+          mp, dp = root / "metrics.json", root / "strategy_diagnostics.json"
+          if mp.is_file() and dp.is_file():
+              metrics, diagnostics = json.loads(mp.read_text()), json.loads(dp.read_text())
+              checks = {
+                  "daily_geometric_growth_at_least_1pct": float(metrics.get("geometric_daily_growth") or 0.0) >= 0.01,
+                  "trades_at_least_calendar_days": int(metrics.get("trades") or 0) >= 30,
+                  "positive_expectancy": float(metrics.get("expectancy_usdt") or 0.0) > 0.0,
+                  "max_drawdown_lte_20pct": float(metrics.get("max_drawdown") or 1.0) <= 0.20,
+                  "one_position": int(diagnostics.get("global_position_violations") or 0) == 0,
+                  "no_rejections": int(diagnostics.get("order_rejections") or 0) == 0,
+              }
+              assessment = {"produced": True,
+                  **{key: metrics.get(key) for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth", "max_drawdown",
+                      "trades", "wins", "losses", "win_rate", "profit_factor", "expectancy_usdt")},
+                  "checks": checks, "project_gate_pass": all(checks.values())}
+          Path("artifacts/candidate-51/picasso-v9-continuous-assessment.json").write_text(
+              json.dumps(assessment, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(assessment, indent=2, sort_keys=True))
+          PY
+          evidence="research/candidate-51/evidence/v9-picasso"
+          rm -rf "$evidence"
+          mkdir -p "$evidence/development" "$evidence/holdout" "$evidence/continuous"
+          cp .work/candidate-51-picasso-v9/variant_manifest.json "$evidence/variant_manifest.json"
+          cp artifacts/candidate-51/picasso-v9-development-comparison.json "$evidence/development/comparison.json"
+          cp artifacts/candidate-51/picasso-v9-holdout-assessment.json "$evidence/holdout/assessment.json"
+          cp artifacts/candidate-51/picasso-v9-continuous-assessment.json "$evidence/continuous/assessment.json"
+          for variant in exact_15m corrected_15m exact_5m corrected_5m directional_5m; do
+            source="artifacts/candidate-51/picasso-v9-${variant}-development"
+            target="$evidence/development/$variant"
+            if [[ -d "$source" ]]; then
+              mkdir -p "$target"
+              for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
+                [[ ! -f "$source/$file" ]] || cp "$source/$file" "$target/$file"
+              done
+            fi
+          done
+          for pair in "holdout:artifacts/candidate-51/picasso-v9-selected-holdout" \
+                      "continuous:artifacts/candidate-51/picasso-v9-selected-continuous-30d"; do
+            label="${pair%%:*}"; source="${pair#*:}"
+            if [[ -d "$source" ]]; then
+              for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
+                [[ ! -f "$source/$file" ]] || cp "$source/$file" "$evidence/$label/$file"
+              done
+            fi
+          done
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add "$evidence"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate51: persist public Picasso tournament"
+            for attempt in 1 2 3 4; do
+              git pull --rebase origin research/candidate-51 && git push origin HEAD:research/candidate-51 && break
+              sleep $((attempt * 5))
+            done
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-picasso-v9-${{ github.sha }}
+          path: artifacts/candidate-51/picasso-v9-*
+          if-no-files-found: warn
