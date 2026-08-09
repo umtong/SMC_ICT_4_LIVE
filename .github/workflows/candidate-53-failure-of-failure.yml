@@ -1,0 +1,61 @@
+name: candidate-53-failure-of-failure-continuation
+
+on:
+  push:
+    branches: ["research/candidate-53"]
+    paths:
+      - "research/candidate-53/failure_of_failure_study.py"
+      - ".github/workflows/candidate-53-failure-of-failure.yml"
+  workflow_dispatch:
+
+permissions: {contents: read, packages: read}
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {label: "2026-02-09_2026-02-15", start: "2026-02-09", end: "2026-02-15"}
+          - {label: "2026-03-23_2026-03-29", start: "2026-03-23", end: "2026-03-29"}
+          - {label: "2026-05-25_2026-05-31", start: "2026-05-25", end: "2026-05-31"}
+          - {label: "2026-07-01_2026-07-07", start: "2026-07-01", end: "2026-07-07"}
+          - {label: "2026-07-22_2026-07-28", start: "2026-07-22", end: "2026-07-28"}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      ROOT: artifacts/candidate-53-failure-failure/${{ matrix.label }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-53, fetch-depth: 0}
+      - name: Reuse verified downloader
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$(pwd)"
+          git fetch origin research/candidate-16-v13-volatility-squeeze-release:refs/remotes/origin/c16-v13
+          rm -rf .deps/c16 && mkdir -p .deps
+          git worktree add --detach .deps/c16 refs/remotes/origin/c16-v13
+          git config --global --add safe.directory "$(pwd)/.deps/c16"
+          python -m py_compile research/candidate-53/sweep_reclaim_study.py research/candidate-53/failure_of_failure_study.py
+      - name: Screen
+        shell: bash
+        env: {PYTHONPATH: "research/candidate-53:.deps/c16/research/candidate-16"}
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          python research/candidate-53/failure_of_failure_study.py \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+            --cache ".cache/candidate-53-failure-failure/${{ matrix.label }}" \
+            --output "$ROOT" 2>&1 | tee "$ROOT/console.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-53-failure-failure-${{ matrix.label }}-${{ github.sha }}
+          path: artifacts/candidate-53-failure-failure/${{ matrix.label }}/**
+          if-no-files-found: warn
+          retention-days: 30
