@@ -408,7 +408,7 @@ class Candidate47IchiFanStrategy(_base.Candidate35Strategy):
             },
         )
         before = int(self.diagnostics["entry_submissions"])
-        super()._submit_decision(decision, ts_event)
+        self._submit_decision(decision, ts_event)
         if int(self.diagnostics["entry_submissions"]) == before:
             return
         self._seen_episodes.add(episode_id)
