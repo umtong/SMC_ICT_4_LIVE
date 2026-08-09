@@ -43,7 +43,7 @@ jobs:
           encoded = "".join(path.read_text(encoding="utf-8").strip() for path in chunks)
           archive = base64.b64decode(encoded, validate=True)
           digest = hashlib.sha256(archive).hexdigest()
-          expected = "3a93fe964bf816e02ec33f17ba4a32afc3861d7540cdb77d4461c5ce19825219"
+          expected = "92cda8159c6f0a7282e7f14fa4e73ca67662cc6eba8a5436b6ef8be83db767b0"
           if digest != expected:
               raise RuntimeError(f"payload sha256 mismatch: {digest} != {expected}")
           destination = Path(".candidate51-v4-materialized")
@@ -51,6 +51,9 @@ jobs:
               shutil.rmtree(destination)
           destination.mkdir()
           with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as stream:
+              members = stream.getmembers()
+              if any(member.name.startswith("/") or ".." in Path(member.name).parts for member in members):
+                  raise RuntimeError("unsafe payload path")
               stream.extractall(destination)
           for name in ("router.py", "strategy.py", "test_router.py", "config.json"):
               source = destination / name
@@ -213,7 +216,9 @@ jobs:
               "selected": eligible[0] if eligible else None,
               "family_status": "PROMOTE_TO_UNTOUCHED" if eligible else "REJECT_OR_REDESIGN",
           }
-          Path("artifacts/candidate-51/v4-comparison.json").write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          output = Path("artifacts/candidate-51/v4-comparison.json")
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
           print(json.dumps(decision, indent=2, sort_keys=True))
           PY
 
