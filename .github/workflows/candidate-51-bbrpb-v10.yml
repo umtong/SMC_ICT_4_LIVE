@@ -1,0 +1,453 @@
+name: candidate-51-bbrpb-v10
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-bbrpb-v10.yml"
+      - "research/candidate-51/router_bbrpb.py"
+      - "research/candidate-51/strategy_bbrpb.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.13"
+
+concurrency:
+  group: candidate-51-bbrpb-v10
+  cancel-in-progress: true
+
+jobs:
+  develop:
+    name: develop-${{ matrix.family }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        family: [nfi32, nfi33, local_dip, r_deadfish, cofi]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+      - name: Materialize public family
+        run: |
+          cp research/candidate-51/router_bbrpb.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_bbrpb.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install and verify source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import RouteConfig, bbrpb_family_flag
+          names = ("nfi32", "nfi33", "local_dip", "r_deadfish", "cofi")
+          assert RouteConfig().bbrpb_family in names
+          try:
+              bbrpb_family_flag("not-a-family", 1, {})
+          except ValueError:
+              pass
+          else:
+              raise AssertionError("unknown external family was accepted")
+          print("BB_RPB public family contracts verified")
+          PY
+      - name: Build frozen config
+        shell: bash
+        env:
+          FAMILY: ${{ matrix.family }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          config = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in ("sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+                      "sma_stop_max_fraction", "sma_stop_atr_buffer"):
+              config["strategy"].pop(key, None)
+          config["strategy"].update({
+              "cooldown_minutes": 0,
+              "max_hold_minutes": 360,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "bbrpb_family": os.environ["FAMILY"],
+              "bbrpb_allow_short": True,
+              "bbrpb_bucket_minutes": 5,
+              "bbrpb_structural_lookback": 12,
+              "bbrpb_stop_atr_buffer": 0.25,
+              "bbrpb_min_reward_r": 0.75,
+              "bbrpb_min_target_fraction": 0.004,
+          })
+          Path(".work").mkdir(exist_ok=True)
+          Path(".work/config.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Run one four-symbol Nautilus account
+        shell: bash
+        env:
+          FAMILY: ${{ matrix.family }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/config.json \
+            --start 2026-06-22 --end 2026-06-28 \
+            --cache .cache/candidate-51-bbrpb-v10 \
+            --output "artifacts/candidate-51/bbrpb-v10-${FAMILY}-development" \
+            --workspace ".work/candidate-51-bbrpb-v10-${FAMILY}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bbrpb-v10-development-${{ matrix.family }}
+          path: artifacts/candidate-51/bbrpb-v10-${{ matrix.family }}-development/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  select:
+    needs: develop
+    if: always()
+    runs-on: ubuntu-24.04
+    outputs:
+      selected: ${{ steps.choose.outputs.selected }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bbrpb-v10-development-*
+          path: downloaded
+      - id: choose
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          comparison = {}
+          for artifact in sorted(Path("downloaded").glob("bbrpb-v10-development-*")):
+              family = artifact.name.removeprefix("bbrpb-v10-development-")
+              mp, dp = artifact / "metrics.json", artifact / "strategy_diagnostics.json"
+              if not mp.is_file() or not dp.is_file():
+                  comparison[family] = {"produced": False}
+                  continue
+              metrics, diagnostics = json.loads(mp.read_text()), json.loads(dp.read_text())
+              comparison[family] = {
+                  "produced": True,
+                  **{key: metrics.get(key) for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth", "max_drawdown",
+                      "trades", "wins", "losses", "win_rate", "profit_factor",
+                      "expectancy_usdt", "largest_winner_share")},
+                  "source_signals": diagnostics.get("source_signals_before_execution_filters"),
+                  "entries": diagnostics.get("entry_submissions"),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "unresolved_reason_counts": diagnostics.get("unresolved_reason_counts"),
+                  "global_position_violations": diagnostics.get("global_position_violations"),
+                  "order_rejections": diagnostics.get("order_rejections"),
+              }
+          eligible = [family for family, row in comparison.items()
+              if row.get("produced") and int(row.get("trades") or 0) >= 2
+              and float(row.get("expectancy_usdt") or 0.0) > 0.0
+              and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+              and float(row.get("max_drawdown") or 1.0) <= 0.20
+              and int(row.get("global_position_violations") or 0) == 0
+              and int(row.get("order_rejections") or 0) == 0]
+          eligible.sort(key=lambda family: (
+              -float(comparison[family].get("geometric_daily_growth") or 0.0),
+              -float(comparison[family].get("expectancy_usdt") or 0.0),
+              -int(comparison[family].get("trades") or 0), family))
+          selected = eligible[0] if eligible else ""
+          decision = {"comparison": comparison, "eligible": eligible, "selected": selected or None,
+                      "family_status": "TEST_UNTOUCHED" if selected else "REJECT_OR_REDESIGN"}
+          Path("selection.json").write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          Path("selected.txt").write_text(selected + "\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+          selected="$(tr -d '\r\n' < selected.txt)"
+          echo "selected=$selected" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bbrpb-v10-selection
+          path: |
+            selection.json
+            selected.txt
+
+  holdout:
+    needs: select
+    if: needs.select.outputs.selected != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+      - run: |
+          cp research/candidate-51/router_bbrpb.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_bbrpb.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install and generate selected config
+        shell: bash
+        env:
+          FAMILY: ${{ needs.select.outputs.selected }}
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          uv run smc4 doctor
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          config = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in ("sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+                      "sma_stop_max_fraction", "sma_stop_atr_buffer"):
+              config["strategy"].pop(key, None)
+          config["strategy"].update({
+              "cooldown_minutes": 0, "max_hold_minutes": 360,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "bbrpb_family": os.environ["FAMILY"], "bbrpb_allow_short": True,
+              "bbrpb_bucket_minutes": 5, "bbrpb_structural_lookback": 12,
+              "bbrpb_stop_atr_buffer": 0.25, "bbrpb_min_reward_r": 0.75,
+              "bbrpb_min_target_fraction": 0.004,
+          })
+          Path(".work").mkdir(exist_ok=True)
+          Path(".work/config.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Run untouched week
+        shell: bash
+        env:
+          FAMILY: ${{ needs.select.outputs.selected }}
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/config.json \
+            --start 2025-10-06 --end 2025-10-12 \
+            --cache .cache/candidate-51-bbrpb-v10 \
+            --output artifacts/candidate-51/bbrpb-v10-selected-holdout \
+            --workspace .work/candidate-51-bbrpb-v10-holdout
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bbrpb-v10-holdout-${{ needs.select.outputs.selected }}
+          path: artifacts/candidate-51/bbrpb-v10-selected-holdout/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  assess:
+    needs: [select, holdout]
+    if: always()
+    runs-on: ubuntu-24.04
+    outputs:
+      promote: ${{ steps.assess.outputs.promote }}
+      selected: ${{ needs.select.outputs.selected }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bbrpb-v10-holdout-*
+          path: downloaded
+      - id: assess
+        shell: bash
+        env:
+          FAMILY: ${{ needs.select.outputs.selected }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          family = os.environ.get("FAMILY", "")
+          matches = list(Path("downloaded").glob("bbrpb-v10-holdout-*/metrics.json"))
+          assessment = {"family": family or None, "produced": False, "component_pass": False}
+          if family and matches:
+              mp = matches[0]
+              dp = mp.with_name("strategy_diagnostics.json")
+              metrics, diagnostics = json.loads(mp.read_text()), json.loads(dp.read_text())
+              checks = {
+                  "at_least_two_independent_trades": int(metrics.get("trades") or 0) >= 2,
+                  "positive_growth": float(metrics.get("geometric_daily_growth") or 0.0) > 0.0,
+                  "positive_expectancy": float(metrics.get("expectancy_usdt") or 0.0) > 0.0,
+                  "drawdown_lte_20pct": float(metrics.get("max_drawdown") or 1.0) <= 0.20,
+                  "one_position": int(diagnostics.get("global_position_violations") or 0) == 0,
+                  "no_rejections": int(diagnostics.get("order_rejections") or 0) == 0,
+              }
+              assessment = {"family": family, "produced": True,
+                  **{key: metrics.get(key) for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth", "max_drawdown",
+                      "trades", "wins", "losses", "win_rate", "profit_factor", "expectancy_usdt")},
+                  "checks": checks, "component_pass": all(checks.values())}
+          Path("assessment.json").write_text(json.dumps(assessment, indent=2, sort_keys=True) + "\n")
+          Path("promote.txt").write_text("true\n" if assessment.get("component_pass") else "false\n")
+          print(json.dumps(assessment, indent=2, sort_keys=True))
+          PY
+          promote="$(tr -d '\r\n' < promote.txt)"
+          echo "promote=$promote" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bbrpb-v10-holdout-assessment
+          path: assessment.json
+
+  continuous:
+    needs: [assess]
+    if: needs.assess.outputs.promote == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+      - run: |
+          cp research/candidate-51/router_bbrpb.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_bbrpb.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install and build frozen promoted config
+        shell: bash
+        env:
+          FAMILY: ${{ needs.assess.outputs.selected }}
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          uv run smc4 doctor
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          config = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in ("sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+                      "sma_stop_max_fraction", "sma_stop_atr_buffer"):
+              config["strategy"].pop(key, None)
+          config["strategy"].update({
+              "cooldown_minutes": 0, "max_hold_minutes": 360,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "bbrpb_family": os.environ["FAMILY"], "bbrpb_allow_short": True,
+              "bbrpb_bucket_minutes": 5, "bbrpb_structural_lookback": 12,
+              "bbrpb_stop_atr_buffer": 0.25, "bbrpb_min_reward_r": 0.75,
+              "bbrpb_min_target_fraction": 0.004,
+          })
+          Path(".work").mkdir(exist_ok=True)
+          Path(".work/config.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Run 30-day continuous account
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/config.json \
+            --start 2025-08-01 --end 2025-08-30 \
+            --cache .cache/candidate-51-bbrpb-v10 \
+            --output artifacts/candidate-51/bbrpb-v10-selected-continuous-30d \
+            --workspace .work/candidate-51-bbrpb-v10-continuous
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bbrpb-v10-continuous-${{ needs.assess.outputs.selected }}
+          path: artifacts/candidate-51/bbrpb-v10-selected-continuous-30d/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  persist:
+    needs: [develop, select, holdout, assess, continuous]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bbrpb-v10-*
+          path: downloaded
+      - name: Assemble exact evidence and commit
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          evidence = Path("research/candidate-51/evidence/v10-bbrpb")
+          if evidence.exists():
+              import shutil; shutil.rmtree(evidence)
+          (evidence / "development").mkdir(parents=True)
+          (evidence / "holdout").mkdir()
+          (evidence / "continuous").mkdir()
+          manifest = {
+              "family": "public_BB_RPB_TSL_decomposed",
+              "source": {
+                  "repository": "jilv220/BB_RPB_TSL",
+                  "path": "BB_RPB_TSL_BI.py",
+                  "blob_sha": "54cd4ecfa9b27d4f617bd8fdfb3ebe855d5c8434",
+                  "source_annotations_are_discovery_signals_only": True,
+              },
+              "development_interval": ["2026-06-22", "2026-06-28"],
+              "untouched_interval": ["2025-10-06", "2025-10-12"],
+              "conditional_continuous_interval": ["2025-08-01", "2025-08-30"],
+              "families": ["nfi32", "nfi33", "local_dip", "r_deadfish", "cofi"],
+              "engine": "NautilusTrader BacktestNode",
+              "risk_fraction": 0.03,
+              "global_position_limit": 1,
+          }
+          (evidence / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          for artifact in sorted(Path("downloaded").glob("bbrpb-v10-development-*")):
+              family = artifact.name.removeprefix("bbrpb-v10-development-")
+              target = evidence / "development" / family
+              target.mkdir()
+              for source in artifact.iterdir():
+                  if source.is_file() and source.name in {"metrics.json", "strategy_diagnostics.json", "run.json", "data_manifest.json", "closed_scenarios.json"}:
+                      (target / source.name).write_bytes(source.read_bytes())
+          selection = Path("downloaded/bbrpb-v10-selection/selection.json")
+          if selection.is_file():
+              (evidence / "development/selection.json").write_bytes(selection.read_bytes())
+          assessment = Path("downloaded/bbrpb-v10-holdout-assessment/assessment.json")
+          if assessment.is_file():
+              (evidence / "holdout/assessment.json").write_bytes(assessment.read_bytes())
+          for artifact in Path("downloaded").glob("bbrpb-v10-holdout-*"):
+              if artifact.name == "bbrpb-v10-holdout-assessment":
+                  continue
+              for source in artifact.iterdir():
+                  if source.is_file() and source.name in {"metrics.json", "strategy_diagnostics.json", "run.json", "data_manifest.json", "closed_scenarios.json"}:
+                      (evidence / "holdout" / source.name).write_bytes(source.read_bytes())
+          continuous_assessment = {"produced": False, "component_pass": False, "project_gate_pass": False}
+          for artifact in Path("downloaded").glob("bbrpb-v10-continuous-*"):
+              mp, dp = artifact / "metrics.json", artifact / "strategy_diagnostics.json"
+              if not mp.is_file() or not dp.is_file():
+                  continue
+              metrics, diagnostics = json.loads(mp.read_text()), json.loads(dp.read_text())
+              checks = {
+                  "positive_growth": float(metrics.get("geometric_daily_growth") or 0.0) > 0.0,
+                  "positive_expectancy": float(metrics.get("expectancy_usdt") or 0.0) > 0.0,
+                  "drawdown_lte_20pct": float(metrics.get("max_drawdown") or 1.0) <= 0.20,
+                  "one_position": int(diagnostics.get("global_position_violations") or 0) == 0,
+                  "no_rejections": int(diagnostics.get("order_rejections") or 0) == 0,
+              }
+              project = {
+                  "daily_geometric_growth_at_least_1pct": float(metrics.get("geometric_daily_growth") or 0.0) >= 0.01,
+                  "trades_at_least_calendar_days": int(metrics.get("trades") or 0) >= 30,
+                  **checks,
+              }
+              continuous_assessment = {"produced": True,
+                  **{key: metrics.get(key) for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth", "max_drawdown",
+                      "trades", "wins", "losses", "win_rate", "profit_factor", "expectancy_usdt")},
+                  "component_checks": checks, "component_pass": all(checks.values()),
+                  "project_checks": project, "project_gate_pass": all(project.values())}
+              for source in artifact.iterdir():
+                  if source.is_file() and source.name in {"metrics.json", "strategy_diagnostics.json", "run.json", "data_manifest.json", "closed_scenarios.json"}:
+                      (evidence / "continuous" / source.name).write_bytes(source.read_bytes())
+          (evidence / "continuous/assessment.json").write_text(
+              json.dumps(continuous_assessment, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(continuous_assessment, indent=2, sort_keys=True))
+          PY
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add research/candidate-51/evidence/v10-bbrpb
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate51: persist BB RPB external tournament"
+            for attempt in 1 2 3 4; do
+              git pull --rebase origin research/candidate-51 && git push origin HEAD:research/candidate-51 && break
+              sleep $((attempt * 5))
+            done
+          fi
