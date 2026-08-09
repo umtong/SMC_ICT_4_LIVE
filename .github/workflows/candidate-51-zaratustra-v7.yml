@@ -1,50 +1,38 @@
-name: candidate-51-el-v10
-
+name: candidate-51-zaratustra15-v13
 on:
   push:
     branches: ["research/candidate-51"]
     paths:
       - ".github/workflows/candidate-51-zaratustra-v7.yml"
-      - "research/candidate-51/router_el.py.gz"
-      - "research/candidate-51/strategy_el.py.gz"
-      - "research/candidate-51/el_v10_runner.py.gz.b64.part0"
-      - "research/candidate-51/el_v10_runner.py.gz.b64.part1"
-      - "research/candidate-51/el_v10_runner.py.gz.b64.part2"
+      - "research/candidate-51/router_z15.py.gz"
+      - "research/candidate-51/strategy_z15.py.gz"
+      - "research/candidate-51/z15_v13_runner.py.gz"
   workflow_dispatch:
-
 permissions:
   contents: write
-
 concurrency:
-  group: candidate-51-el-v10
+  group: candidate-51-zaratustra15-v13
   cancel-in-progress: true
-
 jobs:
   screen:
     runs-on: ubuntu-24.04
-    timeout-minutes: 210
+    timeout-minutes: 240
     steps:
-      - name: Checkout Candidate 51
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: research/candidate-51
           fetch-depth: 0
-
-      - name: Materialize public el source family
+      - name: Materialize source policy
         shell: bash
         run: |
           set -euo pipefail
           root="research/candidate-51"
-          gzip -dc "$root/router_el.py.gz" > "$root/router_el.py"
-          gzip -dc "$root/strategy_el.py.gz" > "$root/strategy_el.py"
-          cat "$root/el_v10_runner.py.gz.b64.part0" "$root/el_v10_runner.py.gz.b64.part1" "$root/el_v10_runner.py.gz.b64.part2" | base64 -d | gzip -dc > "$root/el_v10_runner.py"
-          cp "$root/router_el.py" "$root/router.py"
-          cp "$root/strategy_el.py" "$root/strategy.py"
-
+          gzip -dc "$root/router_z15.py.gz" > "$root/router.py"
+          gzip -dc "$root/strategy_z15.py.gz" > "$root/strategy.py"
+          gzip -dc "$root/z15_v13_runner.py.gz" > "$root/z15_v13_runner.py"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-
       - name: Install locked NautilusTrader foundation
         shell: bash
         run: |
@@ -54,42 +42,34 @@ jobs:
           uv sync --locked
           uv run smc4 doctor
           uv run python -m compileall -q research/candidate-51
-
-      - name: Run external el source-family screen
+      - name: Run public ZaratustraV15 tournament
         shell: bash
         run: |
           set -euo pipefail
-          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/el_v10_runner.py
-
-      - name: Persist compact evidence without branch races
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/z15_v13_runner.py
+      - name: Persist evidence safely
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          test -d research/candidate-51/evidence/v10-el
+          test -d research/candidate-51/evidence/v13-zaratustra15
           git restore research/candidate-51/router.py research/candidate-51/strategy.py
-          rm -f research/candidate-51/router_el.py research/candidate-51/strategy_el.py research/candidate-51/el_v10_runner.py
+          rm -f research/candidate-51/z15_v13_runner.py
           git config user.name "candidate-51-research-bot"
           git config user.email "candidate-51-research-bot@users.noreply.github.com"
-          git add research/candidate-51/evidence/v10-el
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "candidate51: persist public el family screen"
+          git add research/candidate-51/evidence/v13-zaratustra15
+          git diff --cached --quiet && exit 0
+          git commit -m "candidate51: persist public ZaratustraV15 screen"
           for attempt in 1 2 3 4 5; do
             git fetch origin research/candidate-51
-            if git rebase origin/research/candidate-51 && git push origin HEAD:research/candidate-51; then
-              exit 0
-            fi
+            if git rebase origin/research/candidate-51 && git push origin HEAD:research/candidate-51; then exit 0; fi
             git rebase --abort >/dev/null 2>&1 || true
-            sleep $((attempt * 2))
+            sleep $((attempt*2))
           done
           exit 1
-
-      - name: Upload full diagnostics
-        if: always()
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-51-el-v10-${{ github.sha }}
-          path: artifacts/candidate-51/el-v10-*
+          name: candidate-51-z15-v13-${{ github.sha }}
+          path: artifacts/candidate-51/z15-v13-*
           if-no-files-found: warn
