@@ -1,0 +1,553 @@
+name: candidate-51-crosslead-v20
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-crosslead-v20.yml"
+      - "research/candidate-51/router_crosslead.py"
+      - "research/candidate-51/strategy_crosslead.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-51-crosslead-v20
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+
+      - name: Materialize causal cross-asset policy
+        run: |
+          cp research/candidate-51/router_crosslead.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_crosslead.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify no-current-shock leakage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import (
+              BarObservation,
+              RouteConfig,
+              _decision_for_target,
+              fit_relationship,
+          )
+
+          leader = [0.001 * math.sin(i * 0.31) + 0.0004 * math.cos(i * 0.17)
+                    for i in range(180)]
+          negative_target = [0.0] + [-0.60 * leader[i] for i in range(179)]
+          positive_target = [0.0] + [0.55 * leader[i] for i in range(179)]
+          negative = fit_relationship(leader, negative_target, 170, 120)
+          positive = fit_relationship(leader, positive_target, 170, 120)
+          assert negative is not None and negative.beta < -0.55
+          assert negative.beta_first < 0 and negative.beta_second < 0
+          assert negative.tstat < -10
+          assert positive is not None and positive.beta > 0.50
+          assert positive.beta_first > 0 and positive.beta_second > 0
+          assert positive.tstat > 10
+
+          # The current leader shock is the final element and must not enter the
+          # relationship fit used to predict its target response.
+          altered = list(leader)
+          altered[-1] = 0.25
+          negative_altered = fit_relationship(
+              altered, negative_target, 170, 120
+          )
+          assert negative_altered is not None
+          assert abs(negative_altered.beta - negative.beta) < 1e-12
+          assert abs(negative_altered.tstat - negative.tstat) < 1e-12
+
+          def make_candles(returns, start, step_ns, base, half_range):
+              candles = []
+              close = base
+              candles.append(BarObservation(
+                  ts_event=start,
+                  open=close,
+                  high=close + half_range,
+                  low=close - half_range,
+                  close=close,
+                  volume=1.0,
+              ))
+              for index, value in enumerate(returns, 1):
+                  prior = close
+                  close = prior * math.exp(value)
+                  candles.append(BarObservation(
+                      ts_event=start + index * step_ns,
+                      open=prior,
+                      high=max(prior, close) + half_range,
+                      low=min(prior, close) - half_range,
+                      close=close,
+                      volume=1.0,
+                  ))
+              return candles
+
+          relation_returns = [
+              0.0008 * math.sin(i * 0.29) + 0.0003 * math.cos(i * 0.13)
+              for i in range(170)
+          ]
+          relation_returns[-1] = 0.010
+          target_returns = [0.0] + [
+              -0.60 * relation_returns[i] for i in range(169)
+          ]
+          five_minute_ns = 5 * 60_000_000_000
+          start = five_minute_ns - 1
+          btc = make_candles(
+              relation_returns, start, five_minute_ns, 100.0, 0.015
+          )
+          eth = make_candles(
+              relation_returns, start, five_minute_ns, 100.0, 0.015
+          )
+          sol = make_candles(
+              target_returns, start, five_minute_ns, 100.0, 0.015
+          )
+          xrp = make_candles(
+              target_returns, start, five_minute_ns, 100.0, 0.015
+          )
+          aligned = {
+              "BTCUSDT": btc,
+              "ETHUSDT": eth,
+              "SOLUSDT": sol,
+              "XRPUSDT": xrp,
+          }
+          timestamps = [candle.ts_event for candle in btc]
+          decision = _decision_for_target(
+              "SOLUSDT",
+              aligned,
+              timestamps,
+              RouteConfig(
+                  crosslead_mode="seesaw",
+                  crosslead_train_pairs=160,
+                  crosslead_min_pairs=120,
+                  crosslead_min_abs_beta=0.10,
+                  crosslead_min_abs_tstat=2.0,
+                  crosslead_min_shock_z=2.0,
+                  crosslead_min_predicted_bps=30.0,
+                  crosslead_atr_period=14,
+                  crosslead_stop_buffer_atr=0.05,
+                  crosslead_min_reward_r=1.0,
+              ),
+          )
+          assert decision.actionable, decision
+          assert decision.side == -1
+          assert decision.objective_reference < decision.entry_reference
+          assert decision.stop_reference > decision.entry_reference
+          assert decision.diagnostics["beta"] < 0.0
+          assert decision.diagnostics["leader_shock_z"] > 2.0
+          print("causal fit, current-shock exclusion, and route geometry pass")
+          PY
+
+      - name: Freeze development configurations
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy
+          import hashlib
+          import json
+          from pathlib import Path
+
+          base = json.loads(Path("research/candidate-51/config.json").read_text())
+          work = Path(".work/candidate-51-crosslead-v20")
+          work.mkdir(parents=True, exist_ok=True)
+          legacy = {
+              "sma_offset_low",
+              "sma_offset_high",
+              "sma_stop_min_fraction",
+              "sma_stop_max_fraction",
+              "sma_stop_atr_buffer",
+          }
+          frozen = {
+              "crosslead_bucket_minutes": 5,
+              "crosslead_train_pairs": 288,
+              "crosslead_min_pairs": 144,
+              "crosslead_min_abs_beta": 0.10,
+              "crosslead_min_abs_tstat": 2.00,
+              "crosslead_min_shock_z": 2.00,
+              "crosslead_min_predicted_bps": 30.0,
+              "crosslead_atr_period": 14,
+              "crosslead_stop_buffer_atr": 0.10,
+              "crosslead_min_reward_r": 1.25,
+          }
+          for mode in ("seesaw", "follow", "adaptive"):
+              config = copy.deepcopy(base)
+              for key in legacy:
+                  config["strategy"].pop(key, None)
+              config["strategy"].update(frozen)
+              config["strategy"].update({
+                  "crosslead_mode": mode,
+                  "feature_max_age_seconds": 65.0,
+                  "cooldown_minutes": 0,
+                  "max_hold_minutes": 5,
+                  "funding_flatten_minute": 60,
+                  "funding_blackout_before_minutes": -1,
+                  "funding_blackout_after_minutes": -1,
+              })
+              (work / f"{mode}.json").write_text(
+                  json.dumps(config, indent=2, sort_keys=True) + "\n"
+              )
+          manifest = {
+              "family": "causal_btc_eth_to_sol_xrp_next_5m",
+              "external_hypothesis": (
+                  "cryptocurrency lead-lag and seesaw research; no source "
+                  "performance copied"
+              ),
+              "development_interval": ["2025-04-01", "2025-04-30"],
+              "untouched_interval": ["2025-10-01", "2025-10-30"],
+              "conditional_continuous_interval": ["2026-02-01", "2026-04-30"],
+              "modes": ["seesaw", "follow", "adaptive"],
+              "router_sha256": hashlib.sha256(
+                  Path("research/candidate-51/router.py").read_bytes()
+              ).hexdigest(),
+              "strategy_sha256": hashlib.sha256(
+                  Path("research/candidate-51/strategy.py").read_bytes()
+              ).hexdigest(),
+              "engine": "NautilusTrader BacktestNode",
+              "input_mode": "checksum-verified Binance kline-only",
+              "risk_fraction": 0.03,
+              "global_position_limit": 1,
+              "frozen_parameters": frozen,
+          }
+          (work / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Run independent development accounts
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-51-crosslead-v20/status
+          for mode in seesaw follow adaptive; do
+            PYTHONPATH=research/candidate-51 uv run python \
+              research/candidate-51/launch_kline_only.py \
+              --config ".work/candidate-51-crosslead-v20/${mode}.json" \
+              --start 2025-04-01 --end 2025-04-30 \
+              --cache .cache/candidate-51-crosslead-v20 \
+              --output "artifacts/candidate-51/crosslead-v20-${mode}-development" \
+              --workspace ".work/candidate-51-crosslead-v20-${mode}"
+            echo $? > ".work/candidate-51-crosslead-v20/status/${mode}.txt"
+          done
+          exit 0
+
+      - name: Classify implementation reachability and select survivor
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          modes = ("seesaw", "follow", "adaptive")
+          rows = {}
+          for mode in modes:
+              root = Path(
+                  f"artifacts/candidate-51/crosslead-v20-{mode}-development"
+              )
+              mp = root / "metrics.json"
+              dp = root / "strategy_diagnostics.json"
+              if not mp.is_file() or not dp.is_file():
+                  rows[mode] = {
+                      "produced": False,
+                      "classification": "IMPLEMENTATION_BLOCKED",
+                  }
+                  continue
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              trades = int(metrics.get("trades") or 0)
+              rows[mode] = {
+                  "produced": True,
+                  "classification": (
+                      "ECONOMIC_RESULT" if trades > 0
+                      else "CLEAN_OPPORTUNITY_ABSENCE"
+                  ),
+                  **{
+                      key: metrics.get(key)
+                      for key in (
+                          "ending_nav",
+                          "total_return",
+                          "geometric_daily_growth",
+                          "max_drawdown",
+                          "trades",
+                          "wins",
+                          "losses",
+                          "win_rate",
+                          "profit_factor",
+                          "expectancy_usdt",
+                          "largest_winner_share",
+                          "gate_pass",
+                      )
+                  },
+                  "relationship_decisions": diagnostics.get(
+                      "crosslead_relationship_decisions"
+                  ),
+                  "candidates": diagnostics.get("crosslead_candidates"),
+                  "family_counts": diagnostics.get("actionable_family_counts"),
+                  "unresolved_reason_counts": diagnostics.get(
+                      "unresolved_reason_counts"
+                  ),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "order_rejections": diagnostics.get("order_rejections"),
+                  "global_position_violations": diagnostics.get(
+                      "global_position_violations"
+                  ),
+                  "max_open_positions": diagnostics.get(
+                      "max_open_positions_observed"
+                  ),
+              }
+
+          def clean_positive(mode):
+              row = rows.get(mode, {})
+              return (
+                  row.get("produced")
+                  and int(row.get("trades") or 0) >= 20
+                  and float(row.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(row.get("max_drawdown") or 1.0) <= 0.20
+                  and int(row.get("order_rejections") or 0) == 0
+                  and int(row.get("global_position_violations") or 0) == 0
+                  and int(row.get("max_open_positions") or 0) <= 1
+              )
+
+          eligible = [mode for mode in modes if clean_positive(mode)]
+          eligible.sort(
+              key=lambda mode: (
+                  -float(rows[mode].get("geometric_daily_growth") or 0.0),
+                  -float(rows[mode].get("expectancy_usdt") or 0.0),
+                  -int(rows[mode].get("trades") or 0),
+                  mode,
+              )
+          )
+          selected = eligible[0] if eligible else None
+          result = {
+              "rows": rows,
+              "eligible": eligible,
+              "selected": selected,
+              "status": "TEST_UNTOUCHED" if selected else "NO_CLEAN_DEVELOPMENT_SURVIVOR",
+          }
+          output = Path(
+              "artifacts/candidate-51/crosslead-v20-development-comparison.json"
+          )
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-51-crosslead-v20/selected.txt").write_text(
+              (selected or "") + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run untouched frozen survivor
+        if: always()
+        shell: bash
+        run: |
+          selected="$(tr -d '\r\n' < .work/candidate-51-crosslead-v20/selected.txt)"
+          if [[ -z "$selected" ]]; then
+            exit 0
+          fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/launch_kline_only.py \
+            --config ".work/candidate-51-crosslead-v20/${selected}.json" \
+            --start 2025-10-01 --end 2025-10-30 \
+            --cache .cache/candidate-51-crosslead-v20 \
+            --output artifacts/candidate-51/crosslead-v20-selected-holdout \
+            --workspace .work/candidate-51-crosslead-v20-holdout
+          exit 0
+
+      - name: Assess untouched result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          selected = Path(
+              ".work/candidate-51-crosslead-v20/selected.txt"
+          ).read_text().strip()
+          root = Path(
+              "artifacts/candidate-51/crosslead-v20-selected-holdout"
+          )
+          mp = root / "metrics.json"
+          dp = root / "strategy_diagnostics.json"
+          if not selected:
+              result = {
+                  "selected": None,
+                  "classification": "NO_DEVELOPMENT_SURVIVOR",
+                  "run_continuous": False,
+              }
+          elif not mp.is_file() or not dp.is_file():
+              result = {
+                  "selected": selected,
+                  "classification": "IMPLEMENTATION_BLOCKED",
+                  "run_continuous": False,
+              }
+          else:
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              clean = (
+                  int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+              )
+              passed = (
+                  clean
+                  and int(metrics.get("trades") or 0) >= 20
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(metrics.get("max_drawdown") or 1.0) <= 0.20
+              )
+              result = {
+                  "selected": selected,
+                  "classification": (
+                      "RUN_CONTINUOUS" if passed else "LOGIC_FAILURE_OR_INSUFFICIENT"
+                  ),
+                  "run_continuous": passed,
+                  "metrics": metrics,
+                  "diagnostics": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "crosslead_relationship_decisions",
+                          "crosslead_candidates",
+                          "actionable_family_counts",
+                          "unresolved_reason_counts",
+                          "selected_symbols",
+                          "order_rejections",
+                          "global_position_violations",
+                          "max_open_positions_observed",
+                      )
+                  },
+              }
+          output = Path(
+              "artifacts/candidate-51/crosslead-v20-holdout-assessment.json"
+          )
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-51-crosslead-v20/run-continuous.txt").write_text(
+              ("yes" if result["run_continuous"] else "no") + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run conditional ninety-day continuous account
+        if: always()
+        shell: bash
+        run: |
+          flag="$(tr -d '\r\n' < .work/candidate-51-crosslead-v20/run-continuous.txt)"
+          selected="$(tr -d '\r\n' < .work/candidate-51-crosslead-v20/selected.txt)"
+          if [[ "$flag" != "yes" || -z "$selected" ]]; then
+            exit 0
+          fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/launch_kline_only.py \
+            --config ".work/candidate-51-crosslead-v20/${selected}.json" \
+            --start 2026-02-01 --end 2026-04-30 \
+            --cache .cache/candidate-51-crosslead-v20 \
+            --output artifacts/candidate-51/crosslead-v20-selected-continuous \
+            --workspace .work/candidate-51-crosslead-v20-continuous
+          exit 0
+
+      - name: Write implementation versus logic verdict
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          development_path = Path(
+              "artifacts/candidate-51/crosslead-v20-development-comparison.json"
+          )
+          holdout_path = Path(
+              "artifacts/candidate-51/crosslead-v20-holdout-assessment.json"
+          )
+          continuous_root = Path(
+              "artifacts/candidate-51/crosslead-v20-selected-continuous"
+          )
+          mp = continuous_root / "metrics.json"
+          dp = continuous_root / "strategy_diagnostics.json"
+          development = (
+              json.loads(development_path.read_text())
+              if development_path.is_file() else None
+          )
+          holdout = (
+              json.loads(holdout_path.read_text())
+              if holdout_path.is_file() else None
+          )
+          result = {
+              "family": "causal_btc_eth_to_sol_xrp_next_5m",
+              "external_performance_used_as_evidence": False,
+              "development": development,
+              "holdout": holdout,
+              "continuous": None,
+          }
+          if mp.is_file() and dp.is_file():
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              result["continuous"] = {
+                  "metrics": metrics,
+                  "diagnostics": diagnostics,
+              }
+              project_pass = (
+                  float(metrics.get("geometric_daily_growth") or 0.0) >= 0.01
+                  and int(metrics.get("trades") or 0) >= 89
+                  and int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+              )
+              result["classification"] = (
+                  "PROJECT_GATE_PASS" if project_pass else "LOGIC_INSUFFICIENT"
+              )
+          elif holdout and holdout.get("classification") == "IMPLEMENTATION_BLOCKED":
+              result["classification"] = "IMPLEMENTATION_BLOCKED"
+          elif development and not development.get("selected"):
+              produced = [
+                  row for row in development.get("rows", {}).values()
+                  if row.get("produced")
+              ]
+              any_trades = any(int(row.get("trades") or 0) > 0 for row in produced)
+              result["classification"] = (
+                  "LOGIC_FAILURE" if any_trades
+                  else "LOGIC_OPPORTUNITY_FAILURE"
+              )
+          else:
+              result["classification"] = "LOGIC_FAILURE_OR_INSUFFICIENT_ON_UNTOUCHED"
+          output = Path(
+              "artifacts/candidate-51/crosslead-v20-final-verdict.json"
+          )
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-crosslead-v20
+          path: |
+            artifacts/candidate-51/crosslead-v20-*/**
+            artifacts/candidate-51/crosslead-v20-*.json
+            .work/candidate-51-crosslead-v20/manifest.json
+            .work/candidate-51-crosslead-v20/*.json
+            .work/candidate-51-crosslead-v20/status/*.txt
+          if-no-files-found: warn
+          retention-days: 90
