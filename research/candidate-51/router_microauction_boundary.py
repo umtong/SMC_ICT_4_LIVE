@@ -3,6 +3,10 @@
 Only continuation invalidation changes: once a completed balance break is
 accepted, re-entry through that balance edge invalidates the auction leg.  The
 public-data state filters and measured-move objective remain unchanged.
+
+Execution contract ``actual-fill-v1`` is supplied by ``event_lifecycle_patch``:
+a next-minute market fill outside this frozen bracket is flattened immediately
+rather than leaving an unprotected position after a stop-order rejection.
 """
 from __future__ import annotations
 
@@ -11,6 +15,7 @@ from typing import Mapping, Sequence
 
 import router_microauction as _base
 
+EXECUTION_CONTRACT_VERSION = "actual-fill-v1"
 ABSORPTION_STATE = _base.ABSORPTION_STATE
 CONTINUATION_STATE = _base.CONTINUATION_STATE
 BarObservation = _base.BarObservation
@@ -52,6 +57,7 @@ def classify_continuation(
     side = 1 if flow > 0.0 else -1
     diagnostics: dict[str, float | int | str] = {
         "family": CONTINUATION_STATE,
+        "execution_contract": EXECUTION_CONTRACT_VERSION,
         "side": side,
         "flow_60s": flow,
         "flow_3m": float(feature.flow_3m),
@@ -162,7 +168,23 @@ def classify_absorption(
     feature: FeatureObservation,
     config: RouteConfig = RouteConfig(),
 ) -> RouteDecision:
-    return _base.classify_absorption(symbol, bars, feature, config)
+    decision = _base.classify_absorption(symbol, bars, feature, config)
+    if decision.actionable:
+        diagnostics = dict(decision.diagnostics)
+        diagnostics["execution_contract"] = EXECUTION_CONTRACT_VERSION
+        return RouteDecision(
+            symbol=decision.symbol,
+            state=decision.state,
+            side=decision.side,
+            score=decision.score,
+            entry_reference=decision.entry_reference,
+            stop_reference=decision.stop_reference,
+            objective_reference=decision.objective_reference,
+            episode_ts=decision.episode_ts,
+            reasons=decision.reasons,
+            diagnostics=diagnostics,
+        )
+    return decision
 
 
 def classify_symbol(
@@ -232,6 +254,7 @@ __all__ = [
     "ABSORPTION_STATE",
     "BarObservation",
     "CONTINUATION_STATE",
+    "EXECUTION_CONTRACT_VERSION",
     "FeatureObservation",
     "RouteConfig",
     "RouteDecision",
