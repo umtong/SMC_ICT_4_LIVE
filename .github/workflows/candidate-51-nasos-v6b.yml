@@ -1,0 +1,312 @@
+name: candidate-51-nasos-v6b
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-nasos-v6b.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-nasos-v6b
+  cancel-in-progress: true
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout Candidate 51
+        uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Materialize NASOS policy over the verified shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_nasos.py research/candidate-51/router.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("research/candidate-51/router.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace(
+              "    sma_trend_fast: int = 50\n    sma_trend_slow: int = 200\n",
+              "    # Shell warmup compatibility; NASOS EWO periods are five-minute periods below.\n"
+              "    sma_trend_fast: int = 20\n    sma_trend_slow: int = 25\n"
+              "    nasos_ewo_fast: int = 50\n    nasos_ewo_slow: int = 200\n",
+          )
+          text = text.replace(
+              "ema_fast = _ema(closes, config.sma_trend_fast)",
+              "ema_fast = _ema(closes, config.nasos_ewo_fast)",
+          )
+          text = text.replace(
+              "ema_slow = _ema(closes, config.sma_trend_slow)",
+              "ema_slow = _ema(closes, config.nasos_ewo_slow)",
+          )
+          text = text.replace(
+              "        config.sma_trend_slow + 2,",
+              "        config.nasos_ewo_slow + 2,",
+          )
+          text = text.replace(
+              "    if len(candles) < config.sma_trend_slow + 2:",
+              "    if len(candles) < config.nasos_ewo_slow + 2:",
+          )
+          required = (
+              "nasos_ewo_fast: int = 50",
+              "nasos_ewo_slow: int = 200",
+              "_ema(closes, config.nasos_ewo_fast)",
+              "_ema(closes, config.nasos_ewo_slow)",
+          )
+          if not all(fragment in text for fragment in required):
+              raise RuntimeError("NASOS materialization failed")
+          path.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Set up Python and locked foundation
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify NASOS-specific contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import (
+              BarObservation,
+              FeatureObservation,
+              RouteConfig,
+              SMA_OFFSET_STATE,
+              classify_symbol,
+              route_universe,
+          )
+
+          def synthetic(symbol_shift: float = 0.0):
+              bars = []
+              price = 100.0 + symbol_shift
+              for index in range(1_300):
+                  drift = 0.008 if index < 1_295 else -2.0
+                  opened = price
+                  closed = max(1.0, opened + drift)
+                  bars.append(BarObservation(
+                      (index + 1) * 60_000_000_000 - 1_000_000,
+                      opened,
+                      max(opened, closed) + 0.03,
+                      min(opened, closed) - 0.03,
+                      closed,
+                      1_000.0 + index,
+                  ))
+                  price = closed
+              return bars
+
+          bars = synthetic()
+          config = RouteConfig()
+          decision = classify_symbol(
+              "BTCUSDT", bars, FeatureObservation(bars[-1].ts_event), config,
+          )
+          assert decision.actionable, (decision.reasons, decision.diagnostics)
+          assert decision.state == SMA_OFFSET_STATE
+          assert decision.stop_reference < decision.entry_reference < decision.objective_reference
+          assert decision.diagnostics["source_tag"] in {"ewo1", "ewo2", "ewolow"}
+          assert decision.diagnostics["reward_r"] >= config.sma_min_reward_r
+
+          future = classify_symbol(
+              "BTCUSDT", bars,
+              FeatureObservation(bars[-1].ts_event + 1), config,
+          )
+          assert not future.actionable and "FUTURE_FEATURE_REJECTED" in future.reasons
+
+          bars_by_symbol = {
+              symbol: synthetic(float(index))
+              for index, symbol in enumerate(("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"))
+          }
+          features = {
+              symbol: FeatureObservation(series[-1].ts_event)
+              for symbol, series in bars_by_symbol.items()
+          }
+          winner, decisions = route_universe(bars_by_symbol, features, config)
+          assert winner is not None and winner.actionable
+          assert sum(item.actionable for item in decisions.values()) >= 1
+          assert winner.symbol in bars_by_symbol
+          PY
+
+      - name: Predeclare source and execution-objective variants
+        run: |
+          python - <<'PY'
+          import copy
+          import hashlib
+          import json
+          from pathlib import Path
+
+          source = json.loads(Path("research/candidate-51/config.json").read_text())
+          variants = {
+              "source_0981_1097": {"low": 0.981, "high": 1.097},
+              "reachable_0981_1050": {"low": 0.981, "high": 1.050},
+              "dense_0990_1050": {"low": 0.990, "high": 1.050},
+          }
+          work = Path(".work/candidate-51-v6b")
+          work.mkdir(parents=True, exist_ok=True)
+          manifest = {
+              "family": "public_NASOSv5_EWO_pullback",
+              "source": {
+                  "repository": "davidzr/freqtrade-strategies",
+                  "path": "strategies/NASOSv5/NASOSv5.py",
+                  "source_low_offset": 0.981,
+                  "source_high_offset": 1.097,
+                  "source_ewo_periods": [50, 200],
+                  "source_timeframe_minutes": 5,
+              },
+              "development_interval": ["2026-07-22", "2026-07-28"],
+              "variants": variants,
+              "selection_rule": "positive post-cost expectancy and geometric growth, at least seven completed trades, no integrity violations",
+              "router_sha256": hashlib.sha256(Path("research/candidate-51/router.py").read_bytes()).hexdigest(),
+          }
+          (work / "variant_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          for name, values in variants.items():
+              config = copy.deepcopy(source)
+              config["strategy"]["sma_offset_low"] = values["low"]
+              config["strategy"]["sma_offset_high"] = values["high"]
+              config["strategy"]["sma_stop_max_fraction"] = 0.15
+              config["strategy"]["max_hold_minutes"] = 360
+              config["strategy"]["cooldown_minutes"] = 15
+              (work / f"{name}.json").write_text(json.dumps(config, indent=2) + "\n")
+          PY
+
+      - name: Run exact public source geometry
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-v6b/source_0981_1097.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v6b \
+            --output artifacts/candidate-51/v6b-source_0981_1097-development \
+            --workspace .work/candidate-51-v6b-source
+
+      - name: Run reachable objective geometry
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-v6b/reachable_0981_1050.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v6b \
+            --output artifacts/candidate-51/v6b-reachable_0981_1050-development \
+            --workspace .work/candidate-51-v6b-reachable
+
+      - name: Run denser pullback geometry
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-v6b/dense_0990_1050.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v6b \
+            --output artifacts/candidate-51/v6b-dense_0990_1050-development \
+            --workspace .work/candidate-51-v6b-dense
+
+      - name: Compare valid variants
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          names = ("source_0981_1097", "reachable_0981_1050", "dense_0990_1050")
+          comparison = {}
+          for name in names:
+              root = Path(f"artifacts/candidate-51/v6b-{name}-development")
+              metrics_path = root / "metrics.json"
+              diagnostics_path = root / "strategy_diagnostics.json"
+              if not metrics_path.is_file() or not diagnostics_path.is_file():
+                  comparison[name] = {"produced": False}
+                  continue
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              comparison[name] = {
+                  "produced": True,
+                  "ending_nav": metrics.get("ending_nav"),
+                  "total_return": metrics.get("total_return"),
+                  "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                  "max_drawdown": metrics.get("max_drawdown"),
+                  "trades": metrics.get("trades"),
+                  "wins": metrics.get("wins"),
+                  "win_rate": metrics.get("win_rate"),
+                  "profit_factor": metrics.get("profit_factor"),
+                  "expectancy_usdt": metrics.get("expectancy_usdt"),
+                  "source_signals": diagnostics.get("source_signals_before_execution_filters"),
+                  "entries": diagnostics.get("entry_submissions"),
+                  "source_exits": diagnostics.get("sma_offset_exit_submissions"),
+                  "funding_rejections": diagnostics.get("funding_runway_rejections"),
+                  "cooldown_rejections": diagnostics.get("cooldown_rejections"),
+                  "episode_rejections": diagnostics.get("used_episode_rejections"),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "unresolved_reason_counts": diagnostics.get("unresolved_reason_counts"),
+                  "global_position_violations": diagnostics.get("global_position_violations"),
+                  "order_rejections": diagnostics.get("order_rejections"),
+              }
+          eligible = [
+              name for name, row in comparison.items()
+              if row.get("produced")
+              and int(row.get("trades") or 0) >= 7
+              and float(row.get("expectancy_usdt") or 0.0) > 0.0
+              and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+              and int(row.get("global_position_violations") or 0) == 0
+              and int(row.get("order_rejections") or 0) == 0
+          ]
+          eligible.sort(key=lambda name: (
+              -float(comparison[name].get("geometric_daily_growth") or 0.0),
+              -float(comparison[name].get("profit_factor") or 0.0),
+              name,
+          ))
+          decision = {
+              "comparison": comparison,
+              "eligible": eligible,
+              "selected": eligible[0] if eligible else None,
+              "family_status": "PROMOTE_TO_UNTOUCHED" if eligible else "REJECT_OR_REDESIGN",
+          }
+          output = Path("artifacts/candidate-51/v6b-comparison.json")
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(decision, indent=2, sort_keys=True))
+          PY
+
+      - name: Persist compact evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="research/candidate-51/evidence/v6b-nasos-development-2026-07-22_2026-07-28"
+          rm -rf "$root"
+          mkdir -p "$root"
+          cp .work/candidate-51-v6b/variant_manifest.json "$root/variant_manifest.json"
+          cp artifacts/candidate-51/v6b-comparison.json "$root/comparison.json"
+          for variant in source_0981_1097 reachable_0981_1050 dense_0990_1050; do
+            source="artifacts/candidate-51/v6b-${variant}-development"
+            target="$root/$variant"
+            mkdir -p "$target"
+            for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
+              [[ ! -f "$source/$file" ]] || cp "$source/$file" "$target/$file"
+            done
+          done
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add "$root"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate51: persist NASOSv5 family screen"
+            git push origin HEAD:research/candidate-51
+          fi
+
+      - name: Preserve full diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-v6b-nasos-${{ github.sha }}
+          path: |
+            artifacts/candidate-51/v6b-*/**/*.json
+            artifacts/candidate-51/v6b-*/**/*.csv
+            artifacts/candidate-51/v6b-comparison.json
+          if-no-files-found: warn
