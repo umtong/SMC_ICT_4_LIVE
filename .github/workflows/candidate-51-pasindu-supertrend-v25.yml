@@ -1,0 +1,177 @@
+name: candidate-51-pasindu-supertrend-v25
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-pasindu-supertrend-v25.yml"
+      - "research/candidate-51/router_pasindu_supertrend_diagnostic_v25.py"
+      - "research/candidate-51/router_pasindu_supertrend_diagnostic.py"
+      - "research/candidate-51/router_pasindu_supertrend.py"
+      - "research/candidate-51/strategy_pasindu_supertrend.py"
+      - "research/candidate-51/strategy_base.py"
+      - "research/candidate-51/launch_kline_only_warmup.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-51-pasindu-supertrend-v25
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+
+      - name: Materialize implementation-correct live-effective policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_pasindu_supertrend_diagnostic_v25.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_pasindu_supertrend.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import IndicatorState, RouteConfig, RouteDecision, _patch
+          c = RouteConfig()
+          assert c.pasindu_supertrend_period == 8
+          assert c.pasindu_supertrend_multiplier == 2.0
+          d = RouteDecision('BTCUSDT','TEST',1,1.0,100.0,99.0,102.0,1,(),{'atr_4h': 2.0})
+          _patch({'BTCUSDT': d})
+          assert d.diagnostics['atr_at_entry'] == 2.0
+          print('ATR diagnostic alias contract passes; economics unchanged')
+          PY
+
+      - name: Freeze source policies
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          base = json.loads(Path('research/candidate-51/config.json').read_text())
+          for key in ('sma_offset_low','sma_offset_high','sma_stop_min_fraction','sma_stop_max_fraction','sma_stop_atr_buffer'):
+              base['strategy'].pop(key, None)
+          frozen = {
+              'feature_max_age_seconds': 65.0,
+              'cooldown_minutes': 0,
+              'max_hold_minutes': 525600,
+              'funding_flatten_minute': 60,
+              'funding_blackout_before_minutes': -1,
+              'funding_blackout_after_minutes': -1,
+              'pasindu_supertrend_period': 8,
+              'pasindu_supertrend_multiplier': 2.0,
+              'pasindu_adx_period': 14,
+              'pasindu_adx_min': 18.0,
+              'pasindu_confidence_min': 45.0,
+              'pasindu_established_4h_bars': 3,
+              'pasindu_continuation_lookback_1h': 8,
+              'pasindu_trail_activate_atr': 2.0,
+              'pasindu_trail_distance_atr': 2.5,
+          }
+          work = Path('.work/candidate-51-pasindu-v25')
+          work.mkdir(parents=True, exist_ok=True)
+          for mode in ('flip_only','reduced_live'):
+              cfg = json.loads(json.dumps(base))
+              cfg['strategy'].update(frozen)
+              cfg['strategy']['pasindu_mode'] = mode
+              (work/f'{mode}.json').write_text(json.dumps(cfg, indent=2, sort_keys=True)+'\n')
+          manifest = {
+              'family':'pasindu_live_effective_supertrend8x2',
+              'implementation_fix_only':'atr_4h -> atr_at_entry diagnostic alias',
+              'external_source':'PasinduUpendra/Binance-Futures-Trading',
+              'external_performance_used_as_evidence':False,
+              'data_start':'2024-12-01','evaluation_start':'2025-01-01','evaluation_end':'2025-03-31',
+              'engine':'NautilusTrader BacktestNode','risk_fraction':0.03,'global_position_limit':1,
+              'router_sha256':hashlib.sha256(Path('research/candidate-51/router.py').read_bytes()).hexdigest(),
+              'strategy_sha256':hashlib.sha256(Path('research/candidate-51/strategy.py').read_bytes()).hexdigest(),
+              'frozen_parameters':frozen,
+          }
+          (work/'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True)+'\n')
+          PY
+
+      - name: Run independent ninety-day development accounts
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-51-pasindu-v25/status
+          for mode in flip_only reduced_live; do
+            PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch_kline_only_warmup.py \
+              --config ".work/candidate-51-pasindu-v25/${mode}.json" \
+              --data-start 2024-12-01 --start 2025-01-01 --end 2025-03-31 \
+              --cache .cache/candidate-51-pasindu-v25 \
+              --output "artifacts/candidate-51/pasindu-v25-${mode}-development" \
+              --workspace ".work/candidate-51-pasindu-v25-${mode}-development"
+            echo $? > ".work/candidate-51-pasindu-v25/status/${mode}.txt"
+          done
+          exit 0
+
+      - name: Classify implementation versus economic failure
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, re
+          from pathlib import Path
+          def pnl(text):
+              m=re.search(r'[-+]?\d+(?:\.\d+)?',str(text).replace('_','').replace(',',''))
+              return float(m.group()) if m else 0.0
+          rows={}
+          for mode in ('flip_only','reduced_live'):
+              root=Path(f'artifacts/candidate-51/pasindu-v25-{mode}-development')
+              required=[root/'metrics.json',root/'strategy_diagnostics.json',root/'closed_scenarios.json']
+              if not all(p.is_file() for p in required):
+                  rows[mode]={'classification':'IMPLEMENTATION_BLOCKED','produced':False,'exit_code':int(Path(f'.work/candidate-51-pasindu-v25/status/{mode}.txt').read_text())}
+                  continue
+              m=json.loads(required[0].read_text()); d=json.loads(required[1].read_text()); s=json.loads(required[2].read_text())
+              valid=[x for x in s if bool(x.get('actual_fill_risk_valid'))]
+              pnls=[pnl(x.get('realized_pnl')) for x in valid]
+              gp=sum(x for x in pnls if x>0); gl=-sum(x for x in pnls if x<0)
+              clean=(int(d.get('order_rejections') or 0)==0 and int(d.get('global_position_violations') or 0)==0 and int(d.get('max_open_positions_observed') or 0)<=1 and int(d.get('fill_beyond_bracket_invalidations') or 0)==0)
+              trades=int(m.get('trades') or 0)
+              positive=(clean and trades>=20 and float(m.get('expectancy_usdt') or 0)>0 and float(m.get('geometric_daily_growth') or 0)>0 and float(m.get('profit_factor') or 0)>1 and float(m.get('max_drawdown') or 1)<=0.25 and sum(pnls)>0)
+              if not clean: label='IMPLEMENTATION_OR_FILL_CONTAMINATED'
+              elif trades==0: label='LOGIC_OPPORTUNITY_FAILURE'
+              elif positive: label='PROVISIONAL_ALPHA'
+              else: label='ECONOMIC_LOGIC_FAILURE'
+              rows[mode]={
+                  'classification':label,'produced':True,
+                  'metrics':{k:m.get(k) for k in ('trades','ending_nav','total_return','geometric_daily_growth','profit_factor','expectancy_usdt','win_rate','max_drawdown','gate_pass')},
+                  'valid_fill_only':{'trades':len(pnls),'wins':sum(x>0 for x in pnls),'losses':sum(x<0 for x in pnls),'sum_realized_pnl_usdt':sum(pnls),'expectancy_usdt':sum(pnls)/len(pnls) if pnls else 0.0,'profit_factor':gp/gl if gl>0 else None},
+                  'diagnostics':{k:d.get(k) for k in ('pasindu_hourly_decisions','pasindu_source_candidates','pasindu_used_episode_rejections','pasindu_management_exits','unresolved_reason_counts','actionable_family_counts','selected_symbols','order_rejections','global_position_violations','max_open_positions_observed','fill_invalidations','fill_beyond_bracket_invalidations','fill_risk_budget_invalidations','pasindu_hour_bars_by_symbol','pasindu_four_hour_bars_by_symbol')},
+              }
+          result={'family':'pasindu_live_effective_supertrend8x2','implementation_fix_verified':True,'rows':rows,'survivors':[k for k,v in rows.items() if v.get('classification')=='PROVISIONAL_ALPHA']}
+          out=Path('artifacts/candidate-51/pasindu-v25-development-verdict.json'); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(result,indent=2,sort_keys=True))
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-pasindu-supertrend-v25-${{ github.sha }}
+          path: |
+            artifacts/candidate-51/pasindu-v25-*
+            .work/candidate-51-pasindu-v25/manifest.json
+            .work/candidate-51-pasindu-v25/status/*.txt
+          if-no-files-found: warn
+          retention-days: 30
