@@ -1,0 +1,549 @@
+name: candidate-51-trendrider-v21
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-trendrider-v21.yml"
+      - "research/candidate-51/router_trendrider.py"
+      - "research/candidate-51/router_trendrider_cached.py"
+      - "research/candidate-51/strategy_trendrider.py"
+      - "research/candidate-51/strategy_trendrider_cached.py"
+      - "research/candidate-51/event_lifecycle_patch.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-51-trendrider-v21
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+
+      - name: Materialize public TrendRider long policy
+        run: |
+          cp research/candidate-51/router_trendrider_cached.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_trendrider_cached.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify source reachability and causality
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from dataclasses import asdict
+          import math
+
+          import router_trendrider as source
+          from router import RouteConfig, evaluate_entry_aggregated, trendrider_exit_signal
+          from strategy import _completed_bucket
+
+          Bar = source.BarObservation
+          HOUR = 3_600_000_000_000
+          MINUTE = 60_000_000_000
+
+          def make_hours(returns, last_volume=20.0):
+              candles = []
+              close = 100.0
+              for index, change in enumerate(returns):
+                  opened = close
+                  close = opened * (1.0 + change)
+                  volume = last_volume if index == len(returns) - 1 else 1.0
+                  pad = max(opened, close) * 0.001
+                  candles.append(Bar(
+                      ts_event=(index + 1) * HOUR - 1,
+                      open=opened,
+                      high=max(opened, close) + pad,
+                      low=min(opened, close) - pad,
+                      close=close,
+                      volume=volume,
+                  ))
+              return candles
+
+          config = RouteConfig()
+          reachable = None
+          # Search a small, predeclared family of causal pullback/bounce paths.
+          # This is a branch-reachability contract, not parameter optimization.
+          for trend in (0.0003, 0.0006, 0.0010):
+              for drop_bars in (3, 5, 8, 12):
+                  for drop in (0.004, 0.007, 0.010, 0.015):
+                      for bounce in (0.006, 0.010, 0.018, 0.030):
+                          returns = [trend] * 210 + [-drop] * drop_bars + [bounce]
+                          hours = make_hours(returns)
+                          evaluation = evaluate_entry_aggregated(
+                              "SOLUSDT",
+                              hours,
+                              (),
+                              (),
+                              hours,
+                              config,
+                          )
+                          if not evaluation.reject_reason and evaluation.tag:
+                              reachable = (hours, evaluation)
+                              break
+                      if reachable:
+                          break
+                  if reachable:
+                      break
+              if reachable:
+                  break
+          assert reachable is not None, "no public TrendRider entry branch reached"
+          hours, evaluation = reachable
+          assert evaluation.confidence >= 5
+          assert evaluation.tag in {
+              "trend_pullback",
+              "ema50_bounce",
+              "rsi_bounce",
+              "ema_crossover",
+              "bb_bounce",
+              "macd_reversal",
+          }
+
+          # Appending an arbitrary future hour cannot change the original last
+          # completed snapshot when addressed at its shifted index.
+          before = source._snapshot(hours, config)
+          extreme = Bar(
+              ts_event=hours[-1].ts_event + HOUR,
+              open=hours[-1].close,
+              high=hours[-1].close * 3.0,
+              low=hours[-1].close * 0.2,
+              close=hours[-1].close * 2.0,
+              volume=1_000_000.0,
+          )
+          after_same_bar = source._snapshot([*hours, extreme], config, -2)
+          assert before is not None and after_same_bar is not None
+          assert asdict(before) == asdict(after_same_bar)
+
+          # Public indicator management is independently reachable.
+          strong_up = make_hours([0.004] * 230, last_volume=2.0)
+          assert trendrider_exit_signal(strong_up, config) == "RSI_OVERBOUGHT"
+
+          # Cached minute aggregation must preserve exact completed OHLCV.
+          minute_bars = []
+          for index in range(60):
+              opened = 100.0 + index * 0.01
+              close = opened + 0.005
+              minute_bars.append(Bar(
+                  ts_event=(index + 1) * MINUTE - 1,
+                  open=opened,
+                  high=opened + 0.02,
+                  low=opened - 0.03,
+                  close=close,
+                  volume=2.0,
+              ))
+          aggregated = _completed_bucket(minute_bars, 60)
+          assert aggregated is not None
+          assert aggregated.open == minute_bars[0].open
+          assert aggregated.close == minute_bars[-1].close
+          assert aggregated.high == max(bar.high for bar in minute_bars)
+          assert aggregated.low == min(bar.low for bar in minute_bars)
+          assert aggregated.volume == 120.0
+
+          # Public tuned values and actual-fill execution guard remain frozen.
+          assert config.trendrider_ema_fast == 9
+          assert config.trendrider_ema_slow == 16
+          assert config.trendrider_rsi_period == 16
+          assert config.trendrider_adx_threshold == 18.0
+          assert config.trendrider_volume_factor == 0.70
+          assert config.trendrider_stop_fraction == 0.06
+          assert config.trendrider_remote_target_fraction == 0.229
+          print({
+              "reachable_tag": evaluation.tag,
+              "confidence": evaluation.confidence,
+              "regime": evaluation.regime,
+              "append_invariant": True,
+              "indicator_exit_reachable": True,
+              "cached_aggregation_exact": True,
+          })
+          PY
+
+      - name: Freeze exact public configuration
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          config = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in (
+              "sma_offset_low",
+              "sma_offset_high",
+              "sma_stop_min_fraction",
+              "sma_stop_max_fraction",
+              "sma_stop_atr_buffer",
+          ):
+              config["strategy"].pop(key, None)
+          frozen = {
+              "feature_max_age_seconds": 65.0,
+              "cooldown_minutes": 0,
+              "max_hold_minutes": 1440,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "trendrider_bucket_minutes": 60,
+              "trendrider_ema_fast": 9,
+              "trendrider_ema_slow": 16,
+              "trendrider_rsi_period": 16,
+              "trendrider_rsi_pullback_low": 30.0,
+              "trendrider_rsi_pullback_high": 65.0,
+              "trendrider_rsi_bounce": 35.0,
+              "trendrider_adx_threshold": 18.0,
+              "trendrider_volume_factor": 0.70,
+              "trendrider_rsi_exit": 78.0,
+              "trendrider_min_confidence_normal": 5,
+              "trendrider_min_confidence_bear": 6,
+              "trendrider_stop_fraction": 0.06,
+              "trendrider_remote_target_fraction": 0.229,
+              "trendrider_trailing_activation": 0.05,
+              "trendrider_trailing_distance": 0.03,
+              "trendrider_roi_124m": 0.136,
+              "trendrider_roi_290m": 0.044,
+              "trendrider_roi_764m": 0.0,
+          }
+          config["strategy"].update(frozen)
+          work = Path(".work/candidate-51-trendrider-v21")
+          work.mkdir(parents=True, exist_ok=True)
+          (work / "config.json").write_text(
+              json.dumps(config, indent=2, sort_keys=True) + "\n"
+          )
+          manifest = {
+              "family": "public_trendrider_v211_long_only",
+              "external_source": "darkvolg/trendrider-strategy",
+              "external_performance_used_as_evidence": False,
+              "source_parity_scope": (
+                  "public OHLCV long policy only; no website shorts or private "
+                  "FNG/funding/OI/whale layers"
+              ),
+              "development_interval": ["2025-03-01", "2025-05-29"],
+              "post_public_untouched_interval": ["2026-05-01", "2026-07-29"],
+              "conditional_continuous_interval": ["2025-07-01", "2025-12-28"],
+              "engine": "NautilusTrader BacktestNode",
+              "input_mode": "checksum-verified Binance kline-only",
+              "risk_fraction": 0.03,
+              "global_position_limit": 1,
+              "actual_fill_contract": "actual-fill-v1",
+              "router_sha256": hashlib.sha256(
+                  Path("research/candidate-51/router.py").read_bytes()
+              ).hexdigest(),
+              "strategy_sha256": hashlib.sha256(
+                  Path("research/candidate-51/strategy.py").read_bytes()
+              ).hexdigest(),
+              "frozen_parameters": frozen,
+          }
+          (work / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Run ninety-day development account
+        shell: bash
+        run: |
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/launch_kline_only.py \
+            --config .work/candidate-51-trendrider-v21/config.json \
+            --start 2025-03-01 --end 2025-05-29 \
+            --cache .cache/candidate-51-trendrider-v21 \
+            --output artifacts/candidate-51/trendrider-v21-development \
+            --workspace .work/candidate-51-trendrider-v21-development
+          echo $? > .work/candidate-51-trendrider-v21/development-exit.txt
+          exit 0
+
+      - name: Classify development result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-51/trendrider-v21-development")
+          mp = root / "metrics.json"
+          dp = root / "strategy_diagnostics.json"
+          if not mp.is_file() or not dp.is_file():
+              result = {
+                  "classification": "IMPLEMENTATION_BLOCKED",
+                  "run_holdout": False,
+              }
+          else:
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              trades = int(metrics.get("trades") or 0)
+              clean = (
+                  int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+                  and int(diagnostics.get("fill_beyond_bracket_invalidations") or 0) == 0
+                  and int(diagnostics.get("fill_risk_budget_invalidations") or 0) == 0
+              )
+              positive = (
+                  clean
+                  and trades >= 5
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(metrics.get("max_drawdown") or 1.0) <= 0.25
+              )
+              if trades == 0 and clean:
+                  classification = "LOGIC_OPPORTUNITY_FAILURE"
+              elif not clean:
+                  classification = "IMPLEMENTATION_CONTAMINATED"
+              elif positive:
+                  classification = "PROVISIONAL_ALPHA"
+              else:
+                  classification = "LOGIC_FAILURE"
+              result = {
+                  "classification": classification,
+                  "run_holdout": positive,
+                  "metrics": metrics,
+                  "diagnostics": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "trendrider_hourly_decisions",
+                          "trendrider_source_candidates",
+                          "trendrider_confidence_rejections",
+                          "trendrider_management_exits",
+                          "unresolved_reason_counts",
+                          "selected_symbols",
+                          "order_rejections",
+                          "global_position_violations",
+                          "max_open_positions_observed",
+                          "fill_invalidations",
+                          "fill_beyond_bracket_invalidations",
+                          "fill_risk_budget_invalidations",
+                          "trendrider_hour_bars_by_symbol",
+                          "trendrider_four_hour_bars_by_symbol",
+                          "trendrider_day_bars_by_symbol",
+                      )
+                  },
+              }
+          output = Path(
+              "artifacts/candidate-51/trendrider-v21-development-assessment.json"
+          )
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-51-trendrider-v21/run-holdout.txt").write_text(
+              ("yes" if result["run_holdout"] else "no") + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run post-public untouched account
+        if: always()
+        shell: bash
+        run: |
+          flag="$(tr -d '\r\n' < .work/candidate-51-trendrider-v21/run-holdout.txt)"
+          if [[ "$flag" != "yes" ]]; then
+            exit 0
+          fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/launch_kline_only.py \
+            --config .work/candidate-51-trendrider-v21/config.json \
+            --start 2026-05-01 --end 2026-07-29 \
+            --cache .cache/candidate-51-trendrider-v21 \
+            --output artifacts/candidate-51/trendrider-v21-holdout \
+            --workspace .work/candidate-51-trendrider-v21-holdout
+          exit 0
+
+      - name: Assess untouched result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          development = json.loads(Path(
+              "artifacts/candidate-51/trendrider-v21-development-assessment.json"
+          ).read_text())
+          root = Path("artifacts/candidate-51/trendrider-v21-holdout")
+          mp = root / "metrics.json"
+          dp = root / "strategy_diagnostics.json"
+          if not development.get("run_holdout"):
+              result = {
+                  "classification": "NO_DEVELOPMENT_SURVIVOR",
+                  "run_continuous": False,
+              }
+          elif not mp.is_file() or not dp.is_file():
+              result = {
+                  "classification": "IMPLEMENTATION_BLOCKED",
+                  "run_continuous": False,
+              }
+          else:
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              clean = (
+                  int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+                  and int(diagnostics.get("fill_beyond_bracket_invalidations") or 0) == 0
+                  and int(diagnostics.get("fill_risk_budget_invalidations") or 0) == 0
+              )
+              positive = (
+                  clean
+                  and int(metrics.get("trades") or 0) >= 5
+                  and float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+                  and float(metrics.get("max_drawdown") or 1.0) <= 0.25
+              )
+              result = {
+                  "classification": (
+                      "RUN_CONTINUOUS" if positive
+                      else "LOGIC_FAILURE_OR_INSUFFICIENT"
+                  ),
+                  "run_continuous": positive,
+                  "metrics": metrics,
+                  "diagnostics": {
+                      key: diagnostics.get(key)
+                      for key in (
+                          "trendrider_hourly_decisions",
+                          "trendrider_source_candidates",
+                          "trendrider_confidence_rejections",
+                          "trendrider_management_exits",
+                          "unresolved_reason_counts",
+                          "selected_symbols",
+                          "order_rejections",
+                          "global_position_violations",
+                          "max_open_positions_observed",
+                          "fill_invalidations",
+                          "fill_beyond_bracket_invalidations",
+                          "fill_risk_budget_invalidations",
+                      )
+                  },
+              }
+          output = Path(
+              "artifacts/candidate-51/trendrider-v21-holdout-assessment.json"
+          )
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-51-trendrider-v21/run-continuous.txt").write_text(
+              ("yes" if result["run_continuous"] else "no") + "\n"
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run conditional 181-day continuous account
+        if: always()
+        shell: bash
+        run: |
+          flag="$(tr -d '\r\n' < .work/candidate-51-trendrider-v21/run-continuous.txt)"
+          if [[ "$flag" != "yes" ]]; then
+            exit 0
+          fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/launch_kline_only.py \
+            --config .work/candidate-51-trendrider-v21/config.json \
+            --start 2025-07-01 --end 2025-12-28 \
+            --cache .cache/candidate-51-trendrider-v21 \
+            --output artifacts/candidate-51/trendrider-v21-continuous \
+            --workspace .work/candidate-51-trendrider-v21-continuous
+          exit 0
+
+      - name: Write final implementation versus logic verdict
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          dev_path = Path(
+              "artifacts/candidate-51/trendrider-v21-development-assessment.json"
+          )
+          hold_path = Path(
+              "artifacts/candidate-51/trendrider-v21-holdout-assessment.json"
+          )
+          continuous_root = Path(
+              "artifacts/candidate-51/trendrider-v21-continuous"
+          )
+          mp = continuous_root / "metrics.json"
+          dp = continuous_root / "strategy_diagnostics.json"
+          result = {
+              "family": "public_trendrider_v211_long_only",
+              "external_performance_used_as_evidence": False,
+              "development": (
+                  json.loads(dev_path.read_text()) if dev_path.is_file() else None
+              ),
+              "holdout": (
+                  json.loads(hold_path.read_text()) if hold_path.is_file() else None
+              ),
+              "continuous": None,
+          }
+          if mp.is_file() and dp.is_file():
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              result["continuous"] = {
+                  "metrics": metrics,
+                  "diagnostics": diagnostics,
+              }
+              project_pass = (
+                  float(metrics.get("geometric_daily_growth") or 0.0) >= 0.01
+                  and int(metrics.get("trades") or 0) >= 181
+                  and int(diagnostics.get("order_rejections") or 0) == 0
+                  and int(diagnostics.get("global_position_violations") or 0) == 0
+                  and int(diagnostics.get("max_open_positions_observed") or 0) <= 1
+                  and int(diagnostics.get("fill_invalidations") or 0) == 0
+              )
+              if project_pass:
+                  classification = "PROJECT_GATE_PASS"
+              elif (
+                  float(metrics.get("expectancy_usdt") or 0.0) > 0.0
+                  and float(metrics.get("geometric_daily_growth") or 0.0) > 0.0
+              ):
+                  classification = "LOGIC_INSUFFICIENT"
+              else:
+                  classification = "LOGIC_FAILURE"
+          elif result.get("holdout", {}).get("classification") == "IMPLEMENTATION_BLOCKED":
+              classification = "IMPLEMENTATION_BLOCKED"
+          elif not result.get("development", {}).get("run_holdout"):
+              classification = result.get("development", {}).get(
+                  "classification",
+                  "IMPLEMENTATION_BLOCKED",
+              )
+          else:
+              classification = "LOGIC_FAILURE_OR_INSUFFICIENT_ON_UNTOUCHED"
+          result["classification"] = classification
+          output = Path(
+              "artifacts/candidate-51/trendrider-v21-final-verdict.json"
+          )
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-trendrider-v21
+          path: |
+            artifacts/candidate-51/trendrider-v21-*/metrics.json
+            artifacts/candidate-51/trendrider-v21-*/strategy_diagnostics.json
+            artifacts/candidate-51/trendrider-v21-*/positions.csv
+            artifacts/candidate-51/trendrider-v21-*/closed_scenarios.json
+            artifacts/candidate-51/trendrider-v21-*/events.jsonl
+            artifacts/candidate-51/trendrider-v21-*/data_manifest.json
+            artifacts/candidate-51/trendrider-v21-*.json
+            .work/candidate-51-trendrider-v21/config.json
+            .work/candidate-51-trendrider-v21/manifest.json
+            .work/candidate-51-trendrider-v21/*.txt
+          if-no-files-found: warn
+          retention-days: 90
