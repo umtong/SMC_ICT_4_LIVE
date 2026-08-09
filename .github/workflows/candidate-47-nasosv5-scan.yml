@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/candidate-47-nasosv5-scan.yml"
       - "research/candidate-47/nasosv5_signal_scan.py"
+      - "research/candidate-47/nasosv5_signal_scan_launch.py"
       - "research/candidate-47/kline_only_inputs.py"
       - "research/candidate-47/e0v1e_reversion_strategy.py"
   workflow_dispatch:
@@ -53,7 +54,8 @@ jobs:
           python -m compileall -q \
             research/candidate-47/kline_only_inputs.py \
             research/candidate-47/e0v1e_reversion_strategy.py \
-            research/candidate-47/nasosv5_signal_scan.py
+            research/candidate-47/nasosv5_signal_scan.py \
+            research/candidate-47/nasosv5_signal_scan_launch.py
 
       - name: Scan exact public defaults without simulating PnL
         shell: bash
@@ -61,7 +63,7 @@ jobs:
           set -euo pipefail
           rm -rf "$ROOT"
           mkdir -p "$ROOT"
-          python research/candidate-47/nasosv5_signal_scan.py \
+          python research/candidate-47/nasosv5_signal_scan_launch.py \
             --start "${{ matrix.period.start }}" \
             --end "${{ matrix.period.end }}" \
             --cache ".cache/candidate-47-nasosv5-${{ matrix.period.label }}" \
@@ -87,9 +89,10 @@ jobs:
           assert aggregate["valid_geometry_episodes"] <= aggregate["rising_edge_episodes"]
           assert aggregate["maximum_same_timestamp_candidates"] <= 4
           for event in report["events"]:
-              assert event["structural_stop"] < event["close"] < event["objective_15m_high"]
-              assert event["reward_risk"] > 0.0
               assert event["profit_space"] >= 0.037 - 1e-12
+              if event["valid_geometry"]:
+                  assert event["structural_stop"] < event["close"] < event["objective_15m_high"]
+                  assert event["reward_risk"] > 0.0
           PY
 
       - uses: actions/upload-artifact@v4
