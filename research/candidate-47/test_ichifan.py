@@ -13,7 +13,6 @@ from ichifan_strategy import (
 from router import BarObservation
 
 MINUTE_NS = 60 * 1_000_000_000
-FIVE_MINUTE_NS = 5 * MINUTE_NS
 
 
 def _minute(index: int, base: float = 100.0) -> BarObservation:
@@ -77,10 +76,12 @@ def test_exact_five_minute_aggregation_and_partial_bin_rejection() -> None:
     assert complete[-1].ts_event == 9 * MINUTE_NS
 
 
-def test_gap_cannot_be_silently_aggregated() -> None:
+def test_gap_bin_is_rejected_without_discarding_later_complete_bin() -> None:
     bars = [_minute(index) for index in (0, 1, 2, 4, 5, 6, 7, 8, 9)]
     aggregated = aggregate_five_minute(bars)
-    assert len(aggregated) == 0
+    assert len(aggregated) == 1
+    assert aggregated[0].ts_event == 9 * MINUTE_NS
+    assert aggregated[0].open == bars[4].open
 
 
 def test_appending_future_bars_cannot_change_existing_states() -> None:
