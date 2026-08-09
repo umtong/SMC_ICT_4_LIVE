@@ -1,0 +1,579 @@
+name: candidate-51-flowvote-fade-v16
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-flowvote-fade-v16.yml"
+      - "research/candidate-51/router_flowvote_fade.py"
+      - "research/candidate-51/strategy_flowvote_fade.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-flowvote-fade-v16
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Materialize inverse auction policy
+        run: |
+          cp research/candidate-51/router_flowvote_fade.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_flowvote_fade.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify inversion contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import RouteConfig, flowvote_scores
+          config = RouteConfig()
+          long_score, short_score, _ = flowvote_scores(
+              depth_imbalance=.20,
+              trade_delta=.20,
+              close=101.0,
+              ema=100.0,
+              volume_ratio=1.0,
+              config=config,
+          )
+          assert (long_score, short_score) == (3, 0)
+          assert config.flowvote_fade_min_target_fraction >= 0.004
+          assert config.flowvote_fade_min_reward_r >= 0.75
+          print("public vote preserved; inverse geometry contracts verified")
+          PY
+
+      - name: Predeclare variants and frozen configs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy
+          import hashlib
+          import json
+          from pathlib import Path
+
+          base = json.loads(Path("research/candidate-51/config.json").read_text())
+          variants = {
+              "source_l30_h60": {
+                  "imbalance": 0.12,
+                  "delta": 0.15,
+                  "lookback": 30,
+                  "hold": 60,
+              },
+              "source_l60_h180": {
+                  "imbalance": 0.12,
+                  "delta": 0.15,
+                  "lookback": 60,
+                  "hold": 180,
+              },
+              "strict_l30_h60": {
+                  "imbalance": 0.20,
+                  "delta": 0.20,
+                  "lookback": 30,
+                  "hold": 60,
+              },
+              "strict_l60_h180": {
+                  "imbalance": 0.20,
+                  "delta": 0.20,
+                  "lookback": 60,
+                  "hold": 180,
+              },
+          }
+          work = Path(".work/candidate-51-flowvote-fade-v16")
+          work.mkdir(parents=True, exist_ok=True)
+          manifest = {
+              "family": "inverse_public_flowvote_auction_fade",
+              "source": {
+                  "repository": "vortex-systems-tech/Crypto-Strategy-Order-Book-Delta-Volume",
+                  "commit": "f0d00e9a31a820f8c46c494e7eea839dc099ddfe",
+                  "public_vote": "depth imbalance + aggressor delta + EMA50 + volume bonus; three of four",
+              },
+              "prior_evidence": {
+                  "continuation_v11": "catastrophically negative with short timeout",
+                  "continuation_v13": "catastrophically negative after structural stop and source holding restoration",
+                  "inversion_is_one_predeclared_mechanism_test": True,
+              },
+              "development_interval": ["2026-04-13", "2026-04-19"],
+              "untouched_interval": ["2025-11-03", "2025-11-09"],
+              "conditional_continuous_interval": ["2025-07-01", "2025-07-30"],
+              "variants": variants,
+              "router_sha256": hashlib.sha256(
+                  Path("research/candidate-51/router.py").read_bytes()
+              ).hexdigest(),
+              "strategy_sha256": hashlib.sha256(
+                  Path("research/candidate-51/strategy.py").read_bytes()
+              ).hexdigest(),
+              "engine": "NautilusTrader BacktestNode",
+              "risk_fraction": 0.03,
+              "global_position_limit": 1,
+          }
+          (work / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          legacy = {
+              "sma_offset_low",
+              "sma_offset_high",
+              "sma_stop_min_fraction",
+              "sma_stop_max_fraction",
+              "sma_stop_atr_buffer",
+          }
+          for name, variant in variants.items():
+              config = copy.deepcopy(base)
+              for key in legacy:
+                  config["strategy"].pop(key, None)
+              config["strategy"].update(
+                  {
+                      "cooldown_minutes": 0,
+                      "max_hold_minutes": variant["hold"],
+                      "funding_flatten_minute": 60,
+                      "funding_blackout_before_minutes": -1,
+                      "funding_blackout_after_minutes": -1,
+                      "feature_max_age_seconds": 65.0,
+                      "flowvote_bucket_minutes": 1,
+                      "flowvote_ema_period": 50,
+                      "flowvote_atr_period": 14,
+                      "flowvote_imbalance_threshold": variant["imbalance"],
+                      "flowvote_delta_threshold": variant["delta"],
+                      "flowvote_min_volume_ratio": 1.20,
+                      "flowvote_min_votes": 3,
+                      "flowvote_min_efficiency": 0.0,
+                      "flowvote_stop_atr_multiple": 1.5,
+                      "flowvote_min_stop_fraction": 0.003,
+                      "flowvote_target_r": 2.0,
+                      "flowvote_fade_lookback_minutes": variant["lookback"],
+                      "flowvote_fade_atr_buffer": 0.50,
+                      "flowvote_fade_min_reward_r": 0.75,
+                      "flowvote_fade_min_target_fraction": 0.004,
+                      "flowvote_fade_min_displacement_atr": 0.35,
+                  }
+              )
+              (work / f"{name}.json").write_text(
+                  json.dumps(config, indent=2, sort_keys=True) + "\n"
+              )
+          PY
+
+      - name: Run independent development period
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-51-flowvote-fade-v16/status
+          for variant in source_l30_h60 source_l60_h180 strict_l30_h60 strict_l60_h180; do
+            PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+              --config ".work/candidate-51-flowvote-fade-v16/${variant}.json" \
+              --start 2026-04-13 --end 2026-04-19 \
+              --cache .cache/candidate-51-flowvote-fade-v16 \
+              --output "artifacts/candidate-51/flowvote-fade-v16-${variant}-development" \
+              --workspace ".work/candidate-51-flowvote-fade-v16-${variant}"
+            echo $? > ".work/candidate-51-flowvote-fade-v16/status/${variant}.txt"
+          done
+          exit 0
+
+      - name: Select only cost-after day-trading survivor
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          names = (
+              "source_l30_h60",
+              "source_l60_h180",
+              "strict_l30_h60",
+              "strict_l60_h180",
+          )
+          comparison = {}
+          for name in names:
+              root = Path(
+                  f"artifacts/candidate-51/flowvote-fade-v16-{name}-development"
+              )
+              metrics_path = root / "metrics.json"
+              diagnostics_path = root / "strategy_diagnostics.json"
+              if not metrics_path.is_file() or not diagnostics_path.is_file():
+                  comparison[name] = {"produced": False}
+                  continue
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              comparison[name] = {
+                  "produced": True,
+                  **{
+                      key: metrics.get(key)
+                      for key in (
+                          "ending_nav",
+                          "total_return",
+                          "geometric_daily_growth",
+                          "max_drawdown",
+                          "trades",
+                          "wins",
+                          "losses",
+                          "win_rate",
+                          "profit_factor",
+                          "expectancy_usdt",
+                          "largest_winner_share",
+                      )
+                  },
+                  "fade_edges": diagnostics.get("flowvote_source_edges"),
+                  "opposite_fade_exits": diagnostics.get(
+                      "flowvote_opposite_vote_exits"
+                  ),
+                  "entries": diagnostics.get("entry_submissions"),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "unresolved_reason_counts": diagnostics.get(
+                      "unresolved_reason_counts"
+                  ),
+                  "global_position_violations": diagnostics.get(
+                      "global_position_violations"
+                  ),
+                  "order_rejections": diagnostics.get("order_rejections"),
+              }
+          eligible = [
+              name
+              for name, row in comparison.items()
+              if row.get("produced")
+              and int(row.get("trades") or 0) >= 7
+              and float(row.get("expectancy_usdt") or 0.0) > 0.0
+              and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+              and float(row.get("max_drawdown") or 1.0) <= 0.20
+              and int(row.get("global_position_violations") or 0) == 0
+              and int(row.get("order_rejections") or 0) == 0
+          ]
+          eligible.sort(
+              key=lambda name: (
+                  -float(
+                      comparison[name].get("geometric_daily_growth") or 0.0
+                  ),
+                  -float(comparison[name].get("expectancy_usdt") or 0.0),
+                  -int(comparison[name].get("trades") or 0),
+                  name,
+              )
+          )
+          selected = eligible[0] if eligible else None
+          result = {
+              "comparison": comparison,
+              "eligible": eligible,
+              "selected": selected,
+              "status": (
+                  "TEST_UNTOUCHED"
+                  if selected
+                  else "ABANDON_PUBLIC_FLOWVOTE_OBSERVATION"
+              ),
+          }
+          output = Path(
+              "artifacts/candidate-51/flowvote-fade-v16-development-comparison.json"
+          )
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(
+              ".work/candidate-51-flowvote-fade-v16/selected.txt"
+          ).write_text((selected or "") + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run untouched week for the frozen survivor
+        if: always()
+        shell: bash
+        run: |
+          selected="$(tr -d '\r\n' < .work/candidate-51-flowvote-fade-v16/selected.txt)"
+          if [[ -z "$selected" ]]; then
+            exit 0
+          fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config ".work/candidate-51-flowvote-fade-v16/${selected}.json" \
+            --start 2025-11-03 --end 2025-11-09 \
+            --cache .cache/candidate-51-flowvote-fade-v16 \
+            --output artifacts/candidate-51/flowvote-fade-v16-selected-holdout \
+            --workspace .work/candidate-51-flowvote-fade-v16-holdout
+          exit 0
+
+      - name: Assess holdout and conditionally promote
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          variant = Path(
+              ".work/candidate-51-flowvote-fade-v16/selected.txt"
+          ).read_text().strip()
+          root = Path(
+              "artifacts/candidate-51/flowvote-fade-v16-selected-holdout"
+          )
+          metrics_path = root / "metrics.json"
+          diagnostics_path = root / "strategy_diagnostics.json"
+          assessment = {
+              "variant": variant or None,
+              "produced": False,
+              "component_pass": False,
+          }
+          if variant and metrics_path.is_file() and diagnostics_path.is_file():
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              checks = {
+                  "trades_at_least_calendar_days": int(
+                      metrics.get("trades") or 0
+                  )
+                  >= 7,
+                  "positive_growth": float(
+                      metrics.get("geometric_daily_growth") or 0.0
+                  )
+                  > 0.0,
+                  "positive_expectancy": float(
+                      metrics.get("expectancy_usdt") or 0.0
+                  )
+                  > 0.0,
+                  "drawdown_lte_20pct": float(
+                      metrics.get("max_drawdown") or 1.0
+                  )
+                  <= 0.20,
+                  "one_position": int(
+                      diagnostics.get("global_position_violations") or 0
+                  )
+                  == 0,
+                  "no_rejections": int(
+                      diagnostics.get("order_rejections") or 0
+                  )
+                  == 0,
+              }
+              assessment = {
+                  "variant": variant,
+                  "produced": True,
+                  **{
+                      key: metrics.get(key)
+                      for key in (
+                          "ending_nav",
+                          "total_return",
+                          "geometric_daily_growth",
+                          "max_drawdown",
+                          "trades",
+                          "wins",
+                          "losses",
+                          "win_rate",
+                          "profit_factor",
+                          "expectancy_usdt",
+                          "largest_winner_share",
+                      )
+                  },
+                  "checks": checks,
+                  "component_pass": all(checks.values()),
+              }
+          Path(
+              "artifacts/candidate-51/flowvote-fade-v16-holdout-assessment.json"
+          ).write_text(
+              json.dumps(assessment, indent=2, sort_keys=True) + "\n"
+          )
+          Path(
+              ".work/candidate-51-flowvote-fade-v16/promote.txt"
+          ).write_text(
+              assessment.get("variant", "") + "\n"
+              if assessment.get("component_pass")
+              else ""
+          )
+          print(json.dumps(assessment, indent=2, sort_keys=True))
+          PY
+          selected="$(tr -d '\r\n' < .work/candidate-51-flowvote-fade-v16/promote.txt)"
+          if [[ -z "$selected" ]]; then
+            exit 0
+          fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config ".work/candidate-51-flowvote-fade-v16/${selected}.json" \
+            --start 2025-07-01 --end 2025-07-30 \
+            --cache .cache/candidate-51-flowvote-fade-v16 \
+            --output artifacts/candidate-51/flowvote-fade-v16-selected-continuous-30d \
+            --workspace .work/candidate-51-flowvote-fade-v16-continuous
+          exit 0
+
+      - name: Persist exact evidence and final gate
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import shutil
+          from pathlib import Path
+
+          root = Path(
+              "artifacts/candidate-51/flowvote-fade-v16-selected-continuous-30d"
+          )
+          metrics_path = root / "metrics.json"
+          diagnostics_path = root / "strategy_diagnostics.json"
+          continuous = {
+              "produced": False,
+              "component_pass": False,
+              "project_gate_pass": False,
+          }
+          if metrics_path.is_file() and diagnostics_path.is_file():
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              component = {
+                  "positive_growth": float(
+                      metrics.get("geometric_daily_growth") or 0.0
+                  )
+                  > 0.0,
+                  "positive_expectancy": float(
+                      metrics.get("expectancy_usdt") or 0.0
+                  )
+                  > 0.0,
+                  "drawdown_lte_20pct": float(
+                      metrics.get("max_drawdown") or 1.0
+                  )
+                  <= 0.20,
+                  "one_position": int(
+                      diagnostics.get("global_position_violations") or 0
+                  )
+                  == 0,
+                  "no_rejections": int(
+                      diagnostics.get("order_rejections") or 0
+                  )
+                  == 0,
+              }
+              project = {
+                  "daily_geometric_growth_at_least_1pct": float(
+                      metrics.get("geometric_daily_growth") or 0.0
+                  )
+                  >= 0.01,
+                  "trades_at_least_calendar_days": int(
+                      metrics.get("trades") or 0
+                  )
+                  >= 30,
+                  **component,
+              }
+              continuous = {
+                  "produced": True,
+                  **{
+                      key: metrics.get(key)
+                      for key in (
+                          "ending_nav",
+                          "total_return",
+                          "geometric_daily_growth",
+                          "max_drawdown",
+                          "trades",
+                          "wins",
+                          "losses",
+                          "win_rate",
+                          "profit_factor",
+                          "expectancy_usdt",
+                          "largest_winner_share",
+                      )
+                  },
+                  "component_checks": component,
+                  "component_pass": all(component.values()),
+                  "project_checks": project,
+                  "project_gate_pass": all(project.values()),
+              }
+          assessment_path = Path(
+              "artifacts/candidate-51/flowvote-fade-v16-continuous-assessment.json"
+          )
+          assessment_path.write_text(
+              json.dumps(continuous, indent=2, sort_keys=True) + "\n"
+          )
+
+          evidence = Path(
+              "research/candidate-51/evidence/v16-flowvote-auction-fade"
+          )
+          if evidence.exists():
+              shutil.rmtree(evidence)
+          for name in ("development", "holdout", "continuous"):
+              (evidence / name).mkdir(parents=True)
+          shutil.copy2(
+              ".work/candidate-51-flowvote-fade-v16/manifest.json",
+              evidence / "manifest.json",
+          )
+          shutil.copy2(
+              "artifacts/candidate-51/flowvote-fade-v16-development-comparison.json",
+              evidence / "development/comparison.json",
+          )
+          shutil.copy2(
+              "artifacts/candidate-51/flowvote-fade-v16-holdout-assessment.json",
+              evidence / "holdout/assessment.json",
+          )
+          shutil.copy2(
+              assessment_path,
+              evidence / "continuous/assessment.json",
+          )
+          for variant in (
+              "source_l30_h60",
+              "source_l60_h180",
+              "strict_l30_h60",
+              "strict_l60_h180",
+          ):
+              source = Path(
+                  f"artifacts/candidate-51/flowvote-fade-v16-{variant}-development"
+              )
+              if not source.exists():
+                  continue
+              target = evidence / "development" / variant
+              target.mkdir()
+              for name in (
+                  "metrics.json",
+                  "strategy_diagnostics.json",
+                  "run.json",
+                  "data_manifest.json",
+                  "closed_scenarios.json",
+              ):
+                  candidate = source / name
+                  if candidate.is_file():
+                      shutil.copy2(candidate, target / name)
+          for label, source in (
+              (
+                  "holdout",
+                  Path(
+                      "artifacts/candidate-51/flowvote-fade-v16-selected-holdout"
+                  ),
+              ),
+              ("continuous", root),
+          ):
+              if not source.exists():
+                  continue
+              for name in (
+                  "metrics.json",
+                  "strategy_diagnostics.json",
+                  "run.json",
+                  "data_manifest.json",
+                  "closed_scenarios.json",
+              ):
+                  candidate = source / name
+                  if candidate.is_file():
+                      shutil.copy2(candidate, evidence / label / name)
+          print(json.dumps(continuous, indent=2, sort_keys=True))
+          PY
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add research/candidate-51/evidence/v16-flowvote-auction-fade
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate51: persist inverse flow vote auction fade"
+            for attempt in 1 2 3 4; do
+              git pull --rebase origin research/candidate-51 \
+                && git push origin HEAD:research/candidate-51 \
+                && break
+              sleep $((attempt * 5))
+            done
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-flowvote-fade-v16-${{ github.sha }}
+          path: artifacts/candidate-51/flowvote-fade-v16-*
+          if-no-files-found: warn
+          retention-days: 30
