@@ -1,0 +1,180 @@
+name: candidate-51-collect-v22-v24
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-collect-v22-v24.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: candidate-51-collect-v22-v24
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TRENDRIDER_RUN: "31322690571"
+      PASINDU_RUN: "31325478325"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Wait for exact research runs and capture status
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .collector/status .collector/logs .collector/downloads
+          for spec in "trendrider:${TRENDRIDER_RUN}" "pasindu:${PASINDU_RUN}"; do
+            name="${spec%%:*}"
+            run_id="${spec##*:}"
+            while true; do
+              gh run view "$run_id" --repo "$REPO" \
+                --json databaseId,name,headBranch,headSha,status,conclusion,createdAt,updatedAt \
+                > ".collector/status/${name}.json"
+              status="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' ".collector/status/${name}.json")"
+              [[ "$status" == "completed" ]] && break
+              sleep 20
+            done
+            set +e
+            gh run view "$run_id" --repo "$REPO" --log-failed \
+              > ".collector/logs/${name}-failed.log" 2>&1
+            set -e
+          done
+
+      - name: Download exact artifacts when present
+        shell: bash
+        run: |
+          set +e
+          gh run download "$TRENDRIDER_RUN" --repo "$REPO" \
+            --name candidate-51-trendrider-warmup-v22 \
+            --dir .collector/downloads/trendrider
+          echo $? > .collector/status/trendrider-download-exit.txt
+          gh run download "$PASINDU_RUN" --repo "$REPO" \
+            --name candidate-51-pasindu-supertrend-v24 \
+            --dir .collector/downloads/pasindu
+          echo $? > .collector/status/pasindu-download-exit.txt
+          exit 0
+
+      - name: Build implementation versus logic evidence
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          evidence = Path("research/candidate-51/evidence")
+          evidence.mkdir(parents=True, exist_ok=True)
+          status_dir = Path(".collector/status")
+          download = Path(".collector/downloads")
+
+          def status(name):
+              path = status_dir / f"{name}.json"
+              return json.loads(path.read_text()) if path.is_file() else None
+
+          def locate(root, name):
+              matches = list(root.rglob(name)) if root.exists() else []
+              return matches[0] if matches else None
+
+          def failed_tail(name):
+              path = Path(f".collector/logs/{name}-failed.log")
+              if not path.is_file():
+                  return []
+              lines = path.read_text(errors="replace").splitlines()
+              return lines[-300:]
+
+          trend_status = status("trendrider")
+          trend_file = locate(
+              download / "trendrider",
+              "trendrider-v22-final-verdict.json",
+          )
+          if trend_file is not None:
+              trend = json.loads(trend_file.read_text())
+              trend["collector"] = {
+                  "source_run": trend_status,
+                  "artifact_file": str(trend_file),
+              }
+          else:
+              trend = {
+                  "family": "public_trendrider_v211_source_warm",
+                  "classification": "IMPLEMENTATION_BLOCKED_BEFORE_COMMITTED_ECONOMIC_VERDICT",
+                  "source_run": trend_status,
+                  "failed_log_tail": failed_tail("trendrider"),
+              }
+          (evidence / "TRENDRIDER_V22_SOURCE_WARM_VERDICT_2026-08-09.json").write_text(
+              json.dumps(trend, indent=2, sort_keys=True) + "\n"
+          )
+
+          pasindu_status = status("pasindu")
+          pasindu_file = locate(
+              download / "pasindu",
+              "pasindu-v24-development-verdict.json",
+          )
+          if pasindu_file is not None:
+              pasindu = json.loads(pasindu_file.read_text())
+              pasindu["collector"] = {
+                  "source_run": pasindu_status,
+                  "artifact_file": str(pasindu_file),
+              }
+          else:
+              pasindu = {
+                  "family": "pasindu_live_effective_supertrend8x2",
+                  "classification": "IMPLEMENTATION_BLOCKED_BEFORE_COMMITTED_ECONOMIC_VERDICT",
+                  "source_run": pasindu_status,
+                  "failed_log_tail": failed_tail("pasindu"),
+              }
+          (evidence / "PASINDU_SUPERTREND_V24_DEVELOPMENT_VERDICT_2026-08-09.json").write_text(
+              json.dumps(pasindu, indent=2, sort_keys=True) + "\n"
+          )
+
+          combined = {
+              "generated_by": "candidate-51-collect-v22-v24",
+              "trendrider": {
+                  "run_id": 31322690571,
+                  "run_status": trend_status,
+                  "classification": trend.get("classification"),
+                  "project_gate_pass": bool(trend.get("project_gate_pass")),
+              },
+              "pasindu": {
+                  "run_id": 31325478325,
+                  "run_status": pasindu_status,
+                  "classification": pasindu.get("classification"),
+                  "survivors": pasindu.get("survivors", []),
+              },
+              "interpretation_rule": (
+                  "A failed or missing artifact is implementation-blocked and carries no alpha verdict. "
+                  "A clean produced account is classified from its own cost-after metrics and valid-fill diagnostics."
+              ),
+          }
+          (evidence / "V22_V24_COLLECTION_SUMMARY_2026-08-09.json").write_text(
+              json.dumps(combined, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(combined, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit exact compact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git pull --rebase origin research/candidate-51
+          git add \
+            research/candidate-51/evidence/TRENDRIDER_V22_SOURCE_WARM_VERDICT_2026-08-09.json \
+            research/candidate-51/evidence/PASINDU_SUPERTREND_V24_DEVELOPMENT_VERDICT_2026-08-09.json \
+            research/candidate-51/evidence/V22_V24_COLLECTION_SUMMARY_2026-08-09.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate51: persist v22 and v24 research verdicts"
+          git push origin HEAD:research/candidate-51
