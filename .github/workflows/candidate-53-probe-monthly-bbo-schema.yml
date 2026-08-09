@@ -1,0 +1,38 @@
+name: candidate-53-probe-monthly-bbo-schema
+on:
+  push:
+    branches: ["research/candidate-53"]
+    paths:
+      - "research/candidate-53/probe_monthly_bbo_schema.py"
+      - ".github/workflows/candidate-53-probe-monthly-bbo-schema.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-53
+          fetch-depth: 0
+      - name: Reuse BBO source contract and inspect archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$(pwd)"
+          git fetch origin research/candidate-16-v13-volatility-squeeze-release:refs/remotes/origin/c16-v13
+          rm -rf .deps/c16 && mkdir -p .deps
+          git worktree add --detach .deps/c16 refs/remotes/origin/c16-v13
+          PYTHONPATH=.deps/c16/research/candidate-16:research/candidate-53 python research/candidate-53/probe_monthly_bbo_schema.py | tee monthly_bbo_schema.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-53-monthly-bbo-schema-${{ github.sha }}
+          path: monthly_bbo_schema.json
+          retention-days: 30
