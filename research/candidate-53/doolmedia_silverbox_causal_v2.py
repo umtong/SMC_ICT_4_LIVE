@@ -2,8 +2,8 @@
 """Causal asynchronous interpretation of the public DoolMedia Silver-Box rules.
 
 The first reconstruction required the 5m RSI cross to land on the final 5m
-child of the same 15m bar.  That is causal but may be stricter than the stated
-"15 min chart as master; 5 min for fine entry" intent.  This independent v2
+child of the same 15m bar. That is causal but may be stricter than the stated
+"15 min chart as master; 5 min for fine entry" intent. This independent v2
 implements the natural live interpretation without changing any thresholds:
 
 - maintain the latest fully completed 15m RSI(14)/ATR(14) master state;
@@ -28,51 +28,66 @@ from pathlib import Path
 import pandas as pd
 
 from doolmedia_silverbox_causal_study import (
-    SYMBOLS, LONG_MASTER, SHORT_MASTER, LONG_FINE_CROSS, SHORT_FINE_CROSS,
-    ATR_MULT, TP_R, Signal, detect as detect_v1, with_indicators, score, summarize,
+    SYMBOLS, LONG_MASTER, SHORT_MASTER,
+    ATR_MULT, TP_R, Signal, with_indicators, score, summarize,
     arbitrate, load_symbol,
 )
 
 
 def detect_async(symbol: str, panel: pd.DataFrame, year: int):
+    """Linear-time causal as-of join of completed 15m master onto 5m closes."""
     f5, f15 = with_indicators(panel)
     start = pd.Timestamp(f"{year}-01-01", tz="UTC")
     end = pd.Timestamp(f"{year+1}-01-01", tz="UTC")
+    core = f5.loc[(f5.index >= start) & (f5.index < end)].copy()
+    master = f15[["rsi14", "atr14"]].dropna().sort_index().copy()
+    if core.empty or master.empty:
+        return [], f15
+
+    left = core.reset_index().rename(columns={core.index.name or "index": "ts"})
+    if "ts" not in left.columns:
+        left = left.rename(columns={left.columns[0]: "ts"})
+    right = master.reset_index().rename(columns={master.index.name or "index": "master_ts"})
+    if "master_ts" not in right.columns:
+        right = right.rename(columns={right.columns[0]: "master_ts"})
+    joined = pd.merge_asof(
+        left.sort_values("ts"),
+        right.sort_values("master_ts"),
+        left_on="ts",
+        right_on="master_ts",
+        direction="backward",
+        allow_exact_matches=True,
+    )
+
     signals=[]
-    master = f15[["rsi14","atr14"]].dropna().sort_index()
-    if master.empty:
-        return signals, f15
-    for ts, fine in f5.loc[(f5.index >= start) & (f5.index < end)].iterrows():
+    for row in joined.itertuples(index=False):
+        ts = pd.Timestamp(row.ts)
         if ts.dayofweek >= 5:
             continue
-        known = master[master.index <= ts]
-        if known.empty:
-            continue
-        m = known.iloc[-1]
-        rsi15=float(m["rsi14"]); atr=float(m["atr14"]); rsi5=float(fine["rsi6"])
+        rsi15=float(row.rsi14); atr=float(row.atr14); rsi5=float(row.rsi6)
         if not all(math.isfinite(v) for v in (rsi15,atr,rsi5)) or atr<=0:
             continue
-        if rsi15 <= LONG_MASTER and bool(fine["cross_up_45"]):
+        if rsi15 <= LONG_MASTER and bool(row.cross_up_45):
             side=1
-        elif rsi15 >= SHORT_MASTER and bool(fine["cross_dn_55"]):
+        elif rsi15 >= SHORT_MASTER and bool(row.cross_dn_55):
             side=-1
         else:
             continue
-        entry_ts=pd.Timestamp(ts)+pd.Timedelta(minutes=1)
+        entry_ts=ts+pd.Timedelta(minutes=1)
         if entry_ts not in panel.index:
             continue
         entry=float(panel.loc[entry_ts,"perp_open"])
         if side>0:
-            stop=float(fine["low"])-ATR_MULT*atr
+            stop=float(row.low)-ATR_MULT*atr
             risk=entry-stop
             target=entry+TP_R*risk
         else:
-            stop=float(fine["high"])+ATR_MULT*atr
+            stop=float(row.high)+ATR_MULT*atr
             risk=stop-entry
             target=entry-TP_R*risk
         if not (entry>0 and stop>0 and target>0 and risk>0):
             continue
-        signals.append(Signal(symbol,pd.Timestamp(ts),entry_ts,side,entry,stop,target,rsi15,rsi5,atr))
+        signals.append(Signal(symbol,ts,entry_ts,side,entry,stop,target,rsi15,rsi5,atr))
     return signals,f15
 
 
