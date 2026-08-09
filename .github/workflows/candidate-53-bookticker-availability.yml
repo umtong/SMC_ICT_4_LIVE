@@ -1,0 +1,29 @@
+name: candidate-53-bookticker-availability
+
+on:
+  push:
+    branches: ["research/candidate-53"]
+    paths:
+      - "research/candidate-53/check_bookticker_availability.py"
+      - ".github/workflows/candidate-53-bookticker-availability.yml"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-53}
+      - name: Probe official archives
+        run: |
+          mkdir -p artifacts/candidate-53-bookticker-availability
+          python research/candidate-53/check_bookticker_availability.py | tee artifacts/candidate-53-bookticker-availability/result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-53-bookticker-availability-${{ github.sha }}
+          path: artifacts/candidate-53-bookticker-availability/**
+          if-no-files-found: error
