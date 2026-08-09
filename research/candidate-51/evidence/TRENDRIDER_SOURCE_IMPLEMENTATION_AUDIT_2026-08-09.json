@@ -1,0 +1,98 @@
+{
+  "external_source": {
+    "repository": "darkvolg/trendrider-strategy",
+    "strategy_file": "TrendRiderStrategy.py",
+    "public_version": "2.11.0",
+    "timeframe": "1h",
+    "license": "MIT"
+  },
+  "classification": "SOURCE_PERFORMANCE_PARITY_UNRESOLVED_PUBLIC_POLICY_TESTABLE",
+  "reported_claims_not_used_as_alpha_evidence": [
+    "Website reports backtest/live-style metrics across more pairs and displays both long and short examples.",
+    "Repository README reports relative V4 improvements and a paid-report PF change rather than a complete committed trade ledger.",
+    "Blog and website metric counts vary across pages and versions."
+  ],
+  "implementation_and_parity_findings": [
+    {
+      "finding": "Public code is long-only",
+      "evidence": "can_short = False and every populated entry is enter_long",
+      "conflict": "The public website includes short trade examples and describes broader production behavior",
+      "classification": "SOURCE_PARITY_GAP"
+    },
+    {
+      "finding": "Private production layers are omitted",
+      "evidence": "Fear and Greed, funding/OI, whale alerts and price-alert layers are replaced by neutral constants or excluded",
+      "classification": "SOURCE_PARITY_GAP"
+    },
+    {
+      "finding": "Portfolio mechanics differ from project",
+      "evidence": "Sample config permits three simultaneous trades with fixed stake; project permits one global entry/position and current-NAV 3% planned loss",
+      "classification": "ACCOUNT_MODEL_INCOMPATIBILITY"
+    },
+    {
+      "finding": "Tuned values conflict with declared optimization ranges",
+      "evidence": {
+        "adx_threshold_buy_param": 18,
+        "adx_threshold_declared_range": [20, 35],
+        "volume_factor_buy_param": 0.7,
+        "volume_factor_declared_range": [1.0, 2.5]
+      },
+      "classification": "PUBLIC_SOURCE_CONFIGURATION_AMBIGUITY"
+    },
+    {
+      "finding": "No direct future-bar reference found in public entry and exit expressions",
+      "evidence": "Current completed 1h indicators, shift(1), and Freqtrade informative-pair merge are used; no shift(-n) or extrema back-labeling was found",
+      "classification": "CAUSAL_POLICY_TESTABLE"
+    },
+    {
+      "finding": "The public policy is not merely a confidence score",
+      "evidence": "Six explicit long entry branches fire first, then confirm_trade_entry rejects candidates below confidence 5 or 6 depending on regime",
+      "classification": "IMPLEMENTATION_REQUIREMENT"
+    },
+    {
+      "finding": "Management is integral to the claimed V4 improvement",
+      "evidence": "2h/4h/8h/16h cascading loss cuts, 24h timeout, ROI ladder, trailing stop and indicator exits",
+      "classification": "IMPLEMENTATION_REQUIREMENT"
+    }
+  ],
+  "public_policy_to_test": {
+    "direction": "long_only",
+    "entry_branches": [
+      "trend_pullback",
+      "ema50_bounce",
+      "rsi_bounce",
+      "ema_crossover",
+      "bb_bounce",
+      "macd_reversal"
+    ],
+    "confidence_gate": "minimum 6 in detected bear regime, otherwise 5",
+    "source_stop": -0.06,
+    "roi_ladder": {
+      "0_minutes": 0.229,
+      "124_minutes": 0.136,
+      "290_minutes": 0.044,
+      "764_minutes": 0.0
+    },
+    "trailing": {
+      "activate_profit": 0.05,
+      "trail_distance": 0.03
+    },
+    "cascading_exit": {
+      "2h": "profit < -1.5%",
+      "4h": "profit < 0%",
+      "8h": "profit < 0.5%",
+      "16h": "profit < 1%",
+      "24h": "force exit"
+    }
+  },
+  "project_adaptation_contract": [
+    "Use only completed 1h/4h/daily/BTC bars.",
+    "Use the public tuned values exactly where unambiguous and record range conflicts rather than optimizing them.",
+    "Run one four-symbol NautilusTrader account with one global slot.",
+    "Size every accepted entry to the current-NAV 3% loss budget using the frozen 6% stop and full costs.",
+    "Implement source management before changing any signal threshold.",
+    "Treat a missing daily EMA200 history as the public no-data fallback, not as future-filled information.",
+    "Do not attribute website short trades or private-data boosts to the public long policy."
+  ],
+  "decision": "Implement and test the public causal long policy; external performance claims remain discovery signals only."
+}
