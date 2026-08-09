@@ -1,0 +1,83 @@
+name: candidate-47-ichifan-inverse-short
+
+on:
+  push:
+    branches: ["research/candidate-47"]
+    paths: [".github/workflows/candidate-47-ichifan-inverse-short.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  short-development-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-47:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-47-ichifan-inverse-short
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-47
+      - name: Verify environment and inverse contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-47/ichifan_inverse_short_strategy.py research/candidate-47/ichifan_inverse_short_launch.py research/candidate-47/test_ichifan_inverse_short.py
+          python - <<'PY'
+          import inspect, test_ichifan_inverse_short as module
+          tests = [(n, f) for n, f in inspect.getmembers(module, inspect.isfunction) if n.startswith("test_")]
+          assert tests
+          for name, fn in tests:
+              fn(); print(f"PASS {name}")
+          PY
+      - name: Run seven-day four-symbol continuous short account
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          python research/candidate-47/ichifan_inverse_short_launch.py \
+            --config research/candidate-47/ichifan_structural_config.json \
+            --start 2026-07-01 --end 2026-07-07 \
+            --cache .cache/candidate-47-ichifan-inverse-short \
+            --output "$ROOT" --workspace "$ROOT/workspace" \
+            2>&1 | tee "$ROOT/console.log"
+      - name: Print and verify short result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          m = json.loads((Path(os.environ["ROOT"]) / "metrics.json").read_text()); d = m["strategy_diagnostics"]
+          result = {k: m[k] for k in ("ending_nav","total_return","geometric_daily_growth","max_drawdown","trades","wins","losses","win_rate","profit_factor","expectancy_usdt")}
+          result.update({
+              "entry_candidates": d.get("inverse_short_entry_candidates", 0),
+              "rising_edges": d.get("inverse_short_rising_edges", 0),
+              "structural_submissions": d.get("inverse_short_structural_submissions", 0),
+              "structural_failures": d.get("inverse_short_structural_failures", 0),
+              "trend_exits": d.get("inverse_short_exit_signals", 0),
+              "exchange_max_quantity_bounds": d.get("exchange_max_quantity_bounds", 0),
+          })
+          print(json.dumps(result, indent=2, sort_keys=True))
+          assert m["single_continuous_account"] is True
+          assert m["single_strategy_process"] is True
+          assert m["global_entry_or_position_limit"] == 1
+          assert m["gate_checks"]["risk_fraction_exactly_three_percent"] is True
+          assert m["gate_checks"]["no_global_position_violation"] is True
+          assert m["gate_checks"]["nautilus_positions_match"] is True
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-47-ichifan-inverse-short-${{ github.sha }}
+          path: artifacts/candidate-47-ichifan-inverse-short/**
+          if-no-files-found: warn
+          retention-days: 30
