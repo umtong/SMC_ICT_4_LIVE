@@ -1,0 +1,217 @@
+name: candidate-51-sma-offset-v4
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-sma-offset-v4.yml"
+      - "research/candidate-51/router.py"
+      - "research/candidate-51/strategy.py"
+      - "research/candidate-51/config.json"
+      - "research/candidate-51/test_router.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-sma-offset-v4
+  cancel-in-progress: true
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout Candidate 51
+        uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install locked foundation
+        run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+
+      - name: Runtime and causal-policy contracts
+        run: |
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          uv run --with pytest python -m pytest -q research/candidate-51/test_router.py
+
+      - name: Predeclare source and opportunity-map variants
+        run: |
+          python - <<'PY'
+          import copy
+          import hashlib
+          import json
+          from pathlib import Path
+
+          source = json.loads(Path("research/candidate-51/config.json").read_text())
+          variants = {
+              "exact0960": 0.960,
+              "moderate0980": 0.980,
+              "shallow0990": 0.990,
+          }
+          manifest = {
+              "family": "public_SMAOffsetV2_causal_adaptation",
+              "source": {
+                  "repository": "PeetCrypto/freqtrade-stuff",
+                  "commit": "f6c38def0b2fe01d8d42e47740cdeab53511527b",
+                  "path": "SMAOffsetV2.py",
+                  "exact_buy_offset": 0.960,
+                  "exact_sell_offset": 1.012,
+              },
+              "development_interval": ["2026-07-22", "2026-07-28"],
+              "variants": variants,
+              "selection_rule": "positive post-cost expectancy, positive geometric growth, no integrity violation, and at least seven completed trades",
+              "router_sha256": hashlib.sha256(Path("research/candidate-51/router.py").read_bytes()).hexdigest(),
+              "strategy_sha256": hashlib.sha256(Path("research/candidate-51/strategy.py").read_bytes()).hexdigest(),
+          }
+          work = Path(".work/candidate-51-v4")
+          work.mkdir(parents=True, exist_ok=True)
+          (work / "variant_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          for name, offset in variants.items():
+              config = copy.deepcopy(source)
+              config["strategy"]["sma_offset_low"] = offset
+              (work / f"{name}.json").write_text(json.dumps(config, indent=2) + "\n")
+          PY
+
+      - name: Exact public source offset 0.960
+        run: |
+          uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-v4/exact0960.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v4 \
+            --output artifacts/candidate-51/v4-exact0960-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v4-exact
+
+      - name: Moderate opportunity offset 0.980
+        run: |
+          uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-v4/moderate0980.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v4 \
+            --output artifacts/candidate-51/v4-moderate0980-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v4-moderate
+
+      - name: Shallow opportunity offset 0.990
+        run: |
+          uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-v4/shallow0990.json \
+            --start 2026-07-22 --end 2026-07-28 \
+            --cache .cache/candidate-51-v4 \
+            --output artifacts/candidate-51/v4-shallow0990-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v4-shallow
+
+      - name: Compare variants mechanically
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          roots = {
+              "exact0960": Path("artifacts/candidate-51/v4-exact0960-development-2026-07-22_2026-07-28"),
+              "moderate0980": Path("artifacts/candidate-51/v4-moderate0980-development-2026-07-22_2026-07-28"),
+              "shallow0990": Path("artifacts/candidate-51/v4-shallow0990-development-2026-07-22_2026-07-28"),
+          }
+          comparison = {}
+          for name, root in roots.items():
+              metrics_path = root / "metrics.json"
+              diagnostics_path = root / "strategy_diagnostics.json"
+              if not metrics_path.is_file() or not diagnostics_path.is_file():
+                  comparison[name] = {"produced": False}
+                  continue
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              comparison[name] = {
+                  "produced": True,
+                  "ending_nav": metrics.get("ending_nav"),
+                  "total_return": metrics.get("total_return"),
+                  "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                  "max_drawdown": metrics.get("max_drawdown"),
+                  "trades": metrics.get("trades"),
+                  "wins": metrics.get("wins"),
+                  "win_rate": metrics.get("win_rate"),
+                  "profit_factor": metrics.get("profit_factor"),
+                  "expectancy_usdt": metrics.get("expectancy_usdt"),
+                  "largest_winner_share": metrics.get("largest_winner_share"),
+                  "source_signals": diagnostics.get("source_signals_before_execution_filters"),
+                  "entries": diagnostics.get("entry_submissions"),
+                  "funding_rejections": diagnostics.get("funding_runway_rejections"),
+                  "cooldown_rejections": diagnostics.get("cooldown_rejections"),
+                  "episode_rejections": diagnostics.get("used_episode_rejections"),
+                  "source_exits": diagnostics.get("sma_offset_exit_submissions"),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "global_position_violations": diagnostics.get("global_position_violations"),
+                  "order_rejections": diagnostics.get("order_rejections"),
+              }
+          eligible = [
+              name for name, row in comparison.items()
+              if row.get("produced")
+              and int(row.get("trades") or 0) >= 7
+              and float(row.get("expectancy_usdt") or 0.0) > 0.0
+              and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+              and int(row.get("global_position_violations") or 0) == 0
+              and int(row.get("order_rejections") or 0) == 0
+          ]
+          eligible.sort(key=lambda name: (
+              -float(comparison[name].get("geometric_daily_growth") or 0.0),
+              -float(comparison[name].get("profit_factor") or 0.0),
+              name,
+          ))
+          result = {
+              "comparison": comparison,
+              "eligible": eligible,
+              "selected": eligible[0] if eligible else None,
+              "family_status": "PROMOTE_TO_UNTOUCHED" if eligible else "REJECT_OR_REDESIGN",
+          }
+          path = Path("artifacts/candidate-51/v4-comparison.json")
+          path.parent.mkdir(parents=True, exist_ok=True)
+          path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Persist compact development evidence
+        if: success()
+        run: |
+          set -euo pipefail
+          root="research/candidate-51/evidence/v4-sma-offset-development-2026-07-22_2026-07-28"
+          rm -rf "$root"
+          mkdir -p "$root"
+          cp .work/candidate-51-v4/variant_manifest.json "$root/variant_manifest.json"
+          cp artifacts/candidate-51/v4-comparison.json "$root/comparison.json"
+          for variant in exact0960 moderate0980 shallow0990; do
+            source="artifacts/candidate-51/v4-${variant}-development-2026-07-22_2026-07-28"
+            target="$root/$variant"
+            mkdir -p "$target"
+            for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
+              [[ ! -f "$source/$file" ]] || cp "$source/$file" "$target/$file"
+            done
+          done
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add "$root"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate51: persist SMAOffsetV2 development screen"
+            git push origin HEAD:research/candidate-51
+          fi
+
+      - name: Preserve full diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-v4-sma-offset-${{ github.sha }}
+          path: |
+            artifacts/candidate-51/v4-*/**/*.json
+            artifacts/candidate-51/v4-*/**/*.csv
+            artifacts/candidate-51/v4-comparison.json
+          if-no-files-found: warn
