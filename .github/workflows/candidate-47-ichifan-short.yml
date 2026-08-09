@@ -1,0 +1,154 @@
+name: candidate-47-ichifan-short
+
+on:
+  push:
+    branches: ["research/candidate-47"]
+    paths:
+      - "research/candidate-47/ichifan_strategy.py"
+      - "research/candidate-47/ichifan_launch.py"
+      - "research/candidate-47/ichifan_config.json"
+      - "research/candidate-47/test_ichifan.py"
+      - "research/candidate-47/run.py"
+      - "research/candidate-47/event_lifecycle_patch.py"
+      - "research/candidate-35/strategy.py"
+      - ".github/workflows/candidate-47-ichifan-short.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-47-ichifan-short
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-47:research/candidate-16:research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-47-ichifan-short
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-47
+
+      - name: Verify environment, causality contracts, and module ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-47/ichifan_strategy.py \
+            research/candidate-47/ichifan_launch.py \
+            research/candidate-47/test_ichifan.py \
+            research/candidate-47/run.py
+          python - <<'PY'
+          import inspect
+          import test_ichifan
+
+          tests = [
+              (name, fn)
+              for name, fn in inspect.getmembers(test_ichifan, inspect.isfunction)
+              if name.startswith("test_")
+          ]
+          assert tests, "no ichiFan contracts discovered"
+          for name, fn in tests:
+              fn()
+              print(f"PASS {name}")
+          print(f"executed {len(tests)} ichiFan contracts")
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          import ichifan_strategy
+          import router
+
+          root = Path("research/candidate-47").resolve()
+          assert Path(ichifan_strategy.__file__).resolve() == root / "ichifan_strategy.py"
+          assert Path(router.__file__).resolve() == root / "router.py"
+          assert ichifan_strategy.Candidate35Strategy is ichifan_strategy.Candidate47IchiFanStrategy
+          print("candidate47 ichiFan module ownership verified")
+          PY
+
+      - name: Run seven-day four-symbol continuous-account Nautilus diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          python research/candidate-47/ichifan_launch.py \
+            --config research/candidate-47/ichifan_config.json \
+            --start 2026-07-01 \
+            --end 2026-07-07 \
+            --cache .cache/candidate-47-ichifan-short \
+            --output "$ROOT" \
+            --workspace "$ROOT/workspace" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Diagnose alpha, frequency, and validity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          metrics = json.loads((root / "metrics.json").read_text())
+          diagnostics = metrics["strategy_diagnostics"]
+          summary = {
+              "candidate": metrics["candidate"],
+              "evaluation_start": metrics["evaluation_start"],
+              "evaluation_end": metrics["evaluation_end"],
+              "calendar_days": metrics["calendar_days"],
+              "starting_nav": metrics["starting_nav"],
+              "ending_nav": metrics["ending_nav"],
+              "total_return": metrics["total_return"],
+              "geometric_daily_growth": metrics["geometric_daily_growth"],
+              "max_drawdown": metrics["max_drawdown"],
+              "trades": metrics["trades"],
+              "wins": metrics["wins"],
+              "losses": metrics["losses"],
+              "win_rate": metrics["win_rate"],
+              "expectancy_usdt": metrics["expectancy_usdt"],
+              "profit_factor": metrics["profit_factor"],
+              "position_counts_by_symbol": metrics.get("position_counts_by_symbol", {}),
+              "daily_returns": metrics.get("daily_returns", {}),
+              "ichifan_five_minute_decisions": diagnostics.get("ichifan_five_minute_decisions", 0),
+              "ichifan_ready_symbol_states": diagnostics.get("ichifan_ready_symbol_states", 0),
+              "ichifan_entry_candidates": diagnostics.get("ichifan_entry_candidates", 0),
+              "ichifan_rising_edge_candidates": diagnostics.get("ichifan_rising_edge_candidates", 0),
+              "entry_submissions": diagnostics.get("entry_submissions", 0),
+              "entry_expirations": diagnostics.get("entry_expirations", 0),
+              "ichifan_exit_signals": diagnostics.get("ichifan_exit_signals", 0),
+              "ichifan_trailing_exits": diagnostics.get("ichifan_trailing_exits", 0),
+              "order_rejections": diagnostics.get("order_rejections", 0),
+              "global_position_violations": diagnostics.get("global_position_violations", 0),
+              "gate_checks": metrics["gate_checks"],
+          }
+          print(json.dumps(summary, indent=2, sort_keys=True))
+
+          assert metrics["engine"] == "NautilusTrader BacktestNode"
+          assert metrics["single_continuous_account"] is True
+          assert metrics["single_strategy_process"] is True
+          assert metrics["global_entry_or_position_limit"] == 1
+          assert metrics["gate_checks"]["risk_fraction_exactly_three_percent"] is True
+          assert metrics["gate_checks"]["no_global_position_violation"] is True
+          assert metrics["gate_checks"]["nautilus_positions_match"] is True
+          assert diagnostics.get("global_position_violations", 0) == 0
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-47-ichifan-short-${{ github.sha }}
+          path: artifacts/candidate-47-ichifan-short/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
