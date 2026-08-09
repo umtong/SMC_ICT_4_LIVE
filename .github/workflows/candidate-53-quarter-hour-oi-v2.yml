@@ -1,0 +1,75 @@
+name: candidate-53-quarter-hour-oi-screen-v2
+
+on:
+  push:
+    branches: ["research/candidate-53"]
+    paths:
+      - "research/candidate-53/quarter_hour_oi_study.py"
+      - "research/candidate-53/quarter_hour_oi_study_v2.py"
+      - ".github/workflows/candidate-53-quarter-hour-oi-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {label: "2025-02-10_2025-02-16", start: "2025-02-10", end: "2025-02-16"}
+          - {label: "2025-04-14_2025-04-20", start: "2025-04-14", end: "2025-04-20"}
+          - {label: "2025-07-14_2025-07-20", start: "2025-07-14", end: "2025-07-20"}
+          - {label: "2025-11-10_2025-11-16", start: "2025-11-10", end: "2025-11-16"}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-53-quarter-hour-v2/${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-53
+          fetch-depth: 0
+
+      - name: Reuse Candidate05 verified data and timestamp contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$(pwd)"
+          git fetch origin research/candidate-35:refs/remotes/origin/c35
+          rm -rf .deps/c35 && mkdir -p .deps
+          git worktree add --detach .deps/c35 refs/remotes/origin/c35
+          git config --global --add safe.directory "$(pwd)/.deps/c35"
+          PYTHONPATH=.deps/c35/research/candidate-05 python -m py_compile \
+            research/candidate-53/quarter_hour_oi_study.py \
+            research/candidate-53/quarter_hour_oi_study_v2.py \
+            .deps/c35/research/candidate-05/features.py \
+            .deps/c35/research/candidate-05/timestamp_contract.py
+
+      - name: Screen external quarter-hour mechanism
+        shell: bash
+        env:
+          PYTHONPATH: .deps/c35/research/candidate-05
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          python research/candidate-53/quarter_hour_oi_study_v2.py \
+            --start "${{ matrix.start }}" \
+            --end "${{ matrix.end }}" \
+            --cache ".cache/candidate-53-quarter-hour-v2/${{ matrix.label }}" \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-53-quarter-hour-v2-${{ matrix.label }}-${{ github.sha }}
+          path: artifacts/candidate-53-quarter-hour-v2/${{ matrix.label }}/**
+          if-no-files-found: warn
+          retention-days: 30
