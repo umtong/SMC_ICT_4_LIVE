@@ -1,0 +1,64 @@
+name: candidate-53-l1-ofi-frozen-bounded-reorder
+
+on:
+  push:
+    branches: ["research/candidate-53"]
+    paths:
+      - "research/candidate-53/l1_ofi_participation_study_v3.py"
+      - ".github/workflows/candidate-53-l1-ofi-reorder-retry.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT]
+        period:
+          - {label: "JAN_LATER", start: "2024-01-15", end: "2024-01-21"}
+          - {label: "FEB_CONFIRM", start: "2024-02-05", end: "2024-02-11"}
+          - {label: "MAR_UNTOUCHED", start: "2024-03-04", end: "2024-03-10"}
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-53-l1-ofi-reorder/${{ matrix.period.label }}/${{ matrix.symbol }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-53, fetch-depth: 0}
+      - name: Reuse preserved Candidate16 BBO source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$(pwd)"
+          git fetch origin research/candidate-16-v13-volatility-squeeze-release:refs/remotes/origin/c16-v13
+          rm -rf .deps/c16 && mkdir -p .deps
+          git worktree add --detach .deps/c16 refs/remotes/origin/c16-v13
+          git config --global --add safe.directory "$(pwd)/.deps/c16"
+          PYTHONPATH=.deps/c16/research/candidate-16 python -m py_compile \
+            research/candidate-53/l1_ofi_participation_study.py \
+            research/candidate-53/l1_ofi_participation_study_v3.py
+      - name: Run unchanged frozen OFI rule with corrected event ordering
+        shell: bash
+        env: {PYTHONPATH: .deps/c16/research/candidate-16}
+        run: |
+          set -euo pipefail
+          rm -rf "$ROOT" && mkdir -p "$ROOT"
+          python research/candidate-53/l1_ofi_participation_study_v3.py \
+            --symbol "${{ matrix.symbol }}" --start "${{ matrix.period.start }}" --end "${{ matrix.period.end }}" \
+            --cache ".cache/candidate-53-l1-ofi-reorder/${{ matrix.period.label }}/${{ matrix.symbol }}" \
+            --output "$ROOT" 2>&1 | tee "$ROOT/console.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-53-l1-ofi-reorder-${{ matrix.period.label }}-${{ matrix.symbol }}-${{ github.sha }}
+          path: artifacts/candidate-53-l1-ofi-reorder/${{ matrix.period.label }}/${{ matrix.symbol }}/**
+          if-no-files-found: warn
+          retention-days: 30
