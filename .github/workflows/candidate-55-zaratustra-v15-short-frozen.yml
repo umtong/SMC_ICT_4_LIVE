@@ -1,0 +1,94 @@
+name: candidate-55-zaratustra-v15-short-frozen
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v15-short-frozen.yml"
+      - "research/candidate-55/router_zaratustra_v15.py"
+      - "research/candidate-55/router_zaratustra_v15_short.py"
+      - "research/candidate-55/strategy_zaratustra_v15.py"
+      - "research/candidate-55/strategy_zaratustra_v15_short.py"
+      - "research/candidate-55/run_zaratustra_v15_short_frozen.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-zaratustra-v15-short-frozen
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - name: Materialize frozen V15 short family
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/router_zaratustra_v15.py research/candidate-51/router_zaratustra_v15.py
+          cp research/candidate-55/router_zaratustra_v15_short.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra_v15.py research/candidate-51/strategy_zaratustra_v15.py
+          cp research/candidate-55/strategy_zaratustra_v15_short.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and prove frozen-family contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import (
+              BarObservation,
+              FeatureObservation,
+              RouteConfig,
+              classify_symbol,
+          )
+
+          # A monotonic up sequence may create a long source signal but the frozen
+          # family must never return an actionable long decision.
+          bars = [
+              BarObservation(
+                  ts_event=index * 60_000_000_000,
+                  open=100.0 + index * 0.05,
+                  high=100.2 + index * 0.05,
+                  low=99.8 + index * 0.05,
+                  close=100.1 + index * 0.05,
+                  volume=1000.0 + index * 10.0,
+              )
+              for index in range(400)
+          ]
+          decision = classify_symbol(
+              "BTCUSDT",
+              bars,
+              FeatureObservation(bars[-1].ts_event, ready=True),
+              RouteConfig(picasso_precedence_mode="edge_exact"),
+          )
+          assert decision.side in (-1, 0)
+          assert decision.side != 1
+          print("Frozen V15 short family cannot emit a long entry")
+          PY
+      - name: Run fresh 30d and conditional older 90d
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_zaratustra_v15_short_frozen.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v15-short-frozen-${{ github.sha }}
+          path: artifacts/candidate-55/zaratustra-v15-short-frozen-*
+          if-no-files-found: warn
