@@ -1,0 +1,168 @@
+name: candidate-51-markov-v26
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-markov-v26.yml"
+      - "research/candidate-51/router_markov_v26.py"
+      - "research/candidate-51/strategy_markov_v26.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-51-markov-v26
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+
+      - name: Materialize causal Markov policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_markov_v26.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_markov_v26.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and verify causal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import BarObservation, OnlineMarkovRouter, RouteConfig, UNRESOLVED
+          minute=60_000_000_000
+          cfg=RouteConfig(markov_sequence_length=2,markov_min_transition_count=1,markov_min_direction_probability=0.5,markov_atr_period=3,markov_volume_period=3)
+          model=OnlineMarkovRouter(cfg,['BTCUSDT'])
+          bars=[]
+          for i in range(12):
+              p=100.0+i*(1 if i%4<2 else -0.7)
+              bars.append(BarObservation((i+1)*15*minute,p-0.2,p+0.7,p-0.8,p,100+i))
+              model.advance('BTCUSDT',tuple(bars))
+          assert model.learned_transitions['BTCUSDT'] <= model.observations['BTCUSDT']-2
+          duplicate=model.advance('BTCUSDT',tuple(bars))
+          assert duplicate.state==UNRESOLVED and duplicate.reasons==('MARKOV_DUPLICATE_BAR',)
+          print('causal online transition ordering passes')
+          PY
+
+      - name: Freeze source and adapted profiles
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          base=json.loads(Path('research/candidate-51/config.json').read_text())
+          for key in ('sma_offset_low','sma_offset_high','sma_stop_min_fraction','sma_stop_max_fraction','sma_stop_atr_buffer'):
+              base['strategy'].pop(key,None)
+          common={
+              'feature_max_age_seconds':65.0,'cooldown_minutes':0,
+              'max_hold_minutes':240,'funding_flatten_minute':45,
+              'funding_blackout_before_minutes':25,'funding_blackout_after_minutes':5,
+              'markov_atr_period':18,'markov_volume_period':24,
+              'markov_price_state_threshold':0.774325295833127,
+              'markov_volume_high_multiplier':2.96381982151409,
+              'markov_volume_low_multiplier':0.76691565071116,
+              'markov_stop_atr':3.2935543511297,
+              'markov_target_atr':2.04204584013095,
+          }
+          profiles={
+              'source5_long':{'markov_sequence_length':5,'markov_min_transition_count':5,'markov_min_direction_probability':0.610321553188911,'markov_long_only':True},
+              'source5_symmetric':{'markov_sequence_length':5,'markov_min_transition_count':5,'markov_min_direction_probability':0.610321553188911,'markov_long_only':False},
+              'fast2_long':{'markov_sequence_length':2,'markov_min_transition_count':10,'markov_min_direction_probability':0.80,'markov_long_only':True},
+              'fast2_symmetric':{'markov_sequence_length':2,'markov_min_transition_count':10,'markov_min_direction_probability':0.80,'markov_long_only':False},
+          }
+          work=Path('.work/candidate-51-markov-v26');work.mkdir(parents=True,exist_ok=True)
+          for name,extra in profiles.items():
+              cfg=json.loads(json.dumps(base));cfg['strategy'].update(common);cfg['strategy'].update(extra)
+              (work/f'{name}.json').write_text(json.dumps(cfg,indent=2,sort_keys=True)+'\n')
+          manifest={
+              'external_source':'jehumtine/markov-chain-trading-strategy',
+              'external_claim_used_as_evidence':False,
+              'source_defects_removed':['left-labeled-resampling','backfill','monthly-account-reset','incomplete-cost-accounting'],
+              'causal_adaptation':'completed 15m state predicts next completed 15m state with online expanding counts',
+              'data_start':'2025-03-01','evaluation':['2025-05-01','2025-06-30'],
+              'engine':'NautilusTrader BacktestNode','risk_fraction':0.03,'global_position_limit':1,
+              'common':common,'profiles':profiles,
+              'router_sha256':hashlib.sha256(Path('research/candidate-51/router.py').read_bytes()).hexdigest(),
+              'strategy_sha256':hashlib.sha256(Path('research/candidate-51/strategy.py').read_bytes()).hexdigest(),
+          }
+          (work/'manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Run four independent development accounts
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-51-markov-v26/status artifacts/candidate-51/markov-v26
+          for profile in source5_long source5_symmetric fast2_long fast2_symmetric; do
+            PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch_kline_only_warmup.py \
+              --config ".work/candidate-51-markov-v26/${profile}.json" \
+              --data-start 2025-03-01 --start 2025-05-01 --end 2025-06-30 \
+              --cache .cache/candidate-51-markov-v26 \
+              --output "artifacts/candidate-51/markov-v26/${profile}" \
+              --workspace ".work/candidate-51-markov-v26/${profile}"
+            echo $? > ".work/candidate-51-markov-v26/status/${profile}.txt"
+          done
+          exit 0
+
+      - name: Classify implementation versus economics
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,re
+          from pathlib import Path
+          root=Path('artifacts/candidate-51/markov-v26');work=Path('.work/candidate-51-markov-v26')
+          rows={}
+          def num(x):
+              m=re.search(r'[-+]?\d+(?:\.\d+)?',str(x).replace('_','').replace(',',''))
+              return float(m.group()) if m else 0.0
+          for profile in ('source5_long','source5_symmetric','fast2_long','fast2_symmetric'):
+              p=root/profile;required=[p/'metrics.json',p/'strategy_diagnostics.json',p/'closed_scenarios.json']
+              if not all(x.is_file() for x in required):
+                  rows[profile]={'classification':'IMPLEMENTATION_BLOCKED','exit_code':int((work/'status'/f'{profile}.txt').read_text())};continue
+              m=json.loads(required[0].read_text());d=json.loads(required[1].read_text());s=json.loads(required[2].read_text())
+              valid=[x for x in s if bool(x.get('actual_fill_risk_valid'))];pnls=[num(x.get('realized_pnl')) for x in valid]
+              gp=sum(x for x in pnls if x>0);gl=-sum(x for x in pnls if x<0)
+              clean=(int(d.get('order_rejections') or 0)==0 and int(d.get('global_position_violations') or 0)==0 and int(d.get('max_open_positions_observed') or 0)<=1 and int(d.get('fill_beyond_bracket_invalidations') or 0)==0)
+              trades=int(m.get('trades') or 0)
+              positive=(clean and trades>=20 and float(m.get('expectancy_usdt') or 0)>0 and float(m.get('geometric_daily_growth') or 0)>0 and float(m.get('profit_factor') or 0)>1 and float(m.get('max_drawdown') or 1)<=0.25 and sum(pnls)>0)
+              label='PROVISIONAL_ALPHA' if positive else ('IMPLEMENTATION_OR_FILL_CONTAMINATED' if not clean else ('LOGIC_OPPORTUNITY_FAILURE' if trades==0 else 'ECONOMIC_LOGIC_FAILURE'))
+              rows[profile]={
+                  'classification':label,
+                  'metrics':{k:m.get(k) for k in ('trades','ending_nav','total_return','geometric_daily_growth','profit_factor','expectancy_usdt','win_rate','max_drawdown','gate_pass','rolling_windows')},
+                  'valid_fill_only':{'trades':len(pnls),'wins':sum(x>0 for x in pnls),'losses':sum(x<0 for x in pnls),'sum_realized_pnl_usdt':sum(pnls),'expectancy_usdt':sum(pnls)/len(pnls) if pnls else 0.0,'profit_factor':gp/gl if gl else None},
+                  'diagnostics':{k:d.get(k) for k in ('entry_submissions','fill_invalidations','fill_risk_budget_invalidations','order_rejections','global_position_violations','max_open_positions_observed','markov_source_candidates','markov_used_episode_rejections','markov_observations_by_symbol','markov_learned_transitions_by_symbol','unresolved_reason_counts','selected_symbols')},
+              }
+          result={'candidate':'candidate-51-causal-markov-v26','development_only':True,'rows':rows,'survivors':[k for k,v in rows.items() if v.get('classification')=='PROVISIONAL_ALPHA']}
+          (root/'VERDICT.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n');print(json.dumps(result,indent=2,sort_keys=True))
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-markov-v26-${{ github.sha }}
+          path: |
+            artifacts/candidate-51/markov-v26
+            .work/candidate-51-markov-v26/manifest.json
+            .work/candidate-51-markov-v26/status/*.txt
+          if-no-files-found: warn
+          retention-days: 30
