@@ -21,36 +21,47 @@ jobs:
           ref: research/candidate-47
           fetch-depth: 0
 
-      - name: Inherit Candidate 35 Nautilus shell once
+      - name: Inherit verified Nautilus shell and its narrow dependencies
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f research/candidate-47/.bootstrapped-from-candidate-35 ]]; then
-            echo "Candidate 47 is already bootstrapped."
-            exit 0
-          fi
-
           git fetch --no-tags origin research/candidate-35
-          rm -rf research/candidate-47
           mkdir -p research
-          git archive origin/research/candidate-35 research/candidate-35 | tar -x
-          mv research/candidate-35 research/candidate-47
 
-          while IFS= read -r -d '' file; do
-            sed -i 's#research/candidate-35#research/candidate-47#g' "$file"
-          done < <(find research/candidate-47 -type f \( -name '*.py' -o -name '*.json' -o -name '*.md' \) -print0)
-
-          cat > research/candidate-47/.bootstrapped-from-candidate-35 <<'EOF'
+          if [[ ! -f research/candidate-47/.bootstrapped-from-candidate-35 ]]; then
+            rm -rf research/candidate-47
+            git archive origin/research/candidate-35 research/candidate-35 | tar -x
+            mv research/candidate-35 research/candidate-47
+            while IFS= read -r -d '' file; do
+              sed -i 's#research/candidate-35#research/candidate-47#g' "$file"
+            done < <(find research/candidate-47 -type f \( -name '*.py' -o -name '*.json' -o -name '*.md' \) -print0)
+            cat > research/candidate-47/.bootstrapped-from-candidate-35 <<'EOF'
           Candidate 47 inherited Candidate 35's NautilusTrader execution, accounting,
           data assembly, continuous-account runner, and tests. Candidate 35 alpha is
           not accepted as evidence and will be replaced inside Candidate 47.
           EOF
+          fi
+
+          for dependency in candidate-05 candidate-16; do
+            if [[ ! -d "research/${dependency}" ]]; then
+              git archive origin/research/candidate-35 "research/${dependency}" | tar -x
+            fi
+          done
+
+          if git diff --quiet -- research/candidate-47 research/candidate-05 research/candidate-16 \
+             && git diff --cached --quiet; then
+            echo "Execution shell and dependencies are already present."
+            exit 0
+          fi
 
           git config user.name "candidate-47-research-bot"
           git config user.email "candidate-47-research-bot@users.noreply.github.com"
-          git add research/candidate-47
-          git commit -m "candidate47: inherit candidate35 Nautilus execution shell"
+          git add research/candidate-47 research/candidate-05 research/candidate-16
+          git commit -m "candidate47: inherit narrow data and execution dependencies"
           git push origin HEAD:research/candidate-47
 
-      - name: Confirm bootstrap marker
-        run: test -f research/candidate-47/.bootstrapped-from-candidate-35
+      - name: Confirm inherited dependency contract
+        run: |
+          test -f research/candidate-47/.bootstrapped-from-candidate-35
+          test -d research/candidate-05
+          test -d research/candidate-16
