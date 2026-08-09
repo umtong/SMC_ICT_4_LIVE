@@ -1,38 +1,23 @@
-# Candidate 35 — Clock-Phase Auction Router
+# Candidate 47 — leader transfer and failed-reentry router
 
-Candidate 35 is a four-asset, one-account NautilusTrader system for BTCUSDT,
-ETHUSDT, SOLUSDT and XRPUSDT. It acts only after all four completed one-minute
-observations for the same UTC minute are available.
+Candidate 47 reuses, rather than rewrites, three existing layers:
 
-The external idea was decomposed into one policy:
+1. Candidate 35's four-symbol, one-account NautilusTrader execution/account shell;
+2. Candidate 39's passive structural-retest LIMIT entry and cost-after reward-space gate;
+3. Candidate 41's unexecuted cross-asset leader-continuation and mature failed-reentry router.
 
-1. Treat the first three completed minutes of each quarter hour as an auction
-   response to the preceding 15-minute impulse.
-2. Route to continuation only when displacement is accepted with participation,
-   flow/efficiency and cross-asset support.
-3. Route to reversal only when a sufficiently large prior impulse fails to hold
-   its boundary extension and the opposite response confirms exhaustion.
-4. Otherwise return `UNRESOLVED`; rank all actionable symbols and submit only the
-   strongest single bracket.
+The inherited Candidate 35c alpha is rejected and receives no performance credit.
+Candidate 47 must earn evidence through its own four-symbol continuous-account runs.
 
-NautilusTrader owns orders, contingent children, partial-fill OTO release,
-fees, latency, positions, margin, liquidation and continuous NAV. Planned loss
-is current account NAV × 3%, divided by stop distance plus entry/stop costs,
-adverse slippage reserve and funding reserve. There is no strategy-level
-notional or leverage-based size cap; exchange contract quantity limits remain
-binding.
+The two independent scenario families are:
 
-## Commands
+- `LEADER_FIRST_PULLBACK_CONTINUATION`: a fresh 15-minute cross-asset leader reprices,
+  survives its first shallow six-minute pullback, and resumes with new initiative;
+- `MATURE_EXTENSION_FAILED_REENTRY`: a mature one-hour trend probes external value,
+  cracks back inside, fails its re-entry attempt, and resumes away from the failed boundary.
 
-```bash
-python -m unittest discover -s research/candidate-47 -p 'test_*.py' -v
-python research/candidate-47/launch.py \
-  --config research/candidate-47/config.json \
-  --start 2026-07-01 --end 2026-07-07 \
-  --cache .cache/c35 --workspace .cache/c35-work \
-  --output artifacts/c35-smoke
-```
+Both use one stable causal-episode identifier, one global pending-entry/position slot,
+current-NAV 3% planned-loss sizing, realistic costs, and NautilusTrader orders/fills/NAV.
 
-For long validation, build checksum-verified monthly chunks with
-`build_chunk.py`, then replay the common root through
-`run_continuous.py --input-root`.
+Current status: implementation adopted; no Candidate 47 performance claim until the
+branch workflows produce reproducible metrics.
