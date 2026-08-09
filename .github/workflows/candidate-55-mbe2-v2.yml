@@ -1,0 +1,461 @@
+name: candidate-55-mbe2-v2
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-mbe2-v2.yml"
+      - "research/candidate-55/router_mbe2.py"
+      - "research/candidate-55/strategy_mbe2.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-55-mbe2-v2
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+          fetch-depth: 0
+
+      - name: Materialize reused execution with corrected MBE2 semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_mbe2.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_mbe2.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install, doctor and prove source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import RouteConfig, _decode_mode, _effective_leverage, _tema, source_entry_flags
+
+          assert _decode_mode("pair_both") == ("pair", "both")
+          assert _decode_mode("pair_short") == ("pair", "short")
+          assert _decode_mode("average_long") == ("average", "long")
+          cfg = RouteConfig(picasso_source_effective_leverage=6.46)
+          assert abs(_effective_leverage("BTCUSDT", cfg, "pair_both") - 10.0) < 1e-12
+          assert abs(_effective_leverage("XRPUSDT", cfg, "pair_both") - 4.166666666666667) < 1e-12
+          assert abs(_effective_leverage("SOLUSDT", cfg, "average_both") - 6.46) < 1e-12
+
+          long_flag = source_entry_flags(
+              previous_rsi=29.0, current_rsi=31.0,
+              previous_tema=99.0, current_tema=100.0,
+              bb_middle=101.0, volume=1.0,
+          )
+          short_flag = source_entry_flags(
+              previous_rsi=71.0, current_rsi=69.0,
+              previous_tema=101.0, current_tema=100.0,
+              bb_middle=99.0, volume=1.0,
+          )
+          assert long_flag == (True, False), long_flag
+          assert short_flag == (False, True), short_flag
+          tema = _tema([100.0] * 80, 9)
+          assert math.isfinite(tema[-1]) and abs(tema[-1] - 100.0) < 1e-9
+          print("Candidate 55 corrected MBE2 contracts verified")
+          PY
+
+      - name: Predeclare variants and genuinely forward intervals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import copy
+          import hashlib
+          import json
+          from pathlib import Path
+
+          source = json.loads(Path("research/candidate-51/config.json").read_text())
+          variants = {
+              "pair_both": "pair_both",
+              "pair_short": "pair_short",
+              "pair_long": "pair_long",
+              "average_both": "average_both",
+          }
+          work = Path(".work/candidate-55-mbe2-v2")
+          work.mkdir(parents=True, exist_ok=True)
+          manifest = {
+              "candidate": "candidate-55",
+              "family": "public_myshortingstrategiembe2_corrected_execution",
+              "source": {
+                  "repository": "remiotore/ccxt-freqtrade",
+                  "path": "strategies/myshortingstrategiembe2.py",
+                  "blob_sha": "d312e07abc99ffd5631a992fc67a4e97a8768c0a",
+                  "timeframe": "5m",
+                  "active_entry": "RSI14 cross 30/70 plus TEMA9 direction and BB20 middle guard",
+                  "dead_source_columns": ["buy", "sell"],
+                  "invalid_source_execution_removed": "Heikin-Ashi overwrite of open/high/low",
+                  "source_stoploss_profit_ratio": -0.22,
+                  "source_trailing_positive": 0.015,
+                  "source_trailing_offset": 0.025,
+                  "source_roi": {"0": 0.079, "15": 0.047, "41": 0.032, "114": 0.11, "180": 0.007, "420": 0.001},
+                  "public_fixed_backtest_discovery_signal": {
+                      "timerange": ["2021-01-01", "2026-01-01"],
+                      "pairs": 33,
+                      "max_open_trades": 10,
+                      "stake_usdt": 100,
+                      "starting_wallet_usdt": 1000,
+                      "trades": 127409,
+                      "win_rate": 0.909,
+                      "profit_factor": 1.57,
+                      "total_profit_fraction": 110.0608,
+                      "max_drawdown_fraction": 0.0268,
+                      "average_leverage": 6.46,
+                      "positive_months": "57/61",
+                      "invalid_for_project_evidence": true
+                  }
+              },
+              "project_contract": {
+                  "engine": "NautilusTrader BacktestNode",
+                  "universe": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+                  "global_position_limit": 1,
+                  "risk_fraction": 0.03,
+                  "real_binance_ohlc": true,
+                  "cost_model": "project fees + adverse slippage + funding reserve"
+              },
+              "development_interval": ["2026-07-15", "2026-07-21"],
+              "untouched_interval": ["2026-05-04", "2026-05-10"],
+              "conditional_continuous_interval": ["2026-04-01", "2026-04-30"],
+              "source_code_frozen_before_all_intervals": true,
+              "variants": variants,
+              "router_sha256": hashlib.sha256(Path("research/candidate-51/router.py").read_bytes()).hexdigest(),
+              "strategy_sha256": hashlib.sha256(Path("research/candidate-51/strategy.py").read_bytes()).hexdigest()
+          }
+          (work / "variant_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+          for name, mode in variants.items():
+              config = copy.deepcopy(source)
+              for key in (
+                  "sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+                  "sma_stop_max_fraction", "sma_stop_atr_buffer"
+              ):
+                  config["strategy"].pop(key, None)
+              config["strategy"].update({
+                  "cooldown_minutes": 0,
+                  "max_hold_minutes": 720,
+                  "funding_flatten_minute": 60,
+                  "funding_blackout_before_minutes": -1,
+                  "funding_blackout_after_minutes": -1,
+                  "mbe_bucket_minutes": 5,
+                  "mbe_variant": mode,
+                  "mbe_rsi_period": 14,
+                  "mbe_tema_period": 9,
+                  "mbe_bb_period": 20,
+                  "mbe_source_effective_leverage": 6.46,
+                  "mbe_source_stoploss": 0.22,
+                  "mbe_trailing_positive": 0.015,
+                  "mbe_trailing_offset": 0.025,
+                  "mbe_emergency_target_fraction": 0.20,
+                  "mbe_roi_0": 0.079,
+                  "mbe_roi_15": 0.047,
+                  "mbe_roi_41": 0.032,
+                  "mbe_roi_114": 0.110,
+                  "mbe_roi_180": 0.007,
+                  "mbe_roi_420": 0.001
+              })
+              (work / f"{name}.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Run seven-day forward development tournament
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-55-mbe2-v2/status
+          for variant in pair_both pair_short pair_long average_both; do
+            PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+              --config ".work/candidate-55-mbe2-v2/${variant}.json" \
+              --start 2026-07-15 --end 2026-07-21 \
+              --cache .cache/candidate-55-mbe2-v2 \
+              --output "artifacts/candidate-55/mbe2-v2-${variant}-development" \
+              --workspace ".work/candidate-55-mbe2-v2-${variant}"
+            echo $? > ".work/candidate-55-mbe2-v2/status/${variant}.txt"
+          done
+          exit 0
+
+      - name: Select up to two development survivors
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          names = ("pair_both", "pair_short", "pair_long", "average_both")
+          comparison = {}
+          for name in names:
+              root = Path(f"artifacts/candidate-55/mbe2-v2-{name}-development")
+              metrics_path = root / "metrics.json"
+              diagnostics_path = root / "strategy_diagnostics.json"
+              if not metrics_path.is_file() or not diagnostics_path.is_file():
+                  comparison[name] = {"produced": False}
+                  continue
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              comparison[name] = {
+                  "produced": True,
+                  **{key: metrics.get(key) for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth", "max_drawdown",
+                      "trades", "wins", "losses", "win_rate", "profit_factor",
+                      "expectancy_usdt", "largest_winner_share")},
+                  "source_signals": diagnostics.get("source_signals_before_execution_filters"),
+                  "entries": diagnostics.get("entry_submissions"),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "trailing_exits": diagnostics.get("mbe_trailing_exits"),
+                  "roi_exits": diagnostics.get("mbe_roi_exits"),
+                  "unresolved_reason_counts": diagnostics.get("unresolved_reason_counts"),
+                  "global_position_violations": diagnostics.get("global_position_violations"),
+                  "order_rejections": diagnostics.get("order_rejections")
+              }
+          eligible = [
+              name for name, row in comparison.items()
+              if row.get("produced")
+              and int(row.get("trades") or 0) >= 7
+              and float(row.get("expectancy_usdt") or 0.0) > 0.0
+              and float(row.get("geometric_daily_growth") or 0.0) > 0.0
+              and float(row.get("max_drawdown") or 1.0) <= 0.20
+              and int(row.get("global_position_violations") or 0) == 0
+              and int(row.get("order_rejections") or 0) == 0
+          ]
+          eligible.sort(key=lambda name: (
+              -float(comparison[name].get("geometric_daily_growth") or 0.0),
+              -float(comparison[name].get("expectancy_usdt") or 0.0),
+              -int(comparison[name].get("trades") or 0), name))
+          survivors = eligible[:2]
+          result = {
+              "comparison": comparison,
+              "eligible": eligible,
+              "survivors": survivors,
+              "family_status": "TEST_UNTOUCHED" if survivors else "REJECT_OR_MINE_SIGNAL"
+          }
+          output = Path("artifacts/candidate-55/mbe2-v2-development-comparison.json")
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-55-mbe2-v2/survivors.txt").write_text(
+              "\n".join(survivors) + ("\n" if survivors else ""))
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Run untouched forward week
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          while IFS= read -r variant; do
+            [[ -n "$variant" ]] || continue
+            PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+              --config ".work/candidate-55-mbe2-v2/${variant}.json" \
+              --start 2026-05-04 --end 2026-05-10 \
+              --cache .cache/candidate-55-mbe2-v2 \
+              --output "artifacts/candidate-55/mbe2-v2-${variant}-holdout" \
+              --workspace ".work/candidate-55-mbe2-v2-${variant}-holdout"
+          done < .work/candidate-55-mbe2-v2/survivors.txt
+          exit 0
+
+      - name: Select untouched winner
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path(".work/candidate-55-mbe2-v2/survivors.txt")
+          names = path.read_text().splitlines() if path.is_file() else []
+          comparison = {}
+          for name in names:
+              root = Path(f"artifacts/candidate-55/mbe2-v2-{name}-holdout")
+              metrics_path = root / "metrics.json"
+              diagnostics_path = root / "strategy_diagnostics.json"
+              if not metrics_path.is_file() or not diagnostics_path.is_file():
+                  comparison[name] = {"produced": False, "gate_pass": False}
+                  continue
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              checks = {
+                  "trades_at_least_days": int(metrics.get("trades") or 0) >= 7,
+                  "positive_growth": float(metrics.get("geometric_daily_growth") or 0.0) > 0.0,
+                  "positive_expectancy": float(metrics.get("expectancy_usdt") or 0.0) > 0.0,
+                  "drawdown_lte_20pct": float(metrics.get("max_drawdown") or 1.0) <= 0.20,
+                  "one_position": int(diagnostics.get("global_position_violations") or 0) == 0,
+                  "no_rejections": int(diagnostics.get("order_rejections") or 0) == 0
+              }
+              comparison[name] = {
+                  "produced": True,
+                  **{key: metrics.get(key) for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth", "max_drawdown",
+                      "trades", "wins", "losses", "win_rate", "profit_factor",
+                      "expectancy_usdt", "largest_winner_share")},
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "checks": checks,
+                  "gate_pass": all(checks.values())
+              }
+          eligible = [name for name, row in comparison.items() if row.get("gate_pass")]
+          eligible.sort(key=lambda name: (
+              -float(comparison[name].get("geometric_daily_growth") or 0.0),
+              -float(comparison[name].get("expectancy_usdt") or 0.0),
+              -int(comparison[name].get("trades") or 0), name))
+          selected = eligible[0] if eligible else None
+          result = {"comparison": comparison, "eligible": eligible, "selected": selected, "gate_pass": selected is not None}
+          Path("artifacts/candidate-55/mbe2-v2-holdout-assessment.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n")
+          Path(".work/candidate-55-mbe2-v2/selected.txt").write_text((selected or "") + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+      - name: Conditionally run frozen 30-day continuous account
+        if: always()
+        shell: bash
+        run: |
+          selected="$(tr -d '\r\n' < .work/candidate-55-mbe2-v2/selected.txt)"
+          if [[ -z "$selected" ]]; then
+            echo "No untouched survivor; 30-day expansion skipped."
+            exit 0
+          fi
+          set +e
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config ".work/candidate-55-mbe2-v2/${selected}.json" \
+            --start 2026-04-01 --end 2026-04-30 \
+            --cache .cache/candidate-55-mbe2-v2 \
+            --output artifacts/candidate-55/mbe2-v2-selected-continuous-30d \
+            --workspace .work/candidate-55-mbe2-v2-continuous
+          exit 0
+
+      - name: Persist complete evidence and decision
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          def read(path, fallback):
+              p = Path(path)
+              return json.loads(p.read_text()) if p.is_file() else fallback
+
+          development = read("artifacts/candidate-55/mbe2-v2-development-comparison.json", {"comparison": {}, "survivors": []})
+          holdout = read("artifacts/candidate-55/mbe2-v2-holdout-assessment.json", {"comparison": {}, "selected": None, "gate_pass": False})
+          root = Path("artifacts/candidate-55/mbe2-v2-selected-continuous-30d")
+          metrics_path = root / "metrics.json"
+          diagnostics_path = root / "strategy_diagnostics.json"
+          continuous = {"produced": False, "project_gate_pass": False}
+          if metrics_path.is_file() and diagnostics_path.is_file():
+              metrics = json.loads(metrics_path.read_text())
+              diagnostics = json.loads(diagnostics_path.read_text())
+              checks = {
+                  "daily_geometric_growth_at_least_1pct": float(metrics.get("geometric_daily_growth") or 0.0) >= 0.01,
+                  "trades_at_least_calendar_days": int(metrics.get("trades") or 0) >= 30,
+                  "positive_expectancy": float(metrics.get("expectancy_usdt") or 0.0) > 0.0,
+                  "max_drawdown_lte_20pct": float(metrics.get("max_drawdown") or 1.0) <= 0.20,
+                  "one_position": int(diagnostics.get("global_position_violations") or 0) == 0,
+                  "no_rejections": int(diagnostics.get("order_rejections") or 0) == 0
+              }
+              continuous = {
+                  "produced": True,
+                  **{key: metrics.get(key) for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth", "max_drawdown",
+                      "trades", "wins", "losses", "win_rate", "profit_factor",
+                      "expectancy_usdt", "largest_winner_share")},
+                  "source_signals": diagnostics.get("source_signals_before_execution_filters"),
+                  "entries": diagnostics.get("entry_submissions"),
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "checks": checks,
+                  "project_gate_pass": all(checks.values())
+              }
+          selected = holdout.get("selected")
+          if continuous.get("project_gate_pass"):
+              decision, reason = "PASS_30D_PROJECT_GATE", "Corrected external solution passed the frozen 30-day project gate."
+          elif continuous.get("produced"):
+              decision, reason = "REJECT_OR_MINE_SIGNAL", "Frozen survivor failed at least one 30-day project gate."
+          elif selected:
+              decision, reason = "EXECUTION_INCOMPLETE", "A holdout survivor existed but 30-day evidence was incomplete."
+          else:
+              decision, reason = "REJECT_OR_MINE_SIGNAL", "No real-OHLC variant survived both positive-alpha gates."
+          result = {
+              "candidate": "candidate-55",
+              "family": "public_myshortingstrategiembe2_corrected_execution",
+              "decision": decision,
+              "reason": reason,
+              "selected_variant": selected,
+              "development": development,
+              "holdout": holdout,
+              "continuous_30d": continuous,
+              "source_claim_accepted_as_evidence": False,
+              "heikin_ashi_ohlc_overwrite_reproduced": False,
+              "long_horizon_run": False,
+              "production_ready": False
+          }
+          evidence = Path("research/candidate-55/evidence/v2-mbe2")
+          evidence.mkdir(parents=True, exist_ok=True)
+          (evidence / "RESULT.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
+
+          evidence="research/candidate-55/evidence/v2-mbe2"
+          mkdir -p "$evidence/development" "$evidence/holdout" "$evidence/continuous"
+          cp .work/candidate-55-mbe2-v2/variant_manifest.json "$evidence/variant_manifest.json"
+          cp artifacts/candidate-55/mbe2-v2-development-comparison.json "$evidence/development/comparison.json" 2>/dev/null || true
+          cp artifacts/candidate-55/mbe2-v2-holdout-assessment.json "$evidence/holdout/assessment.json" 2>/dev/null || true
+
+          for variant in pair_both pair_short pair_long average_both; do
+            source="artifacts/candidate-55/mbe2-v2-${variant}-development"
+            target="$evidence/development/$variant"
+            if [[ -d "$source" ]]; then
+              mkdir -p "$target"
+              for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
+                [[ ! -f "$source/$file" ]] || cp "$source/$file" "$target/$file"
+              done
+            fi
+            source="artifacts/candidate-55/mbe2-v2-${variant}-holdout"
+            target="$evidence/holdout/$variant"
+            if [[ -d "$source" ]]; then
+              mkdir -p "$target"
+              for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
+                [[ ! -f "$source/$file" ]] || cp "$source/$file" "$target/$file"
+              done
+            fi
+          done
+          source="artifacts/candidate-55/mbe2-v2-selected-continuous-30d"
+          if [[ -d "$source" ]]; then
+            for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
+              [[ ! -f "$source/$file" ]] || cp "$source/$file" "$evidence/continuous/$file"
+            done
+          fi
+
+          git config user.name "candidate-55-research-bot"
+          git config user.email "candidate-55-research-bot@users.noreply.github.com"
+          git add "$evidence"
+          if ! git diff --cached --quiet; then
+            git commit -m "candidate55: persist corrected MBE2 evidence"
+            for attempt in 1 2 3 4; do
+              git pull --rebase origin research/candidate-55 && git push origin HEAD:research/candidate-55 && break
+              sleep $((attempt * 5))
+            done
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-mbe2-v2-${{ github.sha }}
+          path: artifacts/candidate-55/mbe2-v2-*
+          if-no-files-found: warn
