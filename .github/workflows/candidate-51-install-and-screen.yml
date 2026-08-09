@@ -22,7 +22,7 @@ jobs:
           ref: research/candidate-51
           fetch-depth: 0
 
-      - name: Materialize exact causal public ichiV2 adaptation
+      - name: Materialize public ichiV2_5 adaptation
         shell: bash
         run: |
           set -euo pipefail
@@ -43,11 +43,11 @@ jobs:
           encoded = "".join(path.read_text(encoding="utf-8").strip() for path in chunks)
           archive = base64.b64decode(encoded, validate=True)
           digest = hashlib.sha256(archive).hexdigest()
-          expected = "75a1fbc5a762009daf4f92095d2b6a894d06819155a684c0c67a2e334cbffb2d"
+          expected = "e58f22d5f30ad63751af744ca837f57a8f516b2807c50f95b157cacad47f8347"
           if digest != expected:
               raise RuntimeError(f"payload sha256 mismatch: {digest} != {expected}")
 
-          destination = Path(".candidate51-v2-materialized")
+          destination = Path(".candidate51-v3-materialized")
           if destination.exists():
               shutil.rmtree(destination)
           destination.mkdir()
@@ -67,7 +67,7 @@ jobs:
           git config user.name "candidate-51-research-bot"
           git config user.email "candidate-51-research-bot@users.noreply.github.com"
           git add -A
-          git commit -m "candidate51: install causal public ichiV2 policy"
+          git commit -m "candidate51: install public ichiV2_5 causal episode policy"
           git push origin HEAD:research/candidate-51
 
       - name: Set up Python
@@ -91,75 +91,107 @@ jobs:
           uv run python -m compileall -q research/candidate-51
           uv run --with pytest python -m pytest -q research/candidate-51/test_router.py
 
-      - name: Run exact-policy seven-day continuous diagnostic
+      - name: Build execution-runway variants
         run: |
-          rm -rf artifacts/candidate-51/v2-development-2026-07-22_2026-07-28
+          python - <<'PY'
+          import copy
+          import json
+          from pathlib import Path
+          source = json.loads(Path("research/candidate-51/config.json").read_text())
+          for runway in (25, 90):
+              config = copy.deepcopy(source)
+              config["strategy"]["funding_blackout_before_minutes"] = runway
+              Path(f".work/candidate-51-v3-config-{runway}.json").parent.mkdir(parents=True, exist_ok=True)
+              Path(f".work/candidate-51-v3-config-{runway}.json").write_text(json.dumps(config, indent=2) + "\n")
+          PY
+
+      - name: Run source-near 25-minute funding-runway diagnostic
+        run: |
+          rm -rf artifacts/candidate-51/v3-runway25-development-2026-07-22_2026-07-28
           uv run python research/candidate-51/launch.py \
-            --config research/candidate-51/config.json \
+            --config .work/candidate-51-v3-config-25.json \
             --start 2026-07-22 \
             --end 2026-07-28 \
-            --cache .cache/candidate-51-v2 \
-            --output artifacts/candidate-51/v2-development-2026-07-22_2026-07-28 \
-            --workspace .work/candidate-51-v2
+            --cache .cache/candidate-51-v3 \
+            --output artifacts/candidate-51/v3-runway25-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v3-runway25
 
-      - name: Print compact account result
+      - name: Run 90-minute causal-runway diagnostic
+        run: |
+          rm -rf artifacts/candidate-51/v3-runway90-development-2026-07-22_2026-07-28
+          uv run python research/candidate-51/launch.py \
+            --config .work/candidate-51-v3-config-90.json \
+            --start 2026-07-22 \
+            --end 2026-07-28 \
+            --cache .cache/candidate-51-v3 \
+            --output artifacts/candidate-51/v3-runway90-development-2026-07-22_2026-07-28 \
+            --workspace .work/candidate-51-v3-runway90
+
+      - name: Print compact comparison
         if: always()
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
-          root = Path("artifacts/candidate-51/v2-development-2026-07-22_2026-07-28")
-          for name in ("metrics.json", "strategy_diagnostics.json"):
-              path = root / name
-              if not path.is_file():
-                  print(f"{name} not produced")
-                  continue
-              data = json.loads(path.read_text())
-              if name == "metrics.json":
-                  keys = (
-                      "ending_nav", "total_return", "geometric_daily_growth",
-                      "max_drawdown", "trades", "wins", "win_rate",
-                      "profit_factor", "expectancy_usdt", "gate_pass",
-                  )
-              else:
-                  keys = (
-                      "quarter_hour_decisions", "entry_submissions",
-                      "entry_expirations", "order_rejections", "route_counts",
-                      "actionable_family_counts", "unresolved_reason_counts",
-                      "selected_symbols", "source_exit_submissions",
-                      "source_trailing_exit_submissions", "global_position_violations",
-                  )
-              print(name)
-              print(json.dumps({key: data.get(key) for key in keys}, indent=2, sort_keys=True))
+          for runway in (25, 90):
+              root = Path(f"artifacts/candidate-51/v3-runway{runway}-development-2026-07-22_2026-07-28")
+              print(f"\nRUNWAY {runway}")
+              for name in ("metrics.json", "strategy_diagnostics.json"):
+                  path = root / name
+                  if not path.is_file():
+                      print(f"{name} not produced")
+                      continue
+                  data = json.loads(path.read_text())
+                  if name == "metrics.json":
+                      keys = (
+                          "ending_nav", "total_return", "geometric_daily_growth",
+                          "max_drawdown", "trades", "wins", "win_rate",
+                          "profit_factor", "expectancy_usdt", "gate_pass",
+                      )
+                  else:
+                      keys = (
+                          "source_signals_before_execution_filters", "entry_submissions",
+                          "funding_runway_rejections", "cooldown_rejections",
+                          "used_episode_rejections", "source_exit_submissions",
+                          "source_trailing_exit_submissions", "route_counts",
+                          "actionable_family_counts", "selected_symbols",
+                          "global_position_violations", "order_rejections",
+                      )
+                  print(name)
+                  print(json.dumps({key: data.get(key) for key in keys}, indent=2, sort_keys=True))
           PY
 
-      - name: Persist compact v2 development evidence
+      - name: Persist compact v3 development evidence
         if: success()
         shell: bash
         run: |
           set -euo pipefail
-          source_dir="artifacts/candidate-51/v2-development-2026-07-22_2026-07-28"
-          evidence_dir="research/candidate-51/evidence/v2-development-2026-07-22_2026-07-28"
-          rm -rf "$evidence_dir"
-          mkdir -p "$evidence_dir"
-          for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
-            if [[ -f "$source_dir/$file" ]]; then
-              cp "$source_dir/$file" "$evidence_dir/$file"
-            fi
+          for runway in 25 90; do
+            source_dir="artifacts/candidate-51/v3-runway${runway}-development-2026-07-22_2026-07-28"
+            evidence_dir="research/candidate-51/evidence/v3-runway${runway}-development-2026-07-22_2026-07-28"
+            rm -rf "$evidence_dir"
+            mkdir -p "$evidence_dir"
+            for file in metrics.json strategy_diagnostics.json run.json data_manifest.json closed_scenarios.json; do
+              if [[ -f "$source_dir/$file" ]]; then
+                cp "$source_dir/$file" "$evidence_dir/$file"
+              fi
+            done
           done
-          git add "$evidence_dir"
+          git add research/candidate-51/evidence/v3-*
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "candidate51: persist exact-policy v2 development evidence"
+          git commit -m "candidate51: persist ichiV2_5 runway comparison"
           git push origin HEAD:research/candidate-51
 
-      - name: Preserve full v2 diagnostic artifact
+      - name: Preserve full v3 diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-51-v2-development-${{ github.sha }}
+          name: candidate-51-v3-development-${{ github.sha }}
           path: |
-            artifacts/candidate-51/v2-development-2026-07-22_2026-07-28/*.json
-            artifacts/candidate-51/v2-development-2026-07-22_2026-07-28/*.csv
+            artifacts/candidate-51/v3-runway25-development-2026-07-22_2026-07-28/*.json
+            artifacts/candidate-51/v3-runway25-development-2026-07-22_2026-07-28/*.csv
+            artifacts/candidate-51/v3-runway90-development-2026-07-22_2026-07-28/*.json
+            artifacts/candidate-51/v3-runway90-development-2026-07-22_2026-07-28/*.csv
           if-no-files-found: warn
