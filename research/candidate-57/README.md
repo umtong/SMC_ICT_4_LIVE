@@ -1,30 +1,25 @@
-# Candidate 57 — source alpha vs independent episodes
+# Candidate 57 — reuse first, expand only when earned
 
-Candidate 57 reuses the Candidate 51 NautilusTrader execution/accounting stack and the Candidate 55 source-faithful public `RSI_BB_MACD_Nov_2023_1h_2_Dec` adapter. It does not rebuild ingestion, matching, portfolio accounting, fees, slippage, funding reserve, global-slot arbitration, or 3% current-NAV risk sizing.
+Candidate 57 reuses the Candidate 51 NautilusTrader execution/accounting stack and the Candidate 55 source-faithful `RSI_BB_MACD_Nov_2023_1h_2_Dec` implementation. It does not rebuild data ingestion, matching, portfolio accounting, realistic costs, one-global-slot arbitration, or 3% current-NAV risk sizing.
 
-The external system is treated as a high-value discovery object, not as proof. Candidate 57 asks a narrower question that Candidate 55 did not isolate directly:
+Candidate 55 already spent the compute needed to diagnose 2026-07-22 through 2026-07-28. Candidate 57 preserves that result in `evidence/seed_candidate55_picasso.json` rather than rerunning it. The important seed finding is mechanically valid `exact_edge` behavior with five profitable closed positions out of six, but a negative seven-day continuous NAV because one short remained open and marked against the account at the endpoint. That is neither a project pass nor a reason to discard the mechanism before one frozen confirmation.
 
-1. `exact_level_short`: preserve the original Python precedence and source-style hourly level re-entry. This is an **alpha replication probe**, but repeated entries while one condition remains true are not accepted as independent project trades.
-2. `exact_edge_short`: preserve the same short-side source logic, but allow only a new rising-edge episode. This tests whether the claimed short-side behavior survives the project's causal-independence rule.
-3. `exact_edge`: preserve both sides with one entry per rising-edge episode. This is the second project-eligible interpretation.
-
-The two edge variants compete for the project route. The level variant is diagnostic only: strong level results with weak edge results mean that the public result depends on repeated re-entry or insufficiently independent opportunities, not that the implementation necessarily failed.
+Only rising-edge entry modes are project eligible. Source-style level re-entry while one condition remains true is never counted as independent opportunity frequency.
 
 ## Adaptive evaluation ladder
 
-The campaign predeclares all intervals before reading results and only spends more compute on survivors.
+1. **Frozen confirmation:** run the untouched baseline `exact_edge` on 2025-11-03 through 2025-11-09.
+2. **Baseline intermediate:** only a confirmed baseline reaches the 30-day continuous account on 2025-09-01 through 2025-09-30.
+3. **Baseline long:** only a full 30-day project-gate pass reaches the 180-day continuous account on 2024-03-01 through 2024-08-27.
+4. **Structural repair only after failure:** when the entry mechanism remains mechanically valid and reachable but baseline exits fail, test three predeclared alternatives on the reused development interval: a cost-clearing exit floor, ROI-only management, and short-side rising-edge isolation.
+5. **Adapted confirmation and new intermediate:** the best positive structural alternative must survive the same frozen week and then a distinct 30-day account on 2024-10-01 through 2024-10-30 before long validation.
 
-- Short development: 2026-07-22 through 2026-07-28. Three variants; mechanics, signal reachability, expectancy, drawdown, and opportunity density are diagnosed.
-- Frozen confirmation: 2025-11-03 through 2025-11-09. At most one edge winner plus the level diagnostic survivor.
-- Intermediate continuous account: 2025-09-01 through 2025-09-30. Only a confirmed edge winner. The full project gate is applied.
-- Long continuous account: 2024-03-01 through 2024-08-27 (180 calendar days). It runs only if the 30-day account already passes the full gate.
+Short and confirmation screens may tolerate negative endpoint NAV only when completed-position expectancy is positive and an open marked position explains the endpoint. The 30-day and 180-day gates never waive continuous NAV: after-cost geometric daily growth must be at least 1%, independent completed positions must be at least calendar days, expectancy must be positive, drawdown at most 20%, NAV positive, and all execution/account contracts valid.
 
-The final gate requires after-cost geometric daily growth of at least 1%, completed independent trades at least calendar days, positive expectancy, maximum drawdown at most 20%, positive NAV, no liquidation, no order rejection, and no global-slot/account-contract violation.
+## Implementation error versus logic failure
 
-## Failure classification
+A nonzero process, missing metrics or diagnostics, future-feature rejection, order rejection, multiple entry intents or open positions, liquidation, non-positive NAV, nonfinite metrics, or disagreement between Nautilus positions and parsed trades is an **implementation/integration error**.
 
-A missing or nonzero run, future-feature rejection, rejected order, multiple simultaneous positions or entry intents, liquidation, non-positive NAV, or a mismatch between Nautilus positions and parsed trades is classified as an **implementation/integration error**.
+A mechanically valid run with unreachable signals, no executable entries, inadequate independent opportunity density, non-positive completed-position expectancy, negative continuous growth, excessive drawdown, or failure of the 1% project gate is a **strategy-logic failure**. The campaign records these classifications separately and does not hide them with a parameter sweep.
 
-A mechanically valid run with no signals, no executed opportunities, negative expectancy, negative growth, excessive drawdown, or insufficient independent episode density is classified as a **strategy-logic failure**. Threshold changes are not used to disguise that distinction.
-
-`campaign.py` writes compact reproducible evidence to `research/candidate-57/evidence/`. Full transient backtest outputs remain in the workflow workspace rather than being committed.
+`campaign.py` integrity-checks and executes `campaign_v2.py.gz.b64`. Compact reproducible evidence is committed under `research/candidate-57/evidence/`; large transient reports remain workflow artifacts.
