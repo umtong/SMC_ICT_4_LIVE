@@ -1,0 +1,209 @@
+name: candidate-51-jump-h4-frozen-v14
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-jump-h4-frozen-v14.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-51-jump-h4-frozen-v14
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  validate:
+    name: ${{ matrix.period.label }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        period:
+          - {label: untouched-2025-05-01_2025-05-14, start: "2025-05-01", end: "2025-05-14"}
+          - {label: untouched-2025-08-01_2025-08-14, start: "2025-08-01", end: "2025-08-14"}
+          - {label: untouched-2025-11-01_2025-11-14, start: "2025-11-01", end: "2025-11-14"}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+      - run: |
+          cp research/candidate-51/router_jump_reversion.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_jump_reversion.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install pinned environment
+        run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+      - name: Build exact frozen h4-z2 config
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          config = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in ("sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+                      "sma_stop_max_fraction", "sma_stop_atr_buffer"):
+              config["strategy"].pop(key, None)
+          config["strategy"].update({
+              "cooldown_minutes": 0,
+              "max_hold_minutes": 240,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "jump_timeframe_minutes": 240,
+              "jump_threshold_sigma": 2.0,
+              "jump_volatility_window": 18,
+              "jump_min_absolute_return": 0.0,
+              "jump_terminal_atr_period": 14,
+              "jump_stop_atr_multiple": 1.0,
+              "jump_min_stop_fraction": 0.0015,
+              "jump_emergency_target_fraction": 0.20
+          })
+          Path(".work").mkdir(exist_ok=True)
+          Path(".work/config.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Run untouched account
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/config.json \
+            --start "${{ matrix.period.start }}" --end "${{ matrix.period.end }}" \
+            --cache .cache/candidate-51-jump-h4-v14 \
+            --output "artifacts/candidate-51/jump-h4-v14-${{ matrix.period.label }}" \
+            --workspace ".work/jump-h4-v14-${{ matrix.period.label }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jump-h4-v14-${{ matrix.period.label }}
+          path: artifacts/candidate-51/jump-h4-v14-${{ matrix.period.label }}/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  decide:
+    needs: validate
+    if: always()
+    runs-on: ubuntu-24.04
+    outputs:
+      promote: ${{ steps.decision.outputs.promote }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: jump-h4-v14-untouched-*
+          path: downloaded
+      - id: decision
+        run: |
+          python - <<'PY'
+          import json
+          from functools import reduce
+          from operator import mul
+          from pathlib import Path
+          rows = []
+          for artifact in sorted(Path("downloaded").glob("jump-h4-v14-untouched-*")):
+              mp = artifact / "metrics.json"
+              dp = artifact / "strategy_diagnostics.json"
+              if not mp.is_file() or not dp.is_file():
+                  rows.append({"period": artifact.name, "produced": False})
+                  continue
+              metrics = json.loads(mp.read_text())
+              diagnostics = json.loads(dp.read_text())
+              rows.append({
+                  "period": artifact.name.removeprefix("jump-h4-v14-"),
+                  "produced": True,
+                  **{key: metrics.get(key) for key in (
+                      "ending_nav", "total_return", "geometric_daily_growth", "max_drawdown",
+                      "trades", "wins", "losses", "win_rate", "profit_factor",
+                      "expectancy_usdt", "largest_winner_share")},
+                  "selected_symbols": diagnostics.get("selected_symbols"),
+                  "global_position_violations": diagnostics.get("global_position_violations"),
+                  "order_rejections": diagnostics.get("order_rejections")
+              })
+          produced = [row for row in rows if row.get("produced")]
+          positive = [row for row in produced if float(row.get("total_return") or 0.0) > 0.0]
+          compounded = reduce(mul, (1.0 + float(row["total_return"]) for row in produced), 1.0) - 1.0 if produced else None
+          total_trades = sum(int(row.get("trades") or 0) for row in produced)
+          weighted_expectancy = (sum(float(row.get("expectancy_usdt") or 0.0) * int(row.get("trades") or 0) for row in produced) / total_trades) if total_trades else None
+          operational = all(int(row.get("global_position_violations") or 0) == 0 and int(row.get("order_rejections") or 0) == 0 for row in produced)
+          promote = len(produced) == 3 and len(positive) >= 2 and (compounded or 0.0) > 0.0 and (weighted_expectancy or 0.0) > 0.0 and operational
+          report = {
+              "frozen_policy": "h4_z2_prior18_equal-period-exit",
+              "rows": rows,
+              "positive_periods": len(positive),
+              "compounded_sequential_return": compounded,
+              "total_trades": total_trades,
+              "weighted_expectancy_usdt": weighted_expectancy,
+              "operational": operational,
+              "promote_to_90d": promote
+          }
+          Path("validation.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+          Path("promote.txt").write_text("true\n" if promote else "false\n")
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+          echo "promote=$(tr -d '\r\n' < promote.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jump-h4-v14-validation
+          path: validation.json
+
+  continuous:
+    needs: decide
+    if: needs.decide.outputs.promote == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+      - run: |
+          cp research/candidate-51/router_jump_reversion.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_jump_reversion.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          uv run smc4 doctor
+      - name: Rebuild the same frozen config
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          config = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in ("sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+                      "sma_stop_max_fraction", "sma_stop_atr_buffer"):
+              config["strategy"].pop(key, None)
+          config["strategy"].update({"cooldown_minutes":0,"max_hold_minutes":240,
+              "funding_flatten_minute":60,"funding_blackout_before_minutes":-1,
+              "funding_blackout_after_minutes":-1,"jump_timeframe_minutes":240,
+              "jump_threshold_sigma":2.0,"jump_volatility_window":18,
+              "jump_min_absolute_return":0.0,"jump_terminal_atr_period":14,
+              "jump_stop_atr_multiple":1.0,"jump_min_stop_fraction":0.0015,
+              "jump_emergency_target_fraction":0.20})
+          Path(".work").mkdir(exist_ok=True)
+          Path(".work/config.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Run untouched 90-day continuous account
+        run: |
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/config.json \
+            --start 2025-01-01 --end 2025-03-31 \
+            --cache .cache/candidate-51-jump-h4-v14 \
+            --output artifacts/candidate-51/jump-h4-v14-continuous-90d \
+            --workspace .work/jump-h4-v14-continuous
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jump-h4-v14-continuous-90d
+          path: artifacts/candidate-51/jump-h4-v14-continuous-90d/**
+          if-no-files-found: warn
+          retention-days: 30
