@@ -88,3 +88,27 @@ def test_sma_offset_exit_is_boolean():
     exited, diagnostics = sma_offset_exit_ready(_dip_bars(), RouteConfig())
     assert isinstance(exited, bool)
     assert diagnostics["sma_exit_ready"] in (0, 1)
+
+
+
+def test_binance_millisecond_close_phase_is_supported():
+    bars = _dip_bars()
+    shifted = [
+        BarObservation(
+  bar.ts_event - 999_999,
+  bar.open,
+  bar.high,
+  bar.low,
+  bar.close,
+  bar.volume,
+        )
+        for bar in bars
+    ]
+    decision = classify_sma_offset(
+        "BTCUSDT",
+        shifted,
+        FeatureObservation(shifted[-1].ts_event),
+        RouteConfig(),
+    )
+    assert decision.actionable, (decision.reasons, decision.diagnostics)
+    assert decision.state == SMA_OFFSET_STATE

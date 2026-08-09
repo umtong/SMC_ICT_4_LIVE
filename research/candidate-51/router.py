@@ -168,24 +168,38 @@ def _aggregate_complete(
     if bucket_minutes <= 0:
         raise ValueError("bucket_minutes must be positive")
     minute_ns = 60_000_000_000
-    bucket_ns = bucket_minutes * minute_ns
-    grouped: dict[int, list[BarObservation]] = {}
-    for bar in bars:
-        grouped.setdefault(int(bar.ts_event) // bucket_ns, []).append(bar)
+    if not bars:
+        return []
+
+    # Binance historical klines close one millisecond before a minute
+    # boundary, while synthetic contracts commonly use one nanosecond.
+    # Derive the phase from the observed stream instead of hard-coding
+    # either representation. A phase change is treated as a data gap.
+    phases = [int(bar.ts_event) % minute_ns for bar in bars]
+    phase = phases[-1]
+    grouped: dict[int, list[tuple[int, BarObservation]]] = {}
+    for bar, observed_phase in zip(bars, phases, strict=True):
+        if observed_phase != phase:
+            continue
+        ordinal = (int(bar.ts_event) - phase) // minute_ns
+        grouped.setdefault(ordinal // bucket_minutes, []).append((ordinal, bar))
 
     output: list[BarObservation] = []
     for key in sorted(grouped):
-        items = sorted(grouped[key], key=lambda item: item.ts_event)
-        if len(items) != bucket_minutes:
+        indexed = sorted(grouped[key], key=lambda item: item[0])
+        if len(indexed) != bucket_minutes:
+            continue
+        ordinals = [item[0] for item in indexed]
+        if ordinals[0] % bucket_minutes != 0:
+            continue
+        if ordinals[-1] % bucket_minutes != bucket_minutes - 1:
             continue
         if any(
-            items[index].ts_event - items[index - 1].ts_event != minute_ns
-            for index in range(1, len(items))
+            ordinals[index] - ordinals[index - 1] != 1
+            for index in range(1, len(ordinals))
         ):
             continue
-        expected_end = (key + 1) * bucket_ns - 1
-        if int(items[-1].ts_event) != expected_end:
-            continue
+        items = [item[1] for item in indexed]
         output.append(
             BarObservation(
                 ts_event=int(items[-1].ts_event),
