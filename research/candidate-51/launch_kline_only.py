@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 from pathlib import Path
 import sys
 
@@ -39,4 +40,25 @@ spec.loader.exec_module(runner)
 # Replace only the input adapter.  The BacktestNode, fee/fill/latency models,
 # account engine, strategy configuration and metric parser remain unchanged.
 runner.load_range = kline_only_inputs.load_range
+
+# The reused runner rejects any non-3% risk_fraction before data preparation,
+# but its legacy metrics dictionary did not expose that already-enforced
+# invariant.  Add the explicit check for the validation workflow without
+# changing sizing, orders, fills, accounting, or any strategy decision.
+_original_build_metrics = runner.build_metrics
+
+
+def _build_metrics_with_risk_contract(*args, **kwargs):
+    metrics = _original_build_metrics(*args, **kwargs)
+    bound = inspect.signature(_original_build_metrics).bind_partial(*args, **kwargs)
+    config = bound.arguments["config"]
+    checks = metrics.setdefault("gate_checks", {})
+    checks["risk_fraction_exactly_three_percent"] = (
+        abs(float(config["risk_fraction"]) - 0.03) <= 1e-12
+    )
+    metrics["gate_pass"] = all(bool(value) for value in checks.values())
+    return metrics
+
+
+runner.build_metrics = _build_metrics_with_risk_contract
 runner.main()
