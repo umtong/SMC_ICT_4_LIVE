@@ -5,8 +5,13 @@ on:
     branches: ["research/candidate-53"]
     paths:
       - "research/candidate-53/event_meta_label_study.py"
+      - "research/candidate-53/event_meta_label_study_fast.py"
       - ".github/workflows/candidate-53-meta-label.yml"
   workflow_dispatch:
+
+concurrency:
+  group: candidate-53-meta-label
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -35,15 +40,18 @@ jobs:
           rm -rf .deps/c16 && mkdir -p .deps
           git worktree add --detach .deps/c16 refs/remotes/origin/c16-v13
           git config --global --add safe.directory "$(pwd)/.deps/c16"
-          python -m py_compile research/candidate-53/event_meta_label_study.py .deps/c16/research/candidate-16/v9_liquidation_event_study.py
+          python -m py_compile \
+            research/candidate-53/event_meta_label_study.py \
+            research/candidate-53/event_meta_label_study_fast.py \
+            .deps/c16/research/candidate-16/v9_liquidation_event_study.py
 
       - name: Run fixed 2025 development and 2026 holdout study
         shell: bash
-        env: {PYTHONPATH: .deps/c16/research/candidate-16}
+        env: {PYTHONPATH: "research/candidate-53:.deps/c16/research/candidate-16"}
         run: |
           set -euo pipefail
           rm -rf "$ROOT" && mkdir -p "$ROOT"
-          python research/candidate-53/event_meta_label_study.py \
+          python research/candidate-53/event_meta_label_study_fast.py \
             --cache .cache/candidate-53-meta-label \
             --output "$ROOT" 2>&1 | tee "$ROOT/console.log"
 
