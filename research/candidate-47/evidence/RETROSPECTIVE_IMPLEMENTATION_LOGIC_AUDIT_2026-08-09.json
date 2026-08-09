@@ -1,0 +1,373 @@
+{
+  "branch": "research/candidate-47",
+  "generated_at": "2026-08-09",
+  "purpose": "Prevent implementation defects, invalid source backtests, and pre-strategy failures from being treated as alpha evidence; retain only correctly executed account results for logic decisions.",
+  "classification_contract": {
+    "IMPLEMENTATION_INVALID": "The intended causal strategy did not execute, or the source performance used future information, invalid accounting, or incompatible mechanics. Economic results are unusable.",
+    "IMPLEMENTATION_BLOCKED": "The run stopped before any valid strategy/account evaluation. No logic inference is allowed.",
+    "MIXED_IMPLEMENTATION_AND_LOGIC": "An implementation defect exists, but a sufficiently large set of valid accepted trades independently establishes the logic verdict.",
+    "LOGIC_FAILURE": "The intended system executed causally with valid data, costs, fills, risk sizing, and continuous-account constraints, but cost-after expectancy or untouched replication failed.",
+    "LOGIC_OPPORTUNITY_FAILURE": "Exact public branches were proven reachable under synthetic contracts, but the frozen source rules produced no usable opportunities in the current universe.",
+    "LOGIC_INSUFFICIENT": "Execution was valid and some positive expectancy appeared, but growth, frequency, stability, or untouched evidence was insufficient for the project target.",
+    "PROVISIONAL_ALPHA": "Valid development evidence is positive, but untouched evidence has not completed; it cannot be integrated or promoted yet.",
+    "PARITY_UNRESOLVED": "A translation or source-equivalence gap remains; neither rejection nor promotion is allowed."
+  },
+  "promotion_invariants": {
+    "strategy_reached_evaluation_start": true,
+    "metrics_and_diagnostics_present": true,
+    "no_future_information": true,
+    "source_parity_or_explicit_adaptation_contract": true,
+    "data_dependencies_match_strategy": true,
+    "current_nav_risk_fraction": 0.03,
+    "nautilus_single_continuous_account": true,
+    "global_entry_or_position_limit": 1,
+    "no_liquidation": true,
+    "no_global_position_violation": true,
+    "no_order_rejection_for_formal_promotion": true,
+    "cost_after_account_result_only": true
+  },
+  "experiments": [
+    {
+      "family": "candidate47-initial-leader-reentry-router",
+      "classification": "LOGIC_OPPORTUNITY_FAILURE",
+      "implementation_status": "VALID",
+      "logic_status": "REJECT",
+      "usable_for_logic_inference": true,
+      "evidence": {
+        "period": "2026-07-01/2026-07-07",
+        "universe_decisions": 605,
+        "valid_routes_before_cost_geometry": 1,
+        "entry_submissions": 0,
+        "completed_trades": 0,
+        "invariants_passed": true
+      },
+      "reason": "The policy executed correctly but its only route had no cost-after objective space. Threshold relaxation would manufacture trades rather than repair implementation."
+    },
+    {
+      "family": "public-ichiv2-long-original",
+      "classification": "LOGIC_INSUFFICIENT",
+      "implementation_status": "VALID",
+      "logic_status": "CONDITIONAL_ALPHA_BELOW_TARGET",
+      "usable_for_logic_inference": true,
+      "evidence": {
+        "development_period": "2026-07-01/2026-07-07",
+        "trades": 9,
+        "total_return": 0.0059291,
+        "geometric_daily_growth": 0.0008449,
+        "profit_factor": 1.5483,
+        "max_drawdown": 0.011212,
+        "later_replication": "mixed positive and negative weeks"
+      },
+      "reason": "Causal execution and positive cost-after expectancy were reproduced, but growth is about one twelfth of the minimum gate and frequency/stability are insufficient."
+    },
+    {
+      "family": "public-ichiv2-reciprocal-short",
+      "classification": "LOGIC_FAILURE",
+      "implementation_status": "VALID",
+      "logic_status": "REJECT",
+      "usable_for_logic_inference": true,
+      "evidence": {
+        "period": "2026-07-01/2026-07-07",
+        "trades": 27,
+        "wins": 4,
+        "losses": 23,
+        "total_return": -0.05765,
+        "geometric_daily_growth": -0.008449,
+        "profit_factor": 0.2078,
+        "max_drawdown": 0.05788,
+        "all_execution_invariants_passed": true
+      },
+      "reason": "The reciprocal transformation executed as intended and lost decisively after costs. This is not an implementation failure."
+    },
+    {
+      "family": "public-ichiv2-structural-risk",
+      "classification": "LOGIC_INSUFFICIENT",
+      "implementation_status": "CORRECTED_AFTER_INVALID_INITIAL_RUN",
+      "logic_status": "CONDITIONAL_ALPHA_BELOW_TARGET",
+      "usable_for_logic_inference": true,
+      "invalidated_evidence": {
+        "defect": "The parent submission path called the base implementation directly and bypassed the subclass structural stop policy.",
+        "treatment": "All pre-fix structural results are excluded."
+      },
+      "corrected_evidence": {
+        "structural_submissions_positive": true,
+        "recorder_control_equivalence_passed": true,
+        "nine_diagnostic_weeks_compound_return": 0.08779068401422108,
+        "nine_diagnostic_weeks_mean_geometric_daily_growth": 0.00134447189761227,
+        "nine_diagnostic_weeks_trades": 55,
+        "positive_weeks": 5
+      },
+      "reason": "Corrected execution shows conditional positive expectancy, but the disjoint-week diagnostic remains far below 1% daily and is not long continuous proof."
+    },
+    {
+      "family": "public-ichiv2-ema-boundary-risk",
+      "classification": "LOGIC_FAILURE",
+      "implementation_status": "VALID",
+      "logic_status": "REJECT_AS_GLOBAL_POLICY",
+      "usable_for_logic_inference": true,
+      "evidence": {
+        "representative_period": "2026-04-27/2026-05-03",
+        "trades": 3,
+        "total_return": -0.0278,
+        "geometric_daily_growth": -0.004017,
+        "replications": "mixed small gains and losses",
+        "all_execution_invariants_passed": true
+      },
+      "reason": "Aligning hard risk directly to the shifted 90-minute EMA did not preserve robust account expectancy."
+    },
+    {
+      "family": "public-ichiv2-breadth-structural",
+      "classification": "LOGIC_FAILURE",
+      "implementation_status": "VALID",
+      "logic_status": "REJECT",
+      "usable_for_logic_inference": true,
+      "evidence": {
+        "period": "2026-07-01/2026-07-07",
+        "trades": 7,
+        "total_return": -0.02913,
+        "geometric_daily_growth": -0.004216,
+        "profit_factor": 0.047,
+        "all_execution_invariants_passed": true
+      },
+      "reason": "The broader source family reached the market correctly but had strongly negative cost-after expectancy."
+    },
+    {
+      "family": "ichiv2-positive-response-exit",
+      "classification": "LOGIC_FAILURE",
+      "implementation_status": "VALID_WITH_RECORDER_CONTROL",
+      "logic_status": "REJECT_ACCOUNT_POLICY",
+      "usable_for_logic_inference": true,
+      "evidence_file": "POSITIVE_RESPONSE_ACCOUNT_REJECTION_2026-08-09.json",
+      "evidence": {
+        "baseline_nine_week_compound": 0.08779068401422108,
+        "response_exit_nine_week_compound": 0.04051523142460689,
+        "baseline_weighted_expectancy_usdt": 160.08111537218178,
+        "response_weighted_expectancy_usdt": 69.14858580475412,
+        "response_failed_exits": 31
+      },
+      "reason": "A non-intervening recorder separated outcomes, but intervention changed slot availability and destroyed account expectancy. Recorder discrimination is not account-policy evidence."
+    },
+    {
+      "family": "ichiv2-signal-high-acceptance-exit",
+      "classification": "LOGIC_FAILURE",
+      "implementation_status": "VALID",
+      "logic_status": "REJECT_GLOBAL_BARRIER",
+      "usable_for_logic_inference": true,
+      "evidence_file": "SIGNAL_HIGH_ACCEPTANCE_ACCOUNT_REJECTION_2026-08-09.json",
+      "evidence": {
+        "baseline_nine_week_compound": 0.08779068401422108,
+        "acceptance_nine_week_compound": 0.061763105163359366,
+        "acceptance_median_weekly_growth": -0.0008045635562244913,
+        "acceptance_max_weekly_drawdown": 0.09267128327796526
+      },
+      "reason": "Later weeks improved, but the global barrier reduced compound return, made median weekly growth negative, and increased drawdown."
+    },
+    {
+      "family": "ichiv2-remove-90m-cross-exit",
+      "classification": "LOGIC_FAILURE",
+      "implementation_status": "VALID",
+      "logic_status": "REJECT_GLOBAL_REMOVAL",
+      "usable_for_logic_inference": true,
+      "evidence_file": "NO_CROSS_GLOBAL_REMOVAL_REJECTION_2026-08-09.json",
+      "evidence": {
+        "baseline_nine_week_compound": 0.08779068401422108,
+        "no_cross_nine_week_compound": 0.09738481303371316,
+        "no_cross_positive_weeks": 4,
+        "no_cross_median_weekly_growth": -0.000560510240070089,
+        "no_cross_max_weekly_drawdown": 0.08580876863261044
+      },
+      "reason": "A small aggregate gain was concentrated in one week; global removal reduced positive weeks, made median growth negative, increased drawdown, and damaged other profitable regimes."
+    },
+    {
+      "family": "public-nfi-squeeze-release-long-only",
+      "classification": "LOGIC_FAILURE",
+      "implementation_status": "VALID_ON_FOUR_COMPLETED_UNTOUCHED_WEEKS",
+      "logic_status": "REJECT",
+      "usable_for_logic_inference": true,
+      "evidence_file": "SQUEEZE_LONG_UNTOUCHED_REJECTION_2026-08-09.json",
+      "evidence": {
+        "untouched_weeks": 4,
+        "positive_weeks": 0,
+        "calendar_days": 28,
+        "trades": 58,
+        "wins": 14,
+        "losses": 44,
+        "compound_return": -0.31936839723841104,
+        "weighted_expectancy_usdt": -621.0921261043103
+      },
+      "excluded_run": {
+        "period": "2026-01-12/2026-01-18",
+        "reason": "Public bookDepth archive returned HTTP 404 before strategy execution",
+        "classification": "IMPLEMENTATION_BLOCKED",
+        "material_to_logic_verdict": false
+      },
+      "reason": "Every successfully executed untouched week was negative. The unrelated blocked January run is not counted as a loss and cannot rescue the logic."
+    },
+    {
+      "family": "public-nasosv5-exact-defaults",
+      "classification": "LOGIC_OPPORTUNITY_FAILURE",
+      "implementation_status": "VALID_SOURCE_BRANCH_CONTRACTS",
+      "logic_status": "REJECT_CURRENT_UNIVERSE",
+      "usable_for_logic_inference": true,
+      "evidence_file": "NASOSV5_ZERO_OPPORTUNITY_REJECTION_2026-08-09.json",
+      "evidence": {
+        "calendar_days": 35,
+        "ready_symbol_states": 36340,
+        "raw_source_signal_bars": 0,
+        "all_three_public_entry_branches_reachable_in_synthetic_contracts": true,
+        "completed_5m_15m_alignment_verified": true
+      },
+      "reason": "The exact frozen rules are executable, but opportunity density is zero on BTC/ETH/SOL/XRP. This is not grounds for threshold loosening."
+    },
+    {
+      "family": "public-e0v1e-structural-reversion",
+      "classification": "LOGIC_OPPORTUNITY_FAILURE",
+      "implementation_status": "VALID_SOURCE_BRANCH_CONTRACTS",
+      "logic_status": "REJECT_CURRENT_UNIVERSE",
+      "usable_for_logic_inference": true,
+      "evidence_file": "E0V1E_ZERO_OPPORTUNITY_REJECTION_2026-08-09.json",
+      "evidence": {
+        "calendar_days": 35,
+        "ready_symbol_states": 34080,
+        "raw_source_candidates": 0,
+        "synthetic_public_ewo_branch_triggers": true,
+        "synthetic_valid_structural_geometry": true,
+        "future_append_invariance_verified": true
+      },
+      "reason": "The exact public branch is reachable and causal, but generated no opportunity in the current universe."
+    },
+    {
+      "family": "public-picasso-rsi-bb-macd-bidirectional",
+      "classification": "LOGIC_FAILURE",
+      "implementation_status": "VALID",
+      "logic_status": "REJECT",
+      "usable_for_logic_inference": true,
+      "evidence": {
+        "best_screen_period": "2026-02-09/2026-02-15",
+        "trades": 30,
+        "win_rate": 0.6667,
+        "profit_factor": 0.948,
+        "total_return": -0.00314,
+        "geometric_daily_growth": -0.000449,
+        "all_execution_invariants_passed": true
+      },
+      "reason": "High win rate did not survive costs; threshold variants were worse."
+    },
+    {
+      "family": "public-bb-rpb-tsl-zero-entry-families",
+      "classification": "PARITY_UNRESOLVED",
+      "implementation_status": "SOURCE_TRANSLATION_NOT_INDEPENDENTLY_PROVEN",
+      "logic_status": "NO_VERDICT",
+      "usable_for_logic_inference": false,
+      "evidence": {
+        "families_screened": 5,
+        "completed_trades": 0
+      },
+      "reason": "Zero entries alone cannot distinguish true source opportunity absence from translation or dispatch mismatch. Do not count it as a logic failure until independent source-output parity is established."
+    },
+    {
+      "family": "public-notankai-99.9pct-win-claim",
+      "classification": "IMPLEMENTATION_INVALID",
+      "implementation_status": "SOURCE_BACKTEST_LOOKAHEAD_AND_INCOMPATIBLE_RISK",
+      "logic_status": "NO_VERDICT_FROM_REPORTED_PERFORMANCE",
+      "usable_for_logic_inference": false,
+      "evidence": {
+        "reported_win_rate": 0.999,
+        "reported_trades": 5738,
+        "lookahead": "scipy.signal.argrelextrema(order=5) labels an earlier bar using five future bars",
+        "additional_incompatibility": "near-total stop and position-adjustment/DCA mechanics"
+      },
+      "reason": "The source performance is invalid for causal inference. Only a reformulated, forward-confirmed extrema idea may be reused."
+    },
+    {
+      "family": "public-four-hour-jump-reversion",
+      "classification": "LOGIC_FAILURE",
+      "implementation_status": "VALID_CAUSAL_RULE_AND_ACCOUNT",
+      "logic_status": "REJECT_AFTER_UNTOUCHED",
+      "usable_for_logic_inference": true,
+      "evidence": {
+        "development": "positive",
+        "untouched_2025_05_return": -0.33,
+        "untouched_2025_08_return": -0.116,
+        "untouched_2025_11_return": -0.145,
+        "untouched_combined_trades": 41,
+        "untouched_wins": 2
+      },
+      "reason": "The paper rule was implemented without future information and failed all three untouched regimes."
+    },
+    {
+      "family": "public-orderbook-delta-flowvote-continuation",
+      "classification": "MIXED_IMPLEMENTATION_AND_LOGIC",
+      "implementation_status": "MINOR_ORDER_REJECTIONS_PRESENT",
+      "logic_status": "DECISIVE_REJECT",
+      "usable_for_logic_inference": true,
+      "evidence": {
+        "variants": 4,
+        "accepted_trades_range": "279-379",
+        "profit_factor_range": "0.355-0.415",
+        "total_return_range": "-0.9682 to -0.8786",
+        "order_rejections_range": "1-6",
+        "no_liquidation": true,
+        "single_position_invariants_passed": true
+      },
+      "reason": "Order rejections prevent formal promotion but cannot explain the catastrophic expectancy of hundreds of accepted trades. The continuation direction is a logic failure."
+    },
+    {
+      "family": "public-orderbook-delta-flowvote-inverse-fade",
+      "classification": "MIXED_IMPLEMENTATION_AND_LOGIC",
+      "implementation_status": "MINOR_ORDER_REJECTIONS_PRESENT",
+      "logic_status": "DECISIVE_REJECT",
+      "usable_for_logic_inference": true,
+      "evidence": {
+        "variants": 4,
+        "accepted_trades_range": "127-266",
+        "profit_factor_range": "0.0303-0.1169",
+        "total_return_range": "-0.9770 to -0.9034",
+        "order_rejections_range": "3-9"
+      },
+      "reason": "Reversing the direction did not recover edge; accepted trades independently establish severe logic failure despite minor execution defects."
+    },
+    {
+      "family": "public-keltrader-squeeze-core",
+      "classification": "PROVISIONAL_ALPHA",
+      "implementation_status": "DEVELOPMENT_VALID_UNTOUCHED_PREVIOUSLY_BLOCKED",
+      "logic_status": "UNTOUCHED_PENDING",
+      "usable_for_logic_inference": false,
+      "development_evidence": {
+        "strict_30m": {
+          "trades": 11,
+          "win_rate": 0.7273,
+          "profit_factor": 2.782,
+          "total_return": 0.12679,
+          "geometric_daily_growth": 0.003987,
+          "max_drawdown": 0.0425
+        },
+        "source_4h": {
+          "trades": 7,
+          "win_rate": 0.7143,
+          "profit_factor": 10.67,
+          "total_return": 0.09390,
+          "geometric_daily_growth": 0.002996,
+          "max_drawdown": 0.0380
+        }
+      },
+      "excluded_untouched_attempts": [
+        "Unused positioning metrics conflicted before strategy execution",
+        "Candidate module import collision",
+        "pandas 3 parsed Binance numeric timestamp strings as years",
+        "pandas 3 exposed a read-only array to Nautilus BarDataWrangler"
+      ],
+      "current_implementation_fix_commit": "0c1a2975958b9797dbf549648845317e59e1eec0",
+      "reason": "Development alpha is real enough to warrant untouched testing, but all prior untouched attempts stopped before an economic result and must not be called wins or losses."
+    }
+  ],
+  "controller_rules": [
+    "Never classify a pre-strategy exception as a losing strategy.",
+    "Never use an external performance report with lookahead, invalid risk, or incompatible multi-position mechanics as alpha evidence.",
+    "A zero-trade result is a logic opportunity failure only after exact branch reachability and source parity are independently proven.",
+    "If a defect is corrected, discard every result produced before the correction and rerun frozen rules.",
+    "Minor execution defects may coexist with a logic verdict only when valid accepted trades alone make the verdict overwhelming; such results remain ineligible for promotion.",
+    "Outcome-predictive recorder features are not account-policy evidence until an intervention is rerun in one continuous account.",
+    "Only a cost-after Nautilus continuous-account result can satisfy the project gate."
+  ]
+}
