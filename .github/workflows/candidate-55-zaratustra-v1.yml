@@ -1,0 +1,136 @@
+name: candidate-55-zaratustra-v1
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v1.yml"
+      - "research/candidate-55/run_zaratustra_tournament.py"
+      - "research/candidate-55/router_zaratustra.py"
+      - "research/candidate-55/strategy_zaratustra.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-55-zaratustra-v1
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+          fetch-depth: 0
+
+      - name: Materialize reused Nautilus execution and source policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install, doctor and validate source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import (
+              BarObservation,
+              _decode_mode,
+              _directional_indicators,
+              source_entry_flags,
+          )
+
+          assert _decode_mode("level_both") == ("level", "both")
+          assert _decode_mode("edge_both") == ("edge", "both")
+          assert _decode_mode("level_short") == ("level", "short")
+
+          long_values = dict(
+              rsi_5m=55.0, rsi_15m=56.0, rsi_30m=57.0,
+              pdi_5m=26.0, pdi_15m=27.0, pdi_30m=28.0,
+              mdi_5m=10.0, mdi_15m=11.0, mdi_30m=12.0,
+              close_5m=101.0, close_15m=102.0, close_30m=103.0,
+              bbm_5m=100.0, bbm_15m=100.0, bbm_30m=100.0,
+          )
+          short_values = dict(
+              rsi_5m=45.0, rsi_15m=44.0, rsi_30m=43.0,
+              pdi_5m=10.0, pdi_15m=11.0, pdi_30m=12.0,
+              mdi_5m=26.0, mdi_15m=27.0, mdi_30m=28.0,
+              close_5m=99.0, close_15m=98.0, close_30m=97.0,
+              bbm_5m=100.0, bbm_15m=100.0, bbm_30m=100.0,
+          )
+          assert source_entry_flags(**long_values) == (True, False)
+          assert source_entry_flags(**short_values) == (False, True)
+
+          bars = [
+              BarObservation(
+                  ts_event=index * 60_000_000_000,
+                  open=100.0 + index,
+                  high=102.0 + index,
+                  low=100.0 + index,
+                  close=101.0 + index,
+                  volume=1.0,
+              )
+              for index in range(40)
+          ]
+          plus, minus = _directional_indicators(bars, 14)
+          assert math.isfinite(plus[-1]) and abs(plus[-1] - 50.0) < 1e-9
+          assert math.isfinite(minus[-1]) and abs(minus[-1]) < 1e-9
+          print("ZaratustraV5 source, DMI and variant contracts verified")
+          PY
+
+      - name: Run source-first tournament
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_zaratustra_tournament.py
+
+      - name: Persist evidence on candidate branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="research/candidate-55/evidence/v3-zaratustra"
+          if [[ ! -f "$evidence/RESULT.json" ]]; then
+            echo "No complete Zaratustra tournament result to persist" >&2
+            exit 1
+          fi
+          git config user.name "candidate-55-research-bot"
+          git config user.email "candidate-55-research-bot@users.noreply.github.com"
+          git add "$evidence"
+          if git diff --cached --quiet; then
+            echo "Evidence already current"
+            exit 0
+          fi
+          git commit -m "candidate55: persist ZaratustraV5 tournament evidence"
+          pushed=0
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-55 && git push origin HEAD:research/candidate-55; then
+              pushed=1
+              break
+            fi
+            sleep $((attempt * 4))
+          done
+          [[ "$pushed" -eq 1 ]]
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v1-${{ github.sha }}
+          path: artifacts/candidate-55/zaratustra-v1-*
+          if-no-files-found: warn
