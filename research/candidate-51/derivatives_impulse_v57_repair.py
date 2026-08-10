@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Gap-aware runner for the frozen v57 derivatives impulse anatomy.
 
-Two development shards contain 19 exchange-archive minute gaps.  The shared
-price adapter correctly rejects those ranges for executable backtests.  For
-this mechanism diagnostic we retain only observed bars, record every missing
-minute, discard incomplete hourly bars, suppress signals until the full
-indicator lookback is contiguous again, and reject every forward path that
-crosses a gap.  No price is synthesized and no v57 state threshold changes.
+Two development shards contain exchange-archive minute gaps. The shared price
+adapter correctly rejects those ranges for executable backtests. For this
+mechanism diagnostic we retain only observed bars, record every missing minute,
+discard incomplete hourly bars, suppress signals until the full indicator
+lookback is contiguous again, and reject every forward path that crosses a gap.
+No price is synthesized and no v57 state threshold changes.
 """
 from __future__ import annotations
 
@@ -56,6 +56,9 @@ def _relaxed_price_loader(module: Any):
         if klines["close_time_dt"].duplicated().any():
             raise RuntimeError("duplicate klines across daily files")
         close_times = pd.DatetimeIndex(pd.to_datetime(klines["close_time_dt"], utc=True))
+        if close_times.empty or not close_times.is_monotonic_increasing:
+            raise RuntimeError(f"empty or non-monotonic minute data for {symbol}")
+
         expected_first = (
             pd.Timestamp(start, tz="UTC")
             + pd.Timedelta(minutes=1)
@@ -65,13 +68,15 @@ def _relaxed_price_loader(module: Any):
             pd.Timestamp(end + timedelta(days=1), tz="UTC")
             - pd.Timedelta(milliseconds=1)
         )
-        if close_times[0] != expected_first or close_times[-1] != expected_last:
+        expected = pd.date_range(expected_first, expected_last, freq="min")
+        unexpected = close_times.difference(expected)
+        if len(unexpected):
             raise RuntimeError(
-                f"unexpected boundary clock for {symbol}: "
-                f"{close_times[0]}..{close_times[-1]}"
+                f"observations outside expected minute clock for {symbol}: "
+                f"{[value.isoformat() for value in unexpected[:10]]}"
             )
-        expected = pd.date_range(expected_first, expected_last, freq="min", tz="UTC")
         missing = expected.difference(close_times)
+
         observed_time_ns = pd.Series(close_times.asi8, dtype="int64")
         feature_path = output / "features.csv.gz"
         pd.DataFrame(
@@ -91,10 +96,15 @@ def _relaxed_price_loader(module: Any):
                     "end": end.isoformat(),
                     "rows": len(klines),
                     "expected_rows": len(expected),
+                    "first_observed_close_time": close_times[0].isoformat(),
+                    "last_observed_close_time": close_times[-1].isoformat(),
+                    "expected_first_close_time": expected_first.isoformat(),
+                    "expected_last_close_time": expected_last.isoformat(),
                     "missing_count": len(missing),
                     "missing_close_times": [value.isoformat() for value in missing],
                     "gap_policy": [
                         "no price synthesis",
+                        "boundary gaps are recorded rather than rejected",
                         "incomplete hourly bars discarded",
                         "signals suppressed until contiguous indicator recovery",
                         "forward paths crossing gaps rejected",
@@ -134,7 +144,9 @@ def _strict_path_returns(minute: pd.DataFrame, entry_time: pd.Timestamp, side: i
             result[f"rev_{horizon}m"] = None
             continue
         segment = times[start : end + 1]
-        if len(segment) != horizon + 1 or not np.all(np.diff(segment.asi8) == 60_000_000_000):
+        if len(segment) != horizon + 1 or not np.all(
+            np.diff(segment.asi8) == 60_000_000_000
+        ):
             result[f"cont_{horizon}m"] = None
             result[f"rev_{horizon}m"] = None
             continue
