@@ -1,4 +1,4 @@
-name: candidate-57-winner-source-fidelity-v1
+name: candidate-57-winner-source-fidelity-v2
 
 on:
   push:
@@ -10,13 +10,14 @@ on:
       - "research/candidate-57/winner_source_fidelity_campaign.py"
       - "research/candidate-57/forensic_sources/winner_strategy_external_v17.py"
       - "research/candidate-51/router_external_v17.py"
+      - "research/candidate-51/run.py"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: candidate-57-winner-source-fidelity-v1
+  group: candidate-57-winner-source-fidelity-v2
   cancel-in-progress: true
 
 jobs:
@@ -70,11 +71,11 @@ jobs:
         shell: bash
         run: |
           set +e
-          mkdir -p .work/candidate-57-winner-source-fidelity-v1-console
+          mkdir -p .work/candidate-57-winner-source-fidelity-v2-console
           set -o pipefail
           PYTHONPATH=research/candidate-51 \
             uv run python research/candidate-57/winner_source_fidelity_campaign.py \
-            2>&1 | tee .work/candidate-57-winner-source-fidelity-v1-console/console.log
+            2>&1 | tee .work/candidate-57-winner-source-fidelity-v2-console/console.log
           status=${PIPESTATUS[0]}
           echo "status=${status}" >> "$GITHUB_OUTPUT"
           exit 0
@@ -88,11 +89,10 @@ jobs:
           rm -f research/candidate-51/router_transition.py research/candidate-51/strategy_transition.py
           git config user.name "candidate-57-research-bot"
           git config user.email "candidate-57-research-bot@users.noreply.github.com"
-          git pull --rebase origin research/candidate-57
           if [[ -d research/candidate-57/evidence/winner-source-fidelity-v1 ]]; then
             git add -f research/candidate-57/evidence/winner-source-fidelity-v1
             if ! git diff --cached --quiet; then
-              git commit --no-gpg-sign -m "candidate57: persist source-fidelity Winner15m anatomy"
+              git commit --no-gpg-sign -m "candidate57: persist source-fidelity Winner15m anatomy v2"
               for attempt in 1 2 3 4 5; do
                 git fetch origin research/candidate-57
                 git rebase origin/research/candidate-57
@@ -108,10 +108,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-57-winner-source-fidelity-v1-evidence
+          name: candidate-57-winner-source-fidelity-v2-evidence
           path: |
             research/candidate-57/evidence/winner-source-fidelity-v1
-            .work/candidate-57-winner-source-fidelity-v1-console/console.log
+            .work/candidate-57-winner-source-fidelity-v2-console/console.log
           if-no-files-found: warn
           retention-days: 14
 
