@@ -56,8 +56,8 @@ This is a structural comparison, not a threshold grid. Fan parameters are frozen
 
 - Development: 2026-02-15 through 2026-02-28.
 - Untouched: 2025-09-08 through 2025-09-14.
-- Conditional 30-day continuous: 2025-04-01 through 2025-04-30.
-- The public report months are not used for development selection.
+- Conditional 30-day continuous: 2025-08-01 through 2025-08-30.
+- No displayed public-report month is used for development, untouched selection or the conditional 30-day account.
 
 Every case persists every completed trade, exit family, R distribution, symbol/side result and winner-versus-loser entry-state contrasts. Up to two development cells consume untouched data: the best quality cell and, when different, the strongest valid opportunity-density cell. This allocation is not a binary truth claim. A 30-day run is consumed only for a positive untouched survivor.
 
