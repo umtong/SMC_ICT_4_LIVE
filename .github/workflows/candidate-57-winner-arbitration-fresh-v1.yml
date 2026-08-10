@@ -1,17 +1,22 @@
-name: candidate-57-winner-arbitration-fresh-v1
+name: candidate-57-winner-arbitration-fresh-v2-implementation-retry
 
 on:
   push:
     branches: ["research/candidate-57"]
     paths:
       - ".github/workflows/candidate-57-winner-arbitration-fresh-v1.yml"
+      - "research/candidate-57/winner_arbitration_router.py"
+      - "research/candidate-57/winner_arbitration_fresh_campaign.py"
+      - "research/candidate-57/winner_source_fidelity_router.py"
+      - "research/candidate-57/winner_source_fidelity_strategy.py"
+      - "research/candidate-51/run.py"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: candidate-57-winner-arbitration-fresh-v1
+  group: candidate-57-winner-arbitration-fresh-v2-implementation-retry
   cancel-in-progress: true
 
 jobs:
@@ -46,22 +51,29 @@ jobs:
             research/candidate-51/strategy_transition.py \
             research/candidate-57/winner_arbitration_fresh_campaign.py
 
-      - name: Install locked environment and prove the two-policy contract
+      - name: Install locked environment and prove score-path implementation
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          python -m pip install --disable-pip-check "uv==0.11.25" 2>/dev/null || python -m pip install --disable-pip-version-check "uv==0.11.25"
           uv lock --check
           uv sync --locked
           PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
           import os
           import router
+          import strategy_transition
           from strategy import Candidate35Config, Candidate35Strategy
-          assert router._mode.__name__ == "_mode"
+
           os.environ["C57_ARBITRATION_MODE"] = "current_max_climax"
           assert router._mode() == "current_max_climax"
           os.environ["C57_ARBITRATION_MODE"] = "least_volume_excess"
           assert router._mode() == "least_volume_excess"
+          source = inspect.getsource(router.route_universe)
+          assert "effective_arbitration_score" in source
+          assert "score=effective_score" in source
+          inherited = inspect.getsource(strategy_transition.Candidate35Strategy._on_complete_universe_minute)
+          assert "unused.sort" in inherited and "-float(item.score)" in inherited
           try:
               os.environ["C57_ARBITRATION_MODE"] = "third_policy_forbidden"
               router._mode()
@@ -71,22 +83,40 @@ jobs:
               raise AssertionError("unfrozen third arbitration policy accepted")
           assert Candidate35Config.__name__ == "Candidate35Config"
           assert Candidate35Strategy.__name__ == "Candidate35Strategy"
-          print("exactly two frozen arbitration policies verified")
+          print("effective arbitration score now reaches the reused strategy sort")
           PY
 
-      - name: Run both policies sequentially on the fresh interval
+      - name: Run frozen policies after implementation repair
         id: campaign
         shell: bash
         run: |
           set +e
-          mkdir -p .work/candidate-57-winner-arbitration-fresh-v1-console
+          mkdir -p .work/candidate-57-winner-arbitration-fresh-v2-console
           set -o pipefail
           PYTHONPATH=research/candidate-51 \
             uv run python research/candidate-57/winner_arbitration_fresh_campaign.py \
-            2>&1 | tee .work/candidate-57-winner-arbitration-fresh-v1-console/console.log
+            2>&1 | tee .work/candidate-57-winner-arbitration-fresh-v2-console/console.log
           status=${PIPESTATUS[0]}
           echo "status=${status}" >> "$GITHUB_OUTPUT"
           exit 0
+
+      - name: Mark implementation retry provenance
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=research/candidate-57/evidence/winner-arbitration-fresh-v1
+          if [[ -d "$out" ]]; then
+            cat > "$out"/IMPLEMENTATION_RETRY.txt <<'EOF'
+          The first run did not test the least-volume policy.  The reused
+          strategy ignored route_universe's selected object and re-sorted the
+          returned decisions by their unchanged source score.  Both branches
+          therefore executed the old max-climax policy.  This rerun preserves
+          the pre-frozen policies and interval but repairs the score path so the
+          least-volume policy is applied.  Treat the interval as development
+          data after this implementation retry.
+          EOF
+          fi
 
       - name: Commit compact causal evidence
         if: always()
@@ -103,7 +133,7 @@ jobs:
           if [[ -d research/candidate-57/evidence/winner-arbitration-fresh-v1 ]]; then
             git add -f research/candidate-57/evidence/winner-arbitration-fresh-v1
             if ! git diff --cached --quiet; then
-              git commit --no-gpg-sign -m "candidate57: persist fresh Winner arbitration causal evidence"
+              git commit --no-gpg-sign -m "candidate57: persist repaired Winner arbitration causal evidence"
               for attempt in 1 2 3 4 5; do
                 git fetch origin research/candidate-57
                 git rebase origin/research/candidate-57
@@ -119,10 +149,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-57-winner-arbitration-fresh-v1-evidence
+          name: candidate-57-winner-arbitration-fresh-v2-evidence
           path: |
             research/candidate-57/evidence/winner-arbitration-fresh-v1
-            .work/candidate-57-winner-arbitration-fresh-v1-console/console.log
+            .work/candidate-57-winner-arbitration-fresh-v2-console/console.log
           if-no-files-found: warn
           retention-days: 14
 
