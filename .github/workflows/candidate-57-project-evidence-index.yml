@@ -1,0 +1,161 @@
+name: candidate-57-project-evidence-index
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-57]
+    paths:
+      - .github/workflows/candidate-57-project-evidence-index.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-57-project-evidence-index
+  cancel-in-progress: true
+
+jobs:
+  index:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Build repository-wide reusable evidence index
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          import math
+          from pathlib import Path
+          import shutil
+
+          root = Path.cwd()
+          out = root / "project-evidence-index"
+          out.mkdir(parents=True, exist_ok=True)
+          rows = []
+          decisions = []
+
+          def finite(value):
+              try:
+                  x = float(value)
+              except (TypeError, ValueError):
+                  return None
+              return x if math.isfinite(x) else None
+
+          def append_metrics(path: Path, payload: dict, metrics: dict, label: str):
+              trades = metrics.get("trades")
+              geo = finite(metrics.get("geometric_daily_growth"))
+              if trades is None or geo is None:
+                  return
+              checks = metrics.get("gate_checks") if isinstance(metrics.get("gate_checks"), dict) else {}
+              mechanical_keys = (
+                  "single_position", "no_global_position_violation", "no_order_rejections",
+                  "no_liquidation", "closed_position_rows_match_trade_count",
+              )
+              mechanically_valid = all(bool(checks.get(key, True)) for key in mechanical_keys)
+              calendar_days = metrics.get("calendar_days") or payload.get("calendar_days")
+              active_days = metrics.get("active_days") or payload.get("active_days")
+              frequency_ratio = None
+              try:
+                  if calendar_days and float(calendar_days) > 0:
+                      frequency_ratio = float(trades) / float(calendar_days)
+              except Exception:
+                  pass
+              rows.append({
+                  "path": str(path.relative_to(root)),
+                  "candidate_dir": next((part for part in path.parts if part.startswith("candidate-")), None),
+                  "label": label,
+                  "stage": payload.get("stage"),
+                  "trades": trades,
+                  "wins": metrics.get("wins"),
+                  "losses": metrics.get("losses"),
+                  "profit_factor": finite(metrics.get("profit_factor")),
+                  "geometric_daily_growth": geo,
+                  "total_return": finite(metrics.get("total_return")),
+                  "max_drawdown": finite(metrics.get("max_drawdown")),
+                  "expectancy_usdt": finite(metrics.get("expectancy_usdt")),
+                  "calendar_days": calendar_days,
+                  "active_days": active_days,
+                  "trades_per_calendar_day": frequency_ratio,
+                  "mechanically_valid": mechanically_valid,
+                  "gate_pass": metrics.get("gate_pass"),
+                  "candidate": payload.get("candidate"),
+              })
+
+          for path in root.glob("research/**/*.json"):
+              try:
+                  if path.stat().st_size > 5_000_000:
+                      continue
+                  payload = json.loads(path.read_text(encoding="utf-8"))
+              except Exception:
+                  continue
+              if not isinstance(payload, dict):
+                  continue
+              metrics = payload.get("metrics")
+              if isinstance(metrics, dict):
+                  label = str(payload.get("variant") or payload.get("cell") or payload.get("policy") or payload.get("name") or path.stem)
+                  append_metrics(path, payload, metrics, label)
+              elif payload.get("trades") is not None and payload.get("geometric_daily_growth") is not None:
+                  append_metrics(path, payload, payload, str(payload.get("variant") or payload.get("cell") or payload.get("name") or path.stem))
+              for key in ("decision", "status", "interpretation", "reason"):
+                  if key in payload and isinstance(payload[key], (str, bool, int, float)):
+                      decisions.append({"path": str(path.relative_to(root)), "key": key, "value": payload[key]})
+
+          rows.sort(key=lambda row: (
+              bool(row["mechanically_valid"]),
+              row["geometric_daily_growth"],
+              row["profit_factor"] if row["profit_factor"] is not None else -999.0,
+              int(row["trades"] or 0),
+          ), reverse=True)
+          (out / "account_evidence.json").write_text(json.dumps(rows, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          (out / "decisions.json").write_text(json.dumps(decisions, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          eligible = [r for r in rows if r["mechanically_valid"] and int(r["trades"] or 0) > 0]
+          lines = [
+              "# Repository-wide account evidence index",
+              "",
+              "This is a Search→Reuse evidence map, not an automatic strategy ranking or promotion gate.",
+              "Historical rows may overlap, be development data, or represent incomplete components. Read the originating causal decision before reuse.",
+              "",
+              f"- account rows found: {len(rows)}",
+              f"- mechanically valid nonzero-trade rows: {len(eligible)}",
+              "",
+              "| candidate/path | label | trades | trades/day | PF | geo/day | return | MDD |",
+              "|---|---|---:|---:|---:|---:|---:|---:|",
+          ]
+          for row in eligible[:300]:
+              lines.append(
+                  f"| `{row['candidate_dir']}` / `{row['path']}` | {row['label']} | {row['trades']} | "
+                  f"{row['trades_per_calendar_day']} | {row['profit_factor']} | {row['geometric_daily_growth']} | "
+                  f"{row['total_return']} | {row['max_drawdown']} |"
+              )
+          (out / "TOP_ACCOUNT_EVIDENCE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+          summaries = out / "source-summaries"
+          for path in root.glob("research/**/*"):
+              if not path.is_file() or path.stat().st_size > 250_000:
+                  continue
+              if path.name in {"RESULT.md", "README.md", "summary.json", "RESULT.json", "DECISION.md"} or "DECISION" in path.name or "FREEZE" in path.name:
+                  destination = summaries / path.relative_to(root)
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(path, destination)
+          (out / "HEAD.txt").write_text(__import__("subprocess").check_output(["git", "rev-parse", "HEAD"], text=True), encoding="utf-8")
+          PY
+
+      - name: Upload project evidence index
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-project-evidence-index
+          path: project-evidence-index
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 3
