@@ -1,0 +1,68 @@
+name: candidate-55-ichi-episode-forensics
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-ichi-episode-forensics.yml"
+      - "research/candidate-55/ichi_episode_forensics.py"
+      - "research/candidate-51/router_ichi.py.gz"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-ichi-episode-forensics
+  cancel-in-progress: true
+
+jobs:
+  episode-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - name: Materialize exact Ichi router
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip
+          from pathlib import Path
+          root = Path("research/candidate-51")
+          (root / "router.py").write_bytes(gzip.decompress((root / "router_ichi.py.gz").read_bytes()))
+          PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install and doctor
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python -m compileall -q research/candidate-55/ichi_episode_forensics.py
+      - name: Audit source and one-component near-miss episodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/ichi_episode_forensics.py \
+            --start 2025-01-08 --end 2025-01-14 \
+            --cache .cache/candidate-55-ichi-episodes \
+            --output artifacts/candidate-55/ichi-episode-forensics-2025-01
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/ichi_episode_forensics.py \
+            --start 2025-03-01 --end 2025-03-07 \
+            --cache .cache/candidate-55-ichi-episodes \
+            --output artifacts/candidate-55/ichi-episode-forensics-2025-03
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-ichi-episode-forensics-${{ github.sha }}
+          path: artifacts/candidate-55/ichi-episode-forensics-*
+          if-no-files-found: warn
+          retention-days: 30
