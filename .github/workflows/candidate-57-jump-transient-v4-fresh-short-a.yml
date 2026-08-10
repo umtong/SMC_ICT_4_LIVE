@@ -1,0 +1,75 @@
+name: candidate-57-jump-transient-v4-fresh-short-a
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-jump-transient-v4-fresh-short-a.yml"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: candidate-57-jump-transient-v4-fresh-short-a
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-57, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Materialize frozen policy
+        run: |
+          cat research/candidate-57/candidate57_jump_transient_v3_bundle.tar.gz.b64.part* | base64 -d > /tmp/c57.tgz
+          tar -xzf /tmp/c57.tgz -C research/candidate-57
+          cp research/candidate-57/router_jump_transient.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_jump_transient.py research/candidate-51/strategy.py
+      - name: Install locked environment
+        run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-57
+      - name: Run one untouched short interval
+        run: |
+          uv run python research/candidate-57/run_jump_transient_variant.py             --variant arm0p4_escape1p0             --mode transient_be --arm 0.4 --escape 1.0             --start 2025-12-01 --end 2025-12-14             --stage fresh-short-a
+      - name: Persist exact compact evidence
+        run: |
+          src=artifacts/candidate-57/candidate57-jump-transient-v3-fresh-short-a-arm0p4_escape1p0
+          out=research/candidate-57/evidence/jump-transient-v4-fresh-short-a
+          mkdir -p "$out"
+          cp "$src"/metrics.json "$out"/
+          cp "$src"/closed_scenarios.json "$out"/
+          cp "$src"/strategy_diagnostics.json "$out"/
+          cp "$src"/run.json "$out"/
+          cp "$src"/data_manifest.json "$out"/
+          cat > "$out"/FREEZE.txt <<'EOF'
+interval=2025-12-01..2025-12-14
+status=untouched_before_candidate57_jump_transient_v4
+family=completed_4h_jump_reversion
+stop=completed_4h_impulse_extreme
+management=transient_all_in_break_even_arm_0.4R_escape_1.0R
+selection=source_jump_score
+global_positions=1
+planned_loss_fraction=0.03
+EOF
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f research/candidate-57/router_jump_transient.py research/candidate-57/strategy_jump_transient.py
+          rm -f research/candidate-57/run_jump_transient_variant.py research/candidate-57/analyze_jump_transient_results.py
+          git config user.name candidate-57-research-bot
+          git config user.email candidate-57-research-bot@users.noreply.github.com
+          git pull --rebase origin research/candidate-57
+          git add -f "$out"
+          git diff --cached --quiet && exit 0
+          git commit -m "candidate57: validate transient jump state on fresh short A"
+          git push origin HEAD:research/candidate-57
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-57-jump-transient-v4-fresh-short-a
+          path: |
+            artifacts/candidate-57/candidate57-jump-transient-v3-fresh-short-a-arm0p4_escape1p0/**
+            research/candidate-57/evidence/jump-transient-v4-fresh-short-a/**
+          if-no-files-found: error
