@@ -1,0 +1,76 @@
+name: candidate-51-forced-unwind-geometry-v59-diagnose
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-forced-unwind-geometry-v59-diagnose.yml"
+      - "research/candidate-51/forced_unwind_geometry_v59_diagnose.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-forced-unwind-geometry-v59-diagnose
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+          sparse-checkout: |
+            research/candidate-05
+            research/candidate-51
+            pyproject.toml
+            uv.lock
+            src
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Trace one known non-empty period
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          uv run smc4 doctor
+          python -m py_compile research/candidate-51/forced_unwind_geometry_v59_diagnose.py
+          output=artifacts/candidate-51/forced-unwind-geometry-v59-diagnosis
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/forced_unwind_geometry_v59_diagnose.py \
+            --period-label dev_ftx_2022_11 --start 2022-11-01 --end 2022-11-14 \
+            --events research/candidate-51/evidence/derivatives-impulse-v57/EVENTS.csv \
+            --cache .cache/candidate-51-v59-diagnosis \
+            --candidate05-path research/candidate-05 --candidate51-path research/candidate-51 \
+            --output "$output"
+          test -s "$output/DIAGNOSIS.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-forced-unwind-geometry-v59-diagnosis
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/forced-unwind-geometry-v59-diagnosis
+      - name: Commit diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/forced-unwind-geometry-v59-diagnosis
+          destination=research/candidate-51/evidence/forced-unwind-geometry-v59-diagnosis
+          mkdir -p "$destination"
+          cp "$source/DIAGNOSIS.json" "$destination/DIAGNOSIS.json"
+          cp "$source/VALID_RECORDS.csv" "$destination/VALID_RECORDS.csv"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          git commit -m "candidate51: record v59 geometry rejection diagnosis"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-51 --depth=1
+            if git rebase FETCH_HEAD && git push origin HEAD:research/candidate-51; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 2))
+          done
+          exit 1
