@@ -1,0 +1,208 @@
+name: candidate-57-ichi-v2-fast-v2
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-ichi-v2-fast-v2.yml"
+      - "research/candidate-57/strategy_ichi_v2_fast_v2.py"
+      - "research/candidate-57/ichi_v2_fast_v2_identity.py"
+      - "research/candidate-57/ichi_v2_fast_v2_campaign.py"
+      - "research/candidate-57/ichi_v2_5m_campaign.py"
+      - "research/candidate-57/strategy_ichi_v2_5m.py"
+      - "research/candidate-57/router_ichi_v2_5m.py"
+      - "research/candidate-57/router_ichi_v2_runtime.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-ichi-v2-fast-v2
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble full and finite source implementations
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_ichi_v2_5m.py research/candidate-51/router_ichi_v2_impl.py
+          cp research/candidate-57/router_ichi_v2_runtime.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_ichi_v2_5m.py research/candidate-51/strategy_ichi_v2_base.py
+          cp research/candidate-57/strategy_ichi_v2_fast_v2.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_ichi_v2_impl.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_ichi_v2_base.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-57/ichi_v2_5m_campaign.py \
+            research/candidate-57/ichi_v2_fast_v2_identity.py \
+            research/candidate-57/ichi_v2_fast_v2_campaign.py \
+            research/candidate-57/trade_ledger_forensics.py
+
+      - name: Install and doctor
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+
+      - name: Prove finite history preserves the fixed source case
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity=.work/candidate-57-ichi-v2-fast-v2-identity
+          rm -rf "$identity"
+          mkdir -p "$identity"
+
+          cp research/candidate-57/strategy_ichi_v2_5m.py research/candidate-51/strategy.py
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/ichi_v2_fast_v2_identity.py --label full
+
+          cp research/candidate-57/strategy_ichi_v2_fast_v2.py research/candidate-51/strategy.py
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/ichi_v2_fast_v2_identity.py --label finite
+
+          uv run python - <<'PY'
+          from pathlib import Path
+          import json, math
+
+          root = Path('.work/candidate-57-ichi-v2-fast-v2-identity')
+          full = json.loads((root / 'full.json').read_text())
+          finite = json.loads((root / 'finite.json').read_text())
+          checks = {}
+          for key in (
+              'trades', 'wins', 'losses', 'total_return',
+              'geometric_daily_growth', 'profit_factor', 'max_drawdown',
+          ):
+              left = (full.get('metrics') or {}).get(key)
+              right = (finite.get('metrics') or {}).get(key)
+              if key in {'trades', 'wins', 'losses'}:
+                  checks[key] = int(left or 0) == int(right or 0)
+              else:
+                  checks[key] = abs(float(left or 0.0) - float(right or 0.0)) <= 1e-10
+          for key in ('source_signals_before_execution_filters', 'entry_submissions'):
+              checks[key] = (full.get('diagnostics') or {}).get(key) == (finite.get('diagnostics') or {}).get(key)
+
+          keys = ('episode_ts', 'symbol', 'side', 'entry_reference', 'stop', 'target', 'pnl_usdt', 'actual_r')
+          left_ledger = (full.get('trade_forensics') or {}).get('trade_ledger') or []
+          right_ledger = (finite.get('trade_forensics') or {}).get('trade_ledger') or []
+          ledger_equal = len(left_ledger) == len(right_ledger)
+          if ledger_equal:
+              for left, right in zip(left_ledger, right_ledger):
+                  for key in keys:
+                      lv, rv = left.get(key), right.get(key)
+                      if isinstance(lv, (int, float)) or isinstance(rv, (int, float)):
+                          if abs(float(lv or 0.0) - float(rv or 0.0)) > 1e-10:
+                              ledger_equal = False
+                              break
+                      elif lv != rv:
+                          ledger_equal = False
+                          break
+                  if not ledger_equal:
+                      break
+          checks['trade_ledger'] = ledger_equal
+          result = {
+              'period': ['2026-03-15', '2026-03-19'],
+              'variant': 'report_long_level',
+              'history_minutes': 1000,
+              'checks': checks,
+              'identical': all(checks.values()),
+              'full': full,
+              'finite': finite,
+          }
+          (root / 'identity.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True, allow_nan=False, default=str) + '\n'
+          )
+          if not result['identical']:
+              raise SystemExit('finite history changed the fixed source case')
+          print('full and finite public ichi source cases are identical')
+          PY
+
+      - name: Run verified finite-history tournament
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-ichi-v2-fast-v2-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/ichi_v2_fast_v2_campaign.py \
+            2>&1 | tee .work/candidate-57-ichi-v2-fast-v2-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          if [[ -d research/candidate-57/evidence/ichi-v2-fast-v2 ]]; then
+            cp .work/candidate-57-ichi-v2-fast-v2-identity/identity.json \
+              research/candidate-57/evidence/ichi-v2-fast-v2/finite_history_identity.json
+          fi
+          exit 0
+
+      - name: Commit compact evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_ichi_v2_impl.py \
+            research/candidate-51/strategy_ichi_v2_base.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/ichi-v2-fast-v2
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist verified fast public ichi evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-ichi-v2-fast-v2
+          path: |
+            research/candidate-57/evidence/ichi-v2-fast-v2
+            .work/candidate-57-ichi-v2-fast-v2-identity/identity.json
+            .work/candidate-57-ichi-v2-fast-v2-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce mechanics
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "verified public ichi tournament failed; status=$status"
+            exit "${status:-1}"
+          fi
