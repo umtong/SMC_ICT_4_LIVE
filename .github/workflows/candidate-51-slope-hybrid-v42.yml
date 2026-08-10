@@ -1,0 +1,280 @@
+name: candidate-51-slope-hybrid-v42
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-slope-hybrid-v42.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-slope-hybrid-v42
+  cancel-in-progress: true
+
+jobs:
+  interval:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {interval: winter_2025_02, data_start: 2025-01-24, start: 2025-02-01, end: 2025-02-14}
+          - {interval: summer_2025_08, data_start: 2025-07-24, start: 2025-08-01, end: 2025-08-14}
+          - {interval: winter_2026_01, data_start: 2025-12-24, start: 2026-01-01, end: 2026-01-14}
+          - {interval: summer_2026_06, data_start: 2026-05-24, start: 2026-06-01, end: 2026-06-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install and materialize episode-aware public mechanism
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_slope_hybrid.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_slope_hybrid.py research/candidate-51/strategy.py
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import router
+          from strategy import Candidate35Config
+
+          fields = set(Candidate35Config.__struct_fields__)
+          required = {
+              "slope_hybrid_reentry_policy",
+              "slope_hybrid_stop_policy",
+              "slope_hybrid_nonquality_action",
+              "slope_hybrid_management",
+              "slope_hybrid_progress_checkpoint_1_minutes",
+              "slope_hybrid_adx_margin_min",
+          }
+          assert required <= fields, sorted(required - fields)
+          assert callable(router.inspect_condition)
+          print("Slope hybrid contracts verified")
+          PY
+          python research/candidate-51/slope_hybrid_prepare.py \
+            --output .work/candidate-51-slope-hybrid-v42
+
+      - name: Run clean mechanism factorial on one-slot Nautilus accounts
+        shell: bash
+        run: |
+          set +e
+          work=.work/candidate-51-slope-hybrid-v42
+          root=artifacts/candidate-51/slope-hybrid-v42/${{ matrix.interval }}
+          mkdir -p "$root" "$work/status"
+          while IFS= read -r variant; do
+            [[ -z "$variant" ]] && continue
+            PYTHONPATH=research/candidate-51 uv run python \
+              research/candidate-51/launch_kline_only_warmup.py \
+              --config "$work/$variant.json" \
+              --data-start "${{ matrix.data_start }}" \
+              --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+              --cache ".cache/candidate-51-slope-hybrid-v42/${{ matrix.interval }}" \
+              --output "$root/$variant" \
+              --workspace "$work/ws-${{ matrix.interval }}-$variant"
+            echo $? > "$work/status/${{ matrix.interval }}-$variant.txt"
+          done < "$work/variants.txt"
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-slope-hybrid-v42-${{ matrix.interval }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/slope-hybrid-v42/${{ matrix.interval }}/**/metrics.json
+            artifacts/candidate-51/slope-hybrid-v42/${{ matrix.interval }}/**/strategy_diagnostics.json
+            artifacts/candidate-51/slope-hybrid-v42/${{ matrix.interval }}/**/closed_scenarios.json
+            artifacts/candidate-51/slope-hybrid-v42/${{ matrix.interval }}/**/equity.csv
+            .work/candidate-51-slope-hybrid-v42/status/*.txt
+
+  aggregate:
+    if: always()
+    needs: interval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-slope-hybrid-v42-*
+          path: downloaded
+          merge-multiple: true
+
+      - name: Build non-binary episode, risk and lifecycle anatomy
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-51/slope-hybrid-v42
+          mkdir -p "$root"
+          find downloaded -type f | while read -r file; do
+            case "$file" in
+              *artifacts/candidate-51/slope-hybrid-v42/*)
+                relative="${file#*artifacts/candidate-51/slope-hybrid-v42/}"
+                mkdir -p "$root/$(dirname "$relative")"
+                cp "$file" "$root/$relative"
+                ;;
+            esac
+          done
+          python research/candidate-51/slope_hybrid_prepare.py \
+            --output .work/candidate-51-slope-hybrid-v42
+          cp .work/candidate-51-slope-hybrid-v42/MANIFEST.json "$root/MANIFEST.json"
+          python research/candidate-51/slope_dope_anatomy_audit.py \
+            --root "$root" --manifest "$root/MANIFEST.json" \
+            --output-json "$root/ANATOMY.json" \
+            --output-md "$root/ANATOMY.md"
+          python - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-51/slope-hybrid-v42")
+          manifest = json.loads((root / "MANIFEST.json").read_text())
+          rows = []
+          for interval in manifest["intervals"]:
+              for variant in manifest["variants"]:
+                  path = root / interval / variant / "strategy_diagnostics.json"
+                  if not path.is_file():
+                      rows.append({
+                          "interval": interval,
+                          "variant": variant,
+                          "status": "OUTPUT_MISSING",
+                      })
+                      continue
+                  data = json.loads(path.read_text())
+                  rejections = data.get("slope_hybrid_rejections") or []
+                  reason_counts = Counter(
+                      str(item.get("reason") or "UNKNOWN")
+                      for item in rejections if isinstance(item, dict)
+                  )
+                  quality_counts = Counter()
+                  for item in rejections:
+                      if not isinstance(item, dict):
+                          continue
+                      for reason in item.get("quality_reasons") or []:
+                          quality_counts[str(reason)] += 1
+                  trace = data.get("slope_hybrid_decision_trace") or []
+                  displaced = 0
+                  actionable = 0
+                  for episode in trace:
+                      if not isinstance(episode, dict):
+                          continue
+                      candidates = [
+                          item for item in episode.get("candidates") or []
+                          if isinstance(item, dict)
+                      ]
+                      actionable += len(candidates)
+                      selected = [item for item in candidates if item.get("selected")]
+                      if selected:
+                          selected_score = float(selected[0].get("score") or 0.0)
+                          displaced += sum(
+                              bool(item.get("allow"))
+                              and not bool(item.get("selected"))
+                              and float(item.get("score") or 0.0) > selected_score
+                              for item in candidates
+                          )
+                  rows.append({
+                      "interval": interval,
+                      "variant": variant,
+                      "status": "COMPLETE",
+                      "decision_trace_rows": len(trace),
+                      "actionable_candidates_observed": actionable,
+                      "policy_rejections": len(rejections),
+                      "rejection_reason_counts": dict(reason_counts),
+                      "quality_reason_counts": dict(quality_counts),
+                      "allowed_but_displaced_candidates": displaced,
+                      "profit_reentry_allowed": int(
+                          data.get("slope_hybrid_profit_reentry_allowed") or 0
+                      ),
+                      "profit_reentry_rejected": int(
+                          data.get("slope_hybrid_profit_reentry_rejected") or 0
+                      ),
+                      "source_stop_submissions": int(
+                          data.get("slope_hybrid_source_stop_submissions") or 0
+                      ),
+                      "structural_stop_submissions": int(
+                          data.get("slope_hybrid_structural_stop_submissions") or 0
+                      ),
+                      "quality_structural": int(
+                          data.get("slope_hybrid_quality_structural") or 0
+                      ),
+                      "quality_source_fallback": int(
+                          data.get("slope_hybrid_quality_source_fallback") or 0
+                      ),
+                      "quality_skipped": int(
+                          data.get("slope_hybrid_quality_skipped") or 0
+                      ),
+                      "condition_loss_exits": int(
+                          data.get("slope_hybrid_condition_loss_exits") or 0
+                      ),
+                      "no_progress_exits": int(
+                          data.get("slope_hybrid_no_progress_exits") or 0
+                      ),
+                      "hybrid_exit_counts": data.get("slope_hybrid_exit_counts") or {},
+                  })
+          output = {
+              "purpose": (
+                  "Preserve actionable and rejected causal episodes so zero trades, "
+                  "wins, losses and arbitration are not reduced to a binary gate."
+              ),
+              "rows": rows,
+          }
+          (root / "TRACE_SUMMARY.json").write_text(
+              json.dumps(output, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-slope-hybrid-v42-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/slope-hybrid-v42/ANATOMY.*
+            artifacts/candidate-51/slope-hybrid-v42/MANIFEST.json
+            artifacts/candidate-51/slope-hybrid-v42/TRACE_SUMMARY.json
+
+      - name: Commit compact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/slope-hybrid-v42
+          destination=research/candidate-51/evidence/slope-hybrid-v42
+          test -s "$source/ANATOMY.json"
+          test -s "$source/TRACE_SUMMARY.json"
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          cp "$source/TRACE_SUMMARY.json" "$destination/TRACE_SUMMARY.json"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate51: record Slope episode-risk anatomy"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin research/candidate-51 && \
+              git push origin HEAD:research/candidate-51 && exit 0
+            sleep $((attempt * 3))
+          done
+          exit 1
