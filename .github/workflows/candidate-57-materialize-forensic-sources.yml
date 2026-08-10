@@ -1,0 +1,123 @@
+name: candidate-57-materialize-forensic-sources
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-materialize-forensic-sources.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-materialize-forensic-sources
+  cancel-in-progress: true
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - name: Materialize exact reused sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import gzip
+          import hashlib
+          import json
+          import tarfile
+          from pathlib import Path
+
+          out = Path("research/candidate-57/forensic_sources")
+          out.mkdir(parents=True, exist_ok=True)
+          manifest = {}
+
+          for source, target in [
+              (Path("research/candidate-51/strategy_external_v17.py.gz"), out / "winner_strategy_external_v17.py"),
+              (Path("research/candidate-51/external_v17_runner.py.gz"), out / "winner_external_v17_runner.py"),
+          ]:
+              raw = gzip.decompress(source.read_bytes())
+              target.write_bytes(raw)
+              compile(raw.decode("utf-8"), str(target), "exec")
+              manifest[str(target)] = {
+                  "source": str(source),
+                  "sha256": hashlib.sha256(raw).hexdigest(),
+                  "bytes": len(raw),
+              }
+
+          for source, target in [
+              (Path("research/candidate-57/public_mbe2_router.py.gz.b64"), out / "mbe2_router.py"),
+              (Path("research/candidate-57/public_mbe2_strategy.py.gz.b64"), out / "mbe2_strategy.py"),
+              (Path("research/candidate-57/public_mbe2_campaign.py.gz.b64"), out / "mbe2_campaign.py"),
+          ]:
+              encoded = "".join(source.read_text(encoding="ascii").split())
+              raw = gzip.decompress(base64.b64decode(encoded))
+              target.write_bytes(raw)
+              compile(raw.decode("utf-8"), str(target), "exec")
+              manifest[str(target)] = {
+                  "source": str(source),
+                  "sha256": hashlib.sha256(raw).hexdigest(),
+                  "bytes": len(raw),
+              }
+
+          parts = [
+              Path("research/candidate-57/candidate57_jump_transient_v3_bundle.tar.gz.b64.part00"),
+              Path("research/candidate-57/candidate57_jump_transient_v3_bundle.tar.gz.b64.part01a"),
+              Path("research/candidate-57/candidate57_jump_transient_v3_bundle.tar.gz.b64.part01b"),
+              Path("research/candidate-57/candidate57_jump_transient_v3_bundle.tar.gz.b64.part02a"),
+              Path("research/candidate-57/candidate57_jump_transient_v3_bundle.tar.gz.b64.part02b"),
+          ]
+          encoded = "".join("".join(p.read_text(encoding="ascii").split()) for p in parts)
+          archive = out / "jump_transient_v3_bundle.tar.gz"
+          archive.write_bytes(base64.b64decode(encoded))
+          extract_root = out / "jump_transient_v3"
+          extract_root.mkdir(parents=True, exist_ok=True)
+          with tarfile.open(archive, "r:gz") as tf:
+              tf.extractall(extract_root, filter="data")
+          archive.unlink()
+          for path in sorted(extract_root.rglob("*")):
+              if path.is_file():
+                  raw = path.read_bytes()
+                  manifest[str(path)] = {
+                      "source": "split candidate57 jump transient v3 bundle",
+                      "sha256": hashlib.sha256(raw).hexdigest(),
+                      "bytes": len(raw),
+                  }
+
+          (out / "manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+
+      - name: Commit source snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          git pull --rebase origin research/candidate-57
+          git add -f research/candidate-57/forensic_sources
+          if git diff --cached --quiet; then
+            echo "No source snapshot changes."
+            exit 0
+          fi
+          git commit --no-gpg-sign -m "candidate57: materialize exact forensic source snapshots"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-57
+            git rebase origin/research/candidate-57
+            if git push origin HEAD:research/candidate-57; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
