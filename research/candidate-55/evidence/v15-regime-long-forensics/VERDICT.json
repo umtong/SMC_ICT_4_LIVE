@@ -1,0 +1,72 @@
+{
+  "candidate": "candidate-55",
+  "family": "V15_BB_LONG_TREND_QUALITY_FORENSICS",
+  "hypothesis": "V15 upper-Bollinger long edges should contain a complementary continuation engine when the latest completed 30-minute auction is trending_up_clean under the fixed period-21 ATR-efficiency, Kaufman-efficiency and ADX state.",
+  "fixed_policy": {
+    "signal": "one completed-5m close crossing above the upper Bollinger band",
+    "regime_bucket_minutes": 30,
+    "regime_period": 21,
+    "return_eff_threshold": 0.05,
+    "range_eff_threshold": 0.03,
+    "adx_threshold": 25.0,
+    "efficiency_threshold": 0.5,
+    "diagnostic_cost_floor_bps": 20.0,
+    "account_backtest_run": false
+  },
+  "implementation_history": {
+    "first_run": "IMPLEMENTATION_BLOCKED",
+    "first_run_reason": "The diagnostic imported the inherited candidate-51 router rather than the materialized V15 indicator path.",
+    "repair": "The workflow now materializes router_zaratustra_v15.py and the shared regime module before the audit.",
+    "economic_result_valid": true
+  },
+  "aggregate": {
+    "windows": 3,
+    "supported_windows": 0,
+    "raw_bollinger_long_edges": 2195,
+    "clean_up_edges": 69,
+    "implementation_warranted": false
+  },
+  "windows": [
+    {
+      "period": "2025-02-10/2025-02-16",
+      "clean_up_edges": 1,
+      "clean_mfe_60m_mean_net_bps": -5.549132947976863,
+      "clean_close_60m_mean_net_bps": -247.23988439306345,
+      "clean_mfe_60m_cost_cover_fraction": 0.0,
+      "comparison": "The only clean-up edge immediately failed; no opportunity capacity existed."
+    },
+    {
+      "period": "2025-09-01/2025-09-14",
+      "clean_up_edges": 20,
+      "clean_mfe_60m_mean_net_bps": 11.951189704458347,
+      "clean_mfe_60m_median_net_bps": -0.28220555646629286,
+      "clean_close_60m_mean_net_bps": -23.992951768945712,
+      "clean_mfe_60m_cost_cover_fraction": 0.5,
+      "other_state_mfe_60m_mean_net_bps": 22.410691366914126,
+      "other_state_close_60m_mean_net_bps": -12.091264081596327,
+      "comparison": "Clean-up was worse than the other states on both favorable excursion and close follow-through."
+    },
+    {
+      "period": "2026-04-01/2026-04-30",
+      "clean_up_edges": 48,
+      "clean_mfe_60m_mean_net_bps": 53.679232967454546,
+      "clean_mfe_60m_median_net_bps": 8.364285311581297,
+      "clean_close_60m_mean_net_bps": -22.460133078741677,
+      "clean_mfe_60m_cost_cover_fraction": 0.5625,
+      "other_state_mfe_60m_mean_net_bps": 19.92472642078958,
+      "other_state_close_60m_mean_net_bps": -22.90617476110885,
+      "causal_concentration": "A disproportionate share of the strongest clean-up excursions came from the same multi-asset upside event on 2026-04-07, with repeated BTC/ETH/SOL edges. They are not independent evidence.",
+      "comparison": "The state improved maximum favorable excursion in this month but did not improve realized 60-minute direction; the average close remained cost-after negative."
+    }
+  ],
+  "falsification": {
+    "at_least_five_clean_edges_in_each_useful_window": false,
+    "clean_cost_cover_advantage_repeated": false,
+    "clean_close_follow_through_advantage_repeated": false,
+    "clean_median_mfe_positive_repeated": false,
+    "independent_event_support": false
+  },
+  "verdict": "DO_NOT_IMPLEMENT_LONG_ACCOUNT_FAMILY",
+  "reason": "The fixed clean-up state did not convert V15 upper-band crosses into a repeatable continuation decision. The only strong-looking month still had negative close expectancy and was concentrated in one causal market rally. Running a Nautilus account or tuning thresholds would spend resources on a selector whose predicted state separation was not observed.",
+  "preserved_clue": "Some clean-up edges produced delayed favorable excursion after initial adverse movement. This is an entry-geometry clue, not evidence for the current family. A pullback/re-break study is warranted only if an independently specified causal setup predicts which of those excursions survive and is tested on untouched episodes."
+}
