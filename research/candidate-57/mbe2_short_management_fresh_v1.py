@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 
 HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parent.parent
 SOURCE = HERE / "forensic_sources" / "mbe2_campaign.py"
 SPEC = importlib.util.spec_from_file_location(
     "candidate57_mbe2_short_fresh_campaign", SOURCE
@@ -17,6 +18,13 @@ if SPEC is None or SPEC.loader is None:
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+# The reusable campaign is stored one directory deeper than the original
+# executable campaign. Rebind its repository-relative paths explicitly rather
+# than duplicating the validated runner/account analysis code.
+MODULE.ROOT = REPO_ROOT
+MODULE.REUSED = REPO_ROOT / "research" / "candidate-51"
+MODULE.BASE_CONFIG = MODULE.REUSED / "config.json"
 
 stage = MODULE.Stage(
     key="fresh_short_management_v1",
@@ -46,10 +54,10 @@ roi_only = MODULE.Variant(
 MODULE.STAGES = (stage,)
 MODULE.VARIANTS = (source, roi_only)
 MODULE.VARIANT_BY_NAME = {variant.name: variant for variant in MODULE.VARIANTS}
-MODULE.WORK = HERE.parent.parent / ".work" / "candidate-57-mbe2-short-management-fresh-v1"
-MODULE.ARTIFACTS = HERE.parent.parent / "artifacts" / "candidate-57-mbe2-short-management-fresh-v1"
+MODULE.WORK = REPO_ROOT / ".work" / "candidate-57-mbe2-short-management-fresh-v1"
+MODULE.ARTIFACTS = REPO_ROOT / "artifacts" / "candidate-57-mbe2-short-management-fresh-v1"
 MODULE.EVIDENCE = HERE / "evidence" / "mbe2-short-management-fresh-v1"
-MODULE.CACHE = HERE.parent.parent / ".cache" / "candidate-57-mbe2-short-management-fresh-v1"
+MODULE.CACHE = REPO_ROOT / ".cache" / "candidate-57-mbe2-short-management-fresh-v1"
 
 # The generic two-period synthesis expects at least two stages. Reuse the exact
 # case runner and write a one-stage causal comparison instead.
@@ -104,7 +112,7 @@ def main() -> int:
     for variant in MODULE.VARIANTS:
         row = results[variant.name]
         overall = row.get("trade_anatomy", {}).get("overall", {})
-        account = row.get("continuous_account", {})
+        account = row.get("continuous_account", {}) or {}
         pf = overall.get("profit_factor")
         lines.append(
             f"| {variant.name} | {overall.get('completed_positions')} | "
