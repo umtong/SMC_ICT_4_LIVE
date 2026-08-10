@@ -1,0 +1,224 @@
+name: candidate-55-actual-funding-crowding-forensics
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-actual-funding-crowding-forensics.yml"
+      - "research/candidate-55/actual_funding_crowding_forensics.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-actual-funding-crowding-forensics
+  cancel-in-progress: true
+
+jobs:
+  post-source-oos-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and freeze the reused source policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51:research/candidate-55 uv run python - <<'PY'
+          import actual_funding_crowding_forensics as policy
+          assert policy.SOURCE_COMMIT == "027552726e08a41612cb4faeabb1abb052c06887"
+          assert policy.SOURCE_DATA_END.isoformat() == "2026-04-13"
+          assert policy.SYMBOLS == ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")
+          assert policy.FUNDING_LOOKBACK_EVENTS == 5
+          assert policy.RETURN_LOOKBACK_MINUTES == 120
+          assert policy.DECISION_INTERVAL_MINUTES == 240
+          assert policy.HOLD_MINUTES == 720
+          assert policy.MIN_ABS_FUNDING_BPS == 1.0
+          assert policy.MIN_IDIOSYNCRATIC_RETURN_BPS == 2.5
+          assert policy.PROJECT_ROUND_TRIP_COST_BPS == 20.0
+          print("external survivor policy and project adaptations are frozen")
+          PY
+      - name: Run four untouched post-source windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=research/candidate-51:research/candidate-55
+          cache=.cache/candidate-55-actual-funding-crowding
+          uv run python research/candidate-55/actual_funding_crowding_forensics.py \
+            --start 2026-04-14 --end 2026-05-11 --cache "$cache" \
+            --output artifacts/candidate-55/actual-funding-crowding-2026-w1
+          uv run python research/candidate-55/actual_funding_crowding_forensics.py \
+            --start 2026-05-12 --end 2026-06-08 --cache "$cache" \
+            --output artifacts/candidate-55/actual-funding-crowding-2026-w2
+          uv run python research/candidate-55/actual_funding_crowding_forensics.py \
+            --start 2026-06-09 --end 2026-07-06 --cache "$cache" \
+            --output artifacts/candidate-55/actual-funding-crowding-2026-w3
+          uv run python research/candidate-55/actual_funding_crowding_forensics.py \
+            --start 2026-07-07 --end 2026-08-03 --cache "$cache" \
+            --output artifacts/candidate-55/actual-funding-crowding-2026-w4
+      - name: Aggregate one-slot episode evidence without tuning
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run python - <<'PY'
+          import json
+          import math
+          from pathlib import Path
+          import pandas as pd
+
+          base = Path("artifacts/candidate-55")
+          roots = sorted(base.glob("actual-funding-crowding-2026-w*"))
+          summaries = [json.loads((root / "SUMMARY.json").read_text()) for root in roots]
+          selected_parts = [pd.read_csv(root / "selected_trades.csv") for root in roots]
+          state_parts = [pd.read_csv(root / "decision_states.csv") for root in roots]
+          selected = pd.concat(selected_parts, ignore_index=True) if selected_parts else pd.DataFrame()
+          states = pd.concat(state_parts, ignore_index=True) if state_parts else pd.DataFrame()
+
+          def summarize(frame, column):
+              if frame.empty or column not in frame:
+                  return {"trades": 0}
+              values = pd.to_numeric(frame[column], errors="coerce").dropna()
+              if values.empty:
+                  return {"trades": 0}
+              positive = values[values > 0.0]
+              negative = values[values < 0.0]
+              gp = float(positive.sum())
+              gl = float(-negative.sum())
+              by_symbol = {}
+              if "symbol" in frame:
+                  for symbol, group in frame.assign(_r=pd.to_numeric(frame[column], errors="coerce")).groupby("symbol"):
+                      r = group["_r"].dropna()
+                      by_symbol[str(symbol)] = {
+                          "trades": int(r.size),
+                          "sum_return": float(r.sum()),
+                          "mean_return": float(r.mean()) if not r.empty else None,
+                          "wins": int((r > 0.0).sum()),
+                      }
+              return {
+                  "trades": int(values.size),
+                  "wins": int((values > 0.0).sum()),
+                  "losses": int((values < 0.0).sum()),
+                  "win_rate": float((values > 0.0).mean()),
+                  "mean_return": float(values.mean()),
+                  "median_return": float(values.median()),
+                  "sum_return": float(values.sum()),
+                  "unit_notional_compounded_return": float((1.0 + values).prod() - 1.0),
+                  "gross_profit_return": gp,
+                  "gross_loss_return": gl,
+                  "profit_factor": gp / gl if gl > 0.0 else None,
+                  "largest_winner_share": float(positive.max() / gp) if gp > 0.0 else 1.0,
+                  "by_symbol": by_symbol,
+              }
+
+          pooled20 = summarize(selected, "net_return_20bps")
+          pooled30 = summarize(selected, "net_return_30bps")
+          pooled40 = summarize(selected, "net_return_40bps")
+          state_summary = {}
+          if not states.empty:
+              for state, group in states.groupby("diagnostic_state", sort=True):
+                  state_summary[str(state)] = summarize(group, "net_return_20bps")
+
+          eligible_state = state_summary.get(
+              "NEGATIVE_FUNDING_AND_IDIOSYNCRATIC_DOWNSIDE", {"trades": 0}
+          )
+          funding_only = state_summary.get("NEGATIVE_FUNDING_ONLY", {"trades": 0})
+          idio_only = state_summary.get("IDIOSYNCRATIC_DOWNSIDE_ONLY", {"trades": 0})
+          component_separation = {
+              "eligible_mean_above_negative_funding_only": (
+                  eligible_state.get("trades", 0) > 0
+                  and funding_only.get("trades", 0) > 0
+                  and float(eligible_state.get("mean_return", -math.inf))
+                  > float(funding_only.get("mean_return", math.inf))
+              ),
+              "eligible_mean_above_idiosyncratic_only": (
+                  eligible_state.get("trades", 0) > 0
+                  and idio_only.get("trades", 0) > 0
+                  and float(eligible_state.get("mean_return", -math.inf))
+                  > float(idio_only.get("mean_return", math.inf))
+              ),
+          }
+          positive_window_means = sum(
+              float(item["selected_after_20bps"].get("mean_return", -math.inf)) > 0.0
+              for item in summaries
+          )
+          positive_symbols = sum(
+              float(item.get("sum_return", 0.0)) > 0.0
+              for item in pooled20.get("by_symbol", {}).values()
+          )
+          warrant_checks = {
+              "all_four_windows_produced": len(summaries) == 4,
+              "at_least_three_positive_window_means": positive_window_means >= 3,
+              "at_least_twelve_strict_independent_trades": int(pooled20.get("trades", 0)) >= 12,
+              "positive_pooled_mean_after_20bps": float(pooled20.get("mean_return", -math.inf)) > 0.0,
+              "positive_pooled_median_after_20bps": float(pooled20.get("median_return", -math.inf)) > 0.0,
+              "positive_pooled_mean_after_30bps": float(pooled30.get("mean_return", -math.inf)) > 0.0,
+              "largest_winner_share_at_most_35pct": float(pooled20.get("largest_winner_share", 1.0)) <= 0.35,
+              "at_least_two_positive_symbols": positive_symbols >= 2,
+              **component_separation,
+          }
+          verdict = {
+              "candidate": "candidate-55",
+              "family": "ACTUAL_FUNDING_CROWDING_REVERSAL_LONG",
+              "stage": "POST_SOURCE_2026_OOS_AGGREGATE",
+              "external_source_data_end": "2026-04-13",
+              "evaluation_interval": ["2026-04-14", "2026-08-03"],
+              "calendar_days": sum(int(item["calendar_days"]) for item in summaries),
+              "windows": len(summaries),
+              "positive_window_means_after_20bps": positive_window_means,
+              "window_support_flags": [
+                  bool(item["prediction_supported_in_this_window"]) for item in summaries
+              ],
+              "pooled_selected_after_20bps": pooled20,
+              "pooled_selected_after_30bps": pooled30,
+              "pooled_selected_after_40bps": pooled40,
+              "pooled_diagnostic_state_outcomes_after_20bps": state_summary,
+              "component_separation": component_separation,
+              "warrant_checks": warrant_checks,
+              "structural_invalidation_research_warranted": all(warrant_checks.values()),
+              "nautilus_implementation_warranted": False,
+              "production_ready": False,
+              "reason_nautilus_not_yet_warranted": (
+                  "The source family has no causal structural invalidation, so exact current-NAV "
+                  "3% planned-loss sizing is undefined even if fixed-horizon expectancy survives."
+              ),
+              "policy_frozen": summaries[0]["policy"] if summaries else {},
+              "windows_detail": summaries,
+              "falsification_action": (
+                  "Do not move thresholds, symbols, cadence or hold after seeing this result. "
+                  "If the warrant fails, reject the family as a standalone four-symbol scenario "
+                  "or preserve only a demonstrated contextual role. If it passes, research a "
+                  "same-auction structural invalidation before any Nautilus account test."
+              ),
+          }
+          (base / "actual-funding-crowding-post-source-verdict.json").write_text(
+              json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False) + "\n"
+          )
+          selected.to_csv(base / "actual-funding-crowding-post-source-selected.csv", index=False)
+          states.to_csv(base / "actual-funding-crowding-post-source-states.csv", index=False)
+          print(json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-actual-funding-crowding-forensics-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/actual-funding-crowding-2026-w*/SUMMARY.json
+            artifacts/candidate-55/actual-funding-crowding-2026-w*/selected_trades.csv
+            artifacts/candidate-55/actual-funding-crowding-2026-w*/decision_states.csv
+            artifacts/candidate-55/actual-funding-crowding-2026-w*/funding_evidence.json
+            artifacts/candidate-55/actual-funding-crowding-post-source-verdict.json
+            artifacts/candidate-55/actual-funding-crowding-post-source-selected.csv
+            artifacts/candidate-55/actual-funding-crowding-post-source-states.csv
+          if-no-files-found: warn
+          retention-days: 30
