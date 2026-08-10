@@ -1,0 +1,132 @@
+name: candidate-57-fix-closed-accounting
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-fix-closed-accounting.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-fix-closed-accounting
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Patch closed-trade and end-flat accounting
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("research/candidate-51/run.py")
+          text = path.read_text(encoding="utf-8")
+
+          helper = '''\n\ndef _normalized_column(frame: pd.DataFrame, needle: str) -> Any | None:\n    normalized = {\n        str(column).lower().replace(" ", "_"): column\n        for column in frame.columns\n    }\n    return next(\n        (original for name, original in normalized.items() if needle in name),\n        None,\n    )\n\n\ndef _closed_position_rows(positions: pd.DataFrame) -> pd.DataFrame:\n    """Return completed position rows only; open snapshots are not trades."""\n    if positions.empty:\n        return positions.copy()\n    side_column = _normalized_column(positions, "side")\n    closed_column = _normalized_column(positions, "ts_closed")\n    if side_column is None or closed_column is None:\n        raise Candidate35RunError(\n            f"positions report lacks side/ts_closed columns: {list(positions.columns)}"\n        )\n    side = positions[side_column].astype(str).str.strip().str.upper()\n    closed_text = positions[closed_column].astype(str).str.strip().str.lower()\n    closed = (\n        side.eq("FLAT")\n        & positions[closed_column].notna()\n        & ~closed_text.isin({"", "nan", "none", "nat"})\n    )\n    return positions.loc[closed].copy()\n\n\ndef _open_position_rows(positions: pd.DataFrame) -> pd.DataFrame:\n    """Return unresolved position rows at the end of the replay."""\n    if positions.empty:\n        return positions.copy()\n    side_column = _normalized_column(positions, "side")\n    closed_column = _normalized_column(positions, "ts_closed")\n    if side_column is None or closed_column is None:\n        raise Candidate35RunError(\n            f"positions report lacks side/ts_closed columns: {list(positions.columns)}"\n        )\n    side = positions[side_column].astype(str).str.strip().str.upper()\n    closed_text = positions[closed_column].astype(str).str.strip().str.lower()\n    unresolved = (\n        ~side.eq("FLAT")\n        | positions[closed_column].isna()\n        | closed_text.isin({"", "nan", "none", "nat"})\n    )\n    return positions.loc[unresolved].copy()\n\n\ndef _active_order_rows(orders: pd.DataFrame) -> pd.DataFrame:\n    """Return orders still live/inflight when the replay ends."""\n    if orders.empty:\n        return orders.copy()\n    status_column = _normalized_column(orders, "status")\n    if status_column is None:\n        raise Candidate35RunError(\n            f"orders report lacks status column: {list(orders.columns)}"\n        )\n    terminal = {\n        "FILLED",\n        "CANCELED",\n        "CANCELLED",\n        "REJECTED",\n        "DENIED",\n        "EXPIRED",\n    }\n    status = orders[status_column].astype(str).str.strip().str.upper()\n    return orders.loc[~status.isin(terminal)].copy()\n'''
+          marker = "\ndef _rolling(daily: dict[str, float], starting_nav: float, window: int) -> dict[str, Any]:\n"
+          if marker not in text:
+              raise RuntimeError("rolling insertion marker not found")
+          if "def _closed_position_rows(" not in text:
+              text = text.replace(marker, helper + marker, 1)
+
+          old_signature = '''def build_metrics(\n    *, equity: pd.DataFrame, positions: pd.DataFrame, output: Path,\n    start: date, end: date, config: dict[str, Any], result: Any,\n    input_records: dict[str, Any],\n) -> dict[str, Any]:'''
+          new_signature = '''def build_metrics(\n    *, equity: pd.DataFrame, positions: pd.DataFrame, orders: pd.DataFrame, output: Path,\n    start: date, end: date, config: dict[str, Any], result: Any,\n    input_records: dict[str, Any],\n) -> dict[str, Any]:'''
+          if old_signature not in text:
+              raise RuntimeError("build_metrics signature marker not found")
+          text = text.replace(old_signature, new_signature, 1)
+
+          old_pnls = "    pnls = c05.extract_position_pnls(positions)\n"
+          new_pnls = '''    closed_positions = _closed_position_rows(positions)\n    open_positions = _open_position_rows(positions)\n    active_orders = _active_order_rows(orders)\n    pnls = c05.extract_position_pnls(closed_positions)\n'''
+          if old_pnls not in text:
+              raise RuntimeError("PnL extraction marker not found")
+          text = text.replace(old_pnls, new_pnls, 1)
+
+          old_check = '        "nautilus_positions_match": int(result.total_positions) == trades,\n'
+          new_check = '''        "closed_position_rows_match_trade_count": len(closed_positions) == trades,\n        "no_open_positions_at_end": open_positions.empty,\n        "no_active_orders_at_end": active_orders.empty,\n        "nautilus_position_report_rows_match": int(result.total_positions) == len(positions),\n'''
+          if old_check not in text:
+              raise RuntimeError("old position-match check marker not found")
+          text = text.replace(old_check, new_check, 1)
+
+          old_counts = '        "position_counts_by_symbol": _symbol_counts(positions),\n'
+          new_counts = '''        "position_counts_by_symbol": _symbol_counts(closed_positions),\n        "position_report_rows": len(positions),\n        "closed_position_rows": len(closed_positions),\n        "open_position_rows_at_end": len(open_positions),\n        "active_order_rows_at_end": len(active_orders),\n        "active_order_status_counts": (\n            active_orders[_normalized_column(active_orders, "status")]\n            .astype(str)\n            .str.strip()\n            .str.upper()\n            .value_counts()\n            .to_dict()\n            if not active_orders.empty\n            else {}\n        ),\n'''
+          if old_counts not in text:
+              raise RuntimeError("position count marker not found")
+          text = text.replace(old_counts, new_counts, 1)
+
+          old_call = '''        metrics = build_metrics(\n            equity=equity,\n            positions=positions,\n            output=output,'''
+          new_call = '''        metrics = build_metrics(\n            equity=equity,\n            positions=positions,\n            orders=orders,\n            output=output,'''
+          if old_call not in text:
+              raise RuntimeError("build_metrics call marker not found")
+          text = text.replace(old_call, new_call, 1)
+
+          compile(text, str(path), "exec")
+          path.write_text(text, encoding="utf-8")
+          print("patched closed-only PnL accounting and mandatory end-flat checks")
+          PY
+          python -m compileall -q research/candidate-51/run.py
+
+      - name: Run focused report-contract test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.util
+          import sys
+          import types
+          from pathlib import Path
+          import pandas as pd
+
+          # Importing the full runner pulls Nautilus and project modules.  For
+          # this focused contract, compile has already proved syntax; execute
+          # just the helper block in a matching namespace.
+          text = Path("research/candidate-51/run.py").read_text(encoding="utf-8")
+          start = text.index("def _normalized_column")
+          end = text.index("def _rolling", start)
+          block = text[start:end]
+          namespace = {
+              "pd": pd,
+              "Any": object,
+              "Candidate35RunError": RuntimeError,
+          }
+          exec(block, namespace)
+          positions = pd.DataFrame(\n              [\n                  {"side": "FLAT", "ts_closed": 10, "realized_pnl": "1 USDT"},\n                  {"side": "SHORT", "ts_closed": None, "realized_pnl": "-0.1 USDT"},\n              ]\n          )
+          orders = pd.DataFrame(\n              [\n                  {"status": "FILLED"},\n                  {"status": "SUBMITTED"},\n              ]\n          )
+          assert len(namespace["_closed_position_rows"](positions)) == 1
+          assert len(namespace["_open_position_rows"](positions)) == 1
+          assert len(namespace["_active_order_rows"](orders)) == 1
+          print("closed/open/active report contract verified")
+          PY
+
+      - name: Commit accounting correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          git add research/candidate-51/run.py
+          git commit --no-gpg-sign -m "candidate57: count completed trades and require end-flat account"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-57
+            git rebase origin/research/candidate-57
+            if git push origin HEAD:research/candidate-57; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
