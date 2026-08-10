@@ -17,7 +17,7 @@ import math
 from typing import Mapping, Sequence
 
 import strategy_mbe2_base as _base
-from router import FeatureObservation, RouteConfig, RouteDecision
+from router import FeatureObservation, RouteConfig, RouteDecision, UNRESOLVED
 
 _ORIGINAL_ROUTE_UNIVERSE = _base.route_universe
 _MIN_ACTIONABLE_CANDIDATES = 1
@@ -54,7 +54,7 @@ def _collision_confirmed_route_universe(
         )
         rejected[symbol] = replace(
             decision,
-            state=_base.UNRESOLVED,
+            state=UNRESOLVED,
             side=0,
             score=0.0,
             entry_reference=math.nan,
