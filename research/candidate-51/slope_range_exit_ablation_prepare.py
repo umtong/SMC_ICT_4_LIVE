@@ -25,7 +25,7 @@ PERIODS = {
 
 VARIANTS = {
     "range_control": "corrected_symmetric",
-    "ma_cross_only": "ma_cross_only",
+    "ma_cross_only": "ma_only",
     "no_source_exit": "no_signal",
 }
 
