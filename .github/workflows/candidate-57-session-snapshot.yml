@@ -1,0 +1,44 @@
+name: candidate-57-session-snapshot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-57]
+    paths:
+      - .github/workflows/candidate-57-session-snapshot.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-57-session-snapshot
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - name: Record immutable snapshot identity
+        run: |
+          set -euo pipefail
+          mkdir -p session-snapshot
+          git rev-parse HEAD > session-snapshot/HEAD.txt
+          git status --short > session-snapshot/STATUS.txt
+          cp pyproject.toml uv.lock session-snapshot/
+          cp -R research/candidate-57 session-snapshot/candidate-57
+          cp -R research/candidate-51 session-snapshot/candidate-51
+
+      - name: Upload research snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-session-snapshot
+          path: session-snapshot
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 3
