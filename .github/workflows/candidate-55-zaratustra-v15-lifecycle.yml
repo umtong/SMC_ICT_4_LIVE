@@ -1,0 +1,104 @@
+name: candidate-55-zaratustra-v15-lifecycle
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v15-lifecycle.yml"
+      - "research/candidate-55/router_zaratustra.py"
+      - "research/candidate-55/router_zaratustra_v13.py"
+      - "research/candidate-55/router_zaratustra_v15.py"
+      - "research/candidate-55/strategy_zaratustra.py"
+      - "research/candidate-55/strategy_zaratustra_v15.py"
+      - "research/candidate-55/strategy_zaratustra_v15_relative.py"
+      - "research/candidate-55/strategy_zaratustra_v15_accepted.py"
+      - "research/candidate-55/strategy_zaratustra_v15_lifecycle.py"
+      - "research/candidate-55/run_zaratustra_v15_repair.py"
+      - "research/candidate-55/run_zaratustra_v15_lifecycle.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-zaratustra-v15-lifecycle
+  cancel-in-progress: true
+
+jobs:
+  lifecycle-router:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - name: Materialize lifecycle router
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/router_zaratustra_v15.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra_v15.py research/candidate-51/strategy_zaratustra_v15.py
+          cp research/candidate-55/strategy_zaratustra_v15_relative.py research/candidate-51/strategy_zaratustra_v15_relative.py
+          cp research/candidate-55/strategy_zaratustra_v15_accepted.py research/candidate-51/strategy_zaratustra_v15_accepted.py
+          cp research/candidate-55/strategy_zaratustra_v15_lifecycle.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and prove lifecycle feature causality
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from pathlib import Path
+          import tempfile
+          import pandas as pd
+          from strategy import _LifecycleFeatureStore
+          with tempfile.TemporaryDirectory() as directory:
+              path = Path(directory) / "features.csv.gz"
+              rows = 8
+              pd.DataFrame({
+                  "observed_time_ns": [(i + 1) * 60_000_000_000 for i in range(rows)],
+                  "feature_ready": [True] * rows,
+                  "trade_vwap_60s": [100.0 - i * 0.1 for i in range(rows)],
+                  "flow_15s": [-0.2] * rows,
+                  "flow_60s": [-0.3] * rows,
+                  "efficiency_60s": [0.1] * rows,
+                  "absorption_60s": [0.2] * rows,
+                  "bid_depth_change_1_1m": [-0.1] * rows,
+                  "depth_imbalance_2": [-0.05] * rows,
+              }).to_csv(path, index=False, compression="gzip")
+              store = _LifecycleFeatureStore(path)
+              item = store.observation(
+                  rows * 60_000_000_000,
+                  (rows - 3) * 60_000_000_000,
+                  65.0,
+              )
+              assert item.ready and item.return_since_signal < 0.0
+              causal = store.observation(
+                  rows * 60_000_000_000 - 1,
+                  (rows - 3) * 60_000_000_000,
+                  65.0,
+              )
+              assert causal.observed_time_ns == (rows - 1) * 60_000_000_000
+          print("Lifecycle feature store uses completed causal history only")
+          PY
+      - name: Run causal lifecycle experiment
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_zaratustra_v15_lifecycle.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v15-lifecycle-${{ github.sha }}
+          path: artifacts/candidate-55/zaratustra-v15-lifecycle-*
+          if-no-files-found: warn
+          retention-days: 30
