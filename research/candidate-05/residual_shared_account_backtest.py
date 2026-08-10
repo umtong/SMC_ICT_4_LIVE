@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Run v52/v53 in the existing four-symbol NautilusTrader shared account.
 
-Only dependency injection differs from ``shared_account_backtest_v2``: the
-validated-winner resolver is replaced by the explicit v52/v53 wrapper resolver.
-Data loading, timestamp contracts, fills, fees, positions, current-NAV sizing,
-portfolio accounting, and the final global entry-slot coordinator remain owned
-by the existing project/NautilusTrader implementation.
+Only orchestration dependency injection differs from
+``shared_account_backtest_v2``.  Data loading, timestamp contracts, fills,
+fees, positions, current-NAV sizing, portfolio accounting, and the final global
+entry-slot coordinator remain owned by the existing project/NautilusTrader
+implementation.  The residual families are explicitly marked as preregistered
+mechanisms, not mislabeled as validated winners.
 """
 from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
 
 # Importing v2 installs timestamp, wrangler, positioning, basis and depth-gap
 # contracts, and applies the same instrument/equity compatibility repairs.
@@ -18,10 +23,27 @@ from relative_value_context import reset as reset_relative_value_context
 from residual_shared_strategy_variants import residual_shared_strategy_path
 
 
-# shared_account_backtest resolves this module global at strategy-config build
-# time, so replacing it here is sufficient and avoids mutating any strategy
-# source file on disk.
+def load_pre_registered_family(path: Path) -> tuple[dict[str, Any], str]:
+    if not path.exists():
+        raise _base.SharedAccountError(f"residual family manifest not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("classification") != "PRE_REGISTERED_FOUR_ASSET_MECHANISM":
+        raise _base.SharedAccountError(
+            "residual runner requires PRE_REGISTERED_FOUR_ASSET_MECHANISM",
+        )
+    winner = payload.get("winner")
+    if not isinstance(winner, str) or not winner:
+        raise _base.SharedAccountError("residual family manifest contains no strategy")
+    for symbol in _base.PROJECT_SYMBOLS:
+        residual_shared_strategy_path(winner, symbol)
+    return payload, winner
+
+
+# shared_account_backtest resolves these module globals at run/config-build time.
+# No strategy source file is overwritten.
 _base.final_shared_strategy_path = residual_shared_strategy_path
+_base.load_validated_winner = load_pre_registered_family
+run_shared_account = _base.run_shared_account
 
 
 def main() -> None:
