@@ -1,0 +1,217 @@
+name: candidate-16-v9-role-separated-residual-paired
+
+on:
+  push:
+    branches: ["research/candidate-16-v9-role-separated-residual-state"]
+    paths:
+      - "research/candidate-16/**"
+      - ".github/workflows/candidate-16-v9-role-separated-paired.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v9-role-separated-residual-paired
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  paired-development-diagnosis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05:research/candidate-16
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v9-role-separated-paired
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment, unchanged control, and v9 causal contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q research/candidate-16 research/candidate-05
+          test "$(git hash-object research/candidate-05/strategy_v52_cross_sectional_residual.py)" = "7599036ecdf846175c7c8b3961470bdda241562e"
+          test "$(git hash-object research/candidate-16/strategy_v8.py)" = "b759746e190066d66c1d0dfe814aa1a5dcba50dc"
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v8_contract.py' -v
+          python -m unittest discover -s research/candidate-16/tests -p 'test_strategy_v9_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_strategy_v52_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_global_entry_slot_v3.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_global_entry_slot_v4.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_shared_account_backtest_contract.py' -v
+          python -m unittest discover -s research/candidate-05/tests -p 'test_book_depth_gap_contract.py' -v
+
+      - name: Run four paired development weeks through one-account NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/runs" "$ROOT/evidence" "$ROOT/cache" "$ROOT/logs"
+
+          periods=(
+            "2023-07-09|2023-07-15|2023-07-07"
+            "2023-09-08|2023-09-14|2023-09-06"
+            "2024-01-15|2024-01-21|2024-01-13"
+            "2024-03-18|2024-03-24|2024-03-16"
+          )
+
+          for spec in "${periods[@]}"; do
+            IFS='|' read -r evaluation_start evaluation_end build_start <<<"$spec"
+            slug="$evaluation_start"
+            cache="$ROOT/cache/$slug"
+            control="$ROOT/runs/$slug/control"
+            variant="$ROOT/runs/$slug/variant"
+            mkdir -p "$control" "$variant" "$cache"
+
+            cat > "$ROOT/evidence/$slug-control.json" <<JSON
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "candidate_v8:Candidate16V8Strategy",
+            "experiment_role": "CANDIDATE16_V8_CONTROL_STATE_AND_LATER_TRANSITION"
+          }
+          JSON
+            python research/candidate-16/run_candidate_v8.py \
+              --winner-evidence "$ROOT/evidence/$slug-control.json" \
+              --build-start "$build_start" \
+              --build-end "$evaluation_end" \
+              --evaluation-start "$evaluation_start" \
+              --evaluation-end "$evaluation_end" \
+              --cache "$cache" \
+              --output "$control" \
+              2>&1 | tee "$ROOT/logs/$slug-control.log"
+
+            cat > "$ROOT/evidence/$slug-variant.json" <<JSON
+          {
+            "classification": "VALIDATED_BTC_WINNER_RESOLVED",
+            "winner": "candidate_v9:Candidate16V9RoleSeparatedStrategy",
+            "experiment_role": "CANDIDATE16_V9_ROLE_SEPARATED_STATE"
+          }
+          JSON
+            python research/candidate-16/run_candidate_v9.py \
+              --winner-evidence "$ROOT/evidence/$slug-variant.json" \
+              --build-start "$build_start" \
+              --build-end "$evaluation_end" \
+              --evaluation-start "$evaluation_start" \
+              --evaluation-end "$evaluation_end" \
+              --cache "$cache" \
+              --output "$variant" \
+              2>&1 | tee "$ROOT/logs/$slug-variant.log"
+          done
+
+      - name: Diagnose every state, later observation, trade, and no-trade
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-16/analyze_residual_role_separation.py \
+            --root "$ROOT/runs" \
+            --output "$ROOT/analysis" \
+            2>&1 | tee "$ROOT/analysis.log"
+
+      - name: Verify integrity without converting economics into a binary gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ROOT"])
+          diagnosis = json.loads((root / "analysis" / "paired_diagnosis.json").read_text())
+          summaries = diagnosis["account_summaries"]
+          if len(summaries) != 8:
+              raise SystemExit(f"expected eight paired accounts, got {len(summaries)}")
+          if diagnosis["integrity_failures"]:
+              raise SystemExit(diagnosis["integrity_failures"])
+          expected_periods = {"2023-07-09", "2023-09-08", "2024-01-15", "2024-03-18"}
+          observed_periods = {row["period"] for row in summaries}
+          if observed_periods != expected_periods:
+              raise SystemExit((observed_periods, expected_periods))
+          for period in expected_periods:
+              variants = {row["variant"] for row in summaries if row["period"] == period}
+              if variants != {"control", "variant"}:
+                  raise SystemExit((period, variants))
+          print(json.dumps(diagnosis["episode_diagnosis"], indent=2, sort_keys=True))
+          PY
+
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+          from pandas.errors import EmptyDataError
+
+          root = Path(os.environ["ROOT"])
+          for result in sorted((root / "runs").glob("*/*")):
+              if not result.is_dir():
+                  continue
+              run = __import__("json").loads((result / "run.json").read_text())
+              metrics = __import__("json").loads((result / "metrics.json").read_text())
+              audit = __import__("json").loads((result / "global_slot_audit.json").read_text())
+              if run.get("engine") != "NautilusTrader BacktestNode":
+                  raise SystemExit((result, "unexpected engine"))
+              if not run.get("one_account") or not run.get("one_venue"):
+                  raise SystemExit((result, "not one shared account"))
+              if set(run.get("symbols", [])) != {"BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"}:
+                  raise SystemExit((result, "symbol drift"))
+              if float(run.get("risk_fraction", -1.0)) != 0.03:
+                  raise SystemExit((result, "risk drift"))
+              if not metrics.get("integrity_pass") or not audit.get("audit_pass"):
+                  raise SystemExit((result, "integrity failure"))
+              if int(audit.get("max_entry_intents_plus_positions_replayed", 99)) > 1:
+                  raise SystemExit((result, "global slot failure"))
+              orders_path = result / "orders.csv"
+              try:
+                  orders = pd.read_csv(orders_path)
+              except EmptyDataError:
+                  orders = pd.DataFrame()
+              if not orders.empty:
+                  entries = orders[
+                      orders["tags"].astype(str).str.contains(
+                          "CANDIDATE16_V8_FOK_PRICE_CAP",
+                          na=False,
+                      )
+                  ]
+                  if not entries.empty:
+                      if not (entries["type"] == "LIMIT").all():
+                          raise SystemExit((result, "non-LIMIT residual entry"))
+                      if not (entries["time_in_force"] == "FOK").all():
+                          raise SystemExit((result, "non-FOK residual entry"))
+                      if not (entries["filled_qty"] == entries["quantity"]).all():
+                          raise SystemExit((result, "partial residual entry fill"))
+          PY
+
+          test -s "$ROOT/analysis/paired_diagnosis.json"
+          test -s "$ROOT/analysis/account_summaries.csv"
+          test -e "$ROOT/analysis/residual_episodes.csv"
+          test -s "$ROOT/analysis/paired_diagnosis.md"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v9-role-separated-paired-${{ github.sha }}
+          path: |
+            artifacts/candidate-16-v9-role-separated-paired/analysis/**
+            artifacts/candidate-16-v9-role-separated-paired/analysis.log
+            artifacts/candidate-16-v9-role-separated-paired/logs/**
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/metrics.json
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/run.json
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/data_manifest.json
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/account.csv
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/orders.csv
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/positions.csv
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/daily_returns.json
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/closed_scenarios_all.json
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/global_slot_events.json
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/global_slot_audit.json
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/candidate16_v8_contract.json
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/candidate16_v9_contract.json
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/symbols/*/strategy_diagnostics.json
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/symbols/*/scenario_events.jsonl
+            artifacts/candidate-16-v9-role-separated-paired/runs/**/symbols/*/closed_scenarios.json
+          if-no-files-found: warn
+          retention-days: 90
