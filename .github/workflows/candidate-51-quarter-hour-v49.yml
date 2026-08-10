@@ -1,0 +1,165 @@
+name: candidate-51-quarter-hour-v49
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-quarter-hour-v49.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-quarter-hour-v49
+  cancel-in-progress: true
+
+jobs:
+  anatomy:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        period:
+          - {label: post_2024_11, start: 2024-11-01, end: 2024-11-03, split: development}
+          - {label: development_2025_02, start: 2025-02-01, end: 2025-02-03, split: development}
+          - {label: development_2025_06, start: 2025-06-01, end: 2025-06-03, split: development}
+          - {label: stress_2025_10, start: 2025-10-09, end: 2025-10-11, split: stress}
+          - {label: forward_2026_02, start: 2026-02-01, end: 2026-02-03, split: forward}
+          - {label: forward_2026_06, start: 2026-06-01, end: 2026-06-03, split: forward}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Materialize and verify causal anatomy source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat research/candidate-51/quarter_hour_anatomy.py.gz.b64.part* \
+            | base64 --decode | gzip --decompress \
+            > research/candidate-51/quarter_hour_anatomy.py
+          echo "3702a354c241e852206f8f7b83a791e4e846f3beed84cc3a2f91e4f290bd05e5  research/candidate-51/quarter_hour_anatomy.py" \
+            | sha256sum --check
+          python -m py_compile research/candidate-51/quarter_hour_anatomy.py
+      - name: Install verified research environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+      - name: Measure quarter-hour and placebo causal episodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="artifacts/candidate-51/quarter-hour-v49/${{ matrix.period.label }}/${{ matrix.symbol }}"
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/quarter_hour_anatomy.py run \
+            --symbol "${{ matrix.symbol }}" \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --period-label "${{ matrix.period.label }}" \
+            --split "${{ matrix.period.split }}" \
+            --cache ".cache/candidate-51-quarter-hour-v49/${{ matrix.symbol }}" \
+            --output "$output"
+          test -s "$output/result.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-quarter-hour-v49-${{ matrix.period.label }}-${{ matrix.symbol }}
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/quarter-hour-v49/${{ matrix.period.label }}/${{ matrix.symbol }}/result.json
+
+  aggregate:
+    if: always()
+    needs: anatomy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-quarter-hour-v49-*
+          path: downloaded
+      - name: Aggregate mechanism evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(find downloaded -name result.json -type f | wc -l | tr -d ' ')"
+          test "$count" -eq 24
+          cat research/candidate-51/quarter_hour_anatomy.py.gz.b64.part* \
+            | base64 --decode | gzip --decompress \
+            > research/candidate-51/quarter_hour_anatomy.py
+          echo "3702a354c241e852206f8f7b83a791e4e846f3beed84cc3a2f91e4f290bd05e5  research/candidate-51/quarter_hour_anatomy.py" \
+            | sha256sum --check
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          output=artifacts/candidate-51/quarter-hour-v49
+          uv run python research/candidate-51/quarter_hour_anatomy.py aggregate \
+            --results-root downloaded --output "$output"
+          test -s "$output/ANATOMY.json"
+          test -s "$output/ANATOMY.md"
+          test -s "$output/SUMMARY.csv"
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-51/quarter-hour-v49")
+          files = {}
+          for name in ("ANATOMY.json", "ANATOMY.md", "SUMMARY.csv"):
+              payload = (root / name).read_bytes()
+              files[name] = {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+          manifest = {
+              "schema_version": 1,
+              "candidate": "candidate-51-quarter-hour-v49",
+              "source_paper": "arXiv:2607.09426",
+              "source_sha256": "3702a354c241e852206f8f7b83a791e4e846f3beed84cc3a2f91e4f290bd05e5",
+              "source_runs": 24,
+              "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+              "periods": [
+                  "post_2024_11", "development_2025_02", "development_2025_06",
+                  "stress_2025_10", "forward_2026_02", "forward_2026_06",
+              ],
+              "purpose": "causal mechanism anatomy, not NAV backtest",
+              "files": files,
+          }
+          (root / "MANIFEST.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-quarter-hour-v49-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/quarter-hour-v49/ANATOMY.json
+            artifacts/candidate-51/quarter-hour-v49/ANATOMY.md
+            artifacts/candidate-51/quarter-hour-v49/SUMMARY.csv
+            artifacts/candidate-51/quarter-hour-v49/MANIFEST.json
+      - name: Commit source and compact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/quarter-hour-v49
+          destination=research/candidate-51/evidence/quarter-hour-v49
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/SUMMARY.csv" "$destination/SUMMARY.csv"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          git rm research/candidate-51/quarter_hour_anatomy.py.gz.b64.part*
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add research/candidate-51/quarter_hour_anatomy.py "$destination"
+          git commit -m "candidate51: record quarter-hour causal anatomy"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
