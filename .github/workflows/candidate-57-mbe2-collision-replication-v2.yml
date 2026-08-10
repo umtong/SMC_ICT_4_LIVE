@@ -1,0 +1,132 @@
+name: candidate-57-mbe2-collision-replication-v2
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-mbe2-collision-replication-v2.yml"
+      - "research/candidate-57/mbe2_collision_daytrade_strategy.py"
+      - "research/candidate-57/mbe2_collision_replication_v2.py"
+      - "research/candidate-57/forensic_sources/mbe2_router.py"
+      - "research/candidate-57/forensic_sources/mbe2_strategy.py"
+      - "research/candidate-57/forensic_sources/mbe2_campaign.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-mbe2-collision-replication-v2
+  cancel-in-progress: true
+
+jobs:
+  replicate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble exact source and frozen breadth adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-57/forensic_sources/mbe2_router.py \
+            research/candidate-51/router.py
+          cp research/candidate-57/forensic_sources/mbe2_strategy.py \
+            research/candidate-51/strategy_mbe2_base.py
+          cp research/candidate-57/mbe2_collision_daytrade_strategy.py \
+            research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy_mbe2_base.py \
+            research/candidate-51/strategy.py \
+            research/candidate-57/mbe2_collision_replication_v2.py
+
+      - name: Install locked environment and prove replication contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from strategy import Candidate35Config, Candidate35Strategy
+          fields = Candidate35Config.__struct_fields__
+          assert "mbe_min_actionable_candidates" in fields
+          assert "mbe_daytrade_max_hold_minutes" in fields
+          assert Candidate35Strategy.__name__ == "Candidate35Strategy"
+          print("MBE2 breadth replication contract verified")
+          PY
+
+      - name: Run control and breadth-confirmed policy on untouched November interval
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-mbe2-collision-replication-v2-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/mbe2_collision_replication_v2.py \
+            2>&1 | tee .work/candidate-57-mbe2-collision-replication-v2-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact replication evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f research/candidate-51/strategy_mbe2_base.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/mbe2-collision-replication-v2
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate57: persist second MBE2 breadth replication"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase --autostash origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload compact replication evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-mbe2-collision-replication-v2-evidence
+          path: |
+            research/candidate-57/evidence/mbe2-collision-replication-v2
+            .work/candidate-57-mbe2-collision-replication-v2-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce implementation and account validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "campaign status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "campaign process/account validity failed with status $status"
+            exit "$status"
+          fi
