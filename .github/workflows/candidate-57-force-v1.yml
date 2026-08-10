@@ -1,0 +1,152 @@
+name: candidate-57-force-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-force-v1.yml"
+      - "research/candidate-57/force_router.py"
+      - "research/candidate-57/force_strategy.py"
+      - "research/candidate-57/run_force_ladder.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-force-v1
+  cancel-in-progress: true
+
+jobs:
+  ladder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble exact public source over reused Nautilus shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-57/force_router.py research/candidate-51/router.py
+          cp research/candidate-57/force_strategy.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy.py \
+            research/candidate-57/run_force_ladder.py
+
+      - name: Install locked environment and prove exact source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import BarObservation, source_flags_for_candles
+          from strategy import Candidate35Config, Candidate35Strategy
+
+          # Thirty completed candles are the frozen source startup contract.
+          candles = [
+              BarObservation(
+                  ts_event=index * 900_000_000_000,
+                  open=100.0 + index * 0.1,
+                  high=101.0 + index * 0.1,
+                  low=99.0 + index * 0.1,
+                  close=100.2 + index * 0.1,
+                  volume=1.0,
+              )
+              for index in range(30)
+          ]
+          entry, exit_signal, diagnostics = source_flags_for_candles(candles)
+          assert "reason" not in diagnostics, diagnostics
+          assert math.isfinite(float(diagnostics["fastk"]))
+          assert math.isfinite(float(diagnostics["fastd"]))
+          assert diagnostics["stoch_fastd_matype"] == 3
+          assert diagnostics["macd_signal_period"] == 1
+          assert isinstance(entry, bool) and isinstance(exit_signal, bool)
+          fields = Candidate35Config.__struct_fields__
+          for name in (
+              "force_startup_15m_candles",
+              "force_stop_fraction",
+              "force_roi_0",
+              "force_roi_15",
+              "force_roi_30",
+          ):
+              assert name in fields
+          assert Candidate35Strategy.__name__ == "Candidate35Strategy"
+          print("exact TheForce source contracts verified")
+          PY
+
+      - name: Run two frozen short windows and conditionally the 30-day interval
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-force-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/run_force_ladder.py \
+            2>&1 | tee .work/candidate-57-force-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact source evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/force-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate57: persist exact public TheForce evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload full compact source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-force-v1-evidence
+          path: |
+            research/candidate-57/evidence/force-v1
+            .work/candidate-57-force-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce implementation and account-process validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "campaign status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "campaign process/account validity failed with status $status"
+            exit "$status"
+          fi
