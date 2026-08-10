@@ -3,8 +3,15 @@
 
 The existing Candidate 05 one-account four-symbol runner, per-symbol data
 preparation, cost model, margin account, NautilusTrader engine and audited final
-global slot are reused unchanged.  Candidate 16 v8 changes only the economic
+global slot are reused unchanged. Candidate 16 v8 changes only the economic
 state transition after the original v52 detector freezes a residual state.
+
+This adapter also enforces mechanism purity for the diagnostic account. Candidate
+05 v52 inherits a mature strategy stack which contains an independent
+position-building balance-acceptance family. That family is useful elsewhere,
+but a profit or loss from it cannot test the residual-convergence hypothesis.
+The balance observer is therefore disabled in this isolated experiment and any
+other inherited entry submission is treated as a fatal implementation error.
 """
 from __future__ import annotations
 
@@ -24,10 +31,10 @@ import strategy_global_slot_wrappers_v5 as shared_v5  # noqa: F401
 def _load_candidate16_v8_strategy_class():
     """Load this directory's strategy_v8.py without relying on PYTHONPATH order.
 
-    Candidate 05 also contains a module named ``strategy_v8``.  The shared
+    Candidate 05 also contains a module named ``strategy_v8``. The shared
     runner intentionally keeps Candidate 05 first on PYTHONPATH because v8
-    reuses its account/execution stack.  A normal ``from strategy_v8 import``
-    therefore resolves to the wrong economic module.  Loading the sibling file
+    reuses its account/execution stack. A normal ``from strategy_v8 import``
+    therefore resolves to the wrong economic module. Loading the sibling file
     under a unique module name fixes only that namespace collision and leaves
     all Candidate 05 dependencies used by the strategy unchanged.
     """
@@ -48,6 +55,8 @@ def _load_candidate16_v8_strategy_class():
 
 
 Candidate16V8Strategy = _load_candidate16_v8_strategy_class()
+_STRATEGY_V8_MODULE = sys.modules[Candidate16V8Strategy.__module__]
+V8_TRADE_BRANCH = str(getattr(_STRATEGY_V8_MODULE, "V8_TRADE_BRANCH"))
 
 
 V8_WINNER = "candidate_v8:Candidate16V8Strategy"
@@ -62,7 +71,48 @@ class Candidate16V8SharedStrategy(
     shared_v4.SharedAccountEntryLifecycleMixin,
     Candidate16V8Strategy,
 ):
-    """Role-separated v8 economics with the audited one-global-slot lifecycle."""
+    """Residual-only v8 economics with the audited one-global-slot lifecycle."""
+
+    def __init__(self, config: Any) -> None:
+        super().__init__(config)
+        self.diagnostics.update(
+            {
+                "candidate16_v8_legacy_balance_observer_calls_suppressed": 0,
+                "candidate16_v8_non_residual_submission_attempts": 0,
+            },
+        )
+
+    def _detect_position_building_balance(
+        self,
+        row: dict[str, float | int],
+    ) -> None:
+        """Keep the independent PBA family out of the residual diagnosis.
+
+        v52 inherits this detector through Candidate 05's v16-v26 stack. A PBA
+        fill is economically real but says nothing about residual convergence,
+        so allowing it would make the experiment mechanism-contaminated.
+        """
+        del row
+        self.diagnostics[
+            "candidate16_v8_legacy_balance_observer_calls_suppressed"
+        ] = int(
+            self.diagnostics[
+                "candidate16_v8_legacy_balance_observer_calls_suppressed"
+            ],
+        ) + 1
+
+    def _submit_price_capped_bracket(self, *args: Any, **kwargs: Any) -> bool:
+        """Permit only the v8 residual branch in this diagnostic account."""
+        branch = str(kwargs.get("branch", ""))
+        if branch != V8_TRADE_BRANCH:
+            self.diagnostics["candidate16_v8_non_residual_submission_attempts"] = int(
+                self.diagnostics["candidate16_v8_non_residual_submission_attempts"],
+            ) + 1
+            raise RuntimeError(
+                "NON_RESIDUAL_ENTRY_PATH_ATTEMPTED_IN_V8_ISOLATED_ACCOUNT: "
+                f"{branch or '<missing>'}",
+            )
+        return super()._submit_price_capped_bracket(*args, **kwargs)
 
 
 class Candidate16V8BTCUSDTStrategy(Candidate16V8SharedStrategy):
@@ -128,6 +178,7 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
         "research/candidate-05/strategy_v52_cross_sectional_residual.py"
     )
     metrics["transition_source"] = "research/candidate-16/strategy_v8.py"
+    metrics["mechanism_purity"] = "V8_LATER_RESIDUAL_CONVERGENCE_ONLY"
     write_json(args.output.resolve() / "metrics.json", metrics)
 
     run_path = args.output.resolve() / "run.json"
@@ -142,6 +193,9 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
         "strictly_later_convergence_required": True,
         "entry_time_in_force": "FOK",
         "minimum_natural_target_net_r": 1.0,
+        "mechanism_purity": "V8_LATER_RESIDUAL_CONVERGENCE_ONLY",
+        "inherited_position_building_balance_observer": "DISABLED",
+        "any_other_inherited_entry_submission": "FATAL_IMPLEMENTATION_ERROR",
     }
     write_json(run_path, run_payload)
 
@@ -154,6 +208,7 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
             "symbols": list(PROJECT_SYMBOLS),
             "risk_fraction": 0.03,
             "global_constraint": "entry intents plus open positions <= 1",
+            "mechanism_purity": "V8_LATER_RESIDUAL_CONVERGENCE_ONLY",
             "state_detector": (
                 "unchanged Candidate 05 v52 robust residual, OI, tail-flow and depth"
             ),
@@ -173,6 +228,8 @@ def run_stage(args: argparse.Namespace) -> dict[str, Any]:
             ],
             "same_timestamp_peer_information": "forbidden",
             "same_bar_state_confirmation_reuse": "forbidden",
+            "inherited_position_building_balance_observer": "disabled",
+            "other_inherited_entry_branches": "fatal if reached",
             "state_wait_horizon_minutes": 15,
             "target_fallback": "forbidden",
             "execution_and_nav": "existing shared NautilusTrader runner",
@@ -206,6 +263,7 @@ __all__ = [
     "Candidate16V8XRPUSDTStrategy",
     "Candidate16V8SharedStrategy",
     "PROJECT_SYMBOLS",
+    "V8_TRADE_BRANCH",
     "V8_WINNER",
     "candidate16_v8_strategy_path",
     "install_shared_adapter",
