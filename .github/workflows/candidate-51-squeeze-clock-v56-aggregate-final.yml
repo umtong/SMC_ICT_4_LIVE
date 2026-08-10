@@ -5,11 +5,17 @@ on:
     branches: ["research/candidate-51"]
     paths:
       - ".github/workflows/candidate-51-squeeze-clock-v56-aggregate-final.yml"
+      - "research/candidate-51/squeeze_clock_v56_aggregate_repair.py"
+      - "research/candidate-51/squeeze_clock_anatomy.py"
   workflow_dispatch:
 
 permissions:
   actions: read
   contents: write
+
+concurrency:
+  group: candidate-51-squeeze-clock-v56-aggregate-final
+  cancel-in-progress: true
 
 jobs:
   aggregate:
@@ -39,11 +45,12 @@ jobs:
         run: |
           set -euo pipefail
           count="$(find downloaded -name result.json -type f | wc -l | tr -d ' ')"
-          test "$count" -ge 51
+          test "$count" -eq 52
           python -m pip install --disable-pip-version-check "uv==0.11.25"
           uv sync --locked
+          python -m py_compile research/candidate-51/squeeze_clock_v56_aggregate_repair.py
           output=artifacts/candidate-51/squeeze-clock-v56
-          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/squeeze_clock_anatomy.py aggregate \
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/squeeze_clock_v56_aggregate_repair.py aggregate \
             --results-root downloaded --output "$output"
           python - "$output" "$count" <<'PY'
           import json, pathlib, sys
@@ -83,6 +90,12 @@ jobs:
           git config user.email candidate-51-research-bot@users.noreply.github.com
           git add "$destination"
           git commit -m "candidate51: record squeeze causal clock anatomy"
-          git fetch origin research/candidate-51 --depth=1
-          git rebase FETCH_HEAD
-          git push origin HEAD:research/candidate-51
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-51 --depth=1
+            if git rebase FETCH_HEAD && git push origin HEAD:research/candidate-51; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 2))
+          done
+          exit 1
