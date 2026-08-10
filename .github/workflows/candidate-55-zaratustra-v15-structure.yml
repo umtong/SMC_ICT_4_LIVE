@@ -1,0 +1,93 @@
+name: candidate-55-zaratustra-v15-structure
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v15-structure.yml"
+      - "research/candidate-55/router_zaratustra.py"
+      - "research/candidate-55/router_zaratustra_v13.py"
+      - "research/candidate-55/router_zaratustra_v15.py"
+      - "research/candidate-55/router_zaratustra_v15_short.py"
+      - "research/candidate-55/router_zaratustra_v15_structure.py"
+      - "research/candidate-55/strategy_zaratustra.py"
+      - "research/candidate-55/strategy_zaratustra_v15.py"
+      - "research/candidate-55/strategy_zaratustra_v15_structure.py"
+      - "research/candidate-55/run_zaratustra_v15_structure.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-zaratustra-v15-structure
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+
+      - name: Materialize source engine and structural repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/router_zaratustra_v15.py research/candidate-51/router_zaratustra_v15.py
+          cp research/candidate-55/router_zaratustra_v15_short.py research/candidate-51/router_zaratustra_v15_short.py
+          cp research/candidate-55/router_zaratustra_v15_structure.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra_v15.py research/candidate-51/strategy_zaratustra_v15.py
+          cp research/candidate-55/strategy_zaratustra_v15_structure.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install, doctor and prove repair contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import (
+              bb_clean_synchronized_expansion,
+              di_pullback_resumption,
+          )
+
+          assert di_pullback_resumption(0.001, -0.01)
+          assert di_pullback_resumption(0.0, -1e-6)
+          assert not di_pullback_resumption(-0.001, -0.01)
+          assert not di_pullback_resumption(0.001, 0.01)
+
+          assert bb_clean_synchronized_expansion(-0.0045, 0.003, 3)
+          assert bb_clean_synchronized_expansion(-0.0060, 0.003, 4)
+          assert not bb_clean_synchronized_expansion(-0.0030, 0.003, 3)
+          assert not bb_clean_synchronized_expansion(-0.0060, 0.003, 2)
+          print("Candidate 55 V15 structural state contracts verified")
+          PY
+
+      - name: Run value-of-information validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_zaratustra_v15_structure.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v15-structure-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/zaratustra-v15-structure-*
+            .work/candidate-55-v15-structure/manifest.json
+          if-no-files-found: warn
+          retention-days: 30
