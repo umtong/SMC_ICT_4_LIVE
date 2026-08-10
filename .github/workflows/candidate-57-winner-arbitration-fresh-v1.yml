@@ -1,0 +1,141 @@
+name: candidate-57-winner-arbitration-fresh-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-winner-arbitration-fresh-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-winner-arbitration-fresh-v1
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble frozen arbitration policies over reused Nautilus shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/WINNER_ARBITRATION_FRESH_V1_FREEZE.md
+          cp research/candidate-51/router_external_v17.py research/candidate-51/router_transition.py
+          cp research/candidate-57/winner_source_fidelity_router.py research/candidate-51/router_source_fidelity.py
+          cp research/candidate-57/winner_arbitration_router.py research/candidate-51/router.py
+          cp research/candidate-57/forensic_sources/winner_strategy_external_v17.py research/candidate-51/strategy_transition.py
+          cp research/candidate-57/winner_source_fidelity_strategy.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/router.py \
+            research/candidate-51/router_transition.py \
+            research/candidate-51/router_source_fidelity.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_transition.py \
+            research/candidate-57/winner_arbitration_fresh_campaign.py
+
+      - name: Install locked environment and prove the two-policy contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import os
+          import router
+          from strategy import Candidate35Config, Candidate35Strategy
+          assert router._mode.__name__ == "_mode"
+          os.environ["C57_ARBITRATION_MODE"] = "current_max_climax"
+          assert router._mode() == "current_max_climax"
+          os.environ["C57_ARBITRATION_MODE"] = "least_volume_excess"
+          assert router._mode() == "least_volume_excess"
+          try:
+              os.environ["C57_ARBITRATION_MODE"] = "third_policy_forbidden"
+              router._mode()
+          except ValueError:
+              pass
+          else:
+              raise AssertionError("unfrozen third arbitration policy accepted")
+          assert Candidate35Config.__name__ == "Candidate35Config"
+          assert Candidate35Strategy.__name__ == "Candidate35Strategy"
+          print("exactly two frozen arbitration policies verified")
+          PY
+
+      - name: Run both policies sequentially on the fresh interval
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-winner-arbitration-fresh-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/winner_arbitration_fresh_campaign.py \
+            2>&1 | tee .work/candidate-57-winner-arbitration-fresh-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_transition.py \
+            research/candidate-51/router_source_fidelity.py \
+            research/candidate-51/strategy_transition.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          if [[ -d research/candidate-57/evidence/winner-arbitration-fresh-v1 ]]; then
+            git add -f research/candidate-57/evidence/winner-arbitration-fresh-v1
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist fresh Winner arbitration causal evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload full compact experiment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-winner-arbitration-fresh-v1-evidence
+          path: |
+            research/candidate-57/evidence/winner-arbitration-fresh-v1
+            .work/candidate-57-winner-arbitration-fresh-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce process and account validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "campaign status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "campaign/account validity failed with status $status; evidence retained"
+            exit "$status"
+          fi
