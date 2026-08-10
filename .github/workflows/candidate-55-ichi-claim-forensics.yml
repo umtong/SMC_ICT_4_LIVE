@@ -1,0 +1,78 @@
+name: candidate-55-ichi-claim-forensics
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-ichi-claim-forensics.yml"
+      - "research/candidate-55/strategy_ichi_claim.py"
+      - "research/candidate-55/run_ichi_claim_forensics.py"
+      - "research/candidate-51/router_ichi.py.gz"
+      - "research/candidate-51/strategy_ichi.py.gz"
+      - "research/candidate-51/ichi_v9_runner.py.gz"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-ichi-claim-forensics
+  cancel-in-progress: true
+
+jobs:
+  claim-forensics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - name: Materialize inherited source-exact Ichi implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip
+          from pathlib import Path
+          root = Path("research/candidate-51")
+          for name in ("router_ichi.py", "strategy_ichi.py", "ichi_v9_runner.py"):
+              (root / name).write_bytes(gzip.decompress((root / f"{name}.gz").read_bytes()))
+          (root / "router.py").write_bytes((root / "router_ichi.py").read_bytes())
+          (root / "strategy.py").write_bytes(
+              Path("research/candidate-55/strategy_ichi_claim.py").read_bytes()
+          )
+          PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and verify exact public decision path
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import importlib.util, sys
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location("ichi_contract", Path("research/candidate-51/ichi_v9_runner.py"))
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          module.test_contracts()
+          print("public Ichi cloud/fan/episode contract passes")
+          PY
+      - name: Reproduce and anatomize two disjoint claim-period windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_ichi_claim_forensics.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-ichi-claim-forensics-${{ github.sha }}
+          path: artifacts/candidate-55/ichi-claim-*
+          if-no-files-found: warn
+          retention-days: 30
