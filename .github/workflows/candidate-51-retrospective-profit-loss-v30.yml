@@ -1,0 +1,49 @@
+name: candidate-51-retrospective-profit-loss-v30
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - "research/candidate-51/retrospective_profit_loss_mining.py"
+      - ".github/workflows/candidate-51-retrospective-profit-loss-v30.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-retrospective-profit-loss-v30
+  cancel-in-progress: true
+
+jobs:
+  mine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Mine gross alpha and repairable loss structure
+        run: python research/candidate-51/retrospective_profit_loss_mining.py
+
+      - name: Commit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add \
+            research/candidate-51/evidence/RETROSPECTIVE_PROFIT_LOSS_MINING_2026-08-10.json \
+            research/candidate-51/evidence/RETROSPECTIVE_PROFIT_LOSS_MINING_2026-08-10.md
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate51: record non-binary profit loss mining"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
