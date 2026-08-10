@@ -1,0 +1,199 @@
+name: candidate-57-ichi5m-private-fast-v2-identity
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-ichi5m-private-fast-v2-identity.yml"
+      - "research/candidate-57/ichi5m_private_fast_v2_identity.py"
+      - "research/candidate-57/strategy_ichi5m_private_fast_v2.py"
+      - "research/candidate-57/strategy_ichi5m_private_recon_v1.py"
+      - "research/candidate-57/router_ichi5m_private_recon_v1.py"
+      - "research/candidate-57/router_ichi5m_private_runtime.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-ichi5m-private-fast-v2-identity
+  cancel-in-progress: true
+
+jobs:
+  identity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble full and finite private-ichi reconstructions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_ichi5m_private_recon_v1.py research/candidate-51/router_ichi5m_private_impl.py
+          cp research/candidate-57/router_ichi5m_private_runtime.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_ichi5m_private_recon_v1.py research/candidate-51/strategy_ichi5m_private_base.py
+          cp research/candidate-57/strategy_ichi5m_private_fast_v2.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_ichi5m_private_impl.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_ichi5m_private_base.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-57/ichi5m_private_fast_v2_identity.py \
+            research/candidate-57/ichi5m_private_recon_v1_campaign.py \
+            research/candidate-57/trade_ledger_forensics.py
+
+      - name: Install and doctor
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+
+      - name: Compare full history with 512-minute history
+        id: identity
+        shell: bash
+        run: |
+          set +e
+          root=.work/candidate-57-private-ichi-fast-v2-identity
+          rm -rf "$root"
+          mkdir -p "$root"
+          set -o pipefail
+
+          cp research/candidate-57/strategy_ichi5m_private_recon_v1.py research/candidate-51/strategy.py
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/ichi5m_private_fast_v2_identity.py --label full \
+            2>&1 | tee "$root/full.log"
+          full_status=${PIPESTATUS[0]}
+
+          cp research/candidate-57/strategy_ichi5m_private_fast_v2.py research/candidate-51/strategy.py
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/ichi5m_private_fast_v2_identity.py --label finite \
+            2>&1 | tee "$root/finite.log"
+          finite_status=${PIPESTATUS[0]}
+
+          uv run python - <<'PY'
+          from pathlib import Path
+          import json, math
+          root = Path('.work/candidate-57-private-ichi-fast-v2-identity')
+          full_path = root / 'full.json'
+          finite_path = root / 'finite.json'
+          result = {
+              'period': ['2026-02-15', '2026-02-18'],
+              'variant': 'structural_anchor_long',
+              'history_minutes': 512,
+              'full_exists': full_path.is_file(),
+              'finite_exists': finite_path.is_file(),
+              'checks': {},
+              'identical': False,
+          }
+          if full_path.is_file() and finite_path.is_file():
+              full = json.loads(full_path.read_text())
+              finite = json.loads(finite_path.read_text())
+              checks = {}
+              for key in (
+                  'trades', 'wins', 'losses', 'total_return',
+                  'geometric_daily_growth', 'profit_factor', 'max_drawdown',
+              ):
+                  left = (full.get('metrics') or {}).get(key)
+                  right = (finite.get('metrics') or {}).get(key)
+                  if key in {'trades', 'wins', 'losses'}:
+                      checks[key] = int(left or 0) == int(right or 0)
+                  else:
+                      checks[key] = abs(float(left or 0.0) - float(right or 0.0)) <= 1e-10
+              for key in ('source_signals_before_execution_filters', 'entry_submissions'):
+                  checks[key] = (full.get('diagnostics') or {}).get(key) == (finite.get('diagnostics') or {}).get(key)
+              keys = ('episode_ts', 'symbol', 'side', 'entry_reference', 'stop', 'target', 'pnl_usdt', 'actual_r')
+              left_ledger = (full.get('trade_forensics') or {}).get('trade_ledger') or []
+              right_ledger = (finite.get('trade_forensics') or {}).get('trade_ledger') or []
+              ledger_equal = len(left_ledger) == len(right_ledger)
+              if ledger_equal:
+                  for left, right in zip(left_ledger, right_ledger):
+                      for key in keys:
+                          lv, rv = left.get(key), right.get(key)
+                          if isinstance(lv, (int, float)) or isinstance(rv, (int, float)):
+                              if abs(float(lv or 0.0) - float(rv or 0.0)) > 1e-10:
+                                  ledger_equal = False
+                                  break
+                          elif lv != rv:
+                              ledger_equal = False
+                              break
+                      if not ledger_equal:
+                          break
+              checks['trade_ledger'] = ledger_equal
+              result.update({'checks': checks, 'identical': all(checks.values()), 'full': full, 'finite': finite})
+          (root / 'identity.json').write_text(json.dumps(result, indent=2, sort_keys=True, allow_nan=False, default=str) + '\n')
+          print(json.dumps({'identical': result['identical'], 'checks': result['checks']}, sort_keys=True))
+          PY
+          compare_status=$?
+          final_status=0
+          if [[ "$full_status" != "0" || "$finite_status" != "0" || "$compare_status" != "0" ]]; then
+            final_status=2
+          fi
+          if ! uv run python -c "import json; assert json.load(open('$root/identity.json'))['identical']"; then
+            final_status=3
+          fi
+          echo "status=$final_status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit identity evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f research/candidate-51/router_ichi5m_private_impl.py research/candidate-51/strategy_ichi5m_private_base.py
+          out=research/candidate-57/evidence/ichi5m-private-fast-v2-identity
+          rm -rf "$out"
+          mkdir -p "$out"
+          cp .work/candidate-57-private-ichi-fast-v2-identity/identity.json "$out/identity.json" || true
+          cp .work/candidate-57-private-ichi-fast-v2-identity/full.log "$out/full.log" || true
+          cp .work/candidate-57-private-ichi-fast-v2-identity/finite.log "$out/finite.log" || true
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          git add -f "$out"
+          if ! git diff --cached --quiet; then
+            git commit --no-gpg-sign -m "candidate57: persist private ichi finite-history identity"
+            for attempt in 1 2 3 4 5; do
+              git fetch origin research/candidate-57
+              git rebase origin/research/candidate-57
+              if git push origin HEAD:research/candidate-57; then
+                break
+              fi
+              sleep 2
+            done
+          fi
+
+      - name: Upload identity artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-ichi5m-private-fast-v2-identity
+          path: .work/candidate-57-private-ichi-fast-v2-identity
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce identity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.identity.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "private ichi finite-history identity failed; status=$status"
+            exit "${status:-1}"
+          fi
