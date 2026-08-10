@@ -1,0 +1,145 @@
+name: candidate-57-jump-all-candidate-forensic-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-jump-all-candidate-forensic-v1.yml"
+      - "research/candidate-57/jump_episode_forensic_strategy.py"
+      - "research/candidate-57/jump_episode_forensic_analyze.py"
+      - "research/candidate-57/forensic_sources/jump_transient_v3/**"
+      - "research/candidate-51/run.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-jump-all-candidate-forensic-v1
+  cancel-in-progress: true
+
+jobs:
+  forensic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble exact traded jump policy plus non-trading audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-57/forensic_sources/jump_transient_v3/router_jump_transient.py research/candidate-51/router.py
+          cp research/candidate-57/forensic_sources/jump_transient_v3/strategy_jump_transient.py research/candidate-51/strategy_jump_transient.py
+          cp research/candidate-57/jump_episode_forensic_strategy.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_jump_transient.py \
+            research/candidate-57/jump_episode_forensic_analyze.py
+
+      - name: Install locked project environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from strategy import Candidate35Config, Candidate35Strategy
+          assert Candidate35Config().jump_audit_enabled is True
+          assert Candidate35Strategy.__name__ == "Candidate35Strategy"
+          print("jump audit imports verified")
+          PY
+
+      - name: Replay fresh short A while observing every source candidate
+        id: replay
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-jump-all-candidate-forensic-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/forensic_sources/jump_transient_v3/run_jump_transient_variant.py \
+              --variant arm0p4_escape1p0 \
+              --mode transient_be --arm 0.4 --escape 1.0 \
+              --start 2025-12-01 --end 2025-12-14 \
+              --stage forensic-all-candidates \
+            2>&1 | tee .work/candidate-57-jump-all-candidate-forensic-v1-console/replay.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Decompose executed, rejected and slot-hidden episodes
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-57/candidate57-jump-transient-v3-forensic-all-candidates-arm0p4_escape1p0
+          out=research/candidate-57/evidence/jump-all-candidate-forensic-v1
+          if [[ -d "$source" ]]; then
+            uv run python research/candidate-57/jump_episode_forensic_analyze.py \
+              --source "$source" --out "$out" \
+              2>&1 | tee .work/candidate-57-jump-all-candidate-forensic-v1-console/analyze.log
+          else
+            mkdir -p "$out"
+            printf '{"implementation_failure":"source output missing"}\n' > "$out"/implementation_failure.json
+          fi
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f research/candidate-51/strategy_jump_transient.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/jump-all-candidate-forensic-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist all-candidate jump causal episode audit"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload forensic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-jump-all-candidate-forensic-v1-evidence
+          path: |
+            research/candidate-57/evidence/jump-all-candidate-forensic-v1
+            .work/candidate-57-jump-all-candidate-forensic-v1-console
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce replay process integrity
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.replay.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "replay status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "replay process failed with status $status; evidence/log retained"
+            exit "$status"
+          fi
