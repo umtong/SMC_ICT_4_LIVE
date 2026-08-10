@@ -1,0 +1,74 @@
+name: candidate-51-quarter-hour-v58-decision-audit
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-quarter-hour-v58-decision-audit.yml"
+      - "research/candidate-51/quarter_hour_v58_decision_audit.py"
+      - "research/candidate-51/evidence/quarter-hour-v58/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-quarter-hour-v58-decision-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+          sparse-checkout: |
+            research/candidate-51
+            pyproject.toml
+            uv.lock
+            src
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Audit frozen imbalance bins
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          python -m py_compile research/candidate-51/quarter_hour_v58_decision_audit.py
+          output=artifacts/candidate-51/quarter-hour-v58-decision-audit
+          uv run python research/candidate-51/quarter_hour_v58_decision_audit.py \
+            --candidate-dir research/candidate-51 --output "$output"
+          test -s "$output/DECISION.json"
+          test -s "$output/DECISION.md"
+          test -s "$output/BIN_DECISIONS.csv"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-quarter-hour-v58-decision-audit
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/quarter-hour-v58-decision-audit
+      - name: Commit compact decision evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/quarter-hour-v58-decision-audit
+          destination=research/candidate-51/evidence/quarter-hour-v58-decision-audit
+          mkdir -p "$destination"
+          cp "$source/DECISION.json" "$destination/DECISION.json"
+          cp "$source/DECISION.md" "$destination/DECISION.md"
+          cp "$source/BIN_DECISIONS.csv" "$destination/BIN_DECISIONS.csv"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          git commit -m "candidate51: record quarter-hour fixed-bin decision audit"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-51 --depth=1
+            if git rebase FETCH_HEAD && git push origin HEAD:research/candidate-51; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 2))
+          done
+          exit 1
