@@ -1,0 +1,105 @@
+name: candidate-57-jump-oi-lifecycle-june-development-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-jump-oi-lifecycle-june-development-v1.yml"
+      - "research/candidate-57/jump_oi_lifecycle_development.py"
+      - "research/candidate-57/jump_oi_lifecycle_june_development.py"
+      - "research/candidate-57/download_binance_metrics_sidecar.py"
+      - "research/candidate-57/evidence/jump-state-arbitration-fresh-v1/source_max_z__no_taker/episode_rows.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-jump-oi-lifecycle-june-development-v1
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install locked environment and check consumed source anatomy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          test -f research/candidate-57/evidence/jump-state-arbitration-fresh-v1/source_max_z__no_taker/episode_rows.json
+          python -m compileall -q \
+            research/candidate-57/download_binance_metrics_sidecar.py \
+            research/candidate-57/jump_oi_lifecycle_development.py \
+            research/candidate-57/jump_oi_lifecycle_june_development.py
+
+      - name: Decompose June target and peer OI lifecycle
+        id: diagnostic
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-jump-oi-lifecycle-june-development-v1-console
+          set -o pipefail
+          uv run python research/candidate-57/jump_oi_lifecycle_june_development.py \
+            2>&1 | tee .work/candidate-57-jump-oi-lifecycle-june-development-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact June OI lifecycle evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/jump-oi-lifecycle-june-development-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate57: persist June jump OI lifecycle anatomy"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload June diagnostic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-jump-oi-lifecycle-june-development-v1
+          path: |
+            research/candidate-57/evidence/jump-oi-lifecycle-june-development-v1
+            .work/candidate-57-jump-oi-lifecycle-june-development-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce complete strict-asof diagnostic
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.diagnostic.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "June OI lifecycle diagnostic incomplete; status=$status"
+            exit "${status:-1}"
+          fi
