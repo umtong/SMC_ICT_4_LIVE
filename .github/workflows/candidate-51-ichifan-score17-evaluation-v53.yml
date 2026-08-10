@@ -1,0 +1,207 @@
+name: candidate-51-ichifan-score17-evaluation-v53
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-ichifan-score17-evaluation-v53.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-ichifan-score17-evaluation-v53
+  cancel-in-progress: true
+
+jobs:
+  interval:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {interval: eval_2024_02, start: 2024-02-15, end: 2024-02-21}
+          - {interval: eval_2024_05, start: 2024-05-15, end: 2024-05-21}
+          - {interval: eval_2024_11, start: 2024-11-15, end: 2024-11-21}
+          - {interval: eval_2025_02, start: 2025-02-15, end: 2025-02-21}
+          - {interval: eval_2025_06, start: 2025-06-15, end: 2025-06-21}
+          - {interval: eval_2025_12, start: 2025-12-15, end: 2025-12-21}
+          - {interval: eval_2026_01, start: 2026-01-15, end: 2026-01-21}
+          - {interval: eval_2026_06, start: 2026-06-15, end: 2026-06-21}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Materialize frozen score17 combined system
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin=e01b7532829507320d0baae601b410746d523868
+          git fetch --no-tags origin research/candidate-47
+          mkdir -p research/candidate-47 research/candidate-35
+          for file in \
+            router.py \
+            ichifan_strategy.py \
+            ichifan_structural_strategy.py \
+            ichifan_structural_config.json \
+            kline_only_inputs.py \
+            run.py; do
+            git show "$pin:research/candidate-47/$file" > "research/candidate-47/$file"
+          done
+          git show "$pin:research/candidate-35/strategy.py" \
+            > research/candidate-35/strategy.py
+          cp research/candidate-51/ichifan_strong_score_strategy.py \
+            research/candidate-47/ichifan_strong_score_strategy.py
+          cp research/candidate-51/ichifan_strong_score_launch.py \
+            research/candidate-47/ichifan_strong_score_launch.py
+          cp research/candidate-51/event_lifecycle_patch.py \
+            research/candidate-47/event_lifecycle_patch.py
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q \
+            research/candidate-35/strategy.py \
+            research/candidate-47 \
+            research/candidate-51/ichifan_score17_evaluation_prepare.py \
+            research/candidate-51/ichifan_strong_score_audit.py
+          uv run python research/candidate-51/ichifan_score17_evaluation_prepare.py \
+            --output .work/candidate-51-ichifan-score17-evaluation-v53
+          PYTHONPATH=research/candidate-47:research/candidate-16:research/candidate-05 \
+            uv run python - <<'PY'
+          import json
+          from pathlib import Path
+          import ichifan_strong_score_strategy as strategy
+
+          fields = set(strategy.Candidate35Config.__struct_fields__)
+          assert "ichifan_min_entry_score" in fields
+          config = json.loads(
+              Path(".work/candidate-51-ichifan-score17-evaluation-v53/frozen_score17.json").read_text()
+          )["strategy"]
+          assert config["ichifan_min_entry_score"] == 17.0
+          print("Frozen score17 system verified without parameter change")
+          PY
+      - name: Run frozen score17 once on this new evaluation account
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=.work/candidate-51-ichifan-score17-evaluation-v53
+          root=artifacts/candidate-51/ichifan-score17-evaluation-v53/${{ matrix.interval }}/frozen_score17
+          PYTHONPATH=research/candidate-47:research/candidate-16:research/candidate-05 \
+            uv run python research/candidate-47/ichifan_strong_score_launch.py \
+            --config "$work/frozen_score17.json" \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+            --cache ".cache/candidate-51-ichifan-score17-evaluation-v53/${{ matrix.interval }}" \
+            --output "$root" \
+            --workspace "$work/ws-${{ matrix.interval }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-ichifan-score17-evaluation-v53-${{ matrix.interval }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/ichifan-score17-evaluation-v53/${{ matrix.interval }}/**/metrics.json
+            artifacts/candidate-51/ichifan-score17-evaluation-v53/${{ matrix.interval }}/**/strategy_diagnostics.json
+            artifacts/candidate-51/ichifan-score17-evaluation-v53/${{ matrix.interval }}/**/closed_scenarios.json
+            artifacts/candidate-51/ichifan-score17-evaluation-v53/${{ matrix.interval }}/**/equity.csv
+
+  aggregate:
+    if: always()
+    needs: interval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-ichifan-score17-evaluation-v53-eval_*
+          path: downloaded
+      - name: Aggregate frozen score17 evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-51/ichifan-score17-evaluation-v53
+          mkdir -p "$root"
+          for artifact_dir in downloaded/candidate-51-ichifan-score17-evaluation-v53-eval_*; do
+            [[ -d "$artifact_dir" ]] || continue
+            interval="${artifact_dir##*candidate-51-ichifan-score17-evaluation-v53-}"
+            mkdir -p "$root/$interval"
+            cp -R "$artifact_dir"/. "$root/$interval/"
+          done
+          pin=e01b7532829507320d0baae601b410746d523868
+          git fetch --no-tags origin research/candidate-47
+          mkdir -p research/candidate-47
+          git show "$pin:research/candidate-47/ichifan_structural_config.json" \
+            > research/candidate-47/ichifan_structural_config.json
+          python research/candidate-51/ichifan_score17_evaluation_prepare.py \
+            --output .work/candidate-51-ichifan-score17-evaluation-v53
+          cp .work/candidate-51-ichifan-score17-evaluation-v53/MANIFEST.json "$root/MANIFEST.json"
+          python research/candidate-51/ichifan_strong_score_audit.py \
+            --root "$root" --manifest "$root/MANIFEST.json" \
+            --output-json "$root/ANATOMY.json" --output-md "$root/ANATOMY.md"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-51/ichifan-score17-evaluation-v53")
+          result = json.loads((root / "ANATOMY.json").read_text())
+          assert result["all_runs_present"] is True
+          summary = result["variant_aggregate"]["frozen_score17"]
+          assert summary["zero_global_position_violations"] is True
+          assert summary["zero_order_rejections"] is True
+          compact = {
+              "frozen_variant": "frozen_score17",
+              "positive_account_count": summary["positive_account_count"],
+              "independent_account_count": summary["independent_account_count"],
+              "trades": summary["trades"],
+              "trades_per_day": summary["trades_per_day"],
+              "profit_factor": summary["profit_factor"],
+              "net_pnl_usdt": summary["net_pnl_usdt"],
+              "expectancy_r": summary["expectancy_r"],
+              "median_account_return": summary["median_account_return"],
+              "median_account_geometric_daily_growth": summary["median_account_geometric_daily_growth"],
+              "worst_account_return": summary["worst_account_return"],
+              "worst_account_drawdown": summary["worst_account_drawdown"],
+              "zero_global_position_violations": summary["zero_global_position_violations"],
+              "zero_order_rejections": summary["zero_order_rejections"],
+              "parameters_changed_after_results": False,
+          }
+          (root / "EVALUATION_SUMMARY.json").write_text(
+              json.dumps(compact, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(compact, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-ichifan-score17-evaluation-v53-summary
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/ichifan-score17-evaluation-v53/ANATOMY.*
+            artifacts/candidate-51/ichifan-score17-evaluation-v53/MANIFEST.json
+            artifacts/candidate-51/ichifan-score17-evaluation-v53/EVALUATION_SUMMARY.json
+      - name: Commit frozen score17 evaluation evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/ichifan-score17-evaluation-v53
+          destination=research/candidate-51/evidence/ichifan-score17-evaluation-v53
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          cp "$source/EVALUATION_SUMMARY.json" "$destination/EVALUATION_SUMMARY.json"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate51: record frozen IchiFan score17 evaluation"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
