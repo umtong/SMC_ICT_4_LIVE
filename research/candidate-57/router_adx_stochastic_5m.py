@@ -16,7 +16,6 @@ from router_picasso import (
     _aggregate_complete,
     _atr,
     _finite,
-    _sma,
 )
 
 ADX_STOCH_STATE = "PUBLIC_ADX_STOCHASTIC_5M"
@@ -65,18 +64,23 @@ def _fast_stochastic(
 ) -> tuple[list[float], list[float]]:
     size = len(candles)
     fastk = [math.nan] * size
+    fastd = [math.nan] * size
     if fastk_period <= 0 or fastd_period <= 0:
-        return fastk, [math.nan] * size
+        return fastk, fastd
     for index in range(fastk_period - 1, size):
         sample = candles[index - fastk_period + 1 : index + 1]
         highest = max(float(candle.high) for candle in sample)
         lowest = min(float(candle.low) for candle in sample)
         denominator = highest - lowest
-        if denominator > 1e-12:
-            fastk[index] = 100.0 * (float(candles[index].close) - lowest) / denominator
-        else:
-            fastk[index] = 50.0
-    fastd = _sma(fastk, fastd_period)
+        fastk[index] = (
+            100.0 * (float(candles[index].close) - lowest) / denominator
+            if denominator > 1e-12
+            else 50.0
+        )
+        if index >= fastk_period - 1 + fastd_period - 1:
+            window = fastk[index - fastd_period + 1 : index + 1]
+            if all(_finite(value) for value in window):
+                fastd[index] = sum(float(value) for value in window) / fastd_period
     return fastk, fastd
 
 
