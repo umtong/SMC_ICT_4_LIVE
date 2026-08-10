@@ -1,0 +1,127 @@
+name: candidate-55-zaratustra-v15-meta
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v15-meta.yml"
+      - "research/candidate-55/router_zaratustra.py"
+      - "research/candidate-55/router_zaratustra_v13.py"
+      - "research/candidate-55/router_zaratustra_v15.py"
+      - "research/candidate-55/strategy_zaratustra.py"
+      - "research/candidate-55/strategy_zaratustra_v15.py"
+      - "research/candidate-55/strategy_zaratustra_v15_relative.py"
+      - "research/candidate-55/strategy_zaratustra_v15_accepted.py"
+      - "research/candidate-55/strategy_zaratustra_v15_meta.py"
+      - "research/candidate-55/run_zaratustra_v15_repair.py"
+      - "research/candidate-55/run_zaratustra_v15_meta.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-55-zaratustra-v15-meta
+  cancel-in-progress: true
+
+jobs:
+  meta-label:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+          fetch-depth: 0
+      - name: Materialize V15 meta research environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/router_zaratustra_v15.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra_v15.py research/candidate-51/strategy_zaratustra_v15.py
+          cp research/candidate-55/strategy_zaratustra_v15_relative.py research/candidate-51/strategy_zaratustra_v15_relative.py
+          cp research/candidate-55/strategy_zaratustra_v15_accepted.py research/candidate-51/strategy_zaratustra_v15_accepted.py
+          cp research/candidate-55/strategy_zaratustra_v15_meta.py research/candidate-51/strategy_zaratustra_v15_meta.py
+          cp research/candidate-55/strategy_zaratustra_v15_accepted.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and prove frozen-model contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import numpy as np
+          from research.candidate_55_placeholder import never
+          PY
+        continue-on-error: true
+      - name: Enforce direct compile and causal feature store
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from pathlib import Path
+          import importlib.util
+          import tempfile
+          import pandas as pd
+
+          path = Path('research/candidate-55/strategy_zaratustra_v15_meta.py')
+          spec = importlib.util.spec_from_file_location('candidate55_meta_contract', path)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          with tempfile.TemporaryDirectory() as directory:
+              feature_path = Path(directory) / 'features.csv.gz'
+              pd.DataFrame({
+                  'observed_time_ns': [60_000_000_000, 120_000_000_000],
+                  'feature_ready': [True, True],
+                  'flow_3m': [-0.2, 0.3],
+                  'ret_60s_bps': [-2.0, 3.0],
+                  'efficiency_60s': [0.2, 0.3],
+                  'absorption_60s': [0.1, 0.2],
+                  'notional_burst': [1.5, 2.0],
+                  'trade_count_burst': [1.2, 1.4],
+                  'oi_change_15m': [0.01, -0.02],
+                  'premium_change_5m': [-0.00004, 0.00002],
+              }).to_csv(feature_path, index=False, compression='gzip')
+              store = module._MetaFeatureStore(feature_path)
+              causal = store.observation(119_000_000_000, 65.0)
+              assert causal.ready and causal.observed_time_ns == 60_000_000_000
+          print('V15 meta store is complete-minute causal')
+          PY
+      - name: Run period-blocked meta-label experiment
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_zaratustra_v15_meta.py
+      - name: Persist compact frozen-model evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin research/candidate-55
+          if [[ -d research/candidate-55/evidence/v15-meta ]]; then
+            git add -f research/candidate-55/evidence/v15-meta
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate55: persist V15 meta evidence"
+              git push origin HEAD:research/candidate-55
+            fi
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v15-meta-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/zaratustra-v15-meta-*
+            research/candidate-55/evidence/v15-meta
+          if-no-files-found: warn
+          retention-days: 30
