@@ -1,16 +1,16 @@
-"""Peer-taker market state × cross-symbol arbitration for the 4h jump specialist.
+"""Peer-taker market state × side-aware arbitration for the 4h jump specialist.
 
 The public/source jump classifier, structural stop and management are unchanged.
-The wrapper exposes the two frozen factorial controls and one state-conditional
-composition derived after that factor map became development data:
+The wrapper exposes frozen controls and two structural compositions:
 
 * ``source_max_z``: source maximum absolute z-score;
 * ``least_qualifying_z``: least absolute already-qualified z-score;
 * ``taker_conditional``: source max-z when at least 3 of 4 peer taker ratios
   already align with the proposed reversal, otherwise least-z.
 
-The optional peer-taker filter remains independent of arbitration.  Every state
-join is strict as-of and no outcome, symbol exception or future path is used.
+An independent causal side state can keep both reversal directions or retain
+only short reversals after completed upward jumps. Every metrics join is strict
+as-of and no outcome, symbol exception or future path is used.
 """
 from __future__ import annotations
 
@@ -66,6 +66,23 @@ def arbitration_mode() -> str:
     return mode
 
 
+def side_mode() -> str:
+    mode = os.environ.get("C57_JUMP_SIDE_MODE", "both").strip().lower()
+    if mode not in {"both", "short_only", "long_only"}:
+        raise ValueError(f"unsupported C57_JUMP_SIDE_MODE={mode!r}")
+    return mode
+
+
+def _side_allowed(mode: str, side: int) -> bool:
+    if mode == "both":
+        return True
+    if mode == "short_only":
+        return int(side) < 0
+    if mode == "long_only":
+        return int(side) > 0
+    raise ValueError(mode)
+
+
 def _load_metrics() -> None:
     global _METRICS_PATH, _METRICS, _TIMES
     raw_path = os.environ.get("C57_JUMP_TAKER_METRICS_PATH", "").strip()
@@ -111,10 +128,7 @@ def _asof(symbol: str, ts_event: int) -> dict[str, Any] | None:
     age_ns = int(ts_event) - int(row["ts_event"])
     if age_ns < 0 or age_ns > _MAX_AGE_NS:
         return None
-    return {
-        **row,
-        "age_minutes": age_ns / 60_000_000_000.0,
-    }
+    return {**row, "age_minutes": age_ns / 60_000_000_000.0}
 
 
 def _alignment(side: int, ts_event: int) -> dict[str, Any]:
@@ -180,6 +194,7 @@ def route_universe(
 ) -> tuple[RouteDecision | None, dict[str, RouteDecision]]:
     taker_mode = filter_mode()
     requested_selection_mode = arbitration_mode()
+    requested_side_mode = side_mode()
     source_config = replace(config, jump_selection_mode="source")
     _, raw = _base_route_universe(
         bars_by_symbol=bars_by_symbol,
@@ -212,8 +227,24 @@ def route_universe(
             decisions[symbol] = decision
             continue
 
-        state = _alignment(int(decision.side), int(decision.episode_ts))
         diagnostics = dict(decision.diagnostics or {})
+        diagnostics.update(
+            {
+                "jump_requested_side_mode": requested_side_mode,
+                "jump_boundary_candidate_count": len(actionable_raw),
+                "jump_boundary_candidate_set_json": snapshot_json,
+            }
+        )
+        if not _side_allowed(requested_side_mode, int(decision.side)):
+            decisions[symbol] = _unresolved(
+                symbol,
+                "JUMP_SIDE_REJECTED",
+                int(decision.episode_ts),
+                diagnostics,
+            )
+            continue
+
+        state = _alignment(int(decision.side), int(decision.episode_ts))
         absolute_z = abs(float(diagnostics.get("causal_zscore", 0.0)))
         effective = _effective_arbitration(
             requested_mode=requested_selection_mode,
@@ -232,8 +263,6 @@ def route_universe(
                 "jump_requested_arbitration_mode": requested_selection_mode,
                 "jump_source_score": float(decision.score),
                 "jump_absolute_z": absolute_z,
-                "jump_boundary_candidate_count": len(actionable_raw),
-                "jump_boundary_candidate_set_json": snapshot_json,
             }
         )
         if effective is None:
@@ -313,5 +342,6 @@ __all__ = [
     "UNRESOLVED",
     "arbitration_mode",
     "filter_mode",
+    "side_mode",
     "route_universe",
 ]
