@@ -1,0 +1,82 @@
+name: candidate-55-zaratustra-v15-long-forensics
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v15-long-forensics.yml"
+      - "research/candidate-55/v15_regime_long_forensics.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-zaratustra-v15-long-forensics
+  cancel-in-progress: true
+
+jobs:
+  clean-up-complement-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and verify causal audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+      - name: Run three result-blind clean-up windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=research/candidate-51:research/candidate-55
+          cache=.cache/candidate-55-v15-long-forensics
+          uv run python research/candidate-55/v15_regime_long_forensics.py \
+            --start 2026-04-01 --end 2026-04-30 --cache "$cache" \
+            --output artifacts/candidate-55/zaratustra-v15-long-forensics-2026-04
+          uv run python research/candidate-55/v15_regime_long_forensics.py \
+            --start 2025-02-10 --end 2025-02-16 --cache "$cache" \
+            --output artifacts/candidate-55/zaratustra-v15-long-forensics-2025-02
+          uv run python research/candidate-55/v15_regime_long_forensics.py \
+            --start 2025-09-01 --end 2025-09-14 --cache "$cache" \
+            --output artifacts/candidate-55/zaratustra-v15-long-forensics-2025-09
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roots = sorted(Path("artifacts/candidate-55").glob("zaratustra-v15-long-forensics-*/SUMMARY.json"))
+          rows = [json.loads(path.read_text()) for path in roots]
+          verdict = {
+              "candidate": "candidate-55",
+              "family": "V15_BB_LONG_TREND_QUALITY_FORENSICS",
+              "windows": len(rows),
+              "supported_windows": sum(bool(row["prediction_supported_in_this_window"]) for row in rows),
+              "episodes": sum(int(row["episodes"]) for row in rows),
+              "clean_up_episodes": sum(int(row["clean_up"].get("episodes", 0)) for row in rows),
+              "implementation_warranted": sum(bool(row["prediction_supported_in_this_window"]) for row in rows) >= 2,
+              "results": rows,
+          }
+          Path("artifacts/candidate-55/zaratustra-v15-long-forensics-verdict.json").write_text(
+              json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False) + "\n"
+          )
+          print(json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v15-long-forensics-${{ github.sha }}
+          path: |
+            artifacts/candidate-55/zaratustra-v15-long-forensics-*/SUMMARY.json
+            artifacts/candidate-55/zaratustra-v15-long-forensics-*/episodes.csv
+            artifacts/candidate-55/zaratustra-v15-long-forensics-verdict.json
+          if-no-files-found: warn
+          retention-days: 30
