@@ -1,0 +1,102 @@
+name: candidate-16-v10-liquidation-path-diagnostic
+
+on:
+  push:
+    branches: ["research/candidate-16-v9-liquidation-vwap-basis"]
+    paths:
+      - "research/candidate-16/v10_liquidation_path_diagnostic.py"
+      - ".github/workflows/candidate-16-v10-path-diagnostic.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-16-v10-liquidation-path-diagnostic
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  path-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-16
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-16-v10-path-diagnostic
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify environment and compile diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-16/v9_liquidation_event_study.py \
+            research/candidate-16/v9_tardis_liquidation_study.py \
+            research/candidate-16/v9_tardis_liquidation_study_v2.py \
+            research/candidate-16/v9_tardis_liquidation_study_v3.py \
+            research/candidate-16/v10_liquidation_path_diagnostic.py
+          python -m unittest discover \
+            -s research/candidate-16/tests \
+            -p 'test_v9_tardis_liquidation_study.py' -v
+
+      - name: Persist frozen-event causal paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          python research/candidate-16/v10_liquidation_path_diagnostic.py \
+            --cache .cache/candidate-16-v10-path \
+            --output "$ROOT" \
+            2>&1 | tee "$ROOT/console.log"
+
+      - name: Verify diagnostic evidence contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool "$ROOT/diagnostic.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path(os.environ["ROOT"])
+          diagnostic = json.loads((root / "diagnostic.json").read_text())
+          if diagnostic.get("role") != "development-data path diagnostic; no strategy, fills, PnL, account, or NAV claim":
+              raise SystemExit("diagnostic role drifted")
+          if diagnostic.get("event_contract_reused_unchanged") is not True:
+              raise SystemExit("v9 event contract was not frozen")
+          sample = diagnostic.get("sample_contract", {})
+          if int(sample.get("calendar_days", 0)) != 28 or int(sample.get("symbol_days", 0)) != 112:
+              raise SystemExit("sample contract drifted")
+          if int(diagnostic.get("global_independent_events", 0)) <= 0:
+              raise SystemExit("no independent episodes")
+          if int(diagnostic.get("forced_events", 0)) <= 0:
+              raise SystemExit("no forced-deleveraging episodes")
+          paths = pd.read_csv(root / "paths.csv")
+          required = {
+              "event_id", "t_min", "event_regime", "reversal_return_from_event",
+              "reversal_spot_bar_return", "reversal_taker_imbalance",
+              "reversal_close_vs_event_mid", "perp_basis_contraction_for_reversal",
+              "oi_change_from_event",
+          }
+          if not required.issubset(paths.columns):
+              raise SystemExit(f"missing path columns: {sorted(required - set(paths.columns))}")
+          if not (paths["t_min"] == 0).any() or not (paths["t_min"] > 0).any():
+              raise SystemExit("event-time paths are incomplete")
+          print(json.dumps(diagnostic, indent=2, sort_keys=True))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-16-v10-path-diagnostic-${{ github.sha }}
+          path: artifacts/candidate-16-v10-path-diagnostic/**
+          if-no-files-found: warn
+          retention-days: 90
