@@ -1,4 +1,4 @@
-name: candidate-57-jump-all-candidate-forensic-v1
+name: candidate-57-jump-all-candidate-forensic-v2-implementation-retry
 
 on:
   push:
@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: candidate-57-jump-all-candidate-forensic-v1
+  group: candidate-57-jump-all-candidate-forensic-v2-implementation-retry
   cancel-in-progress: true
 
 jobs:
@@ -45,7 +45,7 @@ jobs:
             research/candidate-51/strategy_jump_transient.py \
             research/candidate-57/jump_episode_forensic_analyze.py
 
-      - name: Install locked project environment
+      - name: Install locked project environment and prove audit contract
         shell: bash
         run: |
           set -euo pipefail
@@ -55,9 +55,12 @@ jobs:
           uv run smc4 doctor
           PYTHONPATH=research/candidate-51 uv run python - <<'PY'
           from strategy import Candidate35Config, Candidate35Strategy
-          assert Candidate35Config().jump_audit_enabled is True
+          fields = set(getattr(Candidate35Config, "__struct_fields__", ()))
+          assert "jump_audit_enabled" in fields, fields
           assert Candidate35Strategy.__name__ == "Candidate35Strategy"
-          print("jump audit imports verified")
+          assert hasattr(Candidate35Strategy, "_audit_boundary")
+          assert hasattr(Candidate35Strategy, "_update_shadow_paths")
+          print("jump all-candidate audit class contract verified")
           PY
 
       - name: Replay fresh short A while observing every source candidate
@@ -65,7 +68,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          mkdir -p .work/candidate-57-jump-all-candidate-forensic-v1-console
+          mkdir -p .work/candidate-57-jump-all-candidate-forensic-v2-console
           set -o pipefail
           PYTHONPATH=research/candidate-51 \
             uv run python research/candidate-57/forensic_sources/jump_transient_v3/run_jump_transient_variant.py \
@@ -73,7 +76,7 @@ jobs:
               --mode transient_be --arm 0.4 --escape 1.0 \
               --start 2025-12-01 --end 2025-12-14 \
               --stage forensic-all-candidates \
-            2>&1 | tee .work/candidate-57-jump-all-candidate-forensic-v1-console/replay.log
+            2>&1 | tee .work/candidate-57-jump-all-candidate-forensic-v2-console/replay.log
           status=${PIPESTATUS[0]}
           echo "status=${status}" >> "$GITHUB_OUTPUT"
           exit 0
@@ -88,7 +91,13 @@ jobs:
           if [[ -d "$source" ]]; then
             uv run python research/candidate-57/jump_episode_forensic_analyze.py \
               --source "$source" --out "$out" \
-              2>&1 | tee .work/candidate-57-jump-all-candidate-forensic-v1-console/analyze.log
+              2>&1 | tee .work/candidate-57-jump-all-candidate-forensic-v2-console/analyze.log
+            cat > "$out"/IMPLEMENTATION_RETRY.txt <<'EOF'
+          The first workflow never entered the replay because its import check
+          instantiated a config that requires instrument IDs.  No market result
+          was observed.  This rerun changes only that implementation check and
+          executes the same frozen all-candidate audit on the same interval.
+          EOF
           else
             mkdir -p "$out"
             printf '{"implementation_failure":"source output missing"}\n' > "$out"/implementation_failure.json
@@ -107,7 +116,7 @@ jobs:
           if [[ -d "$out" ]]; then
             git add -f "$out"
             if ! git diff --cached --quiet; then
-              git commit --no-gpg-sign -m "candidate57: persist all-candidate jump causal episode audit"
+              git commit --no-gpg-sign -m "candidate57: persist repaired all-candidate jump audit"
               for attempt in 1 2 3 4 5; do
                 git fetch origin research/candidate-57
                 git rebase origin/research/candidate-57
@@ -123,10 +132,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-57-jump-all-candidate-forensic-v1-evidence
+          name: candidate-57-jump-all-candidate-forensic-v2-evidence
           path: |
             research/candidate-57/evidence/jump-all-candidate-forensic-v1
-            .work/candidate-57-jump-all-candidate-forensic-v1-console
+            .work/candidate-57-jump-all-candidate-forensic-v2-console
           if-no-files-found: warn
           retention-days: 14
 
