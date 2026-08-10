@@ -1,0 +1,114 @@
+{
+  "status": "DISCARDED_AFTER_LOCKED_SECOND_WEEK_AND_SINGLE_ABLATION",
+  "candidate_family": "candidate-02-v77-quarter-hour-metaorder-wave",
+  "performance_engine": "NautilusTrader 1.230.0",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "baseline": {
+    "selected_rule": {
+      "mode": "METAORDER_WAVE",
+      "accepted_range_minutes": 60,
+      "target_range_multiple": 1.25,
+      "stop_range_multiple": 1.0,
+      "maximum_holding_minutes": 180,
+      "front_side_depth_withdrawal_required": true
+    },
+    "week1": {
+      "start_utc": "2024-09-16T00:00:00Z",
+      "trades": 9,
+      "trades_per_day": 1.2857142857142858,
+      "win_rate": 0.7777777777777778,
+      "profit_factor_after_cost": 3.093027620174296,
+      "geometric_daily_growth_after_cost": 0.01182252780390769,
+      "maximum_mark_to_market_drawdown": -0.05584250523737544,
+      "final_nav_usdt": 108575.14348132,
+      "decision": "PASSED_FIRST_WEEK_PLATEAU"
+    },
+    "week2": {
+      "start_utc": "2024-01-29T00:00:00Z",
+      "trades": 5,
+      "trades_per_day": 0.7142857142857143,
+      "win_rate": 0.4,
+      "profit_factor_after_cost": 0.23185665512598225,
+      "geometric_daily_growth_after_cost": -0.010219578279306196,
+      "maximum_mark_to_market_drawdown": -0.09047397590965289,
+      "final_nav_usdt": 93061.92102968,
+      "decision": "REJECTED_LOCKED_SECOND_WEEK"
+    }
+  },
+  "implementation_errors": [
+    {
+      "error": "The first-week promotion script indexed only v77 config files and could not map the immutable v76 base120 comparison row.",
+      "control_fix": "Added v76_60m_1x_config.json only to the immutable evidence-to-config map and reran the same first-week evidence.",
+      "strategy_variables_changed": false,
+      "outcome": "The 1.25-range targets with 120, 180 and 240 minute holds all passed; the predeclared central 180-minute rule was locked."
+    },
+    {
+      "error": "The first second-week attempt generated 2024-09-16 features while loading 2024-01-29 raw bars because the generic tool shifted ISO strings but not the Python date(...) constructor.",
+      "control_fix": "Materialized the exact locked date constructor and asserted full feature coverage for 2024-01-29 before rerunning the unchanged rule on the same locked week.",
+      "strategy_variables_changed": false,
+      "outcome": "The corrected run produced five real NautilusTrader trades and a negative result; the earlier zero-signal result was excluded."
+    }
+  ],
+  "single_ablation": {
+    "removed_variable": "front_side_depth_withdrawal_requirement",
+    "all_other_variables_unchanged": true,
+    "week1": {
+      "trades": 22,
+      "trades_per_day": 3.142857142857143,
+      "win_rate": 0.6363636363636364,
+      "profit_factor_after_cost": 1.2886076751716387,
+      "geometric_daily_growth_after_cost": 0.006650002443426617,
+      "maximum_mark_to_market_drawdown": -0.10029529623892186,
+      "final_nav_usdt": 104748.90518055
+    },
+    "week2": {
+      "trades": 22,
+      "trades_per_day": 3.142857142857143,
+      "win_rate": 0.22727272727272727,
+      "profit_factor_after_cost": 0.10837945537509011,
+      "geometric_daily_growth_after_cost": -0.05440141413816457,
+      "maximum_mark_to_market_drawdown": -0.33041704340112765,
+      "final_nav_usdt": 67600.15603236
+    },
+    "decision": "NO_STRUCTURAL_PATH_DISCARD_V77"
+  },
+  "failure_analysis": {
+    "primary_failure": "A synchronized quarter-hour perpetual-futures flow burst with persistent same-direction flow was incorrectly generalized as informed and durable price discovery. The same completed state can instead be transient derivative inventory transfer, liquidation, or a locally exhausted execution burst.",
+    "largest_performance_driver": "The week-dependent sign of post-burst expectancy, not the target or holding-time plateau. Week 1 had seven wins from nine trades; the unchanged rule produced only two wins from five trades in the locked second week.",
+    "frequency_issue": "The depth-withdrawal filter reduced baseline week-2 frequency below the day-trading gate, but removing it restored frequency while sharply worsening expectancy and drawdown. Frequency was therefore not recoverable by deleting the filter.",
+    "reward_geometry_issue": "The 1.25-range target and 120-240 minute holding plateau was robust inside week 1, but did not transfer to week 2 because the directional state itself changed; exit geometry was not the root cause.",
+    "why_no_more_parameter_search": "The one permitted core-variable ablation failed in both weeks and made the second week materially worse. Further threshold fitting would optimize a failed state definition rather than repair a causal mechanism."
+  },
+  "valid_components": [
+    {
+      "component": "quarter_hour_first_ten_second_flow_burst",
+      "why_useful": "It created a repeatable, causally observable event clock with enough raw opportunities for day trading."
+    },
+    {
+      "component": "front_side_depth_withdrawal",
+      "why_useful": "It materially improved week-1 selectivity, profit factor and drawdown. It should be retained as a liquidity-resilience quality feature, not treated as proof of direction."
+    },
+    {
+      "component": "accepted_range_target_and_inventory_horizon",
+      "why_useful": "A 1.25 accepted-range target was stable across 120, 180 and 240 minute holds in week 1, indicating coherent reward geometry after a genuinely durable impulse."
+    }
+  ],
+  "next_hypothesis_requirements": [
+    "Classify whether the impulse contains common spot-perpetual information or only derivative-specific pressure before assigning continuation direction.",
+    "Measure retained versus decayed impact after the opening burst, rather than inferring permanence from persistent aggressive flow alone.",
+    "Use depth withdrawal as a conditional quality feature and not as the causal source of direction.",
+    "Keep permanent price discovery and transient overshoot as mutually exclusive scenarios with an explicit ambiguous no-trade state.",
+    "Preserve the same NautilusTrader execution, 3% NAV risk, cost model and sequential unseen-week gates."
+  ],
+  "evidence": {
+    "first_week_decision": "research/candidate-02/v77_first_week_decision.json",
+    "second_week_lock": "research/candidate-02/v77_week2_lock.json",
+    "second_week_decision": "research/candidate-02/v77_week2_decision.json",
+    "ablation_lock": "research/candidate-02/v77_front_depth_ablation_lock.json",
+    "ablation_run_id": 31093713209,
+    "ablation_artifact_id": 8964558033
+  },
+  "third_week_or_long_evaluation_permitted": false
+}

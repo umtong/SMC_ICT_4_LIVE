@@ -1,0 +1,56 @@
+{
+  "candidate": "candidate-02-v68-failed-replenishment-price-discovery",
+  "status": "LOCKED_SINGLE_STATE_TRANSITION_CONTROL_BEFORE_NAUTILUSTRADER_RUN",
+  "locked_utc": "2026-08-06T05:50:00Z",
+  "engine": "NautilusTrader 1.230.0 only",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "parent": {
+    "candidate": "candidate-02-v66-depth-replenishment-absorption",
+    "workflow_run_id": 31074428818,
+    "week": "2024-10-28",
+    "scheduled_signals": 7,
+    "trades": 7,
+    "trades_per_day": 1.0,
+    "win_rate": 0.14285714285714285,
+    "profit_factor_after_cost": 0.224,
+    "geometric_daily_growth_after_cost": -0.02079,
+    "maximum_mark_to_market_drawdown": 0.1367,
+    "diagnosis": "passive replenishment and inefficient price impact generated sufficient events, but the first reclaim was not a reliable immediate reversal trigger"
+  },
+  "unchanged_setup": [
+    "completed three-minute aggressive-flow imbalance above its prior rolling quantile",
+    "above-median completed three-minute quote turnover",
+    "inefficient price response relative to aggressive flow",
+    "same-side one-percent depth replenishment above its prior rolling quantile",
+    "sweep of a frozen prior 30-minute auction boundary",
+    "first completed one-minute reclaim back inside that boundary",
+    "all feature thresholds, costs, 3% current-NAV risk and global single-position rule"
+  ],
+  "single_state_transition_change": {
+    "before": "enter opposite the aggressive flow immediately after the first completed boundary reclaim",
+    "after": "wait up to 30 minutes for a completed close through the original impact extreme plus 0.05 ATR, proving that replenished passive liquidity was consumed, then enter with the original aggressive flow",
+    "economic_reason": "failed absorption is not inferred from the reclaim alone; continuation is released only after the replenishing liquidity and original extreme are causally consumed"
+  },
+  "entry": "next NautilusTrader one-minute bar after the failed-absorption confirmation close",
+  "invalidation": "0.15 ATR back inside the frozen original boundary",
+  "target": "one full frozen 30-minute auction-range extension beyond the original boundary",
+  "maximum_holding_minutes": 120,
+  "minimum_cost_after_reward_risk": 0.8,
+  "development_week": "2024-10-28",
+  "promotion_rule": "The unchanged v68 rule must satisfy every gate on this revealed development week before it may be prospectively locked to a newly selected and uncollected BTC week. Failure ends the replenishment family without target, window or threshold tuning.",
+  "pass_criteria": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor_after_cost": 1.50,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25
+  },
+  "locked_files": [
+    "research/candidate-02/v68_failed_absorption_core.py",
+    "research/candidate-02/v68_nt_backtest.py",
+    "research/candidate-02/v68_development_config.json",
+    "research/candidate-02/v68_control_lock.json"
+  ]
+}

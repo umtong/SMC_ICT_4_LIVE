@@ -1,0 +1,100 @@
+name: candidate-02-v65-nautilustrader-control-r2
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths: [".github/workflows/candidate-02-v65-control-r2.yml"]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Features
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e
+          path: inputs/base
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31036754667"
+      - name: Week A raw
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v55-first-week-500bd78d3ac6e6586482fa4dc76196ccd4e40532
+          path: inputs/a-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31066652588"
+      - name: Week B raw
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v58-second-week-e9025707a88c0cc1a0b312e72236468b82f33b6e
+          path: inputs/b-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31067990119"
+      - name: Materialize inputs and verify lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          for label in a b; do
+            root="inputs/${label}/candidate-02-v48-first-week"
+            raw="inputs/${label}/.cache/candidate-02/v65-${label}/binance_1m"
+            mkdir -p "$root" "$raw"
+            find inputs/base -name v48_features.npz -type f -exec cp '{}' "$root/v48_features.npz" \;
+            find inputs/base -name columns.json -type f -exec cp '{}' "$root/columns.json" \;
+            find "inputs/${label}-source" -path '*/binance_1m/*.zip' -type f -exec cp '{}' "$raw/" \;
+            test -f "$root/v48_features.npz"
+            test -f "$root/columns.json"
+            test "$(find "$raw" -name '*.zip' | wc -l)" -eq 10
+          done
+          python -m py_compile research/candidate-02/v57_nt_core.py research/candidate-02/v57_nt_backtest.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          assert json.loads(Path("research/candidate-02/v65_impact_decay_lock.json").read_text())["custom_backtest_engine"] is False
+          for label, week in (("a","2024-11-18"),("b","2024-12-16")):
+              c=json.loads(Path(f"research/candidate-02/v65_week_{label}_config.json").read_text())
+              assert c["validation"]["first_week_start"] == week
+              assert c["scenario"]["target_impulse_multiple"] == 1.0
+              assert c["scenario"]["maximum_holding_minutes"] == 90
+              assert float(c["risk"]["risk_fraction"]) == 0.03
+          PY
+      - name: Run two revealed weeks through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          for label in a b; do
+            output="artifacts/candidate-02-v65-week-${label}"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v57_nt_backtest.py --config "research/candidate-02/v65_week_${label}_config.json" --input-root "inputs/${label}" --output "$output" | tee "artifacts-v65-${label}.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != 0 && "$status" != 2 ]]; then exit "$status"; fi
+          done
+      - name: Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v65-control-r2-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v65-week-a
+            artifacts/candidate-02-v65-week-b
+            artifacts-v65-a.log
+            artifacts-v65-b.log
+          retention-days: 30

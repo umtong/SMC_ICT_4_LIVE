@@ -1,0 +1,105 @@
+{
+  "candidate": "candidate-02-frozen-auction-acceptance-rejection-v55",
+  "status": "LOCKED_BEFORE_FIRST_WEEK_RAW_DATA_COLLECTION",
+  "engine": "NautilusTrader 1.230.0 only",
+  "risk_fraction": 0.03,
+  "research_basis": {
+    "microstructure": [
+      "Short-horizon price changes are driven more directly by order-flow imbalance relative to available depth than by trade volume alone.",
+      "Queue and depth imbalance contain directional information, while deeper book shape and resiliency matter beyond the top level.",
+      "Short-run reversals can compensate liquidity provision, but unexpected shocks can withdraw passive liquidity and create price-discovery gaps."
+    ],
+    "project_failure_lessons": [
+      "A rolling auction center contaminated by the excursion can report artificial mean reversion.",
+      "A small move toward value is not a completed rejection.",
+      "Forcing every excursion into a reversal ignores accepted price discovery.",
+      "The source dealing range, its boundary, the excursion and the classification window must be frozen and stateful."
+    ]
+  },
+  "first_week_selection": {
+    "seed": 2026080655,
+    "method": "Python random.Random(seed).choice over chronologically sorted eligible UTC Mondays",
+    "eligible_start": "2024-10-07",
+    "eligible_end": "2025-02-24",
+    "excluded_previously_used_weeks": [
+      "2024-11-04",
+      "2024-12-23",
+      "2024-12-30",
+      "2025-02-10",
+      "2025-02-17",
+      "2025-02-24",
+      "2025-03-03"
+    ],
+    "eligible_weeks": [
+      "2024-10-07",
+      "2024-10-14",
+      "2024-10-21",
+      "2024-10-28",
+      "2024-11-11",
+      "2024-11-18",
+      "2024-11-25",
+      "2024-12-02",
+      "2024-12-09",
+      "2024-12-16",
+      "2025-01-06",
+      "2025-01-13",
+      "2025-01-20",
+      "2025-01-27",
+      "2025-02-03"
+    ],
+    "selected_first_week": "2024-11-18"
+  },
+  "state_machine": {
+    "formation": {
+      "completed_bars": 12,
+      "bar_interval_minutes": 5,
+      "range_is_frozen_before_excursion": true,
+      "maximum_directional_efficiency_prior_quantile": 0.45,
+      "maximum_vpin_prior_quantile": 0.55,
+      "maximum_absolute_oi_change_prior_quantile": 0.70
+    },
+    "liquidity_event": {
+      "minimum_boundary_excursion_atr": 0.10,
+      "required_outward_taker_flow": 0.0,
+      "maximum_classification_bars": 3,
+      "ambiguous_two_sided_excursion": "reject"
+    },
+    "rejection_branch": {
+      "definition": "completed close at least 0.25 ATR back inside the frozen boundary before two accepted outside closes",
+      "required_passive_depth_toward_range": 0.0,
+      "required_aggressive_flow_toward_range": -0.10,
+      "direction": "opposite the excursion",
+      "invalidation": "excursion extreme plus 0.15 ATR",
+      "target": "opposite frozen auction boundary",
+      "maximum_holding_minutes": 180
+    },
+    "acceptance_branch": {
+      "definition": "two consecutive completed closes outside the frozen boundary",
+      "required_outward_taker_flow": 0.0,
+      "required_outward_depth": -0.10,
+      "direction": "with the excursion",
+      "invalidation": "0.15 ATR back inside the frozen boundary",
+      "target": "0.75 frozen-range extension beyond the boundary",
+      "maximum_holding_minutes": 120
+    },
+    "cooldown_bars_after_decision": 6,
+    "minimum_cost_after_reward_risk": 1.0,
+    "maximum_cost_after_reward_risk": 5.0
+  },
+  "execution": {
+    "decision_data": "completed five-minute bars and previously observed features only",
+    "entry": "next executable one-minute NautilusTrader bar after decision",
+    "orders": "NautilusTrader bracket order list",
+    "positions_and_nav": "NautilusTrader account and portfolio",
+    "custom_backtest_engine": false
+  },
+  "promotion": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor_after_cost": 1.50,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25,
+    "rule": "Only a passing first-week NautilusTrader result may reveal a second week."
+  },
+  "raw_first_week_data_collected_before_this_lock": false
+}

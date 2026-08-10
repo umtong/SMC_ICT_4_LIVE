@@ -1,0 +1,54 @@
+name: candidate-02-v103-nautilustrader-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v103-first.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  first-week-endogenous-flow-clock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run locked v103 first-week research through NautilusTrader
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-02/v103_first_week_driver.py
+
+      - name: Preserve direct data, manifests and NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v103-first-week-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v103-*
+            artifacts-v103-*.log
+            artifacts-v103-baseline-decision.json
+            artifacts-v103-first-week-decision.json
+            artifacts-v103-variant-manifest.json
+            inputs/v103-first-week/artifacts
+            inputs/v103-first-week/candidate-02-v48-first-week
+            inputs/v103-first-week/.cache/candidate-02/v103-first-week/binance_1m
+            inputs/v103-first-week/direct
+            inputs/v103-first-week/spot
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30

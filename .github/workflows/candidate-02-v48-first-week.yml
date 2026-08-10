@@ -1,0 +1,35 @@
+name: candidate-02-v48-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-adaptive/collect_v48_first_week.py"
+      - ".github/workflows/candidate-02-v48-first-week.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install locked data dependencies
+        run: python -m pip install --disable-pip-version-check "huggingface_hub>=0.30,<2" "pandas>=2.2,<4" "pyarrow>=18,<26" "numpy>=2,<3"
+      - name: Collect locked v48 historical training and first-week test data
+        env:
+          HF_HUB_DISABLE_XET: "1"
+        run: python .candidate-02-adaptive/collect_v48_first_week.py
+      - name: Upload immutable v48 first-week matrix and raw prices
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v48-first-week-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v48-first-week
+            .cache/candidate-02/v48-first-week/binance_1m
+          retention-days: 14

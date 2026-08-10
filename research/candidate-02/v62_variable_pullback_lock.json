@@ -1,0 +1,50 @@
+{
+  "candidate": "candidate-02-v62-variable-duration-trend-pullback",
+  "status": "LOCKED_BEFORE_NAUTILUSTRADER_PERFORMANCE_RUN",
+  "engine": "NautilusTrader 1.230.0 only",
+  "risk_fraction": 0.03,
+  "parent": {
+    "candidate": "candidate-02-v61-trend-pullback-reacceleration",
+    "workflow_run_id": 31069904281,
+    "trades": 3,
+    "trades_per_day": 0.42857142857142855,
+    "win_rate": 0.6666666666666666,
+    "profit_factor_after_cost": 2.5752444536509036,
+    "geometric_daily_growth_after_cost": 0.007030245160003723,
+    "maximum_mark_to_market_drawdown": -0.04954424161093518,
+    "failed_checks": [
+      "minimum_trades_per_day",
+      "minimum_geometric_daily_growth"
+    ]
+  },
+  "diagnosis": {
+    "classification": "valid directional mechanism with an artificially fixed pullback duration",
+    "reason": "a trader observes a completed pullback state, not exactly one fixed fifteen-minute return; valid countertrend retracements in the same one-hour price-discovery state lasted between ten and thirty minutes",
+    "pre_execution_opportunity_check": {
+      "fixed_15_minute_eligible_events_before_geometry": 6,
+      "variable_10_to_30_minute_first_reacceleration_events_before_geometry": 8,
+      "performance_source_of_truth": "NautilusTrader only"
+    }
+  },
+  "controlled_revision": {
+    "before": "one fixed fifteen-minute pullback",
+    "after": "completed pullback horizons of 10, 15, 20, 25 or 30 minutes; select the deepest valid countertrend pullback and require the immediately previous five-minute bar to remain countertrend or stalled before the first reacceleration bar",
+    "selection_uses_future_information": false
+  },
+  "unchanged": {
+    "one_hour_trend_threshold_prior_quantile": 0.60,
+    "pullback_depth_fraction_range": [0.20, 0.60],
+    "reacceleration_flow_min": 0.0,
+    "reacceleration_depth_min": -0.10,
+    "open_interest_change_min": 0.0,
+    "vpin_max_prior_quantile": 0.70,
+    "stop": "beyond selected pullback extreme plus 0.15 ATR",
+    "target": "prior one-hour external liquidity plus 0.50 selected-pullback extension",
+    "maximum_holding_minutes": 180,
+    "cost_model": "unchanged",
+    "pass_criteria": "unchanged",
+    "risk_fraction": 0.03
+  },
+  "promotion_rule": "If the revealed first week passes every criterion, freeze the candidate and prospectively select a fresh second BTC week. Otherwise discard without further pullback-duration tuning.",
+  "custom_backtest_engine": false
+}

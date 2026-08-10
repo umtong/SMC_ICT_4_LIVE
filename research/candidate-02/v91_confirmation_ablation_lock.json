@@ -1,0 +1,43 @@
+{
+  "status": "LOCKED_SINGLE_ABLATION_ON_REVEALED_V91_FIRST_WEEK",
+  "candidate_family": "candidate-02-v91-cross-market-fair-value-catch-up",
+  "performance_engine": "NautilusTrader 1.230.0",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "revealed_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2025-12-15T00:00:00Z",
+    "end_utc": "2025-12-22T00:00:00Z"
+  },
+  "single_ablation": {
+    "removed_core_variable": "confirmation_minute",
+    "implementation": "The signal becomes available at the completed event minute close instead of waiting one additional completed minute. Event thresholds, leader-laggard classification, pre-event-basis fair-value target, event-extreme invalidation, holding time, costs, risk and all state directions remain unchanged.",
+    "why_this_variable": "The original funnel retained relative-value events before confirmation but produced no cost-valid trade afterward. Removing the confirmation minute directly tests whether delayed confirmation consumed the observable fair-value gap.",
+    "single_ablation_only": true
+  },
+  "unchanged_variables": [
+    "spot and perpetual event-return thresholds",
+    "spot and perpetual turnover thresholds",
+    "event aggressive-flow alignment",
+    "spot-led perpetual participation ceiling",
+    "spot-led basis-lag share",
+    "perpetual-overshoot spot-participation ceiling",
+    "perpetual-overshoot basis-share floor",
+    "pre-event observed basis",
+    "spot-implied perpetual fair-value target",
+    "event-window extreme invalidation plus 0.10 ATR",
+    "60-minute maximum holding time",
+    "fees, slippage, market impact and funding allowance",
+    "3% current-NAV planned loss budget"
+  ],
+  "event_windows_minutes": [1, 2, 3],
+  "weekly_gate": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor_after_cost": 1.50,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25
+  },
+  "decision_rule": "A structural path exists only if the central two-minute portfolio and at least one adjacent one- or three-minute portfolio pass every original weekly gate. Otherwise discard v91; the diagnostic cannot itself be promoted as blind evidence."
+}

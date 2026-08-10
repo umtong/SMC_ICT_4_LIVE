@@ -1,0 +1,216 @@
+name: candidate-02-v90-nautilustrader-first-week-r2
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-v90/prepare_depthless_tools.py"
+      - ".github/workflows/candidate-02-v90-first-r2.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  same-week-controlled-fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify unchanged v90 lock and controlled data-source fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v90_common_failed_auction_core.py \
+            research/candidate-02/v90_nt_backtest.py \
+            .candidate-02-v90/prepare_depthless_tools.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v90_common_failed_auction_lock.json').read_text())
+          assert lock['status']=='LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['first_week']['start_utc']=='2022-02-14T00:00:00Z'
+          assert lock['first_week']['raw_data_status_at_lock']=='NOT_COLLECTED_FOR_V90'
+          assert float(lock['risk_fraction'])==0.03
+          assert lock['custom_backtest_engine'] is False
+          for path in sorted(Path('research/candidate-02').glob('v90_*_config.json')):
+              cfg=json.loads(path.read_text())
+              assert cfg['validation']['first_week_start']=='2022-02-14'
+              assert float(cfg['risk']['risk_fraction'])==0.03
+              assert cfg['risk']['maximum_notional_cap'] is None
+              assert cfg['risk']['score_risk_multiplier'] is None
+          PY
+
+      - name: Materialize exact locked-week futures tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v90-futures-tools inputs/v90-first-week
+          cp -a .candidate-02-v75 /tmp/v90-futures-tools
+          python - <<'PY'
+          from datetime import date
+          import json,re
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v90_common_failed_auction_lock.json').read_text())
+          start=date.fromisoformat(lock['first_week']['start_utc'][:10])
+          constructor=re.compile(r'EVALUATION_START\s*=\s*date\(\s*\d{4}\s*,\s*\d{1,2}\s*,\s*\d{1,2}\s*\)')
+          count=0
+          for path in Path('/tmp/v90-futures-tools').rglob('*'):
+              if not path.is_file() or path.suffix not in {'.py','.json','.md'}:
+                  continue
+              text=path.read_text(encoding='utf-8',errors='strict')
+              text=text.replace('inputs/v75-first-week','inputs/v90-first-week')
+              text=text.replace('candidate-02-v75-first-week','candidate-02-v90-first-week')
+              text=text.replace('v75-first-week','v90-first-week')
+              if path.name.startswith('collect') and path.suffix=='.py':
+                  text,n=constructor.subn(f'EVALUATION_START = date({start.year}, {start.month}, {start.day})',text)
+                  count+=n
+              path.write_text(text,encoding='utf-8')
+          if count!=1:
+              raise RuntimeError(f'expected one locked date constructor, found {count}')
+          PY
+          python .candidate-02-v90/prepare_depthless_tools.py /tmp/v90-futures-tools
+          python -m py_compile /tmp/v90-futures-tools/collect_first_week.py /tmp/v90-futures-tools/build_features.py
+
+      - name: Collect futures aggTrades and klines then build causal features
+        shell: bash
+        run: |
+          set -euo pipefail
+          python /tmp/v90-futures-tools/collect_first_week.py
+          python /tmp/v90-futures-tools/build_features.py
+          test -f inputs/v90-first-week/candidate-02-v48-first-week/v48_features.npz
+          test -f inputs/v90-first-week/candidate-02-v48-first-week/columns.json
+          test "$(find inputs/v90-first-week/direct/aggTrades -name '*.zip' | wc -l)" -eq 10
+          test "$(find inputs/v90-first-week/.cache/candidate-02/v90-first-week/binance_1m -name '*.zip' | wc -l)" -eq 10
+          test ! -d inputs/v90-first-week/direct/bookDepth
+          mkdir -p inputs/v90-first-week/artifacts/candidate-02-v90-first-week-data
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          policy={
+              'status':'EXPLICIT_NEUTRAL_MISSING_SOURCE',
+              'unavailable_source':'Binance Vision USD-M daily bookDepth for 2022-02-14 week',
+              'observed_error':'HTTP 404 before any strategy execution',
+              'neutral_columns':[
+                  'bid_depth_1pct_first','bid_depth_1pct_end','bid_depth_1pct_mean',
+                  'ask_depth_1pct_first','ask_depth_1pct_end','ask_depth_1pct_mean',
+                  'book_snapshot_count','bid_depth_change_1m','ask_depth_change_1m','book_imbalance_end'
+              ],
+              'strategy_effect':'v90 does not gate any signal on depth; front_depth_change only multiplies the score, and v90 emits one mutually exclusive state per timestamp, so neutralization cannot add, remove or redirect a signal.',
+              'performance_engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+          }
+          Path('inputs/v90-first-week/artifacts/candidate-02-v90-first-week-data/book_depth_policy.json').write_text(json.dumps(policy,indent=2,sort_keys=True))
+          PY
+
+      - name: Collect locked spot data and augment the completed-minute matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .candidate-02-v89/collect_spot.py /tmp/v90_collect_spot.py
+          cp .candidate-02-v89/augment_cross_market.py /tmp/v90_augment_cross_market.py
+          python - <<'PY'
+          from pathlib import Path
+          replacements={
+              'research/candidate-02/v89_cross_market_impact_lock.json':'research/candidate-02/v90_common_failed_auction_lock.json',
+              'inputs/v89-first-week':'inputs/v90-first-week',
+              'candidate-02-v89-first-week':'candidate-02-v90-first-week',
+              'v89 first-week':'v90 first-week',
+              'for v89':'for v90',
+          }
+          for name in ('/tmp/v90_collect_spot.py','/tmp/v90_augment_cross_market.py'):
+              path=Path(name); text=path.read_text()
+              for old,new in replacements.items(): text=text.replace(old,new)
+              path.write_text(text)
+          PY
+          python /tmp/v90_collect_spot.py
+          python /tmp/v90_augment_cross_market.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          from v53_nt_core import load_feature_matrix
+          lock=json.loads(Path('research/candidate-02/v90_common_failed_auction_lock.json').read_text())
+          start=pd.Timestamp(lock['first_week']['start_utc']); end=pd.Timestamp(lock['first_week']['end_utc'])
+          features=load_feature_matrix(
+              Path('inputs/v90-first-week/candidate-02-v48-first-week/v48_features.npz'),
+              Path('inputs/v90-first-week/candidate-02-v48-first-week/columns.json'))
+          required={'spot_open','spot_close','spot_signed_flow_ratio_1m','spot_qh_opening_10s_flow_ratio','spot_qh_full_minute_return','perp_spot_log_basis','perp_spot_basis_change_1m','front_depth_change'}
+          missing=sorted(required-set(features.columns))
+          if missing: raise RuntimeError(f'missing required features: {missing}')
+          evaluation=features.loc[(features.index>=start)&(features.index<end)]
+          if len(evaluation)<7*24*60*0.995: raise RuntimeError(f'feature coverage mismatch: {len(evaluation)}')
+          if (features['front_depth_change'].fillna(0.0)!=0.0).any(): raise RuntimeError('neutral depth policy was not preserved')
+          PY
+
+      - name: Run all prelocked states and horizons in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          labels=(portfolio15 portfolio30 portfolio60 persistent30 reversal30)
+          configs=(v90_portfolio_15m_config.json v90_portfolio_30m_config.json v90_portfolio_60m_config.json v90_persistent30_config.json v90_reversal30_config.json)
+          for i in "${!labels[@]}"; do
+            label="${labels[$i]}"; config="${configs[$i]}"
+            output="artifacts/candidate-02-v90-${label}"; mkdir -p "$output"
+            set +e
+            python research/candidate-02/v90_nt_backtest.py --config "research/candidate-02/${config}" --input-root inputs/v90-first-week --output "$output" | tee "artifacts-v90-${label}.log"
+            status=${PIPESTATUS[0]}; set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish prospective first-week matrix
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          labels=('portfolio15','portfolio30','portfolio60','persistent30','reversal30'); rows={}
+          print('# Candidate-02 v90 common failed auction — controlled same-week rerun')
+          print('| Variant | Decision | Signals | Trades/day | Win | PF | Growth/day | MDD |')
+          print('|---|---:|---:|---:|---:|---:|---:|---:|')
+          def passed(m):
+              return m.get('trades_per_day',0)>=.75 and m.get('win_rate',0)>=.5 and m.get('profit_factor_after_cost',0)>=1.5 and m.get('geometric_daily_growth_after_cost',-1)>=.01 and abs(m.get('maximum_mark_to_market_drawdown',-1))<=.25 and m.get('engine','').startswith('NautilusTrader') and m.get('custom_backtest_engine') is False and abs(m.get('risk_fraction',0)-.03)<=1e-12
+          for label in labels:
+              path=Path(f'artifacts/candidate-02-v90-{label}/metrics.json')
+              if not path.exists(): rows[label]={'status':'IMPLEMENTATION_ERROR'}; print(f'| {label} | implementation error | - | - | - | - | - | - |'); continue
+              m=json.loads(path.read_text()); rows[label]=m
+              print(f"| {label} | {m['decision']} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          plateau=isinstance(rows.get('portfolio30'),dict) and passed(rows['portfolio30']) and any(isinstance(rows.get(x),dict) and passed(rows[x]) for x in ('portfolio15','portfolio60'))
+          components={}
+          for label in ('persistent30','reversal30'):
+              m=rows.get(label,{}); trades=int(m.get('trades',0)) if isinstance(m,dict) else 0
+              components[label]={'trades':trades,'nonnegative_if_active':trades<2 or (m.get('profit_factor_after_cost',0)>=1 and m.get('geometric_daily_growth_after_cost',-1)>=0)}
+          decision={'status':'FIRST_WEEK_PROMOTION_ELIGIBLE' if plateau and all(v['nonnegative_if_active'] for v in components.values()) else 'FIRST_WEEK_REJECT_OR_REDESIGN','portfolio_plateau':plateau,'component_checks':components,'rows':rows,'implementation_fix':'neutralize unavailable non-gating bookDepth fields','risk_fraction':.03,'performance_engine':'NautilusTrader 1.230.0','custom_backtest_engine':False}
+          Path('artifacts-v90-first-week-decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+
+      - name: Preserve corrected direct data and NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v90-first-week-r2-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v90-*
+            artifacts-v90-*.log
+            artifacts-v90-first-week-decision.json
+            inputs/v90-first-week/artifacts
+            inputs/v90-first-week/candidate-02-v48-first-week
+            inputs/v90-first-week/.cache/candidate-02/v90-first-week/binance_1m
+            inputs/v90-first-week/spot
+          if-no-files-found: warn
+          retention-days: 30

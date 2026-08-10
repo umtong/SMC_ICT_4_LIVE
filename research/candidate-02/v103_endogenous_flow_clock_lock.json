@@ -1,0 +1,83 @@
+{
+  "candidate_family": "candidate-02-v103-endogenous-turnover-clock-order-flow-regimes",
+  "custom_backtest_engine": false,
+  "first_week": {
+    "eligible_universe": "all Mondays from 2024-01-01 through 2025-12-29 excluding candidate-02 weeks already used or publicly opened",
+    "end_utc": "2025-11-24T00:00:00Z",
+    "raw_data_status_at_lock": "NOT_COLLECTED_FOR_V103",
+    "selection_method": "Python random.Random(seed).choice over chronologically sorted eligible Mondays",
+    "selection_seed": 20260807103,
+    "start_utc": "2025-11-17T00:00:00Z",
+    "symbol": "BTCUSDT"
+  },
+  "global_pending_entry_plus_position_limit": 1,
+  "locked_hypothesis": {
+    "absorbed_exhaustion": "same-direction aggressive flow persists while price impact decays, the first packet midpoint is reclaimed and spot or basis fails to confirm",
+    "ambiguous_state": "no trade",
+    "continuation_invalidation": "the second packet adverse extreme plus 0.10 lagged ATR",
+    "continuation_objective": "1.25 times the completed first-packet displacement from the observed entry",
+    "event_clock": "non-overlapping packets close when completed aggressive quote turnover reaches a multiple of the lagged prior-24-hour median one-minute turnover",
+    "regime_seed": "a first packet must have unusually persistent signed flow, an aligned price move and high path efficiency relative only to prior packets",
+    "retained_discovery": "a second same-direction packet continues price impact, basis-adjusted spot confirms, basis expansion does not dominate and front-side depth does not materially refill",
+    "reversal_invalidation": "the combined two-packet extreme plus 0.10 lagged ATR",
+    "reversal_objective": "the completed first-packet origin",
+    "target_selection_rule": "never skip a nearer causal objective merely to raise reward/risk"
+  },
+  "performance_engine": "NautilusTrader 1.230.0",
+  "promotion_rule": "central u8 and at least one adjacent u6/u10 must pass every original weekly gate; any component with at least two trades must have nonnegative after-cost expectancy; otherwise execute exactly one predeclared core ablation on the same week",
+  "research_basis": [
+    {
+      "implication": "information time should be defined by market activity rather than fixed wall-clock intervals",
+      "reference": "Ane and Geman (2000), Order Flow, Transaction Clock, and Normality of Asset Returns"
+    },
+    {
+      "implication": "persistent order flow arises from split large orders and price-impact behavior changes by flow regime",
+      "reference": "Tsaknaki, Lillo and Mazzarisi (2025), Online learning of order flow and market impact with Bayesian change-point detection"
+    },
+    {
+      "implication": "impact permanence separates informed flow from temporary execution pressure",
+      "reference": "Donier and Bonart, A million metaorder analysis of Bitcoin"
+    },
+    {
+      "implication": "displacement and imbalance are confirmations inside a scenario, not standalone entry patterns",
+      "reference": "ICT 2022 mentorship material on displacement, imbalance and dealing ranges"
+    }
+  ],
+  "risk_fraction": 0.03,
+  "single_ablation": {
+    "implementation": "set maximum_front_depth_refill to 1000.0 while all event-clock, impact, spot, basis, entry, stop, objective, cost and risk variables remain unchanged",
+    "reason": "depth refill is a conditional quality feature inherited from v77 and must not be allowed to hide a viable endogenous-clock event rate",
+    "removed_variable": "maximum_front_depth_refill"
+  },
+  "source_git_blob_sha": {
+    "base_config": "c64d2fdbf50d1d08eba2b6ab2ed8a6c3e6d38959",
+    "core": "ece6aa6bb7bd3e8667f52b4d2669607c4c6fab0e"
+  },
+  "status": "LOCKED_BEFORE_FIRST_WEEK_COLLECTION",
+  "variant_matrix": {
+    "adjacent": [
+      {
+        "mode": "PORTFOLIO",
+        "packet_turnover_units": 6.0
+      },
+      {
+        "mode": "PORTFOLIO",
+        "packet_turnover_units": 10.0
+      }
+    ],
+    "central": {
+      "mode": "PORTFOLIO",
+      "packet_turnover_units": 8.0
+    },
+    "components": [
+      {
+        "mode": "RETAINED_DISCOVERY",
+        "packet_turnover_units": 8.0
+      },
+      {
+        "mode": "ABSORBED_EXHAUSTION",
+        "packet_turnover_units": 8.0
+      }
+    ]
+  }
+}

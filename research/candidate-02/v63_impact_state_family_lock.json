@@ -1,0 +1,73 @@
+{
+  "candidate_family": "candidate-02-v63-order-flow-impact-and-boundary-state",
+  "status": "LOCKED_BEFORE_FIRST_WEEK_RAW_DATA_COLLECTION",
+  "locked_utc": "2026-08-06T04:46:00Z",
+  "performance_engine": "NautilusTrader 1.230.0 via existing candidate-02 v53 run_window path",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "first_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2025-02-03T00:00:00Z",
+    "end_utc": "2025-02-10T00:00:00Z",
+    "selection_seed": 2026080663,
+    "selection_method": "deterministic shuffle of eligible Monday weeks within the already locked feature coverage after excluding all previously revealed candidate-02 weeks",
+    "raw_data_status_at_lock": "NOT_COLLECTED_FOR_V63"
+  },
+  "causal_question": "When persistent aggressive order flow reaches an external auction boundary, did it create accepted price discovery, become absorbed while new inventory accumulated, or exhaust forced liquidation inventory?",
+  "state_machine": [
+    "freeze the prior completed 60-minute auction before the impact window",
+    "measure the completed 15-minute aggressive-flow direction, price response and impact efficiency",
+    "classify inventory from causal OI change and toxicity from causal VPIN",
+    "require an external frozen-boundary sweep or close acceptance",
+    "wait for the first completed one-minute boundary reclaim or hold/retest",
+    "submit a NautilusTrader bracket on the next one-minute bar",
+    "invalidate beyond the observed sweep or back inside the accepted boundary",
+    "target the opposite frozen boundary for rotations or a measured auction extension for accepted discovery"
+  ],
+  "mutually_exclusive_modes": [
+    {
+      "mode": "ABSORBED_NEW_POSITION_ROTATION",
+      "cause": "aggressive flow and rising OI produce inefficient price impact at an external boundary, indicating passive absorption of new positions",
+      "direction": "opposite the failed impact after the first causal one-minute reclaim",
+      "target": "opposite side of the frozen prior auction"
+    },
+    {
+      "mode": "LIQUIDATION_EXHAUSTION_ROTATION",
+      "cause": "toxic aggressive flow and material OI decline sweep an external boundary, indicating forced inventory liquidation that can exhaust",
+      "direction": "opposite the liquidation impulse after the first causal one-minute reclaim",
+      "target": "opposite side of the frozen prior auction"
+    },
+    {
+      "mode": "ACCEPTED_FLOW_PRICE_DISCOVERY",
+      "cause": "aggressive flow, rising OI and efficient price impact close beyond a frozen boundary without extreme toxicity",
+      "direction": "with the accepted impact after the first causal one-minute boundary hold/retest",
+      "target": "one-half frozen auction-range extension"
+    }
+  ],
+  "fixed_cost_model": {
+    "entry_fee_rate": 0.0005,
+    "target_fee_rate": 0.0002,
+    "stop_fee_rate": 0.0005,
+    "entry_slippage_rate": 0.00015,
+    "stop_slippage_rate": 0.00025,
+    "market_impact_rate": 0.00005,
+    "funding_rate_allowance": 0.0001
+  },
+  "first_week_gate": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.5,
+    "minimum_profit_factor_after_cost": 1.5,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25
+  },
+  "promotion_rule": "Only a mode satisfying every first-week gate may be frozen unchanged before a fresh second BTC week is selected and collected. A mode failing because of sparse signals, negative direction quality, poor reward geometry or excessive drawdown is not promoted.",
+  "files_locked_before_collection": [
+    "research/candidate-02/v63_impact_state_core.py",
+    "research/candidate-02/v63_nt_backtest.py",
+    "research/candidate-02/v63_absorbed_rotation_config.json",
+    "research/candidate-02/v63_liquidation_rotation_config.json",
+    "research/candidate-02/v63_accepted_discovery_config.json",
+    "research/candidate-02/v63_impact_state_family_lock.json"
+  ]
+}

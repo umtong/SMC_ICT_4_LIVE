@@ -1,0 +1,257 @@
+name: candidate-02-pipeline-supervisor
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-pipeline-supervisor.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: candidate-02-pipeline-supervisor
+  cancel-in-progress: true
+
+jobs:
+  supervise:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: research/candidate-02
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Add explicit dispatch entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          paths=[
+            '.github/workflows/candidate-02-v77-promote.yml',
+            '.github/workflows/candidate-02-v77-week2.yml',
+            '.github/workflows/candidate-02-v77-week3.yml',
+            '.github/workflows/candidate-02-v77-terminal-router.yml',
+            '.github/workflows/candidate-02-v78-lock.yml',
+            '.github/workflows/candidate-02-v78-first.yml',
+            '.github/workflows/candidate-02-v78-week2.yml',
+            '.github/workflows/candidate-02-v78-week3.yml',
+            '.github/workflows/candidate-02-v78-terminal-router.yml',
+            '.github/workflows/candidate-02-long-lock.yml',
+            '.github/workflows/candidate-02-long-evaluate.yml',
+            '.github/workflows/candidate-02-status-report.yml',
+          ]
+          for value in paths:
+              path=Path(value)
+              if not path.exists():
+                  print(f'skip missing {path}')
+                  continue
+              text=path.read_text(encoding='utf-8')
+              head=text.split('permissions:',1)[0]
+              if 'workflow_dispatch:' in head:
+                  continue
+              marker='on:\n'
+              if marker not in text:
+                  raise RuntimeError(f'cannot locate on block in {path}')
+              text=text.replace(marker,marker+'  workflow_dispatch:\n',1)
+              path.write_text(text,encoding='utf-8')
+              print(f'added workflow_dispatch to {path}')
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/candidate-02-v77-*.yml .github/workflows/candidate-02-v78-*.yml .github/workflows/candidate-02-long-*.yml .github/workflows/candidate-02-status-report.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "ci(candidate-02): expose explicit dispatch entrypoints"
+            for attempt in 1 2 3 4 5; do
+              git pull --rebase origin "$BRANCH"
+              if git push origin HEAD:"$BRANCH"; then break; fi
+              sleep $((attempt*3))
+            done
+          fi
+
+      - name: Drive sequential gates without recursive push assumptions
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="research/candidate-02"
+
+          refresh() {
+            git fetch origin "$BRANCH" --quiet
+            git reset --hard "origin/$BRANCH" --quiet
+          }
+
+          json_status() {
+            python - "$1" <<'PY'
+          import json,sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          if not p.exists(): print('MISSING')
+          else:
+              try: print(json.loads(p.read_text()).get('status','UNKNOWN'))
+              except Exception: print('MALFORMED')
+          PY
+          }
+
+          active() {
+            local workflow="$1"
+            local count
+            count=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" --branch "$BRANCH" --limit 20 --json status --jq '[.[] | select(.status=="queued" or .status=="in_progress")] | length' 2>/dev/null || echo 0)
+            [[ "$count" != "0" ]]
+          }
+
+          dispatch() {
+            local workflow="$1"
+            if active "$workflow"; then
+              echo "active: $workflow"
+              return 0
+            fi
+            echo "dispatch: $workflow"
+            gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+          }
+
+          terminal=""
+          for iteration in $(seq 1 90); do
+            refresh
+
+            if [[ -f "$root/four_symbol_lock.json" ]]; then
+              terminal="LONG_PASS_FOUR_SYMBOL_EVALUATION_REQUIRED"
+              break
+            fi
+            if [[ -f "$root/long_evaluation_decision.json" ]]; then
+              status=$(json_status "$root/long_evaluation_decision.json")
+              terminal="$status"
+              break
+            fi
+            if [[ -f "$root/long_evaluation_lock.json" ]]; then
+              dispatch candidate-02-long-evaluate.yml
+              sleep 45
+              continue
+            fi
+            if [[ -f "$root/v78_long_lock.json" || -f "$root/v77_long_lock.json" ]]; then
+              dispatch candidate-02-long-lock.yml
+              sleep 30
+              continue
+            fi
+
+            v78w3=$(json_status "$root/v78_week3_decision.json")
+            if [[ "$v78w3" == REJECTED* || "$v78w3" == IMPLEMENTATION_ERROR* ]]; then
+              dispatch candidate-02-v78-terminal-router.yml
+              terminal="$v78w3"
+              break
+            fi
+            if [[ -f "$root/v78_week3_lock.json" && "$v78w3" == "MISSING" ]]; then
+              dispatch candidate-02-v78-week3.yml
+              sleep 45
+              continue
+            fi
+
+            v78w2=$(json_status "$root/v78_week2_decision.json")
+            if [[ "$v78w2" == REJECTED* || "$v78w2" == IMPLEMENTATION_ERROR* ]]; then
+              dispatch candidate-02-v78-terminal-router.yml
+              terminal="$v78w2"
+              break
+            fi
+            if [[ -f "$root/v78_week2_lock.json" && "$v78w2" == "MISSING" ]]; then
+              dispatch candidate-02-v78-week2.yml
+              sleep 45
+              continue
+            fi
+
+            v78w1=$(json_status "$root/v78_first_week_decision.json")
+            if [[ "$v78w1" == REJECTED* || "$v78w1" == IMPLEMENTATION_ERROR* ]]; then
+              dispatch candidate-02-v78-terminal-router.yml
+              terminal="$v78w1"
+              break
+            fi
+            if [[ -f "$root/v78_first_week_lock.json" && "$v78w1" == "MISSING" ]]; then
+              dispatch candidate-02-v78-first.yml
+              sleep 45
+              continue
+            fi
+
+            v77terminal=$(json_status "$root/v77_terminal_status.json")
+            if [[ "$v77terminal" == REJECTED* ]]; then
+              if [[ ! -f "$root/v78_first_week_lock.json" ]]; then
+                dispatch candidate-02-v78-lock.yml
+                sleep 30
+                continue
+              fi
+            fi
+
+            v77w3=$(json_status "$root/v77_week3_decision.json")
+            if [[ "$v77w3" == REJECTED* || "$v77w3" == IMPLEMENTATION_ERROR* ]]; then
+              dispatch candidate-02-v77-terminal-router.yml
+              sleep 25
+              continue
+            fi
+            if [[ -f "$root/v77_week3_lock.json" && "$v77w3" == "MISSING" ]]; then
+              dispatch candidate-02-v77-week3.yml
+              sleep 45
+              continue
+            fi
+
+            v77w2=$(json_status "$root/v77_week2_decision.json")
+            if [[ "$v77w2" == REJECTED* || "$v77w2" == IMPLEMENTATION_ERROR* ]]; then
+              dispatch candidate-02-v77-terminal-router.yml
+              sleep 25
+              continue
+            fi
+            if [[ -f "$root/v77_week2_lock.json" && "$v77w2" == "MISSING" ]]; then
+              dispatch candidate-02-v77-week2.yml
+              sleep 45
+              continue
+            fi
+
+            v77w1=$(json_status "$root/v77_first_week_decision.json")
+            if [[ "$v77w1" == REJECTED* || "$v77w1" == IMPLEMENTATION_ERROR* ]]; then
+              dispatch candidate-02-v77-terminal-router.yml
+              sleep 25
+              continue
+            fi
+            if [[ "$v77w1" == "MISSING" || ( "$v77w1" == PROMOTED* && ! -f "$root/v77_week2_lock.json" ) ]]; then
+              dispatch candidate-02-v77-promote.yml
+              sleep 30
+              continue
+            fi
+
+            echo "No new transition at iteration $iteration"
+            sleep 20
+          done
+
+          refresh
+          if [[ -z "$terminal" ]]; then terminal="SUPERVISOR_TIME_LIMIT_WITH_NONTERMINAL_PIPELINE"; fi
+          python - "$terminal" <<'PY'
+          import json,sys
+          from datetime import datetime,timezone
+          from pathlib import Path
+          root=Path('research/candidate-02')
+          files=['v77_first_week_decision.json','v77_week2_decision.json','v77_week3_decision.json','v77_terminal_status.json','v78_first_week_lock.json','v78_first_week_decision.json','v78_week2_decision.json','v78_week3_decision.json','v78_terminal_status.json','long_evaluation_lock.json','long_evaluation_decision.json','four_symbol_lock.json']
+          snapshots={}
+          for name in files:
+              p=root/name
+              if p.exists():
+                  try:snapshots[name]=json.loads(p.read_text())
+                  except Exception as exc:snapshots[name]={'status':'MALFORMED','error':repr(exc)}
+          out={'status':sys.argv[1],'recorded_utc':datetime.now(timezone.utc).isoformat(),'risk_fraction':0.03,'performance_engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'snapshots':snapshots}
+          (root/'PIPELINE_SUPERVISOR_STATUS.json').write_text(json.dumps(out,indent=2,sort_keys=True))
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$root/PIPELINE_SUPERVISOR_STATUS.json"
+          if ! git diff --cached --quiet; then
+            git commit -m "research(candidate-02): record supervised pipeline state"
+            for attempt in 1 2 3 4 5; do
+              git pull --rebase origin "$BRANCH"
+              if git push origin HEAD:"$BRANCH"; then break; fi
+              sleep $((attempt*3))
+            done
+          fi
+
+          dispatch candidate-02-status-report.yml || true

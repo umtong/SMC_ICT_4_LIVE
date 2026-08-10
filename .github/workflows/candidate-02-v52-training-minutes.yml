@@ -1,0 +1,31 @@
+name: candidate-02-v52-training-minutes
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-adaptive/collect_v52_training_minutes.py"
+      - ".github/workflows/candidate-02-v52-training-minutes.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Collect official one-minute barrier-label history
+        run: python .candidate-02-adaptive/collect_v52_training_minutes.py
+      - name: Upload immutable barrier-label history
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v52-training-minutes-${{ github.sha }}
+          path: |
+            .cache/candidate-02/v52-training-minutes
+            artifacts/candidate-02-v52-training-minutes/manifest.json
+          retention-days: 14

@@ -1,0 +1,232 @@
+name: candidate-02-v78-nautilustrader-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v78-first.yml"
+      - "research/candidate-02/v78_first_week_lock.json"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  first-week:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Gate on immutable v78 lock
+        id: gate
+        shell: bash
+        run: |
+          if [[ -f research/candidate-02/v78_first_week_lock.json ]]; then echo "enabled=true" >> "$GITHUB_OUTPUT"; else echo "enabled=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Verify fixed runtime source hashes and risk contract
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-02/v78_impact_resilience_core.py research/candidate-02/v78_nt_backtest.py
+          python - <<'PY'
+          import hashlib,json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v78_first_week_lock.json').read_text())
+          assert lock['status']=='LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['custom_backtest_engine'] is False
+          assert float(lock['risk_fraction'])==0.03
+          assert lock['first_week']['raw_data_status_at_lock']=='NOT_COLLECTED_FOR_V78'
+          for path,digest in lock['source_sha256'].items():
+              assert hashlib.sha256(Path(path).read_bytes()).hexdigest()==digest,(path,digest)
+          for path in sorted(Path('research/candidate-02').glob('v78_*_config.json')):
+              cfg=json.loads(path.read_text())
+              assert float(cfg['risk']['risk_fraction'])==0.03
+              assert cfg['risk']['maximum_notional_cap'] is None
+              assert cfg['risk']['score_risk_multiplier'] is None
+              assert cfg['validation']['first_week_start']==lock['first_week']['start_utc'][:10]
+          PY
+
+      - name: Prepare generic direct-data tools for the locked week
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v78-tools
+          cp -a .candidate-02-v75 /tmp/v78-tools
+          python - <<'PY'
+          from datetime import date
+          import json,re
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v78_first_week_lock.json').read_text())
+          new_start=date.fromisoformat(lock['first_week']['start_utc'][:10])
+          candidates=[]
+          for path in Path('research/candidate-02').glob('v75_*_config.json'):
+              try:
+                  token=json.loads(path.read_text()).get('validation',{}).get('first_week_start')
+                  if token:candidates.append(date.fromisoformat(token[:10]))
+              except Exception:pass
+          if not candidates:
+              for path in Path('/tmp/v78-tools').rglob('*.py'):
+                  for token in re.findall(r'20\d{2}-\d{2}-\d{2}',path.read_text(errors='ignore')):
+                      d=date.fromisoformat(token)
+                      if d.weekday()==0:candidates.append(d)
+          if not candidates:raise RuntimeError('unable to infer original v75 direct-data week')
+          old_start=min(candidates,key=lambda d:abs((d-new_start).days)); delta=new_start-old_start
+          pat=re.compile(r'20\d{2}-\d{2}-\d{2}')
+          for path in Path('/tmp/v78-tools').rglob('*'):
+              if not path.is_file() or path.suffix not in {'.py','.json','.md'}:continue
+              text=path.read_text(encoding='utf-8',errors='ignore')
+              text=pat.sub(lambda m:(date.fromisoformat(m.group(0))+delta).isoformat(),text)
+              text=text.replace('v75-first-week','v78-first-week').replace('candidate-02-v75-first-week','candidate-02-v78-first-week')
+              path.write_text(text,encoding='utf-8')
+          print(json.dumps({'base_week':old_start.isoformat(),'locked_week':new_start.isoformat(),'delta_days':delta.days}))
+          PY
+
+      - name: Collect locked aggTrades bookDepth and build completed-minute features
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          collect=$(find /tmp/v78-tools -maxdepth 1 -type f -name 'collect*.py' | sort | head -n1)
+          build=$(find /tmp/v78-tools -maxdepth 1 -type f -name 'build*.py' | sort | head -n1)
+          test -n "$collect"; test -n "$build"
+          python "$collect"
+          python "$build"
+          mkdir -p inputs/v78-first/candidate-02-v48-first-week
+          feature=$(find . /tmp -type f -name '*.npz' -newermt '15 minutes ago' | sort | tail -n1)
+          columns=$(find . /tmp -type f -name 'columns.json' -newermt '15 minutes ago' | sort | tail -n1)
+          test -n "$feature"; test -n "$columns"
+          cp "$feature" inputs/v78-first/candidate-02-v48-first-week/v48_features.npz
+          cp "$columns" inputs/v78-first/candidate-02-v48-first-week/columns.json
+
+      - name: Collect locked one-minute execution bars
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from datetime import date,timedelta
+          import json,urllib.request
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v78_first_week_lock.json').read_text())
+          start=date.fromisoformat(lock['first_week']['start_utc'][:10])-timedelta(days=2)
+          end=date.fromisoformat(lock['first_week']['end_utc'][:10])+timedelta(days=1)
+          root=Path('inputs/v78-first/.cache/candidate-02/v78-first/binance_1m'); root.mkdir(parents=True,exist_ok=True)
+          d=start
+          while d<=end:
+              name=f'BTCUSDT-1m-{d.isoformat()}.zip'; path=root/name
+              if not path.exists():
+                  url=f'https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1m/{name}'
+                  with urllib.request.urlopen(url,timeout=60) as response:path.write_bytes(response.read())
+              d+=timedelta(days=1)
+          assert len(list(root.glob('*.zip')))>=10
+          PY
+
+      - name: Run all v78 states in fresh NautilusTrader processes
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-02-v78-first-week
+          for config in research/candidate-02/v78_*_config.json; do
+            label=$(basename "$config" _config.json)
+            output="artifacts/candidate-02-v78-first-week/$label"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v78_nt_backtest.py --config "$config" --input-root inputs/v78-first --output "$output" | tee "artifacts-v78-${label}.log"
+            status=${PIPESTATUS[0]}; set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Apply mode-level adjacent-threshold promotion rule
+        if: steps.gate.outputs.enabled == 'true' && always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date,timedelta,datetime,timezone
+          import hashlib,json,random,re
+          from pathlib import Path
+          root=Path('research/candidate-02'); artifact=Path('artifacts/candidate-02-v78-first-week')
+          rows=[]
+          for path in sorted(artifact.rglob('metrics.json')):
+              m=json.loads(path.read_text())
+              cfg_path=root/(path.parent.name+'_config.json')
+              if not cfg_path.exists():
+                  matches=[p for p in root.glob('v78_*_config.json') if json.loads(p.read_text()).get('candidate')==m.get('candidate')]
+                  if len(matches)!=1:raise RuntimeError(f'cannot map {path}')
+                  cfg_path=matches[0]
+              cfg=json.loads(cfg_path.read_text()); mode=cfg['scenario']['mode']; retention=float(cfg['scenario']['retention_threshold'])
+              checks={'trades_per_day':float(m.get('trades_per_day',0))>=0.75,'win_rate':float(m.get('win_rate',0))>=0.50,'profit_factor':float(m.get('profit_factor_after_cost',0))>=1.50,'growth':float(m.get('geometric_daily_growth_after_cost',-1))>=0.01,'drawdown':abs(float(m.get('maximum_mark_to_market_drawdown',-1)))<=0.25,'risk':abs(float(m.get('risk_fraction',0))-0.03)<=1e-12,'engine':str(m.get('engine','')).startswith('NautilusTrader'),'no_custom_engine':m.get('custom_backtest_engine') is False}
+              rows.append({'config_path':str(cfg_path),'candidate':m.get('candidate'),'mode':mode,'retention_threshold':retention,'checks':checks,'passes_all':all(checks.values()),'metrics':m})
+          expected={'RESILIENT_CONTINUATION':{0.60,0.70},'TRANSIENT_FAILURE_ROTATION':{0.30,0.40}}
+          passed_modes=[]
+          for mode,thresholds in expected.items():
+              got={r['retention_threshold'] for r in rows if r['mode']==mode and r['passes_all']}
+              if got==thresholds:passed_modes.append(mode)
+          selected_mode=None; selected=None
+          if len(passed_modes)==1:
+              selected_mode=passed_modes[0]
+              preferred=0.70 if selected_mode=='RESILIENT_CONTINUATION' else 0.30
+              selected=next(r for r in rows if r['mode']==selected_mode and r['retention_threshold']==preferred)
+          status='PROMOTED_TO_LOCKED_SECOND_WEEK' if selected else ('REJECTED_AMBIGUOUS_MULTIPLE_MODE_PLATEAUS' if len(passed_modes)>1 else 'REJECTED_FIRST_WEEK_NO_MODE_PLATEAU')
+          decision={'candidate_family':'candidate-02-v78-quarter-hour-impact-resilience','status':status,'recorded_utc':datetime.now(timezone.utc).isoformat(),'rows':rows,'mode_plateaus':passed_modes,'selected_mode':selected_mode,'performance_engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':0.03}
+          (root/'v78_first_week_decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          if selected:
+              selected_bytes=Path(selected['config_path']).read_bytes(); (root/'v78_selected_config.json').write_bytes(selected_bytes)
+              date_re=re.compile(r'^20\d{2}-\d{2}-\d{2}$'); excluded=set()
+              def scan(v,k=''):
+                  if isinstance(v,dict):
+                      for kk,vv in v.items():scan(vv,str(kk).lower())
+                  elif isinstance(v,list):
+                      for vv in v:scan(vv,k)
+                  elif isinstance(v,str):
+                      token=v[:10]
+                      if date_re.match(token) and any(x in k for x in ('week','start','window','date')):
+                          try:d=date.fromisoformat(token)
+                          except ValueError:return
+                          if d.weekday()==0:excluded.add(d)
+              for p in root.glob('*.json'):
+                  try:scan(json.loads(p.read_text()))
+                  except Exception:pass
+              mondays=[]; d=date(2023,1,2); last=date(2026,6,1)
+              while d<=last:
+                  if d not in excluded:mondays.append(d)
+                  d+=timedelta(days=7)
+              random.Random(2026080679).shuffle(mondays)
+              if not mondays:raise RuntimeError('no unseen second week')
+              week=mondays[0]
+              lock={'status':'LOCKED_BEFORE_SECOND_WEEK_COLLECTION','candidate_family':decision['candidate_family'],'selected_mode':selected_mode,'selected_config_sha256':hashlib.sha256(selected_bytes).hexdigest(),'second_week':{'symbol':'BTCUSDT','start_utc':week.isoformat()+'T00:00:00Z','end_utc':(week+timedelta(days=7)).isoformat()+'T00:00:00Z','selection_seed':2026080679,'raw_data_status_at_lock':'NOT_COLLECTED_FOR_V78'},'risk_fraction':0.03,'custom_backtest_engine':False,'performance_engine':'NautilusTrader 1.230.0'}
+              (root/'v78_week2_lock.json').write_text(json.dumps(lock,indent=2,sort_keys=True))
+          PY
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-02/v78_first_week_decision.json
+          if [[ -f research/candidate-02/v78_week2_lock.json ]]; then git add research/candidate-02/v78_selected_config.json research/candidate-02/v78_week2_lock.json; fi
+          git commit -m "research(candidate-02): record v78 first-week decision"
+          git push origin HEAD:research/candidate-02
+
+      - name: Preserve direct data and NautilusTrader evidence
+        if: steps.gate.outputs.enabled == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v78-first-week-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v78-first-week
+            artifacts-v78-*.log
+            inputs/v78-first
+          if-no-files-found: warn
+          retention-days: 30

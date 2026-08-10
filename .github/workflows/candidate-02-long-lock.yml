@@ -1,0 +1,100 @@
+name: candidate-02-prospective-long-evaluation-lock
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-long-lock.yml"
+      - "research/candidate-02/v77_long_lock.json"
+      - "research/candidate-02/v78_long_lock.json"
+
+permissions:
+  contents: write
+
+jobs:
+  lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 1}
+      - name: Select candidate and prelock twelve unseen regime weeks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          from datetime import date,timedelta,datetime,timezone
+          import hashlib,json,random,re
+          from pathlib import Path
+          root=Path('research/candidate-02')
+          selected=None
+          if (root/'v78_long_lock.json').exists():
+              lock=json.loads((root/'v78_long_lock.json').read_text())
+              if str(lock.get('status','')).startswith('LOCKED_BEFORE_LONG'):
+                  selected={'version':'v78','family':lock['candidate_family'],'config':root/'v78_selected_config.json','runner':'research/candidate-02/v78_nt_backtest.py'}
+          if selected is None and (root/'v77_long_lock.json').exists():
+              lock=json.loads((root/'v77_long_lock.json').read_text())
+              if str(lock.get('status','')).startswith('LOCKED_BEFORE_LONG'):
+                  selected={'version':'v77','family':lock['candidate_family'],'config':root/'v77_selected_config.json','runner':'research/candidate-02/v76_nt_backtest.py'}
+          if selected is None:
+              print('No three-week pass; no long-evaluation dates selected.')
+              raise SystemExit(0)
+          if (root/'long_evaluation_lock.json').exists():
+              print('Long lock already exists.')
+              raise SystemExit(0)
+          if not selected['config'].exists():raise RuntimeError('selected config missing')
+
+          date_re=re.compile(r'^20\d{2}-\d{2}-\d{2}$'); excluded=set()
+          def scan(v,k=''):
+              if isinstance(v,dict):
+                  for kk,vv in v.items():scan(vv,str(kk).lower())
+              elif isinstance(v,list):
+                  for vv in v:scan(vv,k)
+              elif isinstance(v,str):
+                  t=v[:10]
+                  if date_re.match(t) and any(x in k for x in ('week','start','window','date')):
+                      try:d=date.fromisoformat(t)
+                      except ValueError:return
+                      if d.weekday()==0:excluded.add(d)
+          for p in root.glob('*.json'):
+              try:scan(json.loads(p.read_text()))
+              except Exception:pass
+
+          rng=random.Random(2026080690); chosen=[]
+          year_targets={2023:3,2024:3,2025:3,2026:3}
+          for year,count in year_targets.items():
+              first=date(year,1,1)
+              while first.weekday()!=0:first+=timedelta(days=1)
+              last=date(year,6,1) if year==2026 else date(year,12,1)
+              candidates=[]; d=first
+              while d<=last:
+                  if d not in excluded:candidates.append(d)
+                  d+=timedelta(days=7)
+              rng.shuffle(candidates)
+              for candidate in candidates:
+                  if all(abs((candidate-other).days)>=21 for other in chosen):
+                      chosen.append(candidate)
+                      if sum(1 for x in chosen if x.year==year)>=count:break
+              if sum(1 for x in chosen if x.year==year)<count:raise RuntimeError(f'insufficient separated weeks for {year}')
+          chosen=sorted(chosen)
+          cfg_bytes=selected['config'].read_bytes()
+          out={
+              'status':'LOCKED_BEFORE_DISTRIBUTED_LONG_EVALUATION_COLLECTION',
+              'candidate_version':selected['version'],'candidate_family':selected['family'],
+              'selected_config_path':str(selected['config']),'selected_config_sha256':hashlib.sha256(cfg_bytes).hexdigest(),
+              'runner':selected['runner'],'selection_seed':2026080690,
+              'weeks':[{'start_utc':d.isoformat()+'T00:00:00Z','end_utc':(d+timedelta(days=7)).isoformat()+'T00:00:00Z','raw_data_status_at_lock':'NOT_COLLECTED'} for d in chosen],
+              'evaluation_days':84,'risk_fraction':0.03,'custom_backtest_engine':False,'performance_engine':'NautilusTrader 1.230.0',
+              'nav_rule':'Each fresh NautilusTrader week starts from the prior week final NAV; no external fill or PnL simulation.',
+              'pass_criteria':{'minimum_trades_per_day':0.75,'minimum_win_rate':0.50,'minimum_profit_factor_after_cost':1.50,'minimum_geometric_daily_growth_after_cost':0.01,'maximum_mark_to_market_drawdown':0.35,'minimum_positive_week_fraction':0.60,'maximum_single_win_profit_share':0.25},
+              'locked_utc':datetime.now(timezone.utc).isoformat(),
+          }
+          (root/'long_evaluation_lock.json').write_text(json.dumps(out,indent=2,sort_keys=True))
+          print(json.dumps({'candidate':selected['version'],'weeks':[d.isoformat() for d in chosen]},indent=2))
+          PY
+      - name: Commit actual dates before data collection
+        shell: bash
+        run: |
+          if [[ ! -f research/candidate-02/long_evaluation_lock.json ]]; then exit 0; fi
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"; git add research/candidate-02/long_evaluation_lock.json; git commit -m "research(candidate-02): lock distributed long evaluation"; git pull --rebase origin research/candidate-02; git push origin HEAD:research/candidate-02

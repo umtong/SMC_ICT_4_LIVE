@@ -1,0 +1,79 @@
+{
+  "candidate_family": "candidate-02-v92-session-liquidity-sweep-displacement-fvg-retrace",
+  "status": "LOCKED_BEFORE_FIRST_WEEK_COLLECTION",
+  "performance_engine": "NautilusTrader 1.230.0",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "selection": {
+    "seed": 2026080692,
+    "eligible_universe": "all Mondays from 2024-01-01 through 2025-11-24 excluding previously used candidate-02 weeks",
+    "selection_method": "Python random.Random(seed).choice over chronologically sorted eligible Mondays",
+    "selected_week_start_utc": "2024-03-11T00:00:00Z",
+    "selected_week_end_utc": "2024-03-18T00:00:00Z",
+    "symbol": "BTCUSDT",
+    "raw_data_status_at_lock": "NOT_COLLECTED_FOR_V92"
+  },
+  "locked_hypothesis": {
+    "market_logic": "A frozen dealing-range extreme is an external liquidity pool. A directional aggressive-flow sweep that promptly closes back inside is a failed auction. Opposite displacement through pre-sweep internal structure plus a fair-value gap proves a change in delivery. The first later retrace into the imbalance offers entry toward the opposing external pool.",
+    "state_sequence": [
+      "FROZEN_8H_DEALING_RANGE",
+      "EXTERNAL_LIQUIDITY_SWEEP_WITH_DIRECTIONAL_AGGRESSIVE_FLOW",
+      "PROMPT_RECLAIM_INSIDE_RANGE",
+      "OPPOSITE_DISPLACEMENT_AND_INTERNAL_STRUCTURE_BREAK",
+      "THREE_CANDLE_FAIR_VALUE_GAP",
+      "COMPLETED_MINUTE_RETRACE_AND_REJECTION",
+      "ENTRY",
+      "INVALIDATION_BEYOND_SWEEP_EXTREME",
+      "TARGET_OPPOSITE_RANGE_BOUNDARY"
+    ],
+    "no_trade_states": [
+      "both range boundaries swept in the same minute",
+      "break remains accepted outside the range",
+      "sweep extension exceeds the locked structural ceiling",
+      "no opposite displacement",
+      "no fair-value gap",
+      "no retrace before deadline",
+      "cost-after reward/risk below the locked floor"
+    ],
+    "cycle_anchors_utc": [
+      "00:00",
+      "08:00",
+      "16:00"
+    ],
+    "dealing_range_hours": 8,
+    "active_window_minutes": 240
+  },
+  "controlled_plateau": {
+    "central_retrace_minutes": 20,
+    "adjacent_retrace_minutes": [
+      15,
+      25
+    ],
+    "all_other_scenario_variables_identical": true,
+    "component_diagnostics": [
+      "CYCLE_00",
+      "CYCLE_08",
+      "CYCLE_16"
+    ]
+  },
+  "promotion_rule": "The 20-minute portfolio and at least one adjacent retrace horizon must pass every original weekly gate, and scheduled signals must span at least two cycle anchors. Otherwise perform one core-variable ablation on the revealed week before discarding.",
+  "research_basis": [
+    {
+      "reference": "Carol L. Osler, Currency Orders and Exchange-Rate Dynamics",
+      "mapping": "stop-loss orders cluster near predictable support/resistance and can accelerate moves after a level is crossed"
+    },
+    {
+      "reference": "Carol L. Osler, Stop-Loss Orders and Price Cascades in Currency Markets",
+      "mapping": "external liquidity sweeps can trigger positive-feedback order cascades"
+    },
+    {
+      "reference": "Cont, Kukanov and Stoikov, The Price Impact of Order Book Events",
+      "mapping": "short-horizon price movement depends on order-flow imbalance relative to available depth"
+    },
+    {
+      "reference": "Periodicity in Cryptocurrency Volatility and Liquidity",
+      "mapping": "crypto liquidity and volatility have systematic hour and within-hour periodicity, supporting prospectively fixed dealing cycles"
+    }
+  ]
+}

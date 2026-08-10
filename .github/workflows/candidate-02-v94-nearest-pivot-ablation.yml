@@ -1,0 +1,224 @@
+name: candidate-02-v94-nearest-pivot-ablation
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-v94-ablation/**"
+      - ".github/workflows/candidate-02-v94-nearest-pivot-ablation.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  single-target-selection-ablation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download immutable v94 first-week evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v94-first-week-4f1067d773cfe5834c79c80398d666f5c1adda5a
+          path: inputs/v94-ablation-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31108758860"
+
+      - name: Verify runtime, ablation lock and exact one-line source delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile \
+            research/candidate-02/v94_multilevel_common_breakout_core.py \
+            .candidate-02-v94-ablation/materialize_nearest_pivot.py \
+            .candidate-02-v94-ablation/run_ablation.py
+          python -m json.tool .candidate-02-v94-ablation/lock.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('.candidate-02-v94-ablation/lock.json').read_text())
+          assert lock['status']=='LOCKED_SINGLE_CORE_VARIABLE_ABLATION_BEFORE_EXECUTION'
+          assert lock['base_evidence']['workflow_run_id']==31108758860
+          assert lock['base_evidence']['artifact_id']==8970792202
+          assert lock['removed_core_variable']['name']=='minimum_cost_after_reward_risk_filter_for_pivot_target_selection'
+          assert len(lock['unchanged'])>=20
+          PY
+          python .candidate-02-v94-ablation/materialize_nearest_pivot.py
+          python -m py_compile /tmp/v94_nearest_pivot_core.py
+
+      - name: Materialize exact immutable feature matrix and raw bars
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf inputs/v94-ablation
+          mkdir -p inputs/v94-ablation/candidate-02-v48-first-week
+          mkdir -p inputs/v94-ablation/.cache/candidate-02/v94-ablation/binance_1m
+          feature=$(find inputs/v94-ablation-source -name v48_features.npz -type f | head -n1)
+          columns=$(find inputs/v94-ablation-source -name columns.json -type f | head -n1)
+          test -n "$feature"; test -n "$columns"
+          cp "$feature" inputs/v94-ablation/candidate-02-v48-first-week/v48_features.npz
+          cp "$columns" inputs/v94-ablation/candidate-02-v48-first-week/columns.json
+          find inputs/v94-ablation-source -path '*/binance_1m/BTCUSDT-1m-*.zip' -type f -exec cp '{}' inputs/v94-ablation/.cache/candidate-02/v94-ablation/binance_1m/ \;
+          test "$(find inputs/v94-ablation/.cache/candidate-02/v94-ablation/binance_1m -name '*.zip' | wc -l)" -eq 10
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          from v53_nt_core import load_feature_matrix, load_raw_one_minute
+          features=load_feature_matrix(
+              Path('inputs/v94-ablation/candidate-02-v48-first-week/v48_features.npz'),
+              Path('inputs/v94-ablation/candidate-02-v48-first-week/columns.json'))
+          raw=load_raw_one_minute(Path('inputs/v94-ablation/.cache/candidate-02/v94-ablation/binance_1m'))
+          start=pd.Timestamp('2025-11-03T00:00:00Z'); end=pd.Timestamp('2025-11-10T00:00:00Z')
+          assert len(features.loc[(features.index>=start)&(features.index<end)])>=7*24*60*.995
+          assert len(raw.loc[(raw.index>=start)&(raw.index<end)])>=7*24*60*.995
+          assert features.index.min()<=start-pd.Timedelta(days=2)+pd.Timedelta(minutes=2)
+          assert features.index.max()>=end
+          required={'spot_close','perp_spot_log_basis','aggressive_total_quote_1m'}
+          assert not (required-set(features.columns))
+          PY
+
+      - name: Materialize unchanged locked variant matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/v94-ablation-configs
+          python - <<'PY'
+          import copy,json
+          from pathlib import Path
+          base=json.loads(Path('research/candidate-02/v94_base_config.json').read_text())
+          variants={
+              'all15':{'level_mode':'ALL','retrace_minutes':15},
+              'all20':{'level_mode':'ALL','retrace_minutes':20},
+              'all25':{'level_mode':'ALL','retrace_minutes':25},
+              'four20':{'level_mode':'FOUR_HOUR','retrace_minutes':20},
+              'eight20':{'level_mode':'EIGHT_HOUR','retrace_minutes':20},
+              'day20':{'level_mode':'PREVIOUS_DAY','retrace_minutes':20},
+          }
+          for label,override in variants.items():
+              cfg=copy.deepcopy(base)
+              cfg['candidate']=f'candidate-02-v94-nearest-pivot-{label}'
+              cfg['scenario'].update(override)
+              (Path('/tmp/v94-ablation-configs')/f'{label}.json').write_text(json.dumps(cfg,indent=2,sort_keys=True))
+          PY
+
+      - name: Run central, adjacent and source ablations in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          labels=(all15 all20 all25 four20 eight20 day20)
+          for label in "${labels[@]}"; do
+            output="artifacts/candidate-02-v94-nearest-${label}"
+            mkdir -p "$output"
+            set +e
+            python .candidate-02-v94-ablation/run_ablation.py \
+              --config "/tmp/v94-ablation-configs/${label}.json" \
+              --input-root inputs/v94-ablation \
+              --output "$output" \
+              | tee "artifacts-v94-nearest-${label}.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish single-ablation decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from collections import Counter
+          from pathlib import Path
+          labels=('all15','all20','all25','four20','eight20','day20')
+          rows={}
+          print('# Candidate-02 v94 single ablation: nearest intact pivot without minimum-RR skip')
+          print('| Variant | Signals | Trades/day | Win | PF | Growth/day | MDD |')
+          print('|---|---:|---:|---:|---:|---:|---:|')
+          def passed(m):
+              return (
+                  m.get('trades_per_day',0)>=.75
+                  and m.get('win_rate',0)>=.5
+                  and m.get('profit_factor_after_cost',0)>=1.5
+                  and m.get('geometric_daily_growth_after_cost',-1)>=.01
+                  and abs(m.get('maximum_mark_to_market_drawdown',-1))<=.25
+                  and m.get('engine','').startswith('NautilusTrader')
+                  and m.get('custom_backtest_engine') is False
+                  and abs(m.get('risk_fraction',0)-.03)<=1e-12
+              )
+          for label in labels:
+              path=Path(f'artifacts/candidate-02-v94-nearest-{label}/metrics.json')
+              if not path.exists():
+                  rows[label]={'status':'IMPLEMENTATION_ERROR'}
+                  print(f'| {label} | - | - | - | - | - | - |')
+                  continue
+              m=json.loads(path.read_text()); rows[label]=m
+              print(f"| {label} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          central=rows.get('all20',{})
+          central_pass=passed(central)
+          adjacent_pass=any(passed(rows.get(x,{})) for x in ('all15','all25'))
+          sources=Counter()
+          sig=Path('artifacts/candidate-02-v94-nearest-all20/signals.jsonl')
+          if sig.exists():
+              for line in sig.read_text().splitlines():
+                  if not line.strip(): continue
+                  value=json.loads(line)
+                  if value.get('status')!='OBSERVED': continue
+                  for source in value.get('details',{}).get('level_sources',[]): sources[str(source)]+=1
+          repeated=int(central.get('trades',0))>=5
+          positive=(central.get('profit_factor_after_cost',0)>=1.0 and central.get('geometric_daily_growth_after_cost',-1)>0.0)
+          materially_approaches=(
+              central.get('win_rate',0)>=.4
+              and central.get('profit_factor_after_cost',0)>=1.0
+              and central.get('geometric_daily_growth_after_cost',-1)>=.005
+          )
+          promotion=central_pass and adjacent_pass and len(sources)>=2
+          structural_path=repeated and positive and len(sources)>=2 and materially_approaches
+          status=(
+              'ABLATION_PROMOTION_ELIGIBLE' if promotion
+              else 'STRUCTURAL_PATH_REQUIRES_NEW_CANDIDATE' if structural_path
+              else 'NO_STRUCTURAL_PATH_DISCARD_V94'
+          )
+          decision={
+              'status':status,
+              'removed_core_variable':'minimum_cost_after_reward_risk_filter_for_pivot_target_selection',
+              'central_pass':central_pass,
+              'adjacent_pass':adjacent_pass,
+              'central_signal_sources':dict(sources),
+              'repeated_trades':repeated,
+              'positive_after_cost':positive,
+              'materially_approaches_original_gates':materially_approaches,
+              'rows':rows,
+              'risk_fraction':.03,
+              'performance_engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+          }
+          Path('artifacts-v94-nearest-decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+
+      - name: Preserve NautilusTrader ablation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v94-nearest-pivot-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v94-nearest-*
+            artifacts-v94-nearest-*.log
+            artifacts-v94-nearest-decision.json
+            artifacts-v94-nearest-pivot-source-manifest.json
+            /tmp/v94_nearest_pivot_core.py
+          if-no-files-found: warn
+          retention-days: 30

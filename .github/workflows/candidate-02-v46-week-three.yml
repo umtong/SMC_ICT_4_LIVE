@@ -1,0 +1,31 @@
+name: candidate-02-v46-week-three-metrics
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-v46/collect_week_three_metrics.py"
+      - ".github/workflows/candidate-02-v46-week-three.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Collect locked v46 third-week positioning metrics
+        run: python .candidate-02-v46/collect_week_three_metrics.py
+      - name: Upload immutable v46 week-three metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v46-week-three-${{ github.sha }}
+          path: |
+            .cache/candidate-02/v46-week-three-metrics
+            artifacts/candidate-02-v46-week-three-metrics/manifest.json
+          retention-days: 14

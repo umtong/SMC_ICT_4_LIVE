@@ -1,0 +1,105 @@
+{
+  "candidate_family": "candidate-02-v70-passive-imbalance-retest",
+  "status": "LOCKED_REVEALED_WEEK_LIMIT_FAMILY_BEFORE_NAUTILUSTRADER_RUN",
+  "locked_utc": "2026-08-06T06:18:00Z",
+  "performance_engine": "NautilusTrader 1.230.0 only",
+  "custom_backtest_engine": false,
+  "entry_execution": "NautilusTrader post-only LIMIT parent with contingent TP LIMIT and SL STOP_MARKET children",
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "development_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2024-10-28T00:00:00Z",
+    "end_utc": "2024-11-04T00:00:00Z",
+    "status": "ALREADY_REVEALED_BY_V66",
+    "use": "controlled execution-geometry development only; not a fresh random-week pass"
+  },
+  "parent_diagnosis": {
+    "candidate": "candidate-02-v69-post-shock-liquidity-resiliency",
+    "event_count_before_geometry": {"2m": 36, "3m": 40, "5m": 42},
+    "scheduled_market_entries_after_natural_geometry": 1,
+    "problem": "the causal continuation state was frequent, but entry at the late confirmation close left insufficient after-cost reward relative to the structural invalidation"
+  },
+  "single_structural_change": {
+    "before": "enter at market after the completed hold confirmation",
+    "after": "rest a post-only limit for five minutes at a prelocked fraction of the completed shock displacement",
+    "reason": "a displacement-generated imbalance should be entered on a causal retracement, not chased after confirmation; an unfilled limit is a valid no-trade outcome"
+  },
+  "unchanged_market_state": {
+    "shock": "completed three-minute aligned aggressive flow, above-threshold turnover and return, with front-side one-percent depth depletion",
+    "confirmation": "within two completed minutes, less than half of depleted depth is rebuilt, at least 70% of the displacement remains and directional flow is not materially negative",
+    "entry_expiry_minutes": 5,
+    "invalidation": "20% retained-displacement level minus/plus 0.05 ATR",
+    "target": "0.75 additional completed shock displacement beyond the shock close",
+    "maximum_holding_minutes": 90
+  },
+  "prelocked_entry_fractions": [
+    {"label": "entry_40", "limit_entry_fraction": 0.40},
+    {"label": "entry_50", "limit_entry_fraction": 0.50},
+    {"label": "entry_60", "limit_entry_fraction": 0.60}
+  ],
+  "base_scenario": {
+    "mode": "DEPTH_DEPLETION_IMBALANCE_RETEST",
+    "shock_window_minutes": 3,
+    "prior_window_minutes": 720,
+    "prior_minimum_minutes": 180,
+    "flow_abs_quantile": 0.65,
+    "volume_quantile": 0.60,
+    "return_abs_quantile": 0.60,
+    "depletion_abs_quantile": 0.60,
+    "recovery_window_minutes": 2,
+    "slow_maximum_recovery_fraction": 0.50,
+    "continuation_minimum_retention": 0.55,
+    "continuation_minimum_directional_flow": -0.05,
+    "fast_minimum_recovery_fraction": 0.80,
+    "reversal_maximum_retention": 0.50,
+    "reversal_maximum_directional_flow": 0.0,
+    "continuation_invalidation_retention": 0.35,
+    "stop_buffer_atr": 0.10,
+    "continuation_target_extension": 0.75,
+    "reversal_target_overshoot": 0.0,
+    "atr_lookback_minutes": 60,
+    "cooldown_minutes": 5,
+    "maximum_holding_minutes": 90,
+    "minimum_cost_after_rr": 0.80,
+    "maximum_cost_after_rr": 5.0,
+    "flow_floor": 0.05,
+    "limit_entry_expiry_minutes": 5,
+    "hold_confirmation_minutes": 2,
+    "hold_minimum_retention": 0.70,
+    "hold_maximum_recovery_fraction": 0.50,
+    "invalidation_retention": 0.20,
+    "limit_stop_buffer_atr": 0.05,
+    "limit_target_extension": 0.75
+  },
+  "fixed_risk": {
+    "starting_nav_usdt": "100000",
+    "risk_fraction": "0.03",
+    "maximum_notional_cap": null,
+    "score_risk_multiplier": null
+  },
+  "fixed_costs": {
+    "entry_fee_rate": "0.00050",
+    "target_fee_rate": "0.00020",
+    "stop_fee_rate": "0.00050",
+    "entry_slippage_rate": "0.00015",
+    "stop_slippage_rate": "0.00025",
+    "market_impact_rate": "0.00005",
+    "funding_rate_allowance": "0.00010"
+  },
+  "pass_criteria": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor_after_cost": 1.50,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25
+  },
+  "family_promotion_rule": "The central 50% imbalance entry and at least one adjacent 40% or 60% entry must satisfy every gate. Only then is the unchanged 50% rule locked before a newly selected uncollected first BTC week. Isolated performance is rejected.",
+  "fresh_data_rule": "No new random-week data is collected before the revealed-week plateau passes.",
+  "locked_files": [
+    "research/candidate-02/v70_limit_strategy.py",
+    "research/candidate-02/v70_limit_retest_core.py",
+    "research/candidate-02/v70_nt_backtest.py",
+    "research/candidate-02/v70_limit_retest_family_lock.json"
+  ]
+}

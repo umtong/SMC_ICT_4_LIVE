@@ -1,0 +1,115 @@
+name: candidate-02-v75-nautilustrader-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v75_*.py"
+      - "research/candidate-02/v75_*.json"
+      - ".candidate-02-v75/**"
+      - ".github/workflows/candidate-02-v75-first.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  first-week-quarter-hour-family:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify fixed runtime and prospective lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-02/v75_quarter_hour_core.py research/candidate-02/v75_nt_backtest.py .candidate-02-v75/collect_first_week.py .candidate-02-v75/build_features.py
+          python -m json.tool research/candidate-02/v75_quarter_hour_family_lock.json >/dev/null
+          for file in research/candidate-02/v75_*_config.json; do python -m json.tool "$file" >/dev/null; done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path("research/candidate-02/v75_quarter_hour_family_lock.json").read_text())
+          assert lock["status"]=="LOCKED_BEFORE_FIRST_WEEK_DIRECT_COLLECTION"
+          assert lock["custom_backtest_engine"] is False
+          assert lock["first_week"]["start_utc"]=="2024-09-16T00:00:00Z"
+          assert lock["first_week"]["raw_data_status_at_lock"]=="NOT_COLLECTED_FOR_V75"
+          assert float(lock["risk_fraction"])==0.03
+          labels=["immediate_acceptance","two_close_acceptance","boundary_hold","failed_opening_rotation"]
+          for label in labels:
+              cfg=json.loads(Path(f"research/candidate-02/v75_{label}_config.json").read_text())
+              assert cfg["validation"]["first_week_start"]=="2024-09-16"
+              assert float(cfg["risk"]["risk_fraction"])==0.03
+              assert cfg["risk"]["maximum_notional_cap"] is None
+              assert cfg["risk"]["score_risk_multiplier"] is None
+          PY
+      - name: Collect only locked first-week direct data
+        run: python .candidate-02-v75/collect_first_week.py
+      - name: Build causal completed-minute features
+        run: python .candidate-02-v75/build_features.py
+      - name: Run every state in a fresh NautilusTrader process
+        shell: bash
+        run: |
+          set -euo pipefail
+          for label in immediate_acceptance two_close_acceptance boundary_hold failed_opening_rotation; do
+            output="artifacts/candidate-02-v75-${label}"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v75_nt_backtest.py --config "research/candidate-02/v75_${label}_config.json" --input-root inputs/v75-first-week --output "$output" | tee "artifacts-v75-${label}.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+      - name: Publish first-week decision matrix
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          labels=["immediate_acceptance","two_close_acceptance","boundary_hold","failed_opening_rotation"]
+          results={}
+          print("# Candidate-02 v75 quarter-hour algorithmic opening auction")
+          print("| Mode | Decision | Scheduled | Trades/day | Win | PF | Growth/day | MDD |")
+          print("|---|---:|---:|---:|---:|---:|---:|---:|")
+          for label in labels:
+              p=Path(f"artifacts/candidate-02-v75-{label}/metrics.json")
+              if not p.exists():
+                  results[label]={"decision":"IMPLEMENTATION_ERROR"}
+                  print(f"| {label} | implementation error | - | - | - | - | - | - |")
+                  continue
+              m=json.loads(p.read_text())
+              keys=("decision","scheduled_signals","submitted_signals","trades","trades_per_day","win_rate","profit_factor_after_cost","geometric_daily_growth_after_cost","maximum_mark_to_market_drawdown")
+              results[label]={k:m[k] for k in keys}
+              print(f"| {label} | {m['decision']} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          promoted=[label for label,value in results.items() if value.get("decision")=="PROMOTE_TO_NEXT_WEEK"]
+          decision={"promoted_modes":promoted,"results":results}
+          Path("artifacts-v75-family-decision.json").write_text(json.dumps(decision,indent=2))
+          print("\n```json");print(json.dumps(decision,indent=2));print("```")
+          PY
+      - name: Preserve direct-data and NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v75-first-week-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v75-immediate_acceptance
+            artifacts/candidate-02-v75-two_close_acceptance
+            artifacts/candidate-02-v75-boundary_hold
+            artifacts/candidate-02-v75-failed_opening_rotation
+            artifacts-v75-*.log
+            artifacts-v75-family-decision.json
+            inputs/v75-first-week/artifacts/candidate-02-v75-first-week-data
+            inputs/v75-first-week/candidate-02-v48-first-week
+          if-no-files-found: warn
+          retention-days: 30

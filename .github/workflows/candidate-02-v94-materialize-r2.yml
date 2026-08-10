@@ -1,0 +1,71 @@
+name: candidate-02-v94-materialize-r2
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v94-materialize-r2.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  controlled-payload-verification:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Decode, inventory and verify prospective v94 files
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .candidate-02-v94/payload.part* | base64 -d > /tmp/v94payload.tar.gz
+          sha256sum /tmp/v94payload.tar.gz | tee /tmp/v94payload.sha256
+          gzip -t /tmp/v94payload.tar.gz
+          rm -rf /tmp/v94extract && mkdir -p /tmp/v94extract
+          tar -xzf /tmp/v94payload.tar.gz -C /tmp/v94extract
+          find /tmp/v94extract -type f -print | sort
+          test "$(find /tmp/v94extract/research/candidate-02 -maxdepth 1 -type f -name 'v94_*' | wc -l)" -eq 5
+          test -f /tmp/v94extract/research/candidate-02/v94_multilevel_common_breakout_core.py
+          test -f /tmp/v94extract/research/candidate-02/v94_nt_backtest.py
+          test -f /tmp/v94extract/research/candidate-02/v94_base_config.json
+          test -f /tmp/v94extract/research/candidate-02/v94_multilevel_common_breakout_lock.json
+          test -f /tmp/v94extract/research/candidate-02/v94_design.md
+          python -m py_compile /tmp/v94extract/research/candidate-02/v94_multilevel_common_breakout_core.py /tmp/v94extract/research/candidate-02/v94_nt_backtest.py
+          python -m json.tool /tmp/v94extract/research/candidate-02/v94_base_config.json >/dev/null
+          python -m json.tool /tmp/v94extract/research/candidate-02/v94_multilevel_common_breakout_lock.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('/tmp/v94extract/research/candidate-02')
+          lock=json.loads((root/'v94_multilevel_common_breakout_lock.json').read_text())
+          cfg=json.loads((root/'v94_base_config.json').read_text())
+          assert lock['status']=='LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['first_week']['start_utc']=='2025-11-03T00:00:00Z'
+          assert lock['first_week']['end_utc']=='2025-11-10T00:00:00Z'
+          assert lock['first_week']['raw_data_status_at_lock']=='NOT_COLLECTED_FOR_V94'
+          assert lock['performance_engine']=='NautilusTrader 1.230.0'
+          assert lock['custom_backtest_engine'] is False
+          assert float(lock['risk_fraction'])==0.03
+          assert int(lock['global_pending_entry_plus_position_limit'])==1
+          assert cfg['validation']['first_week_start']=='2025-11-03'
+          assert int(cfg['validation']['selection_seed'])==2026080694
+          assert float(cfg['risk']['risk_fraction'])==0.03
+          assert cfg['risk']['maximum_notional_cap'] is None
+          assert cfg['risk']['score_risk_multiplier'] is None
+          assert cfg['scenario']['level_mode']=='ALL'
+          assert int(cfg['scenario']['retrace_minutes'])==20
+          PY
+      - name: Commit readable non-workflow v94 sources atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/v94extract/research/candidate-02/v94_* research/candidate-02/
+          cp /tmp/v94payload.sha256 research/candidate-02/v94_payload_sha256.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add research/candidate-02/v94_*
+          git diff --cached --quiet && exit 0
+          git commit -m 'research(candidate-02): materialize verified prospective v94 sources'
+          git push origin HEAD:research/candidate-02

@@ -1,0 +1,242 @@
+name: candidate-02-v77-promote
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v77-promote.yml"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  decide-and-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download immutable v77 first-week NautilusTrader evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v77-first-week-a0e65980335c993184c4714ef11b6775c2cfd2cc
+          path: inputs/v77-first-week
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31082478739"
+
+      - name: Apply predeclared plateau rule and select unseen week
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import copy
+          from datetime import date, timedelta
+          import hashlib
+          import json
+          from pathlib import Path
+          import random
+          import re
+
+          ROOT = Path("research/candidate-02")
+          EVIDENCE = Path("inputs/v77-first-week")
+          DATE_RE = re.compile(r"^20\d{2}-\d{2}-\d{2}$")
+
+          config_by_candidate = {}
+          config_by_path = {}
+          # v77 contains the unchanged v76 60m/1.0/120 control plus v77 reward-duration variants.
+          # Map every immutable evidence row without changing any trading rule or performance gate.
+          config_paths = [*ROOT.glob("v77_*_config.json"), ROOT / "v76_60m_1x_config.json"]
+          for path in sorted(config_paths):
+              if not path.is_file():
+                  raise RuntimeError(f"missing locked comparison config: {path}")
+              data = json.loads(path.read_text(encoding="utf-8"))
+              candidate = str(data.get("candidate", ""))
+              if candidate:
+                  config_by_candidate[candidate] = (path, data)
+              config_by_path[path.stem] = (path, data)
+
+          rows = []
+          for path in sorted(EVIDENCE.rglob("metrics.json")):
+              m = json.loads(path.read_text(encoding="utf-8"))
+              candidate = str(m.get("candidate", ""))
+              cfg_pair = config_by_candidate.get(candidate)
+              if cfg_pair is None:
+                  for stem, pair in config_by_path.items():
+                      if stem in str(path):
+                          cfg_pair = pair
+                          break
+              if cfg_pair is None:
+                  raise RuntimeError(f"cannot map metrics to locked v77 config: {path} candidate={candidate}")
+              cfg_path, cfg = cfg_pair
+              scenario = cfg["scenario"]
+              target = float(scenario["target_range_multiple"])
+              hold = int(scenario["maximum_holding_minutes"])
+              checks = {
+                  "trades_per_day": float(m.get("trades_per_day", 0.0)) >= 0.75,
+                  "win_rate": float(m.get("win_rate", 0.0)) >= 0.50,
+                  "profit_factor": float(m.get("profit_factor_after_cost", 0.0)) >= 1.50,
+                  "growth": float(m.get("geometric_daily_growth_after_cost", -1.0)) >= 0.01,
+                  "drawdown": abs(float(m.get("maximum_mark_to_market_drawdown", -1.0))) <= 0.25,
+                  "risk": abs(float(m.get("risk_fraction", 0.0)) - 0.03) <= 1e-12,
+                  "engine": str(m.get("engine", "")).startswith("NautilusTrader"),
+                  "no_custom_engine": m.get("custom_backtest_engine") is False,
+              }
+              rows.append({
+                  "metrics_path": str(path),
+                  "config_path": str(cfg_path),
+                  "candidate": candidate,
+                  "target_range_multiple": target,
+                  "maximum_holding_minutes": hold,
+                  "metrics": m,
+                  "checks": checks,
+                  "passes_all": all(checks.values()),
+              })
+
+          if not rows:
+              raise RuntimeError("v77 artifact contains no metrics.json")
+
+          passing = [r for r in rows if r["passes_all"]]
+          passing_points = {(r["target_range_multiple"], r["maximum_holding_minutes"]) for r in passing}
+
+          def adjacent(point_a, point_b):
+              ta, ha = point_a
+              tb, hb = point_b
+              return (ta == tb and abs(ha - hb) in {60, 120}) or (ha == hb and abs(ta - tb) <= 0.250000001)
+
+          plateau_points = {
+              point for point in passing_points
+              if any(other != point and adjacent(point, other) for other in passing_points)
+          }
+          promoted = len(plateau_points) >= 2
+          selected = None
+          if promoted:
+              eligible = [r for r in passing if (r["target_range_multiple"], r["maximum_holding_minutes"]) in plateau_points]
+              # Central structural preference was fixed before opening another week:
+              # target 1.25 accepted ranges and 180-minute inventory horizon.
+              selected = min(
+                  eligible,
+                  key=lambda r: (
+                      abs(r["target_range_multiple"] - 1.25),
+                      abs(r["maximum_holding_minutes"] - 180),
+                      -float(r["metrics"]["geometric_daily_growth_after_cost"]),
+                      r["config_path"],
+                  ),
+              )
+
+          def collect_dates(value, key_hint=""):
+              found = set()
+              if isinstance(value, dict):
+                  for k, v in value.items():
+                      found |= collect_dates(v, str(k).lower())
+              elif isinstance(value, list):
+                  for v in value:
+                      found |= collect_dates(v, key_hint)
+              elif isinstance(value, str):
+                  token = value[:10]
+                  if DATE_RE.match(token) and any(word in key_hint for word in ("week", "start", "window", "date")):
+                      try:
+                          d = date.fromisoformat(token)
+                      except ValueError:
+                          return found
+                      if d.weekday() == 0:
+                          found.add(d)
+              return found
+
+          excluded = set()
+          for path in sorted(ROOT.glob("*.json")):
+              try:
+                  excluded |= collect_dates(json.loads(path.read_text(encoding="utf-8")))
+              except Exception:
+                  continue
+          # Explicitly include prior revealed candidate-02 BTC weeks whose older files may not carry a standard key.
+          for token in (
+              "2021-04-19", "2022-04-25", "2022-08-22", "2024-04-15",
+              "2024-07-08", "2024-10-28", "2024-11-18", "2024-12-16",
+              "2024-12-23", "2025-02-17", "2025-03-03", "2025-08-04",
+          ):
+              excluded.add(date.fromisoformat(token))
+
+          second_week = None
+          if promoted:
+              mondays = []
+              cursor = date(2021, 1, 4)
+              last = date(2026, 6, 1)
+              while cursor <= last:
+                  if cursor not in excluded:
+                      mondays.append(cursor)
+                  cursor += timedelta(days=7)
+              rng = random.Random(2026080677)
+              rng.shuffle(mondays)
+              if not mondays:
+                  raise RuntimeError("no unseen Monday remains")
+              second_week = mondays[0]
+
+          decision = {
+              "candidate_family": "candidate-02-v77-quarter-hour-metaorder-wave-reward-duration-plateau",
+              "evidence_run_id": 31082478739,
+              "evidence_commit": "a0e65980335c993184c4714ef11b6775c2cfd2cc",
+              "performance_engine": "NautilusTrader 1.230.0",
+              "custom_backtest_engine": False,
+              "risk_fraction": 0.03,
+              "plateau_rule": {
+                  "minimum_passing_adjacent_points": 2,
+                  "adjacency": "same target and adjacent hold, or same hold and adjacent 1.00/1.25 target",
+                  "central_preference": {"target_range_multiple": 1.25, "maximum_holding_minutes": 180},
+              },
+              "status": "PROMOTED_TO_LOCKED_SECOND_WEEK" if promoted else "REJECTED_FIRST_WEEK_NO_PASSING_PLATEAU",
+              "rows": rows,
+              "passing_points": sorted([list(x) for x in passing_points]),
+              "plateau_points": sorted([list(x) for x in plateau_points]),
+              "selected_candidate": None if selected is None else selected["candidate"],
+              "selected_config_path": None if selected is None else selected["config_path"],
+              "selected_second_week_start": None if second_week is None else second_week.isoformat(),
+              "selection_seed": 2026080677,
+              "excluded_week_count": len(excluded),
+          }
+          decision_path = ROOT / "v77_first_week_decision.json"
+          decision_path.write_text(json.dumps(decision, indent=2, sort_keys=True), encoding="utf-8")
+
+          if promoted:
+              selected_path = Path(selected["config_path"])
+              selected_cfg = copy.deepcopy(json.loads(selected_path.read_text(encoding="utf-8")))
+              selected_bytes = json.dumps(selected_cfg, indent=2, sort_keys=True).encode("utf-8")
+              (ROOT / "v77_selected_config.json").write_bytes(selected_bytes)
+              lock = {
+                  "status": "LOCKED_BEFORE_SECOND_WEEK_COLLECTION",
+                  "candidate_family": decision["candidate_family"],
+                  "selected_candidate": selected["candidate"],
+                  "selected_source_config_path": selected["config_path"],
+                  "selected_config_sha256": hashlib.sha256(selected_bytes).hexdigest(),
+                  "second_week": {
+                      "symbol": "BTCUSDT",
+                      "start_utc": second_week.isoformat() + "T00:00:00Z",
+                      "end_utc": (second_week + timedelta(days=7)).isoformat() + "T00:00:00Z",
+                      "selection_seed": 2026080677,
+                      "raw_data_status_at_lock": "NOT_COLLECTED_FOR_V77",
+                  },
+                  "risk_fraction": 0.03,
+                  "global_pending_entry_plus_position_limit": 1,
+                  "performance_engine": "NautilusTrader 1.230.0",
+                  "custom_backtest_engine": False,
+                  "promotion_requirement": "The unchanged selected rule must pass every original weekly gate before a third week can be selected.",
+              }
+              (ROOT / "v77_week2_lock.json").write_text(json.dumps(lock, indent=2, sort_keys=True), encoding="utf-8")
+          PY
+
+      - name: Commit immutable decision and optional second-week lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/candidate-02/v77_first_week_decision.json
+          if [[ -f research/candidate-02/v77_selected_config.json ]]; then
+            git add research/candidate-02/v77_selected_config.json research/candidate-02/v77_week2_lock.json
+          fi
+          git commit -m "research(candidate-02): record v77 plateau decision"
+          git push origin HEAD:research/candidate-02

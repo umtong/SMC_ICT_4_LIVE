@@ -1,0 +1,74 @@
+{
+  "family": "candidate-02-v61-causal-scenario-screen",
+  "status": "LOCKED_BEFORE_FIRST_WEEK_RAW_DATA_COLLECTION",
+  "engine": "NautilusTrader 1.230.0 only",
+  "risk_fraction": 0.03,
+  "first_week_selection": {
+    "seed": 2026080661,
+    "method": "Python random.Random(seed).choice over chronologically sorted eligible unused UTC Mondays",
+    "eligible_weeks": [
+      "2024-10-07",
+      "2024-10-14",
+      "2024-10-21",
+      "2024-10-28",
+      "2024-11-11",
+      "2024-11-25",
+      "2024-12-02",
+      "2024-12-09",
+      "2025-01-06",
+      "2025-01-13",
+      "2025-01-20",
+      "2025-01-27",
+      "2025-02-03"
+    ],
+    "selected_first_week": "2025-01-13",
+    "raw_data_collected_before_lock": false
+  },
+  "scenarios": {
+    "TREND_PULLBACK_REACCELERATION": {
+      "cause": "an established one-hour price-discovery move retains open-interest inventory while a controlled fifteen-minute counter-move is rejected by renewed aggressive flow",
+      "entry_sequence": "prior one-hour trend -> completed pullback -> completed five-minute reacceleration -> next one-minute execution",
+      "invalidation": "beyond the observed pullback extreme plus ATR buffer",
+      "target": "retest and extension beyond the prior one-hour external extreme"
+    },
+    "TREND_TERMINAL_SWEEP_REVERSAL": {
+      "cause": "an extreme one-hour move enters toxic or closing-inventory conditions, sweeps the external extreme and fails back inside",
+      "entry_sequence": "extreme one-hour trend -> external sweep -> close back inside with opposite flow and depth -> next one-minute execution",
+      "invalidation": "beyond the sweep extreme plus ATR buffer",
+      "target": "frozen one-hour range midpoint"
+    },
+    "LOW_TOXICITY_AUCTION_ROTATION": {
+      "cause": "a low-efficiency, low-VPIN, stable-OI auction rejects a one-sided value excursion and rotates through value",
+      "entry_sequence": "balanced one-hour auction -> previous value excursion -> completed return toward center with supportive depth -> next one-minute execution",
+      "invalidation": "two-standard-deviation price discovery beyond frozen value",
+      "target": "center and opposite half-value liquidity"
+    },
+    "COMPRESSION_BREAKOUT_RETEST": {
+      "cause": "open interest accumulates in a compressed auction, a displacement bar discovers price outside the frozen boundary, and the boundary holds on retest",
+      "entry_sequence": "completed compression -> completed displacement breakout -> completed retest and reacceleration -> next one-minute execution",
+      "invalidation": "back inside the frozen boundary plus ATR buffer",
+      "target": "one frozen-range measured extension"
+    },
+    "LIQUIDATION_DISTORTION_RECLAIM": {
+      "cause": "a high-displacement fifteen-minute move is accompanied by falling OI, then aggressive flow and depth reverse as forced inventory is exhausted",
+      "entry_sequence": "OI-decreasing displacement -> completed midpoint reclaim -> opposite flow and depth -> next one-minute execution",
+      "invalidation": "beyond the liquidation impulse extreme plus ATR buffer",
+      "target": "frozen impulse origin"
+    }
+  },
+  "common_execution": {
+    "orders": "NautilusTrader bracket order list",
+    "positions_fees_nav": "NautilusTrader account and portfolio",
+    "risk": "3% of current NautilusTrader NAV by expected stop loss including fees, slippage, impact and funding allowance",
+    "custom_backtest_engine": false,
+    "single_entry_or_position": true
+  },
+  "first_week_pass_criteria": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor_after_cost": 1.50,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25
+  },
+  "promotion_rule": "Only a scenario passing every criterion in the locked first-week NautilusTrader run may be frozen and advanced to a prospectively selected second week."
+}

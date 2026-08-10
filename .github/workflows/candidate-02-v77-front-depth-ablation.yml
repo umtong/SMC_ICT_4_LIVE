@@ -1,0 +1,212 @@
+name: candidate-02-v77-front-depth-ablation
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v77_front_depth_ablation_lock.json"
+      - ".github/workflows/candidate-02-v77-front-depth-ablation.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  single-ablation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download immutable first-week feature evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v75-first-week-7ad07baa2e80fefd91d8817cf3d648f77952b527
+          path: inputs/ablation-week1-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31080121440"
+
+      - name: Download immutable corrected second-week evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v77-second-week-31e6292b8667f79fae0237034c9f7a58bc871083
+          path: inputs/ablation-week2-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31093347991"
+
+      - name: Verify fixed runtime and exact single-variable ablation
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-02/v75_quarter_hour_core.py research/candidate-02/v76_metaorder_wave_core.py research/candidate-02/v76_nt_backtest.py
+          python -m json.tool research/candidate-02/v77_front_depth_ablation_lock.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v77_front_depth_ablation_lock.json').read_text())
+          cfg=json.loads(Path('research/candidate-02/v77_selected_config.json').read_text())
+          assert lock['status']=='LOCKED_SINGLE_ABLATION_ON_REVEALED_WEEKS'
+          assert lock['ablation']['removed_core_variable']=='front_side_depth_withdrawal_requirement'
+          assert lock['ablation']['single_ablation_only'] is True
+          assert lock['unchanged_contract']['performance_engine']=='NautilusTrader 1.230.0'
+          assert lock['unchanged_contract']['custom_backtest_engine'] is False
+          assert float(cfg['risk']['risk_fraction'])==0.03
+          assert cfg['risk']['maximum_notional_cap'] is None
+          assert cfg['risk']['score_risk_multiplier'] is None
+          assert cfg['scenario']['mode']=='METAORDER_WAVE'
+          assert int(cfg['scenario']['accepted_range_minutes'])==60
+          assert float(cfg['scenario']['target_range_multiple'])==1.25
+          assert float(cfg['scenario']['stop_range_multiple'])==1.0
+          assert int(cfg['scenario']['maximum_holding_minutes'])==180
+          PY
+
+      - name: Materialize exact feature matrices and one-minute bars
+        shell: bash
+        run: |
+          set -euo pipefail
+          for label in week1 week2; do
+            mkdir -p "inputs/v77-depth-ablation-${label}/candidate-02-v48-first-week"
+            mkdir -p "inputs/v77-depth-ablation-${label}/.cache/candidate-02/v77-depth-ablation-${label}/binance_1m"
+          done
+          find inputs/ablation-week1-source -name v48_features.npz -type f -exec cp '{}' inputs/v77-depth-ablation-week1/candidate-02-v48-first-week/v48_features.npz \;
+          find inputs/ablation-week1-source -name columns.json -type f -exec cp '{}' inputs/v77-depth-ablation-week1/candidate-02-v48-first-week/columns.json \;
+          find inputs/ablation-week2-source -name v48_features.npz -type f -exec cp '{}' inputs/v77-depth-ablation-week2/candidate-02-v48-first-week/v48_features.npz \;
+          find inputs/ablation-week2-source -name columns.json -type f -exec cp '{}' inputs/v77-depth-ablation-week2/candidate-02-v48-first-week/columns.json \;
+          for label in week1 week2; do
+            test -f "inputs/v77-depth-ablation-${label}/candidate-02-v48-first-week/v48_features.npz"
+            test -f "inputs/v77-depth-ablation-${label}/candidate-02-v48-first-week/columns.json"
+          done
+          python - <<'PY'
+          from datetime import date,timedelta
+          from pathlib import Path
+          import urllib.request
+          weeks={'week1':date(2024,9,16),'week2':date(2024,1,29)}
+          for label,evaluation_start in weeks.items():
+              root=Path(f'inputs/v77-depth-ablation-{label}/.cache/candidate-02/v77-depth-ablation-{label}/binance_1m')
+              start=evaluation_start-timedelta(days=2)
+              end=evaluation_start+timedelta(days=7)
+              d=start
+              while d<=end:
+                  name=f'BTCUSDT-1m-{d.isoformat()}.zip'
+                  path=root/name
+                  url=f'https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1m/{name}'
+                  with urllib.request.urlopen(url,timeout=60) as response:
+                      path.write_bytes(response.read())
+                  d+=timedelta(days=1)
+              if len(list(root.glob('*.zip'))) != 10:
+                  raise RuntimeError(f'incomplete {label} raw bars')
+          PY
+
+      - name: Materialize two controlled runtime configs
+        shell: bash
+        run: |
+          python - <<'PY'
+          import copy,json
+          from pathlib import Path
+          baseline=json.loads(Path('research/candidate-02/v77_selected_config.json').read_text())
+          for label,start in {'week1':'2024-09-16','week2':'2024-01-29'}.items():
+              cfg=copy.deepcopy(baseline)
+              cfg['candidate']=str(cfg['candidate'])+f'-ablate-front-depth-{label}'
+              cfg['validation']['first_week_start']=start
+              cfg['scenario']['maximum_front_depth_change']=1000000.0
+              # Every economic and execution field other than the one removed gate remains identical.
+              check=copy.deepcopy(cfg)
+              check['candidate']=baseline['candidate']
+              check['validation']['first_week_start']=baseline['validation']['first_week_start']
+              check['scenario']['maximum_front_depth_change']=baseline['scenario']['maximum_front_depth_change']
+              if check != baseline:
+                  raise RuntimeError('more than the locked front-depth variable changed')
+              Path(f'/tmp/v77_depth_ablation_{label}.json').write_text(json.dumps(cfg,indent=2,sort_keys=True))
+          PY
+
+      - name: Run both revealed weeks in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for label in week1 week2; do
+            output="artifacts/candidate-02-v77-depth-ablation-${label}"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v76_nt_backtest.py \
+              --config "/tmp/v77_depth_ablation_${label}.json" \
+              --input-root "inputs/v77-depth-ablation-${label}" \
+              --output "$output" \
+              | tee "artifacts-v77-depth-ablation-${label}.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish ablation decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          rows={}
+          all_pass=True
+          print('# Candidate-02 v77 single front-depth ablation')
+          print('| Week | Decision | Signals | Trades/day | Win | PF | Growth/day | MDD |')
+          print('|---|---:|---:|---:|---:|---:|---:|---:|')
+          for label in ('week1','week2'):
+              path=Path(f'artifacts/candidate-02-v77-depth-ablation-{label}/metrics.json')
+              if not path.exists():
+                  rows[label]={'status':'IMPLEMENTATION_ERROR'}
+                  all_pass=False
+                  print(f'| {label} | implementation error | - | - | - | - | - | - |')
+                  continue
+              m=json.loads(path.read_text())
+              checks={
+                  'trades_per_day':float(m.get('trades_per_day',0))>=0.75,
+                  'win_rate':float(m.get('win_rate',0))>=0.50,
+                  'profit_factor':float(m.get('profit_factor_after_cost',0))>=1.50,
+                  'growth':float(m.get('geometric_daily_growth_after_cost',-1))>=0.01,
+                  'drawdown':abs(float(m.get('maximum_mark_to_market_drawdown',-1)))<=0.25,
+                  'risk':abs(float(m.get('risk_fraction',0))-0.03)<=1e-12,
+                  'engine':str(m.get('engine','')).startswith('NautilusTrader'),
+                  'no_custom_engine':m.get('custom_backtest_engine') is False,
+              }
+              passed=all(checks.values())
+              all_pass &= passed
+              rows[label]={'passes_all':passed,'checks':checks,'metrics':m}
+              print(f"| {label} | {'PASS' if passed else 'REJECT'} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          decision={
+              'status':'STRUCTURAL_PATH_PRESENT_REQUIRES_NEW_BLIND_CANDIDATE' if all_pass else 'NO_STRUCTURAL_PATH_DISCARD_V77',
+              'ablation':'remove_front_side_depth_withdrawal_requirement',
+              'diagnostic_only':True,
+              'risk_fraction':0.03,
+              'performance_engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+              'weeks':rows,
+          }
+          Path('artifacts-v77-depth-ablation-decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+
+      - name: Preserve NautilusTrader ablation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v77-front-depth-ablation-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v77-depth-ablation-week1
+            artifacts/candidate-02-v77-depth-ablation-week2
+            artifacts-v77-depth-ablation-week1.log
+            artifacts-v77-depth-ablation-week2.log
+            artifacts-v77-depth-ablation-decision.json
+          if-no-files-found: warn
+          retention-days: 30

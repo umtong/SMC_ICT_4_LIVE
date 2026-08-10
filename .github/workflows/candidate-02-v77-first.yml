@@ -1,0 +1,132 @@
+name: candidate-02-v77-nautilustrader-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v77_*.json"
+      - ".github/workflows/candidate-02-v77-first.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  reward-duration-plateau:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download immutable revealed v75 feature evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v75-first-week-7ad07baa2e80fefd91d8817cf3d648f77952b527
+          path: inputs/v77-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31080121440"
+      - name: Materialize exact feature matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p inputs/v77-first-week/candidate-02-v48-first-week
+          find inputs/v77-source -name v48_features.npz -type f -exec cp '{}' inputs/v77-first-week/candidate-02-v48-first-week/v48_features.npz \;
+          find inputs/v77-source -name columns.json -type f -exec cp '{}' inputs/v77-first-week/candidate-02-v48-first-week/columns.json \;
+          test -f inputs/v77-first-week/candidate-02-v48-first-week/v48_features.npz
+          test -f inputs/v77-first-week/candidate-02-v48-first-week/columns.json
+      - name: Verify runtime and controlled plateau lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-02/v76_metaorder_wave_core.py research/candidate-02/v76_nt_backtest.py .candidate-02-v76/collect_revealed_klines.py
+          python -m json.tool research/candidate-02/v77_reward_duration_lock.json >/dev/null
+          for file in research/candidate-02/v77_*_config.json; do python -m json.tool "$file" >/dev/null; done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path("research/candidate-02/v77_reward_duration_lock.json").read_text())
+          assert lock["status"] == "LOCKED_CONTROL_ON_REVEALED_V76_FIRST_WEEK_BEFORE_NAUTILUSTRADER_RUN"
+          assert lock["custom_backtest_engine"] is False
+          assert lock["no_signal_filter_change"] is True
+          assert float(lock["risk_fraction"]) == 0.03
+          for path in Path("research/candidate-02").glob("v77_*_config.json"):
+              cfg=json.loads(path.read_text())
+              assert cfg["scenario"]["mode"] == "METAORDER_WAVE"
+              assert cfg["scenario"]["accepted_range_minutes"] == 60
+              assert cfg["scenario"]["stop_range_multiple"] == 1.0
+              assert cfg["validation"]["first_week_start"] == "2024-09-16"
+              assert float(cfg["risk"]["risk_fraction"]) == 0.03
+              assert cfg["risk"]["maximum_notional_cap"] is None
+              assert cfg["risk"]["score_risk_multiplier"] is None
+          PY
+      - name: Recollect only revealed one-minute bars
+        run: |
+          mkdir -p inputs/v76-first-week/.cache/candidate-02/v76-first-week/binance_1m
+          python .candidate-02-v76/collect_revealed_klines.py
+          mkdir -p inputs/v77-first-week/.cache/candidate-02/v77-first-week/binance_1m
+          find inputs/v76-first-week -path '*/binance_1m/*.zip' -type f -exec cp '{}' inputs/v77-first-week/.cache/candidate-02/v77-first-week/binance_1m/ \;
+          test "$(find inputs/v77-first-week/.cache/candidate-02/v77-first-week/binance_1m -name '*.zip' | wc -l)" -eq 10
+      - name: Run reward-duration plateau in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          labels=(base120 60m_1x_180 60m_1x_240 60m_1p25_120 60m_1p25_180 60m_1p25_240)
+          configs=(v76_60m_1x_config.json v77_60m_1x_180_config.json v77_60m_1x_240_config.json v77_60m_1p25_120_config.json v77_60m_1p25_180_config.json v77_60m_1p25_240_config.json)
+          for i in "${!labels[@]}"; do
+            label="${labels[$i]}"
+            config="${configs[$i]}"
+            output="artifacts/candidate-02-v77-${label}"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-02/v76_nt_backtest.py --config "research/candidate-02/${config}" --input-root inputs/v77-first-week --output "$output" | tee "artifacts-v77-${label}.log"
+            status=${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+      - name: Publish plateau matrix
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          labels=("base120","60m_1x_180","60m_1x_240","60m_1p25_120","60m_1p25_180","60m_1p25_240")
+          results={}
+          print("# Candidate-02 v77 reward-duration plateau")
+          print("| Variant | Decision | Signals | Trades/day | Win | PF | Growth/day | MDD |")
+          print("|---|---:|---:|---:|---:|---:|---:|---:|")
+          for label in labels:
+              p=Path(f"artifacts/candidate-02-v77-{label}/metrics.json")
+              if not p.exists():
+                  results[label]={"decision":"IMPLEMENTATION_ERROR"}
+                  print(f"| {label} | implementation error | - | - | - | - | - | - |")
+                  continue
+              m=json.loads(p.read_text())
+              keys=("decision","scheduled_signals","submitted_signals","trades","trades_per_day","win_rate","profit_factor_after_cost","geometric_daily_growth_after_cost","maximum_mark_to_market_drawdown","final_nav_usdt")
+              results[label]={k:m[k] for k in keys}
+              print(f"| {label} | {m['decision']} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          promoted=[label for label,value in results.items() if value.get("decision")=="PROMOTE_TO_NEXT_WEEK"]
+          Path("artifacts-v77-family-decision.json").write_text(json.dumps({"promoted_variants":promoted,"results":results},indent=2))
+          PY
+      - name: Preserve NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v77-first-week-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v77-*
+            artifacts-v77-*.log
+            artifacts-v77-family-decision.json
+          if-no-files-found: warn
+          retention-days: 30

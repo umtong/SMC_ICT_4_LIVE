@@ -1,0 +1,77 @@
+{
+  "candidate_family": "candidate-02-v91-cross-market-fair-value-catch-up",
+  "causal_question": "Does an observable spot-perpetual relative-value gap converge after the lagging market starts responding, without forecasting the direction of the whole BTC market?",
+  "causality": {
+    "all adaptive thresholds": "rolling completed-minute history shifted by one minute",
+    "entry": "after the completed confirmation minute only",
+    "event_windows_minutes": [
+      1,
+      2,
+      3
+    ],
+    "fair_value_target": "confirmation spot close multiplied by exp(pre-event observed basis)",
+    "feature_timestamp": "completed minute close"
+  },
+  "custom_backtest_engine": false,
+  "files_locked_before_collection": [
+    "v91_cross_market_fair_value_core.py",
+    "v91_nt_backtest.py",
+    "v91_perp_overshoot_2m_config.json",
+    "v91_portfolio_1m_config.json",
+    "v91_portfolio_2m_config.json",
+    "v91_portfolio_3m_config.json",
+    "v91_spot_led_2m_config.json"
+  ],
+  "first_week": {
+    "end_utc": "2025-12-22T00:00:00Z",
+    "raw_data_status_at_lock": "NOT_COLLECTED_FOR_V91",
+    "selection_method": "deterministic shuffle of unrevealed Monday weeks after 2023-01-01, excluding every prior candidate-02 week",
+    "selection_seed": 2026080691,
+    "start_utc": "2025-12-15T00:00:00Z",
+    "symbol": "BTCUSDT"
+  },
+  "first_week_gate": {
+    "maximum_mark_to_market_drawdown": 0.25,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "minimum_profit_factor_after_cost": 1.5,
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.5
+  },
+  "fixed_cost_model": {
+    "entry_fee_rate": "0.00050",
+    "entry_slippage_rate": "0.00015",
+    "funding_rate_allowance": "0.00010",
+    "market_impact_rate": "0.00005",
+    "stop_fee_rate": "0.00050",
+    "stop_slippage_rate": "0.00025",
+    "target_fee_rate": "0.00020"
+  },
+  "global_pending_entry_plus_position_limit": 1,
+  "locked_utc": "2026-08-06T11:40:00Z",
+  "mutually_exclusive_states": [
+    {
+      "cause": "spot carries significant aligned flow and price discovery while the perpetual underreacts and basis moves away from its pre-event level",
+      "confirmation": "next completed minute retains the spot impulse, moves the perpetual in the spot direction and begins closing the lagging basis gap",
+      "entry": "perpetual in spot direction",
+      "invalidation": "event-plus-confirmation extreme beyond a 0.10 ATR buffer",
+      "state": "SPOT_LED_CATCHUP",
+      "target": "spot-implied perpetual fair value at the pre-event basis"
+    },
+    {
+      "cause": "perpetual carries significant aligned flow while spot under-participates and basis widens away from its pre-event level",
+      "confirmation": "next completed minute begins closing basis and perpetual aggressive flow no longer supports the overshoot",
+      "entry": "opposite the perpetual shock",
+      "invalidation": "overshoot extreme beyond a 0.10 ATR buffer",
+      "state": "PERP_OVERSHOOT_REVERSION",
+      "target": "spot-implied perpetual fair value at the pre-event basis"
+    },
+    {
+      "action": "no trade",
+      "state": "AMBIGUOUS"
+    }
+  ],
+  "performance_engine": "NautilusTrader 1.230.0",
+  "promotion_rule": "The central two-minute state portfolio and at least one adjacent one- or three-minute portfolio must pass every gate; each active component with at least two trades must be nonnegative after cost. Only then may the unchanged central rule be locked before a new second BTC week is selected and collected.",
+  "risk_fraction": 0.03,
+  "status": "LOCKED_BEFORE_FIRST_WEEK_COLLECTION"
+}

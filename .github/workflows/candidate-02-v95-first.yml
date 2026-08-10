@@ -1,0 +1,314 @@
+name: candidate-02-v95-nautilustrader-first-week
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v95-first.yml"
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  first-week-mature-defended-swing-breakout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/repo/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/repo/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - name: Clone exact triggering branch without external actions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --branch research/candidate-02 --single-branch \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Commit controlled implementation fixes before any v95 market data
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          test ! -e inputs/v95-first-week
+          test "$(find .candidate-02-v95-runner -maxdepth 1 -name 'payload.part*' -type f | wc -l)" -eq 4
+          test "$(cat .candidate-02-v95-runner/payload.part* | wc -c)" -eq 15356
+          cat .candidate-02-v95-runner/payload.part* | base64 --decode > research/candidate-02/v95_first_week_runner.sh
+          test "$(sha256sum research/candidate-02/v95_first_week_runner.sh | cut -d' ' -f1)" = "725db7f6347910f675fdf34a71d1ea34b628854dd574c2b213182c37e698525d"
+          chmod +x research/candidate-02/v95_first_week_runner.sh
+          bash -n research/candidate-02/v95_first_week_runner.sh
+
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+          import hashlib
+          import json
+
+          root = Path('research/candidate-02')
+          core = root / 'v95_mature_swing_breakout_core.py'
+          original = core.read_text(encoding='utf-8')
+          original_sha = hashlib.sha256(original.encode()).hexdigest()
+          assert original_sha == 'cbb08f4ed11b02638c30a898444e1d8bc8a1867cfc61036044905866524295b0'
+
+          first = original
+          first_replacements = {
+              'if not 1 <= self.minimum_outside_closes <= self.classification_minutes + 1:':
+                  'if not 1 <= self.minimum_outside_closes <= self.classification_minutes:',
+              'confirm_end = min(position + config.defense_confirmation_minutes, right - 1)':
+                  'confirm_end = min(position + config.defense_confirmation_minutes - 1, right - 1)',
+              'classification_end = min(event_position + config.classification_minutes, len(x) - 1)':
+                  'classification_end = min(event_position + config.classification_minutes - 1, len(x) - 1)',
+          }
+          for before, after in first_replacements.items():
+              assert first.count(before) == 1, before
+              first = first.replace(before, after)
+          ast.parse(first)
+          first_sha = hashlib.sha256(first.encode()).hexdigest()
+          assert first_sha == 'd519683c3e3c5df6351cf003ca30a5ab5fa21053622f4434fd6422813a851663'
+
+          second = first
+          second_replacements = [
+              ('return bars.loc[bars["count"] >= minutes - 1, ["open", "high", "low", "close"]]',
+               'return bars.loc[bars["count"] == minutes, ["open", "high", "low", "close"]]'),
+              ('earliest = int(np.searchsorted(index_ns, earliest_ns, side="left"))',
+               'earliest = int(np.searchsorted(index_ns, earliest_ns, side="right"))'),
+              ('    closes = bars["close"].to_numpy(dtype=float)\n', ''),
+              ('        later_closes = closes[confirmation + 1 :]\n',
+               '        later_highs = highs[confirmation + 1 :]\n        later_lows = lows[confirmation + 1 :]\n'),
+              ('        if is_high and not np.any(later_closes > high):\n            intact_highs.append(high)\n        if is_low and not np.any(later_closes < low):\n            intact_lows.append(low)\n',
+               '        if is_high and not np.any(later_highs > high):\n            intact_highs.append(high)\n        if is_low and not np.any(later_lows < low):\n            intact_lows.append(low)\n'),
+              ('    end_position = min(event_position + config.displacement_minutes, len(x) - 1)',
+               '    end_position = min(event_position + config.displacement_minutes - 1, len(x) - 1)'),
+              ('    used_observed_times: set[int] = set()\n    cooldown_until = -1\n', ''),
+              ('            event_position=event_position,\n',
+               '            event_position=classification_end,\n'),
+              ('            if observed_ns <= cooldown_until or observed_ns in used_observed_times:\n                continue\n', ''),
+              ('            selected = _select_nearest_target(\n                levels=pivot_highs if side == "BUY" else pivot_lows,\n',
+               '            path = x.iloc[event_position : position + 1]\n            path_extreme = (\n                float(path["raw_high"].max()) if side == "BUY" else float(path["raw_low"].min())\n            )\n            intact_at_entry = (\n                [level for level in pivot_highs if level > path_extreme]\n                if side == "BUY"\n                else [level for level in pivot_lows if level < path_extreme]\n            )\n            selected = _select_nearest_target(\n                levels=intact_at_entry,\n'),
+              ('                "selected_nearest_intact_swing": target,\n',
+               '                "entry_path_extreme": path_extreme,\n                "selected_nearest_intact_swing": target,\n'),
+              ('            used_observed_times.add(observed_ns)\n            cooldown_until = observed_ns + config.cooldown_minutes * NS_MINUTE\n', ''),
+              ('    unique: list[RotationSignal] = []\n    seen: set[int] = set()\n    for signal in signals:\n        if signal.observed_time_ns in seen:\n            continue\n        seen.add(signal.observed_time_ns)\n        if signal.source_max_market_time_ns > signal.observed_time_ns:\n            raise AssertionError("future information detected in v95")\n        unique.append(signal)\n',
+               '    unique: list[RotationSignal] = []\n    seen: set[int] = set()\n    cooldown_until = -1\n    for signal in signals:\n        if signal.observed_time_ns in seen or signal.observed_time_ns <= cooldown_until:\n            continue\n        seen.add(signal.observed_time_ns)\n        if signal.source_max_market_time_ns > signal.observed_time_ns:\n            raise AssertionError("future information detected in v95")\n        unique.append(signal)\n        cooldown_until = signal.observed_time_ns + config.cooldown_minutes * NS_MINUTE\n'),
+          ]
+          for before, after in second_replacements:
+              assert second.count(before) == 1, before
+              second = second.replace(before, after)
+          ast.parse(second)
+          second_sha = hashlib.sha256(second.encode()).hexdigest()
+          assert second_sha == '60ea90e83b3f1cffb0d816c0cb08ff6c6bf6b160a025c7da5f75d7d83e5598a8'
+          core.write_text(second, encoding='utf-8')
+
+          fixed_week = {
+              'symbol': 'BTCUSDT',
+              'start_utc': '2025-10-06T00:00:00Z',
+              'end_utc': '2025-10-13T00:00:00Z',
+              'selection_seed': 2026080695,
+          }
+          fix01 = {
+              'candidate': 'candidate-02-v95-mature-defended-swing-common-accepted-breakout',
+              'classification': 'IMPLEMENTATION_ERROR_FIXED_BEFORE_FIRST_WEEK_DATA_COLLECTION',
+              'data_status_before_fix': 'NO_V95_RAW_OR_DERIVED_MARKET_DATA_COLLECTED',
+              'locked_week_unchanged': fixed_week,
+              'strategy_logic_and_parameters_unchanged': True,
+              'risk_and_cost_model_unchanged': True,
+              'performance_engine_unchanged': 'NautilusTrader 1.230.0',
+              'custom_backtest_engine': False,
+              'implementation_error': {
+                  'cause': 'inclusive dataframe endpoints made a configured N-completed-minute window evaluate N+1 bars',
+                  'affected_windows': [
+                      {'name': 'defense_confirmation_minutes', 'locked_meaning': 'reject within five completed one-minute bars beginning with the approach bar', 'before': 'position through position + 5 inclusive (six bars)', 'after': 'position through position + 4 inclusive (five bars)'},
+                      {'name': 'classification_minutes', 'locked_meaning': 'three completed one-minute bars beginning with the first external-breach bar', 'before': 'event_position through event_position + 3 inclusive (four bars)', 'after': 'event_position through event_position + 2 inclusive (three bars)'},
+                      {'name': 'minimum_outside_closes validation', 'before': 'allowed classification_minutes + 1 closes', 'after': 'allows at most classification_minutes closes'},
+                  ],
+              },
+              'controlled_change': {'old_core_sha256': original_sha, 'new_core_sha256': first_sha, 'source_line_deltas': 3},
+              'precommitted_logic_ablation_unchanged': 'require_defense_memory true to false',
+          }
+          fix02 = {
+              'candidate': fix01['candidate'],
+              'classification': 'IMPLEMENTATION_ERRORS_FIXED_BEFORE_FIRST_WEEK_DATA_COLLECTION',
+              'data_status_before_fix': 'NO_V95_RAW_OR_DERIVED_MARKET_DATA_COLLECTED',
+              'locked_week_unchanged': fixed_week,
+              'strategy_hypothesis_and_parameters_unchanged': True,
+              'risk_and_cost_model_unchanged': True,
+              'performance_engine_unchanged': 'NautilusTrader 1.230.0',
+              'custom_backtest_engine': False,
+              'controlled_change': {
+                  'old_core_sha256': first_sha,
+                  'new_core_sha256': second_sha,
+                  'new_combined_payload_sha256': 'e5847fdb56138b4b09ddb3bf62d468d3e96cb6011957121169c5c121878f2356',
+              },
+              'implementation_errors': [
+                  {'name': 'acceptance_to_displacement_future_leak', 'cause': 'displacement search began at the breach candle although common acceptance required the complete three-minute classification segment', 'fix': 'begin the six-completed-minute displacement search at the classification close and require the retest later'},
+                  {'name': 'event_order_future_cooldown', 'cause': 'event-order future scans let a later observed signal suppress an earlier real-time signal', 'fix': 'sort causal candidates by observed time before applying cooldown'},
+                  {'name': 'displacement_window_inclusive_endpoint', 'cause': 'six configured minutes evaluated seven candles', 'fix': 'evaluate exactly six completed candles'},
+                  {'name': 'incomplete_higher_timeframe_bar_admission', 'cause': 'a fifteen-minute swing bar admitted fourteen one-minute observations', 'fix': 'require all fifteen unique completed minutes'},
+                  {'name': 'target_not_intact_at_entry', 'cause': 'historical wick traversal and current-path target sweeps were ignored', 'fix': 'invalidate on wick traversal and require the target beyond the event-to-entry path extreme'},
+                  {'name': 'maturity_boundary_gap', 'cause': 'the exact minimum-age candle was outside both survival and later-break evaluation', 'fix': 'include it in survival and begin defense observation on the following candle'},
+              ],
+              'precommitted_logic_ablation_unchanged': 'require_defense_memory true to false',
+          }
+          (root / 'v95_implementation_fix_01.json').write_text(json.dumps(fix01, indent=2, sort_keys=True) + '\n')
+          (root / 'v95_implementation_fix_02.json').write_text(json.dumps(fix02, indent=2, sort_keys=True) + '\n')
+          payload_files = [
+              'v95_mature_swing_breakout_core.py',
+              'v95_nt_backtest.py',
+              'v95_base_config.json',
+              'v95_mature_swing_breakout_lock.json',
+              'v95_design.md',
+          ]
+          combined = hashlib.sha256(b''.join((root / name).read_bytes() for name in payload_files)).hexdigest()
+          assert combined == 'e5847fdb56138b4b09ddb3bf62d468d3e96cb6011957121169c5c121878f2356'
+          (root / 'v95_payload_sha256.txt').write_text(combined, encoding='utf-8')
+          PY
+
+          mkdir -p research/candidate-02/tests
+          cat > research/candidate-02/tests/test_v95_causality.py <<'PY'
+          from pathlib import Path
+          import sys
+          import numpy as np
+          import pandas as pd
+          ROOT = Path(__file__).resolve().parents[1]
+          if str(ROOT) not in sys.path:
+              sys.path.insert(0, str(ROOT))
+          import v95_mature_swing_breakout_core as v95
+
+          def minute_raw(index):
+              return pd.DataFrame({'open':100.0,'high':101.0,'low':99.0,'close':100.0}, index=index)
+
+          def test_completed_swing_bars_require_every_minute():
+              index=pd.date_range('2025-01-01 00:01',periods=15,freq='min',tz='UTC')
+              raw=minute_raw(index)
+              assert len(v95._completed_bars(raw,start=index[0]-pd.Timedelta(minutes=1),end=index[-1],minutes=15))==1
+              assert v95._completed_bars(raw.drop(index[7]),start=index[0]-pd.Timedelta(minutes=1),end=index[-1],minutes=15).empty
+
+          def test_wick_traversal_consumes_target_pivot():
+              index=pd.date_range('2025-01-01 00:15',periods=7,freq='15min',tz='UTC')
+              bars=pd.DataFrame({'open':[8,9,10,9,8,9,8],'high':[9,10,12,10,9,13,9],'low':[7,8,9,8,7,8,7],'close':[8,9,11,9,8,8.5,8]},index=index,dtype=float)
+              highs,_=v95._intact_pivots(bars,2)
+              assert 12.0 not in highs
+
+          def test_displacement_horizon_is_exactly_six_completed_minutes():
+              start=5
+              index=pd.date_range('2025-01-01',periods=20,freq='min',tz='UTC')
+              frame=pd.DataFrame({'raw_open':np.full(20,100.0),'raw_high':np.full(20,100.1),'raw_low':np.full(20,99.9),'raw_close':np.full(20,100.0),'body':np.zeros(20),'body_threshold':np.full(20,0.1),'atr':np.ones(20)},index=index)
+              seventh=start+6
+              frame.loc[index[seventh],['raw_open','raw_high','raw_low','raw_close','body']]=[100.0,101.1,100.6,101.0,1.0]
+              frame.loc[index[seventh-2],'raw_high']=100.2
+              config=v95.MatureSwingBreakoutConfig()
+              assert v95._find_displacement(x=frame,event_position=start,boundary=100.0,direction=1,config=config) is None
+              frame.loc[index[seventh],['raw_open','raw_high','raw_low','raw_close','body']]=[100.0,100.1,99.9,100.0,0.0]
+              sixth=start+5
+              frame.loc[index[sixth],['raw_open','raw_high','raw_low','raw_close','body']]=[100.0,101.1,100.6,101.0,1.0]
+              frame.loc[index[sixth-2],'raw_high']=100.2
+              result=v95._find_displacement(x=frame,event_position=start,boundary=100.0,direction=1,config=config)
+              assert result is not None and result[0]==sixth
+
+          def test_exact_maturity_boundary_is_part_of_survival():
+              confirmation=pd.Timestamp('2025-01-01 00:00',tz='UTC')
+              index=pd.date_range(confirmation+pd.Timedelta(minutes=1),periods=600,freq='min',tz='UTC')
+              raw=minute_raw(index)
+              raw.loc[confirmation+pd.Timedelta(minutes=480),'high']=101.1
+              candidate=v95.SwingLevelCandidate(level_id='test-high',side='HIGH',price=101.0,pivot_close_ns=int((confirmation-pd.Timedelta(minutes=30)).value),confirmation_ns=int(confirmation.value),expiry_ns=int((confirmation+pd.Timedelta(minutes=600)).value))
+              atr=pd.Series(1.0,index=index)
+              config=v95.MatureSwingBreakoutConfig(minimum_level_age_minutes=480,maximum_level_age_minutes=600,require_defense_memory=False)
+              assert v95._qualify_levels(raw,candidates=[candidate],atr=atr,config=config)==[]
+
+          def test_source_enforces_acceptance_before_displacement_and_chronological_cooldown():
+              source=Path(v95.__file__).read_text()
+              assert 'event_position=classification_end' in source
+              assert 'path = x.iloc[event_position : position + 1]' in source
+              assert 'observed_ns <= cooldown_until or observed_ns in used_observed_times' not in source
+              sort_at=source.index('signals.sort(')
+              assert sort_at < source.index('cooldown_until = -1',sort_at)
+          PY
+
+          python -m py_compile research/candidate-02/v95_mature_swing_breakout_core.py research/candidate-02/v95_nt_backtest.py
+          python -m json.tool research/candidate-02/v95_implementation_fix_01.json >/dev/null
+          python -m json.tool research/candidate-02/v95_implementation_fix_02.json >/dev/null
+          python -m pytest -q research/candidate-02/tests/test_v95_causality.py
+          test "$(cat research/candidate-02/v95_payload_sha256.txt)" = "e5847fdb56138b4b09ddb3bf62d468d3e96cb6011957121169c5c121878f2356"
+          test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "60ea90e83b3f1cffb0d816c0cb08ff6c6bf6b160a025c7da5f75d7d83e5598a8"
+          rm -rf .candidate-02-v95-runner
+
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(candidate-02): enforce v95 causal state ordering before data"
+          git push origin HEAD:research/candidate-02
+          echo "V95_SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Execute prospectively locked v95 first BTC week
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          test "$(git rev-parse HEAD)" = "$V95_SOURCE_COMMIT"
+          test "$(sha256sum research/candidate-02/v95_mature_swing_breakout_core.py | cut -d' ' -f1)" = "60ea90e83b3f1cffb0d816c0cb08ff6c6bf6b160a025c7da5f75d7d83e5598a8"
+          test "$(cat research/candidate-02/v95_payload_sha256.txt)" = "e5847fdb56138b4b09ddb3bf62d468d3e96cb6011957121169c5c121878f2356"
+          test "$(sha256sum research/candidate-02/v95_first_week_runner.sh | cut -d' ' -f1)" = "725db7f6347910f675fdf34a71d1ea34b628854dd574c2b213182c37e698525d"
+          set +e
+          bash research/candidate-02/v95_first_week_runner.sh 2>&1 | tee artifacts-v95-runner.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "$status" > artifacts-v95-runner-exit-code.txt
+          if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+
+      - name: Commit compact reproducible evidence and immutable data manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -d repo/.git ]] || exit 0
+          cd repo
+          source_commit="${V95_SOURCE_COMMIT:-$GITHUB_SHA}"
+          run_dir="research/candidate-02/results/v95_first_week/${source_commit}"
+          mkdir -p "$run_dir/variants" "$run_dir/manifests"
+          cp -f artifacts-v95-first-week-decision.json "$run_dir/" 2>/dev/null || true
+          cp -f artifacts-v95-variant-manifest.json "$run_dir/" 2>/dev/null || true
+          cp -f artifacts-v95-runner.log "$run_dir/" 2>/dev/null || true
+          cp -f artifacts-v95-runner-exit-code.txt "$run_dir/" 2>/dev/null || true
+          for directory in artifacts/candidate-02-v95-*; do
+            [[ -d "$directory" ]] || continue
+            label="$(basename "$directory")"
+            mkdir -p "$run_dir/variants/$label"
+            for file in metrics.json signals_schedule.json trades.jsonl risk_sizing.jsonl validation_exit_code.txt account.csv positions.csv fills.csv orders.csv; do
+              [[ -f "$directory/$file" ]] && cp "$directory/$file" "$run_dir/variants/$label/$file"
+            done
+          done
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, os
+          root=Path('inputs/v95-first-week')
+          source=os.environ.get('V95_SOURCE_COMMIT',os.environ['GITHUB_SHA'])
+          output=Path('research/candidate-02/results/v95_first_week')/source/'manifests'
+          records=[]
+          if root.exists():
+              for path in sorted(p for p in root.rglob('*') if p.is_file()):
+                  records.append({'path':path.relative_to(root).as_posix(),'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+          manifest={'candidate':'candidate-02-v95-mature-defended-swing-common-accepted-breakout','symbol':'BTCUSDT','evaluation_start_utc':'2025-10-06T00:00:00Z','evaluation_end_utc':'2025-10-13T00:00:00Z','selection_seed':2026080695,'source_commit':source,'performance_engine':'NautilusTrader 1.230.0','custom_backtest_engine':False,'risk_fraction':0.03,'files':records}
+          output.mkdir(parents=True,exist_ok=True)
+          (output/'immutable_input_sha256.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+          find "$run_dir" -type f -size +20M -delete
+          git config user.name "umtong"
+          git config user.email "dddgjj03@gmail.com"
+          git add "$run_dir"
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git commit -m "results(candidate-02): preserve v95 first-week NautilusTrader evidence"
+            git push origin HEAD:research/candidate-02
+          fi

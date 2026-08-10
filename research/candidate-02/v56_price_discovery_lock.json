@@ -1,0 +1,52 @@
+{
+  "candidate": "candidate-02-high-impact-price-discovery-v56",
+  "status": "LOCKED_BEFORE_NAUTILUSTRADER_PERFORMANCE_RUN",
+  "engine": "NautilusTrader 1.230.0 only",
+  "risk_fraction": 0.03,
+  "development_week": "2024-11-18",
+  "development_data_status": "already revealed by rejected v55 and used only to define causal state and verify opportunity count/geometry",
+  "economic_filter_before_execution": {
+    "rejected_branch": "low-impact absorption reversal",
+    "reason": "the observable return to the prior value center or impulse origin did not provide one cost-after R under the fixed fee and slippage model",
+    "retained_branch": "high-impact order-flow price discovery with open-interest construction"
+  },
+  "causal_sequence": [
+    "aggregate the previous three completed five-minute bars into a 15-minute aggressive-flow episode",
+    "require absolute volume-weighted taker-flow imbalance above its prior 30-day 70th percentile",
+    "require price response in the same direction as the aggressive flow",
+    "require response per unit flow above its prior 30-day 55th percentile, indicating weak absorption",
+    "require the next completed five-minute bar to continue in the same direction",
+    "require one-percent depth imbalance to be no more than mildly opposed",
+    "require one-hour open interest to increase, indicating new inventory rather than pure position closure",
+    "enter at the next executable one-minute NautilusTrader bar",
+    "invalidate after a greater-than-half retracement of the impulse plus 0.15 ATR",
+    "target a two-impulse measured move from the confirmed entry"
+  ],
+  "parameters": {
+    "flow_lookback_bars_5m": 3,
+    "prior_quantile_days": 30,
+    "flow_abs_quantile": 0.70,
+    "impact_quantile": 0.55,
+    "minimum_event_response": 0.0,
+    "minimum_confirmation_return": 0.0,
+    "minimum_confirmation_depth": -0.10,
+    "minimum_oi_change_1h": 0.0,
+    "stop_retracement_fraction": 0.50,
+    "stop_buffer_atr": 0.15,
+    "target_impulse_multiple": 2.0,
+    "maximum_holding_minutes": 120,
+    "cooldown_bars": 6,
+    "minimum_cost_after_rr": 1.0,
+    "maximum_cost_after_rr": 3.0
+  },
+  "expected_raw_opportunities_before_global_busy_filter": 7,
+  "promotion": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor_after_cost": 1.50,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25,
+    "rule": "If this revealed development week fails, discard v56. If it passes, prospectively lock a fresh second week before collecting raw data."
+  },
+  "custom_backtest_engine": false
+}

@@ -1,0 +1,106 @@
+{
+  "candidate_family": "candidate-02-v75-quarter-hour-algorithmic-opening-auction",
+  "status": "LOCKED_BEFORE_FIRST_WEEK_DIRECT_COLLECTION",
+  "locked_utc": "2026-08-06T06:55:00Z",
+  "performance_engine": "NautilusTrader 1.230.0 only through existing candidate-02 run_window architecture",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "first_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2024-09-16T00:00:00Z",
+    "end_utc": "2024-09-23T00:00:00Z",
+    "selection_seed": 2026080675,
+    "selection_method": "deterministic shuffle of eligible Monday weeks inside direct-data coverage after excluding every candidate-02 revealed week",
+    "raw_data_status_at_lock": "NOT_COLLECTED_FOR_V75"
+  },
+  "research_basis": [
+    {
+      "source": "The Quarter-Hour Effect: Periodic Algorithmic Trading and Return Predictability in Cryptocurrency Futures, arXiv:2607.09426v2",
+      "use": "motivates a synchronized 15-minute execution origin and first-ten-second flow split; no paper-return coefficient is used as a parameter"
+    },
+    {
+      "source": "Order Flows and Limit Order Book Resiliency on the Meso-Scale, arXiv:1708.02715",
+      "use": "motivates separating acceptance after liquidity withdrawal from failure after replenishment rather than treating imbalance alone as a signal"
+    }
+  ],
+  "causal_question": "At a synchronized quarter-hour execution burst, does first-ten-second aggressive flow consume the frozen prior 15-minute external boundary and gain completed-price acceptance, or does the remaining fifty seconds absorb the shock and rotate through the prior auction?",
+  "direct_sources": [
+    "Binance Vision USD-M aggTrades",
+    "Binance Vision USD-M bookDepth",
+    "Binance Vision USD-M one-minute klines"
+  ],
+  "mutually_exclusive_modes": [
+    {
+      "mode": "IMMEDIATE_ACCEPTANCE",
+      "confirmation": "opening minute closes outside the frozen auction with aligned completed-minute flow",
+      "entry": "market after completed opening minute",
+      "invalidation": "opening origin/extreme or boundary plus 0.10 ATR",
+      "target": "one frozen 15-minute auction range extension"
+    },
+    {
+      "mode": "TWO_CLOSE_ACCEPTANCE",
+      "confirmation": "opening minute accepts outside and next completed close remains outside without strongly opposing flow",
+      "entry": "market after second completed outside close",
+      "invalidation": "opening origin/extreme or boundary plus 0.10 ATR",
+      "target": "one frozen 15-minute auction range extension"
+    },
+    {
+      "mode": "BOUNDARY_HOLD",
+      "confirmation": "opening minute accepts outside and a completed retest touches then holds the frozen boundary",
+      "entry": "market after completed retest-hold",
+      "invalidation": "opening origin/extreme or boundary plus 0.10 ATR",
+      "target": "one frozen 15-minute auction range extension"
+    },
+    {
+      "mode": "FAILED_OPENING_ROTATION",
+      "confirmation": "opening ten-second shock sweeps the frozen boundary but remaining fifty-second flow reverses and completed minute reclaims the auction",
+      "entry": "market opposite the shock",
+      "invalidation": "opening extreme plus 0.10 ATR",
+      "target": "opposite frozen 15-minute boundary"
+    }
+  ],
+  "causality": {
+    "first_ten_seconds": "released only at containing minute close",
+    "remaining_fifty_seconds": "released only at containing minute close",
+    "adaptive_thresholds": "quarter-hour event-only rolling quantiles with shift(1)",
+    "frozen_auction": "the 15 completed one-minute bars immediately before the quarter-hour opening minute",
+    "orders": "submitted only at completed observation timestamps"
+  },
+  "fixed_risk": {
+    "starting_nav_usdt": "100000",
+    "risk_fraction": "0.03",
+    "quantity_rule": "current NautilusTrader account NAV times 3% divided by expected per-unit loss including entry and stop fees, slippage, impact and funding",
+    "maximum_notional_cap": null,
+    "score_risk_multiplier": null
+  },
+  "fixed_costs": {
+    "entry_fee_rate": "0.00050",
+    "target_fee_rate": "0.00020",
+    "stop_fee_rate": "0.00050",
+    "entry_slippage_rate": "0.00015",
+    "stop_slippage_rate": "0.00025",
+    "market_impact_rate": "0.00005",
+    "funding_rate_allowance": "0.00010"
+  },
+  "first_week_gate": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.5,
+    "minimum_profit_factor": 1.5,
+    "minimum_geometric_daily_growth": 0.01,
+    "maximum_drawdown": 0.25
+  },
+  "promotion_rule": "A mode must satisfy every first-week gate. A weak direction, frequency, reward geometry or drawdown ends that mode. Only a passing unchanged mode is locked before selecting and collecting a new second BTC week.",
+  "locked_files": [
+    "research/candidate-02/v75_quarter_hour_core.py",
+    "research/candidate-02/v75_nt_backtest.py",
+    ".candidate-02-v75/collect_first_week.py",
+    ".candidate-02-v75/build_features.py",
+    "research/candidate-02/v75_immediate_acceptance_config.json",
+    "research/candidate-02/v75_two_close_acceptance_config.json",
+    "research/candidate-02/v75_boundary_hold_config.json",
+    "research/candidate-02/v75_failed_opening_rotation_config.json",
+    "research/candidate-02/v75_quarter_hour_family_lock.json",
+    ".github/workflows/candidate-02-v75-first.yml"
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "candidate_family": "candidate-02-v102-quarter-hour-impact-retention",
+  "custom_backtest_engine": false,
+  "decision_rule": "Use the two revealed weeks only to decide whether a structural path exists. A candidate may receive a new prospectively locked random BTC week only if the central and at least one adjacent response horizon show sufficient frequency and positive after-cost expectancy in both revealed weeks. Revealed-week performance is never project certification.",
+  "development_weeks": [
+    {
+      "role": "previous positive v77 week",
+      "start_utc": "2024-09-16T00:00:00Z"
+    },
+    {
+      "role": "previous negative locked v77 week",
+      "start_utc": "2024-01-29T00:00:00Z"
+    }
+  ],
+  "global_pending_entry_plus_position_limit": 1,
+  "hypothesis": {
+    "ambiguous_state": "no trade when impact decays, flow changes sign, depth refills materially or cost-after geometry is insufficient",
+    "entry": "market order at the completed response minute",
+    "event_clock": "first ten seconds of every quarter-hour opening minute",
+    "initial_shock": "opening ten-second flow, turnover and return exceed prior-only event quantiles and remain aligned through the completed opening minute",
+    "invalidation": "pre-burst close plus 0.10 prior ATR against the delivery direction",
+    "liquidity_condition": "front-side one-percent depth may refill by at most five percent during the opening minute",
+    "objective": "one frozen prior 60-minute accepted-close range from entry",
+    "permanence_confirmation": "after 2, 3 or 4 completed response minutes, price retains at least 100 percent of the opening-minute impact and mean aggressive flow remains directionally non-negative"
+  },
+  "performance_engine": "NautilusTrader 1.230.0",
+  "research_basis": [
+    {
+      "implication": "temporary impact and post-metaorder decay must be measured rather than inferred from aggressive flow alone",
+      "reference": "Bacry et al., Market impacts and the life cycle of investors' orders"
+    },
+    {
+      "implication": "retained and decayed impact are distinct states",
+      "reference": "Bucci et al., Slow decay of impact in equity markets"
+    },
+    {
+      "implication": "an intraday market-structure shift is a short-horizon delivery state and should not automatically be generalized into a multi-session trend",
+      "reference": "ICT 2022 Mentorship Episode 3"
+    }
+  ],
+  "risk_fraction": 0.03,
+  "status": "DEVELOPMENT_CONTROL_LOCKED",
+  "variant_matrix": {
+    "adjacent": [
+      {
+        "response_minutes": 2
+      },
+      {
+        "response_minutes": 4
+      }
+    ],
+    "central": {
+      "response_minutes": 3
+    }
+  }
+}

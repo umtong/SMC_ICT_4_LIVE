@@ -1,0 +1,58 @@
+name: candidate-02-v102-materialize-locked-sources
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v102-materialize.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct and verify exact v102 locked payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v102-materialized /tmp/v102_payload.tar.gz
+          mkdir -p /tmp/v102-materialized
+          base64 --decode research/candidate-02/v102_payload.b64 > /tmp/v102_payload.tar.gz
+          echo 'ef78b1cb54fc78e3403d44ad8d1a7f8827518fef2ddee4e6cffc1bcec9fd574c  /tmp/v102_payload.tar.gz' | sha256sum --check
+          tar -xzf /tmp/v102_payload.tar.gz -C /tmp/v102-materialized
+          cd /tmp/v102-materialized
+          echo 'c2edc8603ae8eb7b7b817e2f299a2f7f1a664e80f8b4feae73accf5c7b4cafd8  research/candidate-02/v102_impact_retention_core.py' | sha256sum --check
+          echo 'fc50da7430db53002b8cea24da31523edc1bbaa8af11142c72a75ded8e66bcbb  research/candidate-02/v102_nt_backtest.py' | sha256sum --check
+          echo '2824afeb2ce4b4294306f87190a13403bda606a7fad1b41ee2241018c2e91fa2  research/candidate-02/v102_base_config.json' | sha256sum --check
+          echo '4822fb9750f2f381e768a36a44eda6878a8e37aa007755cecaa21715f52d313c  research/candidate-02/v102_development_lock.json' | sha256sum --check
+          echo '011b6ee16dd2e76a82b36e7f12b4cdbffd32f319749d690aef338eed1301b636  .github/workflows/candidate-02-v102-development.yml' | sha256sum --check
+          python -m py_compile research/candidate-02/v102_impact_retention_core.py research/candidate-02/v102_nt_backtest.py
+          python -m json.tool research/candidate-02/v102_base_config.json >/dev/null
+          python -m json.tool research/candidate-02/v102_development_lock.json >/dev/null
+
+      - name: Commit readable v102 sources atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a /tmp/v102-materialized/research/candidate-02/v102_impact_retention_core.py research/candidate-02/
+          cp -a /tmp/v102-materialized/research/candidate-02/v102_nt_backtest.py research/candidate-02/
+          cp -a /tmp/v102-materialized/research/candidate-02/v102_base_config.json research/candidate-02/
+          cp -a /tmp/v102-materialized/research/candidate-02/v102_development_lock.json research/candidate-02/
+          cp -a /tmp/v102-materialized/.github/workflows/candidate-02-v102-development.yml .github/workflows/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            research/candidate-02/v102_impact_retention_core.py \
+            research/candidate-02/v102_nt_backtest.py \
+            research/candidate-02/v102_base_config.json \
+            research/candidate-02/v102_development_lock.json \
+            .github/workflows/candidate-02-v102-development.yml
+          git diff --cached --check
+          git commit -m 'research(candidate-02): lock v102 impact retention controls'
+          git push origin HEAD:research/candidate-02

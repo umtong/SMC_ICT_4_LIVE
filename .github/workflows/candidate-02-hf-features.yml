@@ -1,0 +1,36 @@
+name: candidate-02-btc-feature-dataset
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-adaptive/download_feature_dataset.py"
+      - ".github/workflows/candidate-02-hf-features.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dataset client
+        run: python -m pip install --disable-pip-version-check "huggingface_hub>=0.30,<2"
+      - name: Download deterministic BTC feature files
+        env:
+          HF_HUB_DISABLE_XET: "1"
+        run: python .candidate-02-adaptive/download_feature_dataset.py
+      - name: Upload immutable feature dataset and manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-btc-features-${{ github.sha }}
+          path: |
+            .cache/candidate-02/hf-btc-features/features/BTCUSDT
+            .cache/candidate-02/hf-btc-features/README.md
+            artifacts/candidate-02-hf-features/manifest.json
+          retention-days: 14

@@ -1,0 +1,70 @@
+name: candidate-02-v89-materialize
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-v89/payload.b64"
+      - ".github/workflows/candidate-02-v89-materialize.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify and extract exact prospective v89 payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .candidate-02-v89/payload.b64 > /tmp/v89_payload.tar.gz
+          echo "279f5d93418357174967840eee6ebf05551bdd137e4c3692d5fb429b73efab5d  /tmp/v89_payload.tar.gz" | sha256sum -c -
+          tar -tzf /tmp/v89_payload.tar.gz | tee /tmp/v89_members.txt
+          if grep -Eq '(^/|(^|/)\.\.(/|$))' /tmp/v89_members.txt; then
+            echo "unsafe archive member" >&2
+            exit 1
+          fi
+          tar -xzf /tmp/v89_payload.tar.gz -C .
+          python -m py_compile \
+            research/candidate-02/v89_cross_market_impact_core.py \
+            research/candidate-02/v89_nt_backtest.py \
+            .candidate-02-v89/collect_spot.py \
+            .candidate-02-v89/augment_cross_market.py
+          python -m json.tool research/candidate-02/v89_cross_market_impact_lock.json >/dev/null
+          for file in research/candidate-02/v89_*_config.json; do python -m json.tool "$file" >/dev/null; done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v89_cross_market_impact_lock.json').read_text())
+          assert lock['status']=='LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['first_week']['raw_data_status_at_lock']=='NOT_COLLECTED_FOR_V89'
+          assert float(lock['risk_fraction'])==0.03
+          assert lock['custom_backtest_engine'] is False
+          PY
+
+      - name: Commit readable non-workflow v89 sources atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .candidate-02-v89/payload.b64
+          git add \
+            research/candidate-02/v89_cross_market_impact_core.py \
+            research/candidate-02/v89_nt_backtest.py \
+            research/candidate-02/v89_cross_market_impact_lock.json \
+            research/candidate-02/v89_portfolio_15m_config.json \
+            research/candidate-02/v89_portfolio_30m_config.json \
+            research/candidate-02/v89_portfolio_60m_config.json \
+            research/candidate-02/v89_permanent_30m_config.json \
+            research/candidate-02/v89_transient_30m_config.json \
+            .candidate-02-v89/collect_spot.py \
+            .candidate-02-v89/augment_cross_market.py
+          git commit -m "research(candidate-02): lock v89 cross-market impact state"
+          git push origin HEAD:research/candidate-02

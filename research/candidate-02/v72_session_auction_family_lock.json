@@ -1,0 +1,104 @@
+{
+  "candidate_family": "candidate-02-v72-session-opening-auction-classifier",
+  "status": "LOCKED_REVEALED_WEEK_SESSION_FAMILY_BEFORE_NAUTILUSTRADER_RUN",
+  "locked_utc": "2026-08-06T06:35:00Z",
+  "performance_engine": "NautilusTrader 1.230.0 only",
+  "custom_backtest_engine": false,
+  "entry_execution": "five-minute post-only LIMIT at the frozen pre-session boundary with contingent TP/SL",
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "development_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2024-10-28T00:00:00Z",
+    "end_utc": "2024-11-04T00:00:00Z",
+    "status": "ALREADY_REVEALED_BY_V66",
+    "use": "session-state development only; not counted as a fresh random-week pass"
+  },
+  "fixed_sessions_utc": ["00:00", "08:00", "13:30", "16:00"],
+  "causal_question": "At repeated session activity transitions, did aggressive flow merely collect external pre-session liquidity and fail because the front book replenished, or did it create accepted price discovery because the front book was withdrawn?",
+  "prelocked_pre_session_horizons": [
+    {"label": "range_20m", "pre_session_minutes": 20},
+    {"label": "range_30m", "pre_session_minutes": 30},
+    {"label": "range_45m", "pre_session_minutes": 45}
+  ],
+  "base_scenario": {
+    "mode": "SESSION_OPENING_AUCTION_CLASSIFIER",
+    "session_minutes_utc": [0, 480, 810, 960],
+    "observation_minutes": 20,
+    "prior_window_minutes": 720,
+    "prior_minimum_minutes": 180,
+    "flow_abs_quantile": 0.55,
+    "turnover_quantile": 0.40,
+    "depth_change_abs_quantile": 0.50,
+    "impact_efficiency_low_quantile": 0.45,
+    "impact_efficiency_high_quantile": 0.55,
+    "vpin_quantile": 0.70,
+    "flow_floor": 0.05,
+    "maximum_pre_session_efficiency": 0.55,
+    "minimum_range_atr": 0.75,
+    "maximum_range_atr": 8.0,
+    "touch_tolerance_atr": 0.20,
+    "minimum_touches_each_side": 1,
+    "minimum_directional_flow": 0.08,
+    "sweep_buffer_atr": 0.05,
+    "rejection_reclaim_atr": 0.00,
+    "rejection_minimum_replenishment": 0.0,
+    "rejection_stop_buffer_atr": 0.10,
+    "acceptance_close_buffer_atr": 0.05,
+    "acceptance_opposite_depth_floor": -0.10,
+    "acceptance_stop_inside_atr": 0.15,
+    "acceptance_range_extension": 0.75,
+    "entry_expiry_minutes": 5,
+    "maximum_holding_minutes": 120,
+    "atr_lookback_minutes": 60,
+    "minimum_cost_after_rr": 0.75,
+    "maximum_cost_after_rr": 5.0
+  },
+  "mutually_exclusive_session_states": [
+    {
+      "state": "REPLENISHED_FAILED_SWEEP",
+      "setup": "directional aggressive flow sweeps one frozen pre-session boundary, same-side one-percent depth rebuilds, price impact is inefficient and the completed minute closes back inside",
+      "entry": "post-only limit at the consumed boundary",
+      "invalidation": "beyond the observed sweep extreme plus 0.10 ATR",
+      "target": "aggressive-volume weighted pre-session equilibrium"
+    },
+    {
+      "state": "WITHDRAWN_ACCEPTED_BREAK",
+      "setup": "directional aggressive flow closes beyond one frozen pre-session boundary, same-side one-percent depth is withdrawn, opposite depth is stable and price impact is efficient",
+      "confirmation": "second consecutive completed minute closes outside the same boundary",
+      "entry": "post-only limit at the accepted boundary",
+      "invalidation": "0.15 ATR back inside the boundary",
+      "target": "0.75 pre-session-range extension"
+    }
+  ],
+  "fixed_risk": {
+    "starting_nav_usdt": "100000",
+    "risk_fraction": "0.03",
+    "maximum_notional_cap": null,
+    "score_risk_multiplier": null
+  },
+  "fixed_costs": {
+    "entry_fee_rate": "0.00050",
+    "target_fee_rate": "0.00020",
+    "stop_fee_rate": "0.00050",
+    "entry_slippage_rate": "0.00015",
+    "stop_slippage_rate": "0.00025",
+    "market_impact_rate": "0.00005",
+    "funding_rate_allowance": "0.00010"
+  },
+  "pass_criteria": {
+    "minimum_trades_per_day": 0.75,
+    "minimum_win_rate": 0.50,
+    "minimum_profit_factor_after_cost": 1.50,
+    "minimum_geometric_daily_growth_after_cost": 0.01,
+    "maximum_mark_to_market_drawdown": 0.25
+  },
+  "family_promotion_rule": "The central 30-minute pre-session range and at least one adjacent 20- or 45-minute range must satisfy every gate. Only then is the unchanged 30-minute classifier locked before a newly selected uncollected first BTC week.",
+  "fresh_data_rule": "No fresh random-week direct data is collected before the revealed-week horizon plateau passes.",
+  "locked_files": [
+    "research/candidate-02/v70_limit_strategy.py",
+    "research/candidate-02/v72_session_auction_core.py",
+    "research/candidate-02/v72_nt_backtest.py",
+    "research/candidate-02/v72_session_auction_family_lock.json"
+  ]
+}

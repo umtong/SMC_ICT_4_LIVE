@@ -1,0 +1,31 @@
+name: candidate-02-micro-probe
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".candidate-02-micro/**"
+      - ".github/workflows/candidate-02-micro-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Probe first-day direct microstructure archives
+        run: python .candidate-02-micro/probe_first_day.py
+      - name: Upload probe evidence and available files
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-micro-probe-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-micro-probe/probe.json
+            .cache/candidate-02/micro-probe
+          retention-days: 30

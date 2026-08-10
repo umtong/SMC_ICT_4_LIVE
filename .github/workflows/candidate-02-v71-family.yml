@@ -1,0 +1,116 @@
+name: candidate-02-v71-nautilustrader-family
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v71_*.py"
+      - "research/candidate-02/v71_*.json"
+      - ".candidate-02-v71/**"
+      - ".candidate-02-v67/collect_revealed_klines.py"
+      - ".github/workflows/candidate-02-v71-family.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  balanced-auction-family:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download immutable direct features
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v66-first-week-2f9098a37b57de57d314650075c6edc36b969667
+          path: inputs/v71-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31074428818"
+      - name: Materialize exact feature matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p inputs/v67-control/candidate-02-v48-first-week
+          find inputs/v71-source -name v48_features.npz -type f -exec cp '{}' inputs/v67-control/candidate-02-v48-first-week/v48_features.npz \;
+          find inputs/v71-source -name columns.json -type f -exec cp '{}' inputs/v67-control/candidate-02-v48-first-week/columns.json \;
+          test -f inputs/v67-control/candidate-02-v48-first-week/v48_features.npz
+          test -f inputs/v67-control/candidate-02-v48-first-week/columns.json
+      - name: Verify runtime family and limit API
+        run: |
+          smc4 doctor
+          python -m py_compile research/candidate-02/v70_limit_strategy.py research/candidate-02/v71_balanced_sweep_core.py research/candidate-02/v71_nt_backtest.py .candidate-02-v71/materialize_configs.py .candidate-02-v67/collect_revealed_klines.py
+          python -m json.tool research/candidate-02/v71_balanced_sweep_family_lock.json >/dev/null
+          python - <<'PY'
+          import inspect,json
+          from pathlib import Path
+          from nautilus_trader.common.factories import OrderFactory
+          sig=inspect.signature(OrderFactory.bracket)
+          assert all(name in sig.parameters for name in ("entry_order_type","entry_price","entry_post_only","expire_time"))
+          lock=json.loads(Path("research/candidate-02/v71_balanced_sweep_family_lock.json").read_text())
+          assert lock["status"]=="LOCKED_REVEALED_WEEK_AUCTION_FAMILY_BEFORE_NAUTILUSTRADER_RUN"
+          assert lock["custom_backtest_engine"] is False
+          assert float(lock["risk_fraction"])==0.03
+          assert [v["auction_minutes"] for v in lock["prelocked_horizons"]]==[20,30,45]
+          PY
+      - name: Materialize prelocked configs
+        run: |
+          python .candidate-02-v71/materialize_configs.py --lock research/candidate-02/v71_balanced_sweep_family_lock.json --output generated/v71
+          test "$(find generated/v71 -name '*.json' | wc -l)" -eq 3
+      - name: Recollect only revealed one-minute bars
+        run: python .candidate-02-v67/collect_revealed_klines.py
+      - name: Run horizons in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for label in auction_20m auction_30m auction_45m; do
+            output="artifacts/candidate-02-v71-${label}";mkdir -p "$output";set +e
+            python research/candidate-02/v71_nt_backtest.py --config "generated/v71/${label}.json" --input-root inputs/v67-control --output "$output" | tee "artifacts-v71-${label}.log"
+            status=${PIPESTATUS[0]};set -e;echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != 0 && "$status" != 2 ]]; then exit "$status"; fi
+          done
+      - name: Publish family decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          labels=["auction_20m","auction_30m","auction_45m"];results={}
+          print("# Candidate-02 v71 balanced-auction passive retest")
+          print("| Variant | Decision | Scheduled | Trades/day | Win | PF | Growth/day | MDD |")
+          print("|---|---:|---:|---:|---:|---:|---:|---:|")
+          for label in labels:
+              p=Path(f"artifacts/candidate-02-v71-{label}/metrics.json")
+              if not p.exists(): results[label]={"decision":"IMPLEMENTATION_ERROR"};print(f"| {label} | implementation error | - | - | - | - | - | - |");continue
+              m=json.loads(p.read_text());results[label]={k:m[k] for k in ("decision","scheduled_signals","submitted_signals","trades","trades_per_day","win_rate","profit_factor_after_cost","geometric_daily_growth_after_cost","maximum_mark_to_market_drawdown")}
+              print(f"| {label} | {m['decision']} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          passed=lambda label:results.get(label,{}).get("decision")=="PROMOTE_TO_NEXT_WEEK"
+          plateau=passed("auction_30m") and (passed("auction_20m") or passed("auction_45m"))
+          decision={"central_30m_plateau":plateau,"promote":"auction_30m" if plateau else None,"results":results}
+          Path("artifacts-v71-family-decision.json").write_text(json.dumps(decision,indent=2));print("\n```json");print(json.dumps(decision,indent=2));print("```")
+          PY
+      - name: Preserve NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v71-family-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v71-auction_20m
+            artifacts/candidate-02-v71-auction_30m
+            artifacts/candidate-02-v71-auction_45m
+            artifacts-v71-*.log
+            artifacts-v71-family-decision.json
+            generated/v71
+          if-no-files-found: warn
+          retention-days: 30

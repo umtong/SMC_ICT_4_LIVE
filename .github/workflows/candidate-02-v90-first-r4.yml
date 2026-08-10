@@ -1,0 +1,228 @@
+name: candidate-02-v90-nautilustrader-first-week-r4
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - ".github/workflows/candidate-02-v90-first-r4.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  same-week-artifact-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download immutable corrected v90 feature matrix
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v90-first-week-r2-5e37ea791464e016d469e0bcbcfeedefff0b4819
+          path: inputs/v90-r4-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31097079388"
+
+      - name: Verify unchanged lock and materialize exact input roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m py_compile research/candidate-02/v90_common_failed_auction_core.py research/candidate-02/v90_nt_backtest.py
+          rm -rf inputs/v90-r4
+          mkdir -p inputs/v90-r4/candidate-02-v48-first-week
+          mkdir -p inputs/v90-r4/.cache/candidate-02/v90-r4/binance_1m
+          feature=$(find inputs/v90-r4-source -name v48_features.npz -type f | sort | head -n1)
+          columns=$(find inputs/v90-r4-source -name columns.json -type f | sort | head -n1)
+          test -n "$feature"
+          test -n "$columns"
+          cp "$feature" inputs/v90-r4/candidate-02-v48-first-week/v48_features.npz
+          cp "$columns" inputs/v90-r4/candidate-02-v48-first-week/columns.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock=json.loads(Path('research/candidate-02/v90_common_failed_auction_lock.json').read_text())
+          assert lock['status']=='LOCKED_BEFORE_FIRST_WEEK_COLLECTION'
+          assert lock['first_week']['start_utc']=='2022-02-14T00:00:00Z'
+          assert lock['first_week']['end_utc']=='2022-02-21T00:00:00Z'
+          assert float(lock['risk_fraction'])==0.03
+          assert lock['custom_backtest_engine'] is False
+          assert lock['performance_engine']=='NautilusTrader 1.230.0'
+          for path in sorted(Path('research/candidate-02').glob('v90_*_config.json')):
+              cfg=json.loads(path.read_text())
+              assert cfg['validation']['first_week_start']=='2022-02-14'
+              assert float(cfg['risk']['risk_fraction'])==0.03
+              assert cfg['risk']['maximum_notional_cap'] is None
+              assert cfg['risk']['score_risk_multiplier'] is None
+          PY
+
+      - name: Recollect exact locked futures one-minute bars only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from datetime import date,timedelta
+          from pathlib import Path
+          import urllib.request
+          root=Path('inputs/v90-r4/.cache/candidate-02/v90-r4/binance_1m')
+          d=date(2022,2,12)
+          end=date(2022,2,21)
+          while d<=end:
+              name=f'BTCUSDT-1m-{d.isoformat()}.zip'
+              url=f'https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1m/{name}'
+              with urllib.request.urlopen(url,timeout=60) as response:
+                  (root/name).write_bytes(response.read())
+              d+=timedelta(days=1)
+          files=sorted(root.glob('BTCUSDT-1m-*.zip'))
+          if len(files)!=10:
+              raise RuntimeError(f'expected ten locked one-minute archives, found {len(files)}')
+          PY
+
+      - name: Verify causal coverage and explicit neutral missing-depth policy
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+          from v53_nt_core import load_feature_matrix
+          lock=json.loads(Path('research/candidate-02/v90_common_failed_auction_lock.json').read_text())
+          features=load_feature_matrix(
+              Path('inputs/v90-r4/candidate-02-v48-first-week/v48_features.npz'),
+              Path('inputs/v90-r4/candidate-02-v48-first-week/columns.json'),
+          )
+          start=pd.Timestamp(lock['first_week']['start_utc'])
+          end=pd.Timestamp(lock['first_week']['end_utc'])
+          evaluation=features.loc[(features.index>=start)&(features.index<end)]
+          if len(evaluation)<7*24*60*0.995:
+              raise RuntimeError(f'locked feature coverage mismatch: {len(evaluation)}')
+          required={
+              'spot_open','spot_close','spot_signed_flow_ratio_1m',
+              'spot_qh_opening_10s_flow_ratio','spot_qh_full_minute_return',
+              'perp_spot_log_basis','perp_spot_basis_change_1m',
+              'ask_depth_change_1m','bid_depth_change_1m','book_snapshot_count',
+          }
+          missing=sorted(required-set(features.columns))
+          if missing:
+              raise RuntimeError(f'missing stored features: {missing}')
+          for column in ('ask_depth_change_1m','bid_depth_change_1m','book_snapshot_count'):
+              if not (features[column].fillna(0.0)==0.0).all():
+                  raise RuntimeError(f'neutral missing-depth policy changed: {column}')
+          print(json.dumps({
+              'feature_first_utc':features.index.min().isoformat(),
+              'feature_last_utc':features.index.max().isoformat(),
+              'locked_rows':len(evaluation),
+              'one_minute_archives':10,
+              'front_depth_change':'derived inside v90 build_state from neutral stored depth changes',
+          }))
+          PY
+
+      - name: Run all unchanged prelocked variants in fresh NautilusTrader processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          labels=(portfolio15 portfolio30 portfolio60 persistent30 reversal30)
+          configs=(v90_portfolio_15m_config.json v90_portfolio_30m_config.json v90_portfolio_60m_config.json v90_persistent30_config.json v90_reversal30_config.json)
+          for i in "${!labels[@]}"; do
+            label="${labels[$i]}"; config="${configs[$i]}"
+            output="artifacts/candidate-02-v90-${label}"; mkdir -p "$output"
+            set +e
+            python research/candidate-02/v90_nt_backtest.py \
+              --config "research/candidate-02/${config}" \
+              --input-root inputs/v90-r4 \
+              --output "$output" \
+              | tee "artifacts-v90-${label}.log"
+            status=${PIPESTATUS[0]}; set -e
+            echo "$status" > "$output/validation_exit_code.txt"
+            if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+          done
+
+      - name: Publish exact first-week decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          labels=('portfolio15','portfolio30','portfolio60','persistent30','reversal30')
+          rows={}
+          print('# Candidate-02 v90 common failed auction — exact locked first week')
+          print('| Variant | Decision | Signals | Trades/day | Win | PF | Growth/day | MDD |')
+          print('|---|---:|---:|---:|---:|---:|---:|---:|')
+          def passed(m):
+              return (
+                  m.get('trades_per_day',0)>=0.75
+                  and m.get('win_rate',0)>=0.50
+                  and m.get('profit_factor_after_cost',0)>=1.50
+                  and m.get('geometric_daily_growth_after_cost',-1)>=0.01
+                  and abs(m.get('maximum_mark_to_market_drawdown',-1))<=0.25
+                  and m.get('engine','').startswith('NautilusTrader')
+                  and m.get('custom_backtest_engine') is False
+                  and abs(m.get('risk_fraction',0)-0.03)<=1e-12
+              )
+          for label in labels:
+              path=Path(f'artifacts/candidate-02-v90-{label}/metrics.json')
+              if not path.exists():
+                  rows[label]={'status':'IMPLEMENTATION_ERROR'}
+                  print(f'| {label} | implementation error | - | - | - | - | - | - |')
+                  continue
+              m=json.loads(path.read_text())
+              rows[label]=m
+              print(f"| {label} | {m['decision']} | {m['scheduled_signals']} | {m['trades_per_day']:.3f} | {m['win_rate']:.2%} | {m['profit_factor_after_cost']:.3f} | {m['geometric_daily_growth_after_cost']:.3%} | {m['maximum_mark_to_market_drawdown']:.2%} |")
+          plateau=(
+              isinstance(rows.get('portfolio30'),dict)
+              and passed(rows['portfolio30'])
+              and any(isinstance(rows.get(x),dict) and passed(rows[x]) for x in ('portfolio15','portfolio60'))
+          )
+          component_checks={}
+          for label in ('persistent30','reversal30'):
+              m=rows.get(label,{})
+              trades=int(m.get('trades',0)) if isinstance(m,dict) else 0
+              component_checks[label]={
+                  'trades':trades,
+                  'nonnegative_if_active':trades<2 or (
+                      m.get('profit_factor_after_cost',0)>=1.0
+                      and m.get('geometric_daily_growth_after_cost',-1)>=0.0
+                  ),
+              }
+          decision={
+              'status':'FIRST_WEEK_PROMOTION_ELIGIBLE' if plateau and all(v['nonnegative_if_active'] for v in component_checks.values()) else 'FIRST_WEEK_REJECT_OR_REDESIGN',
+              'portfolio_plateau':plateau,
+              'component_checks':component_checks,
+              'rows':rows,
+              'implementation_fixes':[
+                  'unavailable non-gating bookDepth explicitly neutralized',
+                  'derived front_depth_change not required as stored column',
+                  'hidden artifact cache omission repaired by recollecting the same official locked one-minute bars'
+              ],
+              'risk_fraction':0.03,
+              'performance_engine':'NautilusTrader 1.230.0',
+              'custom_backtest_engine':False,
+          }
+          Path('artifacts-v90-first-week-decision.json').write_text(json.dumps(decision,indent=2,sort_keys=True))
+          PY
+
+      - name: Preserve NautilusTrader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v90-first-week-r4-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v90-*
+            artifacts-v90-*.log
+            artifacts-v90-first-week-decision.json
+          if-no-files-found: warn
+          retention-days: 30

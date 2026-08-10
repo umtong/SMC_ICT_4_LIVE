@@ -1,0 +1,157 @@
+name: candidate-02-v54-nautilustrader-control
+
+on:
+  push:
+    branches: ["research/candidate-02"]
+    paths:
+      - "research/candidate-02/v54_*.json"
+      - ".github/workflows/candidate-02-v54-control.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  two-week-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user 0:0
+    env:
+      PYTHONPATH: /__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/src:/__w/SMC_ICT_4_LIVE/SMC_ICT_4_LIVE/research/candidate-02
+      SMC4_PREBUILT_ENV: "1"
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+
+      - name: Download immutable feature and first-week raw artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e
+          path: inputs/v54-week1
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31036754667"
+
+      - name: Download same immutable feature matrix for week two
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v48-first-week-ce89ac21360ae334900dcf969efab088a182681e
+          path: inputs/v54-week2
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31036754667"
+
+      - name: Download locked second-week raw artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-02-v53-nt-second-week-3c73273b563ee221a0e0b9f4ec3c87077c645edd
+          path: inputs/v54-week2-source
+          github-token: ${{ github.token }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: "31065619489"
+
+      - name: Materialize week-two raw bars without outcome changes
+        shell: bash
+        run: |
+          rm -rf inputs/v54-week2/.cache
+          mkdir -p inputs/v54-week2/.cache/candidate-02/v54-week2/binance_1m
+          find inputs/v54-week2-source -path '*/binance_1m/*.zip' -type f \
+            -exec cp '{}' inputs/v54-week2/.cache/candidate-02/v54-week2/binance_1m/ \;
+          test "$(find inputs/v54-week2/.cache/candidate-02/v54-week2/binance_1m -name '*.zip' | wc -l)" -eq 10
+
+      - name: Verify fixed runtime and single-variable lock
+        run: |
+          smc4 doctor
+          python -m json.tool research/candidate-02/v54_auction_boundary_lock.json >/dev/null
+          python -m json.tool research/candidate-02/v54_week1_config.json >/dev/null
+          python -m json.tool research/candidate-02/v54_week2_config.json >/dev/null
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          lock = json.loads(Path("research/candidate-02/v54_auction_boundary_lock.json").read_text())
+          one = json.loads(Path("research/candidate-02/v54_week1_config.json").read_text())
+          two = json.loads(Path("research/candidate-02/v54_week2_config.json").read_text())
+          assert lock["single_controlled_change"] == {
+              "field": "scenario.stop_lookback_minutes",
+              "before": 20,
+              "after": 60,
+              "causal_reason": "match invalidation horizon to the 60-minute source auction",
+          }
+          assert one["scenario"] == two["scenario"]
+          assert one["costs"] == two["costs"]
+          assert one["risk"] == two["risk"]
+          assert float(one["risk"]["risk_fraction"]) == 0.03
+          PY
+
+      - name: Run v54 first revealed week through NautilusTrader
+        shell: bash
+        run: |
+          mkdir -p artifacts/candidate-02-v54/week1
+          set +e
+          python research/candidate-02/v53_nt_backtest.py \
+            --config research/candidate-02/v54_week1_config.json \
+            --input-root inputs/v54-week1 \
+            --output artifacts/candidate-02-v54/week1 \
+            | tee artifacts-v54-week1-console.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "$status" > artifacts/candidate-02-v54/week1/validation_exit_code.txt
+          if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+
+      - name: Run v54 second revealed week through NautilusTrader
+        shell: bash
+        run: |
+          mkdir -p artifacts/candidate-02-v54/week2
+          set +e
+          python research/candidate-02/v53_nt_backtest.py \
+            --config research/candidate-02/v54_week2_config.json \
+            --input-root inputs/v54-week2 \
+            --output artifacts/candidate-02-v54/week2 \
+            | tee artifacts-v54-week2-console.log
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "$status" > artifacts/candidate-02-v54/week2/validation_exit_code.txt
+          if [[ "$status" != "0" && "$status" != "2" ]]; then exit "$status"; fi
+
+      - name: Publish controlled decision
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          print("# Candidate-02 v54 60-minute auction invalidation control")
+          decisions = []
+          for label in ("week1", "week2"):
+              path = Path(f"artifacts/candidate-02-v54/{label}/metrics.json")
+              if not path.exists():
+                  print(f"- {label}: no metrics")
+                  decisions.append(False)
+                  continue
+              m = json.loads(path.read_text())
+              decisions.append(bool(m["target_met"]))
+              print(
+                  f"- {label}: **{m['decision']}**, {m['trades']} trades, "
+                  f"{m['win_rate']:.1%} win, PF {m['profit_factor_after_cost']:.3f}, "
+                  f"growth {m['geometric_daily_growth_after_cost']:.3%}/day, "
+                  f"MDD {m['maximum_mark_to_market_drawdown']:.2%}"
+              )
+          print(f"- Controlled candidate survives both weeks: **{all(decisions)}**")
+          PY
+
+      - name: Preserve NautilusTrader control evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-02-v54-control-${{ github.sha }}
+          path: |
+            artifacts/candidate-02-v54
+            artifacts-v54-week1-console.log
+            artifacts-v54-week2-console.log
+          if-no-files-found: warn
+          retention-days: 30

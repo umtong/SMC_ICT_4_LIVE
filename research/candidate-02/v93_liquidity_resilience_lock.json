@@ -1,0 +1,55 @@
+{
+  "candidate_family": "candidate-02-v93-cross-market-liquidity-shock-resilience",
+  "status": "LOCKED_BEFORE_FIRST_WEEK_COLLECTION",
+  "performance_engine": "NautilusTrader 1.230.0",
+  "custom_backtest_engine": false,
+  "risk_fraction": 0.03,
+  "global_pending_entry_plus_position_limit": 1,
+  "first_week": {
+    "symbol": "BTCUSDT",
+    "start_utc": "2025-08-18T00:00:00Z",
+    "end_utc": "2025-08-25T00:00:00Z",
+    "selection_seed": 2026080693,
+    "eligible_universe": "all Mondays from 2024-01-01 through 2025-11-24 excluding previously used candidate-02 weeks",
+    "selection_method": "Python random.Random(seed).choice over chronologically sorted eligible Mondays",
+    "raw_data_status_at_lock": "NOT_COLLECTED_FOR_V93"
+  },
+  "locked_hypothesis": {
+    "event_detector": "turnover-qualified one-boundary sweep of a frozen preceding eight-hour high or low",
+    "local_reversion": "the perpetual closes back inside, opposite displacement breaks internal structure, and the FVG retrace targets the nearest intact internal pivot rather than the opposite range boundary",
+    "common_breakout_continuation": "perpetual and spot both accept beyond the boundary without excessive basis expansion, breakout displacement leaves an FVG, and its retest holds outside before targeting the nearest intact external pivot",
+    "ambiguous_state": "no trade when final range acceptance and cross-market state do not identify exactly one scenario",
+    "target_rule": "nearest pre-existing confirmed and structurally intact five-minute pivot whose cost-after reward/risk is at least 1.10",
+    "invalidation": "beyond the sweep extreme for local reversion; accepted return inside the old range for continuation"
+  },
+  "variant_matrix": {
+    "central": {"mode": "STATE_PORTFOLIO", "retrace_minutes": 20},
+    "adjacent": [
+      {"mode": "STATE_PORTFOLIO", "retrace_minutes": 15},
+      {"mode": "STATE_PORTFOLIO", "retrace_minutes": 25}
+    ],
+    "state_components": [
+      {"mode": "LOCAL_REVERSION", "retrace_minutes": 20},
+      {"mode": "COMMON_BREAKOUT_CONTINUATION", "retrace_minutes": 20}
+    ]
+  },
+  "promotion_rule": "The central portfolio and at least one adjacent horizon must pass every original weekly gate, signals must span at least two UTC cycles, and no active state component may have negative after-cost expectancy. Otherwise run one core-variable ablation on the revealed week before discarding.",
+  "research_basis": [
+    {
+      "reference": "Osler, Stop-Loss Orders and Price Cascades in Currency Markets",
+      "implication": "a boundary break can be a noninformative positive-feedback cascade, so the sweep itself cannot determine direction"
+    },
+    {
+      "reference": "Cont, Kukanov and Stoikov, The Price Impact of Order Book Events",
+      "implication": "short-horizon price impact is tied to order-flow imbalance relative to depth rather than trade volume alone"
+    },
+    {
+      "reference": "Xu et al., Limit-order book resiliency after effective market orders",
+      "implication": "liquidity shocks can show either price resilience or continuation depending on event aggressiveness and replenishment"
+    },
+    {
+      "reference": "Hansen, Kim and Kimbrough, Periodicity in Cryptocurrency Volatility and Liquidity",
+      "implication": "fixed UTC dealing cycles are prospectively defensible because crypto liquidity and volatility have recurrent intraday patterns"
+    }
+  ]
+}

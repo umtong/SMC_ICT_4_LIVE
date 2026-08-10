@@ -1,0 +1,127 @@
+{
+  "candidate": "balanced_auction_deep_reclaim_v2",
+  "locked_at_utc": "2026-08-05T09:05:00Z",
+  "purpose": "Prospective falsification lock. No parameter may change after holdout data are inspected.",
+  "research_basis": {
+    "discovery_seed": 20260805,
+    "discovery_weeks": [
+      "2024-07-08",
+      "2025-08-04",
+      "2022-08-22",
+      "2025-02-10",
+      "2024-08-26",
+      "2024-09-02",
+      "2025-04-28",
+      "2023-05-15",
+      "2022-01-10",
+      "2022-09-05",
+      "2022-10-03",
+      "2023-03-20"
+    ],
+    "holdout_seed": 2026080503,
+    "holdout_weeks": [
+      "2021-04-19",
+      "2021-06-28",
+      "2021-08-30",
+      "2021-09-27",
+      "2021-11-29",
+      "2022-04-04",
+      "2022-04-25",
+      "2022-09-12",
+      "2022-09-26",
+      "2022-11-14",
+      "2023-01-23",
+      "2023-03-06",
+      "2023-06-19",
+      "2023-11-27",
+      "2024-01-08",
+      "2024-02-05",
+      "2024-03-04",
+      "2024-04-01",
+      "2024-06-10",
+      "2024-07-15",
+      "2024-11-04",
+      "2024-12-23",
+      "2025-02-24",
+      "2025-06-02",
+      "2025-08-25",
+      "2025-12-08",
+      "2026-02-16",
+      "2026-03-16",
+      "2026-03-30",
+      "2026-05-18"
+    ]
+  },
+  "market": {
+    "discovery_symbol": "BTCUSDT",
+    "decision_bar": "5-MINUTE-LAST-EXTERNAL",
+    "fill_bar": "1-MINUTE-LAST-EXTERNAL",
+    "calendar": "UTC",
+    "future_information_policy": "Only completed bars and previously observed state are usable."
+  },
+  "state_machine": {
+    "formation": {
+      "bars": 12,
+      "max_range_atr": 4.0,
+      "atr_definition": "Median true range of the 12 completed 5-minute bars preceding the decision bar.",
+      "directional_efficiency_definition": "abs(last_close - first_open) / sum(abs(close_t - close_t-1))",
+      "directional_efficiency_min_exclusive": 0.15,
+      "directional_efficiency_max_inclusive": 0.25,
+      "boundary_touch_tolerance_atr": 0.25,
+      "minimum_touches_each_boundary": 2
+    },
+    "liquidity_event": {
+      "maximum_wait_bars": 12,
+      "minimum_excursion_atr": 0.10,
+      "maximum_classification_bars": 6,
+      "acceptance_definition": "Two consecutive completed closes outside the frozen boundary.",
+      "reclaim_definition": "First completed close back inside the frozen boundary before acceptance.",
+      "required_reclaim_depth_atr": 0.40,
+      "required_branch": "RECLAIM",
+      "cooldown_bars_after_decision": 6
+    },
+    "trade": {
+      "direction": "Opposite the liquidity excursion.",
+      "entry": "Market at the next 1-minute open after the completed reclaim decision bar.",
+      "stop": "Excursion extreme plus 0.15 ATR beyond the invalidation side.",
+      "target_r_multiple": 3.0,
+      "maximum_holding_minutes": 720,
+      "single_global_entry_or_position": true
+    }
+  },
+  "cost_model": {
+    "maker_fee_bps": 2.0,
+    "taker_fee_bps": 5.0,
+    "entry_slippage_bps": 1.5,
+    "stop_slippage_bps": 2.5,
+    "market_impact_bps": 0.5,
+    "funding_allowance_bps": 1.0
+  },
+  "risk": {
+    "planned_loss_fraction_of_current_nav": 0.06,
+    "quantity_rule": "NAV times rho divided by per-unit expected loss, including entry/stop fees, slippage, impact and funding.",
+    "max_notional_cap": null,
+    "score_multiplier": null
+  },
+  "prospective_pass_criteria": {
+    "after_cost_geometric_daily_growth_at_locked_risk_min": 0.01,
+    "minimum_trades_per_evaluation_day": 0.50,
+    "minimum_win_rate": 0.45,
+    "minimum_profit_factor": 1.25,
+    "maximum_nav_drawdown": 0.35,
+    "minimum_positive_week_fraction": 0.60,
+    "maximum_single_winner_share_of_gross_profit": 0.25
+  },
+  "discovery_snapshot": {
+    "risk_fraction": 0.01,
+    "evaluation_days": 84,
+    "trades": 65,
+    "wins": 35,
+    "win_rate": 0.5384615384615384,
+    "geometric_daily_growth": 0.002056101031715496,
+    "profit_factor": 1.5968151408559783,
+    "maximum_drawdown": 0.06040635273397765,
+    "positive_weeks": 8,
+    "total_weeks": 12
+  }
+}
