@@ -85,7 +85,6 @@ def build_config(cell: str) -> Path:
             "jump_min_confirmation_elapsed_minutes": 10,
             "jump_oi_max_decline_fraction": 0.01,
             "jump_confirmation_pool_mode": CELLS[cell],
-            "jump_audit_enabled": False,
         }
     )
     path.write_text(
