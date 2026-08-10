@@ -1,0 +1,94 @@
+{
+  "candidate": "candidate-55",
+  "family": "V15_BB_SHORT_FIXED_TREND_QUALITY",
+  "external_solution_reused": "go-trader composite clean/choppy regime split: ATR-normalized displacement and range, Kaufman efficiency, and Wilder ADX",
+  "hypothesis": "V15 lower-Bollinger short gross profit should concentrate in clean downside price discovery, while choppy and non-directional states should contain a disproportionate failed-auction loss engine.",
+  "prediction_before_outcome": {
+    "preserve": "source Bollinger short entries classified trending_down_clean on the latest completed 30-minute state",
+    "remove": "clean-up, choppy, ranging and unresolved short episodes before global arbitration",
+    "expected_effect": "retain at least 55% of gross profit while removing at least 30% of gross loss and preserve at least 0.5 trade/day",
+    "falsification": "clean-down episodes fail to improve cost-covering excursion and close follow-through, gross profit falls with gross loss, or replacement trades remain negative"
+  },
+  "fixed_policy": {
+    "regime_bucket_minutes": 30,
+    "period": 21,
+    "return_eff_threshold": 0.05,
+    "range_eff_threshold": 0.03,
+    "adx_threshold": 25.0,
+    "efficiency_threshold": 0.5,
+    "source_entry_changed": false,
+    "source_stop_changed": false,
+    "source_trailing_changed": false,
+    "risk_fraction": 0.03,
+    "global_slots": 1
+  },
+  "forensics": {
+    "windows": 3,
+    "supported_windows": 0,
+    "episodes": 2041,
+    "window_results": [
+      {
+        "period": "2026-04-01/2026-04-30",
+        "clean_edges": 75,
+        "clean_mfe_60m_mean_net_bps": 15.15352424831716,
+        "other_mfe_60m_mean_net_bps": 16.2960721958264,
+        "clean_close_60m_mean_net_bps": -24.179896754646634,
+        "other_close_60m_mean_net_bps": -21.8783246859717
+      },
+      {
+        "period": "2025-02-10/2025-02-16",
+        "clean_edges": 20,
+        "clean_mfe_60m_mean_net_bps": 25.277876391836568,
+        "other_mfe_60m_mean_net_bps": 34.540792481160786,
+        "clean_close_60m_mean_net_bps": -31.45968390678815,
+        "other_close_60m_mean_net_bps": -22.637629710950172
+      },
+      {
+        "period": "2025-09-01/2025-09-14",
+        "clean_edges": 4,
+        "clean_mfe_60m_mean_net_bps": 6.786920346374405,
+        "other_mfe_60m_mean_net_bps": 16.368750401938364,
+        "clean_close_60m_mean_net_bps": -35.061682176332454,
+        "other_close_60m_mean_net_bps": -24.766491355869366
+      }
+    ]
+  },
+  "continuous_account_short": {
+    "calendar_days": 51,
+    "source": {
+      "trades": 105,
+      "trades_per_day": 2.0588235294117645,
+      "gross_profit": 84365.45124200999,
+      "gross_loss": 123607.84823023001,
+      "net_pnl": -39242.39698822002,
+      "profit_factor": 0.6825250374464269,
+      "positive_windows": 0
+    },
+    "clean_down": {
+      "trades": 18,
+      "trades_per_day": 0.35294117647058826,
+      "gross_profit": 9573.32164941,
+      "gross_loss": 20489.80394701,
+      "net_pnl": -10916.482297600001,
+      "profit_factor": 0.46722368228452466,
+      "positive_windows": 1
+    },
+    "comparison": {
+      "net_improvement": 28325.91469062002,
+      "gross_loss_reduction": 0.8342354127154934,
+      "gross_profit_retention": 0.1134744318731616,
+      "trade_retention": 0.17142857142857143
+    },
+    "mechanically_valid": true
+  },
+  "episode_findings": {
+    "clean_down_not_alpha_owner": "Clean-down trades were negative in April, approximately flat in February, and a single losing trade in September.",
+    "false_negatives": "Large source winners repeatedly occurred in trending_up_choppy, trending_down_choppy and ranging_volatile states; the clean gate removed them together with losses.",
+    "interpretation": "The apparent NAV improvement came from deleting most trading, not from identifying the causal profit state. The lower-band short is not a clean-trend continuation family."
+  },
+  "medium_replay_consumed": false,
+  "long_replay_consumed": false,
+  "verdict": "FALSIFIED_DO_NOT_TUNE_REGIME_THRESHOLDS",
+  "reason": "The fixed market-state prediction failed before and after one-slot arbitration. Profit factor deteriorated, gross profit retention was only 11.35%, and opportunity density fell below the project minimum. Changing period or thresholds would be a parameter rescue without a valid state model.",
+  "next_model_update": "Treat perpetual-versus-spot leadership, aggressor flow and OI state as the direct causal distinction. Development episode data shows premium collapse plus sell aggression is the only pooled positive natural quadrant; this is being tested on fresh accounts without fitted thresholds."
+}
