@@ -1,0 +1,74 @@
+{
+  "candidate": "candidate-55",
+  "family": "V15_BB_SHORT_ACCEPTANCE_TRANSITION_FORENSICS",
+  "hypothesis": "A V15 lower-Bollinger close is only an interaction. Requiring the auction to remain below the signal close for exactly three completed 5-minute bars, without first touching the source stop or consuming the source trailing-activation move, should separate accepted short continuation from failed/reclaimed auctions.",
+  "prediction_before_outcome": {
+    "removed": "reclaimed, pre-confirmation-invalidated and pre-confirmation-exhausted lower-band episodes",
+    "preserved": "episodes still below the signal interaction after one 15-minute state transition",
+    "expected_effect": "materially higher cost-covering MFE and positive 60-minute close follow-through in at least two fresh windows",
+    "falsification": "MFE improves but close follow-through stays negative, the cost-cover advantage is not repeated, or replacement arbitration loses the apparent separation"
+  },
+  "fixed_policy": {
+    "confirmation_bars": 3,
+    "confirmation_minutes": 15,
+    "source_stop_fraction": 0.015,
+    "source_trail_activation_fraction": 0.0107,
+    "diagnostic_cost_floor_bps": 20.0,
+    "parameter_search": false,
+    "account_backtest_run": false
+  },
+  "aggregate": {
+    "windows": 3,
+    "supported_windows": 0,
+    "source_episodes": 905,
+    "accepted_episodes": 384,
+    "accepted_after_cross_asset_arbitration": 277,
+    "implementation_warranted": false
+  },
+  "windows": [
+    {
+      "period": "2024-06-03/2024-06-09",
+      "source_episodes": 264,
+      "accepted_episodes": 107,
+      "accepted_mfe_60m_mean_net_bps": 48.517491732728296,
+      "accepted_mfe_60m_median_net_bps": 4.766807740087632,
+      "accepted_mfe_60m_cost_cover_fraction": 0.5327102803738317,
+      "accepted_close_60m_mean_net_bps": -1.9683871810102906,
+      "rejected_close_60m_mean_net_bps": -32.96854951711494,
+      "selected_accepted_close_60m_mean_net_bps": -4.830160379992324,
+      "prediction_supported": false
+    },
+    {
+      "period": "2025-11-03/2025-11-09",
+      "source_episodes": 352,
+      "accepted_episodes": 149,
+      "accepted_mfe_60m_mean_net_bps": 61.43005286939602,
+      "accepted_mfe_60m_median_net_bps": 32.578233878120635,
+      "accepted_mfe_60m_cost_cover_fraction": 0.7583892617449665,
+      "accepted_close_60m_mean_net_bps": -16.66264949958631,
+      "rejected_close_60m_mean_net_bps": -33.06645071949253,
+      "selected_accepted_close_60m_mean_net_bps": -15.36630383010845,
+      "prediction_supported": false
+    },
+    {
+      "period": "2026-05-04/2026-05-10",
+      "source_episodes": 289,
+      "accepted_episodes": 128,
+      "accepted_mfe_60m_mean_net_bps": 14.412437424197606,
+      "accepted_mfe_60m_median_net_bps": 2.50775053623242,
+      "accepted_mfe_60m_cost_cover_fraction": 0.5625,
+      "accepted_close_60m_mean_net_bps": -25.674642410903612,
+      "rejected_close_60m_mean_net_bps": -27.531830114769747,
+      "selected_accepted_close_60m_mean_net_bps": -25.899221716983092,
+      "prediction_supported": false
+    }
+  ],
+  "causal_interpretation": {
+    "observed": "The fixed state transition often increased maximum favorable excursion relative to reclaimed episodes.",
+    "not_observed": "It never produced positive average 60-minute close follow-through and did not create a repeated 15 percentage-point cost-cover advantage.",
+    "meaning": "Remaining below the interaction is not a sufficient continuation state. Price commonly offered a transient favorable excursion and then reverted. The source's 1.07% activation and 1.5% stop therefore belong to a different geometry than the typical accepted episode.",
+    "next_uncertainty": "Whether a counter-trend pullback followed by a structural re-break can convert the transient excursion into a same-leg entry with invalidation above the pullback high."
+  },
+  "verdict": "DO_NOT_IMPLEMENT_FIXED_DELAY_ACCEPTANCE_ACCOUNT",
+  "reason": "The predicted state separation was not observed in three fresh windows. A Nautilus replay or a delay/threshold grid would be a random rescue attempt rather than a justified experiment."
+}
