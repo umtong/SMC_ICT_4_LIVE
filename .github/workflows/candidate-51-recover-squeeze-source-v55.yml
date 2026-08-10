@@ -1,0 +1,110 @@
+name: candidate-51-recover-squeeze-source-v55
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-recover-squeeze-source-v55.yml"
+      - "research/candidate-51/recover_squeeze_source.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-recover-squeeze-source-v55
+  cancel-in-progress: true
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Download immutable public source and committed logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=99cfa582b239fd9c59a5ac92618a3e36bb73ed76
+          root=.cache/candidate-51-squeeze-source-v55
+          mkdir -p "$root/trade_logs"
+          files=(
+            LICENSE
+            README.md
+            signal_generator.py
+            technical.py
+            backtester.py
+            optimize.py
+            optimize_lib.py
+            permutation_test.py
+            optuna_history.db
+            trade_logs/trade_log_btc.txt
+            trade_logs/trade_log_eth.txt
+            trade_logs/trade_log_sol.txt
+            trade_logs/trade_log_xrp.txt
+          )
+          for file in "${files[@]}"; do
+            mkdir -p "$root/$(dirname "$file")"
+            curl --fail --location --retry 5 --retry-all-errors \
+              "https://raw.githubusercontent.com/jicheolha/crypto-trading-bot/${commit}/${file}" \
+              --output "$root/$file"
+            test -s "$root/$file"
+          done
+          python -m py_compile research/candidate-51/recover_squeeze_source.py
+
+      - name: Recover exact parameters, provenance and causal defects
+        shell: bash
+        run: |
+          set -euo pipefail
+          output=artifacts/candidate-51/squeeze-source-recovery-v55
+          python research/candidate-51/recover_squeeze_source.py \
+            --source-root .cache/candidate-51-squeeze-source-v55 \
+            --output "$output"
+          test -s "$output/RECOVERY.json"
+          test -s "$output/RECOVERY.md"
+          test -s "$output/ASSET_SUMMARY.csv"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-squeeze-source-recovery-v55
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/squeeze-source-recovery-v55/RECOVERY.json
+            artifacts/candidate-51/squeeze-source-recovery-v55/RECOVERY.md
+            artifacts/candidate-51/squeeze-source-recovery-v55/ASSET_SUMMARY.csv
+
+      - name: Commit compact source recovery evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/squeeze-source-recovery-v55
+          destination=research/candidate-51/evidence/squeeze-source-recovery-v55
+          mkdir -p "$destination"
+          cp "$source/RECOVERY.json" "$destination/RECOVERY.json"
+          cp "$source/RECOVERY.md" "$destination/RECOVERY.md"
+          cp "$source/ASSET_SUMMARY.csv" "$destination/ASSET_SUMMARY.csv"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add research/candidate-51/recover_squeeze_source.py "$destination"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate51: recover public squeeze source and optimization provenance"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin research/candidate-51 \
+              && git push origin HEAD:research/candidate-51; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 2))
+          done
+          exit 1
