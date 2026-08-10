@@ -1,0 +1,113 @@
+name: candidate-57-c04-v61-policy-fresh
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-57]
+    paths:
+      - research/candidate-57/c04_v61_policy_fresh.py
+      - .github/workflows/candidate-57-c04-v61-policy-fresh.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-c04-v61-policy-fresh
+  cancel-in-progress: false
+
+jobs:
+  policy-fresh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install locked common environment
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check 'uv==0.11.25'
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+
+      - name: Materialize Candidate04 source without changing it
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-04
+          git worktree add --detach /tmp/candidate04 origin/research/candidate-04
+          mkdir -p /tmp/candidate04/research/candidate-57
+          cp research/candidate-57/c04_v61_policy_fresh.py /tmp/candidate04/research/candidate-57/
+
+      - name: Run the two preselected policy-fresh regimes
+        id: experiment
+        run: |
+          set +e
+          cd /tmp/candidate04
+          uv run python research/candidate-57/c04_v61_policy_fresh.py
+          code=$?
+          echo "returncode=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Copy compact evidence back to Candidate57
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p research/candidate-57/evidence/c04-v61-policy-fresh
+          if test -d /tmp/candidate04/research/candidate-57/evidence/c04-v61-policy-fresh; then
+            cp -R /tmp/candidate04/research/candidate-57/evidence/c04-v61-policy-fresh/. research/candidate-57/evidence/c04-v61-policy-fresh/
+          fi
+          for week in 2 3; do
+            source=/tmp/candidate04/artifacts/candidate-57-c04-v61-policy-fresh/week_${week}
+            target=research/candidate-57/evidence/c04-v61-policy-fresh/week_${week}
+            if test -d "$source"; then
+              mkdir -p "$target"
+              cp "$source/summary.json" "$target/summary.json" 2>/dev/null || true
+              cp "$source/signals/summary.json" "$target/signal_summary.json" 2>/dev/null || true
+              cp "$source/nautilus/metrics.json" "$target/metrics.json" 2>/dev/null || true
+              cp "$source/nautilus/strategy_events.json" "$target/strategy_events.json" 2>/dev/null || true
+              cp "$source/nautilus/positions.csv" "$target/positions.csv" 2>/dev/null || true
+            fi
+          done
+
+      - name: Commit compact causal evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          git config user.name 'candidate-57-research-bot'
+          git config user.email 'candidate-57-research-bot@users.noreply.github.com'
+          git add -f research/candidate-57/evidence/c04-v61-policy-fresh 2>/dev/null || true
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit --no-gpg-sign -m 'candidate57: persist Candidate04 policy-fresh portability'
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-57
+            git rebase origin/research/candidate-57
+            if git push origin HEAD:research/candidate-57; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - name: Upload complete experiment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-c04-v61-policy-fresh
+          path: |
+            /tmp/candidate04/research/candidate-57/evidence/c04-v61-policy-fresh
+            /tmp/candidate04/artifacts/candidate-57-c04-v61-policy-fresh
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce implementation validity only
+        if: always()
+        run: test '${{ steps.experiment.outputs.returncode }}' = '0'
