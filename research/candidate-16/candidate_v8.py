@@ -10,14 +10,44 @@ from __future__ import annotations
 
 import argparse
 from datetime import date
+import importlib.util
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 from global_entry_slot_v4 import FINAL_SHARED_ACCOUNT_ENTRY_COORDINATOR
 import strategy_global_slot_wrappers_v4 as shared_v4
 import strategy_global_slot_wrappers_v5 as shared_v5  # noqa: F401
-from strategy_v8 import Candidate16V8Strategy
+
+
+def _load_candidate16_v8_strategy_class():
+    """Load this directory's strategy_v8.py without relying on PYTHONPATH order.
+
+    Candidate 05 also contains a module named ``strategy_v8``.  The shared
+    runner intentionally keeps Candidate 05 first on PYTHONPATH because v8
+    reuses its account/execution stack.  A normal ``from strategy_v8 import``
+    therefore resolves to the wrong economic module.  Loading the sibling file
+    under a unique module name fixes only that namespace collision and leaves
+    all Candidate 05 dependencies used by the strategy unchanged.
+    """
+    module_name = "_candidate16_strategy_v8"
+    module = sys.modules.get(module_name)
+    if module is None:
+        source = Path(__file__).resolve().with_name("strategy_v8.py")
+        spec = importlib.util.spec_from_file_location(module_name, source)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"unable to load Candidate 16 v8 strategy from {source}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    strategy_class = getattr(module, "Candidate16V8Strategy", None)
+    if strategy_class is None:
+        raise ImportError("Candidate16V8Strategy missing from Candidate 16 strategy_v8.py")
+    return strategy_class
+
+
+Candidate16V8Strategy = _load_candidate16_v8_strategy_class()
 
 
 V8_WINNER = "candidate_v8:Candidate16V8Strategy"
