@@ -1,0 +1,241 @@
+name: candidate-51-ichiv21-v36
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-ichiv21-v36.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-ichiv21-v36
+  cancel-in-progress: true
+
+jobs:
+  interval:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - interval: winter_2025_02
+            data_start: 2025-01-26
+            start: 2025-02-01
+            end: 2025-02-14
+          - interval: summer_2025_08
+            data_start: 2025-07-26
+            start: 2025-08-01
+            end: 2025-08-14
+          - interval: winter_2026_01
+            data_start: 2026-01-09
+            start: 2026-01-15
+            end: 2026-01-28
+          - interval: summer_2026_06
+            data_start: 2026-06-09
+            start: 2026-06-15
+            end: 2026-06-28
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Materialize public source mechanism
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_ichiv21.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_ichiv21.py research/candidate-51/strategy.py
+
+      - name: Install environment and prove causal source semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import (
+              BarObservation, FeatureObservation, RouteConfig, classify_symbol,
+              ichiv21_states, reciprocal_candles,
+          )
+          from strategy import Candidate35Config
+
+          fields = set(Candidate35Config.__struct_fields__)
+          assert {
+              "ichiv21_episode_mode", "ichiv21_direction_mode",
+              "ichiv21_alignment_mode", "ichiv21_stop_mode",
+              "ichiv21_management_mode",
+          } <= fields
+
+          candles = []
+          inverse_original = []
+          for index in range(650):
+              transformed = 100.0 * math.exp(0.0005 * index + 0.000003 * index * index)
+              prior = 100.0 * math.exp(
+                  0.0005 * max(index - 1, 0)
+                  + 0.000003 * max(index - 1, 0) * max(index - 1, 0)
+              )
+              open_ = prior
+              close = transformed
+              high = max(open_, close) * 1.0002
+              low = min(open_, close) * 0.9998
+              ts = (index + 1) * 5 * 60_000_000_000 - 1
+              candles.append(BarObservation(ts, open_, high, low, close, 1000.0 + index))
+              inv_open = 1.0 / open_
+              inv_close = 1.0 / close
+              inverse_original.append(BarObservation(
+                  ts, inv_open, max(inv_open, inv_close) * 1.0002,
+                  min(inv_open, inv_close) * 0.9998, inv_close, 1000.0 + index,
+              ))
+
+          source = RouteConfig(
+              ichiv21_direction_mode="long_only",
+              ichiv21_episode_mode="condition_reentry",
+              ichiv21_alignment_mode="all8",
+          )
+          long_states = ichiv21_states(candles, source)
+          assert long_states[-1].ready and long_states[-1].entry, long_states[-1]
+          assert long_states[-1].fan_gain >= 1.002
+
+          reciprocal_states = ichiv21_states(inverse_original, source, reciprocal=True)
+          assert reciprocal_states[-1].ready and reciprocal_states[-1].entry
+          roundtrip = reciprocal_candles(inverse_original)
+          assert abs(roundtrip[-1].close - candles[-1].close) / candles[-1].close < 1e-12
+
+          minute_bars = []
+          for candle in candles:
+              start = candle.ts_event - 5 * 60_000_000_000 + 1
+              for minute in range(5):
+                  fraction = (minute + 1) / 5.0
+                  close = candle.open + (candle.close - candle.open) * fraction
+                  open_ = candle.open + (candle.close - candle.open) * (minute / 5.0)
+                  minute_bars.append(BarObservation(
+                      start + (minute + 1) * 60_000_000_000 - 1,
+                      open_, max(open_, close) * 1.00002,
+                      min(open_, close) * 0.99998, close,
+                      candle.volume / 5.0,
+                  ))
+          decision = classify_symbol(
+              "BTCUSDT", minute_bars,
+              FeatureObservation(observed_time_ns=minute_bars[-1].ts_event, ready=True),
+              source,
+          )
+          assert decision.actionable and decision.side == 1, decision
+          assert decision.stop_reference < decision.entry_reference < decision.objective_reference
+          print("ichiV2_1 source semantics, reciprocal transform and geometry verified")
+          PY
+          python research/candidate-51/ichiv21_prepare.py \
+            --output .work/candidate-51-ichiv21-v36
+
+      - name: Run every mechanism on this separated account
+        shell: bash
+        run: |
+          set +e
+          work=.work/candidate-51-ichiv21-v36
+          root=artifacts/candidate-51/ichiv21-v36/${{ matrix.interval }}
+          mkdir -p "$root" "$work/status"
+          while IFS= read -r variant; do
+            [[ -z "$variant" ]] && continue
+            PYTHONPATH=research/candidate-51 uv run python \
+              research/candidate-51/launch_kline_only_warmup.py \
+              --config "$work/$variant.json" \
+              --data-start "${{ matrix.data_start }}" \
+              --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+              --cache ".cache/candidate-51-ichiv21-v36/${{ matrix.interval }}" \
+              --output "$root/$variant" \
+              --workspace "$work/ws-${{ matrix.interval }}-$variant"
+            echo $? > "$work/status/${{ matrix.interval }}-$variant.txt"
+          done < "$work/variants.txt"
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-ichiv21-v36-${{ matrix.interval }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/ichiv21-v36/${{ matrix.interval }}/**/metrics.json
+            artifacts/candidate-51/ichiv21-v36/${{ matrix.interval }}/**/strategy_diagnostics.json
+            artifacts/candidate-51/ichiv21-v36/${{ matrix.interval }}/**/closed_scenarios.json
+            artifacts/candidate-51/ichiv21-v36/${{ matrix.interval }}/**/equity.csv
+            .work/candidate-51-ichiv21-v36/status/*.txt
+
+  aggregate:
+    if: always()
+    needs: interval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-ichiv21-v36-*
+          path: downloaded
+          merge-multiple: true
+      - name: Normalize and audit mechanism anatomy
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-51/ichiv21-v36
+          mkdir -p "$root"
+          find downloaded -type f | while read -r file; do
+            case "$file" in
+              *artifacts/candidate-51/ichiv21-v36/*)
+                relative="${file#*artifacts/candidate-51/ichiv21-v36/}"
+                mkdir -p "$root/$(dirname "$relative")"
+                cp "$file" "$root/$relative"
+                ;;
+            esac
+          done
+          python research/candidate-51/ichiv21_prepare.py \
+            --output .work/candidate-51-ichiv21-v36
+          cp .work/candidate-51-ichiv21-v36/MANIFEST.json "$root/MANIFEST.json"
+          python research/candidate-51/ichiv21_anatomy_audit.py \
+            --root "$root" --manifest "$root/MANIFEST.json" \
+            --output-json "$root/ANATOMY.json" --output-md "$root/ANATOMY.md"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-ichiv21-v36-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/ichiv21-v36/ANATOMY.json
+            artifacts/candidate-51/ichiv21-v36/ANATOMY.md
+            artifacts/candidate-51/ichiv21-v36/MANIFEST.json
+      - name: Commit compact anatomy evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/ichiv21-v36
+          destination=research/candidate-51/evidence/ichiv21-v36
+          test -s "$source/ANATOMY.json"
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add "$destination"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate51: record public ichiV2_1 mechanism anatomy"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
