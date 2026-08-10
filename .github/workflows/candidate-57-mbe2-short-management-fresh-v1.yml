@@ -1,0 +1,135 @@
+name: candidate-57-mbe2-short-management-fresh-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-mbe2-short-management-fresh-v1.yml"
+      - "research/candidate-57/MBE2_SHORT_MANAGEMENT_FRESH_V1_FREEZE.md"
+      - "research/candidate-57/mbe2_short_management_fresh_v1.py"
+      - "research/candidate-57/forensic_sources/mbe2_*.py"
+      - "research/candidate-51/run.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-mbe2-short-management-fresh-v1
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble exact public MBE2 adapter over reused Nautilus shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/MBE2_SHORT_MANAGEMENT_FRESH_V1_FREEZE.md
+          cp research/candidate-57/forensic_sources/mbe2_router.py research/candidate-51/router.py
+          cp research/candidate-57/forensic_sources/mbe2_strategy.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy.py \
+            research/candidate-57/forensic_sources/mbe2_campaign.py \
+            research/candidate-57/mbe2_short_management_fresh_v1.py
+
+      - name: Install locked environment and prove two-cell contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import _decode_mode, mbe_source_flags
+          from strategy import Candidate35Config, Candidate35Strategy
+          assert _decode_mode("short_avg646_source") == "short"
+          assert _decode_mode("short_avg646_roi_only") == "short"
+          assert mbe_source_flags(
+              previous_rsi=71.0,
+              rsi=69.0,
+              previous_tema=101.0,
+              tema=100.0,
+              bb_middle=99.0,
+              volume=1.0,
+          ) == (False, True)
+          assert Candidate35Config.__name__ == "Candidate35Config"
+          assert Candidate35Strategy.__name__ == "Candidate35Strategy"
+          print("exact public MBE2 short source contract verified")
+          PY
+
+      - name: Run frozen short management comparison
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-mbe2-short-management-fresh-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/mbe2_short_management_fresh_v1.py \
+            2>&1 | tee .work/candidate-57-mbe2-short-management-fresh-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact causal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/mbe2-short-management-fresh-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist fresh MBE2 short management evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload full compact experiment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-mbe2-short-management-fresh-v1-evidence
+          path: |
+            research/candidate-57/evidence/mbe2-short-management-fresh-v1
+            .work/candidate-57-mbe2-short-management-fresh-v1-console
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce process and account validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "campaign status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "MBE2 campaign or mechanical validity failed with status $status; evidence retained"
+            exit "$status"
+          fi
