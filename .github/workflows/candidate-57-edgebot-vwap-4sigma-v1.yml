@@ -1,0 +1,88 @@
+name: candidate-57-edgebot-vwap-4sigma-v1
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-edgebot-vwap-4sigma-v1.yml"
+      - "research/candidate-57/EDGEBOT_VWAP_4SIGMA_V1_FREEZE.md"
+      - "research/candidate-57/router_edgebot_vwap_4sigma.py"
+      - "research/candidate-57/router_edgebot_vwap_runtime.py"
+      - "research/candidate-57/strategy_edgebot_vwap_4sigma.py"
+      - "research/candidate-57/edgebot_vwap_4sigma_development_v1.py"
+      - "research/candidate-57/trade_ledger_forensics.py"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: candidate-57-edgebot-vwap-4sigma-v1
+  cancel-in-progress: true
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Assemble source reconstruction
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_edgebot_vwap_4sigma.py research/candidate-51/router_edgebot_vwap_impl.py
+          cp research/candidate-57/router_edgebot_vwap_runtime.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_edgebot_vwap_4sigma.py research/candidate-51/strategy.py
+          python -m compileall -q research/candidate-51 research/candidate-57/edgebot_vwap_4sigma_development_v1.py research/candidate-57/trade_ledger_forensics.py
+      - name: Install and doctor
+        run: |
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          from router import RouteConfig, _prior_residual_sigma, _rolling_vwap, _weighted_sigma
+          from strategy import Candidate35Config, Candidate35Strategy
+          assert abs(RouteConfig().edge_entry_sigma - 4.0) < 1e-12
+          assert "edge_mean_exit_mode" in Candidate35Config.__struct_fields__
+          assert "dynamic_mean" in inspect.getsource(Candidate35Strategy._source_exit_signal)
+          assert callable(_rolling_vwap) and callable(_weighted_sigma) and callable(_prior_residual_sigma)
+          print("EdgeBot 4sigma causal reconstruction contracts verified")
+          PY
+      - name: Run development audit
+        id: campaign
+        run: |
+          set +e
+          PYTHONPATH=research/candidate-51:research/candidate-57 uv run python research/candidate-57/edgebot_vwap_4sigma_development_v1.py
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Commit evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f research/candidate-51/router_edgebot_vwap_impl.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/edgebot-vwap-4sigma-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist EdgeBot VWAP audit"
+              git pull --rebase origin research/candidate-57
+              git push origin HEAD:research/candidate-57
+            fi
+          fi
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-edgebot-vwap-4sigma-v1
+          path: research/candidate-57/evidence/edgebot-vwap-4sigma-v1
+          retention-days: 14
+      - name: Enforce mechanics
+        if: always()
+        run: test "${{ steps.campaign.outputs.status }}" = "0"
