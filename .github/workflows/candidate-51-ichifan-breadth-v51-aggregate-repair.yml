@@ -1,0 +1,92 @@
+name: candidate-51-ichifan-breadth-v51-aggregate-repair
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-ichifan-breadth-v51-aggregate-repair.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: candidate-51-ichifan-breadth-v51-aggregate-repair
+  cancel-in-progress: true
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: umtong/SMC_ICT_4_LIVE
+          run-id: 31377158196
+          pattern: candidate-51-ichifan-breadth-v51-dev_*
+          path: downloaded
+      - name: Build corrected static-breadth anatomy
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-51/ichifan-breadth-v51
+          mkdir -p "$root"
+          for artifact_dir in downloaded/candidate-51-ichifan-breadth-v51-dev_*; do
+            [[ -d "$artifact_dir" ]] || continue
+            interval="${artifact_dir##*candidate-51-ichifan-breadth-v51-}"
+            mkdir -p "$root/$interval"
+            cp -R "$artifact_dir"/. "$root/$interval/"
+          done
+          pin=e01b7532829507320d0baae601b410746d523868
+          git fetch --no-tags origin research/candidate-47
+          mkdir -p research/candidate-47
+          git show "$pin:research/candidate-47/ichifan_structural_config.json" \
+            > research/candidate-47/ichifan_structural_config.json
+          python research/candidate-51/ichifan_breadth_prepare.py \
+            --output .work/candidate-51-ichifan-breadth-v51
+          cp .work/candidate-51-ichifan-breadth-v51/MANIFEST.json "$root/MANIFEST.json"
+          python research/candidate-51/ichifan_breadth_audit.py \
+            --root "$root" --manifest "$root/MANIFEST.json" \
+            --output-json "$root/ANATOMY.json" --output-md "$root/ANATOMY.md"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(
+              Path("artifacts/candidate-51/ichifan-breadth-v51/ANATOMY.json").read_text()
+          )
+          assert result["all_runs_present"] is True
+          for summary in result["variant_aggregate"].values():
+              assert summary["zero_global_position_violations"] is True
+              assert summary["zero_order_rejections"] is True
+          print(json.dumps(result["variant_aggregate"], indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-ichifan-breadth-v51-corrected-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/ichifan-breadth-v51/ANATOMY.*
+            artifacts/candidate-51/ichifan-breadth-v51/MANIFEST.json
+      - name: Commit corrected static-breadth evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/ichifan-breadth-v51
+          destination=research/candidate-51/evidence/ichifan-breadth-v51
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          git commit -m "candidate51: record corrected IchiFan static-breadth anatomy"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
