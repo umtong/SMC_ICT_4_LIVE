@@ -1,4 +1,4 @@
-name: candidate-57-public-mbe2-v1
+name: candidate-57-public-mbe2-anatomy-v2
 
 on:
   push:
@@ -15,11 +15,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: candidate-57-public-mbe2-v1
+  group: candidate-57-public-mbe2-anatomy-v2
   cancel-in-progress: true
 
 jobs:
-  tournament:
+  anatomy:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
@@ -32,7 +32,7 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Materialize and verify the reused public MBE2 adapter
+      - name: Materialize and verify the reused public MBE2 anatomy adapter
         shell: bash
         run: |
           set -euo pipefail
@@ -43,9 +43,9 @@ jobs:
           from pathlib import Path
 
           specs = [
-              (Path("research/candidate-57/public_mbe2_router.py.gz.b64"), Path("research/candidate-51/router.py"), "d9c7f7aa9a1d9d739b3ae4c54d7f8db0212047c1314a393546e97aa2ea9bada7"),
-              (Path("research/candidate-57/public_mbe2_strategy.py.gz.b64"), Path("research/candidate-51/strategy.py"), "5b31b9737b861c9bc1ce698a76517e9a87ba5a8d7a2216ac5bda13d992922ed2"),
-              (Path("research/candidate-57/public_mbe2_campaign.py.gz.b64"), Path("research/candidate-57/.run_mbe2_tournament_materialized.py"), "238388a1ad0e96fb4b8d51f8337a132747ecb9fd1e1014b67f3334d8c34e59ac"),
+              (Path("research/candidate-57/public_mbe2_router.py.gz.b64"), Path("research/candidate-51/router.py"), "8654dc8adf3dfc5f290060b50b2a320a3d680e6021a5cd48f6a6664850c543dc"),
+              (Path("research/candidate-57/public_mbe2_strategy.py.gz.b64"), Path("research/candidate-51/strategy.py"), "d987d0f37e6fb824f5b3906181b8a6cadb0827e62d96f2a642f37c2db8691127"),
+              (Path("research/candidate-57/public_mbe2_campaign.py.gz.b64"), Path("research/candidate-57/.run_mbe2_anatomy_materialized.py"), "26aa5268d46f9c68e0b5cd11e09eb1252cf655512d003e095ba1457149bcbdc0"),
           ]
           for encoded, target, expected in specs:
               source = gzip.decompress(base64.b64decode("".join(encoded.read_text(encoding="ascii").split()), validate=False))
@@ -55,7 +55,7 @@ jobs:
               compile(source.decode("utf-8"), str(encoded), "exec")
               target.parent.mkdir(parents=True, exist_ok=True)
               target.write_bytes(source)
-          print("Candidate 57 public MBE2 payloads materialized and verified")
+          print("Candidate 57 public MBE2 anatomy payloads materialized and verified")
           PY
 
       - name: Install locked environment and prove source contracts
@@ -65,63 +65,63 @@ jobs:
           python -m pip install --disable-pip-version-check "uv==0.11.25"
           uv lock --check
           uv sync --locked
-          uv run python -m compileall -q research/candidate-51 research/candidate-57/.run_mbe2_tournament_materialized.py
+          uv run python -m compileall -q research/candidate-51 research/candidate-57/.run_mbe2_anatomy_materialized.py
           PYTHONPATH=research/candidate-51 uv run python - <<'PY'
           import math
           from router import _decode_mode, _tema, mbe_source_flags
 
-          assert _decode_mode("both_avg646") == "both"
-          assert _decode_mode("long_avg646") == "long"
-          assert _decode_mode("short_avg646") == "short"
+          assert _decode_mode("both_avg646_source") == "both"
+          assert _decode_mode("long_avg646_source") == "long"
+          assert _decode_mode("short_avg646_source") == "short"
           assert mbe_source_flags(previous_rsi=29.0, rsi=31.0, previous_tema=99.0, tema=100.0, bb_middle=101.0, volume=1.0) == (True, False)
           assert mbe_source_flags(previous_rsi=71.0, rsi=69.0, previous_tema=101.0, tema=100.0, bb_middle=99.0, volume=1.0) == (False, True)
           tema = _tema([float(i) for i in range(1, 101)], 9)
           assert any(math.isfinite(value) for value in tema[30:]), tema
-          print("Candidate 57 public MBE2 source and TEMA contracts verified")
+          print("Candidate 57 public MBE2 source, TEMA and direction contracts verified")
           PY
 
-      - name: Run adaptive development to long tournament
+      - name: Run decomposition-first cross-period anatomy campaign
         id: campaign
         shell: bash
         run: |
           set +e
-          mkdir -p .work/candidate-57-mbe2-v1
+          mkdir -p .work/candidate-57-mbe2-anatomy-v2
           set -o pipefail
-          PYTHONPATH=research/candidate-51 uv run python research/candidate-57/.run_mbe2_tournament_materialized.py 2>&1 | tee .work/candidate-57-mbe2-v1/console.log
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-57/.run_mbe2_anatomy_materialized.py 2>&1 | tee .work/candidate-57-mbe2-anatomy-v2/console.log
           status=${PIPESTATUS[0]}
           echo "status=${status}" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Persist compact evidence
+      - name: Persist compact anatomy evidence
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          rm -f research/candidate-57/.run_mbe2_tournament_materialized.py
+          rm -f research/candidate-57/.run_mbe2_anatomy_materialized.py
           git restore research/candidate-51/router.py research/candidate-51/strategy.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin research/candidate-57
-          if [[ -d research/candidate-57/evidence/mbe2-v1 ]]; then
-            git add -f research/candidate-57/evidence/mbe2-v1
+          if [[ -d research/candidate-57/evidence/mbe2-anatomy-v2 ]]; then
+            git add -f research/candidate-57/evidence/mbe2-anatomy-v2
             if git diff --cached --quiet; then
-              echo "No new evidence to commit."
+              echo "No new anatomy evidence to commit."
             else
-              git commit --no-gpg-sign -m "candidate57: persist public MBE2 validation evidence"
+              git commit --no-gpg-sign -m "candidate57: persist public MBE2 anatomy evidence"
               git push origin HEAD:research/candidate-57
             fi
           else
-            echo "No evidence directory was produced."
+            echo "No anatomy evidence directory was produced."
           fi
 
       - name: Retain compact workflow evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-57-public-mbe2-v1-evidence
+          name: candidate-57-public-mbe2-anatomy-v2-evidence
           path: |
-            research/candidate-57/evidence/mbe2-v1
-            .work/candidate-57-mbe2-v1/console.log
+            research/candidate-57/evidence/mbe2-anatomy-v2
+            .work/candidate-57-mbe2-anatomy-v2/console.log
           if-no-files-found: warn
           retention-days: 7
 
@@ -135,6 +135,6 @@ jobs:
             exit 1
           fi
           if [[ "$status" != "0" ]]; then
-            echo "Campaign failed with status $status; evidence retained."
+            echo "Campaign process failed with status $status; anatomy evidence retained."
             exit "$status"
           fi
