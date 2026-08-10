@@ -1,0 +1,81 @@
+name: candidate-51-derivatives-impulse-v57-debug
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-derivatives-impulse-v57-debug.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+          sparse-checkout: |
+            research/candidate-51
+      - name: Capture completed run and failed logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id=31414571020
+          out=research/candidate-51/evidence/derivatives-impulse-v57-debug
+          mkdir -p "$out"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" > "$out/RUN.json"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" > "$out/JOBS.json"
+          gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log-failed > "$out/FAILED.log" 2>&1 || true
+          python - "$out" <<'PY'
+          import json, pathlib, re, sys
+          root=pathlib.Path(sys.argv[1])
+          run=json.loads((root/'RUN.json').read_text())
+          jobs=json.loads((root/'JOBS.json').read_text()).get('jobs',[])
+          failed=[]
+          for job in jobs:
+              if job.get('conclusion') not in ('success','skipped'):
+                  failed.append({
+                      'id':job['id'],'name':job['name'],'conclusion':job.get('conclusion'),
+                      'failed_steps':[s['name'] for s in job.get('steps',[]) if s.get('conclusion') not in ('success','skipped',None)]
+                  })
+          log=(root/'FAILED.log').read_text(errors='replace')
+          patterns=[]
+          for pattern in (
+              r'HTTP Error[^\n]+', r'KeyError:[^\n]+', r'AttributeError:[^\n]+',
+              r'TypeError:[^\n]+', r'ValueError:[^\n]+', r'RuntimeError:[^\n]+',
+              r'FileNotFoundError:[^\n]+', r'AssertionError[^\n]*',
+          ):
+              patterns.extend(re.findall(pattern,log))
+          payload={
+              'run_id':run_id if False else int(run['id']),
+              'status':run.get('status'),'conclusion':run.get('conclusion'),
+              'failed_jobs':failed,'error_signatures':sorted(set(patterns)),
+          }
+          (root/'DIAGNOSIS.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          md=['# Derivatives impulse v57 workflow diagnosis','',
+              f"- run: {run['id']}",f"- status: {run.get('status')}",f"- conclusion: {run.get('conclusion')}",
+              f"- failed jobs: {len(failed)}",'', '## Error signatures','']
+          md += [f'- `{item}`' for item in payload['error_signatures']] or ['- none']
+          md += ['', '## Failed jobs','']
+          md += [f"- `{item['name']}`: {', '.join(item['failed_steps'])}" for item in failed] or ['- none']
+          (root/'DIAGNOSIS.md').write_text('\n'.join(md)+'\n')
+          PY
+      - name: Commit diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add research/candidate-51/evidence/derivatives-impulse-v57-debug
+          git commit -m "candidate51: record derivatives impulse workflow diagnosis"
+          git fetch origin research/candidate-51 --depth=1
+          git rebase FETCH_HEAD
+          git push origin HEAD:research/candidate-51
