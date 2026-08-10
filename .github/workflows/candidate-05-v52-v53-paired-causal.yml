@@ -1,0 +1,146 @@
+name: candidate-05-v52-v53-paired-causal
+
+on:
+  push:
+    branches: ["research/candidate-05-v52-v53-repair"]
+    paths:
+      - "research/candidate-05/residual_shared_strategy_variants.py"
+      - "research/candidate-05/residual_shared_account_backtest.py"
+      - "research/candidate-05/RESIDUAL_PAIRED_HYPOTHESES.json"
+      - "research/candidate-05/V52_RESIDUAL_FAMILY.json"
+      - "research/candidate-05/V53_RESIDUAL_FAMILY.json"
+      - "research/candidate-05/analyze_residual_paired_causal.py"
+      - "research/candidate-05/tests/test_residual_shared_wiring.py"
+      - ".github/workflows/candidate-05-v52-v53-paired-causal.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-05-v52-v53-paired-causal
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  paired-causal-diagnosis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    container:
+      image: ghcr.io/umtong/smc-ict-4-live-research@sha256:8f4de8a2b2fa28c3f424d114969b1c07765206708f24613b86896ced67532469
+      options: --user 0
+    env:
+      PYTHONPATH: research/candidate-05
+      PYTHONUNBUFFERED: "1"
+      ROOT: artifacts/candidate-05-v52-v53-paired-causal
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify environment and source-preserving shared wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          smc4 doctor
+          python -m compileall -q \
+            research/candidate-05/residual_shared_strategy_variants.py \
+            research/candidate-05/residual_shared_account_backtest.py \
+            research/candidate-05/analyze_residual_paired_causal.py \
+            research/candidate-05/tests/test_residual_shared_wiring.py
+          python -m unittest \
+            research/candidate-05/tests/test_strategy_v52_contract.py \
+            research/candidate-05/tests/test_residual_shared_wiring.py \
+            -v
+          git diff --exit-code -- research/candidate-05/strategy_v36_cross_asset_repricing_gate.py
+
+      - name: Run both fixed mechanisms on every paired diagnostic window
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT"
+          cp research/candidate-05/RESIDUAL_PAIRED_HYPOTHESES.json "$ROOT/"
+          printf '{"runs":[' > "$ROOT/run_status.json"
+          first=1
+
+          run_family() {
+            label="$1"
+            family="$2"
+            build_start="$3"
+            evaluation_start="$4"
+            evaluation_end="$5"
+            if [ "$family" = "v52" ]; then
+              manifest="research/candidate-05/V52_RESIDUAL_FAMILY.json"
+            else
+              manifest="research/candidate-05/V53_RESIDUAL_FAMILY.json"
+            fi
+            output="$ROOT/$label/$family"
+            cache=".cache/candidate-05-v52-v53/$label"
+            mkdir -p "$output"
+            set +e
+            python research/candidate-05/residual_shared_account_backtest.py \
+              --winner-evidence "$manifest" \
+              --build-start "$build_start" \
+              --build-end "$evaluation_end" \
+              --evaluation-start "$evaluation_start" \
+              --evaluation-end "$evaluation_end" \
+              --cache "$cache" \
+              --output "$output" \
+              2>&1 | tee "$output/console.log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$first" -eq 0 ]; then printf ',' >> "$ROOT/run_status.json"; fi
+            first=0
+            printf '{"label":"%s","family":"%s","exit_code":%s,"build_start":"%s","evaluation_start":"%s","evaluation_end":"%s"}' \
+              "$label" "$family" "$rc" "$build_start" "$evaluation_start" "$evaluation_end" >> "$ROOT/run_status.json"
+          }
+
+          for family in v52 v53; do
+            run_family week-2023-07 "$family" 2023-07-07 2023-07-09 2023-07-15
+            run_family week-2023-09 "$family" 2023-09-06 2023-09-08 2023-09-14
+            run_family week-2024-01 "$family" 2024-01-13 2024-01-15 2024-01-21
+            run_family week-2024-03 "$family" 2024-02-28 2024-03-01 2024-03-07
+          done
+          printf ']}' >> "$ROOT/run_status.json"
+          python -m json.tool "$ROOT/run_status.json" >/dev/null
+
+      - name: Build episode-level causal anatomy
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-05/analyze_residual_paired_causal.py \
+            --root "$ROOT" \
+            --output "$ROOT/anatomy"
+          cp research/candidate-05/RESIDUAL_PAIRED_HYPOTHESES.json "$ROOT/anatomy/"
+          cp "$ROOT/run_status.json" "$ROOT/anatomy/" 2>/dev/null || true
+
+      - name: Commit compact evidence without turning economics into CI pass-fail
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="research/candidate-05/evidence/residual-paired-repair-v1"
+          mkdir -p "$evidence"
+          cp "$ROOT/anatomy/CAUSAL_ANATOMY.json" "$evidence/CAUSAL_ANATOMY.json"
+          cp "$ROOT/anatomy/CAUSAL_ANATOMY.md" "$evidence/CAUSAL_ANATOMY.md"
+          cp research/candidate-05/RESIDUAL_PAIRED_HYPOTHESES.json "$evidence/RESIDUAL_PAIRED_HYPOTHESES.json"
+          cp "$ROOT/run_status.json" "$evidence/RUN_STATUS.json" 2>/dev/null || true
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" config user.name github-actions
+          git -C "$GITHUB_WORKSPACE" config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C "$GITHUB_WORKSPACE" add "$evidence"
+          if git -C "$GITHUB_WORKSPACE" diff --cached --quiet; then
+            exit 0
+          fi
+          git -C "$GITHUB_WORKSPACE" commit -m "candidate-05: record paired residual causal anatomy [skip ci]"
+          git -C "$GITHUB_WORKSPACE" pull --rebase origin research/candidate-05-v52-v53-repair
+          git -C "$GITHUB_WORKSPACE" push origin HEAD:research/candidate-05-v52-v53-repair
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-05-v52-v53-paired-causal-${{ github.sha }}
+          path: artifacts/candidate-05-v52-v53-paired-causal/**
+          if-no-files-found: error
+          retention-days: 90
