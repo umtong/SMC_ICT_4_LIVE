@@ -1,0 +1,148 @@
+name: candidate-51-ichiv2-claim-v54
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-ichiv2-claim-v54.yml"
+      - "research/candidate-51/ichi_v2_claim_anatomy.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-ichiv2-claim-v54
+  cancel-in-progress: true
+
+jobs:
+  causal-reconstruction:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Materialize and verify causal reconstruction source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat research/candidate-51/ichi_v2_claim_anatomy.py.gz.b64.part* \
+            | base64 --decode | gzip --decompress \
+            > research/candidate-51/ichi_v2_claim_anatomy.py
+          echo "4e49301078f132d8c68cba63caca63435cfae45a8419f15171c40786ded72531  research/candidate-51/ichi_v2_claim_anatomy.py" \
+            | sha256sum --check
+          python -m py_compile research/candidate-51/ichi_v2_claim_anatomy.py
+          python research/candidate-51/ichi_v2_claim_anatomy.py self-test
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+
+      - name: Run continuous multi-regime causal reconstruction
+        shell: bash
+        run: |
+          set -euo pipefail
+          output=artifacts/candidate-51/ichiv2-claim-v54
+          uv run python research/candidate-51/ichi_v2_claim_anatomy.py run \
+            --start 2024-01-01 \
+            --end 2026-07-24 \
+            --warmup-days 30 \
+            --forward-days 7 \
+            --cache .cache/candidate-51-ichiv2-claim-v54 \
+            --output "$output"
+          test -s "$output/result.json"
+          test -s "$output/ANATOMY.json"
+          test -s "$output/ANATOMY.md"
+          test -s "$output/POLICIES.csv"
+          test -s "$output/EXIT_REASONS.csv"
+          test -s "$output/QUARTERS.csv"
+
+      - name: Build compact evidence manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-51/ichiv2-claim-v54")
+          names = ["ANATOMY.json", "ANATOMY.md", "POLICIES.csv", "EXIT_REASONS.csv", "QUARTERS.csv"]
+          files = {}
+          for name in names:
+              payload = (root / name).read_bytes()
+              files[name] = {
+                  "bytes": len(payload),
+                  "sha256": hashlib.sha256(payload).hexdigest(),
+              }
+          source = Path("research/candidate-51/ichi_v2_claim_anatomy.py").read_bytes()
+          manifest = {
+              "schema_version": 1,
+              "candidate": "candidate-51-ichiv2-claim-v54",
+              "purpose": "hypothesis-driven causal reconstruction; not promotion",
+              "evaluation_start": "2024-01-01",
+              "evaluation_end": "2026-07-24",
+              "calendar_days": 936,
+              "assets": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+              "global_position_limit": 1,
+              "planned_loss_fraction": 0.03,
+              "round_trip_cost_bps": 15.0,
+              "source_sha256": hashlib.sha256(source).hexdigest(),
+              "files": files,
+          }
+          (root / "MANIFEST.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-ichiv2-claim-v54-raw
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/ichiv2-claim-v54/result.json
+            artifacts/candidate-51/ichiv2-claim-v54/signals.csv
+            artifacts/candidate-51/ichiv2-claim-v54/trades_*.csv
+            artifacts/candidate-51/ichiv2-claim-v54/ANATOMY.json
+            artifacts/candidate-51/ichiv2-claim-v54/ANATOMY.md
+            artifacts/candidate-51/ichiv2-claim-v54/POLICIES.csv
+            artifacts/candidate-51/ichiv2-claim-v54/EXIT_REASONS.csv
+            artifacts/candidate-51/ichiv2-claim-v54/QUARTERS.csv
+            artifacts/candidate-51/ichiv2-claim-v54/MANIFEST.json
+
+      - name: Commit compact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/ichiv2-claim-v54
+          destination=research/candidate-51/evidence/ichiv2-claim-v54
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/POLICIES.csv" "$destination/POLICIES.csv"
+          cp "$source/EXIT_REASONS.csv" "$destination/EXIT_REASONS.csv"
+          cp "$source/QUARTERS.csv" "$destination/QUARTERS.csv"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git rm research/candidate-51/ichi_v2_claim_anatomy.py.gz.b64.part*
+          git add research/candidate-51/ichi_v2_claim_anatomy.py "$destination"
+          git commit -m "candidate51: record ichiV2 claim causal anatomy"
+          for attempt in 1 2 3 4; do
+            if git pull --rebase origin research/candidate-51 && git push origin HEAD:research/candidate-51; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep $((attempt * 3))
+          done
+          exit 1
