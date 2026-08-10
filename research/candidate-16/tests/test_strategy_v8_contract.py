@@ -90,6 +90,18 @@ class Candidate16V8ContractTests(unittest.TestCase):
                 f"candidate_v8:Candidate16V8{symbol}Strategy",
             )
 
+    def test_diagnostic_account_is_residual_only(self) -> None:
+        source = (ROOT / "candidate_v8.py").read_text(encoding="utf-8")
+        self.assertEqual(
+            candidate_v8.V8_TRADE_BRANCH,
+            _STRATEGY_V8_MODULE.V8_TRADE_BRANCH,
+        )
+        self.assertIn("def _detect_position_building_balance", source)
+        self.assertIn("inherited_position_building_balance_observer", source)
+        self.assertIn("NON_RESIDUAL_ENTRY_PATH_ATTEMPTED_IN_V8_ISOLATED_ACCOUNT", source)
+        self.assertIn('branch != V8_TRADE_BRANCH', source)
+        self.assertIn('mechanism_purity', source)
+
     def test_adapter_does_not_implement_engine_or_accounting(self) -> None:
         source = (ROOT / "candidate_v8.py").read_text(encoding="utf-8")
         self.assertIn("runner._base.run_shared_account", source)
