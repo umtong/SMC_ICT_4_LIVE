@@ -1,0 +1,63 @@
+name: candidate-55-zaratustra-v15-lifecycle-v2
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v15-lifecycle-v2.yml"
+      - "research/candidate-55/strategy_zaratustra_v15_lifecycle_v2.py"
+      - "research/candidate-55/run_zaratustra_v15_lifecycle_v2.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-zaratustra-v15-lifecycle-v2
+  cancel-in-progress: true
+
+jobs:
+  lifecycle-v2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - name: Materialize fixed lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/router_zaratustra_v15.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra_v15.py research/candidate-51/strategy_zaratustra_v15.py
+          cp research/candidate-55/strategy_zaratustra_v15_relative.py research/candidate-51/strategy_zaratustra_v15_relative.py
+          cp research/candidate-55/strategy_zaratustra_v15_accepted.py research/candidate-51/strategy_zaratustra_v15_accepted.py
+          cp research/candidate-55/strategy_zaratustra_v15_lifecycle.py research/candidate-51/strategy_zaratustra_v15_lifecycle.py
+          cp research/candidate-55/strategy_zaratustra_v15_lifecycle_v2.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and verify lazy binding contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python -m compileall -q research/candidate-51 research/candidate-55
+      - name: Run focused causal lifecycle v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_zaratustra_v15_lifecycle_v2.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v15-lifecycle-v2-${{ github.sha }}
+          path: artifacts/candidate-55/zaratustra-v15-lifecycle-*
+          if-no-files-found: warn
+          retention-days: 30
