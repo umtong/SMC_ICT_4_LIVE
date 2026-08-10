@@ -1,0 +1,142 @@
+name: candidate-51-forced-unwind-geometry-v59-fixed
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-forced-unwind-geometry-v59-fixed.yml"
+      - "research/candidate-51/forced_unwind_geometry_v59_fixed.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-forced-unwind-geometry-v59-fixed
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        period:
+          - {label: dev_riskoff_2022_01, start: 2022-01-10, end: 2022-01-23, split: development}
+          - {label: dev_cascade_2022_06, start: 2022-06-06, end: 2022-06-19, split: development}
+          - {label: dev_ftx_2022_11, start: 2022-11-01, end: 2022-11-14, split: development}
+          - {label: confirm_recovery_2023_03, start: 2023-03-06, end: 2023-03-19, split: confirmation}
+          - {label: confirm_expansion_2023_10, start: 2023-10-16, end: 2023-10-29, split: confirmation}
+          - {label: untouched_bull_2024_03, start: 2024-03-04, end: 2024-03-17, split: untouched}
+          - {label: untouched_shock_2024_08, start: 2024-08-01, end: 2024-08-14, split: untouched}
+          - {label: untouched_cascade_2025_10, start: 2025-10-01, end: 2025-10-14, split: untouched}
+          - {label: postpub_2026_04, start: 2026-04-01, end: 2026-04-14, split: post_publication}
+          - {label: postpub_2026_07, start: 2026-07-15, end: 2026-07-28, split: post_publication}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+          sparse-checkout: |
+            research/candidate-05
+            research/candidate-51
+            pyproject.toml
+            uv.lock
+            src
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Install verified environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          python -m py_compile research/candidate-51/forced_unwind_geometry_v59_fixed.py
+      - name: Measure corrected structural geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="artifacts/candidate-51/forced-unwind-geometry-v59-fixed/${{ matrix.period.label }}"
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/forced_unwind_geometry_v59_fixed.py run \
+            --period-label "${{ matrix.period.label }}" --split "${{ matrix.period.split }}" \
+            --start "${{ matrix.period.start }}" --end "${{ matrix.period.end }}" \
+            --events research/candidate-51/evidence/derivatives-impulse-v57/EVENTS.csv \
+            --cache ".cache/candidate-51-forced-unwind-geometry-v59-fixed/${{ matrix.period.label }}" \
+            --candidate05-path research/candidate-05 --candidate51-path research/candidate-51 \
+            --output "$output"
+          test -s "$output/result.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-forced-unwind-geometry-v59-fixed-${{ matrix.period.label }}
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/forced-unwind-geometry-v59-fixed/${{ matrix.period.label }}/result.json
+
+  aggregate:
+    if: always()
+    needs: measure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+          sparse-checkout: |
+            research/candidate-51
+            pyproject.toml
+            uv.lock
+            src
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-forced-unwind-geometry-v59-fixed-*
+          path: downloaded
+      - name: Aggregate ten corrected frozen periods
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(find downloaded -name result.json -type f | wc -l | tr -d ' ')"
+          test "$count" -eq 10
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          output=artifacts/candidate-51/forced-unwind-geometry-v59-fixed
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/forced_unwind_geometry_v59_fixed.py aggregate \
+            --results-root downloaded --output "$output"
+          test -s "$output/GEOMETRY.json"
+          test -s "$output/GEOMETRY.md"
+          test -s "$output/GEOMETRY.csv"
+          test -s "$output/RECORDS.csv"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-forced-unwind-geometry-v59-fixed-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/forced-unwind-geometry-v59-fixed
+      - name: Commit compact corrected geometry evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/forced-unwind-geometry-v59-fixed
+          destination=research/candidate-51/evidence/forced-unwind-geometry-v59-fixed
+          mkdir -p "$destination"
+          cp "$source/GEOMETRY.json" "$destination/GEOMETRY.json"
+          cp "$source/GEOMETRY.md" "$destination/GEOMETRY.md"
+          cp "$source/GEOMETRY.csv" "$destination/GEOMETRY.csv"
+          cp "$source/RECORDS.csv" "$destination/RECORDS.csv"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          git commit -m "candidate51: record corrected forced-unwind geometry"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-51 --depth=1
+            if git rebase FETCH_HEAD && git push origin HEAD:research/candidate-51; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 2))
+          done
+          exit 1
