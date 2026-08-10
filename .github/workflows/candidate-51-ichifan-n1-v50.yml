@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           pin=e01b7532829507320d0baae601b410746d523868
           git fetch --no-tags origin research/candidate-47
-          mkdir -p research/candidate-47
+          mkdir -p research/candidate-47 research/candidate-35
           for file in \
             router.py \
             ichifan_strategy.py \
@@ -51,6 +51,8 @@ jobs:
             run.py; do
             git show "$pin:research/candidate-47/$file" > "research/candidate-47/$file"
           done
+          git show "$pin:research/candidate-35/strategy.py" \
+            > research/candidate-35/strategy.py
           cp research/candidate-51/ichifan_n1_strategy.py \
             research/candidate-47/ichifan_n1_strategy.py
           cp research/candidate-51/ichifan_n1_launch.py \
@@ -62,6 +64,7 @@ jobs:
           uv sync --locked
           uv run smc4 doctor
           uv run python -m compileall -q \
+            research/candidate-35/strategy.py \
             research/candidate-47 \
             research/candidate-51/ichifan_n1_prepare.py \
             research/candidate-51/ichifan_n1_anatomy_audit.py
