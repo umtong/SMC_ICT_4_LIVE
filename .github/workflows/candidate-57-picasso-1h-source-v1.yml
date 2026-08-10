@@ -1,0 +1,186 @@
+name: candidate-57-picasso-1h-source-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-picasso-1h-source-v1.yml"
+      - "research/candidate-57/PICASSO_1H_SOURCE_TOURNAMENT_V1_FREEZE.md"
+      - "research/candidate-57/picasso_1h_source_campaign.py"
+      - "research/candidate-55/router_picasso_1h.py"
+      - "research/candidate-55/strategy_picasso_1h.py"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/strategy_picasso.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-picasso-1h-source-v1
+  cancel-in-progress: true
+
+jobs:
+  tournament:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Materialize reused source semantics and kline-only project input
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/PICASSO_1H_SOURCE_TOURNAMENT_V1_FREEZE.md
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-55/router_picasso_1h.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_picasso_1h.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-57/picasso_1h_source_campaign.py
+
+      - name: Install locked environment and prove public source contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          from router import RouteConfig, _decode_mode, picasso_source_flags
+          from strategy import Candidate35Config
+
+          assert _decode_mode("exact_level") == ("exact", "level", "all")
+          assert _decode_mode("exact_level_short") == ("exact", "level", "short")
+          assert _decode_mode("exact_edge") == ("exact", "edge", "all")
+          assert _decode_mode("corrected_level") == ("corrected", "level", "all")
+          assert _decode_mode("corrected_edge") == ("corrected", "edge", "all")
+
+          config = RouteConfig()
+          exact_long = picasso_source_flags(
+              mode="exact_level",
+              adx=6.0,
+              trend_long=False,
+              trend_short=False,
+              volume=1.0,
+              volume_mean_long=2.0,
+              volume_mean_short=2.0,
+              pump_warning=False,
+              config=config,
+          )
+          corrected_long = picasso_source_flags(
+              mode="corrected_level",
+              adx=6.0,
+              trend_long=False,
+              trend_short=False,
+              volume=1.0,
+              volume_mean_long=2.0,
+              volume_mean_short=2.0,
+              pump_warning=False,
+              config=config,
+          )
+          exact_short = picasso_source_flags(
+              mode="exact_level_short",
+              adx=15.0,
+              trend_long=False,
+              trend_short=False,
+              volume=1.0,
+              volume_mean_long=2.0,
+              volume_mean_short=2.0,
+              pump_warning=False,
+              config=config,
+          )
+          assert exact_long == (True, False), exact_long
+          assert corrected_long == (False, False), corrected_long
+          assert exact_short == (False, True), exact_short
+
+          fields = set(Candidate35Config.__struct_fields__)
+          for name in (
+              "picasso_bucket_minutes",
+              "picasso_precedence_mode",
+              "picasso_source_effective_leverage",
+              "picasso_source_stoploss",
+              "picasso_roi_1982",
+          ):
+              assert name in fields, name
+          print("public precedence, level re-entry and source management contracts verified")
+          PY
+
+      - name: Run conditional source tournament
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-picasso-1h-source-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/picasso_1h_source_campaign.py \
+            2>&1 | tee .work/candidate-57-picasso-1h-source-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact public-source evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore \
+            research/candidate-51/launch.py \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/picasso-1h-source-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate57: persist public Picasso 1h source tournament"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete public-source artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-picasso-1h-source-v1
+          path: |
+            research/candidate-57/evidence/picasso-1h-source-v1
+            .work/candidate-57-picasso-1h-source-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce mechanics and account validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "public source tournament failed mechanically; status=$status"
+            exit "${status:-1}"
+          fi
