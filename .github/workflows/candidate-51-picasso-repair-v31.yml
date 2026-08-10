@@ -1,0 +1,321 @@
+name: candidate-51-picasso-repair-v31
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - "research/candidate-51/strategy_picasso_repair.py"
+      - "research/candidate-51/picasso_repair_audit.py"
+      - ".github/workflows/candidate-51-picasso-repair-v31.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-picasso-repair-v31
+  cancel-in-progress: true
+
+jobs:
+  anatomy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Materialize public entry engine and repair policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_picasso.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_picasso_repair.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install reusable environment and prove implementation contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from dataclasses import replace
+          from router import BarObservation, FeatureObservation, RouteConfig, RouteDecision, picasso_source_flags
+          from strategy import Candidate35Config
+
+          config = RouteConfig()
+          assert picasso_source_flags(
+              mode="exact", adx=6.0, trend_long=False, trend_short=False,
+              volume=1.0, volume_mean_long=2.0, volume_mean_short=2.0,
+              pump_warning=False, config=config,
+          ) == (True, False)
+          assert picasso_source_flags(
+              mode="corrected", adx=6.0, trend_long=False, trend_short=False,
+              volume=1.0, volume_mean_long=2.0, volume_mean_short=2.0,
+              pump_warning=False, config=config,
+          ) == (False, False)
+          assert picasso_source_flags(
+              mode="directional_relaxed", adx=30.0,
+              trend_long=True, trend_short=False, volume=1.0,
+              volume_mean_long=2.0, volume_mean_short=2.0,
+              pump_warning=False, config=config,
+          ) == (True, False)
+          fields = Candidate35Config.__dataclass_fields__
+          for name in (
+              "picasso_stop_mode", "picasso_management_mode",
+              "picasso_stop_atr_buffer", "picasso_progress_checkpoint_1_minutes",
+          ):
+              assert name in fields, name
+          print("Picasso source and repair contracts verified")
+          PY
+
+      - name: Freeze variants and intervals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import copy
+          import json
+          from pathlib import Path
+
+          source = json.loads(Path("research/candidate-51/config.json").read_text())
+          work = Path(".work/candidate-51-picasso-repair-v31")
+          work.mkdir(parents=True, exist_ok=True)
+
+          periods = {
+              "dev_2026_07_22": ["2026-07-22", "2026-07-28"],
+              "spring_2025_03_10": ["2025-03-10", "2025-03-16"],
+              "autumn_2025_10_13": ["2025-10-13", "2025-10-19"],
+              "spring_2026_05_11": ["2026-05-11", "2026-05-17"],
+          }
+          variants = {
+              "exact_15m_source": {
+                  "bucket": 15, "precedence": "exact", "stop": "source",
+                  "management": "source", "max_hold": 720,
+              },
+              "corrected_15m_source": {
+                  "bucket": 15, "precedence": "corrected", "stop": "source",
+                  "management": "source", "max_hold": 720,
+              },
+              "directional_5m_source": {
+                  "bucket": 5, "precedence": "directional_relaxed", "stop": "source",
+                  "management": "source", "max_hold": 720,
+              },
+              "directional_5m_no_source": {
+                  "bucket": 5, "precedence": "directional_relaxed", "stop": "source",
+                  "management": "no_source_exit", "max_hold": 1440,
+              },
+              "directional_5m_structural_source": {
+                  "bucket": 5, "precedence": "directional_relaxed", "stop": "signal_extreme_atr",
+                  "management": "source", "max_hold": 720,
+              },
+              "directional_5m_structural_no_source": {
+                  "bucket": 5, "precedence": "directional_relaxed", "stop": "signal_extreme_atr",
+                  "management": "no_source_exit", "max_hold": 1440,
+              },
+              "directional_5m_structural_lifecycle": {
+                  "bucket": 5, "precedence": "directional_relaxed", "stop": "signal_extreme_atr",
+                  "management": "lifecycle", "max_hold": 1440,
+              },
+              "directional_5m_structural_progress": {
+                  "bucket": 5, "precedence": "directional_relaxed", "stop": "signal_extreme_atr",
+                  "management": "lifecycle_progress", "max_hold": 1440,
+              },
+              "directional_5m_midline_lifecycle": {
+                  "bucket": 5, "precedence": "directional_relaxed", "stop": "midline_atr",
+                  "management": "lifecycle", "max_hold": 1440,
+              },
+          }
+
+          manifest = {
+              "family": "public_picasso_rsi_bb_macd_decomposed",
+              "source": {
+                  "repository": "syuraj/freq-test",
+                  "commit": "f065569c4881ed646e6629f2509f1afa092f7227",
+                  "path": "user_data/strategies/picasso_RSI_BB_MACD_Dec_2023_15m_3_rls.py",
+                  "performance_claim_used_as_evidence": False,
+              },
+              "intervals": list(periods),
+              "periods": periods,
+              "variants": list(variants),
+              "control_groups": {
+                  "exact_15m_source": ["corrected_15m_source"],
+                  "directional_5m_source": [
+                      "directional_5m_no_source",
+                      "directional_5m_structural_source",
+                      "directional_5m_structural_no_source",
+                      "directional_5m_structural_lifecycle",
+                      "directional_5m_structural_progress",
+                      "directional_5m_midline_lifecycle"
+                  ]
+              },
+              "interpretation": (
+                  "No variant is accepted or rejected by one metric. Compare entry opportunity, "
+                  "winner preservation, loss reduction, path geometry, episode displacement and "
+                  "implementation validity."
+              ),
+          }
+          (work / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+          legacy = {
+              "sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+              "sma_stop_max_fraction", "sma_stop_atr_buffer",
+          }
+          common = {
+              "feature_max_age_seconds": 65.0,
+              "cooldown_minutes": 0,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "picasso_adx_period": 14,
+              "picasso_rsi_long_period": 22,
+              "picasso_rsi_short_period": 17,
+              "picasso_bb_long_period": 16,
+              "picasso_bb_short_period": 20,
+              "picasso_volume_long_period": 38,
+              "picasso_volume_short_period": 20,
+              "picasso_adx_long_min_1": 5.7,
+              "picasso_adx_long_max_1": 6.5,
+              "picasso_adx_long_min_2": 20.9,
+              "picasso_adx_long_max_2": 50.7,
+              "picasso_adx_short_min_1": 9.9,
+              "picasso_adx_short_max_1": 21.4,
+              "picasso_adx_short_min_2": 30.3,
+              "picasso_adx_short_max_2": 50.8,
+              "picasso_source_effective_leverage": 5.0,
+              "picasso_source_stoploss": 0.317,
+              "picasso_trailing_positive": 0.012,
+              "picasso_trailing_offset": 0.030,
+              "picasso_emergency_target_fraction": 0.10,
+              "picasso_roi_0": 0.184,
+              "picasso_roi_416": 0.140,
+              "picasso_roi_933": 0.073,
+              "picasso_roi_1982": 0.0,
+              "picasso_atr_period": 20,
+              "picasso_ema_long_exit": 91,
+              "picasso_ema_short_exit": 147,
+              "picasso_atr_long_multiple": 3.8,
+              "picasso_atr_short_multiple": 5.0,
+              "picasso_volume_long_exit": 19,
+              "picasso_volume_short_exit": 41,
+              "picasso_stop_atr_buffer": 0.25,
+              "picasso_progress_checkpoint_1_minutes": 120,
+              "picasso_progress_checkpoint_2_minutes": 240,
+              "picasso_progress_checkpoint_3_minutes": 480,
+              "picasso_progress_mfe_fraction_1": 0.50,
+              "picasso_progress_mfe_fraction_2": 0.75,
+              "picasso_progress_mfe_fraction_3": 1.00,
+          }
+          for name, variant in variants.items():
+              config = copy.deepcopy(source)
+              for key in legacy:
+                  config["strategy"].pop(key, None)
+              config["strategy"].update(common)
+              config["strategy"].update({
+                  "picasso_bucket_minutes": variant["bucket"],
+                  "picasso_precedence_mode": variant["precedence"],
+                  "picasso_stop_mode": variant["stop"],
+                  "picasso_management_mode": variant["management"],
+                  "max_hold_minutes": variant["max_hold"],
+              })
+              (work / f"{name}.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Run every mechanism on every separated weekly account
+        shell: bash
+        run: |
+          set +e
+          work=.work/candidate-51-picasso-repair-v31
+          root=artifacts/candidate-51/picasso-repair-v31
+          mkdir -p "$root" "$work/status"
+          python - <<'PY' > "$work/periods.tsv"
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path(".work/candidate-51-picasso-repair-v31/manifest.json").read_text())
+          for name, dates in manifest["periods"].items():
+              print(name, dates[0], dates[1], sep="\t")
+          PY
+          python - <<'PY' > "$work/variants.txt"
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path(".work/candidate-51-picasso-repair-v31/manifest.json").read_text())
+          print("\n".join(manifest["variants"]))
+          PY
+          while IFS=$'\t' read -r interval start end; do
+            while IFS= read -r variant; do
+              [[ -z "$variant" ]] && continue
+              output="$root/$interval/$variant"
+              workspace="$work/ws-$interval-$variant"
+              PYTHONPATH=research/candidate-51 uv run python \
+                research/candidate-51/launch_kline_only.py \
+                --config "$work/$variant.json" \
+                --start "$start" --end "$end" \
+                --cache ".cache/candidate-51-picasso-repair-v31/$interval" \
+                --output "$output" \
+                --workspace "$workspace"
+              echo $? > "$work/status/$interval-$variant.txt"
+            done < "$work/variants.txt"
+          done < "$work/periods.tsv"
+          exit 0
+
+      - name: Build deep non-binary system anatomy
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-51/picasso-repair-v31
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/picasso_repair_audit.py \
+            --root artifacts/candidate-51/picasso-repair-v31 \
+            --manifest .work/candidate-51-picasso-repair-v31/manifest.json \
+            --output-json artifacts/candidate-51/picasso-repair-v31/ANATOMY.json \
+            --output-md artifacts/candidate-51/picasso-repair-v31/ANATOMY.md
+          cp .work/candidate-51-picasso-repair-v31/manifest.json \
+            artifacts/candidate-51/picasso-repair-v31/MANIFEST.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-picasso-repair-v31
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/picasso-repair-v31/ANATOMY.json
+            artifacts/candidate-51/picasso-repair-v31/ANATOMY.md
+            artifacts/candidate-51/picasso-repair-v31/MANIFEST.json
+            artifacts/candidate-51/picasso-repair-v31/**/metrics.json
+            artifacts/candidate-51/picasso-repair-v31/**/strategy_diagnostics.json
+            artifacts/candidate-51/picasso-repair-v31/**/closed_scenarios.json
+            artifacts/candidate-51/picasso-repair-v31/**/equity.csv
+            .work/candidate-51-picasso-repair-v31/status/*.txt
+
+      - name: Commit compact anatomy evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/picasso-repair-v31
+          test -s "$source/ANATOMY.json"
+          destination=research/candidate-51/evidence/picasso-repair-v31
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add "$destination"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate51: record Picasso mechanism anatomy"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
