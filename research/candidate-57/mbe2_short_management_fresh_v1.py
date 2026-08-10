@@ -2,7 +2,6 @@
 """Run the two pre-frozen MBE2 short-management cells on a fresh interval."""
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import date
 import importlib.util
 from pathlib import Path
@@ -21,22 +20,27 @@ SPEC.loader.exec_module(MODULE)
 
 stage = MODULE.Stage(
     key="fresh_short_management_v1",
+    name="fresh-short-management-7d",
     start=date(2026, 5, 4),
     end=date(2026, 5, 10),
 )
 source = MODULE.Variant(
     name="short_avg646_source",
-    side_mode="short",
+    side="short",
     leverage=6.46,
-    management_mode="source",
+    management="source",
+    roi_114=0.11,
     component_role="SHORT_SOURCE_MANAGEMENT_CONTROL",
+    source_faithful=True,
 )
 roi_only = MODULE.Variant(
     name="short_avg646_roi_only",
-    side_mode="short",
+    side="short",
     leverage=6.46,
-    management_mode="roi_only",
+    management="roi_only",
+    roi_114=0.11,
     component_role="SHORT_ROI_ONLY_HYPOTHESIS",
+    source_faithful=False,
 )
 
 MODULE.STAGES = (stage,)
@@ -47,8 +51,8 @@ MODULE.ARTIFACTS = HERE.parent.parent / "artifacts" / "candidate-57-mbe2-short-m
 MODULE.EVIDENCE = HERE / "evidence" / "mbe2-short-management-fresh-v1"
 MODULE.CACHE = HERE.parent.parent / ".cache" / "candidate-57-mbe2-short-management-fresh-v1"
 
-# The generic two-period synthesis expects at least two stages.  Reuse the
-# exact case runner and write a one-stage causal comparison instead.
+# The generic two-period synthesis expects at least two stages. Reuse the exact
+# case runner and write a one-stage causal comparison instead.
 def main() -> int:
     for path in (MODULE.WORK, MODULE.ARTIFACTS, MODULE.EVIDENCE, MODULE.CACHE):
         path.mkdir(parents=True, exist_ok=True)
@@ -62,6 +66,7 @@ def main() -> int:
         "fresh_interval_consumed": True,
         "stage": {
             "key": stage.key,
+            "name": stage.name,
             "start": stage.start.isoformat(),
             "end": stage.end.isoformat(),
             "days": stage.days,
