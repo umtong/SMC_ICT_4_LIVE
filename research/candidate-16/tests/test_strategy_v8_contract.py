@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 import unittest
 
 import candidate_v8
 from global_entry_slot_v4 import FINAL_SHARED_ACCOUNT_ENTRY_COORDINATOR
 import strategy_global_slot_wrappers_v4 as shared_v4
 from strategy_v52_cross_sectional_residual import CrossSectionalResidualStrategy
-from strategy_v8 import Candidate16V8Strategy
-from strategy_v8 import V8_MAX_WAIT_BARS
-from strategy_v8 import V8_MIN_TARGET_NET_R
 
 
 ROOT = Path(__file__).resolve().parents[1]
+Candidate16V8Strategy = candidate_v8.Candidate16V8Strategy
+_STRATEGY_V8_MODULE = sys.modules[Candidate16V8Strategy.__module__]
+V8_MAX_WAIT_BARS = _STRATEGY_V8_MODULE.V8_MAX_WAIT_BARS
+V8_MIN_TARGET_NET_R = _STRATEGY_V8_MODULE.V8_MIN_TARGET_NET_R
 
 
 class Candidate16V8ContractTests(unittest.TestCase):
