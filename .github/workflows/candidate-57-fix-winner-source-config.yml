@@ -1,0 +1,59 @@
+name: candidate-57-fix-winner-source-config
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-fix-winner-source-config.yml"
+      - "research/candidate-57/patch_winner_source_fidelity_config.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-fix-winner-source-config
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Remove incompatible inherited config fields
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-57/patch_winner_source_fidelity_config.py
+          python -m compileall -q research/candidate-57/winner_source_fidelity_campaign.py
+
+      - name: Commit campaign correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          git add research/candidate-57/winner_source_fidelity_campaign.py
+          if git diff --cached --quiet; then
+            echo "campaign correction already present"
+            exit 0
+          fi
+          git commit --no-gpg-sign -m "candidate57: remove unrelated fields from Winner source config"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-57
+            git rebase origin/research/candidate-57
+            if git push origin HEAD:research/candidate-57; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
