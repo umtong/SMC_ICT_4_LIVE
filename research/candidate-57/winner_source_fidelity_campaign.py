@@ -96,6 +96,14 @@ def quantiles(values: list[float]) -> dict[str, float | None]:
 def frozen_config() -> Path:
     base = json.loads((C51 / "config.json").read_text(encoding="utf-8"))
     config = copy.deepcopy(base)
+    for key in (
+        "sma_offset_low",
+        "sma_offset_high",
+        "sma_stop_min_fraction",
+        "sma_stop_max_fraction",
+        "sma_stop_atr_buffer",
+    ):
+        config["strategy"].pop(key, None)
     config["strategy"].update(
         {
             "cooldown_minutes": 0,
