@@ -1,0 +1,91 @@
+name: candidate-55-zaratustra-v15-accepted
+
+on:
+  push:
+    branches: ["research/candidate-55"]
+    paths:
+      - ".github/workflows/candidate-55-zaratustra-v15-accepted.yml"
+      - "research/candidate-55/router_zaratustra.py"
+      - "research/candidate-55/router_zaratustra_v13.py"
+      - "research/candidate-55/router_zaratustra_v15.py"
+      - "research/candidate-55/strategy_zaratustra.py"
+      - "research/candidate-55/strategy_zaratustra_v15.py"
+      - "research/candidate-55/strategy_zaratustra_v15_relative.py"
+      - "research/candidate-55/strategy_zaratustra_v15_accepted.py"
+      - "research/candidate-55/run_zaratustra_v15_repair.py"
+      - "research/candidate-55/run_zaratustra_v15_accepted.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-55-zaratustra-v15-accepted
+  cancel-in-progress: true
+
+jobs:
+  accepted-auction-router:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-55
+      - name: Materialize accepted-auction router
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-55/router_zaratustra.py research/candidate-51/router_zaratustra.py
+          cp research/candidate-55/router_zaratustra_v13.py research/candidate-51/router_zaratustra_v13.py
+          cp research/candidate-55/router_zaratustra_v15.py research/candidate-51/router.py
+          cp research/candidate-55/strategy_zaratustra.py research/candidate-51/strategy_zaratustra.py
+          cp research/candidate-55/strategy_zaratustra_v15.py research/candidate-51/strategy_zaratustra_v15.py
+          cp research/candidate-55/strategy_zaratustra_v15_relative.py research/candidate-51/strategy_zaratustra_v15_relative.py
+          cp research/candidate-55/strategy_zaratustra_v15_accepted.py research/candidate-51/strategy.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install, doctor and prove accepted-auction contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51 research/candidate-55
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from pathlib import Path
+          import tempfile
+          import pandas as pd
+          from strategy import _AcceptedFeatureStore
+          with tempfile.TemporaryDirectory() as directory:
+              path = Path(directory) / "features.csv.gz"
+              rows = 70
+              pd.DataFrame({
+                  "observed_time_ns": [(i + 1) * 60_000_000_000 for i in range(rows)],
+                  "feature_ready": [True] * rows,
+                  "trade_vwap_60s": [100.0 + i for i in range(rows)],
+                  "premium_change_5m": [-0.00004] * rows,
+                  "efficiency_60s": [0.02] * rows,
+                  "absorption_60s": [0.20] * rows,
+              }).to_csv(path, index=False, compression="gzip")
+              store = _AcceptedFeatureStore(path)
+              item = store.observation(rows * 60_000_000_000, 60, 65.0)
+              assert item.ready and item.efficiency_60s == 0.02 and item.absorption_60s == 0.20
+              causal = store.observation(rows * 60_000_000_000 - 1, 60, 65.0)
+              assert causal.observed_time_ns == (rows - 1) * 60_000_000_000
+          print("Accepted-auction router uses only completed causal history")
+          PY
+      - name: Run short-first accepted-auction tournament
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-55/run_zaratustra_v15_accepted.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-55-zaratustra-v15-accepted-${{ github.sha }}
+          path: artifacts/candidate-55/zaratustra-v15-accepted-*
+          if-no-files-found: warn
+          retention-days: 30
