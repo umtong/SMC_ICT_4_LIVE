@@ -1,0 +1,153 @@
+name: candidate-57-adx-stochastic-dmi-forensic-v2
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-adx-stochastic-dmi-forensic-v2.yml"
+      - "research/candidate-57/ADX_STOCHASTIC_DMI_FORENSIC_V2.md"
+      - "research/candidate-57/router_adx_stochastic_5m.py"
+      - "research/candidate-57/router_adx_stochastic_runtime.py"
+      - "research/candidate-57/strategy_adx_stochastic_5m.py"
+      - "research/candidate-57/strategy_adx_stochastic_dmi_forensic_v2.py"
+      - "research/candidate-57/adx_stochastic_dmi_forensic_v2.py"
+      - "research/candidate-57/trade_ledger_forensics.py"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/strategy_picasso.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-adx-stochastic-dmi-forensic-v2
+  cancel-in-progress: true
+
+jobs:
+  forensic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble behaviour-identical directional instrumentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/ADX_STOCHASTIC_DMI_FORENSIC_V2.md
+          test -f research/candidate-57/evidence/adx-stochastic-5m-v1/cases/development-corrected_exit.json
+          test -f research/candidate-57/evidence/adx-stochastic-5m-v1/cases/reserved-corrected_exit.json
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_adx_stochastic_5m.py research/candidate-51/router_adx_stochastic_impl.py
+          cp research/candidate-57/router_adx_stochastic_runtime.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_adx_stochastic_5m.py research/candidate-51/strategy_adx_stochastic_source_base.py
+          cp research/candidate-57/strategy_adx_stochastic_dmi_forensic_v2.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_adx_stochastic_impl.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_adx_stochastic_source_base.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-57/adx_stochastic_dmi_forensic_v2.py \
+            research/candidate-57/trade_ledger_forensics.py
+
+      - name: Install locked environment and prove no policy change
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          from strategy import Candidate35Strategy, _directional_indicators
+          from strategy_adx_stochastic_source_base import Candidate35Strategy as Source
+
+          assert issubclass(Candidate35Strategy, Source)
+          assert callable(_directional_indicators)
+          path = inspect.getsource(Candidate35Strategy._update_path)
+          for token in (
+              "forensic_entry_plus_di",
+              "forensic_first_bullish_dmi_state_minute",
+              "forensic_first_negative_pressure_weakening_minute",
+          ):
+              assert token in path, token
+          assert "close_all_positions" not in path
+          print("DMI wrapper records directional state without changing the source policy")
+          PY
+
+      - name: Reproduce consumed accounts and extract directional state
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-adx-dmi-forensic-v2-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/adx_stochastic_dmi_forensic_v2.py \
+            2>&1 | tee .work/candidate-57-adx-dmi-forensic-v2-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact forensic evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_adx_stochastic_impl.py \
+            research/candidate-51/strategy_adx_stochastic_source_base.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/adx-dmi-forensic-v2
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist ADXStochastic DMI forensic evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete forensic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-adx-stochastic-dmi-forensic-v2
+          path: |
+            research/candidate-57/evidence/adx-dmi-forensic-v2
+            .work/candidate-57-adx-dmi-forensic-v2-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce behaviour identity and mechanics
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "ADXStochastic DMI forensic failed; status=$status"
+            exit "${status:-1}"
+          fi
