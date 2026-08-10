@@ -1,0 +1,182 @@
+name: candidate-57-all-branch-evidence-index
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-57]
+    paths:
+      - .github/workflows/candidate-57-all-branch-evidence-index.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-57-all-branch-evidence-index
+  cancel-in-progress: true
+
+jobs:
+  index:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Fetch all candidate branches
+        run: |
+          set -euo pipefail
+          git fetch --prune origin '+refs/heads/research/candidate-*:refs/remotes/origin/research/candidate-*'
+
+      - name: Build cross-branch evidence map
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import json
+          import math
+          from pathlib import Path
+          import subprocess
+
+          root = Path.cwd()
+          out = root / "all-branch-evidence-index"
+          out.mkdir(parents=True, exist_ok=True)
+
+          def run(*args: str) -> str:
+              return subprocess.check_output(args, cwd=root, text=True, stderr=subprocess.DEVNULL)
+
+          def finite(value):
+              try:
+                  x = float(value)
+              except (TypeError, ValueError):
+                  return None
+              return x if math.isfinite(x) else None
+
+          refs = [line.strip() for line in run("git", "for-each-ref", "--format=%(refname)", "refs/remotes/origin/research/candidate-*").splitlines() if line.strip()]
+          rows = []
+          branch_summaries = []
+          read_errors = []
+          for ref in refs:
+              branch = ref.removeprefix("refs/remotes/origin/")
+              try:
+                  head = run("git", "rev-parse", ref).strip()
+                  files = run("git", "ls-tree", "-r", "--name-only", ref).splitlines()
+              except Exception as exc:
+                  read_errors.append({"branch": branch, "error": repr(exc)})
+                  continue
+              result_files = []
+              for path in files:
+                  lower = path.lower()
+                  if not path.startswith("research/"):
+                      continue
+                  if path.endswith("RESULT.md") or path.endswith("summary.json") or path.endswith("RESULT.json") or "DECISION" in Path(path).name:
+                      result_files.append(path)
+                  if not path.endswith(".json"):
+                      continue
+                  if not any(token in lower for token in ("metrics", "case", "result", "summary", "report", "comparison", "evidence")):
+                      continue
+                  try:
+                      raw = subprocess.check_output(["git", "show", f"{ref}:{path}"], cwd=root, stderr=subprocess.DEVNULL)
+                  except Exception:
+                      continue
+                  if len(raw) > 5_000_000:
+                      continue
+                  try:
+                      payload = json.loads(raw)
+                  except Exception:
+                      continue
+                  if not isinstance(payload, dict):
+                      continue
+                  candidates = []
+                  if isinstance(payload.get("metrics"), dict):
+                      candidates.append((payload, payload["metrics"], payload.get("variant") or payload.get("cell") or payload.get("policy") or payload.get("name") or Path(path).stem))
+                  if payload.get("trades") is not None and payload.get("geometric_daily_growth") is not None:
+                      candidates.append((payload, payload, payload.get("variant") or payload.get("cell") or payload.get("name") or Path(path).stem))
+                  for owner, metrics, label in candidates:
+                      geo = finite(metrics.get("geometric_daily_growth"))
+                      trades = metrics.get("trades")
+                      if geo is None or trades is None:
+                          continue
+                      checks = metrics.get("gate_checks") if isinstance(metrics.get("gate_checks"), dict) else {}
+                      mechanically_valid = all(bool(checks.get(key, True)) for key in (
+                          "single_position", "no_global_position_violation", "no_order_rejections",
+                          "no_liquidation", "closed_position_rows_match_trade_count",
+                      ))
+                      calendar_days = metrics.get("calendar_days") or owner.get("calendar_days")
+                      stage = owner.get("stage")
+                      if calendar_days is None and isinstance(stage, dict):
+                          calendar_days = stage.get("days")
+                      ratio = None
+                      try:
+                          if calendar_days and float(calendar_days) > 0:
+                              ratio = float(trades) / float(calendar_days)
+                      except Exception:
+                          pass
+                      rows.append({
+                          "branch": branch,
+                          "head": head,
+                          "path": path,
+                          "label": str(label),
+                          "stage": stage,
+                          "trades": trades,
+                          "trades_per_calendar_day": ratio,
+                          "wins": metrics.get("wins"),
+                          "losses": metrics.get("losses"),
+                          "profit_factor": finite(metrics.get("profit_factor")),
+                          "geometric_daily_growth": geo,
+                          "total_return": finite(metrics.get("total_return")),
+                          "max_drawdown": finite(metrics.get("max_drawdown")),
+                          "expectancy_usdt": finite(metrics.get("expectancy_usdt")),
+                          "mechanically_valid": mechanically_valid,
+                          "gate_pass": metrics.get("gate_pass"),
+                      })
+              branch_summaries.append({"branch": branch, "head": head, "research_result_files": result_files[:500], "result_file_count": len(result_files)})
+
+          unique = {}
+          for row in rows:
+              key = (row["branch"], row["path"], row["label"], json.dumps(row.get("stage"), sort_keys=True, default=str))
+              unique[key] = row
+          rows = list(unique.values())
+          rows.sort(key=lambda r: (
+              bool(r["mechanically_valid"]),
+              r["geometric_daily_growth"],
+              r["profit_factor"] if r["profit_factor"] is not None else -999.0,
+              int(r["trades"] or 0),
+          ), reverse=True)
+          (out / "account_evidence.json").write_text(json.dumps(rows, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          (out / "branches.json").write_text(json.dumps(branch_summaries, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          (out / "errors.json").write_text(json.dumps(read_errors, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+          lines = [
+              "# Cross-branch reusable account evidence",
+              "",
+              "This is a discovery index. It does not add historical returns, declare overlapping development rows independent, or promote the highest row automatically.",
+              "Every reusable item must be read with its causal decision and rerun under the current four-symbol one-slot contract.",
+              "",
+              f"- candidate branches: {len(refs)}",
+              f"- account rows: {len(rows)}",
+              "",
+              "| branch | path/label | trades | trades/day | PF | geo/day | return | MDD | valid |",
+              "|---|---|---:|---:|---:|---:|---:|---:|---|",
+          ]
+          for row in rows[:1000]:
+              lines.append(
+                  f"| `{row['branch']}` | `{row['path']}` / {row['label']} | {row['trades']} | {row['trades_per_calendar_day']} | "
+                  f"{row['profit_factor']} | {row['geometric_daily_growth']} | {row['total_return']} | {row['max_drawdown']} | {row['mechanically_valid']} |"
+              )
+          (out / "TOP_ACCOUNT_EVIDENCE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload cross-branch evidence map
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-all-branch-evidence-index
+          path: all-branch-evidence-index
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 3
