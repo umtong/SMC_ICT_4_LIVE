@@ -1,0 +1,344 @@
+name: candidate-51-edtma-v34
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-edtma-v34.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-edtma-v34
+  cancel-in-progress: true
+
+jobs:
+  interval:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - interval: spring_2025_03
+            data_start: 2025-02-01
+            start: 2025-03-01
+            end: 2025-03-14
+          - interval: autumn_2025_09
+            data_start: 2025-08-01
+            start: 2025-09-01
+            end: 2025-09-14
+          - interval: winter_2026_01
+            data_start: 2025-12-01
+            start: 2026-01-01
+            end: 2026-01-14
+          - interval: summer_2026_06
+            data_start: 2026-05-01
+            start: 2026-06-01
+            end: 2026-06-14
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+
+      - name: Materialize public EDTMA system
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_edtma.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_edtma.py research/candidate-51/strategy.py
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install environment and prove causal reachability
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from router import BarObservation, FeatureObservation, RouteConfig, classify_symbol
+          from strategy import Candidate35Config
+
+          fields = set(Candidate35Config.__struct_fields__)
+          for name in (
+              "edtma_episode_mode", "edtma_exit_mode", "edtma_stop_mode",
+              "edtma_long_ema_period", "edtma_short_ema_period",
+          ):
+              assert name in fields, name
+
+          def minute_bars(direction: int):
+              bars = []
+              base = 100.0
+              for hour in range(260):
+                  hour_open = base + direction * hour * 0.35
+                  for minute in range(60):
+                      close = hour_open + direction * minute * 0.002
+                      open_ = close - direction * 0.001
+                      high = max(open_, close) + 0.01
+                      low = min(open_, close) - 0.01
+                      volume = 1000.0 + hour * 4.0 + minute * 0.01
+                      ts = (hour * 60 + minute + 1) * 60_000_000_000 - 1
+                      bars.append(BarObservation(ts, open_, high, low, close, volume))
+              return bars
+
+          config = RouteConfig(edtma_episode_mode="condition_reentry")
+          rising = minute_bars(1)
+          falling = minute_bars(-1)
+          long = classify_symbol(
+              "BTCUSDT", rising,
+              FeatureObservation(observed_time_ns=rising[-1].ts_event, ready=True),
+              config,
+          )
+          short = classify_symbol(
+              "BTCUSDT", falling,
+              FeatureObservation(observed_time_ns=falling[-1].ts_event, ready=True),
+              config,
+          )
+          assert long.side == 1 and long.actionable, long
+          assert short.side == -1 and short.actionable, short
+          assert long.stop_reference < long.entry_reference < long.objective_reference
+          assert short.objective_reference < short.entry_reference < short.stop_reference
+          print("EDTMA causal reachability and geometry verified")
+          PY
+
+      - name: Freeze mechanism variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import copy
+          import json
+          from pathlib import Path
+
+          source = json.loads(Path("research/candidate-51/config.json").read_text())
+          work = Path(".work/candidate-51-edtma-v34")
+          work.mkdir(parents=True, exist_ok=True)
+          variants = {
+              "source_condition": {
+                  "episode": "condition_reentry", "exit": "source_exact", "stop": "source",
+              },
+              "source_rising_edge": {
+                  "episode": "rising_edge", "exit": "source_exact", "stop": "source",
+              },
+              "condition_no_signal": {
+                  "episode": "condition_reentry", "exit": "no_signal", "stop": "source",
+              },
+              "condition_rolling_chandelier": {
+                  "episode": "condition_reentry", "exit": "rolling_chandelier", "stop": "source",
+              },
+              "condition_structural_source_exit": {
+                  "episode": "condition_reentry", "exit": "source_exact", "stop": "signal_extreme_atr",
+              },
+              "condition_structural_no_signal": {
+                  "episode": "condition_reentry", "exit": "no_signal", "stop": "signal_extreme_atr",
+              },
+          }
+          (work / "variants.json").write_text(json.dumps(variants, indent=2, sort_keys=True) + "\n")
+          legacy = {
+              "sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+              "sma_stop_max_fraction", "sma_stop_atr_buffer",
+          }
+          common = {
+              "feature_max_age_seconds": 65.0,
+              "cooldown_minutes": 0,
+              "max_hold_minutes": 2880,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "edtma_bucket_minutes": 60,
+              "edtma_adx_period": 14,
+              "edtma_volume_period": 22,
+              "edtma_long_adx_min": 35.0,
+              "edtma_long_tema_period": 7,
+              "edtma_long_dema_period": 45,
+              "edtma_long_ema_period": 177,
+              "edtma_short_adx_min": 26.0,
+              "edtma_short_tema_period": 19,
+              "edtma_short_dema_period": 53,
+              "edtma_short_ema_period": 102,
+              "edtma_source_leverage": 3.0,
+              "edtma_source_stoploss_profit_ratio": 0.12,
+              "edtma_remote_target_fraction": 0.10,
+              "edtma_stop_atr_period": 14,
+              "edtma_stop_atr_buffer": 0.25,
+              "edtma_trailing_positive_profit_ratio": 0.01,
+              "edtma_trailing_offset_profit_ratio": 0.02,
+              "edtma_roi_0_profit_ratio": 0.238,
+              "edtma_roi_362_profit_ratio": 0.148,
+              "edtma_roi_881_profit_ratio": 0.066,
+              "edtma_roi_1039_profit_ratio": 0.0,
+              "edtma_long_chandelier_period": 23,
+              "edtma_long_chandelier_multiple": 1.0,
+              "edtma_short_chandelier_period": 26,
+              "edtma_short_chandelier_multiple": 6.0,
+          }
+          for name, variant in variants.items():
+              config = copy.deepcopy(source)
+              for key in legacy:
+                  config["strategy"].pop(key, None)
+              config["strategy"].update(common)
+              config["strategy"].update({
+                  "edtma_episode_mode": variant["episode"],
+                  "edtma_exit_mode": variant["exit"],
+                  "edtma_stop_mode": variant["stop"],
+              })
+              (work / f"{name}.json").write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Run every mechanism on this separated account
+        shell: bash
+        run: |
+          set +e
+          work=.work/candidate-51-edtma-v34
+          root=artifacts/candidate-51/edtma-v34/${{ matrix.interval }}
+          mkdir -p "$root" "$work/status"
+          python - <<'PY' > "$work/variants.txt"
+          import json
+          from pathlib import Path
+          variants = json.loads(Path(".work/candidate-51-edtma-v34/variants.json").read_text())
+          print("\n".join(variants))
+          PY
+          while IFS= read -r variant; do
+            [[ -z "$variant" ]] && continue
+            PYTHONPATH=research/candidate-51 uv run python \
+              research/candidate-51/launch_kline_only_warmup.py \
+              --config "$work/$variant.json" \
+              --data-start "${{ matrix.data_start }}" \
+              --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+              --cache ".cache/candidate-51-edtma-v34/${{ matrix.interval }}" \
+              --output "$root/$variant" \
+              --workspace "$work/ws-${{ matrix.interval }}-$variant"
+            echo $? > "$work/status/${{ matrix.interval }}-$variant.txt"
+          done < "$work/variants.txt"
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-edtma-v34-${{ matrix.interval }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/edtma-v34/${{ matrix.interval }}/**/metrics.json
+            artifacts/candidate-51/edtma-v34/${{ matrix.interval }}/**/strategy_diagnostics.json
+            artifacts/candidate-51/edtma-v34/${{ matrix.interval }}/**/closed_scenarios.json
+            artifacts/candidate-51/edtma-v34/${{ matrix.interval }}/**/equity.csv
+            .work/candidate-51-edtma-v34/status/*.txt
+
+  aggregate:
+    if: always()
+    needs: interval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-edtma-v34-*
+          path: downloaded
+          merge-multiple: true
+      - name: Normalize outputs and build system anatomy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/candidate-51/edtma-v34
+          find downloaded -type f | while read -r file; do
+            case "$file" in
+              *artifacts/candidate-51/edtma-v34/*)
+                relative="${file#*artifacts/candidate-51/edtma-v34/}"
+                mkdir -p "artifacts/candidate-51/edtma-v34/$(dirname "$relative")"
+                cp "$file" "artifacts/candidate-51/edtma-v34/$relative"
+                ;;
+            esac
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          periods = {
+              "spring_2025_03": ["2025-03-01", "2025-03-14"],
+              "autumn_2025_09": ["2025-09-01", "2025-09-14"],
+              "winter_2026_01": ["2026-01-01", "2026-01-14"],
+              "summer_2026_06": ["2026-06-01", "2026-06-14"],
+          }
+          variants = [
+              "source_condition", "source_rising_edge", "condition_no_signal",
+              "condition_rolling_chandelier", "condition_structural_source_exit",
+              "condition_structural_no_signal",
+          ]
+          manifest = {
+              "family": "public_edtma_tema_dema_ema_adx",
+              "source": {
+                  "repository": "syuraj/freq-test",
+                  "commit": "f065569c4881ed646e6629f2509f1afa092f7227",
+                  "path": "user_data/strategies_backup/EDTMA_long_short_prot_CE_1h_3Lev_3mt_March.py",
+                  "performance_claim_used_as_evidence": False,
+              },
+              "intervals": list(periods),
+              "periods": periods,
+              "variants": variants,
+              "control_groups": {
+                  "source_condition": [
+                      "source_rising_edge", "condition_no_signal",
+                      "condition_rolling_chandelier", "condition_structural_source_exit",
+                      "condition_structural_no_signal",
+                  ],
+              },
+              "interpretation": (
+                  "Do not select by final PnL alone. Inspect entry opportunity, repeated-entry "
+                  "increment, winner engine, stop tail, source chandelier behavior, structural "
+                  "risk geometry, path development and implementation validity."
+              ),
+          }
+          path = Path("artifacts/candidate-51/edtma-v34/MANIFEST.json")
+          path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          PY
+          python research/candidate-51/edtma_anatomy_audit.py \
+            --root artifacts/candidate-51/edtma-v34 \
+            --manifest artifacts/candidate-51/edtma-v34/MANIFEST.json \
+            --output-json artifacts/candidate-51/edtma-v34/ANATOMY.json \
+            --output-md artifacts/candidate-51/edtma-v34/ANATOMY.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-edtma-v34-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/edtma-v34/ANATOMY.json
+            artifacts/candidate-51/edtma-v34/ANATOMY.md
+            artifacts/candidate-51/edtma-v34/MANIFEST.json
+      - name: Commit compact anatomy evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/edtma-v34
+          test -s "$source/ANATOMY.json"
+          destination=research/candidate-51/evidence/edtma-v34
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          git config user.name "candidate-51-research-bot"
+          git config user.email "candidate-51-research-bot@users.noreply.github.com"
+          git add "$destination"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate51: record EDTMA deep mechanism anatomy"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
