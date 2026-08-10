@@ -1,0 +1,140 @@
+name: candidate-57-mbe2-state-management-fresh-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-mbe2-state-management-fresh-v1.yml"
+      - "research/candidate-57/MBE2_STATE_MANAGEMENT_FRESH_V1_FREEZE.md"
+      - "research/candidate-57/mbe2_state_management_strategy.py"
+      - "research/candidate-57/mbe2_state_management_fresh_v1.py"
+      - "research/candidate-57/forensic_sources/mbe2_router.py"
+      - "research/candidate-57/forensic_sources/mbe2_strategy.py"
+      - "research/candidate-57/forensic_sources/mbe2_campaign.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-mbe2-state-management-fresh-v1
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble public source and frozen management router
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/MBE2_STATE_MANAGEMENT_FRESH_V1_FREEZE.md
+          cp research/candidate-57/forensic_sources/mbe2_router.py \
+            research/candidate-51/router.py
+          cp research/candidate-57/forensic_sources/mbe2_strategy.py \
+            research/candidate-51/strategy_mbe2_base.py
+          cp research/candidate-57/mbe2_state_management_strategy.py \
+            research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy_mbe2_base.py \
+            research/candidate-51/strategy.py \
+            research/candidate-57/mbe2_state_management_fresh_v1.py
+
+      - name: Install locked environment and prove state-management contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          from strategy import Candidate35Config, Candidate35Strategy
+
+          fields = set(Candidate35Config.__struct_fields__)
+          assert "mbe_single_max_hold_minutes" in fields
+          assert "mbe_breadth_max_hold_minutes" in fields
+          source = inspect.getsource(Candidate35Strategy._manage_open_position)
+          assert "mbe_collision_competitors" in source
+          assert "competitors >= 1" in source
+          assert "mbe_single_max_hold_minutes" in source
+          assert "mbe_breadth_max_hold_minutes" in source
+          print("pre-entry single/breadth state management contract verified")
+          PY
+
+      - name: Run three frozen cells on untouched July interval
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-mbe2-state-management-fresh-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/mbe2_state_management_fresh_v1.py \
+            2>&1 | tee .work/candidate-57-mbe2-state-management-fresh-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact state-management evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f research/candidate-51/strategy_mbe2_base.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/mbe2-state-management-fresh-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate57: persist fresh MBE2 state-management evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete state-management evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-mbe2-state-management-fresh-v1-evidence
+          path: |
+            research/candidate-57/evidence/mbe2-state-management-fresh-v1
+            .work/candidate-57-mbe2-state-management-fresh-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce process and account validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "campaign status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "state-management campaign or account validity failed with status $status"
+            exit "$status"
+          fi
