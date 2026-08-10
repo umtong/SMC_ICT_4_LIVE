@@ -369,18 +369,22 @@ class Candidate35Strategy(_base.Candidate35Strategy):
             if side > 0:
                 period = int(self.config.edtma_long_chandelier_period)
                 multiple = float(self.config.edtma_long_chandelier_multiple)
-                if len(candles) < period:
+                if len(candles) < period + 1:
                     return False, {}
                 atr = float(_ta._atr(candles, period)[-1])
+                if not math.isfinite(atr) or atr <= 0.0:
+                    return False, {}
                 level = max(float(item.high) for item in candles[-period:]) - atr * multiple
                 return float(candle.low) <= level, {
                     "mode": mode, "level": level, "true_atr": atr,
                 }
             period = int(self.config.edtma_short_chandelier_period)
             multiple = float(self.config.edtma_short_chandelier_multiple)
-            if len(candles) < period:
+            if len(candles) < period + 1:
                 return False, {}
             atr = float(_ta._atr(candles, period)[-1])
+            if not math.isfinite(atr) or atr <= 0.0:
+                return False, {}
             level = min(float(item.low) for item in candles[-period:]) + atr * multiple
             return float(candle.high) >= level, {
                 "mode": mode, "level": level, "true_atr": atr,
@@ -433,9 +437,22 @@ class Candidate35Strategy(_base.Candidate35Strategy):
 
         held = max(0, self.minute_index - self.position_open_minute)
         roi = self._roi_threshold(held)
-        if roi > 0.0 and favourable_return >= roi:
+        current_return = side * (float(bar.close) - entry) / entry
+        roi_reached = (
+            held >= 1039 and current_return >= 0.0
+        ) or (
+            held < 1039 and roi > 0.0 and favourable_return >= roi
+        )
+        if roi_reached:
             self.diagnostics["edtma_roi_exits"] += 1
-            self._submit_exit(ts_event, "PUBLIC_ROI_EXIT", threshold_fraction=roi)
+            self._submit_exit(
+                ts_event,
+                "PUBLIC_ROI_EXIT",
+                threshold_fraction=roi,
+                held_minutes=held,
+                current_return_fraction=current_return,
+                favourable_return_fraction=favourable_return,
+            )
             return
 
         moment = datetime.fromtimestamp(ts_event / 1_000_000_000, tz=timezone.utc)
@@ -452,11 +469,13 @@ class Candidate35Strategy(_base.Candidate35Strategy):
                 self._submit_exit(ts_event, reason, **details)
                 return
 
+        before_events = len(self.events)
         super()._manage_open_position(ts_event)
         if scenario.get("edtma_exit_driver") is None:
-            new_events = self.events[-2:]
+            new_events = self.events[before_events:]
             if any(item.get("event_type") == "FORCED_DAYTRADE_EXIT" for item in new_events):
                 scenario["edtma_exit_driver"] = "FORCED_DAYTRADE_EXIT"
+                self._exit_pending = True
 
 
 __all__ = ["Candidate35Config", "Candidate35Strategy"]
