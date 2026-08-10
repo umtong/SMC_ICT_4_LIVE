@@ -12,9 +12,18 @@ The second policy is not claimed to be optimal.  It is the one causal repair
 pre-registered from the development forensic: once trend/momentum/participation
 thresholds are satisfied, the global one-slot account should prefer the member
 with more remaining auction space instead of the most climactic volume burst.
+
+Important implementation detail: the reused public-source strategy historically
+ignored the first value returned by ``route_universe`` and re-sorted the
+returned decisions by ``decision.score``.  Therefore this router must expose
+the effective arbitration score on every actionable decision, not merely
+return a selected object.  This prevents an apparently successful experiment
+from silently running the old policy.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+import json
 import os
 from typing import Mapping, Sequence
 
@@ -42,7 +51,7 @@ def classify_symbol(
     decision = _classify_winner_source_true(symbol, bars, config)
     if not decision.actionable:
         return decision
-    diagnostics = decision.diagnostics or {}
+    diagnostics = dict(decision.diagnostics or {})
     if int(diagnostics.get("persistent_source_condition", 0)):
         return _unresolved(
             symbol,
@@ -51,7 +60,7 @@ def classify_symbol(
             diagnostics,
         )
     diagnostics["independent_transition_only"] = 1
-    return decision
+    return replace(decision, diagnostics=diagnostics)
 
 
 classify_sma_offset = classify_symbol
@@ -69,7 +78,7 @@ def route_universe(
     features_by_symbol: Mapping[str, FeatureObservation],
     config: RouteConfig = RouteConfig(),
 ) -> tuple[RouteDecision | None, dict[str, RouteDecision]]:
-    decisions = {
+    raw = {
         symbol: classify_symbol(
             symbol,
             bars,
@@ -84,30 +93,69 @@ def route_universe(
         )
         for symbol, bars in bars_by_symbol.items()
     }
-    actionable = [decision for decision in decisions.values() if decision.actionable]
     mode = _mode()
-    if mode == "current_max_climax":
-        actionable.sort(
-            key=lambda item: (
-                -float(item.score),
-                _SYMBOL_PRIORITY.get(item.symbol, 99),
-                item.state,
-            )
+    raw_actionable = [decision for decision in raw.values() if decision.actionable]
+    snapshot = [
+        {
+            "symbol": decision.symbol,
+            "source_score": float(decision.score),
+            "volume_ratio": float(
+                (decision.diagnostics or {}).get("volume_ratio", float("inf"))
+            ),
+            "adx": float((decision.diagnostics or {}).get("adx", float("nan"))),
+            "abs_roc": abs(
+                float((decision.diagnostics or {}).get("roc", float("nan")))
+            ),
+        }
+        for decision in raw_actionable
+    ]
+    snapshot.sort(key=lambda row: (_SYMBOL_PRIORITY.get(str(row["symbol"]), 99)))
+    snapshot_json = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+
+    decisions: dict[str, RouteDecision] = {}
+    for symbol, decision in raw.items():
+        if not decision.actionable:
+            decisions[symbol] = decision
+            continue
+        diagnostics = dict(decision.diagnostics or {})
+        volume_ratio = float(diagnostics.get("volume_ratio", float("inf")))
+        source_score = float(decision.score)
+        effective_score = (
+            source_score
+            if mode == "current_max_climax"
+            else -volume_ratio
         )
-    else:
-        actionable.sort(
-            key=lambda item: (
-                float((item.diagnostics or {}).get("volume_ratio", float("inf"))),
-                _SYMBOL_PRIORITY.get(item.symbol, 99),
-                item.state,
-            )
+        diagnostics.update(
+            {
+                "arbitration_mode": mode,
+                "simultaneous_actionable_candidates": len(raw_actionable),
+                "raw_source_score": source_score,
+                "effective_arbitration_score": effective_score,
+                "candidate_set_json": snapshot_json,
+            }
         )
-    if actionable:
-        selected = actionable[0]
-        (selected.diagnostics or {})["arbitration_mode"] = mode
-        (selected.diagnostics or {})["simultaneous_actionable_candidates"] = len(actionable)
-        return selected, decisions
-    return None, decisions
+        decisions[symbol] = replace(
+            decision,
+            score=effective_score,
+            diagnostics=diagnostics,
+        )
+
+    actionable = [decision for decision in decisions.values() if decision.actionable]
+    actionable.sort(
+        key=lambda item: (
+            -float(item.score),
+            _SYMBOL_PRIORITY.get(item.symbol, 99),
+            item.state,
+        )
+    )
+    if not actionable:
+        return None, decisions
+    selected = actionable[0]
+    selected_diagnostics = dict(selected.diagnostics or {})
+    selected_diagnostics["selected_by_effective_arbitration_score"] = 1
+    selected = replace(selected, diagnostics=selected_diagnostics)
+    decisions[selected.symbol] = selected
+    return selected, decisions
 
 
 def sma_offset_exit_ready(
