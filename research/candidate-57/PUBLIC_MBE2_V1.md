@@ -1,22 +1,59 @@
-# Candidate 57 public MBE2 reuse freeze
+# Public MBE2 anatomy campaign v2
 
-Candidate 57 reuses the effective Freqtrade interface-v3 policy in `remiotore/ccxt-freqtrade/strategies/myshortingstrategiembe2.py` at blob `d312e07abc99ffd5631a992fc67a4e97a8768c0a`.
+## Reused public system
 
-The source's effective explicit entry surface is tested without treating its legacy `buy` and `sell` columns as interface-v3 entries or exits:
+Candidate 57 reuses the public `myshortingstrategiembe2.py` system from `remiotore/ccxt-freqtrade` (source blob `d312e07abc99ffd5631a992fc67a4e97a8768c0a`) and adapts it to the project execution/account contract rather than treating the published headline result as evidence.
 
-- 5-minute complete candles and 140-candle causal startup;
-- long when RSI(14) crosses above 30, TEMA(9) is at or below the 20-period middle band, and TEMA is rising;
-- short when RSI(14) crosses below 70, TEMA is above the middle band, and TEMA is falling;
-- source ROI schedule `0:7.9%, 15:4.7%, 41:3.2%, 114:11%, 180:0.7%, 420:0.1%`;
-- source trailing activation `2.5%`, trailing distance `1.5%`, and stoploss `22%` in source profit space.
+Source decisions retained:
 
-The public result reports average effective leverage near 6.46x. The tournament therefore tests both-side, long-only, and short-only versions at 6.46x plus a both-side 10x source-cap sensitivity. Profit-space stop, ROI, and trailing values are translated into underlying price fractions before the project 3% current-NAV risk sizing is applied.
+- 5-minute signal cadence with 140-candle startup.
+- Long: RSI(14) crosses above 30 while TEMA(9) is at/below the Bollinger middle and rising.
+- Short: RSI(14) crosses below 70 while TEMA(9) is above the Bollinger middle and falling.
+- Source ROI schedule: 0m 7.9%, 15m 4.7%, 41m 3.2%, 114m 11%, 180m 0.7%, 420m 0.1% in source profit space.
+- Trailing activation at 2.5%, trailing distance 1.5%, and source stop at 22% in source profit space.
+- Source-effective leverage approximately 6.46x, with a 10x comparison.
 
-Evaluation is adaptive and predeclared:
+Project adaptation:
 
-1. development: 2026-07-22 through 2026-07-28;
-2. untouched confirmation: 2025-02-10 through 2025-02-16;
-3. 30-day continuous account: 2024-10-01 through 2024-10-30;
-4. 180-day continuous account: 2024-03-01 through 2024-08-27.
+- BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT share one continuous account and one global entry/position slot.
+- Planned stop loss is sized from current account NAV at exactly 3%, including entry/stop fees, adverse slippage and funding reserve.
+- NautilusTrader owns matching, contingent orders, fees, positions, liquidation and portfolio accounting.
+- Causal one-minute management avoids same-bar activation/hit hindsight.
 
-Each replay loads two unscored warmup days. All entries are causal RSI-cross episodes, and only completed positions count toward frequency. The reused NautilusTrader stack enforces the four-symbol single global slot, realistic costs, continuous NAV, and exact 3% planned-loss contract. Process and account-contract failures are classified separately from mechanically valid strategy-logic failures.
+## Why v2 is not a gate tournament
+
+The earlier campaign ranked a positive development screen, confirmed only one winner, and then either advanced or killed it. That procedure could discard a low-frequency high-quality component or promote a frequent but weak component. V2 instead runs every predeclared system variant on both the development interval and a separate confirmation interval, then decomposes each result before deciding what is reusable.
+
+The seven variants are:
+
+1. source-faithful both-side 6.46x control;
+2. long-only 6.46x;
+3. short-only 6.46x;
+4. source-faithful both-side 10x;
+5. ROI-only management;
+6. trailing-only management;
+7. a structural repair of the discontinuous 114-minute ROI jump (`0.11` to `0.011`).
+
+No variant is rejected because its trade count is low, and no variant is preferred because it has many trades or take-profits. Mechanical validity and strategic merit are reported separately.
+
+## Anatomy retained per completed trade
+
+The campaign reconstructs the complete causal scenario and records:
+
+- symbol, side, entry/exit, exit cause and holding time;
+- net and gross PnL, commissions, return on NAV and R multiple;
+- planned loss integrity, MFE and MAE in price and source-profit space;
+- router competition, rejected alternatives and score gap;
+- RSI cross magnitude, TEMA slope and TEMA/Bollinger displacement;
+- Bollinger width, volume participation, 1h/4h/8h returns, 2h-to-8h trend alignment, realized volatility and one-hour range;
+- UTC session, cost burden, concentration and causal-episode independence.
+
+The output contains symbol, direction, exit, holding-time, session, score, signal-shape, trend, volatility, collision, excursion and cost slices. Cross-period synthesis uses a role-balanced Pareto set: quality anchor, growth/robustness anchor, low-frequency quality anchor, cost-efficiency anchor and a frequency reference. The frequency reference is explicitly descriptive, not an automatic recommendation.
+
+## Evaluation intervals
+
+- Development: 2026-07-22 through 2026-07-28.
+- Untouched confirmation for this campaign: 2025-02-10 through 2025-02-16.
+- Each interval receives two preceding warm-up days which are not scored.
+
+Outputs are persisted under `research/candidate-57/evidence/mbe2-anatomy-v2/` as per-case evidence, `synthesis.json`, `manifest.json`, and `RESULT.md`.
