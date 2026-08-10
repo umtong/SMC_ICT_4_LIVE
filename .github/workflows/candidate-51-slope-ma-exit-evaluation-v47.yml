@@ -1,0 +1,242 @@
+name: candidate-51-slope-ma-exit-evaluation-v47
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-slope-ma-exit-evaluation-v47.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-slope-ma-exit-evaluation-v47
+  cancel-in-progress: true
+
+jobs:
+  interval:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {interval: eval_2024_01, data_start: 2023-12-24, start: 2024-01-01, end: 2024-01-14}
+          - {interval: eval_2024_08, data_start: 2024-07-24, start: 2024-08-01, end: 2024-08-14}
+          - {interval: eval_2024_12, data_start: 2024-11-23, start: 2024-12-01, end: 2024-12-14}
+          - {interval: eval_2025_01, data_start: 2024-12-24, start: 2025-01-01, end: 2025-01-14}
+          - {interval: eval_2025_04, data_start: 2025-03-24, start: 2025-04-01, end: 2025-04-14}
+          - {interval: eval_2025_07, data_start: 2025-06-23, start: 2025-07-01, end: 2025-07-14}
+          - {interval: eval_2025_10, data_start: 2025-09-23, start: 2025-10-01, end: 2025-10-14}
+          - {interval: eval_2026_02, data_start: 2026-01-24, start: 2026-02-01, end: 2026-02-14}
+          - {interval: eval_2026_05, data_start: 2026-04-23, start: 2026-05-01, end: 2026-05-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Install frozen Slope MA-cross-only system
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_slope_repair.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_slope_repair.py research/candidate-51/strategy.py
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          python research/candidate-51/slope_ma_exit_evaluation_prepare.py \
+            --output .work/candidate-51-slope-ma-exit-evaluation-v47
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import json
+          from pathlib import Path
+          from strategy import Candidate35Config
+          fields = set(Candidate35Config.__struct_fields__)
+          assert {"slope_min_separation_activation_multiple", "slope_exit_mode"} <= fields
+          cfg = json.loads(Path(".work/candidate-51-slope-ma-exit-evaluation-v47/frozen_ma_cross.json").read_text())["strategy"]
+          assert cfg["slope_min_separation_activation_multiple"] == 2.0
+          assert cfg["slope_stop_mode"] == "signal_slow_atr"
+          assert cfg["slope_exit_mode"] == "ma_only"
+          assert cfg["slope_repair_management"] == "source"
+          print("Frozen Slope sep2 MA-cross-only configuration verified")
+          PY
+      - name: Run frozen system once on new evaluation interval
+        shell: bash
+        run: |
+          set +e
+          work=.work/candidate-51-slope-ma-exit-evaluation-v47
+          root=artifacts/candidate-51/slope-ma-exit-evaluation-v47/${{ matrix.interval }}/frozen_ma_cross
+          mkdir -p "$root" "$work/status"
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/launch_kline_only_warmup.py \
+            --config "$work/frozen_ma_cross.json" \
+            --data-start "${{ matrix.data_start }}" \
+            --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+            --cache ".cache/candidate-51-slope-ma-exit-evaluation-v47/${{ matrix.interval }}" \
+            --output "$root" \
+            --workspace "$work/ws-${{ matrix.interval }}"
+          status=$?
+          echo "$status" > "$work/status/${{ matrix.interval }}.txt"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-slope-ma-exit-evaluation-v47-${{ matrix.interval }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/slope-ma-exit-evaluation-v47/${{ matrix.interval }}/**/metrics.json
+            artifacts/candidate-51/slope-ma-exit-evaluation-v47/${{ matrix.interval }}/**/strategy_diagnostics.json
+            artifacts/candidate-51/slope-ma-exit-evaluation-v47/${{ matrix.interval }}/**/closed_scenarios.json
+            artifacts/candidate-51/slope-ma-exit-evaluation-v47/${{ matrix.interval }}/**/equity.csv
+            .work/candidate-51-slope-ma-exit-evaluation-v47/status/${{ matrix.interval }}.txt
+
+  aggregate:
+    if: always()
+    needs: interval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-slope-ma-exit-evaluation-v47-*
+          path: downloaded
+          merge-multiple: true
+      - name: Aggregate frozen evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-51/slope-ma-exit-evaluation-v47
+          mkdir -p "$root"
+          find downloaded -type f | while read -r file; do
+            case "$file" in
+              *artifacts/candidate-51/slope-ma-exit-evaluation-v47/*)
+                relative="${file#*artifacts/candidate-51/slope-ma-exit-evaluation-v47/}"
+                mkdir -p "$root/$(dirname "$relative")"
+                cp "$file" "$root/$relative"
+                ;;
+              *)
+                ;;
+            esac
+          done
+          python research/candidate-51/slope_ma_exit_evaluation_prepare.py \
+            --output .work/candidate-51-slope-ma-exit-evaluation-v47
+          cp .work/candidate-51-slope-ma-exit-evaluation-v47/MANIFEST.json "$root/MANIFEST.json"
+          python research/candidate-51/slope_dope_anatomy_audit.py \
+            --root "$root" --manifest "$root/MANIFEST.json" \
+            --output-json "$root/ANATOMY.json" --output-md "$root/ANATOMY.md"
+          python - <<'PY'
+          import json
+          import math
+          import re
+          import statistics
+          from pathlib import Path
+
+          root = Path("artifacts/candidate-51/slope-ma-exit-evaluation-v47")
+          manifest = json.loads((root / "MANIFEST.json").read_text())
+          number_pattern = re.compile(r"[-+]?\d+(?:[,_]\d{3})*(?:\.\d+)?")
+
+          def number(value, default=0.0):
+              if isinstance(value, (int, float)) and not isinstance(value, bool):
+                  value = float(value)
+                  return value if math.isfinite(value) else default
+              match = number_pattern.search(str(value).replace("_", ""))
+              return float(match.group().replace(",", "")) if match else default
+
+          rows = []
+          for interval in manifest["intervals"]:
+              folder = root / interval / "frozen_ma_cross"
+              required = [folder / name for name in ("metrics.json", "strategy_diagnostics.json", "closed_scenarios.json")]
+              if not all(path.is_file() for path in required):
+                  rows.append({"interval": interval, "status": "missing"})
+                  continue
+              metrics = json.loads(required[0].read_text())
+              diagnostics = json.loads(required[1].read_text())
+              scenarios = json.loads(required[2].read_text())
+              valid = [row for row in scenarios if not isinstance(row, dict) or row.get("actual_fill_risk_valid") is not False]
+              valid = [row for row in valid if isinstance(row, dict)]
+              pnl = [number(row.get("realized_pnl")) for row in valid]
+              rows.append({
+                  "interval": interval,
+                  "status": "complete",
+                  "ending_nav": metrics.get("ending_nav"),
+                  "total_return": metrics.get("total_return"),
+                  "geometric_daily_growth": metrics.get("geometric_daily_growth"),
+                  "max_drawdown": metrics.get("max_drawdown"),
+                  "reported_trades": metrics.get("trades"),
+                  "reported_closed_records": len(scenarios),
+                  "valid_intended_trades": len(valid),
+                  "valid_wins": sum(value > 0.0 for value in pnl),
+                  "valid_losses": sum(value < 0.0 for value in pnl),
+                  "valid_net_pnl_usdt": sum(pnl),
+                  "profit_factor": (
+                      sum(max(value, 0.0) for value in pnl)
+                      / -sum(min(value, 0.0) for value in pnl)
+                      if any(value < 0.0 for value in pnl) else None
+                  ),
+                  "fill_invalidations": diagnostics.get("fill_invalidations", 0),
+                  "global_position_violations": diagnostics.get("global_position_violations", 0),
+              })
+          complete = [row for row in rows if row["status"] == "complete"]
+          returns = [number(row.get("total_return")) for row in complete]
+          growth = [number(row.get("geometric_daily_growth")) for row in complete]
+          summary = {
+              "frozen_variant": "frozen_ma_cross",
+              "data_status": manifest["data_status"],
+              "all_intervals_complete": len(complete) == len(rows),
+              "period_results": rows,
+              "aggregate": {
+                  "independent_account_count": len(complete),
+                  "calendar_days": 14 * len(complete),
+                  "positive_intervals": sum(value > 0.0 for value in returns),
+                  "negative_intervals": sum(value < 0.0 for value in returns),
+                  "mean_interval_return": statistics.fmean(returns) if returns else None,
+                  "median_interval_return": statistics.median(returns) if returns else None,
+                  "mean_geometric_daily_growth": statistics.fmean(growth) if growth else None,
+                  "median_geometric_daily_growth": statistics.median(growth) if growth else None,
+                  "worst_interval_return": min(returns) if returns else None,
+                  "best_interval_return": max(returns) if returns else None,
+                  "max_interval_drawdown": max((number(row.get("max_drawdown")) for row in complete), default=None),
+                  "valid_intended_trades": sum(int(row.get("valid_intended_trades") or 0) for row in complete),
+                  "reported_closed_records": sum(int(row.get("reported_closed_records") or 0) for row in complete),
+                  "fill_invalidations": sum(int(row.get("fill_invalidations") or 0) for row in complete),
+                  "zero_global_position_violations": all(int(row.get("global_position_violations") or 0) == 0 for row in complete),
+              },
+          }
+          (root / "EVALUATION_SUMMARY.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-slope-ma-exit-evaluation-v47-summary
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/slope-ma-exit-evaluation-v47/ANATOMY.*
+            artifacts/candidate-51/slope-ma-exit-evaluation-v47/EVALUATION_SUMMARY.json
+      - name: Commit compact frozen evaluation evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/slope-ma-exit-evaluation-v47
+          destination=research/candidate-51/evidence/slope-ma-exit-evaluation-v47
+          test -s "$source/ANATOMY.json"
+          test -s "$source/EVALUATION_SUMMARY.json"
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          cp "$source/EVALUATION_SUMMARY.json" "$destination/EVALUATION_SUMMARY.json"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate51: record frozen Slope MA-exit evaluation"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
