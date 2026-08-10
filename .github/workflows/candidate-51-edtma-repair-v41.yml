@@ -1,0 +1,144 @@
+name: candidate-51-edtma-repair-v41
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-edtma-repair-v41.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-edtma-repair-v41
+  cancel-in-progress: true
+
+jobs:
+  interval:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {interval: spring_2025_03, data_start: 2025-02-01, start: 2025-03-01, end: 2025-03-14}
+          - {interval: autumn_2025_09, data_start: 2025-08-01, start: 2025-09-01, end: 2025-09-14}
+          - {interval: winter_2026_01, data_start: 2025-12-01, start: 2026-01-01, end: 2026-01-14}
+          - {interval: summer_2026_06, data_start: 2026-05-01, start: 2026-06-01, end: 2026-06-14}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Install and materialize repair system
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp research/candidate-51/router_edtma_repair.py research/candidate-51/router.py
+          cp research/candidate-51/strategy_edtma_repair.py research/candidate-51/strategy.py
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          uv run python -m compileall -q research/candidate-51
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          from strategy import Candidate35Config
+          fields = set(Candidate35Config.__struct_fields__)
+          assert {"edtma_repair_management", "edtma_progress_checkpoint_1_minutes"} <= fields
+          print("EDTMA repair implementation fields verified")
+          PY
+          python research/candidate-51/edtma_repair_prepare.py --output .work/candidate-51-edtma-repair-v41
+      - name: Run mechanisms on independent account
+        shell: bash
+        run: |
+          set +e
+          work=.work/candidate-51-edtma-repair-v41
+          root=artifacts/candidate-51/edtma-repair-v41/${{ matrix.interval }}
+          mkdir -p "$root" "$work/status"
+          while IFS= read -r variant; do
+            [[ -z "$variant" ]] && continue
+            PYTHONPATH=research/candidate-51 uv run python \
+              research/candidate-51/launch_kline_only_warmup.py \
+              --config "$work/$variant.json" \
+              --data-start "${{ matrix.data_start }}" \
+              --start "${{ matrix.start }}" --end "${{ matrix.end }}" \
+              --cache ".cache/candidate-51-edtma-repair-v41/${{ matrix.interval }}" \
+              --output "$root/$variant" \
+              --workspace "$work/ws-${{ matrix.interval }}-$variant"
+            echo $? > "$work/status/${{ matrix.interval }}-$variant.txt"
+          done < "$work/variants.txt"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-edtma-repair-v41-${{ matrix.interval }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/edtma-repair-v41/${{ matrix.interval }}/**/metrics.json
+            artifacts/candidate-51/edtma-repair-v41/${{ matrix.interval }}/**/strategy_diagnostics.json
+            artifacts/candidate-51/edtma-repair-v41/${{ matrix.interval }}/**/closed_scenarios.json
+            artifacts/candidate-51/edtma-repair-v41/${{ matrix.interval }}/**/equity.csv
+            .work/candidate-51-edtma-repair-v41/status/*.txt
+
+  aggregate:
+    if: always()
+    needs: interval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-edtma-repair-v41-*
+          path: downloaded
+          merge-multiple: true
+      - name: Build mechanism anatomy
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=artifacts/candidate-51/edtma-repair-v41
+          mkdir -p "$root"
+          find downloaded -type f | while read -r file; do
+            case "$file" in
+              *artifacts/candidate-51/edtma-repair-v41/*)
+                relative="${file#*artifacts/candidate-51/edtma-repair-v41/}"
+                mkdir -p "$root/$(dirname "$relative")"
+                cp "$file" "$root/$relative"
+                ;;
+            esac
+          done
+          python research/candidate-51/edtma_repair_prepare.py --output .work/candidate-51-edtma-repair-v41
+          cp .work/candidate-51-edtma-repair-v41/MANIFEST.json "$root/MANIFEST.json"
+          python research/candidate-51/edtma_anatomy_audit.py \
+            --root "$root" --manifest "$root/MANIFEST.json" \
+            --output-json "$root/ANATOMY.json" --output-md "$root/ANATOMY.md"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-edtma-repair-v41-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/edtma-repair-v41/ANATOMY.*
+      - name: Commit compact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/edtma-repair-v41
+          destination=research/candidate-51/evidence/edtma-repair-v41
+          test -s "$source/ANATOMY.json"
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add "$destination"
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "candidate51: record EDTMA episode and loss anatomy"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
