@@ -1,0 +1,198 @@
+name: candidate-57-jump-repair-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-jump-repair-v1.yml"
+      - "research/candidate-57/candidate57_jump_repair_v1_bundle.tar.gz.b64"
+      - "research/candidate-57/JUMP_REPAIR_V1_FREEZE.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-jump-repair-v1
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    name: evaluate-${{ matrix.variant.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        variant:
+          - {name: baseline_terminal_source, stop_mode: terminal, selection: source, confirmation: 0}
+          - {name: impulse_extreme_source, stop_mode: impulse, selection: source, confirmation: 0}
+          - {name: terminal_residual_rank, stop_mode: terminal, selection: residual_rank, confirmation: 0}
+          - {name: confirm5_source, stop_mode: terminal, selection: source, confirmation: 15}
+          - {name: confirm5_residual_rank, stop_mode: terminal, selection: residual_rank, confirmation: 15}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Materialize Candidate 57 policy in reused Nautilus shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d research/candidate-57/candidate57_jump_repair_v1_bundle.tar.gz.b64 \
+            > /tmp/candidate57_jump_repair_v1_bundle.tar.gz
+          tar -xzf /tmp/candidate57_jump_repair_v1_bundle.tar.gz \
+            -C research/candidate-57
+          cp research/candidate-57/router_jump_repair.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_jump_repair.py research/candidate-51/strategy.py
+
+      - name: Install locked project environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run python -m compileall -q research/candidate-51 research/candidate-57
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import math
+          from router import causal_jump_zscore
+          sample = [-0.01, 0.01] * 9 + [0.04]
+          z, sigma, mean = causal_jump_zscore(sample, 18)
+          assert z > 2.0 and sigma > 0.0 and math.isfinite(mean)
+          changed = list(sample)
+          changed[-1] = 0.08
+          z2, sigma2, mean2 = causal_jump_zscore(changed, 18)
+          assert sigma2 == sigma and mean2 == mean and z2 > z
+          print("causal jump estimator contract passed")
+          PY
+
+      - name: Build frozen mechanism config
+        shell: bash
+        env:
+          STOP_MODE: ${{ matrix.variant.stop_mode }}
+          SELECTION: ${{ matrix.variant.selection }}
+          CONFIRMATION: ${{ matrix.variant.confirmation }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          config = json.loads(Path("research/candidate-51/config.json").read_text())
+          for key in (
+              "sma_offset_low", "sma_offset_high", "sma_stop_min_fraction",
+              "sma_stop_max_fraction", "sma_stop_atr_buffer",
+          ):
+              config["strategy"].pop(key, None)
+          config["strategy"].update({
+              "cooldown_minutes": 0,
+              "max_hold_minutes": 240,
+              "funding_flatten_minute": 60,
+              "funding_blackout_before_minutes": -1,
+              "funding_blackout_after_minutes": -1,
+              "jump_timeframe_minutes": 240,
+              "jump_threshold_sigma": 2.0,
+              "jump_volatility_window": 18,
+              "jump_min_absolute_return": 0.0,
+              "jump_terminal_atr_period": 14,
+              "jump_stop_atr_multiple": 1.0,
+              "jump_min_stop_fraction": 0.0015,
+              "jump_emergency_target_fraction": 0.20,
+              "jump_stop_mode": os.environ["STOP_MODE"],
+              "jump_selection_mode": os.environ["SELECTION"],
+              "jump_min_residual_share": 0.50,
+              "jump_min_residual_z": 0.75,
+              "jump_confirmation_minutes": int(os.environ["CONFIRMATION"]),
+              "jump_confirmation_bucket_minutes": 5,
+          })
+          Path(".work").mkdir(exist_ok=True)
+          Path(".work/config.json").write_text(
+              json.dumps(config, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Run frozen 14-day four-symbol continuous account
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant.name }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=research/candidate-51 uv run python research/candidate-51/launch.py \
+            --config .work/config.json \
+            --start 2025-11-01 --end 2025-11-14 \
+            --cache ".cache/candidate-57-jump-repair-v1-${VARIANT}" \
+            --output "artifacts/candidate-57/jump-repair-v1-${VARIANT}" \
+            --workspace ".work/candidate-57-jump-repair-v1-${VARIANT}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-57-jump-repair-v1-${{ matrix.variant.name }}
+          path: artifacts/candidate-57/jump-repair-v1-${{ matrix.variant.name }}/**
+          if-no-files-found: warn
+          retention-days: 30
+
+  synthesize:
+    needs: evaluate
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-57-jump-repair-v1-*
+          path: downloaded
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Decompose alpha, losses, paths and repair leverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d research/candidate-57/candidate57_jump_repair_v1_bundle.tar.gz.b64 \
+            > /tmp/candidate57_jump_repair_v1_bundle.tar.gz
+          tar -xzf /tmp/candidate57_jump_repair_v1_bundle.tar.gz \
+            -C research/candidate-57
+          python research/candidate-57/analyze_jump_repair_results.py \
+            --root downloaded \
+            --out research/candidate-57/evidence/jump-repair-v1
+
+      - name: Persist compact mechanism evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          git add research/candidate-57/evidence/jump-repair-v1
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "candidate57: decompose jump alpha and loss repair mechanisms"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-57
+            git rebase origin/research/candidate-57
+            if git push origin HEAD:research/candidate-57; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-57-jump-repair-v1-synthesis
+          path: research/candidate-57/evidence/jump-repair-v1/**
+          if-no-files-found: error
