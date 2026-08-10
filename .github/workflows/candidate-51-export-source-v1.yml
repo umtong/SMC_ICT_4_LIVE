@@ -1,0 +1,45 @@
+name: candidate-51-export-source-v1
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-export-source-v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-51
+          fetch-depth: 1
+      - name: Build compact source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export
+          cp -a pyproject.toml uv.lock README.md src tests research/candidate-05 research/candidate-51 .github/workflows export/
+          find export -type d -name __pycache__ -prune -exec rm -rf {} +
+          find export -type f \( -name '*.zip' -o -name '*.gz' -o -name '*.parquet' \) -delete
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          root = Path('export')
+          for path in list(root.rglob('artifacts')) + list(root.rglob('.cache')):
+              if path.is_dir():
+                  shutil.rmtree(path)
+          PY
+          zip -qr candidate-51-source-v1.zip export
+          test -s candidate-51-source-v1.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-51-source-v1
+          path: candidate-51-source-v1.zip
+          retention-days: 7
+          if-no-files-found: error
