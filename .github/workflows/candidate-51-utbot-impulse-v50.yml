@@ -1,0 +1,170 @@
+name: candidate-51-utbot-impulse-v50
+
+on:
+  push:
+    branches: ["research/candidate-51"]
+    paths:
+      - ".github/workflows/candidate-51-utbot-impulse-v50.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-51-utbot-impulse-v50
+  cancel-in-progress: true
+
+jobs:
+  anatomy:
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        symbol: [BTCUSDT, ETHUSDT, SOLUSDT, XRPUSDT]
+        period:
+          - {label: dev_2024_01, start: 2024-01-01, end: 2024-01-14, split: development}
+          - {label: dev_2024_08, start: 2024-08-01, end: 2024-08-14, split: development}
+          - {label: dev_2025_01, start: 2025-01-01, end: 2025-01-14, split: development}
+          - {label: dev_2025_04, start: 2025-04-01, end: 2025-04-14, split: development}
+          - {label: stress_2025_10, start: 2025-10-01, end: 2025-10-14, split: stress}
+          - {label: stress_2025_11, start: 2025-11-01, end: 2025-11-14, split: stress}
+          - {label: forward_2026_02, start: 2026-02-01, end: 2026-02-14, split: forward}
+          - {label: forward_2026_05, start: 2026-05-01, end: 2026-05-14, split: forward}
+          - {label: forward_2026_07, start: 2026-07-15, end: 2026-07-28, split: forward}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - name: Materialize and verify causal anatomy source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat research/candidate-51/utbot_impulse_anatomy.py.gz.b64.part* \
+            | base64 --decode | gzip --decompress \
+            > research/candidate-51/utbot_impulse_anatomy.py
+          echo "151be8a30b2deefd73bf0b4f896172141b79a891be3590ecfae3a03225535760  research/candidate-51/utbot_impulse_anatomy.py" \
+            | sha256sum --check
+          python -m py_compile research/candidate-51/utbot_impulse_anatomy.py
+      - name: Install verified research environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+      - name: Measure public vectorized and intended recursive mechanisms
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="artifacts/candidate-51/utbot-impulse-v50/${{ matrix.period.label }}/${{ matrix.symbol }}"
+          PYTHONPATH=research/candidate-51 uv run python \
+            research/candidate-51/utbot_impulse_anatomy.py run \
+            --symbol "${{ matrix.symbol }}" \
+            --start "${{ matrix.period.start }}" \
+            --end "${{ matrix.period.end }}" \
+            --period-label "${{ matrix.period.label }}" \
+            --split "${{ matrix.period.split }}" \
+            --warmup-days 12 \
+            --cache ".cache/candidate-51-utbot-impulse-v50/${{ matrix.symbol }}" \
+            --output "$output"
+          test -s "$output/result.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-utbot-impulse-v50-${{ matrix.period.label }}-${{ matrix.symbol }}
+          retention-days: 30
+          if-no-files-found: error
+          path: artifacts/candidate-51/utbot-impulse-v50/${{ matrix.period.label }}/${{ matrix.symbol }}/result.json
+
+  aggregate:
+    if: always()
+    needs: anatomy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research/candidate-51, fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-51-utbot-impulse-v50-*
+          path: downloaded
+      - name: Aggregate mechanism evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(find downloaded -name result.json -type f | wc -l | tr -d ' ')"
+          test "$count" -eq 36
+          cat research/candidate-51/utbot_impulse_anatomy.py.gz.b64.part* \
+            | base64 --decode | gzip --decompress \
+            > research/candidate-51/utbot_impulse_anatomy.py
+          echo "151be8a30b2deefd73bf0b4f896172141b79a891be3590ecfae3a03225535760  research/candidate-51/utbot_impulse_anatomy.py" \
+            | sha256sum --check
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv sync --locked
+          output=artifacts/candidate-51/utbot-impulse-v50
+          uv run python research/candidate-51/utbot_impulse_anatomy.py aggregate \
+            --results-root downloaded --output "$output"
+          test -s "$output/ANATOMY.json"
+          test -s "$output/ANATOMY.md"
+          test -s "$output/SUMMARY.csv"
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          root = Path("artifacts/candidate-51/utbot-impulse-v50")
+          files = {}
+          for name in ("ANATOMY.json", "ANATOMY.md", "SUMMARY.csv"):
+              payload = (root / name).read_bytes()
+              files[name] = {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+          manifest = {
+              "schema_version": 1,
+              "candidate": "candidate-51-utbot-impulse-v50",
+              "source_family": "UTBotAlert_Donchain_MultTrend_TradingStratAug2023_OnlyUT_1h",
+              "source_sha256": "151be8a30b2deefd73bf0b4f896172141b79a891be3590ecfae3a03225535760",
+              "source_runs": 36,
+              "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"],
+              "periods": [
+                  "dev_2024_01", "dev_2024_08", "dev_2025_01", "dev_2025_04",
+                  "stress_2025_10", "stress_2025_11",
+                  "forward_2026_02", "forward_2026_05", "forward_2026_07"
+              ],
+              "purpose": "causal mechanism anatomy, not NAV backtest",
+              "files": files,
+          }
+          (root / "MANIFEST.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-51-utbot-impulse-v50-anatomy
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            artifacts/candidate-51/utbot-impulse-v50/ANATOMY.json
+            artifacts/candidate-51/utbot-impulse-v50/ANATOMY.md
+            artifacts/candidate-51/utbot-impulse-v50/SUMMARY.csv
+            artifacts/candidate-51/utbot-impulse-v50/MANIFEST.json
+      - name: Commit source and compact evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=artifacts/candidate-51/utbot-impulse-v50
+          destination=research/candidate-51/evidence/utbot-impulse-v50
+          mkdir -p "$destination"
+          cp "$source/ANATOMY.json" "$destination/ANATOMY.json"
+          cp "$source/ANATOMY.md" "$destination/ANATOMY.md"
+          cp "$source/SUMMARY.csv" "$destination/SUMMARY.csv"
+          cp "$source/MANIFEST.json" "$destination/MANIFEST.json"
+          git rm research/candidate-51/utbot_impulse_anatomy.py.gz.b64.part*
+          git config user.name candidate-51-research-bot
+          git config user.email candidate-51-research-bot@users.noreply.github.com
+          git add research/candidate-51/utbot_impulse_anatomy.py "$destination"
+          git commit -m "candidate51: record public UTBot impulse anatomy"
+          git pull --rebase origin research/candidate-51
+          git push origin HEAD:research/candidate-51
