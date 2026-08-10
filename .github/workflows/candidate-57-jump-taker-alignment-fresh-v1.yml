@@ -1,0 +1,159 @@
+name: candidate-57-jump-taker-alignment-fresh-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-jump-taker-alignment-fresh-v1.yml"
+      - "research/candidate-57/JUMP_TAKER_ALIGNMENT_FRESH_V1_FREEZE.md"
+      - "research/candidate-57/download_binance_metrics_sidecar.py"
+      - "research/candidate-57/jump_taker_alignment_router.py"
+      - "research/candidate-57/jump_taker_forensic_strategy.py"
+      - "research/candidate-57/jump_taker_alignment_fresh_campaign.py"
+      - "research/candidate-57/jump_episode_forensic_strategy.py"
+      - "research/candidate-57/jump_episode_forensic_analyze.py"
+      - "research/candidate-57/forensic_sources/jump_transient_v3/**"
+      - "research/candidate-51/run.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-jump-taker-alignment-fresh-v1
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble exact jump source, taker filter and all-candidate audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/JUMP_TAKER_ALIGNMENT_FRESH_V1_FREEZE.md
+          cp research/candidate-57/forensic_sources/jump_transient_v3/router_jump_transient.py research/candidate-51/router_jump_base.py
+          cp research/candidate-57/jump_taker_alignment_router.py research/candidate-51/router.py
+          cp research/candidate-57/forensic_sources/jump_transient_v3/strategy_jump_transient.py research/candidate-51/strategy_jump_transient.py
+          cp research/candidate-57/jump_episode_forensic_strategy.py research/candidate-51/strategy_jump_audit_base.py
+          cp research/candidate-57/jump_taker_forensic_strategy.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/router.py \
+            research/candidate-51/router_jump_base.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_jump_transient.py \
+            research/candidate-51/strategy_jump_audit_base.py \
+            research/candidate-57/download_binance_metrics_sidecar.py \
+            research/candidate-57/jump_taker_alignment_fresh_campaign.py
+
+      - name: Install locked environment and prove frozen state contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          import os
+          import router
+          from strategy import Candidate35Config, Candidate35Strategy
+
+          fields = set(getattr(Candidate35Config, "__struct_fields__", ()))
+          assert "jump_audit_enabled" in fields, fields
+          assert hasattr(Candidate35Strategy, "_audit_boundary")
+          os.environ["C57_JUMP_TAKER_FILTER_MODE"] = "source_without_taker_filter"
+          assert router.filter_mode() == "source_without_taker_filter"
+          os.environ["C57_JUMP_TAKER_FILTER_MODE"] = "peer_taker_alignment_3of4"
+          assert router.filter_mode() == "peer_taker_alignment_3of4"
+          try:
+              os.environ["C57_JUMP_TAKER_FILTER_MODE"] = "unfrozen_variant"
+              router.filter_mode()
+          except ValueError:
+              pass
+          else:
+              raise AssertionError("unfrozen taker filter variant accepted")
+          source = inspect.getsource(router.route_universe)
+          assert "aligned_peers" in source and "< 3" in source
+          asof = inspect.getsource(router._asof)
+          assert "bisect_right" in asof and "_MAX_AGE_NS" in asof
+          print("strict as-of 3-of-4 taker state contract verified")
+          PY
+
+      - name: Run baseline and frozen external-state filter
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-jump-taker-alignment-fresh-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/jump_taker_alignment_fresh_campaign.py \
+            2>&1 | tee .work/candidate-57-jump-taker-alignment-fresh-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact all-candidate evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_jump_base.py \
+            research/candidate-51/strategy_jump_transient.py \
+            research/candidate-51/strategy_jump_audit_base.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/jump-taker-alignment-fresh-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist fresh peer-taker jump evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload full compact state evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-jump-taker-alignment-fresh-v1-evidence
+          path: |
+            research/candidate-57/evidence/jump-taker-alignment-fresh-v1
+            .work/candidate-57-jump-taker-alignment-fresh-v1-console
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce implementation and account validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" ]]; then
+            echo "campaign status missing"
+            exit 1
+          fi
+          if [[ "$status" != "0" ]]; then
+            echo "state campaign or end-flat validity failed with status $status; evidence retained"
+            exit "$status"
+          fi
