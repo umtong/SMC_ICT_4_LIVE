@@ -1,0 +1,157 @@
+name: candidate-57-ichi-v2-short-lifecycle-forensic-v3
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-ichi-v2-short-lifecycle-forensic-v3.yml"
+      - "research/candidate-57/ICHI_V2_SHORT_LIFECYCLE_FORENSIC_V3.md"
+      - "research/candidate-57/router_ichi_v2_5m.py"
+      - "research/candidate-57/router_ichi_v2_runtime.py"
+      - "research/candidate-57/strategy_ichi_v2_5m.py"
+      - "research/candidate-57/strategy_ichi_v2_fast_v2.py"
+      - "research/candidate-57/strategy_ichi_v2_short_lifecycle_forensic_v3.py"
+      - "research/candidate-57/ichi_v2_short_lifecycle_forensic_v3.py"
+      - "research/candidate-57/trade_ledger_forensics.py"
+      - "research/candidate-51/router_picasso.py"
+      - "research/candidate-51/strategy_picasso.py"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-ichi-v2-short-lifecycle-forensic-v3
+  cancel-in-progress: true
+
+jobs:
+  forensic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble verified finite-history source and lifecycle shadows
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/ICHI_V2_SHORT_LIFECYCLE_FORENSIC_V3.md
+          test -f research/candidate-57/evidence/ichi-v2-fast-v2/cases/continuous_30d-report_short_level.json
+          test -f research/candidate-57/evidence/ichi-v2-fast-v2/finite_history_identity.json
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/router_ichi_v2_5m.py research/candidate-51/router_ichi_v2_impl.py
+          cp research/candidate-57/router_ichi_v2_runtime.py research/candidate-51/router.py
+          cp research/candidate-57/strategy_ichi_v2_5m.py research/candidate-51/strategy_ichi_v2_base.py
+          cp research/candidate-57/strategy_ichi_v2_fast_v2.py research/candidate-51/strategy_ichi_v2_fast_base.py
+          cp research/candidate-57/strategy_ichi_v2_short_lifecycle_forensic_v3.py research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_ichi_v2_impl.py \
+            research/candidate-51/router_picasso.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_ichi_v2_base.py \
+            research/candidate-51/strategy_ichi_v2_fast_base.py \
+            research/candidate-51/strategy_picasso.py \
+            research/candidate-57/ichi_v2_short_lifecycle_forensic_v3.py \
+            research/candidate-57/trade_ledger_forensics.py
+
+      - name: Install locked environment and prove shadows cannot trade
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect, json
+          from pathlib import Path
+          from strategy import Candidate35Strategy
+          from strategy_ichi_v2_fast_base import Candidate35Strategy as Fast
+
+          assert issubclass(Candidate35Strategy, Fast)
+          identity = json.loads(Path('research/candidate-57/evidence/ichi-v2-fast-v2/finite_history_identity.json').read_text())
+          assert identity['identical']
+          for source in (
+              inspect.getsource(Candidate35Strategy._update_post_exit_shadows),
+              inspect.getsource(Candidate35Strategy._spawn_post_exit_shadow),
+          ):
+              for forbidden in ('submit_order', '_submit_decision', 'close_all_positions', 'cancel_all_orders'):
+                  assert forbidden not in source, forbidden
+          print('finite source identity verified; post-exit shadows cannot touch the account')
+          PY
+
+      - name: Reproduce June account and audit source exits
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-ichi-short-lifecycle-v3-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51:research/candidate-57 \
+            uv run python research/candidate-57/ichi_v2_short_lifecycle_forensic_v3.py \
+            2>&1 | tee .work/candidate-57-ichi-short-lifecycle-v3-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact forensic evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore research/candidate-51/launch.py research/candidate-51/router.py research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_ichi_v2_impl.py \
+            research/candidate-51/strategy_ichi_v2_base.py \
+            research/candidate-51/strategy_ichi_v2_fast_base.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/ichi-short-lifecycle-v3
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m "candidate57: persist ichi short lifecycle evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete forensic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-ichi-v2-short-lifecycle-forensic-v3
+          path: |
+            research/candidate-57/evidence/ichi-short-lifecycle-v3
+            .work/candidate-57-ichi-short-lifecycle-v3-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce account identity and mechanics
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "ichi short lifecycle forensic failed; status=$status"
+            exit "${status:-1}"
+          fi
