@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/candidate-55-zaratustra-v15-rebreak-forensics.yml"
       - "research/candidate-55/v15_bb_pullback_rebreak_forensics.py"
+      - "research/candidate-55/v15_bb_pullback_rebreak_cost_forensics.py"
   workflow_dispatch:
 
 permissions:
@@ -42,29 +43,29 @@ jobs:
           uv sync --locked
           uv run smc4 doctor
           uv run python -m compileall -q research/candidate-51 research/candidate-55
-      - name: Run three fresh result-blind pullback re-break windows
+      - name: Run three fresh result-blind cost-after re-break windows
         shell: bash
         run: |
           set -euo pipefail
           export PYTHONPATH=research/candidate-51:research/candidate-55
           cache=.cache/candidate-55-v15-rebreak-forensics
-          uv run python research/candidate-55/v15_bb_pullback_rebreak_forensics.py \
+          uv run python research/candidate-55/v15_bb_pullback_rebreak_cost_forensics.py \
             --start 2024-03-04 --end 2024-03-10 --cache "$cache" \
-            --output artifacts/candidate-55/zaratustra-v15-rebreak-forensics-2024-03
-          uv run python research/candidate-55/v15_bb_pullback_rebreak_forensics.py \
+            --output artifacts/candidate-55/zaratustra-v15-rebreak-cost-forensics-2024-03
+          uv run python research/candidate-55/v15_bb_pullback_rebreak_cost_forensics.py \
             --start 2025-07-07 --end 2025-07-13 --cache "$cache" \
-            --output artifacts/candidate-55/zaratustra-v15-rebreak-forensics-2025-07
-          uv run python research/candidate-55/v15_bb_pullback_rebreak_forensics.py \
+            --output artifacts/candidate-55/zaratustra-v15-rebreak-cost-forensics-2025-07
+          uv run python research/candidate-55/v15_bb_pullback_rebreak_cost_forensics.py \
             --start 2026-01-05 --end 2026-01-11 --cache "$cache" \
-            --output artifacts/candidate-55/zaratustra-v15-rebreak-forensics-2026-01
+            --output artifacts/candidate-55/zaratustra-v15-rebreak-cost-forensics-2026-01
           python - <<'PY'
           import json
           from pathlib import Path
-          roots = sorted(Path("artifacts/candidate-55").glob("zaratustra-v15-rebreak-forensics-*/SUMMARY.json"))
+          roots = sorted(Path("artifacts/candidate-55").glob("zaratustra-v15-rebreak-cost-forensics-*/SUMMARY.json"))
           rows = [json.loads(path.read_text()) for path in roots]
           verdict = {
               "candidate": "candidate-55",
-              "family": "V15_BB_SHORT_PULLBACK_REBREAK_GEOMETRY",
+              "family": "V15_BB_SHORT_PULLBACK_REBREAK_COST_AFTER_GEOMETRY",
               "windows": len(rows),
               "supported_windows": sum(bool(row["prediction_supported_in_this_window"]) for row in rows),
               "source_episodes": sum(int(row["source_episodes"]) for row in rows),
@@ -73,7 +74,7 @@ jobs:
               "account_implementation_warranted": sum(bool(row["prediction_supported_in_this_window"]) for row in rows) >= 2,
               "results": rows,
           }
-          Path("artifacts/candidate-55/zaratustra-v15-rebreak-forensics-verdict.json").write_text(
+          Path("artifacts/candidate-55/zaratustra-v15-rebreak-cost-forensics-verdict.json").write_text(
               json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False) + "\n"
           )
           print(json.dumps(verdict, indent=2, sort_keys=True, allow_nan=False))
@@ -81,10 +82,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: candidate-55-zaratustra-v15-rebreak-forensics-${{ github.sha }}
+          name: candidate-55-zaratustra-v15-rebreak-cost-forensics-${{ github.sha }}
           path: |
-            artifacts/candidate-55/zaratustra-v15-rebreak-forensics-*/SUMMARY.json
-            artifacts/candidate-55/zaratustra-v15-rebreak-forensics-*/episodes.csv
-            artifacts/candidate-55/zaratustra-v15-rebreak-forensics-verdict.json
+            artifacts/candidate-55/zaratustra-v15-rebreak-cost-forensics-*/SUMMARY.json
+            artifacts/candidate-55/zaratustra-v15-rebreak-cost-forensics-*/episodes.csv
+            artifacts/candidate-55/zaratustra-v15-rebreak-cost-forensics-verdict.json
           if-no-files-found: warn
           retention-days: 30
