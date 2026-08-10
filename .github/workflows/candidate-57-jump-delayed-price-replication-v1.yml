@@ -1,0 +1,154 @@
+name: candidate-57-jump-delayed-price-replication-v1
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-jump-delayed-price-replication-v1.yml"
+      - "research/candidate-57/JUMP_DELAYED_PRICE_REPLICATION_V1_FREEZE.md"
+      - "research/candidate-57/jump_delayed_price_replication_v1.py"
+      - "research/candidate-57/jump_delayed_post_state_strategy.py"
+      - "research/candidate-57/jump_state_arbitration_router.py"
+      - "research/candidate-57/jump_taker_alignment_fresh_campaign.py"
+      - "research/candidate-57/download_binance_metrics_sidecar.py"
+      - "research/candidate-57/jump_episode_forensic_strategy.py"
+      - "research/candidate-57/jump_episode_forensic_analyze.py"
+      - "research/candidate-57/forensic_sources/jump_transient_v3/**"
+      - "research/candidate-51/launch_kline_only.py"
+      - "research/candidate-51/kline_only_inputs.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-jump-delayed-price-replication-v1
+  cancel-in-progress: true
+
+jobs:
+  replicate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Assemble source jump and frozen two-bar state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f research/candidate-57/JUMP_DELAYED_PRICE_REPLICATION_V1_FREEZE.md
+          cp research/candidate-51/launch_kline_only.py research/candidate-51/launch.py
+          cp research/candidate-57/forensic_sources/jump_transient_v3/router_jump_transient.py research/candidate-51/router_jump_base.py
+          cp research/candidate-57/jump_state_arbitration_router.py research/candidate-51/router.py
+          cp research/candidate-57/forensic_sources/jump_transient_v3/strategy_jump_transient.py research/candidate-51/strategy_jump_transient_base.py
+          cp research/candidate-57/jump_delayed_post_state_strategy.py research/candidate-51/strategy_jump_transient.py
+          cp research/candidate-57/jump_episode_forensic_strategy.py research/candidate-51/strategy_jump_audit.py
+          sed 's/from strategy_jump_audit_base import (/from strategy_jump_audit import (/' \
+            research/candidate-57/jump_state_arbitration_forensic_strategy.py \
+            > research/candidate-51/strategy.py
+          python -m compileall -q \
+            research/candidate-51/launch.py \
+            research/candidate-51/kline_only_inputs.py \
+            research/candidate-51/router.py \
+            research/candidate-51/router_jump_base.py \
+            research/candidate-51/strategy.py \
+            research/candidate-51/strategy_jump_transient.py \
+            research/candidate-51/strategy_jump_transient_base.py \
+            research/candidate-51/strategy_jump_audit.py \
+            research/candidate-57/jump_delayed_price_replication_v1.py
+
+      - name: Install locked environment and prove unchanged delayed rule
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check "uv==0.11.25"
+          uv lock --check
+          uv sync --locked
+          uv run smc4 doctor
+          PYTHONPATH=research/candidate-51 uv run python - <<'PY'
+          import inspect
+          from strategy import Candidate35Strategy as FinalStrategy
+          from strategy_jump_transient import Candidate35Strategy as DelayedStrategy
+
+          assert issubclass(FinalStrategy, DelayedStrategy)
+          source = inspect.getsource(DelayedStrategy._try_pending_confirmation)
+          assert "elapsed < minimum_elapsed" in source
+          assert "two_bar_price_oi_stable" in source
+          assert "super()._try_pending_confirmation" in source
+          print("unchanged two-bar completed-price confirmation verified")
+          PY
+
+      - name: Run three separate replication accounts
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .work/candidate-57-jump-delayed-price-replication-v1-console
+          set -o pipefail
+          PYTHONPATH=research/candidate-51 \
+            uv run python research/candidate-57/jump_delayed_price_replication_v1.py \
+            2>&1 | tee .work/candidate-57-jump-delayed-price-replication-v1-console/console.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit compact replication evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore \
+            research/candidate-51/launch.py \
+            research/candidate-51/router.py \
+            research/candidate-51/strategy.py
+          rm -f \
+            research/candidate-51/router_jump_base.py \
+            research/candidate-51/strategy_jump_transient.py \
+            research/candidate-51/strategy_jump_transient_base.py \
+            research/candidate-51/strategy_jump_audit.py
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          out=research/candidate-57/evidence/jump-delayed-price-replication-v1
+          if [[ -d "$out" ]]; then
+            git add -f "$out"
+            if ! git diff --cached --quiet; then
+              git commit --no-gpg-sign -m \
+                "candidate57: persist delayed jump replication evidence"
+              for attempt in 1 2 3 4 5; do
+                git fetch origin research/candidate-57
+                git rebase origin/research/candidate-57
+                if git push origin HEAD:research/candidate-57; then
+                  break
+                fi
+                sleep 2
+              done
+            fi
+          fi
+
+      - name: Upload complete replication artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-jump-delayed-price-replication-v1
+          path: |
+            research/candidate-57/evidence/jump-delayed-price-replication-v1
+            .work/candidate-57-jump-delayed-price-replication-v1-console/console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Enforce mechanics and end-flat validity only
+        if: always()
+        shell: bash
+        run: |
+          status="${{ steps.campaign.outputs.status }}"
+          if [[ -z "$status" || "$status" != "0" ]]; then
+            echo "delayed jump replication failed mechanically; status=$status"
+            exit "${status:-1}"
+          fi
