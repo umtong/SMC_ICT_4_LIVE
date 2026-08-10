@@ -1,0 +1,42 @@
+name: candidate-57-import-candidate04
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/candidate-57]
+    paths:
+      - .github/workflows/candidate-57-import-candidate04.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-57-import-candidate04
+  cancel-in-progress: true
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - name: Fetch and export candidate04 branch
+        run: |
+          set -euo pipefail
+          git fetch origin research/candidate-04
+          mkdir -p candidate04-export
+          git archive --format=tar origin/research/candidate-04 research/candidate-04 .github/workflows | tar -xf - -C candidate04-export
+          git rev-parse origin/research/candidate-04 > candidate04-export/HEAD.txt
+
+      - name: Upload candidate04 source and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-57-import-candidate04
+          path: candidate04-export
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 3
