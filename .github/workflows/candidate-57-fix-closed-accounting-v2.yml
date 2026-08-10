@@ -1,0 +1,90 @@
+name: candidate-57-fix-closed-accounting-v2
+
+on:
+  push:
+    branches: ["research/candidate-57"]
+    paths:
+      - ".github/workflows/candidate-57-fix-closed-accounting-v2.yml"
+      - "research/candidate-57/patch_closed_accounting.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: candidate-57-fix-closed-accounting-v2
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/candidate-57
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Apply accounting correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          python research/candidate-57/patch_closed_accounting.py
+          python -m compileall -q research/candidate-51/run.py
+
+      - name: Verify report-row classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+
+          text = Path("research/candidate-51/run.py").read_text(encoding="utf-8")
+          start = text.index("def _normalized_column")
+          end = text.index("def _rolling", start)
+          namespace = {
+              "pd": pd,
+              "Any": object,
+              "Candidate35RunError": RuntimeError,
+          }
+          exec(text[start:end], namespace)
+          positions = pd.DataFrame([
+              {"side": "FLAT", "ts_closed": 10, "realized_pnl": "1 USDT"},
+              {"side": "SHORT", "ts_closed": None, "realized_pnl": "-0.1 USDT"},
+          ])
+          orders = pd.DataFrame([
+              {"status": "FILLED"},
+              {"status": "SUBMITTED"},
+          ])
+          assert len(namespace["_closed_position_rows"](positions)) == 1
+          assert len(namespace["_open_position_rows"](positions)) == 1
+          assert len(namespace["_active_order_rows"](orders)) == 1
+          print("closed/open/active report contract verified")
+          PY
+
+      - name: Commit accounting correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "candidate-57-research-bot"
+          git config user.email "candidate-57-research-bot@users.noreply.github.com"
+          git add research/candidate-51/run.py
+          if git diff --cached --quiet; then
+            echo "accounting correction already present"
+            exit 0
+          fi
+          git commit --no-gpg-sign -m "candidate57: count completed trades and require end-flat account"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin research/candidate-57
+            git rebase origin/research/candidate-57
+            if git push origin HEAD:research/candidate-57; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
